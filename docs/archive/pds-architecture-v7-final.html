@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Desktop PDS Architecture v7 — Final</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #0a0e17;
+    --surface: #111827;
+    --surface-2: #1a2332;
+    --border: #1e2d3d;
+    --border-bright: #2a3f55;
+    --text: #e2e8f0;
+    --text-dim: #8494a7;
+    --accent-blue: #38bdf8;
+    --accent-green: #34d399;
+    --accent-amber: #fbbf24;
+    --accent-rose: #fb7185;
+    --accent-purple: #a78bfa;
+    --accent-cyan: #22d3ee;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'DM Sans', sans-serif;
+    padding: 40px 24px;
+    min-height: 100vh;
+  }
+
+  .container { max-width: 1100px; margin: 0 auto; }
+
+  /* Header */
+  .header { text-align: center; margin-bottom: 48px; position: relative; }
+  .header::after { content: ''; position: absolute; bottom: -24px; left: 50%; transform: translateX(-50%); width: 60px; height: 2px; background: linear-gradient(90deg, var(--accent-blue), var(--accent-purple)); border-radius: 1px; }
+  .header h1 { font-family: 'JetBrains Mono', monospace; font-size: 28px; font-weight: 700; letter-spacing: -0.5px; background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 8px; }
+  .header .version { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--accent-green); letter-spacing: 1px; text-transform: uppercase; }
+  .header .subtitle { color: var(--text-dim); font-size: 14px; margin-top: 8px; }
+
+  /* Layer sections */
+  .layer { margin-bottom: 32px; border-radius: 12px; overflow: hidden; border: 1px solid var(--border); }
+  .layer-header { display: flex; align-items: center; gap: 12px; padding: 16px 24px; font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; }
+  .layer-header .layer-num { font-size: 11px; opacity: 0.5; font-weight: 400; }
+  .layer-header .changed-badge { font-size: 10px; padding: 2px 8px; border-radius: 4px; background: rgba(251, 191, 36, 0.15); color: var(--accent-amber); text-transform: uppercase; letter-spacing: 1px; margin-left: auto; font-weight: 500; }
+  .layer-device .layer-header { background: linear-gradient(135deg, rgba(12,74,110,0.4), rgba(12,74,110,0.15)); color: var(--accent-blue); }
+  .layer-relay .layer-header { background: linear-gradient(135deg, rgba(6,78,59,0.4), rgba(6,78,59,0.15)); color: var(--accent-green); }
+  .layer-infra .layer-header { background: linear-gradient(135deg, rgba(74,29,110,0.4), rgba(74,29,110,0.15)); color: var(--accent-purple); }
+  .layer-ops .layer-header { background: linear-gradient(135deg, rgba(110,29,46,0.4), rgba(110,29,46,0.15)); color: var(--accent-rose); }
+  .layer-body { background: var(--surface); padding: 24px; }
+
+  /* Component cards */
+  .components { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+  .component { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; transition: border-color 0.2s; position: relative; }
+  .component:hover { border-color: var(--border-bright); }
+  .component.removed { border-color: rgba(251, 113, 133, 0.2); opacity: 0.35; }
+  .component-icon { font-size: 20px; margin-bottom: 8px; }
+  .component-name { font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: var(--text); }
+  .component-desc { font-size: 12px; color: var(--text-dim); line-height: 1.6; }
+
+  /* Milestone badges */
+  .badge {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+  }
+  .badge-01 { background: rgba(56, 189, 248, 0.15); color: var(--accent-blue); }
+  .badge-10 { background: rgba(167, 139, 250, 0.15); color: var(--accent-purple); }
+  .badge-later { background: rgba(251, 191, 36, 0.1); color: rgba(251, 191, 36, 0.5); }
+  .badge-removed { background: rgba(251, 113, 133, 0.15); color: var(--accent-rose); }
+
+  /* Flow diagram */
+  .flow-section { margin-top: 32px; margin-bottom: 32px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .flow-header { padding: 16px 24px; background: var(--surface-2); font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600; color: var(--accent-cyan); letter-spacing: 0.5px; text-transform: uppercase; }
+  .flow-body { background: var(--surface); padding: 24px; }
+  .flow-diagram { display: flex; align-items: center; justify-content: center; gap: 0; flex-wrap: wrap; padding: 16px 0; }
+  .flow-node { background: var(--surface-2); border: 1px solid var(--border-bright); border-radius: 8px; padding: 12px 16px; text-align: center; min-width: 130px; }
+  .flow-node-label { font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; margin-bottom: 4px; }
+  .flow-node-detail { font-size: 10px; color: var(--text-dim); }
+  .flow-arrow { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-dim); padding: 0 8px; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+  .flow-arrow-line { color: var(--accent-cyan); font-size: 14px; }
+  .flow-arrow-label { font-size: 9px; color: var(--text-dim); white-space: nowrap; }
+  .flow-node.node-device { border-color: rgba(56, 189, 248, 0.3); }
+  .flow-node.node-device .flow-node-label { color: var(--accent-blue); }
+  .flow-node.node-relay { border-color: rgba(52, 211, 153, 0.3); }
+  .flow-node.node-relay .flow-node-label { color: var(--accent-green); }
+  .flow-node.node-network { border-color: rgba(167, 139, 250, 0.3); }
+  .flow-node.node-network .flow-node-label { color: var(--accent-purple); }
+
+  /* Tier pricing */
+  .tier-section { margin-top: 32px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .tier-header { padding: 16px 24px; background: var(--surface-2); font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600; color: var(--accent-amber); letter-spacing: 0.5px; text-transform: uppercase; }
+  .tier-body { background: var(--surface); padding: 24px; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+  .tier-card { border: 1px solid var(--border); border-radius: 8px; padding: 20px; background: var(--surface-2); }
+  .tier-card.highlighted { border-color: var(--accent-green); }
+  .tier-name { font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+  .tier-price { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-dim); margin-bottom: 12px; }
+  .tier-features { list-style: none; font-size: 12px; color: var(--text-dim); line-height: 2; }
+  .tier-features li::before { content: '→ '; color: var(--accent-green); font-family: 'JetBrains Mono', monospace; }
+
+  /* Security strip */
+  .security-section { margin-top: 32px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .security-header { padding: 16px 24px; background: var(--surface-2); font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; }
+  .security-body { background: var(--surface); padding: 24px; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+  .sec-card { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .sec-icon { font-size: 18px; margin-bottom: 8px; }
+  .sec-title { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+  .sec-desc { font-size: 11px; color: var(--text-dim); line-height: 1.6; }
+
+  /* Changelog */
+  .changelog { margin-bottom: 32px; padding: 16px 20px; background: rgba(251, 191, 36, 0.05); border: 1px solid rgba(251, 191, 36, 0.15); border-radius: 8px; font-size: 12px; color: var(--text-dim); line-height: 1.8; }
+  .changelog-title { font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; color: var(--accent-amber); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+  .changelog code { font-family: 'JetBrains Mono', monospace; font-size: 11px; background: rgba(251, 191, 36, 0.1); padding: 1px 5px; border-radius: 3px; color: var(--accent-amber); }
+
+  /* Milestone legend */
+  .milestone-legend {
+    display: flex; gap: 24px; justify-content: center; flex-wrap: wrap;
+    margin-bottom: 32px; padding: 16px;
+    border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface);
+  }
+  .legend-item { display: flex; align-items: center; gap: 8px; font-size: 12px; font-family: 'JetBrains Mono', monospace; }
+  .legend-swatch { width: 10px; height: 10px; border-radius: 2px; }
+
+  /* Sublabel */
+  .sublabel { font-family: 'JetBrains Mono', monospace; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; opacity: 0.7; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- Header -->
+  <div class="header">
+    <h1>Desktop PDS — System Architecture</h1>
+    <div class="version">v7 — final · all questions resolved · milestones scoped</div>
+    <div class="subtitle">Sovereign AT Protocol PDS on macOS via Tauri + Custom PDS Shell + Iroh</div>
+  </div>
+
+  <!-- Milestone Legend -->
+  <div class="milestone-legend">
+    <div class="legend-item"><div class="legend-swatch" style="background:var(--accent-blue)"></div> <span style="color:var(--accent-blue)">v0.1</span> <span style="color:var(--text-dim)">Technical preview · validate PDS federation</span></div>
+    <div class="legend-item"><div class="legend-swatch" style="background:var(--accent-purple)"></div> <span style="color:var(--accent-purple)">v1.0</span> <span style="color:var(--text-dim)">Public launch · product-ready</span></div>
+    <div class="legend-item"><div class="legend-swatch" style="background:rgba(251,191,36,0.5)"></div> <span style="color:rgba(251,191,36,0.5)">LATER</span> <span style="color:var(--text-dim)">Designed, built post-launch</span></div>
+  </div>
+
+  <!-- Changelog -->
+  <div class="changelog">
+    <div class="changelog-title">v7 Changes — Milestone Scoping + Runtime Threats</div>
+    <strong style="color: var(--text);">All open questions resolved.</strong> Solo developer reality check: two milestones. v0.1 validates PDS federation (3-4 months). v1.0 ships the product (3-4 months after). Runtime threat mitigations prioritized: XRPC hardening → Tauri sandbox → relay trust verification (designed) → supply chain auditing.<br>
+    <code>NEW</code> Milestone badges on every component (v0.1 / v1.0 / LATER)<br>
+    <code>NEW</code> Runtime security mitigations: XRPC fuzzing, Tauri IPC lockdown, commit ack protocol, cargo-audit<br>
+    <code>RESOLVED</code> All four open questions now closed
+  </div>
+
+  <div class="changelog" style="opacity: 0.5;">
+    <div class="changelog-title">Previous Versions</div>
+    v2: Corrected relay model (outbound only). v3: Shamir key recovery + repo snapshots. v4: Conformance strategy. v5: Custom PDS shell + atrium/rsky deps. v6: GeoDNS + BYO relay.
+  </div>
+
+  <!-- ============================================ -->
+  <!-- LAYER 1: DEVICE -->
+  <!-- ============================================ -->
+  <div class="layer layer-device">
+    <div class="layer-header">
+      <span class="layer-num">01</span>
+      Device Layer — User's Mac
+    </div>
+    <div class="layer-body">
+      <div class="components">
+
+        <div class="component">
+          <div class="badge badge-01">v0.1</div>
+          <div class="component-icon">🖥</div>
+          <div class="component-name">Tauri Shell</div>
+          <div class="component-desc">Native macOS app. Process lifecycle, auto-updates, system tray. Minimal IPC allowlist — webview cannot access filesystem, shell, or network directly.</div>
+        </div>
+
+        <div class="component">
+          <div class="badge badge-01">v0.1</div>
+          <div class="component-icon">📦</div>
+          <div class="component-name">Custom PDS Shell</div>
+          <div class="component-desc">Purpose-built embedded PDS. SQLite-backed, local-first. Owns XRPC surface and sync protocol. The core technical risk — must federate on the live network before anything else matters.</div>
+        </div>
+
+        <div class="component">
+          <div class="badge badge-01">v0.1</div>
+          <div class="component-icon">🧩</div>
+          <div class="component-name">Dependency Stack</div>
+          <div class="component-desc"><strong>atrium-api</strong> — XRPC types, lexicon defs (auto-generated). <strong>atrium-repo</strong> — MST read/write, CAR export. <strong>rsky-crypto</strong> — P-256/K-256 commit signing.</div>
+        </div>
+
+        <div class="component">
+          <div class="badge badge-01">v0.1</div>
+          <div class="component-icon">🔗</div>
+          <div class="component-name">Iroh Endpoint</div>
+          <div class="component-desc">QUIC-based tunnel to relay. NAT traversal, connection resumption on wake. Pushes signed repo commits to relay when online.</div>
+        </div>
+
+        <div class="component">
+          <div class="badge badge-01">v0.1</div>
+          <div class="component-icon">🔐</div>
+          <div class="component-name">DID Keystore</div>
+          <div class="component-desc">Signing keys in macOS Keychain. Basic key management for v0.1. Shamir split added in v1.0.</div>
+        </div>
+
+        <div class="component">
+          <div class="badge badge-10">v1.0</div>
+          <div class="component-icon">🛟</div>
+          <div class="component-name">Recovery Share Manager</div>
+          <div class="component-desc">Generic UI for managing Shamir shares. Supports iCloud Keychain, encrypted file export, relay escrow. Interface designed for future social recovery.</div>
+        </div>
+
+        <div class="component">
+          <div class="badge badge-10">v1.0</div>
+          <div class="component-icon">⚠️</div>
+          <div class="component-name">Compat Warning Banner</div>
+          <div class="component-desc">Non-blocking in-app warning when spec drift detected. Links to update. Never blocks launch.</div>
+        </div>
+
+        <div class="component">
+          <div class="badge badge-10">v1.0</div>
+          <div class="component-icon">🛡</div>
+          <div class="component-name">XRPC Hardening</div>
+          <div class="component-desc">Request size limits on all endpoints. Rate limiting at relay. cargo-fuzz targets for CBOR/CAR/MST parsing paths. Adversarial MST key distribution testing per ATProto spec guidance.</div>
+        </div>
+
+        <div class="component removed">
+          <div class="badge badge-removed">REMOVED</div>
+          <div class="component-icon">📦</div>
+          <div class="component-name">rsky-pds (fork)</div>
+          <div class="component-desc">Replaced by custom PDS shell in v5. Now tracking a spec, not a codebase.</div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- LAYER 2: RELAY -->
+  <!-- ============================================ -->
+  <div class="layer layer-relay">
+    <div class="layer-header">
+      <span class="layer-num">02</span>
+      Relay Layer — Managed + BYO
+    </div>
+    <div class="layer-body">
+
+      <div class="sublabel" style="color:var(--accent-green);">Managed Relay (Your Infrastructure)</div>
+      <div class="components">
+
+        <div class="component">
+          <div class="badge badge-01">v0.1</div>
+          <div class="component-icon">🚇</div>
+          <div class="component-name">Iroh Relay Node</div>
+          <div class="component-desc">Single-region for v0.1. Always-on tunnel endpoint. Receives commits from device, proxies XRPC repo reads.</div>
+        </div>
+
+        <div class="component">
+          <div class="badge badge-01">v0.1</div>
+          <div class="component-icon">📣</div>
+          <div class="component-name">requestCrawl Trigger</div>
+          <div class="component-desc">On device reconnect, pings BGS requestCrawl so new content propagates immediately.</div>
+        </div>
+
+        <div class="component">
+          <div class="badge badge-10">v1.0</div>
+          <div class="component-icon">📡</div>
+          <div class="component-name">Firehose Proxy</div>
+          <div class="component-desc">Persistent WebSocket to BGS on behalf of PDS. Streams commits continuously. BGS sees 100% uptime. Key paid feature. Beta/preview at launch.</div>
+        </div>
+
+        <div class="component">
+          <div class="badge badge-10">v1.0</div>
+          <div class="component-icon">💾</div>
+          <div class="component-name">Commit Buffer</div>
+          <div class="component-desc">Rolling log of signed repo commits. Feeds firehose proxy during offline. Tiered retention: 7d free, 30d paid, 90d business.</div>
+        </div>
+
+        <div class="component">
+          <div class="badge badge-10">v1.0</div>
+          <div class="component-icon">⚙️</div>
+          <div class="component-name">Provisioning API</div>
+          <div class="component-desc">Account setup, domain linking, relay config. Onboarding flow for new Tauri app connections.</div>
+        </div>
+
+        <div class="component">
+          <div class="badge badge-10">v1.0</div>
+          <div class="component-icon">🔏</div>
+          <div class="component-name">Key Share Escrow</div>
+          <div class="component-desc">Holds one encrypted Shamir share. Cannot reconstruct alone. Encrypted at rest, access-logged.</div>
+        </div>
+
+        <div class="component">
+          <div class="badge badge-10">v1.0</div>
+          <div class="component-icon">💓</div>
+          <div class="component-name">Health Monitor</div>
+          <div class="component-desc">Device liveness, relay uptime, ATProto spec compat. Includes canary account for silent federation failure detection.</div>
+        </div>
+
+        <div class="component">
+          <div class="badge badge-later">LATER</div>
+          <div class="component-icon">🌎</div>
+          <div class="component-name">GeoDNS Multi-Region</div>
+          <div class="component-desc">2-3 relay nodes, route to nearest healthy. Simple failover with brief firehose gap. Cross-region replication interface designed but not built.</div>
+        </div>
+
+        <div class="component">
+          <div class="badge badge-later">LATER</div>
+          <div class="component-icon">🗄</div>
+          <div class="component-name">Repo Snapshot</div>
+          <div class="component-desc">Full repo backup on relay. Incremental from commit buffer. Pro+ feature. Enables one-click device migration.</div>
+        </div>
+
+        <div class="component">
+          <div class="badge badge-later">LATER</div>
+          <div class="component-icon">🌐</div>
+          <div class="component-name">CDN / Public Cache</div>
+          <div class="component-desc">Serves public repo content during offline windows.</div>
+        </div>
+
+      </div>
+
+      <div class="sublabel" style="color:var(--accent-cyan); margin-top:24px;">BYO Relay (User-Hosted, Free)</div>
+      <div class="components">
+
+        <div class="component" style="border-color: rgba(34, 211, 238, 0.3);">
+          <div class="badge badge-10">v1.0</div>
+          <div class="component-icon">📦</div>
+          <div class="component-name">Relay Binary</div>
+          <div class="component-desc">Open-source. Nix flake (source of truth) → Docker image + NixOS module. Tunnel + commit forwarding + requestCrawl. No firehose proxy, no snapshots.</div>
+        </div>
+
+        <div class="component" style="border-color: rgba(34, 211, 238, 0.3);">
+          <div class="badge badge-10">v1.0</div>
+          <div class="component-icon">📜</div>
+          <div class="component-name">Device-Relay Protocol Spec</div>
+          <div class="component-desc">Documented contract: handshake/auth, commit push, health ping, optional feature negotiation. Includes commit ack for future trust verification.</div>
+        </div>
+
+        <div class="component" style="border-color: rgba(34, 211, 238, 0.3);">
+          <div class="badge badge-10">v1.0</div>
+          <div class="component-icon">🔌</div>
+          <div class="component-name">Feature Negotiation</div>
+          <div class="component-desc">App queries relay capabilities on connect. Gracefully degrades when extended features unavailable. Suggests upgrade for missing features.</div>
+        </div>
+
+      </div>
+
+      <div class="components" style="margin-top: 16px;">
+        <div class="component removed">
+          <div class="badge badge-removed">REMOVED</div>
+          <div class="component-icon">📬</div>
+          <div class="component-name">Inbound Message Queue</div>
+          <div class="component-desc">Not needed. ATProto records live in author's repo.</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- DATA FLOW -->
+  <!-- ============================================ -->
+  <div class="flow-section">
+    <div class="flow-header">Data Flow — How Bob's Post Reaches the Network</div>
+    <div class="flow-body">
+      <div class="flow-diagram">
+        <div class="flow-node node-device">
+          <div class="flow-node-label">Bob's Mac</div>
+          <div class="flow-node-detail">PDS shell signs commit</div>
+        </div>
+        <div class="flow-arrow"><div class="flow-arrow-label">Iroh tunnel</div><div class="flow-arrow-line">→</div></div>
+        <div class="flow-node node-relay">
+          <div class="flow-node-label">Commit Buffer</div>
+          <div class="flow-node-detail">Persists signed commit</div>
+        </div>
+        <div class="flow-arrow"><div class="flow-arrow-label">streams</div><div class="flow-arrow-line">→</div></div>
+        <div class="flow-node node-relay">
+          <div class="flow-node-label">Firehose Proxy</div>
+          <div class="flow-node-detail">Stable WebSocket</div>
+        </div>
+        <div class="flow-arrow"><div class="flow-arrow-label">subscribeRepos</div><div class="flow-arrow-line">→</div></div>
+        <div class="flow-node node-network">
+          <div class="flow-node-label">BGS / Relay</div>
+          <div class="flow-node-detail">Network firehose</div>
+        </div>
+        <div class="flow-arrow"><div class="flow-arrow-label">indexes</div><div class="flow-arrow-line">→</div></div>
+        <div class="flow-node node-network">
+          <div class="flow-node-label">AppView</div>
+          <div class="flow-node-detail">Bluesky etc.</div>
+        </div>
+      </div>
+      <div style="text-align:center; margin-top:12px; font-size:11px; color:var(--text-dim); font-family:'JetBrains Mono',monospace;">
+        If Bob's Mac is asleep → commit buffer feeds firehose proxy from stored commits on wake
+      </div>
+    </div>
+  </div>
+
+  <!-- Recovery Flow -->
+  <div class="flow-section">
+    <div class="flow-header" style="color: var(--accent-green);">Recovery Flow — Device Migration / Dead SSD <span style="opacity:0.5; font-size:10px; margin-left:8px;">v1.0</span></div>
+    <div class="flow-body">
+      <div class="flow-diagram">
+        <div class="flow-node node-device">
+          <div class="flow-node-label">New Mac</div>
+          <div class="flow-node-detail">Installs Tauri app</div>
+        </div>
+        <div class="flow-arrow"><div class="flow-arrow-label">authenticates</div><div class="flow-arrow-line">→</div></div>
+        <div class="flow-node node-relay">
+          <div class="flow-node-label">2-of-3 Shares</div>
+          <div class="flow-node-detail">iCloud + relay escrow</div>
+        </div>
+        <div class="flow-arrow"><div class="flow-arrow-label">reconstructs</div><div class="flow-arrow-line">→</div></div>
+        <div class="flow-node node-device">
+          <div class="flow-node-label">Rotation Key</div>
+          <div class="flow-node-detail">Shamir recombination</div>
+        </div>
+        <div class="flow-arrow"><div class="flow-arrow-label">did:plc op</div><div class="flow-arrow-line">→</div></div>
+        <div class="flow-node node-network">
+          <div class="flow-node-label">Key Rotation</div>
+          <div class="flow-node-detail">New signing key</div>
+        </div>
+        <div class="flow-arrow"><div class="flow-arrow-label">syncs</div><div class="flow-arrow-line">→</div></div>
+        <div class="flow-node node-relay">
+          <div class="flow-node-label">Repo Snapshot</div>
+          <div class="flow-node-detail">Full repo restore</div>
+        </div>
+      </div>
+      <div style="text-align:center; margin-top:16px; font-size:11px; color:var(--text-dim); font-family:'JetBrains Mono',monospace; line-height: 1.8;">
+        Share sources (any 2 of 3): &nbsp;
+        <span style="color:var(--accent-blue)">① iCloud Keychain</span> &nbsp;·&nbsp;
+        <span style="color:var(--accent-green)">② Relay escrow</span> &nbsp;·&nbsp;
+        <span style="color:var(--accent-amber)">③ Exported recovery file</span><br>
+        <span style="color:var(--text-dim); opacity:0.5">Future: ④ Trusted contact (social recovery) — interface designed, not yet shipped</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- LAYER 3: INFRASTRUCTURE -->
+  <!-- ============================================ -->
+  <div class="layer layer-infra">
+    <div class="layer-header">
+      <span class="layer-num">03</span>
+      Infrastructure — ATProto Network
+    </div>
+    <div class="layer-body">
+      <div class="components">
+        <div class="component">
+          <div class="badge badge-01">v0.1</div>
+          <div class="component-icon">🌍</div>
+          <div class="component-name">Federation</div>
+          <div class="component-desc">PDS participates in ATProto network via relay. DID document points to relay URL as canonical PDS endpoint.</div>
+        </div>
+        <div class="component">
+          <div class="badge badge-10">v1.0</div>
+          <div class="component-icon">🔤</div>
+          <div class="component-name">DNS / Domain Automation</div>
+          <div class="component-desc">Handle-as-domain resolution. Automated DNS config for custom domain handles.</div>
+        </div>
+        <div class="component">
+          <div class="badge badge-01">v0.1</div>
+          <div class="component-icon">🪪</div>
+          <div class="component-name">DID Resolution</div>
+          <div class="component-desc">did:plc or did:web pointing to relay endpoint. Relay always reachable, DID resolution never fails due to offline device.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- LAYER 4: OPS -->
+  <!-- ============================================ -->
+  <div class="layer layer-ops">
+    <div class="layer-header">
+      <span class="layer-num">04</span>
+      Ops — Security, Conformance &amp; Updates
+    </div>
+    <div class="layer-body">
+
+      <div class="sublabel" style="color:var(--accent-rose);">Update &amp; Supply Chain Security</div>
+      <div class="components">
+        <div class="component">
+          <div class="badge badge-10">v1.0</div>
+          <div class="component-icon">🔑</div>
+          <div class="component-name">2-of-3 Threshold Signing</div>
+          <div class="component-desc">CI key + offline engineer key + cold storage. Compromised CI alone cannot ship malicious updates.</div>
+        </div>
+        <div class="component">
+          <div class="badge badge-later">LATER</div>
+          <div class="component-icon">📋</div>
+          <div class="component-name">Transparency Log</div>
+          <div class="component-desc">Sigstore-backed. Every release publicly logged.</div>
+        </div>
+        <div class="component">
+          <div class="badge badge-10">v1.0</div>
+          <div class="component-icon">🍎</div>
+          <div class="component-name">Apple Notarization</div>
+          <div class="component-desc">First verification layer via Tauri build pipeline.</div>
+        </div>
+        <div class="component">
+          <div class="badge badge-10">v1.0</div>
+          <div class="component-icon">📬</div>
+          <div class="component-name">Responsible Disclosure</div>
+          <div class="component-desc">security@ + published PGP key from day one.</div>
+        </div>
+        <div class="component">
+          <div class="badge badge-01">v0.1</div>
+          <div class="component-icon">📦</div>
+          <div class="component-name">cargo-audit in CI</div>
+          <div class="component-desc">Dependency vulnerability scanning on every build. Pin exact versions in Cargo.lock. Review diffs on dep updates. Verify atrium codegen input against upstream lexicons.</div>
+        </div>
+      </div>
+
+      <div class="sublabel" style="color:var(--accent-rose); margin-top: 24px;">Conformance Testing</div>
+      <div class="components">
+        <div class="component">
+          <div class="badge badge-01">v0.1</div>
+          <div class="component-icon">🧪</div>
+          <div class="component-name">L1: Interop Test Vectors</div>
+          <div class="component-desc">Every commit. Official atproto-interop-tests + interop-test-files. Byte-level checks for MST, CAR, CBOR, CID, commit proofs. Strict MST validation.</div>
+        </div>
+        <div class="component">
+          <div class="badge badge-10">v1.0</div>
+          <div class="component-icon">🔬</div>
+          <div class="component-name">L2: Oracle Compat Suite</div>
+          <div class="component-desc">Nightly CI. Docker Compose: reference TypeScript PDS vs your Rust PDS. Compare CAR output, firehose events, MST roots.</div>
+        </div>
+        <div class="component">
+          <div class="badge badge-10">v1.0</div>
+          <div class="component-icon">🐤</div>
+          <div class="component-name">L3: Production Canary</div>
+          <div class="component-desc">Live account on real Bluesky via your relay. Health monitor verifies posts appear in AppView. Catches silent federation failures.</div>
+        </div>
+      </div>
+
+      <div class="sublabel" style="color:var(--accent-rose); margin-top: 24px;">Runtime Threat Mitigations</div>
+      <div class="components">
+        <div class="component">
+          <div class="badge badge-10">v1.0</div>
+          <div class="component-icon">🔒</div>
+          <div class="component-name">XRPC Input Hardening</div>
+          <div class="component-desc">Request size limits per endpoint. Rate limiting at relay layer. cargo-fuzz targets for CBOR/CAR/MST parsing. Adversarial MST key testing per spec DoS guidance.</div>
+        </div>
+        <div class="component">
+          <div class="badge badge-01">v0.1</div>
+          <div class="component-icon">🏗</div>
+          <div class="component-name">Tauri IPC Lockdown</div>
+          <div class="component-desc">Minimal allowlist: create/list/get records + status. Webview cannot access filesystem, shell, HTTP, or crypto. All sensitive ops in Rust backend only.</div>
+        </div>
+        <div class="component">
+          <div class="badge badge-later">LATER</div>
+          <div class="component-icon">🤝</div>
+          <div class="component-name">Relay Trust Verification</div>
+          <div class="component-desc">Device verifies commits appear in firehose. Protocol designed now (commit ack with seq number), verification logic built later. Protects against censorship by relay.</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- TIERS -->
+  <!-- ============================================ -->
+  <div class="tier-section">
+    <div class="tier-header">Relay Tier Pricing — v1.0 Launch</div>
+    <div class="tier-body">
+      <div class="tier-card">
+        <div class="tier-name" style="color:var(--text-dim)">Free</div>
+        <div class="tier-price">$0/mo</div>
+        <ul class="tier-features">
+          <li>Iroh tunnel (NAT traversal)</li>
+          <li>Basic XRPC proxy</li>
+          <li>7-day commit buffer</li>
+          <li>Key share escrow (1 share)</li>
+          <li>BYO relay supported (Nix / Docker)</li>
+          <li>Apple notarized updates</li>
+          <li>No firehose proxy — BGS drops on sleep</li>
+        </ul>
+      </div>
+      <div class="tier-card highlighted">
+        <div class="tier-name" style="color:var(--accent-green)">Pro</div>
+        <div class="tier-price">$X/mo</div>
+        <ul class="tier-features">
+          <li>Everything in Free</li>
+          <li>Stable firehose proxy (always-on WebSocket)</li>
+          <li>30-day commit buffer</li>
+          <li>CDN cache for public content</li>
+          <li>requestCrawl auto-trigger</li>
+          <li>Custom domain handle</li>
+          <li style="color:var(--accent-amber)">Multi-region GeoDNS (post-launch)</li>
+          <li style="color:var(--accent-amber)">Full repo snapshot (post-launch)</li>
+          <li>One-click device migration</li>
+        </ul>
+      </div>
+      <div class="tier-card">
+        <div class="tier-name" style="color:var(--accent-purple)">Business</div>
+        <div class="tier-price">$XX/mo</div>
+        <ul class="tier-features">
+          <li>Everything in Pro</li>
+          <li>90-day commit buffer</li>
+          <li style="color:var(--accent-amber)">Continuous repo snapshot (post-launch)</li>
+          <li>Admin dashboard</li>
+          <li>Priority support</li>
+          <li>Custom relay config</li>
+          <li>Audit logs</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- RESOLVED QUESTIONS -->
+  <!-- ============================================ -->
+  <div class="security-section">
+    <div class="security-header" style="color:var(--accent-green)">All Questions Resolved</div>
+    <div class="security-body">
+      <div class="sec-card" style="opacity:0.6; border-color: rgba(52, 211, 153, 0.2);">
+        <div class="sec-icon">✅</div>
+        <div class="sec-title" style="color:var(--accent-green)">Availability — v2</div>
+        <div class="sec-desc">Firehose proxy + commit buffer. Relay maintains persistent BGS WebSocket. No inbound buffering needed.</div>
+      </div>
+      <div class="sec-card" style="opacity:0.6; border-color: rgba(52, 211, 153, 0.2);">
+        <div class="sec-icon">✅</div>
+        <div class="sec-title" style="color:var(--accent-green)">Durability — v3</div>
+        <div class="sec-desc">2-of-3 Shamir key recovery. Tiered repo snapshots. iCloud + file export + relay escrow.</div>
+      </div>
+      <div class="sec-card" style="opacity:0.6; border-color: rgba(52, 211, 153, 0.2);">
+        <div class="sec-icon">✅</div>
+        <div class="sec-title" style="color:var(--accent-green)">Spec Drift — v5</div>
+        <div class="sec-desc">Custom PDS shell (atrium + rsky-crypto). 3-layer conformance: interop vectors → oracle → canary.</div>
+      </div>
+      <div class="sec-card" style="opacity:0.6; border-color: rgba(52, 211, 153, 0.2);">
+        <div class="sec-icon">✅</div>
+        <div class="sec-title" style="color:var(--accent-green)">Relay Redundancy — v6</div>
+        <div class="sec-desc">GeoDNS multi-region + BYO relay (Nix/Docker, free). Device-relay protocol spec. Feature negotiation.</div>
+      </div>
+      <div class="sec-card" style="opacity:0.6; border-color: rgba(52, 211, 153, 0.2);">
+        <div class="sec-icon">✅</div>
+        <div class="sec-title" style="color:var(--accent-green)">Runtime Threats — v7</div>
+        <div class="sec-desc">XRPC fuzzing + size limits. Tauri IPC lockdown. Commit ack protocol (designed). cargo-audit. Relay trust verification (designed, deferred).</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- MILESTONE SUMMARY -->
+  <!-- ============================================ -->
+  <div class="flow-section" style="margin-top:32px;">
+    <div class="flow-header" style="color:var(--accent-blue);">Milestone Summary — Solo Developer</div>
+    <div class="flow-body" style="font-size:13px; line-height:1.9;">
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 32px;">
+        <div>
+          <div style="font-family:'JetBrains Mono',monospace; font-size:14px; font-weight:700; color:var(--accent-blue); margin-bottom:12px;">v0.1 — Technical Preview</div>
+          <div style="font-family:'JetBrains Mono',monospace; font-size:10px; color:var(--text-dim); margin-bottom:12px;">~3-4 MONTHS · YOU + 10 BETA TESTERS</div>
+          <div style="color:var(--text-dim); font-size:12px; line-height:1.8;">
+            <strong style="color:var(--text)">Goal:</strong> Can the custom PDS shell federate on the live ATProto network?<br><br>
+            Tauri shell + custom PDS shell + dependency stack + Iroh endpoint + DID keystore (basic) + single-region relay + requestCrawl + federation + DID resolution + L1 interop tests + cargo-audit + Tauri IPC lockdown
+          </div>
+        </div>
+        <div>
+          <div style="font-family:'JetBrains Mono',monospace; font-size:14px; font-weight:700; color:var(--accent-purple); margin-bottom:12px;">v1.0 — Public Launch</div>
+          <div style="font-family:'JetBrains Mono',monospace; font-size:10px; color:var(--text-dim); margin-bottom:12px;">~3-4 MONTHS AFTER v0.1 · EARLY ADOPTERS</div>
+          <div style="color:var(--text-dim); font-size:12px; line-height:1.8;">
+            <strong style="color:var(--text)">Goal:</strong> A product people pay for with real sovereignty guarantees.<br><br>
+            Shamir key recovery + BYO relay binary (Nix/Docker) + device-relay protocol spec + feature negotiation + firehose proxy (beta) + commit buffer + provisioning API + key share escrow + health monitor + XRPC hardening + L2 oracle suite + L3 canary + compat warnings + Apple notarization + threshold signing + responsible disclosure + DNS automation + tier pricing
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
