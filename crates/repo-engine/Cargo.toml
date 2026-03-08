@@ -1,0 +1,8 @@
+[package]
+name = "repo-engine"
+version = "0.1.0"
+edition.workspace = true
+
+# repo-engine: MST construction, CAR file storage, commit construction.
+# Depends on atrium-repo (added when Wave 4 repo work begins).
+[dependencies]

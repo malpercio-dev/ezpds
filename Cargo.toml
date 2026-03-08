@@ -1,0 +1,44 @@
+[workspace]
+members = [
+    "crates/relay",
+    "crates/repo-engine",
+    "crates/crypto",
+    "crates/common",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+
+# Declare shared dependency versions here.
+# Individual crates opt in with `{ workspace = true }`.
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Web framework (relay)
+axum = "0.7"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# ATProto (repo-engine)
+# atrium-api = "0.22"
+# atrium-repo = "0.1"
+
+# Crypto (crypto)
+# rsky-crypto = "0.2"
+
+# Intra-workspace
+common = { path = "crates/common" }
+crypto = { path = "crates/crypto" }
+repo-engine = { path = "crates/repo-engine" }

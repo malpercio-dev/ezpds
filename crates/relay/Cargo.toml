@@ -1,0 +1,10 @@
+[package]
+name = "relay"
+version = "0.1.0"
+edition.workspace = true
+
+# relay is the network-facing binary: Axum HTTP server, XRPC handlers,
+# OAuth, provisioning API, blob storage.
+[[bin]]
+name = "relay"
+path = "src/main.rs"
