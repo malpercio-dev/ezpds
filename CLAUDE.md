@@ -17,7 +17,7 @@ Last verified: 2026-03-07
 
 ## Dev Environment
 - Managed entirely by Nix flake + devenv; do not install tools globally
-- direnv auto-activates via `.envrc` (`use flake`)
+- direnv auto-activates via `.envrc` (`use flake . --impure --accept-flake-config`)
 - Rust toolchain pinned in `rust-toolchain.toml` (stable, with rustfmt + clippy + rust-analyzer)
 - Shell provides: just, cargo-audit, sqlite (runtime binary + dev headers/library for rusqlite), pkg-config
 - `LIBSQLITE3_SYS_USE_PKG_CONFIG=1` is set automatically by devenv
