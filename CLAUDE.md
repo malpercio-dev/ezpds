@@ -9,7 +9,7 @@ Last verified: 2026-03-07
 - Task Runner: just
 
 ## Commands
-- `nix develop --impure --accept-flake-config` - Enter dev shell (flags required; devenv needs --impure for CWD detection)
+- `nix develop --impure --accept-flake-config` - Enter dev shell (flags required; --impure for devenv CWD detection, --accept-flake-config activates the Cachix binary cache in nixConfig — without it, a cold build takes 20+ minutes)
 - `cargo build` - Build all crates
 - `cargo test` - Run all tests
 - `cargo clippy` - Lint
@@ -19,8 +19,10 @@ Last verified: 2026-03-07
 - Managed entirely by Nix flake + devenv; do not install tools globally
 - direnv auto-activates via `.envrc` (`use flake`)
 - Rust toolchain pinned in `rust-toolchain.toml` (stable, with rustfmt + clippy + rust-analyzer)
-- Shell provides: just, cargo-audit, sqlite, pkg-config
+- Shell provides: just, cargo-audit, sqlite (runtime binary + dev headers/library for rusqlite), pkg-config
 - `LIBSQLITE3_SYS_USE_PKG_CONFIG=1` is set automatically by devenv
+- Binary cache: devenv.cachix.org (activated by `--accept-flake-config`); speeds up cold shell builds significantly
+- nixpkgs pin: `cachix/devenv-nixpkgs/rolling` (devenv's own nixpkgs fork — package versions may differ from upstream nixpkgs.search.dev)
 
 ## Project Structure
 - `crates/relay/` - Web relay (axum-based)
