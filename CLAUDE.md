@@ -31,6 +31,7 @@ Last verified: 2026-03-08
 - `crates/repo-engine/` - ATProto repo engine
 - `crates/crypto/` - Cryptographic operations
 - `crates/common/` - Shared types and utilities
+- `nix/` - Nix build helpers (docker.nix produces the relay container image)
 - `docs/` - Specs, design plans, implementation plans
 
 ## Conventions
