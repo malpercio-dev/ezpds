@@ -15,3 +15,8 @@
 .env
 .env.local
 .env.*.local
+
+# Nix / devenv
+.devenv/
+.direnv/
+devenv.local.nix
