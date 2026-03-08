@@ -3,59 +3,43 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$PROJECT_ROOT"
 
 echo "=================================================="
 echo "MM-66 Automated Verification Tests"
 echo "=================================================="
 echo
 
-# Track pass/fail status
 FAILED=0
 
-# AC1.3: Verify docker-image is absent for Darwin systems
+# AC1.3: Verify docker-image is absent for Darwin systems, present for Linux.
+#
+# Uses `nix eval` to inspect package attribute names per system — structurally
+# reliable and avoids parsing `nix flake show` tree output with brittle grep -A
+# heuristics. --accept-flake-config activates the Cachix binary cache; without
+# it, evaluation on a cold machine may trigger a 20+ minute build.
 echo "AC1.3: Checking docker-image platform availability..."
 
-# First, try nix flake show
-if nix flake show --accept-flake-config 2>/dev/null | grep -q docker-image; then
-    echo "  nix flake show: Available"
-    # Check that docker-image only appears under Linux systems
-    DARWIN_DOCKER=$(nix flake show --accept-flake-config 2>/dev/null | grep -A 5 "aarch64-darwin\|x86_64-darwin" | grep -c "docker-image" || true)
-    LINUX_DOCKER=$(nix flake show --accept-flake-config 2>/dev/null | grep -A 5 "aarch64-linux\|x86_64-linux" | grep -c "docker-image" || true)
-
-    if [ "$DARWIN_DOCKER" -eq 0 ] && [ "$LINUX_DOCKER" -gt 0 ]; then
-        echo "  PASS: docker-image present only on Linux systems (aarch64-linux, x86_64-linux)"
-    else
-        echo "  FAIL: docker-image incorrectly appearing on Darwin or missing from Linux"
-        FAILED=1
-    fi
+DARWIN_PACKAGES=$(nix eval --json --accept-flake-config ".#packages.aarch64-darwin" --apply 'builtins.attrNames')
+if echo "$DARWIN_PACKAGES" | grep -q "docker-image"; then
+    echo "  FAIL: docker-image incorrectly present on aarch64-darwin"
+    FAILED=1
 else
-    # Fallback: Use nix eval to check package attributes per system
-    echo "  nix flake show: Unavailable (expected due to devenv CWD detection issue), using fallback"
+    echo "  PASS: docker-image absent from aarch64-darwin"
+fi
 
-    # Check Darwin systems do NOT have docker-image
-    DARWIN_PACKAGES=$(nix eval --json ".#packages.aarch64-darwin" --apply 'builtins.attrNames' 2>/dev/null || echo "[]")
-    if echo "$DARWIN_PACKAGES" | grep -q "docker-image"; then
-        echo "  FAIL: docker-image incorrectly present on aarch64-darwin"
-        FAILED=1
-    else
-        echo "  PASS: docker-image absent from aarch64-darwin"
-    fi
-
-    # Check Linux systems DO have docker-image
-    LINUX_PACKAGES=$(nix eval --json ".#packages.x86_64-linux" --apply 'builtins.attrNames' 2>/dev/null || echo "[]")
-    if echo "$LINUX_PACKAGES" | grep -q "docker-image"; then
-        echo "  PASS: docker-image present on x86_64-linux"
-    else
-        echo "  WARN: docker-image not detected on x86_64-linux (may be due to evaluation context)"
-    fi
+LINUX_PACKAGES=$(nix eval --json --accept-flake-config ".#packages.x86_64-linux" --apply 'builtins.attrNames')
+if echo "$LINUX_PACKAGES" | grep -q "docker-image"; then
+    echo "  PASS: docker-image present on x86_64-linux"
+else
+    echo "  FAIL: docker-image missing from x86_64-linux"
+    FAILED=1
 fi
 
 echo
 
-# AC3.4: Verify nix/docker.nix is tracked by git
+# AC3.4: Verify nix/docker.nix is tracked by git.
 echo "AC3.4: Checking nix/docker.nix git tracking..."
-
-cd "$PROJECT_ROOT"
 
 if git ls-files nix/docker.nix | grep -q "nix/docker.nix"; then
     echo "  PASS: nix/docker.nix is tracked by git"
@@ -65,6 +49,24 @@ else
 fi
 
 echo
+
+# Docker smoke test (Linux only — docker-image is not exposed on Darwin).
+# Runs when Docker is available and relay:latest is already loaded, confirming
+# the relay binary and libsqlite3.so are present in the image closure. The relay
+# is a stub and may exit non-zero; that is acceptable. Only linker/missing-file
+# errors indicate a broken image.
+if command -v docker >/dev/null 2>&1 && docker image inspect relay:latest >/dev/null 2>&1; then
+    echo "Docker smoke test: relay:latest found — verifying binary and dynamic linking..."
+    OUTPUT=$(docker run --rm relay:latest 2>&1 || true)
+    if echo "$OUTPUT" | grep -qE "no such file|error while loading shared libraries"; then
+        echo "  FAIL: linker or missing-binary error detected"
+        echo "  $OUTPUT"
+        FAILED=1
+    else
+        echo "  PASS: relay:latest ran without linker or missing-binary errors"
+    fi
+    echo
+fi
 
 # Summary
 echo "=================================================="

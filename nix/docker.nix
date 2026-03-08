@@ -2,7 +2,12 @@
 pkgs.dockerTools.buildLayeredImage {
   name = "relay";
   tag = "latest";
-  contents = [ relay pkgs.sqlite.out pkgs.cacert pkgs.tzdata ];
+  contents = [
+    relay
+    pkgs.sqlite.out  # runtime shared library only; .out excludes headers/dev outputs
+    pkgs.cacert
+    pkgs.tzdata
+  ];
   config = {
     Entrypoint = [ "${relay}/bin/relay" ];
     Env = [
