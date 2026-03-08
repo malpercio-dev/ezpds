@@ -48,6 +48,8 @@
       in {
         inherit relay;
         default = relay;
+      } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+        docker-image = import ./nix/docker.nix { inherit pkgs relay; };
       }
     );
 
