@@ -1,6 +1,6 @@
 # ezpds
 
-Last verified: 2026-03-07
+Last verified: 2026-03-08
 
 ## Tech Stack
 - Language: Rust (stable channel via rust-toolchain.toml)
@@ -10,6 +10,7 @@ Last verified: 2026-03-07
 
 ## Commands
 - `nix develop --impure --accept-flake-config` - Enter dev shell (flags required; --impure for devenv CWD detection, --accept-flake-config activates the Cachix binary cache in nixConfig — without it, a cold build takes 20+ minutes)
+- `nix build .#relay --accept-flake-config` - Build relay binary (output at ./result/bin/relay)
 - `cargo build` - Build all crates
 - `cargo test` - Run all tests
 - `cargo clippy` - Lint

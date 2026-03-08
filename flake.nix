@@ -26,7 +26,7 @@
           inherit system;
           overlays = [ (import rust-overlay) ];
         };
-        rustToolchain = pkgs.rust-bin.stable.latest.default;
+        rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
         commonArgs = {
