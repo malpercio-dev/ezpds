@@ -14,8 +14,8 @@ Last verified: 2026-03-08
 - `nix build .#docker-image --accept-flake-config` - Build Docker image tarball (Linux only; output at `./result`; load with `docker load < result`; `docker-image` is not exposed on macOS — use a remote Linux builder or CI)
 - `cargo build` - Build all crates
 - `cargo test` - Run all tests
-- `cargo clippy` - Lint
-- `cargo fmt --check` - Check formatting
+- `cargo clippy --workspace -- -D warnings` - Lint (warnings as errors)
+- `cargo fmt --all --check` - Check formatting
 
 ## Dev Environment
 - Managed entirely by Nix flake + devenv; do not install tools globally

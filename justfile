@@ -1,28 +1,22 @@
-# Check all crates for errors without producing binaries
 check:
     cargo check --workspace
 
-# Build all crates
 build:
     cargo build --workspace
 
-# Run all tests
 test:
     cargo test --workspace
 
-# Format all code
 fmt:
     cargo fmt --all
 
-# Check formatting without modifying files
 fmt-check:
-    cargo fmt --all -- --check
+    cargo fmt --all --check
 
-# Lint with warnings as errors
+# Lint all crates; all warnings (Clippy and rustc) are treated as errors
 clippy:
     cargo clippy --workspace -- -D warnings
 
-# Run the relay server
 run-relay:
     cargo run -p relay
 
@@ -30,7 +24,7 @@ run-relay:
 nix-build:
     nix build .#relay --accept-flake-config
 
-# Build the Docker image via Nix (Linux only)
+# Build the Docker image via Nix (Linux only; on macOS use a remote Linux builder or CI)
 docker-build:
     nix build .#docker-image --accept-flake-config
 
