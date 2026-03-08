@@ -20,3 +20,4 @@
 .devenv/
 .direnv/
 devenv.local.nix
+/result
