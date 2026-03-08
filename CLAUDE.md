@@ -11,6 +11,7 @@ Last verified: 2026-03-08
 ## Commands
 - `nix develop --impure --accept-flake-config` - Enter dev shell (flags required; --impure for devenv CWD detection, --accept-flake-config activates the Cachix binary cache in nixConfig — without it, a cold build takes 20+ minutes)
 - `nix build .#relay --accept-flake-config` - Build relay binary (output at ./result/bin/relay)
+- `nix build .#docker-image --accept-flake-config` - Build Docker image tarball (Linux only; `docker-image` is not exposed on macOS — use a remote Linux builder or CI)
 - `cargo build` - Build all crates
 - `cargo test` - Run all tests
 - `cargo clippy` - Lint
