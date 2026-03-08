@@ -13,12 +13,44 @@
     systems.url = "github:nix-systems/default";
     rust-overlay.url = "github:oxalica/rust-overlay";
     rust-overlay.inputs = { nixpkgs.follows = "nixpkgs"; };
+    crane.url = "github:ipetkov/crane";
   };
 
-  outputs = { self, nixpkgs, devenv, systems, rust-overlay, ... } @ inputs:
+  outputs = { self, nixpkgs, devenv, systems, rust-overlay, crane, ... } @ inputs:
   let
     forEachSystem = f: nixpkgs.lib.genAttrs (import systems) f;
   in {
+    packages = forEachSystem (system:
+      let
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [ (import rust-overlay) ];
+        };
+        rustToolchain = pkgs.rust-bin.stable.latest.default;
+        craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+
+        commonArgs = {
+          src = craneLib.cleanCargoSource ./.;
+          pname = "relay";
+          strictDeps = true;
+          nativeBuildInputs = [ pkgs.pkg-config ];
+          buildInputs = [ pkgs.sqlite ];
+          LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+        };
+
+        # Build deps separately so they're cached when only source changes.
+        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+
+        relay = craneLib.buildPackage (commonArgs // {
+          inherit cargoArtifacts;
+          cargoExtraArgs = "--package relay";
+        });
+      in {
+        inherit relay;
+        default = relay;
+      }
+    );
+
     devShells = forEachSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
