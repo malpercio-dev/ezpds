@@ -223,8 +223,9 @@ These tests verify the `lib.filterAttrs` filtering pattern that the module uses 
 nix eval --impure --accept-flake-config --raw --expr '
 let
   flake = builtins.getFlake (builtins.toString ./.);
-  nixpkgs = flake.inputs.nixpkgs;
-  sys = nixpkgs.lib.nixosSystem {
+  # devenv-nixpkgs fork lacks lib.nixosSystem; use system nixpkgs from registry
+  evalNixpkgs = builtins.getFlake "nixpkgs";
+  sys = evalNixpkgs.lib.nixosSystem {
     system = "x86_64-linux";
     modules = [
       flake.nixosModules.default
