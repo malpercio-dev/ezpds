@@ -3,8 +3,9 @@
 let
   cfg = config.services.ezpds;
 
-  # Build the TOML attrset, omitting database_url when null.
-  # When null, the relay binary derives the database path from data_dir.
+  # Build the TOML attrset, omitting any null values (currently only
+  # database_url can be null). When null, the relay binary derives the
+  # database path from data_dir.
   settingsToml = lib.filterAttrs (_: v: v != null) {
     inherit (cfg.settings) bind_address port data_dir public_url database_url;
   };
@@ -34,6 +35,11 @@ in
         When set, all settings.* options are ignored and this path is
         passed directly to --config. Use with agenix or sops-nix to
         keep secrets outside the world-readable Nix store.
+
+        When using agenix or sops-nix, ensure the secrets service runs
+        before ezpds to avoid a startup race:
+          systemd.services.ezpds.after = [ "agenix.service" ];
+          systemd.services.ezpds.wants = [ "agenix.service" ];
       '';
     };
 
@@ -97,9 +103,14 @@ in
       serviceConfig = {
         User = "ezpds";
         Group = "ezpds";
-        ExecStart = "${cfg.package}/bin/relay --config ${activeConfigFile}";
+        ExecStart = "${cfg.package}/bin/relay --config '${activeConfigFile}'";
         StateDirectory = "ezpds";
         StateDirectoryMode = "0750";
+        # Extend write access to custom data_dir paths. When data_dir is the
+        # default (/var/lib/ezpds), StateDirectory already covers it and this
+        # is a no-op. For any other path, ProtectSystem=strict would otherwise
+        # block all writes at runtime.
+        ReadWritePaths = [ cfg.settings.data_dir ];
         Restart = "on-failure";
         PrivateTmp = true;
         ProtectSystem = "strict";

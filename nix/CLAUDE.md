@@ -19,6 +19,7 @@ top-level flake.nix.
   - Dedicated `ezpds` system user/group created automatically
   - systemd service runs with hardening: ProtectSystem=strict, ProtectHome, NoNewPrivileges, PrivateTmp
   - StateDirectory "ezpds" managed by systemd (mode 0750)
+  - ReadWritePaths always includes cfg.settings.data_dir — required when data_dir is not /var/lib/ezpds, since ProtectSystem=strict blocks writes elsewhere
 - **Expects**: Caller provides `services.ezpds.settings.public_url` (or a complete `configFile`)
 
 ### docker.nix

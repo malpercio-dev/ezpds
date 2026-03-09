@@ -68,8 +68,13 @@
     # self is captured from the outputs function closure.
     nixosModules.default = { lib, pkgs, ... }: {
       imports = [ ./nix/module.nix ];
-      config.services.ezpds.package =
-        lib.mkDefault self.packages.${pkgs.system}.relay;
+      # Guard the package default: on unsupported architectures self.packages
+      # won't have an entry, and the raw attrset access would produce an
+      # opaque "attribute missing" error. When the guard fails, NixOS surfaces
+      # its own "option services.ezpds.package is not set" message instead.
+      config.services.ezpds.package = lib.mkIf
+        (self.packages ? ${pkgs.system})
+        (lib.mkDefault self.packages.${pkgs.system}.relay);
     };
   };
 }
