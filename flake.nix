@@ -63,5 +63,13 @@
         };
       }
     );
+
+    # nixosModules is not per-system — placed outside forEachSystem.
+    # self is captured from the outputs function closure.
+    nixosModules.default = { lib, pkgs, ... }: {
+      imports = [ ./nix/module.nix ];
+      config.services.ezpds.package =
+        lib.mkDefault self.packages.${pkgs.system}.relay;
+    };
   };
 }
