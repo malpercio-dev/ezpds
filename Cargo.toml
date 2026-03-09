@@ -44,6 +44,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Crypto (crypto)
 # rsky-crypto = "0.2"
 
+# Testing
+tempfile = "3"
+
 # Intra-workspace
 common = { path = "crates/common" }
 crypto = { path = "crates/crypto" }

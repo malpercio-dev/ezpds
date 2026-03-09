@@ -47,8 +47,12 @@ pub(crate) struct RawConfig {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
-    #[error("failed to read config file: {0}")]
-    Io(#[from] std::io::Error),
+    #[error("failed to read config file {path}: {source}")]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("failed to parse config file: {0}")]
     Parse(#[from] toml::de::Error),
     #[error("invalid configuration: missing required field '{field}'")]
@@ -57,19 +61,20 @@ pub enum ConfigError {
     Invalid(String),
 }
 
-/// Apply `EZPDS_*` environment variable overrides to a `RawConfig`.
+/// Apply `EZPDS_*` environment variable overrides to a [`RawConfig`], returning the updated config.
 ///
-/// Receives the environment as a map so this function stays pure (no `std::env` access).
+/// Receives the environment as a map so this function stays isolated from I/O (no `std::env`
+/// access). Takes `raw` by value and returns it so callers can chain calls without mutation.
 pub(crate) fn apply_env_overrides(
-    raw: &mut RawConfig,
+    mut raw: RawConfig,
     env: &HashMap<String, String>,
-) -> Result<(), ConfigError> {
+) -> Result<RawConfig, ConfigError> {
     if let Some(v) = env.get("EZPDS_BIND_ADDRESS") {
         raw.bind_address = Some(v.clone());
     }
     if let Some(v) = env.get("EZPDS_PORT") {
-        raw.port = Some(v.parse::<u16>().map_err(|_| {
-            ConfigError::Invalid(format!("EZPDS_PORT is not a valid port number: '{v}'"))
+        raw.port = Some(v.parse::<u16>().map_err(|e| {
+            ConfigError::Invalid(format!("EZPDS_PORT is not a valid port number: '{v}': {e}"))
         })?);
     }
     if let Some(v) = env.get("EZPDS_DATA_DIR") {
@@ -81,10 +86,14 @@ pub(crate) fn apply_env_overrides(
     if let Some(v) = env.get("EZPDS_PUBLIC_URL") {
         raw.public_url = Some(v.clone());
     }
-    Ok(())
+    Ok(raw)
 }
 
-/// Validate a `RawConfig` and build a `Config`, applying defaults for optional fields.
+/// Validate a [`RawConfig`] and build a [`Config`], applying defaults for optional fields.
+///
+/// Required fields: `data_dir`, `public_url`.
+/// Defaults: `bind_address = "0.0.0.0"`, `port = 8080`,
+/// `database_url = "{data_dir}/relay.db"` (derived; fails if `data_dir` is non-UTF-8).
 pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> {
     let bind_address = raw.bind_address.unwrap_or_else(|| "0.0.0.0".to_string());
     let port = raw.port.unwrap_or(8080);
@@ -92,9 +101,19 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         .data_dir
         .ok_or(ConfigError::MissingField { field: "data_dir" })?
         .into();
-    let database_url = raw
-        .database_url
-        .unwrap_or_else(|| data_dir.join("relay.db").to_string_lossy().into_owned());
+    let database_url = match raw.database_url {
+        Some(url) => url,
+        None => data_dir
+            .join("relay.db")
+            .to_str()
+            .ok_or_else(|| {
+                ConfigError::Invalid(
+                    "data_dir contains non-UTF-8 characters, cannot derive database_url"
+                        .to_string(),
+                )
+            })?
+            .to_owned(),
+    };
     let public_url = raw.public_url.ok_or(ConfigError::MissingField {
         field: "public_url",
     })?;
@@ -183,17 +202,31 @@ mod tests {
 
     #[test]
     fn env_override_port() {
-        let mut raw = minimal_raw();
         let env = HashMap::from([("EZPDS_PORT".to_string(), "9090".to_string())]);
-        apply_env_overrides(&mut raw, &env).unwrap();
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
         let config = validate_and_build(raw).unwrap();
 
         assert_eq!(config.port, 9090);
     }
 
     #[test]
+    fn env_override_wins_over_toml_value() {
+        // env always takes precedence over explicit TOML values
+        let toml = r#"
+            data_dir = "/var/pds"
+            port = 3000
+            public_url = "https://pds.example.com"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let env = HashMap::from([("EZPDS_PORT".to_string(), "9999".to_string())]);
+        let raw = apply_env_overrides(raw, &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert_eq!(config.port, 9999);
+    }
+
+    #[test]
     fn env_override_all_fields() {
-        let mut raw = RawConfig::default();
         let env = HashMap::from([
             ("EZPDS_BIND_ADDRESS".to_string(), "127.0.0.1".to_string()),
             ("EZPDS_PORT".to_string(), "4000".to_string()),
@@ -207,7 +240,7 @@ mod tests {
                 "https://pds.test".to_string(),
             ),
         ]);
-        apply_env_overrides(&mut raw, &env).unwrap();
+        let raw = apply_env_overrides(RawConfig::default(), &env).unwrap();
         let config = validate_and_build(raw).unwrap();
 
         assert_eq!(config.bind_address, "127.0.0.1");
@@ -219,12 +252,12 @@ mod tests {
 
     #[test]
     fn env_override_invalid_port_returns_error() {
-        let mut raw = minimal_raw();
         let env = HashMap::from([("EZPDS_PORT".to_string(), "not_a_port".to_string())]);
-        let err = apply_env_overrides(&mut raw, &env).unwrap_err();
+        let err = apply_env_overrides(minimal_raw(), &env).unwrap_err();
 
         assert!(matches!(err, ConfigError::Invalid(_)));
         assert!(err.to_string().contains("EZPDS_PORT"));
+        assert!(err.to_string().contains("not_a_port"));
     }
 
     #[test]

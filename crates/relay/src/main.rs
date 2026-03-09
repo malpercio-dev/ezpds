@@ -7,7 +7,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "relay", about = "ezpds relay server")]
 struct Cli {
-    /// Path to relay.toml config file (env: EZPDS_CONFIG)
+    /// Path to relay.toml config file
     #[arg(long, env = "EZPDS_CONFIG")]
     config: Option<PathBuf>,
 }
@@ -22,7 +22,8 @@ fn main() {
 fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+        .try_init()
+        .map_err(|e| anyhow::anyhow!("failed to initialize tracing subscriber: {e}"))?;
 
     let cli = Cli::parse();
     let config_path = cli.config.unwrap_or_else(|| PathBuf::from("relay.toml"));
