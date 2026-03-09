@@ -31,3 +31,9 @@ docker-build:
 # Run the full CI pipeline locally
 ci: fmt-check clippy test
     cargo audit
+
+# Validate NixOS module evaluation (flake structure check).
+# For full smoke tests (ExecStart composition, option enforcement, configFile
+# escape hatch), run the nix eval commands in phase_03.md Tasks 2-5 manually.
+nix-check:
+    nix flake check --impure --accept-flake-config
