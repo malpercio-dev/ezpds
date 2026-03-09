@@ -1,23 +1,17 @@
-// pattern: Functional Core
+// Shared error types and provisioning API error envelope.
 
-use axum::{
-    http::StatusCode,
-    response::{IntoResponse, Response},
-    Json,
-};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 
 /// Error codes for the provisioning API.
 ///
-/// Serialized as SCREAMING_SNAKE_CASE strings in the JSON envelope.
+/// Serialized as SCREAMING_SNAKE_CASE strings in the JSON error envelope.
 /// `#[non_exhaustive]` prevents external crates from writing exhaustive match
 /// arms — new variants can be added in future waves without breaking callers.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ErrorCode {
-    // Wave 0–2 initial set
     InvalidClaim,
     Unauthorized,
     TokenExpired,
@@ -26,37 +20,54 @@ pub enum ErrorCode {
     WeakPassword,
     RateLimited,
     ExportInProgress,
+    // TODO: add remaining codes from Appendix A as endpoints are implemented:
+    // 400: INVALID_DOCUMENT, INVALID_PROOF, INVALID_ENDPOINT, INVALID_CONFIRMATION
+    // 401: INVALID_CREDENTIALS
+    // 403: TIER_RESTRICTED, DIDWEB_REQUIRES_DOMAIN, SINGLE_DEVICE_TIER
+    // 404: DEVICE_NOT_FOUND, DID_NOT_FOUND, HANDLE_NOT_FOUND, NOT_IN_GRACE_PERIOD
+    // 409: ACCOUNT_EXISTS, DEVICE_LIMIT, DID_EXISTS, HANDLE_TAKEN,
+    //      ROTATION_IN_PROGRESS, LEASE_HELD, MIGRATION_IN_PROGRESS, ACTIVE_MIGRATION
+    // 410: ALREADY_DELETED
+    // 422: INVALID_KEY, INVALID_HANDLE, KEY_MISMATCH, DIDWEB_SELF_SERVICE
+    // 423: ACCOUNT_LOCKED
 }
 
 impl ErrorCode {
-    /// Maps each error code to its canonical HTTP status code.
-    pub fn status_code(&self) -> StatusCode {
+    /// Returns the canonical HTTP status code for this error as a `u16`.
+    pub fn status_code(&self) -> u16 {
         match self {
-            ErrorCode::InvalidClaim => StatusCode::BAD_REQUEST,
-            ErrorCode::Unauthorized => StatusCode::UNAUTHORIZED,
-            ErrorCode::TokenExpired => StatusCode::UNAUTHORIZED,
-            ErrorCode::Forbidden => StatusCode::FORBIDDEN,
-            ErrorCode::NotFound => StatusCode::NOT_FOUND,
-            ErrorCode::WeakPassword => StatusCode::UNPROCESSABLE_ENTITY,
-            ErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
-            ErrorCode::ExportInProgress => StatusCode::SERVICE_UNAVAILABLE,
+            ErrorCode::InvalidClaim => 400,
+            ErrorCode::Unauthorized => 401,
+            ErrorCode::TokenExpired => 401,
+            ErrorCode::Forbidden => 403,
+            ErrorCode::NotFound => 404,
+            ErrorCode::WeakPassword => 422,
+            ErrorCode::RateLimited => 429,
+            ErrorCode::ExportInProgress => 503,
         }
     }
 }
 
-/// Provisioning API error, serialized as the standard error envelope:
+/// Provisioning API error, serialized as the standard error envelope.
 ///
+/// Without details:
 /// ```json
-/// { "error": { "code": "NOT_FOUND", "message": "...", "details": {} } }
+/// { "error": { "code": "NOT_FOUND", "message": "..." } }
 /// ```
 ///
-/// Implements `IntoResponse` so it can be returned directly from Axum handlers.
-#[derive(Debug, Serialize)]
+/// With details:
+/// ```json
+/// { "error": { "code": "INVALID_CLAIM", "message": "...", "details": { "field": "email" } } }
+/// ```
+///
+/// Implements `IntoResponse` for Axum when the `axum` feature is enabled.
+#[derive(Debug, Serialize, thiserror::Error)]
+#[error("{code:?}: {message}")]
 pub struct ApiError {
-    pub code: ErrorCode,
-    pub message: String,
+    code: ErrorCode,
+    message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub details: Option<Value>,
+    details: Option<Value>,
 }
 
 impl ApiError {
@@ -72,18 +83,53 @@ impl ApiError {
         self.details = Some(details);
         self
     }
+
+    /// Returns the HTTP status code for this error as a `u16`.
+    pub fn status_code(&self) -> u16 {
+        self.code.status_code()
+    }
 }
 
 /// Wraps `ApiError` in the `{ "error": ... }` envelope for serialization.
+#[cfg(any(feature = "axum", test))]
 #[derive(Serialize)]
 struct ApiErrorEnvelope {
     error: ApiError,
 }
 
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        let status = self.code.status_code();
-        (status, Json(ApiErrorEnvelope { error: self })).into_response()
+#[cfg(feature = "axum")]
+mod axum_integration {
+    use super::*;
+    use axum::{
+        http::{header, StatusCode},
+        response::{IntoResponse, Response},
+        Json,
+    };
+
+    impl IntoResponse for ApiError {
+        fn into_response(self) -> Response {
+            let status = StatusCode::from_u16(self.code.status_code())
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+
+            match serde_json::to_vec(&ApiErrorEnvelope { error: self }) {
+                Ok(body) => {
+                    (status, [(header::CONTENT_TYPE, "application/json")], body).into_response()
+                }
+                Err(err) => {
+                    tracing::error!("failed to serialize ApiError: {err}");
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "error": {
+                                "code": "INTERNAL_SERVER_ERROR",
+                                "message": "internal error"
+                            }
+                        })),
+                    )
+                        .into_response()
+                }
+            }
+        }
     }
 }
 
@@ -128,24 +174,43 @@ mod tests {
     fn omits_details_when_absent() {
         let err = ApiError::new(ErrorCode::Forbidden, "access denied");
         let actual = serde_json::to_value(ApiErrorEnvelope { error: err }).unwrap();
-        // `details` key must not appear at all
         assert!(!actual["error"].as_object().unwrap().contains_key("details"));
     }
 
     #[test]
     fn status_code_mapping() {
         let cases = [
-            (ErrorCode::InvalidClaim, StatusCode::BAD_REQUEST),
-            (ErrorCode::Unauthorized, StatusCode::UNAUTHORIZED),
-            (ErrorCode::TokenExpired, StatusCode::UNAUTHORIZED),
-            (ErrorCode::Forbidden, StatusCode::FORBIDDEN),
-            (ErrorCode::NotFound, StatusCode::NOT_FOUND),
-            (ErrorCode::WeakPassword, StatusCode::UNPROCESSABLE_ENTITY),
-            (ErrorCode::RateLimited, StatusCode::TOO_MANY_REQUESTS),
-            (ErrorCode::ExportInProgress, StatusCode::SERVICE_UNAVAILABLE),
+            (ErrorCode::InvalidClaim, 400u16),
+            (ErrorCode::Unauthorized, 401),
+            (ErrorCode::TokenExpired, 401),
+            (ErrorCode::Forbidden, 403),
+            (ErrorCode::NotFound, 404),
+            (ErrorCode::WeakPassword, 422),
+            (ErrorCode::RateLimited, 429),
+            (ErrorCode::ExportInProgress, 503),
         ];
         for (code, expected) in cases {
             assert_eq!(code.status_code(), expected, "wrong status for {code:?}");
+        }
+    }
+
+    #[cfg(feature = "axum")]
+    mod axum_tests {
+        use super::*;
+        use axum::http::StatusCode;
+        use axum::response::IntoResponse;
+
+        #[tokio::test]
+        async fn into_response_correct_status_and_body() {
+            let err = ApiError::new(ErrorCode::NotFound, "not found");
+            let response = err.into_response();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["error"]["code"], "NOT_FOUND");
+            assert_eq!(json["error"]["message"], "not found");
         }
     }
 }

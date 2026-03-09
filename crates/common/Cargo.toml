@@ -6,8 +6,14 @@ publish.workspace = true
 
 # common: shared types, error envelope, config parsing.
 
+[features]
+# Enable Axum integration: ApiError implements IntoResponse.
+# relay enables this; pure-logic crates (crypto, repo-engine) do not.
+axum = ["dep:axum", "dep:tracing"]
+
 [dependencies]
-axum = { workspace = true }
+axum = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
@@ -15,3 +21,4 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { workspace = true }

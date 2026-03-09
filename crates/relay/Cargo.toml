@@ -11,7 +11,8 @@ name = "relay"
 path = "src/main.rs"
 
 [dependencies]
-common = { workspace = true }
+axum = { workspace = true }
+common = { workspace = true, features = ["axum"] }
 clap = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
