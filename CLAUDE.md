@@ -1,6 +1,6 @@
 # ezpds
 
-Last verified: 2026-03-08
+Last verified: 2026-03-09
 
 ## Tech Stack
 - Language: Rust (stable channel via rust-toolchain.toml)
@@ -12,6 +12,7 @@ Last verified: 2026-03-08
 - `nix develop --impure --accept-flake-config` - Enter dev shell (flags required; --impure for devenv CWD detection, --accept-flake-config activates the Cachix binary cache in nixConfig — without it, a cold build takes 20+ minutes)
 - `nix build .#relay --accept-flake-config` - Build relay binary (output at ./result/bin/relay)
 - `nix build .#docker-image --accept-flake-config` - Build Docker image tarball (Linux only; output at `./result`; load with `docker load < result`; `docker-image` is not exposed on macOS — use a remote Linux builder or CI)
+- `just nix-check` / `nix flake check --impure --accept-flake-config` - Validate NixOS module evaluation and flake structure
 - `cargo build` - Build all crates
 - `cargo test` - Run all tests
 - `cargo clippy --workspace -- -D warnings` - Lint (warnings as errors)
@@ -31,8 +32,14 @@ Last verified: 2026-03-08
 - `crates/repo-engine/` - ATProto repo engine
 - `crates/crypto/` - Cryptographic operations
 - `crates/common/` - Shared types and utilities
-- `nix/` - Nix build helpers (docker.nix produces the relay container image)
+- `nix/` - Nix packaging and deployment (docker.nix: container image; module.nix: NixOS module)
 - `docs/` - Specs, design plans, implementation plans
+
+## Flake Outputs
+- `packages.<system>.relay` - Relay binary
+- `packages.<system>.docker-image` - Docker image tarball (Linux only)
+- `nixosModules.default` - NixOS module exposing `services.ezpds` options (see `nix/CLAUDE.md`)
+- `devShells.<system>.default` - Development shell via devenv
 
 ## Conventions
 - Workspace-level dependency versions in root Cargo.toml; crates use `{ workspace = true }`
