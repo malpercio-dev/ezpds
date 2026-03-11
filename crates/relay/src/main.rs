@@ -3,6 +3,8 @@ use clap::Parser;
 use std::{path::PathBuf, sync::Arc};
 
 mod app;
+#[allow(dead_code)]
+mod db;
 
 #[derive(Parser)]
 #[command(name = "relay", about = "ezpds relay server")]
