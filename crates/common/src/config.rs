@@ -104,6 +104,10 @@ pub(crate) struct RawConfig {
     pub(crate) admin_token: Option<String>,
     #[serde(skip)]
     pub(crate) signing_key_master_key: Option<[u8; 32]>,
+    /// Sentinel field — only present to detect misconfiguration.
+    /// signing_key_master_key must be set via env var EZPDS_SIGNING_KEY_MASTER_KEY, not TOML.
+    #[serde(rename = "signing_key_master_key")]
+    pub(crate) signing_key_master_key_toml_sentinel: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -232,6 +236,13 @@ pub(crate) fn apply_env_overrides(
 /// When provided, `telemetry.otlp_endpoint` must be non-empty and start with `http://` or
 /// `https://`.
 pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> {
+    // Reject signing_key_master_key if it appears in TOML (must be env var only).
+    if raw.signing_key_master_key_toml_sentinel.is_some() {
+        return Err(ConfigError::Invalid(
+            "signing_key_master_key must be set via env var EZPDS_SIGNING_KEY_MASTER_KEY, not relay.toml (security-sensitive field)".to_string()
+        ));
+    }
+
     let bind_address = raw.bind_address.unwrap_or_else(|| "0.0.0.0".to_string());
     let port = raw.port.unwrap_or(8080);
     let data_dir: PathBuf = raw
@@ -773,6 +784,23 @@ mod tests {
             invalid_key.to_string(),
         )]);
         let err = apply_env_overrides(minimal_raw(), &env).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("EZPDS_SIGNING_KEY_MASTER_KEY"));
+    }
+
+    #[test]
+    fn signing_key_master_key_in_toml_returns_error() {
+        // Operator mistakenly puts signing_key_master_key in relay.toml instead of env var.
+        // The sentinel field must catch this and reject the configuration.
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+            signing_key_master_key = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+
         assert!(matches!(err, ConfigError::Invalid(_)));
         assert!(err.to_string().contains("EZPDS_SIGNING_KEY_MASTER_KEY"));
     }

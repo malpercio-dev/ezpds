@@ -6,6 +6,7 @@
 
 use axum::{extract::State, http::HeaderMap, response::Json};
 use serde::{Deserialize, Serialize};
+use subtle::ConstantTimeEq;
 
 use common::{ApiError, ErrorCode};
 
@@ -54,7 +55,12 @@ pub async fn create_signing_key(
         )
     })?;
 
-    if provided_token != expected_token {
+    if provided_token
+        .as_bytes()
+        .ct_eq(expected_token.as_bytes())
+        .unwrap_u8()
+        != 1
+    {
         return Err(ApiError::new(
             ErrorCode::Unauthorized,
             "invalid admin token",

@@ -99,12 +99,12 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), DbError> {
     let applied_set: std::collections::HashSet<u32> = applied
         .into_iter()
         .map(|(v,)| {
-            u32::try_from(v).unwrap_or_else(|_| {
-                tracing::warn!(version = v, "ignoring out-of-range migration version");
-                0
+            u32::try_from(v).map_err(|_| DbError::Setup {
+                step: "parse migration version from schema_migrations",
+                source: sqlx::Error::RowNotFound,
             })
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
 
     // Collect pending migrations in order.
     let pending: Vec<&Migration> = MIGRATIONS
