@@ -1,4 +1,4 @@
-// pattern: Functional Core (router construction is pure — no I/O)
+// pattern: Functional Core (router construction is I/O-free)
 
 use std::sync::Arc;
 
@@ -11,7 +11,7 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 /// Fields will grow as waves are implemented (MM-72 adds the DB pool, etc.).
 #[derive(Clone)]
 pub struct AppState {
-    // Read by handlers from MM-73 onward; suppressed until then.
+    // Read by handlers once XRPC endpoints are implemented; suppressed until then.
     #[allow(dead_code)]
     pub config: Arc<Config>,
 }
@@ -30,8 +30,8 @@ pub fn app(state: AppState) -> Router {
 
 /// Catch-all XRPC handler — returns `MethodNotImplemented` for any unrecognised NSID.
 ///
-/// Real XRPC endpoints (MM-73+) will register specific routes that shadow this catch-all
-/// for their own NSIDs.
+/// Axum gives static path segments priority over parameterised ones, so specific routes
+/// registered for individual NSIDs will match before this catch-all.
 async fn xrpc_handler(Path(method): Path<String>) -> ApiError {
     ApiError::new(
         ErrorCode::MethodNotImplemented,
@@ -96,6 +96,42 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
     }
 
+    // XRPC only defines GET (queries) and POST (procedures); other methods are not part of
+    // the protocol and correctly return 405.
+    #[tokio::test]
+    async fn xrpc_delete_returns_405() {
+        let response = app(test_state())
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/xrpc/com.example.unknownMethod")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
+    async fn xrpc_response_has_json_content_type() {
+        let response = app(test_state())
+            .oneshot(
+                Request::builder()
+                    .uri("/xrpc/com.example.unknownMethod")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "application/json"
+        );
+    }
+
     #[tokio::test]
     async fn xrpc_response_body_is_method_not_implemented() {
         let response = app(test_state())
@@ -108,10 +144,13 @@ mod tests {
             .await
             .unwrap();
 
+        let status = response.status();
         let body = axum::body::to_bytes(response.into_body(), 4096)
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
         assert_eq!(json["error"]["code"], "MethodNotImplemented");
     }
 }

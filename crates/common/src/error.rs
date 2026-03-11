@@ -5,7 +5,10 @@ use serde_json::Value;
 
 /// Error codes for the provisioning API.
 ///
-/// Serialized as SCREAMING_SNAKE_CASE strings in the JSON error envelope.
+/// Most variants serialize as SCREAMING_SNAKE_CASE. Exceptions use `#[serde(rename)]`
+/// when a specific wire format is required (e.g. `MethodNotImplemented` uses PascalCase
+/// to match the AT Protocol XRPC error format).
+///
 /// `#[non_exhaustive]` prevents external crates from writing exhaustive match
 /// arms — new variants can be added in future waves without breaking callers.
 #[non_exhaustive]
@@ -123,7 +126,7 @@ mod axum_integration {
                     (status, [(header::CONTENT_TYPE, "application/json")], body).into_response()
                 }
                 Err(err) => {
-                    tracing::error!("failed to serialize ApiError: {err}");
+                    tracing::error!(error = %err, "failed to serialize ApiError");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(serde_json::json!({
@@ -195,6 +198,7 @@ mod tests {
             (ErrorCode::WeakPassword, 422),
             (ErrorCode::RateLimited, 429),
             (ErrorCode::ExportInProgress, 503),
+            (ErrorCode::MethodNotImplemented, 501),
         ];
         for (code, expected) in cases {
             assert_eq!(code.status_code(), expected, "wrong status for {code:?}");
