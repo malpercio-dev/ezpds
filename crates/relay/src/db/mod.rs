@@ -27,10 +27,16 @@ struct Migration {
     sql: &'static str,
 }
 
-static MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    sql: include_str!("migrations/V001__init.sql"),
-}];
+static MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        sql: include_str!("migrations/V001__init.sql"),
+    },
+    Migration {
+        version: 2,
+        sql: include_str!("migrations/V002__auth_identity.sql"),
+    },
+];
 
 /// Open a WAL-mode SQLite connection pool with a maximum of 1 connection.
 ///
@@ -184,7 +190,7 @@ mod tests {
     }
 
     /// Verify that successful migrations return Ok and bootstrap the schema_migrations table.
-    /// This test asserts the distinct purpose: row count = 1 after first run.
+    /// Row count equals the number of migrations defined in MIGRATIONS.
     #[tokio::test]
     async fn migrations_apply_on_first_run() {
         let pool = in_memory_pool().await;
@@ -194,10 +200,14 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(count, 1, "first run must insert exactly one row");
+        let expected = MIGRATIONS.len() as i64;
+        assert_eq!(
+            count, expected,
+            "first run must insert one row per migration"
+        );
     }
 
-    /// Running migrations twice leaves only one row in schema_migrations.
+    /// Running migrations twice leaves exactly one row per migration in schema_migrations.
     #[tokio::test]
     async fn migrations_are_idempotent() {
         let pool = in_memory_pool().await;
@@ -208,9 +218,10 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
+        let expected = MIGRATIONS.len() as i64;
         assert_eq!(
-            count, 1,
-            "second run must not insert a duplicate migration row"
+            count, expected,
+            "second run must not insert duplicate migration rows"
         );
     }
 
@@ -274,6 +285,213 @@ mod tests {
                 .await;
 
         assert!(result.is_err(), "inserting duplicate key must fail");
+    }
+
+    // ── V002 tests ───────────────────────────────────────────────────────────
+
+    /// Apply V002 on top of V001 and verify all 12 auth/identity tables exist.
+    /// Uses PRAGMA table_info — non-empty result means the table was created.
+    #[tokio::test]
+    async fn v002_all_tables_exist() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        let tables = [
+            "accounts",
+            "handles",
+            "did_documents",
+            "signing_keys",
+            "devices",
+            "claim_codes",
+            "sessions",
+            "refresh_tokens",
+            "oauth_clients",
+            "oauth_authorization_codes",
+            "oauth_tokens",
+            "oauth_par_requests",
+        ];
+
+        for table in tables {
+            let rows: Vec<(i64,)> = sqlx::query_as(&format!("PRAGMA table_info({table})"))
+                .fetch_all(&pool)
+                .await
+                .unwrap_or_else(|e| panic!("PRAGMA table_info({table}) failed: {e}"));
+            assert!(
+                !rows.is_empty(),
+                "table '{table}' must exist after V002 migration"
+            );
+        }
+    }
+
+    /// schema_migrations must contain exactly 2 rows after applying V001 + V002.
+    #[tokio::test]
+    async fn v002_migration_count_is_two_after_both_migrations() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM schema_migrations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 2, "both V001 and V002 must be recorded");
+    }
+
+    /// Running all migrations twice must remain idempotent: still exactly 2 rows.
+    #[tokio::test]
+    async fn v002_migrations_are_idempotent() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+        run_migrations(&pool).await.unwrap();
+
+        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM schema_migrations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 2, "second run must be a no-op");
+    }
+
+    /// accounts.email UNIQUE index must reject duplicate email addresses.
+    #[tokio::test]
+    async fn v002_accounts_unique_email_enforced() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at)
+             VALUES ('did:plc:aaa', 'a@example.com', 'hash', '2024-01-01T00:00:00', '2024-01-01T00:00:00')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let result = sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at)
+             VALUES ('did:plc:bbb', 'a@example.com', 'hash', '2024-01-01T00:00:00', '2024-01-01T00:00:00')",
+        )
+        .execute(&pool)
+        .await;
+
+        assert!(result.is_err(), "duplicate email must be rejected");
+    }
+
+    /// PRAGMA foreign_keys = ON must cause handles.did FK violation to fail.
+    #[tokio::test]
+    async fn v002_foreign_key_violation_rejected() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Insert a handle referencing a DID that does not exist in accounts.
+        let result = sqlx::query(
+            "INSERT INTO handles (handle, did, created_at)
+             VALUES ('alice.bsky.social', 'did:plc:nonexistent', '2024-01-01T00:00:00')",
+        )
+        .execute(&pool)
+        .await;
+
+        assert!(
+            result.is_err(),
+            "FK violation on handles.did must be rejected with foreign_keys = ON"
+        );
+    }
+
+    /// EXPLAIN QUERY PLAN must show idx_refresh_tokens_did for a WHERE did = ? query.
+    #[tokio::test]
+    async fn v002_index_refresh_tokens_did_used() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+            "EXPLAIN QUERY PLAN SELECT * FROM refresh_tokens WHERE did = 'did:plc:aaa'",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+
+        let detail = plan
+            .iter()
+            .map(|r| r.3.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            detail.contains("idx_refresh_tokens_did"),
+            "refresh_tokens WHERE did query must use idx_refresh_tokens_did; got: {detail}"
+        );
+    }
+
+    /// EXPLAIN QUERY PLAN must show idx_oauth_tokens_did for a WHERE did = ? query.
+    #[tokio::test]
+    async fn v002_index_oauth_tokens_did_used() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+            "EXPLAIN QUERY PLAN SELECT * FROM oauth_tokens WHERE did = 'did:plc:aaa'",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+
+        let detail = plan
+            .iter()
+            .map(|r| r.3.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            detail.contains("idx_oauth_tokens_did"),
+            "oauth_tokens WHERE did query must use idx_oauth_tokens_did; got: {detail}"
+        );
+    }
+
+    /// EXPLAIN QUERY PLAN must show idx_claim_codes_did for a WHERE did = ? query.
+    #[tokio::test]
+    async fn v002_index_claim_codes_did_used() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+            "EXPLAIN QUERY PLAN SELECT * FROM claim_codes WHERE did = 'did:plc:aaa'",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+
+        let detail = plan
+            .iter()
+            .map(|r| r.3.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            detail.contains("idx_claim_codes_did"),
+            "claim_codes WHERE did query must use idx_claim_codes_did; got: {detail}"
+        );
+    }
+
+    /// EXPLAIN QUERY PLAN must show idx_accounts_email for a WHERE email = ? query.
+    #[tokio::test]
+    async fn v002_index_accounts_email_used() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+            "EXPLAIN QUERY PLAN SELECT * FROM accounts WHERE email = 'a@example.com'",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+
+        let detail = plan
+            .iter()
+            .map(|r| r.3.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            detail.contains("idx_accounts_email"),
+            "accounts WHERE email query must use idx_accounts_email; got: {detail}"
+        );
     }
 
     /// WAL mode requires a real file — use tempfile here, not :memory:.

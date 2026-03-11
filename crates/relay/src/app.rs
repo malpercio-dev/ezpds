@@ -18,7 +18,10 @@ impl Extractor for HeaderMapCarrier<'_> {
         self.0.get(key).and_then(|v| {
             v.to_str().map_or_else(
                 |_| {
-                    tracing::debug!(header = key, "trace propagation header contains non-UTF-8 bytes; ignoring");
+                    tracing::debug!(
+                        header = key,
+                        "trace propagation header contains non-UTF-8 bytes; ignoring"
+                    );
                     None
                 },
                 Some,
@@ -247,10 +250,7 @@ mod header_carrier_tests {
         map.insert("traceparent", "00-abc123-def456-01".parse().unwrap());
 
         let carrier = HeaderMapCarrier(&map);
-        assert_eq!(
-            carrier.get("traceparent"),
-            Some("00-abc123-def456-01")
-        );
+        assert_eq!(carrier.get("traceparent"), Some("00-abc123-def456-01"));
     }
 
     #[test]

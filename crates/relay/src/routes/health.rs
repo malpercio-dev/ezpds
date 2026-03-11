@@ -4,7 +4,11 @@
 // Processes: none (response shape is trivial — no pure core to extract)
 // Returns: JSON response with version and db status
 
-use axum::{extract::State, http::StatusCode, response::{IntoResponse, Json}};
+use axum::{
+    extract::State,
+    http::StatusCode,
+    response::{IntoResponse, Json},
+};
 use serde::Serialize;
 
 use crate::app::AppState;
@@ -18,10 +22,7 @@ struct HealthResponse {
 pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
     let version = env!("CARGO_PKG_VERSION");
     match sqlx::query("SELECT 1").execute(&state.db).await {
-        Ok(_) => (
-            StatusCode::OK,
-            Json(HealthResponse { version, db: "ok" }),
-        ),
+        Ok(_) => (StatusCode::OK, Json(HealthResponse { version, db: "ok" })),
         Err(e) => {
             tracing::error!(error = %e, "db health check failed");
             (

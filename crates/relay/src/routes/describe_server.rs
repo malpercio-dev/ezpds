@@ -148,7 +148,10 @@ mod tests {
 
     #[test]
     fn resolve_did_returns_configured_did() {
-        let did = super::resolve_did(&Some("did:plc:abc123".to_string()), "https://pds.example.com");
+        let did = super::resolve_did(
+            &Some("did:plc:abc123".to_string()),
+            "https://pds.example.com",
+        );
         assert_eq!(did, "did:plc:abc123");
     }
 
