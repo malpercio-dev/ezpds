@@ -26,7 +26,9 @@ that can later serve per-user SQLite databases (Wave 3/4).
 - Migration SQL files are append-only; never modify an applied migration
 - Migration versions are sequential positive integers starting at 1
 - WAL mode is always enabled (set via SqliteConnectOptions, not raw PRAGMA)
+- Foreign key enforcement is always on (set via SqliteConnectOptions .foreign_keys(true), not raw PRAGMA)
 
 ## Key Files
 - `mod.rs` - Pool creation, migration runner, DbError, tests
 - `migrations/V001__init.sql` - server_metadata table (WITHOUT ROWID)
+- `migrations/V002__auth_identity.sql` - 12 Wave 2 tables: accounts, handles, did_documents, signing_keys, devices, claim_codes, sessions, refresh_tokens, oauth_clients, oauth_authorization_codes, oauth_tokens, oauth_par_requests

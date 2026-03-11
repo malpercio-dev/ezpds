@@ -42,8 +42,8 @@ static MIGRATIONS: &[Migration] = &[
 ///
 /// Accepts any sqlx URL string (e.g. `"sqlite:relay.db"`, `"sqlite::memory:"`).
 /// `create_if_missing` is enabled so the file is created on first run.
-/// WAL journal mode is set via `SqliteConnectOptions`, and sqlx re-issues the
-/// journal_mode PRAGMA on each new connection establishment to ensure the mode persists.
+/// WAL journal mode and foreign key enforcement are set via `SqliteConnectOptions`;
+/// sqlx re-issues both PRAGMAs on every new connection so they survive reconnects.
 ///
 /// Note: Pool creation succeeds even if the file path is invalid; the failure surfaces
 /// at the first query. To fail fast on bad config, consider adding `min_connections(1)`.
@@ -52,7 +52,8 @@ pub async fn open_pool(url: &str) -> Result<SqlitePool, DbError> {
     let opts = SqliteConnectOptions::from_str(url)
         .map_err(|e| DbError::InvalidUrl(e.to_string()))?
         .create_if_missing(true)
-        .journal_mode(SqliteJournalMode::Wal);
+        .journal_mode(SqliteJournalMode::Wal)
+        .foreign_keys(true);
 
     SqlitePoolOptions::new()
         .max_connections(1)
@@ -336,18 +337,31 @@ mod tests {
         assert_eq!(count, 2, "both V001 and V002 must be recorded");
     }
 
-    /// Running all migrations twice must remain idempotent: still exactly 2 rows.
+    /// Running migrations twice must not drop or recreate V002 tables.
+    /// (Row-count idempotency is already covered by the generic migrations_are_idempotent test.)
     #[tokio::test]
-    async fn v002_migrations_are_idempotent() {
+    async fn v002_tables_survive_second_migration_run() {
         let pool = in_memory_pool().await;
         run_migrations(&pool).await.unwrap();
         run_migrations(&pool).await.unwrap();
 
-        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM schema_migrations")
+        // Spot-check a few tables to confirm they still exist and are writable.
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at)
+             VALUES ('did:plc:zzz', 'z@example.com', 'hash', '2024-01-01T00:00:00', '2024-01-01T00:00:00')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM accounts")
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(count, 2, "second run must be a no-op");
+        assert_eq!(
+            count, 1,
+            "accounts table must survive a second migration run"
+        );
     }
 
     /// accounts.email UNIQUE index must reject duplicate email addresses.
@@ -374,17 +388,13 @@ mod tests {
         assert!(result.is_err(), "duplicate email must be rejected");
     }
 
-    /// PRAGMA foreign_keys = ON must cause handles.did FK violation to fail.
+    /// FK enforcement is on by default (via open_pool .foreign_keys(true)).
+    /// Inserting a handle with a nonexistent DID must fail without any manual PRAGMA.
     #[tokio::test]
-    async fn v002_foreign_key_violation_rejected() {
+    async fn v002_fk_handles_did_rejected() {
         let pool = in_memory_pool().await;
         run_migrations(&pool).await.unwrap();
-        sqlx::query("PRAGMA foreign_keys = ON")
-            .execute(&pool)
-            .await
-            .unwrap();
 
-        // Insert a handle referencing a DID that does not exist in accounts.
         let result = sqlx::query(
             "INSERT INTO handles (handle, did, created_at)
              VALUES ('alice.bsky.social', 'did:plc:nonexistent', '2024-01-01T00:00:00')",
@@ -394,8 +404,137 @@ mod tests {
 
         assert!(
             result.is_err(),
-            "FK violation on handles.did must be rejected with foreign_keys = ON"
+            "FK violation on handles.did must be rejected by the pool (foreign_keys=true)"
         );
+    }
+
+    /// sessions.device_id → devices.id FK must be enforced.
+    #[tokio::test]
+    async fn v002_fk_sessions_device_id_rejected() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at)
+             VALUES ('did:plc:aaa', 'a@example.com', 'hash', '2024-01-01T00:00:00', '2024-01-01T00:00:00')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let result = sqlx::query(
+            "INSERT INTO sessions (id, did, device_id, created_at, expires_at)
+             VALUES ('sess1', 'did:plc:aaa', 'dev:nonexistent', '2024-01-01T00:00:00', '2024-01-02T00:00:00')",
+        )
+        .execute(&pool)
+        .await;
+
+        assert!(
+            result.is_err(),
+            "FK violation on sessions.device_id must be rejected"
+        );
+    }
+
+    /// refresh_tokens.session_id → sessions.id FK must be enforced.
+    #[tokio::test]
+    async fn v002_fk_refresh_tokens_session_id_rejected() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at)
+             VALUES ('did:plc:aaa', 'a@example.com', 'hash', '2024-01-01T00:00:00', '2024-01-01T00:00:00')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let result = sqlx::query(
+            "INSERT INTO refresh_tokens (jti, did, session_id, expires_at, created_at)
+             VALUES ('jti1', 'did:plc:aaa', 'sess:nonexistent', '2024-01-02T00:00:00', '2024-01-01T00:00:00')",
+        )
+        .execute(&pool)
+        .await;
+
+        assert!(
+            result.is_err(),
+            "FK violation on refresh_tokens.session_id must be rejected"
+        );
+    }
+
+    /// oauth_authorization_codes.client_id → oauth_clients.client_id FK must be enforced.
+    #[tokio::test]
+    async fn v002_fk_oauth_authorization_codes_client_id_rejected() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at)
+             VALUES ('did:plc:aaa', 'a@example.com', 'hash', '2024-01-01T00:00:00', '2024-01-01T00:00:00')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let result = sqlx::query(
+            "INSERT INTO oauth_authorization_codes
+             (code, client_id, did, code_challenge, code_challenge_method, redirect_uri, scope, expires_at, created_at)
+             VALUES ('code1', 'client:nonexistent', 'did:plc:aaa', 'challenge', 'S256',
+                     'https://example.com/cb', 'atproto', '2024-01-02T00:00:00', '2024-01-01T00:00:00')",
+        )
+        .execute(&pool)
+        .await;
+
+        assert!(
+            result.is_err(),
+            "FK violation on oauth_authorization_codes.client_id must be rejected"
+        );
+    }
+
+    /// End-to-end insert chain: accounts → devices → sessions → refresh_tokens.
+    /// Validates column names, NOT NULL constraints, and FK ordering across the core auth path.
+    #[tokio::test]
+    async fn v002_core_auth_chain_insert_succeeds() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at)
+             VALUES ('did:plc:aaa', 'a@example.com', 'hash', '2024-01-01T00:00:00', '2024-01-01T00:00:00')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO devices (id, did, device_name, user_agent, created_at, last_seen_at)
+             VALUES ('dev1', 'did:plc:aaa', 'My Phone', 'Mozilla/5.0', '2024-01-01T00:00:00', '2024-01-01T00:00:00')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO sessions (id, did, device_id, created_at, expires_at)
+             VALUES ('sess1', 'did:plc:aaa', 'dev1', '2024-01-01T00:00:00', '2024-01-02T00:00:00')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO refresh_tokens (jti, did, session_id, expires_at, created_at)
+             VALUES ('jti1', 'did:plc:aaa', 'sess1', '2024-01-02T00:00:00', '2024-01-01T00:00:00')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM refresh_tokens")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1, "full auth chain insert must succeed");
     }
 
     /// EXPLAIN QUERY PLAN must show idx_refresh_tokens_did for a WHERE did = ? query.
@@ -491,6 +630,99 @@ mod tests {
         assert!(
             detail.contains("idx_accounts_email"),
             "accounts WHERE email query must use idx_accounts_email; got: {detail}"
+        );
+    }
+
+    /// EXPLAIN QUERY PLAN must show idx_handles_did for a WHERE did = ? query.
+    #[tokio::test]
+    async fn v002_index_handles_did_used() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        let plan: Vec<(i64, i64, i64, String)> =
+            sqlx::query_as("EXPLAIN QUERY PLAN SELECT * FROM handles WHERE did = 'did:plc:aaa'")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+
+        let detail = plan
+            .iter()
+            .map(|r| r.3.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            detail.contains("idx_handles_did"),
+            "handles WHERE did query must use idx_handles_did; got: {detail}"
+        );
+    }
+
+    /// EXPLAIN QUERY PLAN must show idx_signing_keys_did for a WHERE did = ? query.
+    #[tokio::test]
+    async fn v002_index_signing_keys_did_used() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+            "EXPLAIN QUERY PLAN SELECT * FROM signing_keys WHERE did = 'did:plc:aaa'",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+
+        let detail = plan
+            .iter()
+            .map(|r| r.3.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            detail.contains("idx_signing_keys_did"),
+            "signing_keys WHERE did query must use idx_signing_keys_did; got: {detail}"
+        );
+    }
+
+    /// EXPLAIN QUERY PLAN must show idx_devices_did for a WHERE did = ? query.
+    #[tokio::test]
+    async fn v002_index_devices_did_used() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        let plan: Vec<(i64, i64, i64, String)> =
+            sqlx::query_as("EXPLAIN QUERY PLAN SELECT * FROM devices WHERE did = 'did:plc:aaa'")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+
+        let detail = plan
+            .iter()
+            .map(|r| r.3.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            detail.contains("idx_devices_did"),
+            "devices WHERE did query must use idx_devices_did; got: {detail}"
+        );
+    }
+
+    /// EXPLAIN QUERY PLAN must show idx_sessions_did for a WHERE did = ? query.
+    #[tokio::test]
+    async fn v002_index_sessions_did_used() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        let plan: Vec<(i64, i64, i64, String)> =
+            sqlx::query_as("EXPLAIN QUERY PLAN SELECT * FROM sessions WHERE did = 'did:plc:aaa'")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+
+        let detail = plan
+            .iter()
+            .map(|r| r.3.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            detail.contains("idx_sessions_did"),
+            "sessions WHERE did query must use idx_sessions_did; got: {detail}"
         );
     }
 

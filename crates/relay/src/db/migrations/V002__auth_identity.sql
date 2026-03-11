@@ -24,7 +24,12 @@ CREATE TABLE handles (
     PRIMARY KEY (handle)
 ) WITHOUT ROWID;
 
+-- Reverse lookup: find all handles for a given DID (e.g., handle resolution).
+CREATE INDEX idx_handles_did ON handles (did);
+
 -- WITHOUT ROWID: DID documents are always fetched by DID (the PK).
+-- No FK to accounts intentionally: this table caches DID documents for any DID
+-- (including external DIDs from remote PDSs), so the did need not be a local account.
 CREATE TABLE did_documents (
     did        TEXT NOT NULL,
     document   TEXT NOT NULL,
@@ -43,6 +48,9 @@ CREATE TABLE signing_keys (
     PRIMARY KEY (id)
 );
 
+-- Key lookup by account (e.g., fetch all keys when building a DID document).
+CREATE INDEX idx_signing_keys_did ON signing_keys (did);
+
 -- ── Device & Provisioning ────────────────────────────────────────────────────
 
 CREATE TABLE devices (
@@ -54,6 +62,9 @@ CREATE TABLE devices (
     last_seen_at TEXT NOT NULL,
     PRIMARY KEY (id)
 );
+
+-- Device listing by account (e.g., show all devices for a user).
+CREATE INDEX idx_devices_did ON devices (did);
 
 CREATE TABLE claim_codes (
     code                 TEXT NOT NULL,
@@ -76,6 +87,9 @@ CREATE TABLE sessions (
     expires_at TEXT NOT NULL,
     PRIMARY KEY (id)
 );
+
+-- Session listing and revocation by account.
+CREATE INDEX idx_sessions_did ON sessions (did);
 
 CREATE TABLE refresh_tokens (
     jti               TEXT NOT NULL,
