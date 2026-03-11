@@ -15,7 +15,15 @@ struct HeaderMapCarrier<'a>(&'a axum::http::HeaderMap);
 
 impl Extractor for HeaderMapCarrier<'_> {
     fn get(&self, key: &str) -> Option<&str> {
-        self.0.get(key).and_then(|v| v.to_str().ok())
+        self.0.get(key).and_then(|v| {
+            v.to_str().map_or_else(
+                |_| {
+                    tracing::debug!(header = key, "trace propagation header contains non-UTF-8 bytes; ignoring");
+                    None
+                },
+                Some,
+            )
+        })
     }
 
     fn keys(&self) -> Vec<&str> {
@@ -224,5 +232,55 @@ mod tests {
             .execute(&state.db)
             .await
             .expect("db pool in AppState must be queryable");
+    }
+}
+
+#[cfg(test)]
+mod header_carrier_tests {
+    use super::*;
+    use axum::http::HeaderMap;
+    use opentelemetry::propagation::Extractor;
+
+    #[test]
+    fn get_returns_ascii_header_value() {
+        let mut map = HeaderMap::new();
+        map.insert("traceparent", "00-abc123-def456-01".parse().unwrap());
+
+        let carrier = HeaderMapCarrier(&map);
+        assert_eq!(
+            carrier.get("traceparent"),
+            Some("00-abc123-def456-01")
+        );
+    }
+
+    #[test]
+    fn get_returns_none_for_absent_header() {
+        let map = HeaderMap::new();
+        let carrier = HeaderMapCarrier(&map);
+        assert_eq!(carrier.get("traceparent"), None);
+    }
+
+    #[test]
+    fn get_is_case_insensitive_via_header_map() {
+        let mut map = HeaderMap::new();
+        // HTTP/2 headers are lower-case; HeaderMap normalises on insert.
+        map.insert("tracestate", "vendor=value".parse().unwrap());
+
+        let carrier = HeaderMapCarrier(&map);
+        // HeaderMap normalises to lower-case, so look-up is case-insensitive.
+        assert_eq!(carrier.get("tracestate"), Some("vendor=value"));
+    }
+
+    #[test]
+    fn keys_returns_all_header_names() {
+        let mut map = HeaderMap::new();
+        map.insert("traceparent", "value1".parse().unwrap());
+        map.insert("tracestate", "value2".parse().unwrap());
+
+        let carrier = HeaderMapCarrier(&map);
+        let keys = carrier.keys();
+        assert!(keys.contains(&"traceparent"));
+        assert!(keys.contains(&"tracestate"));
+        assert_eq!(keys.len(), 2);
     }
 }

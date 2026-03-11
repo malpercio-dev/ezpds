@@ -33,7 +33,6 @@ static MIGRATIONS: &[Migration] = &[Migration {
 }];
 
 /// Open a WAL-mode SQLite connection pool with a maximum of 1 connection.
-#[tracing::instrument(err, fields(db.system = "sqlite"))]
 ///
 /// Accepts any sqlx URL string (e.g. `"sqlite:relay.db"`, `"sqlite::memory:"`).
 /// `create_if_missing` is enabled so the file is created on first run.
@@ -42,6 +41,7 @@ static MIGRATIONS: &[Migration] = &[Migration {
 ///
 /// Note: Pool creation succeeds even if the file path is invalid; the failure surfaces
 /// at the first query. To fail fast on bad config, consider adding `min_connections(1)`.
+#[tracing::instrument(skip(url), err, fields(db.system = "sqlite"))]
 pub async fn open_pool(url: &str) -> Result<SqlitePool, DbError> {
     let opts = SqliteConnectOptions::from_str(url)
         .map_err(|e| DbError::InvalidUrl(e.to_string()))?
@@ -56,12 +56,12 @@ pub async fn open_pool(url: &str) -> Result<SqlitePool, DbError> {
 }
 
 /// Apply any pending migrations from `MIGRATIONS` to the given pool.
-#[tracing::instrument(skip(pool), err, fields(db.system = "sqlite"))]
 ///
 /// The schema_migrations bootstrap DDL runs outside any transaction. Pending migrations
 /// and their bookkeeping inserts run inside a single transaction per call.
 /// On commit() failure, the transaction is rolled back by Drop — no partial schema
 /// is applied, and the operation is safe to re-run.
+#[tracing::instrument(skip(pool), err, fields(db.system = "sqlite"))]
 pub async fn run_migrations(pool: &SqlitePool) -> Result<(), DbError> {
     // Bootstrap the tracking table before any migration SQL runs.
     sqlx::query(

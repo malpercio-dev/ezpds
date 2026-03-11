@@ -53,6 +53,10 @@ async fn run() -> anyhow::Result<()> {
     // Initialize tracing after config is loaded so telemetry settings can be applied.
     // Any config parse error surfaces via eprintln (the error propagation above); tracing
     // is not available until this line succeeds.
+    //
+    // IMPORTANT: must be `_otel_guard`, NOT bare `_`. A bare `_` binding drops
+    // immediately (Rust only keeps `_foo` bindings alive for the scope), which would
+    // shut down the OTLP exporter before the server starts.
     let _otel_guard = telemetry::init_subscriber(&config.telemetry)?;
 
     tracing::info!(

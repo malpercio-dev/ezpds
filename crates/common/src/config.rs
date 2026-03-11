@@ -115,7 +115,11 @@ pub enum ConfigError {
     Invalid(String),
 }
 
-/// Apply `EZPDS_*` environment variable overrides to a [`RawConfig`], returning the updated config.
+/// Apply `EZPDS_*` and selected OTel standard environment variable overrides to a [`RawConfig`],
+/// returning the updated config.
+///
+/// Also reads `OTEL_SERVICE_NAME` (without the `EZPDS_` prefix) as a standard OpenTelemetry
+/// convention for overriding the telemetry service name.
 ///
 /// Receives the environment as a map so this function stays isolated from I/O (no `std::env`
 /// access). Takes `raw` by value and returns it so callers can chain calls without mutation.
@@ -178,8 +182,12 @@ pub(crate) fn apply_env_overrides(
 /// Validate a [`RawConfig`] and build a [`Config`], applying defaults for optional fields.
 ///
 /// Required fields: `data_dir`, `public_url`, `available_user_domains` (non-empty).
-/// Defaults: `bind_address = "0.0.0.0"`, `port = 8080`,
-/// `database_url = "{data_dir}/relay.db"` (derived; fails if `data_dir` is non-UTF-8).
+/// Defaults: `bind_address = "0.0.0.0"`, `port = 8080`, `invite_code_required = true`,
+/// `database_url = "{data_dir}/relay.db"` (derived; fails if `data_dir` is non-UTF-8),
+/// `telemetry.enabled = false`, `telemetry.otlp_endpoint = "http://localhost:4317"`,
+/// `telemetry.service_name = "ezpds-relay"`.
+/// When provided, `telemetry.otlp_endpoint` must be non-empty and start with `http://` or
+/// `https://`.
 pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> {
     let bind_address = raw.bind_address.unwrap_or_else(|| "0.0.0.0".to_string());
     let port = raw.port.unwrap_or(8080);
@@ -216,12 +224,23 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
     let invite_code_required = raw.invite_code_required.unwrap_or(true);
 
     let telemetry_defaults = TelemetryConfig::default();
+    let otlp_endpoint = raw
+        .telemetry
+        .otlp_endpoint
+        .unwrap_or(telemetry_defaults.otlp_endpoint);
+    if otlp_endpoint.is_empty() {
+        return Err(ConfigError::Invalid(
+            "telemetry.otlp_endpoint must not be empty".to_string(),
+        ));
+    }
+    if !otlp_endpoint.starts_with("http://") && !otlp_endpoint.starts_with("https://") {
+        return Err(ConfigError::Invalid(format!(
+            "telemetry.otlp_endpoint must start with http:// or https://, got: {otlp_endpoint:?}"
+        )));
+    }
     let telemetry = TelemetryConfig {
         enabled: raw.telemetry.enabled.unwrap_or(telemetry_defaults.enabled),
-        otlp_endpoint: raw
-            .telemetry
-            .otlp_endpoint
-            .unwrap_or(telemetry_defaults.otlp_endpoint),
+        otlp_endpoint,
         service_name: raw
             .telemetry
             .service_name

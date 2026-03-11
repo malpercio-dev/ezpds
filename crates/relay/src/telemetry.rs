@@ -17,7 +17,9 @@ pub struct OtelGuard {
 impl Drop for OtelGuard {
     fn drop(&mut self) {
         if let Err(e) = self.provider.shutdown() {
-            eprintln!("failed to flush OTel spans on shutdown: {e:?}");
+            // The tracing subscriber is still live at drop time, so tracing::error! is
+            // appropriate and consistent with the rest of the codebase's diagnostics.
+            tracing::error!(error = ?e, "failed to flush OTel spans on shutdown");
         }
     }
 }
@@ -35,8 +37,11 @@ impl Drop for OtelGuard {
 /// Returns an [`OtelGuard`] when telemetry is enabled. Drop it after the server shuts
 /// down to guarantee all buffered spans are flushed before the process exits.
 pub fn init_subscriber(telemetry: &TelemetryConfig) -> anyhow::Result<Option<OtelGuard>> {
-    let env_filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|e| {
+        // Subscriber isn't up yet, so eprintln is the right diagnostic tool here.
+        eprintln!("RUST_LOG is invalid ({e}); defaulting to INFO");
+        EnvFilter::new("info")
+    });
     let fmt_layer = tracing_subscriber::fmt::layer();
 
     if !telemetry.enabled {
