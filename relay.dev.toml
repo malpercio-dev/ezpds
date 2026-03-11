@@ -1,0 +1,12 @@
+# Local development configuration for `devenv up`
+#
+# Required fields (data_dir, public_url) are injected via EZPDS_* environment
+# variables set in devenv.nix.  Override them per-machine in devenv.local.nix:
+#
+#   { ... }: {
+#     env.EZPDS_PUBLIC_URL = "https://my-tunnel.ngrok.io";
+#   }
+
+# TODO: fill in your preferred bind address and port for local development
+bind_address = "127.0.0.1"
+port = 8080
