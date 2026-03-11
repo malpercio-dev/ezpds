@@ -21,6 +21,8 @@ pub enum ErrorCode {
     WeakPassword,
     RateLimited,
     ExportInProgress,
+    ServiceUnavailable,
+    InternalError,
     /// Returned for any XRPC NSID that has no registered handler.
     ///
     /// Serialized as `"MethodNotImplemented"` (PascalCase) to match the AT Protocol XRPC
@@ -51,6 +53,8 @@ impl ErrorCode {
             ErrorCode::WeakPassword => 422,
             ErrorCode::RateLimited => 429,
             ErrorCode::ExportInProgress => 503,
+            ErrorCode::ServiceUnavailable => 503,
+            ErrorCode::InternalError => 500,
             ErrorCode::MethodNotImplemented => 501,
         }
     }
@@ -196,6 +200,8 @@ mod tests {
             (ErrorCode::WeakPassword, 422),
             (ErrorCode::RateLimited, 429),
             (ErrorCode::ExportInProgress, 503),
+            (ErrorCode::ServiceUnavailable, 503),
+            (ErrorCode::InternalError, 500),
             (ErrorCode::MethodNotImplemented, 501),
         ];
         for (code, expected) in cases {

@@ -1,11 +1,17 @@
 use std::sync::Arc;
 
-use axum::{extract::Path, http::Request, routing::get, Router};
+use axum::{
+    extract::Path,
+    http::Request,
+    routing::{get, post},
+    Router,
+};
 use common::{ApiError, Config, ErrorCode};
 use opentelemetry::propagation::Extractor;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
+use crate::routes::create_signing_key::create_signing_key;
 use crate::routes::describe_server::describe_server;
 use crate::routes::health::health;
 
@@ -80,6 +86,7 @@ pub fn app(state: AppState) -> Router {
             get(describe_server),
         )
         .route("/xrpc/:method", get(xrpc_handler).post(xrpc_handler))
+        .route("/v1/relay/keys", post(create_signing_key))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http().make_span_with(OtelMakeSpan))
         .with_state(state)
