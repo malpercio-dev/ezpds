@@ -20,6 +20,12 @@ pub enum ErrorCode {
     WeakPassword,
     RateLimited,
     ExportInProgress,
+    /// Returned for any XRPC NSID that has no registered handler.
+    ///
+    /// Serialized as `"MethodNotImplemented"` (PascalCase) to match the AT Protocol XRPC
+    /// error format, which uses PascalCase error names rather than SCREAMING_SNAKE_CASE.
+    #[serde(rename = "MethodNotImplemented")]
+    MethodNotImplemented,
     // TODO: add remaining codes from Appendix A as endpoints are implemented:
     // 400: INVALID_DOCUMENT, INVALID_PROOF, INVALID_ENDPOINT, INVALID_CONFIRMATION
     // 401: INVALID_CREDENTIALS
@@ -44,6 +50,7 @@ impl ErrorCode {
             ErrorCode::WeakPassword => 422,
             ErrorCode::RateLimited => 429,
             ErrorCode::ExportInProgress => 503,
+            ErrorCode::MethodNotImplemented => 501,
         }
     }
 }

@@ -2,7 +2,9 @@
 
 use anyhow::Context;
 use clap::Parser;
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
+
+mod app;
 
 #[derive(Parser)]
 #[command(name = "relay", about = "ezpds relay server")]
@@ -12,15 +14,15 @@ struct Cli {
     config: Option<PathBuf>,
 }
 
-fn main() {
-    if let Err(err) = run() {
+#[tokio::main]
+async fn main() {
+    if let Err(err) = run().await {
         eprintln!("error: {err:#}");
         std::process::exit(1);
     }
 }
 
-///Hello!
-fn run() -> anyhow::Result<()> {
+async fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init()
@@ -39,5 +41,46 @@ fn run() -> anyhow::Result<()> {
         "relay starting"
     );
 
+    let addr = format!("{}:{}", config.bind_address, config.port);
+    let state = app::AppState {
+        config: Arc::new(config),
+    };
+
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .with_context(|| format!("failed to bind to {addr}"))?;
+
+    tracing::info!(address = %addr, "listening");
+
+    axum::serve(listener, app::app(state))
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .context("server error")?;
+
+    tracing::info!("relay shut down");
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
 }
