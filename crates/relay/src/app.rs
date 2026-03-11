@@ -10,6 +10,9 @@ pub struct AppState {
     // Read by handlers once XRPC endpoints are implemented; suppressed until then.
     #[allow(dead_code)]
     pub config: Arc<Config>,
+    // Read by handlers once XRPC endpoints are implemented; suppressed until then.
+    #[allow(dead_code)]
+    pub db: sqlx::SqlitePool,
 }
 
 /// Build the Axum router with middleware and routes.
@@ -46,24 +49,31 @@ mod tests {
     use std::path::PathBuf;
     use tower::ServiceExt;
 
-    fn test_state() -> AppState {
+    async fn test_state() -> AppState {
+        let pool = crate::db::open_pool("sqlite::memory:")
+            .await
+            .expect("failed to open test pool");
+        crate::db::run_migrations(&pool)
+            .await
+            .expect("failed to run test migrations");
         AppState {
             config: Arc::new(Config {
                 bind_address: "127.0.0.1".to_string(),
                 port: 8080,
                 data_dir: PathBuf::from("/tmp"),
-                database_url: "/tmp/test.db".to_string(),
+                database_url: "sqlite::memory:".to_string(),
                 public_url: "https://test.example.com".to_string(),
                 blobs: BlobsConfig::default(),
                 oauth: OAuthConfig::default(),
                 iroh: IrohConfig::default(),
             }),
+            db: pool,
         }
     }
 
     #[tokio::test]
     async fn xrpc_get_unknown_method_returns_501() {
-        let response = app(test_state())
+        let response = app(test_state().await)
             .oneshot(
                 Request::builder()
                     .uri("/xrpc/com.example.unknownMethod")
@@ -78,7 +88,7 @@ mod tests {
 
     #[tokio::test]
     async fn xrpc_post_unknown_method_returns_501() {
-        let response = app(test_state())
+        let response = app(test_state().await)
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -96,7 +106,7 @@ mod tests {
     // the protocol and correctly return 405.
     #[tokio::test]
     async fn xrpc_delete_returns_405() {
-        let response = app(test_state())
+        let response = app(test_state().await)
             .oneshot(
                 Request::builder()
                     .method("DELETE")
@@ -112,7 +122,7 @@ mod tests {
 
     #[tokio::test]
     async fn xrpc_response_has_json_content_type() {
-        let response = app(test_state())
+        let response = app(test_state().await)
             .oneshot(
                 Request::builder()
                     .uri("/xrpc/com.example.unknownMethod")
@@ -130,7 +140,7 @@ mod tests {
 
     #[tokio::test]
     async fn xrpc_response_body_is_method_not_implemented() {
-        let response = app(test_state())
+        let response = app(test_state().await)
             .oneshot(
                 Request::builder()
                     .uri("/xrpc/com.atproto.server.createSession")
@@ -148,5 +158,14 @@ mod tests {
 
         assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
         assert_eq!(json["error"]["code"], "MethodNotImplemented");
+    }
+
+    #[tokio::test]
+    async fn appstate_db_pool_is_queryable() {
+        let state = test_state().await;
+        sqlx::query("SELECT 1")
+            .execute(&state.db)
+            .await
+            .expect("db pool in AppState must be queryable");
     }
 }
