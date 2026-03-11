@@ -21,3 +21,6 @@
 .direnv/
 devenv.local.nix
 /result
+
+# Git worktrees
+.worktrees/
