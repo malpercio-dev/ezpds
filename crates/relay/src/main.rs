@@ -3,7 +3,6 @@ use clap::Parser;
 use std::{path::PathBuf, sync::Arc};
 
 mod app;
-#[allow(dead_code)]
 mod db;
 
 #[derive(Parser)]
@@ -42,8 +41,34 @@ async fn run() -> anyhow::Result<()> {
     );
 
     let addr = format!("{}:{}", config.bind_address, config.port);
+
+    // **Intentional deviation from design:** The design doc's startup sequence shows
+    // `open_pool(&config.database_url)` directly. However, `config.database_url` defaults
+    // to a plain filesystem path (e.g. `/var/pds/relay.db`) when not explicitly set, which
+    // is not a valid sqlx URL. We format it here rather than changing Config or open_pool,
+    // keeping both functions general-purpose.
+    //
+    // Plain absolute paths like "/var/pds/relay.db" become "sqlite:///var/pds/relay.db".
+    // Already-formatted "sqlite://..." URLs pass through unchanged.
+    let db_url = if config.database_url.starts_with("sqlite:") {
+        config.database_url.clone()
+    } else if config.database_url.starts_with('/') {
+        format!("sqlite://{}", config.database_url)
+    } else {
+        format!("sqlite:{}", config.database_url)
+    };
+
+    let pool = db::open_pool(&db_url)
+        .await
+        .with_context(|| format!("failed to open database at {}", config.database_url))?;
+
+    db::run_migrations(&pool)
+        .await
+        .with_context(|| "failed to run database migrations")?;
+
     let state = app::AppState {
         config: Arc::new(config),
+        db: pool,
     };
 
     let listener = tokio::net::TcpListener::bind(&addr)
