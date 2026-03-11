@@ -36,6 +36,10 @@ static MIGRATIONS: &[Migration] = &[
         version: 2,
         sql: include_str!("migrations/V002__auth_identity.sql"),
     },
+    Migration {
+        version: 3,
+        sql: include_str!("migrations/V003__relay_signing_keys.sql"),
+    },
 ];
 
 /// Open a WAL-mode SQLite connection pool with a maximum of 1 connection.
@@ -324,9 +328,9 @@ mod tests {
         }
     }
 
-    /// schema_migrations must contain exactly 2 rows after applying V001 + V002.
+    /// schema_migrations must contain one row per migration in MIGRATIONS.
     #[tokio::test]
-    async fn v002_migration_count_is_two_after_both_migrations() {
+    async fn all_migrations_recorded_in_schema_migrations() {
         let pool = in_memory_pool().await;
         run_migrations(&pool).await.unwrap();
 
@@ -334,7 +338,11 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(count, 2, "both V001 and V002 must be recorded");
+        assert_eq!(
+            count,
+            MIGRATIONS.len() as i64,
+            "schema_migrations must have one row per migration in MIGRATIONS"
+        );
     }
 
     /// Running migrations twice must not drop or recreate V002 tables.
@@ -724,6 +732,21 @@ mod tests {
             detail.contains("idx_sessions_did"),
             "sessions WHERE did query must use idx_sessions_did; got: {detail}"
         );
+    }
+
+    // ── V003 tests ───────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn v003_relay_signing_keys_table_exists() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        // Verify the table exists by performing a SELECT with no rows expected.
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM relay_signing_keys")
+            .fetch_one(&pool)
+            .await
+            .expect("relay_signing_keys table must exist after V003 migration");
+        assert_eq!(count.0, 0, "table must be empty after migration");
     }
 
     /// WAL mode requires a real file — use tempfile here, not :memory:.

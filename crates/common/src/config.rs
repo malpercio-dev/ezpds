@@ -19,6 +19,10 @@ pub struct Config {
     pub oauth: OAuthConfig,
     pub iroh: IrohConfig,
     pub telemetry: TelemetryConfig,
+    // Operator authentication for management endpoints (e.g., POST /v1/relay/keys).
+    pub admin_token: Option<String>,
+    // AES-256-GCM master key for encrypting signing key private keys at rest.
+    pub signing_key_master_key: Option<[u8; 32]>,
 }
 
 /// Optional privacy/ToS links surfaced by `com.atproto.server.describeServer`.
@@ -97,6 +101,9 @@ pub(crate) struct RawConfig {
     pub(crate) iroh: IrohConfig,
     #[serde(default)]
     pub(crate) telemetry: RawTelemetryConfig,
+    pub(crate) admin_token: Option<String>,
+    #[serde(skip)]
+    pub(crate) signing_key_master_key: Option<[u8; 32]>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -113,6 +120,36 @@ pub enum ConfigError {
     MissingField { field: &'static str },
     #[error("invalid configuration: {0}")]
     Invalid(String),
+}
+
+/// Parse a 64-character hex string into a 32-byte array.
+/// Returns a human-readable error string on failure.
+fn parse_hex_32(var_name: &str, value: &str) -> Result<[u8; 32], ConfigError> {
+    if value.len() != 64 {
+        return Err(ConfigError::Invalid(format!(
+            "{var_name} must be exactly 64 hex characters (32 bytes), got {} characters",
+            value.len()
+        )));
+    }
+    let mut bytes = [0u8; 32];
+    for (i, pair) in value.as_bytes().chunks(2).enumerate() {
+        let hi = hex_nibble(var_name, pair[0])?;
+        let lo = hex_nibble(var_name, pair[1])?;
+        bytes[i] = (hi << 4) | lo;
+    }
+    Ok(bytes)
+}
+
+fn hex_nibble(var_name: &str, b: u8) -> Result<u8, ConfigError> {
+    match b {
+        b'0'..=b'9' => Ok(b - b'0'),
+        b'a'..=b'f' => Ok(b - b'a' + 10),
+        b'A'..=b'F' => Ok(b - b'A' + 10),
+        _ => Err(ConfigError::Invalid(format!(
+            "{var_name} contains invalid hex character: {:?}",
+            char::from(b)
+        ))),
+    }
 }
 
 /// Apply `EZPDS_*` and selected OTel standard environment variable overrides to a [`RawConfig`],
@@ -175,6 +212,12 @@ pub(crate) fn apply_env_overrides(
     }
     if let Some(v) = env.get("OTEL_SERVICE_NAME") {
         raw.telemetry.service_name = Some(v.clone());
+    }
+    if let Some(v) = env.get("EZPDS_ADMIN_TOKEN") {
+        raw.admin_token = Some(v.clone());
+    }
+    if let Some(v) = env.get("EZPDS_SIGNING_KEY_MASTER_KEY") {
+        raw.signing_key_master_key = Some(parse_hex_32("EZPDS_SIGNING_KEY_MASTER_KEY", v)?);
     }
     Ok(raw)
 }
@@ -262,6 +305,8 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         oauth: raw.oauth,
         iroh: raw.iroh,
         telemetry,
+        admin_token: raw.admin_token,
+        signing_key_master_key: raw.signing_key_master_key,
     })
 }
 
@@ -607,10 +652,7 @@ mod tests {
 
     #[test]
     fn env_override_telemetry_enabled() {
-        let env = HashMap::from([(
-            "EZPDS_TELEMETRY_ENABLED".to_string(),
-            "true".to_string(),
-        )]);
+        let env = HashMap::from([("EZPDS_TELEMETRY_ENABLED".to_string(), "true".to_string())]);
         let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
         let config = validate_and_build(raw).unwrap();
 
@@ -631,10 +673,7 @@ mod tests {
 
     #[test]
     fn env_override_otel_service_name() {
-        let env = HashMap::from([(
-            "OTEL_SERVICE_NAME".to_string(),
-            "my-service".to_string(),
-        )]);
+        let env = HashMap::from([("OTEL_SERVICE_NAME".to_string(), "my-service".to_string())]);
         let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
         let config = validate_and_build(raw).unwrap();
 
@@ -652,10 +691,7 @@ mod tests {
             service_name = "from-toml"
         "#;
         let raw: RawConfig = toml::from_str(toml).unwrap();
-        let env = HashMap::from([(
-            "OTEL_SERVICE_NAME".to_string(),
-            "from-env".to_string(),
-        )]);
+        let env = HashMap::from([("OTEL_SERVICE_NAME".to_string(), "from-env".to_string())]);
         let raw = apply_env_overrides(raw, &env).unwrap();
         let config = validate_and_build(raw).unwrap();
 
@@ -664,13 +700,80 @@ mod tests {
 
     #[test]
     fn env_override_telemetry_enabled_invalid_returns_error() {
-        let env = HashMap::from([(
-            "EZPDS_TELEMETRY_ENABLED".to_string(),
-            "maybe".to_string(),
-        )]);
+        let env = HashMap::from([("EZPDS_TELEMETRY_ENABLED".to_string(), "maybe".to_string())]);
         let err = apply_env_overrides(minimal_raw(), &env).unwrap_err();
 
         assert!(matches!(err, ConfigError::Invalid(_)));
         assert!(err.to_string().contains("EZPDS_TELEMETRY_ENABLED"));
+    }
+
+    // --- admin_token and signing_key_master_key config fields ---
+
+    #[test]
+    fn admin_token_is_optional() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        // MM-92.AC7.5
+        assert!(config.admin_token.is_none());
+    }
+
+    #[test]
+    fn signing_key_master_key_is_optional() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        // MM-92.AC7.5
+        assert!(config.signing_key_master_key.is_none());
+    }
+
+    #[test]
+    fn env_override_admin_token() {
+        // MM-92.AC7.1
+        let env = HashMap::from([("EZPDS_ADMIN_TOKEN".to_string(), "secret-token".to_string())]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.admin_token.as_deref(), Some("secret-token"));
+    }
+
+    #[test]
+    fn env_override_signing_key_master_key_valid_hex() {
+        // MM-92.AC7.2: 64 valid hex chars → [u8; 32]
+        let hex_key = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
+        let env = HashMap::from([(
+            "EZPDS_SIGNING_KEY_MASTER_KEY".to_string(),
+            hex_key.to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        let expected: [u8; 32] = [
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+            0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
+            0x1d, 0x1e, 0x1f, 0x20,
+        ];
+        assert_eq!(config.signing_key_master_key, Some(expected));
+    }
+
+    #[test]
+    fn env_override_signing_key_master_key_wrong_length_returns_error() {
+        // MM-92.AC7.3: 62 hex chars (31 bytes) — wrong length
+        let short_key = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+        let env = HashMap::from([(
+            "EZPDS_SIGNING_KEY_MASTER_KEY".to_string(),
+            short_key.to_string(),
+        )]);
+        let err = apply_env_overrides(minimal_raw(), &env).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("EZPDS_SIGNING_KEY_MASTER_KEY"));
+    }
+
+    #[test]
+    fn env_override_signing_key_master_key_non_hex_returns_error() {
+        // MM-92.AC7.4: contains 'g' which is not a valid hex character
+        let invalid_key = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1fgg";
+        let env = HashMap::from([(
+            "EZPDS_SIGNING_KEY_MASTER_KEY".to_string(),
+            invalid_key.to_string(),
+        )]);
+        let err = apply_env_overrides(minimal_raw(), &env).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("EZPDS_SIGNING_KEY_MASTER_KEY"));
     }
 }

@@ -125,6 +125,8 @@ pub(crate) async fn test_state() -> AppState {
             oauth: OAuthConfig::default(),
             iroh: IrohConfig::default(),
             telemetry: TelemetryConfig::default(),
+            admin_token: None,
+            signing_key_master_key: None,
         }),
         db: pool,
     }
