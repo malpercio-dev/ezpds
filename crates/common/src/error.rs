@@ -1,5 +1,3 @@
-// Shared error types and provisioning API error envelope.
-
 use serde::Serialize;
 use serde_json::Value;
 

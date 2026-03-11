@@ -1,5 +1,3 @@
-// common: shared types, error envelope, config parsing.
-
 mod config;
 mod config_loader;
 mod error;

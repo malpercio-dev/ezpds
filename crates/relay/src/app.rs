@@ -1,5 +1,3 @@
-// pattern: Functional Core (router construction is I/O-free)
-
 use std::sync::Arc;
 
 use axum::{extract::Path, routing::get, Router};
@@ -7,8 +5,6 @@ use common::{ApiError, Config, ErrorCode};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 /// Shared application state cloned into every request handler via Axum's `State` extractor.
-///
-/// Fields will grow as waves are implemented (MM-72 adds the DB pool, etc.).
 #[derive(Clone)]
 pub struct AppState {
     // Read by handlers once XRPC endpoints are implemented; suppressed until then.

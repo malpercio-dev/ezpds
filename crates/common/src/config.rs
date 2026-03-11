@@ -1,5 +1,3 @@
-// pattern: Functional Core
-
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;

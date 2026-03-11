@@ -1,5 +1,3 @@
-// pattern: Imperative Shell
-
 use anyhow::Context;
 use clap::Parser;
 use std::{path::PathBuf, sync::Arc};
