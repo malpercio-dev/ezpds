@@ -10,3 +10,4 @@
 # TODO: fill in your preferred bind address and port for local development
 bind_address = "127.0.0.1"
 port = 8080
+database_url = ":memory:"
