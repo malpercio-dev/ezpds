@@ -195,7 +195,7 @@ mod tests {
         assert_eq!(count, 1, "first run must insert exactly one row");
     }
 
-    /// MM-72.AC2.1: Running migrations twice leaves only one row in schema_migrations.
+    /// Running migrations twice leaves only one row in schema_migrations.
     #[tokio::test]
     async fn migrations_are_idempotent() {
         let pool = in_memory_pool().await;
@@ -212,7 +212,7 @@ mod tests {
         );
     }
 
-    /// MM-72.AC2.2: schema_migrations records version=1 with a non-null applied_at.
+    /// schema_migrations records version=1 with a non-null applied_at.
     /// Verifies that version and timestamp fields are recorded correctly.
     #[tokio::test]
     async fn schema_migrations_records_version_and_timestamp() {
@@ -274,7 +274,7 @@ mod tests {
         assert!(result.is_err(), "inserting duplicate key must fail");
     }
 
-    /// MM-72.AC4.1: WAL mode requires a real file — use tempfile here, not :memory:.
+    /// WAL mode requires a real file — use tempfile here, not :memory:.
     /// In-memory SQLite reports journal_mode = "memory", not "wal".
     #[tokio::test]
     async fn wal_mode_enabled_on_file_pool() {
