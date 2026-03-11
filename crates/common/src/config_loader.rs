@@ -3,13 +3,16 @@ use std::path::Path;
 
 use crate::config::{apply_env_overrides, validate_and_build, Config, ConfigError, RawConfig};
 
-/// Collect only `EZPDS_*` env vars from the process environment, rejecting any with non-UTF-8
-/// values rather than panicking (as `std::env::vars()` would on non-UTF-8 data).
+/// Standard OpenTelemetry env vars we read in addition to our `EZPDS_*` prefix.
+const OTEL_ENV_KEYS: &[&str] = &["OTEL_SERVICE_NAME"];
+
+/// Collect `EZPDS_*` env vars and selected OTel standard vars from the process environment,
+/// rejecting any with non-UTF-8 values rather than panicking.
 fn collect_ezpds_env() -> Result<HashMap<String, String>, ConfigError> {
     let mut map = HashMap::new();
     for (key_os, val_os) in std::env::vars_os() {
         let key = match key_os.to_str() {
-            Some(k) if k.starts_with("EZPDS_") => k.to_owned(),
+            Some(k) if k.starts_with("EZPDS_") || OTEL_ENV_KEYS.contains(&k) => k.to_owned(),
             _ => continue,
         };
         let val = val_os.into_string().map_err(|_| {

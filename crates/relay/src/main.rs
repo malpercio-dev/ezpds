@@ -5,6 +5,7 @@ use std::{path::PathBuf, sync::Arc};
 mod app;
 mod db;
 mod routes;
+mod telemetry;
 
 /// Convert a config database_url (which may be a plain filesystem path or a sqlx URL) to a valid sqlx URL.
 ///
@@ -43,16 +44,16 @@ async fn main() {
 }
 
 async fn run() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .try_init()
-        .map_err(|e| anyhow::anyhow!("failed to initialize tracing subscriber: {e}"))?;
-
     let cli = Cli::parse();
     let config_path = cli.config.unwrap_or_else(|| PathBuf::from("relay.toml"));
 
     let config = common::load_config(&config_path)
         .with_context(|| format!("failed to load config from {}", config_path.display()))?;
+
+    // Initialize tracing after config is loaded so telemetry settings can be applied.
+    // Any config parse error surfaces via eprintln (the error propagation above); tracing
+    // is not available until this line succeeds.
+    let _otel_guard = telemetry::init_subscriber(&config.telemetry)?;
 
     tracing::info!(
         bind_address = %config.bind_address,

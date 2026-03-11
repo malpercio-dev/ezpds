@@ -33,6 +33,7 @@ static MIGRATIONS: &[Migration] = &[Migration {
 }];
 
 /// Open a WAL-mode SQLite connection pool with a maximum of 1 connection.
+#[tracing::instrument(err, fields(db.system = "sqlite"))]
 ///
 /// Accepts any sqlx URL string (e.g. `"sqlite:relay.db"`, `"sqlite::memory:"`).
 /// `create_if_missing` is enabled so the file is created on first run.
@@ -55,6 +56,7 @@ pub async fn open_pool(url: &str) -> Result<SqlitePool, DbError> {
 }
 
 /// Apply any pending migrations from `MIGRATIONS` to the given pool.
+#[tracing::instrument(skip(pool), err, fields(db.system = "sqlite"))]
 ///
 /// The schema_migrations bootstrap DDL runs outside any transaction. Pending migrations
 /// and their bookkeeping inserts run inside a single transaction per call.

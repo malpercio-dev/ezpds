@@ -18,6 +18,7 @@ pub struct Config {
     pub blobs: BlobsConfig,
     pub oauth: OAuthConfig,
     pub iroh: IrohConfig,
+    pub telemetry: TelemetryConfig,
 }
 
 /// Optional privacy/ToS links surfaced by `com.atproto.server.describeServer`.
@@ -45,6 +46,34 @@ pub struct OAuthConfig {}
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct IrohConfig {}
 
+/// OpenTelemetry telemetry configuration.
+#[derive(Debug, Clone)]
+pub struct TelemetryConfig {
+    /// Whether to export traces via OTLP. Off by default — zero overhead when disabled.
+    pub enabled: bool,
+    /// OTLP gRPC endpoint for the trace exporter.
+    pub otlp_endpoint: String,
+    /// `service.name` resource attribute reported to the trace backend.
+    pub service_name: String,
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            otlp_endpoint: "http://localhost:4317".to_string(),
+            service_name: "ezpds-relay".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(crate) struct RawTelemetryConfig {
+    pub(crate) enabled: Option<bool>,
+    pub(crate) otlp_endpoint: Option<String>,
+    pub(crate) service_name: Option<String>,
+}
+
 /// Raw TOML-deserialized config with all fields optional to support env-var overlays.
 #[derive(Debug, Deserialize, Default)]
 pub(crate) struct RawConfig {
@@ -66,6 +95,8 @@ pub(crate) struct RawConfig {
     pub(crate) oauth: OAuthConfig,
     #[serde(default)]
     pub(crate) iroh: IrohConfig,
+    #[serde(default)]
+    pub(crate) telemetry: RawTelemetryConfig,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -128,6 +159,19 @@ pub(crate) fn apply_env_overrides(
                 .collect(),
         );
     }
+    if let Some(v) = env.get("EZPDS_TELEMETRY_ENABLED") {
+        raw.telemetry.enabled = Some(v.parse::<bool>().map_err(|e| {
+            ConfigError::Invalid(format!(
+                "EZPDS_TELEMETRY_ENABLED is not a valid boolean: '{v}': {e}"
+            ))
+        })?);
+    }
+    if let Some(v) = env.get("EZPDS_OTLP_ENDPOINT") {
+        raw.telemetry.otlp_endpoint = Some(v.clone());
+    }
+    if let Some(v) = env.get("OTEL_SERVICE_NAME") {
+        raw.telemetry.service_name = Some(v.clone());
+    }
     Ok(raw)
 }
 
@@ -171,6 +215,19 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
     }
     let invite_code_required = raw.invite_code_required.unwrap_or(true);
 
+    let telemetry_defaults = TelemetryConfig::default();
+    let telemetry = TelemetryConfig {
+        enabled: raw.telemetry.enabled.unwrap_or(telemetry_defaults.enabled),
+        otlp_endpoint: raw
+            .telemetry
+            .otlp_endpoint
+            .unwrap_or(telemetry_defaults.otlp_endpoint),
+        service_name: raw
+            .telemetry
+            .service_name
+            .unwrap_or(telemetry_defaults.service_name),
+    };
+
     Ok(Config {
         bind_address,
         port,
@@ -185,6 +242,7 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         blobs: raw.blobs,
         oauth: raw.oauth,
         iroh: raw.iroh,
+        telemetry,
     })
 }
 
@@ -496,5 +554,104 @@ mod tests {
         let config = validate_and_build(raw).unwrap();
 
         assert_eq!(config.available_user_domains, vec!["foo.com", "bar.com"]);
+    }
+
+    // --- telemetry config tests ---
+
+    #[test]
+    fn telemetry_defaults_to_disabled() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert!(!config.telemetry.enabled);
+        assert_eq!(config.telemetry.otlp_endpoint, "http://localhost:4317");
+        assert_eq!(config.telemetry.service_name, "ezpds-relay");
+    }
+
+    #[test]
+    fn parses_telemetry_section_from_toml() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [telemetry]
+            enabled = true
+            otlp_endpoint = "http://otel-collector:4317"
+            service_name = "my-pds"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert!(config.telemetry.enabled);
+        assert_eq!(config.telemetry.otlp_endpoint, "http://otel-collector:4317");
+        assert_eq!(config.telemetry.service_name, "my-pds");
+    }
+
+    #[test]
+    fn env_override_telemetry_enabled() {
+        let env = HashMap::from([(
+            "EZPDS_TELEMETRY_ENABLED".to_string(),
+            "true".to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert!(config.telemetry.enabled);
+    }
+
+    #[test]
+    fn env_override_otlp_endpoint() {
+        let env = HashMap::from([(
+            "EZPDS_OTLP_ENDPOINT".to_string(),
+            "http://custom:4317".to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert_eq!(config.telemetry.otlp_endpoint, "http://custom:4317");
+    }
+
+    #[test]
+    fn env_override_otel_service_name() {
+        let env = HashMap::from([(
+            "OTEL_SERVICE_NAME".to_string(),
+            "my-service".to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert_eq!(config.telemetry.service_name, "my-service");
+    }
+
+    #[test]
+    fn otel_service_name_env_overrides_toml() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [telemetry]
+            service_name = "from-toml"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let env = HashMap::from([(
+            "OTEL_SERVICE_NAME".to_string(),
+            "from-env".to_string(),
+        )]);
+        let raw = apply_env_overrides(raw, &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert_eq!(config.telemetry.service_name, "from-env");
+    }
+
+    #[test]
+    fn env_override_telemetry_enabled_invalid_returns_error() {
+        let env = HashMap::from([(
+            "EZPDS_TELEMETRY_ENABLED".to_string(),
+            "maybe".to_string(),
+        )]);
+        let err = apply_env_overrides(minimal_raw(), &env).unwrap_err();
+
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("EZPDS_TELEMETRY_ENABLED"));
     }
 }

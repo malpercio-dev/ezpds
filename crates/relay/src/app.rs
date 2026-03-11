@@ -1,11 +1,54 @@
 use std::sync::Arc;
 
-use axum::{extract::Path, routing::get, Router};
+use axum::{extract::Path, http::Request, routing::get, Router};
 use common::{ApiError, Config, ErrorCode};
+use opentelemetry::propagation::Extractor;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::routes::describe_server::describe_server;
 use crate::routes::health::health;
+
+/// Wraps an `axum::http::HeaderMap` as an OTel text-map [`Extractor`] so that
+/// the W3C `traceparent` and `tracestate` headers can be read by the global propagator.
+struct HeaderMapCarrier<'a>(&'a axum::http::HeaderMap);
+
+impl Extractor for HeaderMapCarrier<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).and_then(|v| v.to_str().ok())
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.0.keys().map(|k| k.as_str()).collect()
+    }
+}
+
+/// Custom `MakeSpan` for [`TraceLayer`] that:
+///  1. Creates an `info_span` with standard HTTP attributes pre-declared.
+///  2. Extracts an incoming W3C `traceparent` header and sets it as the parent context
+///     on the new span so upstream traces are joined correctly.
+#[derive(Clone, Default)]
+struct OtelMakeSpan;
+
+impl<B> tower_http::trace::MakeSpan<B> for OtelMakeSpan {
+    fn make_span(&mut self, request: &Request<B>) -> tracing::Span {
+        let span = tracing::info_span!(
+            "HTTP request",
+            http.method = %request.method(),
+            http.target = request.uri().path_and_query().map_or("", |pq| pq.as_str()),
+            http.status_code = tracing::field::Empty,
+            otel.status_code = tracing::field::Empty,
+        );
+
+        // Inject parent trace context from incoming W3C traceparent/tracestate headers.
+        // When telemetry is disabled the global propagator is a no-op, so this is free.
+        let parent_cx = opentelemetry::global::get_text_map_propagator(|p| {
+            p.extract(&HeaderMapCarrier(request.headers()))
+        });
+        span.set_parent(parent_cx);
+        span
+    }
+}
 
 /// Shared application state cloned into every request handler via Axum's `State` extractor.
 #[derive(Clone)]
@@ -27,7 +70,7 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/xrpc/:method", get(xrpc_handler).post(xrpc_handler))
         .layer(CorsLayer::permissive())
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(OtelMakeSpan))
         .with_state(state)
 }
 
@@ -46,7 +89,7 @@ async fn xrpc_handler(Path(method): Path<String>) -> ApiError {
 /// The pool is fully migrated, so the schema is present and ready for handler tests.
 #[cfg(test)]
 pub(crate) async fn test_state() -> AppState {
-    use common::{BlobsConfig, IrohConfig, OAuthConfig};
+    use common::{BlobsConfig, IrohConfig, OAuthConfig, TelemetryConfig};
     use std::path::PathBuf;
 
     let pool = crate::db::open_pool("sqlite::memory:")
@@ -70,6 +113,7 @@ pub(crate) async fn test_state() -> AppState {
             blobs: BlobsConfig::default(),
             oauth: OAuthConfig::default(),
             iroh: IrohConfig::default(),
+            telemetry: TelemetryConfig::default(),
         }),
         db: pool,
     }
