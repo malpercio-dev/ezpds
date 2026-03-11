@@ -9,7 +9,7 @@ that can later serve per-user SQLite databases (Wave 3/4).
 
 ## Contracts
 - **Exposes**: `open_pool(url: &str) -> Result<SqlitePool, DbError>`, `run_migrations(pool: &SqlitePool) -> Result<(), DbError>`, `DbError`
-- **Guarantees**: Pool uses WAL journal mode and max 1 connection. Migrations are forward-only, idempotent, and applied in a single transaction. `schema_migrations` table tracks applied versions.
+- **Guarantees**: Pool uses WAL journal mode and max 1 connection. The schema_migrations bootstrap DDL runs outside any transaction. Pending migrations and their bookkeeping inserts run inside a single transaction per call. Migrations are forward-only and idempotent. `schema_migrations` table tracks applied versions.
 - **Expects**: Valid sqlx SQLite URL (e.g. `"sqlite::memory:"`, `"sqlite:path.db"`). Pool must be open before calling `run_migrations`.
 
 ## Dependencies

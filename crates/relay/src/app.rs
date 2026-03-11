@@ -5,12 +5,11 @@ use common::{ApiError, Config, ErrorCode};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 /// Shared application state cloned into every request handler via Axum's `State` extractor.
+/// Fields are marked as dead_code until XRPC endpoint handlers are implemented and read them.
 #[derive(Clone)]
 pub struct AppState {
-    // Read by handlers once XRPC endpoints are implemented; suppressed until then.
     #[allow(dead_code)]
     pub config: Arc<Config>,
-    // Read by handlers once XRPC endpoints are implemented; suppressed until then.
     #[allow(dead_code)]
     pub db: sqlx::SqlitePool,
 }

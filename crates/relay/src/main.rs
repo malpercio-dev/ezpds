@@ -5,6 +5,26 @@ use std::{path::PathBuf, sync::Arc};
 mod app;
 mod db;
 
+/// Convert a config database_url (which may be a plain filesystem path or a sqlx URL) to a valid sqlx URL.
+///
+/// - If the URL already starts with "sqlite:", pass through unchanged.
+/// - If the URL is an absolute path (starts with "/"), format as "sqlite:///path".
+/// - If the URL is a relative path, format as "sqlite:path" and log a warning
+///   (CWD-relative paths are sensitive to working directory).
+fn to_sqlite_url(s: &str) -> String {
+    if s.starts_with("sqlite:") {
+        s.to_string()
+    } else if s.starts_with('/') {
+        format!("sqlite://{s}")
+    } else {
+        tracing::warn!(
+            path = s,
+            "using relative-path database URL; this is sensitive to working directory"
+        );
+        format!("sqlite:{s}")
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "relay", about = "ezpds relay server")]
 struct Cli {
@@ -47,24 +67,28 @@ async fn run() -> anyhow::Result<()> {
     // to a plain filesystem path (e.g. `/var/pds/relay.db`) when not explicitly set, which
     // is not a valid sqlx URL. We format it here rather than changing Config or open_pool,
     // keeping both functions general-purpose.
-    //
-    // Plain absolute paths like "/var/pds/relay.db" become "sqlite:///var/pds/relay.db".
-    // Already-formatted "sqlite://..." URLs pass through unchanged.
-    let db_url = if config.database_url.starts_with("sqlite:") {
-        config.database_url.clone()
-    } else if config.database_url.starts_with('/') {
-        format!("sqlite://{}", config.database_url)
-    } else {
-        format!("sqlite:{}", config.database_url)
-    };
+    let db_url = to_sqlite_url(&config.database_url);
 
     let pool = db::open_pool(&db_url)
         .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "fatal: failed to open database pool");
+            e
+        })
         .with_context(|| format!("failed to open database at {}", config.database_url))?;
 
     db::run_migrations(&pool)
         .await
-        .with_context(|| "failed to run database migrations")?;
+        .map_err(|e| {
+            tracing::error!(error = %e, "fatal: failed to run database migrations");
+            e
+        })
+        .with_context(|| {
+            format!(
+                "failed to run database migrations on {}",
+                config.database_url
+            )
+        })?;
 
     let state = app::AppState {
         config: Arc::new(config),
@@ -115,5 +139,31 @@ async fn shutdown_signal() -> anyhow::Result<()> {
     tokio::select! {
         result = ctrl_c => result,
         result = terminate => result,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn to_sqlite_url_passthrough_sqlite_prefix() {
+        assert_eq!(to_sqlite_url("sqlite:relay.db"), "sqlite:relay.db");
+        assert_eq!(to_sqlite_url("sqlite::memory:"), "sqlite::memory:");
+    }
+
+    #[test]
+    fn to_sqlite_url_absolute_path() {
+        assert_eq!(
+            to_sqlite_url("/var/pds/relay.db"),
+            "sqlite:///var/pds/relay.db"
+        );
+        assert_eq!(to_sqlite_url("/tmp/test.db"), "sqlite:///tmp/test.db");
+    }
+
+    #[test]
+    fn to_sqlite_url_relative_path() {
+        assert_eq!(to_sqlite_url("relay.db"), "sqlite:relay.db");
+        assert_eq!(to_sqlite_url("./data/relay.db"), "sqlite:./data/relay.db");
     }
 }
