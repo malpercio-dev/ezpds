@@ -1,2 +1,5 @@
 // crypto: signing, Shamir secret sharing, DID operations.
-// Integrates with rsky-crypto.
+
+pub mod error;
+
+pub use error::CryptoError;
