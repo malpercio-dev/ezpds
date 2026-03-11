@@ -1,10 +1,11 @@
 # ezpds
 
-Last verified: 2026-03-09
+Last verified: 2026-03-11
 
 ## Tech Stack
 - Language: Rust (stable channel via rust-toolchain.toml)
 - Build: Cargo workspace (resolver v2)
+- Database: SQLite via sqlx 0.8 (runtime-tokio + sqlite features)
 - Dev Environment: Nix flake + devenv (direnv integration via .envrc)
 - Task Runner: just
 
@@ -22,8 +23,8 @@ Last verified: 2026-03-09
 - Managed entirely by Nix flake + devenv; do not install tools globally
 - direnv auto-activates via `.envrc` (`use flake . --impure --accept-flake-config`)
 - Rust toolchain pinned in `rust-toolchain.toml` (stable, with rustfmt + clippy + rust-analyzer)
-- Shell provides: just, cargo-audit, sqlite (runtime binary + dev headers/library for rusqlite), pkg-config
-- `LIBSQLITE3_SYS_USE_PKG_CONFIG=1` is set automatically by devenv
+- Shell provides: just, cargo-audit, sqlite (runtime binary + dev headers/library for sqlx's libsqlite3-sys), pkg-config
+- `LIBSQLITE3_SYS_USE_PKG_CONFIG=1` is set automatically by devenv (links sqlx against Nix-provided SQLite instead of bundled)
 - Binary cache: devenv.cachix.org (activated by `--accept-flake-config`); speeds up cold shell builds significantly
 - nixpkgs pin: `cachix/devenv-nixpkgs/rolling` (devenv's own nixpkgs fork — package versions may differ from upstream nixpkgs.search.dev)
 
