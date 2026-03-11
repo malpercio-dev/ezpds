@@ -1260,6 +1260,7 @@ dependencies = [
  "axum",
  "clap",
  "common",
+ "serde",
  "serde_json",
  "sqlx",
  "tempfile",

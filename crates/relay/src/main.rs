@@ -4,6 +4,7 @@ use std::{path::PathBuf, sync::Arc};
 
 mod app;
 mod db;
+mod routes;
 
 /// Convert a config database_url (which may be a plain filesystem path or a sqlx URL) to a valid sqlx URL.
 ///

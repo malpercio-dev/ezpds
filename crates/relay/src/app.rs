@@ -4,13 +4,13 @@ use axum::{extract::Path, routing::get, Router};
 use common::{ApiError, Config, ErrorCode};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
+use crate::routes::health::health;
+
 /// Shared application state cloned into every request handler via Axum's `State` extractor.
-/// Fields are marked as dead_code until XRPC endpoint handlers are implemented and read them.
 #[derive(Clone)]
 pub struct AppState {
     #[allow(dead_code)]
     pub config: Arc<Config>,
-    #[allow(dead_code)]
     pub db: sqlx::SqlitePool,
 }
 
@@ -20,6 +20,7 @@ pub struct AppState {
 /// listener — callers can use `tower::ServiceExt::oneshot` to drive requests in tests.
 pub fn app(state: AppState) -> Router {
     Router::new()
+        .route("/xrpc/_health", get(health))
         .route("/xrpc/:method", get(xrpc_handler).post(xrpc_handler))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
@@ -37,6 +38,34 @@ async fn xrpc_handler(Path(method): Path<String>) -> ApiError {
     )
 }
 
+/// Build a minimal `AppState` backed by an in-memory SQLite database.
+/// Available to all test modules in this crate via `crate::app::test_state()`.
+#[cfg(test)]
+pub(crate) async fn test_state() -> AppState {
+    use common::{BlobsConfig, IrohConfig, OAuthConfig};
+    use std::path::PathBuf;
+
+    let pool = crate::db::open_pool("sqlite::memory:")
+        .await
+        .expect("failed to open test pool");
+    crate::db::run_migrations(&pool)
+        .await
+        .expect("failed to run test migrations");
+    AppState {
+        config: Arc::new(Config {
+            bind_address: "127.0.0.1".to_string(),
+            port: 8080,
+            data_dir: PathBuf::from("/tmp"),
+            database_url: "sqlite::memory:".to_string(),
+            public_url: "https://test.example.com".to_string(),
+            blobs: BlobsConfig::default(),
+            oauth: OAuthConfig::default(),
+            iroh: IrohConfig::default(),
+        }),
+        db: pool,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -44,31 +73,7 @@ mod tests {
         body::Body,
         http::{Request, StatusCode},
     };
-    use common::{BlobsConfig, IrohConfig, OAuthConfig};
-    use std::path::PathBuf;
     use tower::ServiceExt;
-
-    async fn test_state() -> AppState {
-        let pool = crate::db::open_pool("sqlite::memory:")
-            .await
-            .expect("failed to open test pool");
-        crate::db::run_migrations(&pool)
-            .await
-            .expect("failed to run test migrations");
-        AppState {
-            config: Arc::new(Config {
-                bind_address: "127.0.0.1".to_string(),
-                port: 8080,
-                data_dir: PathBuf::from("/tmp"),
-                database_url: "sqlite::memory:".to_string(),
-                public_url: "https://test.example.com".to_string(),
-                blobs: BlobsConfig::default(),
-                oauth: OAuthConfig::default(),
-                iroh: IrohConfig::default(),
-            }),
-            db: pool,
-        }
-    }
 
     #[tokio::test]
     async fn xrpc_get_unknown_method_returns_501() {
