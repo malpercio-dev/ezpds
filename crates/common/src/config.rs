@@ -133,7 +133,7 @@ pub(crate) fn apply_env_overrides(
 
 /// Validate a [`RawConfig`] and build a [`Config`], applying defaults for optional fields.
 ///
-/// Required fields: `data_dir`, `public_url`.
+/// Required fields: `data_dir`, `public_url`, `available_user_domains` (non-empty).
 /// Defaults: `bind_address = "0.0.0.0"`, `port = 8080`,
 /// `database_url = "{data_dir}/relay.db"` (derived; fails if `data_dir` is non-UTF-8).
 pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> {
@@ -159,11 +159,15 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
     let public_url = raw.public_url.ok_or(ConfigError::MissingField {
         field: "public_url",
     })?;
-    let available_user_domains = raw.available_user_domains.unwrap_or_default();
-    if available_user_domains.is_empty() {
-        return Err(ConfigError::MissingField {
+    let available_user_domains = raw
+        .available_user_domains
+        .ok_or(ConfigError::MissingField {
             field: "available_user_domains",
-        });
+        })?;
+    if available_user_domains.is_empty() {
+        return Err(ConfigError::Invalid(
+            "available_user_domains must contain at least one domain".to_string(),
+        ));
     }
     let invite_code_required = raw.invite_code_required.unwrap_or(true);
 
@@ -409,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn available_user_domains_empty_returns_error() {
+    fn available_user_domains_empty_returns_invalid_error() {
         let raw = RawConfig {
             data_dir: Some("/var/pds".to_string()),
             public_url: Some("https://pds.example.com".to_string()),
@@ -418,12 +422,10 @@ mod tests {
         };
         let err = validate_and_build(raw).unwrap_err();
 
-        assert!(matches!(
-            err,
-            ConfigError::MissingField {
-                field: "available_user_domains"
-            }
-        ));
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err
+            .to_string()
+            .contains("available_user_domains must contain at least one domain"));
     }
 
     #[test]

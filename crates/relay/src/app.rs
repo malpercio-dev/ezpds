@@ -10,7 +10,6 @@ use crate::routes::health::health;
 /// Shared application state cloned into every request handler via Axum's `State` extractor.
 #[derive(Clone)]
 pub struct AppState {
-    #[allow(dead_code)]
     pub config: Arc<Config>,
     pub db: sqlx::SqlitePool,
 }

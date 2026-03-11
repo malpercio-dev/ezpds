@@ -42,20 +42,8 @@ struct Contact {
 
 /// Resolve the DID to return in the `did` field.
 ///
-/// The ATProto Lexicon marks `did` as required, but in Wave 1 the server DID may not be
-/// configured — DID generation is deferred to Wave 3. This function decides what to surface
-/// in the meantime.
-///
-/// TODO: implement this function (5-10 lines).
-///
-/// Parameters:
-///   - `server_did`: the configured `server_did` value, if any
-///   - `public_url`: the server's configured public URL (e.g. "https://pds.example.com")
-///
-/// Consider the trade-offs:
-///   - Returning `""` is the simplest option; the Bluesky app tolerates it during initial setup
-///   - Deriving `did:web:<hostname>` from `public_url` is a valid DID and more semantically correct
-///   - Whatever you choose becomes the pattern for how Wave 3 replaces the placeholder
+/// Returns the configured `server_did` verbatim when present. Otherwise derives a `did:web`
+/// DID from the hostname in `public_url` as a placeholder until Wave 3 generates a real DID.
 fn resolve_did(server_did: &Option<String>, public_url: &str) -> String {
     if let Some(did) = server_did {
         return did.clone();
@@ -105,7 +93,58 @@ mod tests {
     };
     use tower::ServiceExt;
 
-    use crate::app::{app, test_state};
+    use std::sync::Arc;
+
+    use crate::app::{app, test_state, AppState};
+
+    #[tokio::test]
+    async fn describe_server_did_derived_from_public_url() {
+        // test_state() sets public_url = "https://test.example.com", server_did = None
+        let response = app(test_state().await)
+            .oneshot(
+                Request::builder()
+                    .uri("/xrpc/com.atproto.server.describeServer")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(json["did"], "did:web:test.example.com");
+    }
+
+    #[tokio::test]
+    async fn describe_server_did_from_config() {
+        let base = test_state().await;
+        let mut config = (*base.config).clone();
+        config.server_did = Some("did:plc:configured123".to_string());
+        let state = AppState {
+            config: Arc::new(config),
+            db: base.db,
+        };
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/xrpc/com.atproto.server.describeServer")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(json["did"], "did:plc:configured123");
+    }
 
     #[test]
     fn resolve_did_returns_configured_did() {

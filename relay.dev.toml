@@ -13,7 +13,7 @@ port = 8080
 database_url = ":memory:"
 
 # Required: at least one handle domain your PDS serves (e.g. ["your.domain"])
-available_user_domains = []
+available_user_domains = ["localhost"]
 invite_code_required = true
 
 # Optional: set to your server's DID once generated in Wave 3
