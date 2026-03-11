@@ -39,7 +39,7 @@ async fn xrpc_handler(Path(method): Path<String>) -> ApiError {
 }
 
 /// Build a minimal `AppState` backed by an in-memory SQLite database.
-/// Available to all test modules in this crate via `crate::app::test_state()`.
+/// The pool is fully migrated, so the schema is present and ready for handler tests.
 #[cfg(test)]
 pub(crate) async fn test_state() -> AppState {
     use common::{BlobsConfig, IrohConfig, OAuthConfig};

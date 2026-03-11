@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 //
-// Gathers: DB health via SELECT 1
+// Gathers: DB health via SELECT 1 (pool liveness only — does not verify schema or migrations)
 // Processes: none (response shape is trivial — no pure core to extract)
 // Returns: JSON response with version and db status
 
@@ -22,13 +22,16 @@ pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
             StatusCode::OK,
             Json(HealthResponse { version, db: "ok" }),
         ),
-        Err(_) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(HealthResponse {
-                version,
-                db: "error",
-            }),
-        ),
+        Err(e) => {
+            tracing::error!(error = %e, "db health check failed");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(HealthResponse {
+                    version,
+                    db: "error",
+                }),
+            )
+        }
     }
 }
 
@@ -117,6 +120,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "application/json"
+        );
 
         let body = axum::body::to_bytes(response.into_body(), 4096)
             .await
@@ -124,5 +131,21 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["db"], "error");
         assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));
+    }
+
+    #[tokio::test]
+    async fn health_post_returns_405() {
+        let response = app(test_state().await)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/_health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 }
