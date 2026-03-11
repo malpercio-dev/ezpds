@@ -11,3 +11,19 @@
 bind_address = "127.0.0.1"
 port = 8080
 database_url = ":memory:"
+
+# Required: at least one handle domain your PDS serves (e.g. ["your.domain"])
+available_user_domains = []
+invite_code_required = true
+
+# Optional: set to your server's DID once generated in Wave 3
+# server_did = "did:plc:..."
+
+# Optional: legal links
+# [links]
+# privacy_policy = "https://example.com/privacy"
+# terms_of_service = "https://example.com/tos"
+
+# Optional: admin contact
+# [contact]
+# email = "admin@example.com"

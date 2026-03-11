@@ -4,6 +4,7 @@ use axum::{extract::Path, routing::get, Router};
 use common::{ApiError, Config, ErrorCode};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
+use crate::routes::describe_server::describe_server;
 use crate::routes::health::health;
 
 /// Shared application state cloned into every request handler via Axum's `State` extractor.
@@ -21,6 +22,10 @@ pub struct AppState {
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/xrpc/_health", get(health))
+        .route(
+            "/xrpc/com.atproto.server.describeServer",
+            get(describe_server),
+        )
         .route("/xrpc/:method", get(xrpc_handler).post(xrpc_handler))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
@@ -58,6 +63,11 @@ pub(crate) async fn test_state() -> AppState {
             data_dir: PathBuf::from("/tmp"),
             database_url: "sqlite::memory:".to_string(),
             public_url: "https://test.example.com".to_string(),
+            server_did: None,
+            available_user_domains: vec!["test.example.com".to_string()],
+            invite_code_required: true,
+            links: common::ServerLinksConfig::default(),
+            contact: common::ContactConfig::default(),
             blobs: BlobsConfig::default(),
             oauth: OAuthConfig::default(),
             iroh: IrohConfig::default(),

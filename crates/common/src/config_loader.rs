@@ -60,7 +60,8 @@ mod tests {
         writeln!(
             tmp,
             r#"data_dir = "/var/pds"
-public_url = "https://pds.example.com""#
+public_url = "https://pds.example.com"
+available_user_domains = ["example.com"]"#
         )
         .unwrap();
 
@@ -90,7 +91,8 @@ public_url = "https://pds.example.com""#
         writeln!(
             tmp,
             r#"data_dir = "/var/pds"
-public_url = "https://pds.example.com""#
+public_url = "https://pds.example.com"
+available_user_domains = ["example.com"]"#
         )
         .unwrap();
         let env = HashMap::from([("EZPDS_PORT".to_string(), "9999".to_string())]);

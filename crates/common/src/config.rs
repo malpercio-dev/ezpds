@@ -10,9 +10,27 @@ pub struct Config {
     pub data_dir: PathBuf,
     pub database_url: String,
     pub public_url: String,
+    pub server_did: Option<String>,
+    pub available_user_domains: Vec<String>,
+    pub invite_code_required: bool,
+    pub links: ServerLinksConfig,
+    pub contact: ContactConfig,
     pub blobs: BlobsConfig,
     pub oauth: OAuthConfig,
     pub iroh: IrohConfig,
+}
+
+/// Optional privacy/ToS links surfaced by `com.atproto.server.describeServer`.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ServerLinksConfig {
+    pub privacy_policy: Option<String>,
+    pub terms_of_service: Option<String>,
+}
+
+/// Optional admin contact surfaced by `com.atproto.server.describeServer`.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ContactConfig {
+    pub email: Option<String>,
 }
 
 /// Stub for future blob storage configuration.
@@ -35,6 +53,13 @@ pub(crate) struct RawConfig {
     pub(crate) data_dir: Option<String>,
     pub(crate) database_url: Option<String>,
     pub(crate) public_url: Option<String>,
+    pub(crate) server_did: Option<String>,
+    pub(crate) available_user_domains: Option<Vec<String>>,
+    pub(crate) invite_code_required: Option<bool>,
+    #[serde(default)]
+    pub(crate) links: ServerLinksConfig,
+    #[serde(default)]
+    pub(crate) contact: ContactConfig,
     #[serde(default)]
     pub(crate) blobs: BlobsConfig,
     #[serde(default)]
@@ -84,6 +109,25 @@ pub(crate) fn apply_env_overrides(
     if let Some(v) = env.get("EZPDS_PUBLIC_URL") {
         raw.public_url = Some(v.clone());
     }
+    if let Some(v) = env.get("EZPDS_SERVER_DID") {
+        raw.server_did = Some(v.clone());
+    }
+    if let Some(v) = env.get("EZPDS_INVITE_CODE_REQUIRED") {
+        raw.invite_code_required = Some(v.parse::<bool>().map_err(|e| {
+            ConfigError::Invalid(format!(
+                "EZPDS_INVITE_CODE_REQUIRED is not a valid boolean: '{v}': {e}"
+            ))
+        })?);
+    }
+    if let Some(v) = env.get("EZPDS_AVAILABLE_USER_DOMAINS") {
+        raw.available_user_domains = Some(
+            v.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect(),
+        );
+    }
     Ok(raw)
 }
 
@@ -115,6 +159,13 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
     let public_url = raw.public_url.ok_or(ConfigError::MissingField {
         field: "public_url",
     })?;
+    let available_user_domains = raw.available_user_domains.unwrap_or_default();
+    if available_user_domains.is_empty() {
+        return Err(ConfigError::MissingField {
+            field: "available_user_domains",
+        });
+    }
+    let invite_code_required = raw.invite_code_required.unwrap_or(true);
 
     Ok(Config {
         bind_address,
@@ -122,6 +173,11 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         data_dir,
         database_url,
         public_url,
+        server_did: raw.server_did,
+        available_user_domains,
+        invite_code_required,
+        links: raw.links,
+        contact: raw.contact,
         blobs: raw.blobs,
         oauth: raw.oauth,
         iroh: raw.iroh,
@@ -136,6 +192,7 @@ mod tests {
         RawConfig {
             data_dir: Some("/var/pds".to_string()),
             public_url: Some("https://pds.example.com".to_string()),
+            available_user_domains: Some(vec!["example.com".to_string()]),
             ..Default::default()
         }
     }
@@ -145,6 +202,7 @@ mod tests {
         let toml = r#"
             data_dir = "/var/pds"
             public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
         "#;
         let raw: RawConfig = toml::from_str(toml).unwrap();
         let config = validate_and_build(raw).unwrap();
@@ -164,6 +222,7 @@ mod tests {
             data_dir = "/data"
             database_url = "sqlite:///data/custom.db"
             public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
         "#;
         let raw: RawConfig = toml::from_str(toml).unwrap();
         let config = validate_and_build(raw).unwrap();
@@ -179,6 +238,7 @@ mod tests {
         let toml = r#"
             data_dir = "/var/pds"
             public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
 
             [blobs]
 
@@ -214,6 +274,7 @@ mod tests {
             data_dir = "/var/pds"
             port = 3000
             public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
         "#;
         let raw: RawConfig = toml::from_str(toml).unwrap();
         let env = HashMap::from([("EZPDS_PORT".to_string(), "9999".to_string())]);
@@ -236,6 +297,10 @@ mod tests {
             (
                 "EZPDS_PUBLIC_URL".to_string(),
                 "https://pds.test".to_string(),
+            ),
+            (
+                "EZPDS_AVAILABLE_USER_DOMAINS".to_string(),
+                "pds.test".to_string(),
             ),
         ]);
         let raw = apply_env_overrides(RawConfig::default(), &env).unwrap();
@@ -286,5 +351,148 @@ mod tests {
                 field: "public_url"
             }
         ));
+    }
+
+    // --- describeServer config fields ---
+
+    #[test]
+    fn parses_describe_server_fields_from_toml() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            server_did = "did:plc:abc123"
+            available_user_domains = ["pds.example.com", "alt.example.com"]
+            invite_code_required = false
+
+            [links]
+            privacy_policy = "https://example.com/privacy"
+            terms_of_service = "https://example.com/tos"
+
+            [contact]
+            email = "admin@example.com"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert_eq!(config.server_did.as_deref(), Some("did:plc:abc123"));
+        assert_eq!(
+            config.available_user_domains,
+            vec!["pds.example.com", "alt.example.com"]
+        );
+        assert!(!config.invite_code_required);
+        assert_eq!(
+            config.links.privacy_policy.as_deref(),
+            Some("https://example.com/privacy")
+        );
+        assert_eq!(
+            config.links.terms_of_service.as_deref(),
+            Some("https://example.com/tos")
+        );
+        assert_eq!(config.contact.email.as_deref(), Some("admin@example.com"));
+    }
+
+    #[test]
+    fn available_user_domains_missing_returns_error() {
+        let raw = RawConfig {
+            data_dir: Some("/var/pds".to_string()),
+            public_url: Some("https://pds.example.com".to_string()),
+            ..Default::default()
+        };
+        let err = validate_and_build(raw).unwrap_err();
+
+        assert!(matches!(
+            err,
+            ConfigError::MissingField {
+                field: "available_user_domains"
+            }
+        ));
+    }
+
+    #[test]
+    fn available_user_domains_empty_returns_error() {
+        let raw = RawConfig {
+            data_dir: Some("/var/pds".to_string()),
+            public_url: Some("https://pds.example.com".to_string()),
+            available_user_domains: Some(vec![]),
+            ..Default::default()
+        };
+        let err = validate_and_build(raw).unwrap_err();
+
+        assert!(matches!(
+            err,
+            ConfigError::MissingField {
+                field: "available_user_domains"
+            }
+        ));
+    }
+
+    #[test]
+    fn invite_code_required_defaults_to_true() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert!(config.invite_code_required);
+    }
+
+    #[test]
+    fn server_did_is_optional() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert!(config.server_did.is_none());
+    }
+
+    #[test]
+    fn links_section_optional() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert!(config.links.privacy_policy.is_none());
+        assert!(config.links.terms_of_service.is_none());
+    }
+
+    #[test]
+    fn contact_section_optional() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert!(config.contact.email.is_none());
+    }
+
+    #[test]
+    fn env_override_server_did() {
+        let env = HashMap::from([("EZPDS_SERVER_DID".to_string(), "did:plc:xyz".to_string())]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert_eq!(config.server_did.as_deref(), Some("did:plc:xyz"));
+    }
+
+    #[test]
+    fn env_override_invite_code_required_false() {
+        let env = HashMap::from([(
+            "EZPDS_INVITE_CODE_REQUIRED".to_string(),
+            "false".to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert!(!config.invite_code_required);
+    }
+
+    #[test]
+    fn env_override_invite_code_required_invalid_returns_error() {
+        let env = HashMap::from([(
+            "EZPDS_INVITE_CODE_REQUIRED".to_string(),
+            "maybe".to_string(),
+        )]);
+        let err = apply_env_overrides(minimal_raw(), &env).unwrap_err();
+
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("EZPDS_INVITE_CODE_REQUIRED"));
+    }
+
+    #[test]
+    fn env_override_available_user_domains_comma_separated() {
+        let env = HashMap::from([(
+            "EZPDS_AVAILABLE_USER_DOMAINS".to_string(),
+            "foo.com, bar.com".to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert_eq!(config.available_user_domains, vec!["foo.com", "bar.com"]);
     }
 }
