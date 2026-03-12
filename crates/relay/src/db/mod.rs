@@ -40,6 +40,10 @@ static MIGRATIONS: &[Migration] = &[
         version: 3,
         sql: include_str!("migrations/V003__relay_signing_keys.sql"),
     },
+    Migration {
+        version: 4,
+        sql: include_str!("migrations/V004__claim_codes_invite.sql"),
+    },
 ];
 
 /// Open a WAL-mode SQLite connection pool with a maximum of 1 connection.
@@ -593,14 +597,15 @@ mod tests {
         );
     }
 
-    /// EXPLAIN QUERY PLAN must show idx_claim_codes_did for a WHERE did = ? query.
+    /// EXPLAIN QUERY PLAN must show idx_claim_codes_expires_at for a WHERE expires_at query.
+    /// (V004 removed the did column; the index is now on expires_at for expiry sweeps.)
     #[tokio::test]
-    async fn v002_index_claim_codes_did_used() {
+    async fn v004_index_claim_codes_expires_at_used() {
         let pool = in_memory_pool().await;
         run_migrations(&pool).await.unwrap();
 
         let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
-            "EXPLAIN QUERY PLAN SELECT * FROM claim_codes WHERE did = 'did:plc:aaa'",
+            "EXPLAIN QUERY PLAN SELECT * FROM claim_codes WHERE expires_at < datetime('now')",
         )
         .fetch_all(&pool)
         .await
@@ -612,8 +617,8 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            detail.contains("idx_claim_codes_did"),
-            "claim_codes WHERE did query must use idx_claim_codes_did; got: {detail}"
+            detail.contains("idx_claim_codes_expires_at"),
+            "claim_codes WHERE expires_at query must use idx_claim_codes_expires_at; got: {detail}"
         );
     }
 

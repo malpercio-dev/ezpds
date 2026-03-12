@@ -1808,6 +1808,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "rand_core",
  "serde",
  "serde_json",
  "sqlx",

@@ -27,6 +27,7 @@ tower-http = { workspace = true }
 serde = { workspace = true }
 sqlx = { workspace = true }
 crypto = { workspace = true }
+rand_core = { workspace = true }
 subtle = { workspace = true }
 zeroize = { workspace = true }
 
