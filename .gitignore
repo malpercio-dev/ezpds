@@ -24,3 +24,6 @@ devenv.local.nix
 
 # Git worktrees
 .worktrees/
+
+# playwright-mcp
+.playwright-mcp/

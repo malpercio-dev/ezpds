@@ -6,6 +6,12 @@
 #   { ... }: {
 #     env.EZPDS_PUBLIC_URL = "https://my-tunnel.ngrok.io";
 #   }
+#
+#
+
+# these would be silly values for a production deployment
+# don't use them in production
+admin_token = "test-token-please-ignore"
 
 # TODO: fill in your preferred bind address and port for local development
 bind_address = "127.0.0.1"
