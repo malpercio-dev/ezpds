@@ -1,0 +1,15 @@
+meta {
+  name: Describe Server
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.server.describeServer
+  body: none
+  auth: none
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}

@@ -1,0 +1,22 @@
+meta {
+  name: Claim Codes
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/accounts/claim-codes
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+body:json {
+  {
+    "count": 1,
+    "expiresInHours": 24
+  }
+}

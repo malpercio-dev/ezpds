@@ -1,0 +1,21 @@
+meta {
+  name: Create Signing Key
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/relay/keys
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+body:json {
+  {
+    "algorithm": "p256"
+  }
+}
