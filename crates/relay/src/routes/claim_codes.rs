@@ -31,6 +31,7 @@ pub struct ClaimCodesRequest {
 
 #[derive(Serialize)]
 pub struct ClaimCodesResponse {
+    /// 6-character uppercase alphanumeric strings, unique within this batch.
     codes: Vec<String>,
 }
 
@@ -49,7 +50,15 @@ pub async fn claim_codes(
 
     let auth_value = headers
         .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
+        .and_then(|v| {
+            v.to_str()
+                .inspect_err(|_| {
+                    tracing::debug!(
+                        "Authorization header contains non-UTF-8 bytes; treating as absent"
+                    );
+                })
+                .ok()
+        })
         .unwrap_or("");
 
     let provided_token = auth_value.strip_prefix("Bearer ").ok_or_else(|| {
@@ -86,13 +95,13 @@ pub async fn claim_codes(
     }
 
     // --- Generate unique codes and insert in a single transaction ---
-    // Retry up to 3 times on the rare event of a uniqueness conflict with an
-    // existing DB row (probability ≈ existing_codes / 36^6 per code generated).
+    // Attempt up to 3 times total (2 retries) on the rare event of a uniqueness
+    // conflict with an existing DB row (probability ≈ existing_codes / 36^6 per code).
     for attempt in 0..3_usize {
         let codes = generate_unique_codes(payload.count as usize);
         match insert_claim_codes(&state.db, &codes, payload.expires_in_hours).await {
             Ok(()) => return Ok(Json(ClaimCodesResponse { codes })),
-            Err(e) if is_unique_violation(&e) && attempt < 2 => {
+            Err(e) if is_unique_violation(&e) => {
                 tracing::warn!(attempt, "claim code uniqueness conflict; retrying");
                 continue;
             }
@@ -137,7 +146,9 @@ async fn insert_claim_codes(
     expires_in_hours: u32,
 ) -> Result<(), sqlx::Error> {
     let offset = format!("+{expires_in_hours} hours");
-    let mut tx = db.begin().await?;
+    let mut tx = db.begin().await.inspect_err(|e| {
+        tracing::error!(error = %e, "failed to begin claim_codes transaction");
+    })?;
     for code in codes {
         sqlx::query(
             "INSERT INTO claim_codes (code, expires_at, created_at) \
@@ -148,7 +159,9 @@ async fn insert_claim_codes(
         .execute(&mut *tx)
         .await?;
     }
-    tx.commit().await?;
+    tx.commit().await.inspect_err(|e| {
+        tracing::error!(error = %e, "failed to commit claim_codes transaction");
+    })?;
     Ok(())
 }
 
@@ -257,7 +270,6 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let code = json["codes"][0].as_str().unwrap();
 
-        // expires_at should be roughly 24h from now; verify it is in the future.
         let expires_at: String =
             sqlx::query_scalar("SELECT expires_at FROM claim_codes WHERE code = ?")
                 .bind(code)
@@ -265,13 +277,18 @@ mod tests {
                 .await
                 .unwrap();
 
-        // SQLite datetime('now', '+24 hours') produces a value > datetime('now').
-        let is_future: bool = sqlx::query_scalar("SELECT ? > datetime('now')")
-            .bind(&expires_at)
-            .fetch_one(&db)
-            .await
-            .unwrap();
-        assert!(is_future, "expires_at must be in the future");
+        // Verify expires_at is within 5 seconds of 24h from now.
+        let within_window: bool = sqlx::query_scalar(
+            "SELECT ABS(strftime('%s', ?) - strftime('%s', datetime('now', '+24 hours'))) < 5",
+        )
+        .bind(&expires_at)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert!(
+            within_window,
+            "expires_at must be approximately 24h from now"
+        );
     }
 
     // ── Code format ───────────────────────────────────────────────────────────
@@ -335,7 +352,7 @@ mod tests {
 
     #[tokio::test]
     async fn codes_persisted_in_db_with_pending_status() {
-        // MM-86.AC3.1: stored with redeemed_at NULL (pending)
+        // MM-86.AC3.1: stored with redeemed_at NULL (pending) and correct expiry
         let state = test_state_with_admin_token().await;
         let db = state.db.clone();
 
@@ -366,7 +383,41 @@ mod tests {
                 row.1.is_none(),
                 "redeemed_at must be NULL for a freshly generated code"
             );
+
+            // expires_at must be approximately 48h from now (within 5 seconds).
+            let within_window: bool = sqlx::query_scalar(
+                "SELECT ABS(strftime('%s', ?) - strftime('%s', datetime('now', '+48 hours'))) < 5",
+            )
+            .bind(&row.0)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+            assert!(
+                within_window,
+                "expires_at must be approximately 48h from now"
+            );
         }
+    }
+
+    // ── Retry / DB error paths ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn non_unique_db_error_returns_500_without_retry() {
+        // Closing the pool before the request causes db.begin() to fail with a
+        // non-unique-violation error. The handler must return 500 immediately
+        // (no retry) and must not panic.
+        let state = test_state_with_admin_token().await;
+        state.db.close().await;
+
+        let response = app(state)
+            .oneshot(post_claim_codes(
+                r#"{"count": 1, "expiresInHours": 24}"#,
+                Some("test-admin-token"),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     // ── Input validation ──────────────────────────────────────────────────────
