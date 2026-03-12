@@ -1,0 +1,23 @@
+meta {
+  name: Create Account
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/accounts
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+body:json {
+  {
+    "email": "alice@example.com",
+    "handle": "alice.example.com",
+    "tier": "free"
+  }
+}

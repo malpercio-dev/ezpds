@@ -12,6 +12,7 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::routes::claim_codes::claim_codes;
+use crate::routes::create_account::create_account;
 use crate::routes::create_signing_key::create_signing_key;
 use crate::routes::describe_server::describe_server;
 use crate::routes::health::health;
@@ -87,6 +88,7 @@ pub fn app(state: AppState) -> Router {
             get(describe_server),
         )
         .route("/xrpc/:method", get(xrpc_handler).post(xrpc_handler))
+        .route("/v1/accounts", post(create_account))
         .route("/v1/accounts/claim-codes", post(claim_codes))
         .route("/v1/relay/keys", post(create_signing_key))
         .layer(CorsLayer::permissive())

@@ -29,6 +29,7 @@ sqlx = { workspace = true }
 crypto = { workspace = true }
 rand_core = { workspace = true }
 subtle = { workspace = true }
+uuid = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]

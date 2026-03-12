@@ -44,6 +44,10 @@ static MIGRATIONS: &[Migration] = &[
         version: 4,
         sql: include_str!("migrations/V004__claim_codes_invite.sql"),
     },
+    Migration {
+        version: 5,
+        sql: include_str!("migrations/V005__pending_accounts.sql"),
+    },
 ];
 
 /// Open a WAL-mode SQLite connection pool with a maximum of 1 connection.

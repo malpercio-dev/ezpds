@@ -29,15 +29,21 @@ pub enum ErrorCode {
     /// error format, which uses PascalCase error names rather than SCREAMING_SNAKE_CASE.
     #[serde(rename = "MethodNotImplemented")]
     MethodNotImplemented,
+    /// An account with the given email already exists (pending or active).
+    AccountExists,
+    /// The requested handle is already claimed by an active or pending account.
+    HandleTaken,
+    /// The handle string failed basic format validation.
+    InvalidHandle,
     // TODO: add remaining codes from Appendix A as endpoints are implemented:
     // 400: INVALID_DOCUMENT, INVALID_PROOF, INVALID_ENDPOINT, INVALID_CONFIRMATION
     // 401: INVALID_CREDENTIALS
     // 403: TIER_RESTRICTED, DIDWEB_REQUIRES_DOMAIN, SINGLE_DEVICE_TIER
     // 404: DEVICE_NOT_FOUND, DID_NOT_FOUND, HANDLE_NOT_FOUND, NOT_IN_GRACE_PERIOD
-    // 409: ACCOUNT_EXISTS, ACCOUNT_NOT_FOUND, DEVICE_LIMIT, DID_EXISTS, HANDLE_TAKEN,
+    // 409: ACCOUNT_NOT_FOUND, DEVICE_LIMIT, DID_EXISTS,
     //      ROTATION_IN_PROGRESS, LEASE_HELD, MIGRATION_IN_PROGRESS, ACTIVE_MIGRATION
     // 410: ALREADY_DELETED
-    // 422: INVALID_KEY, INVALID_HANDLE, KEY_MISMATCH, DIDWEB_SELF_SERVICE
+    // 422: INVALID_KEY, KEY_MISMATCH, DIDWEB_SELF_SERVICE
     // 423: ACCOUNT_LOCKED
 }
 
@@ -56,6 +62,9 @@ impl ErrorCode {
             ErrorCode::ServiceUnavailable => 503,
             ErrorCode::InternalError => 500,
             ErrorCode::MethodNotImplemented => 501,
+            ErrorCode::AccountExists => 409,
+            ErrorCode::HandleTaken => 409,
+            ErrorCode::InvalidHandle => 400,
         }
     }
 }
