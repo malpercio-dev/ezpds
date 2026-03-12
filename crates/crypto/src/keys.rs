@@ -14,13 +14,26 @@ use crate::CryptoError;
 /// 0x1200 encoded as LEB128 varint = [0x80, 0x24].
 const P256_MULTICODEC_PREFIX: &[u8] = &[0x80, 0x24];
 
+/// A `did:key:z...` URI — the canonical identifier for a P-256 keypair.
+///
+/// Distinct from `public_key` (a bare multibase string) at the type level to prevent
+/// positional swap bugs in SQL binds and API responses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DidKeyUri(pub String);
+
+impl std::fmt::Display for DidKeyUri {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// A generated P-256 keypair.
 ///
 /// `private_key_bytes` is zeroized on drop. Callers must encrypt it with
 /// [`encrypt_private_key`] before storing and drop this struct promptly.
 pub struct P256Keypair {
     /// Full `did:key:z...` URI — use as the database primary key.
-    pub key_id: String,
+    pub key_id: DidKeyUri,
     /// Multibase base58btc-encoded compressed public key point (no `did:key:` prefix).
     pub public_key: String,
     /// Raw 32-byte P-256 private key scalar. Zeroized on drop.
@@ -43,11 +56,11 @@ pub fn generate_p256_keypair() -> Result<P256Keypair, CryptoError> {
 
     // multibase::encode with Base58Btc prepends the 'z' prefix automatically.
     let multibase_encoded = multibase::encode(Base::Base58Btc, &multikey);
-    let key_id = format!("did:key:{multibase_encoded}");
+    let key_id = DidKeyUri(format!("did:key:{multibase_encoded}"));
     let public_key_str = multibase::encode(Base::Base58Btc, compressed_bytes);
 
     // Copy private key bytes into a Zeroizing wrapper.
-    let raw_bytes = secret_key.to_bytes();
+    let raw_bytes = Zeroizing::new(secret_key.to_bytes());
     let mut private_key_bytes = Zeroizing::new([0u8; 32]);
     private_key_bytes.copy_from_slice(raw_bytes.as_slice());
 
@@ -132,12 +145,12 @@ mod tests {
 
         // key_id must be a valid did:key URI with P-256 multicodec prefix.
         assert!(
-            keypair.key_id.starts_with("did:key:z"),
+            keypair.key_id.0.starts_with("did:key:z"),
             "key_id must start with did:key:z"
         );
 
         // Decode the multibase portion and verify the multicodec prefix.
-        let multibase_part = keypair.key_id.strip_prefix("did:key:").unwrap();
+        let multibase_part = keypair.key_id.0.strip_prefix("did:key:").unwrap();
         let (_, multikey_bytes) = multibase::decode(multibase_part).unwrap();
         assert_eq!(
             &multikey_bytes[..2],

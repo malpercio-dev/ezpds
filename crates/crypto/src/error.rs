@@ -6,6 +6,4 @@ pub enum CryptoError {
     Encryption(String),
     #[error("decryption failed: {0}")]
     Decryption(String),
-    #[error("invalid key id: {0}")]
-    InvalidKeyId(String),
 }

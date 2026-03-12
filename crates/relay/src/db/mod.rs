@@ -766,4 +766,64 @@ mod tests {
 
         assert_eq!(mode, "wal", "pool must use WAL journal mode");
     }
+
+    #[tokio::test]
+    async fn v003_relay_signing_keys_columns_are_correct() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        // PRAGMA table_info returns: (cid, name, type, notnull, dflt_value, pk)
+        let columns: Vec<(i32, String, String, i32, Option<String>, i32)> =
+            sqlx::query_as("PRAGMA table_info(relay_signing_keys)")
+                .fetch_all(&pool)
+                .await
+                .expect("PRAGMA table_info must succeed");
+
+        let names: Vec<&str> = columns.iter().map(|r| r.1.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "id",
+                "algorithm",
+                "public_key",
+                "private_key_encrypted",
+                "created_at"
+            ],
+            "relay_signing_keys must have exactly these columns in order"
+        );
+    }
+
+    #[tokio::test]
+    async fn v003_relay_signing_keys_id_is_unique() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        let insert = "INSERT INTO relay_signing_keys \
+                      (id, algorithm, public_key, private_key_encrypted, created_at) \
+                      VALUES (?, ?, ?, ?, datetime('now'))";
+
+        // First insert: must succeed.
+        sqlx::query(insert)
+            .bind("did:key:ztest123")
+            .bind("p256")
+            .bind("zpubkey1")
+            .bind("base64encodedvalue1")
+            .execute(&pool)
+            .await
+            .expect("first insert must succeed");
+
+        // Second insert with same id: must fail.
+        let result = sqlx::query(insert)
+            .bind("did:key:ztest123")
+            .bind("p256")
+            .bind("zpubkey2")
+            .bind("base64encodedvalue2")
+            .execute(&pool)
+            .await;
+
+        assert!(
+            result.is_err(),
+            "duplicate id must be rejected by PRIMARY KEY constraint"
+        );
+    }
 }

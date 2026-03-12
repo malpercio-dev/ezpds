@@ -28,6 +28,7 @@ serde = { workspace = true }
 sqlx = { workspace = true }
 crypto = { workspace = true }
 subtle = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true }

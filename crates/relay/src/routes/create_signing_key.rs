@@ -13,10 +13,16 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 
 #[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Algorithm {
+    P256,
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateSigningKeyRequest {
-    #[serde(default)]
-    algorithm: Option<String>,
+    #[allow(dead_code)]
+    algorithm: Algorithm,
 }
 
 // Response uses camelCase per JSON API convention (keyId, publicKey).
@@ -33,7 +39,7 @@ pub struct CreateSigningKeyResponse {
 pub async fn create_signing_key(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(payload): Json<CreateSigningKeyRequest>,
+    Json(_payload): Json<CreateSigningKeyRequest>,
 ) -> Result<Json<CreateSigningKeyResponse>, ApiError> {
     // --- Auth: require matching Bearer token ---
     // Check this first so unauthenticated callers cannot probe server configuration.
@@ -67,22 +73,12 @@ pub async fn create_signing_key(
         ));
     }
 
-    // --- Algorithm: only p256 is supported ---
-    match payload.algorithm.as_deref() {
-        Some("p256") => {}
-        _ => {
-            return Err(ApiError::new(
-                ErrorCode::InvalidClaim,
-                "unsupported algorithm; expected \"p256\"",
-            ))
-        }
-    }
-
     // --- Master key: return 503 if not configured ---
     let master_key: &[u8; 32] = state
         .config
         .signing_key_master_key
         .as_ref()
+        .map(|s| &*s.0)
         .ok_or_else(|| {
             ApiError::new(
                 ErrorCode::ServiceUnavailable,
@@ -111,7 +107,7 @@ pub async fn create_signing_key(
          (id, algorithm, public_key, private_key_encrypted, created_at) \
          VALUES (?, ?, ?, ?, datetime('now'))",
     )
-    .bind(&keypair.key_id)
+    .bind(keypair.key_id.to_string())
     .bind("p256")
     .bind(&keypair.public_key)
     .bind(&private_key_encrypted)
@@ -123,7 +119,7 @@ pub async fn create_signing_key(
     })?;
 
     Ok(Json(CreateSigningKeyResponse {
-        key_id: keypair.key_id,
+        key_id: keypair.key_id.to_string(),
         public_key: keypair.public_key,
         algorithm: "p256".to_string(),
     }))
@@ -138,19 +134,21 @@ mod tests {
         http::{Request, StatusCode},
     };
     use tower::ServiceExt;
+    use zeroize::Zeroizing;
 
     use crate::app::{app, test_state, AppState};
+    use common::Sensitive;
 
     /// Build an AppState with both admin_token and signing_key_master_key configured.
     async fn test_state_with_keys() -> AppState {
         let base = test_state().await;
         let mut config = (*base.config).clone();
         config.admin_token = Some("test-admin-token".to_string());
-        config.signing_key_master_key = Some([
+        config.signing_key_master_key = Some(Sensitive(Zeroizing::new([
             0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
             0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
             0x1d, 0x1e, 0x1f, 0x20,
-        ]);
+        ])));
         AppState {
             config: Arc::new(config),
             db: base.db,
@@ -355,7 +353,7 @@ mod tests {
 
     #[tokio::test]
     async fn unsupported_algorithm_returns_400() {
-        // MM-92.AC5.1
+        // MM-92.AC5.1: serde rejects unknown enum variant with 422 Unprocessable Entity
         let response = app(test_state_with_keys().await)
             .oneshot(post_keys(
                 r#"{"algorithm": "k256"}"#,
@@ -363,27 +361,27 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[tokio::test]
     async fn empty_algorithm_returns_400() {
-        // MM-92.AC5.2
+        // MM-92.AC5.2: serde rejects empty string for enum variant with 422 Unprocessable Entity
         let response = app(test_state_with_keys().await)
             .oneshot(post_keys(r#"{"algorithm": ""}"#, Some("test-admin-token")))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[tokio::test]
     async fn missing_algorithm_field_returns_400() {
-        // MM-92.AC5.3: empty JSON body — algorithm field absent, defaults to None → 400
+        // MM-92.AC5.3: missing required field returns 422 Unprocessable Entity
         let response = app(test_state_with_keys().await)
             .oneshot(post_keys(r#"{}"#, Some("test-admin-token")))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     // --- Master key test ---

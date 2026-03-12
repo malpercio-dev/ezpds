@@ -1,6 +1,17 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use zeroize::Zeroizing;
+
+/// A wrapper that suppresses Debug output for sensitive values.
+#[derive(Clone)]
+pub struct Sensitive<T>(pub T);
+
+impl<T> std::fmt::Debug for Sensitive<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("***")
+    }
+}
 
 /// Validated, fully-resolved relay configuration.
 #[derive(Debug, Clone)]
@@ -22,7 +33,7 @@ pub struct Config {
     // Operator authentication for management endpoints (e.g., POST /v1/relay/keys).
     pub admin_token: Option<String>,
     // AES-256-GCM master key for encrypting signing key private keys at rest.
-    pub signing_key_master_key: Option<[u8; 32]>,
+    pub signing_key_master_key: Option<Sensitive<Zeroizing<[u8; 32]>>>,
 }
 
 /// Optional privacy/ToS links surfaced by `com.atproto.server.describeServer`.
@@ -317,7 +328,9 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         iroh: raw.iroh,
         telemetry,
         admin_token: raw.admin_token,
-        signing_key_master_key: raw.signing_key_master_key,
+        signing_key_master_key: raw
+            .signing_key_master_key
+            .map(|k| Sensitive(Zeroizing::new(k))),
     })
 }
 
@@ -759,7 +772,10 @@ mod tests {
             0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
             0x1d, 0x1e, 0x1f, 0x20,
         ];
-        assert_eq!(config.signing_key_master_key, Some(expected));
+        assert_eq!(
+            config.signing_key_master_key.as_ref().map(|s| &*s.0),
+            Some(&expected)
+        );
     }
 
     #[test]
