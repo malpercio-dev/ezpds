@@ -184,24 +184,36 @@ pub async fn create_account(
                     }),
                 ))
             }
-            Err(e) if is_unique_violation(&e) => {
-                tracing::warn!(attempt, "pending account insert conflict; retrying");
-                continue;
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "failed to insert pending account");
-                return Err(ApiError::new(
-                    ErrorCode::InternalError,
-                    "failed to create account",
-                ));
-            }
+            Err(e) => match unique_violation_source(&e) {
+                Some(UniqueConflict::ClaimCode) => {
+                    tracing::warn!(attempt, "claim code collision; retrying");
+                    continue;
+                }
+                Some(UniqueConflict::Email) => {
+                    return Err(ApiError::new(
+                        ErrorCode::AccountExists,
+                        "an account with this email already exists",
+                    ));
+                }
+                Some(UniqueConflict::Handle) => {
+                    return Err(ApiError::new(
+                        ErrorCode::HandleTaken,
+                        "this handle is already claimed",
+                    ));
+                }
+                None => {
+                    tracing::error!(error = %e, "failed to insert pending account");
+                    return Err(ApiError::new(
+                        ErrorCode::InternalError,
+                        "failed to create account",
+                    ));
+                }
+            },
         }
     }
 
-    Err(ApiError::new(
-        ErrorCode::InternalError,
-        "failed to generate unique claim code after retries",
-    ))
+    tracing::error!("exhausted all claim code generation attempts");
+    Err(ApiError::new(ErrorCode::InternalError, "failed to create account"))
 }
 
 /// Validate that a handle string passes basic format checks.
@@ -258,7 +270,10 @@ async fn insert_pending_account(
     .bind(claim_code)
     .bind(expires_offset)
     .execute(&mut *tx)
-    .await?;
+    .await
+    .inspect_err(|e| {
+        tracing::error!(error = %e, "failed to insert claim_codes row in pending account transaction");
+    })?;
 
     sqlx::query(
         "INSERT INTO pending_accounts (id, email, handle, tier, claim_code, created_at) \
@@ -270,7 +285,10 @@ async fn insert_pending_account(
     .bind(tier)
     .bind(claim_code)
     .execute(&mut *tx)
-    .await?;
+    .await
+    .inspect_err(|e| {
+        tracing::error!(error = %e, "failed to insert pending_accounts row in pending account transaction");
+    })?;
 
     tx.commit().await.inspect_err(|e| {
         tracing::error!(error = %e, "failed to commit pending_account transaction");
@@ -279,12 +297,35 @@ async fn insert_pending_account(
     Ok(())
 }
 
-fn is_unique_violation(e: &sqlx::Error) -> bool {
-    matches!(
-        e,
-        sqlx::Error::Database(db_err)
-            if db_err.kind() == sqlx::error::ErrorKind::UniqueViolation
-    )
+/// Classification of a unique constraint violation by which column fired.
+enum UniqueConflict {
+    /// `claim_codes.code` — safe to retry with a freshly generated code.
+    ClaimCode,
+    /// `pending_accounts.email` — return `AccountExists` immediately.
+    Email,
+    /// `pending_accounts.handle` — return `HandleTaken` immediately.
+    Handle,
+}
+
+/// Inspect a unique constraint violation to determine which column caused it.
+/// Returns `None` for non-unique-violation errors.
+///
+/// SQLite unique violation messages take the stable form
+/// "UNIQUE constraint failed: <table>.<column>", which is not locale-dependent.
+fn unique_violation_source(e: &sqlx::Error) -> Option<UniqueConflict> {
+    if let sqlx::Error::Database(db_err) = e {
+        if db_err.kind() == sqlx::error::ErrorKind::UniqueViolation {
+            let msg = db_err.message();
+            if msg.contains("pending_accounts.email") {
+                return Some(UniqueConflict::Email);
+            }
+            if msg.contains("pending_accounts.handle") {
+                return Some(UniqueConflict::Handle);
+            }
+            return Some(UniqueConflict::ClaimCode);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -443,6 +484,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(second.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(second.into_body(), 4096).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "ACCOUNT_EXISTS");
     }
 
     #[tokio::test]
@@ -468,6 +512,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "ACCOUNT_EXISTS");
     }
 
     // ── Duplicate handle ──────────────────────────────────────────────────────
@@ -495,6 +542,44 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(second.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(second.into_body(), 4096).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "HANDLE_TAKEN");
+    }
+
+    #[tokio::test]
+    async fn duplicate_handle_in_handles_returns_409() {
+        // handle_in_handles query (line ~129) coverage
+        let state = test_state_with_admin_token().await;
+
+        // Seed a fully-provisioned account with an active handle.
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES ('did:plc:active1', 'active1@example.com', 'hash', datetime('now'), datetime('now'))",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO handles (handle, did, created_at) \
+             VALUES ('active.example.com', 'did:plc:active1', datetime('now'))",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let response = app(state)
+            .oneshot(post_create_account(
+                r#"{"email":"new@example.com","handle":"active.example.com","tier":"free"}"#,
+                Some("test-admin-token"),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "HANDLE_TAKEN");
     }
 
     // ── Handle validation ─────────────────────────────────────────────────────

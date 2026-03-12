@@ -212,6 +212,9 @@ mod tests {
             (ErrorCode::ServiceUnavailable, 503),
             (ErrorCode::InternalError, 500),
             (ErrorCode::MethodNotImplemented, 501),
+            (ErrorCode::AccountExists, 409),
+            (ErrorCode::HandleTaken, 409),
+            (ErrorCode::InvalidHandle, 400),
         ];
         for (code, expected) in cases {
             assert_eq!(code.status_code(), expected, "wrong status for {code:?}");
