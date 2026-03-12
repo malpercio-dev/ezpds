@@ -1,4 +1,4 @@
-pub mod auth;
+pub(crate) mod auth;
 pub mod claim_codes;
 pub mod create_account;
 pub mod create_signing_key;

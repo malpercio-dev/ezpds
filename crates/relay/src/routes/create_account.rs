@@ -61,13 +61,17 @@ pub async fn create_account(
     }
 
     // --- Email uniqueness: check accounts and pending_accounts in one query ---
-    // Fast-path optimization: reject before the INSERT to avoid touching the claim code retry
-    // loop on a predictable failure. The unique indexes on pending_accounts.email and
-    // accounts.email are the authoritative enforcement; this is an early return.
+    // Fast-path: reject before the INSERT to avoid burning a claim_code slot on a
+    // predictable conflict. The unique indexes are the authoritative enforcement; this
+    // is an optimization that also provides an early error for fully-provisioned accounts.
     // Note: pending_accounts has no cross-table FK to accounts, so both tables must be checked.
-    let email_taken: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM accounts WHERE email = ?)
-             OR EXISTS(SELECT 1 FROM pending_accounts WHERE email = ?)",
+    // CAST ensures sqlx maps the result as INTEGER regardless of SQLite's type affinity
+    // rules on untyped OR expressions.
+    let email_taken: i64 = sqlx::query_scalar(
+        "SELECT CAST(
+             (EXISTS(SELECT 1 FROM accounts WHERE email = ?)
+              OR EXISTS(SELECT 1 FROM pending_accounts WHERE email = ?))
+         AS INTEGER)",
     )
     .bind(&payload.email)
     .bind(&payload.email)
@@ -78,7 +82,7 @@ pub async fn create_account(
         ApiError::new(ErrorCode::InternalError, "failed to create account")
     })?;
 
-    if email_taken {
+    if email_taken != 0 {
         return Err(ApiError::new(
             ErrorCode::AccountExists,
             "an account with this email already exists",
@@ -86,9 +90,12 @@ pub async fn create_account(
     }
 
     // --- Handle uniqueness: check handles and pending_accounts in one query ---
-    let handle_taken: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM handles WHERE handle = ?)
-             OR EXISTS(SELECT 1 FROM pending_accounts WHERE handle = ?)",
+    // handles.handle is the PRIMARY KEY (uniqueness enforced by the PK, not a separate index).
+    let handle_taken: i64 = sqlx::query_scalar(
+        "SELECT CAST(
+             (EXISTS(SELECT 1 FROM handles WHERE handle = ?)
+              OR EXISTS(SELECT 1 FROM pending_accounts WHERE handle = ?))
+         AS INTEGER)",
     )
     .bind(&payload.handle)
     .bind(&payload.handle)
@@ -99,7 +106,7 @@ pub async fn create_account(
         ApiError::new(ErrorCode::InternalError, "failed to create account")
     })?;
 
-    if handle_taken {
+    if handle_taken != 0 {
         return Err(ApiError::new(
             ErrorCode::HandleTaken,
             "this handle is already claimed",
@@ -164,7 +171,10 @@ pub async fn create_account(
     }
 
     tracing::error!("exhausted all claim code generation attempts");
-    Err(ApiError::new(ErrorCode::InternalError, "failed to create account"))
+    Err(ApiError::new(
+        ErrorCode::InternalError,
+        "failed to create account",
+    ))
 }
 
 /// Validate that a handle string passes basic format checks.
@@ -264,6 +274,12 @@ fn unique_violation_source(e: &sqlx::Error) -> Option<UniqueConflict> {
             if msg.contains("pending_accounts.handle") {
                 return Some(UniqueConflict::Handle);
             }
+            // Treat any other unique violation as a claim_codes.code collision.
+            // Log the constraint name so unexpected constraints are visible in traces.
+            tracing::debug!(
+                constraint = msg,
+                "unique violation on unknown constraint; treating as claim code collision"
+            );
             return Some(UniqueConflict::ClaimCode);
         }
     }
@@ -312,9 +328,15 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert!(json["accountId"].as_str().is_some(), "accountId must be present");
+        assert!(
+            json["accountId"].as_str().is_some(),
+            "accountId must be present"
+        );
         assert_eq!(json["did"], serde_json::Value::Null, "did must be null");
-        assert!(json["claimCode"].as_str().is_some(), "claimCode must be present");
+        assert!(
+            json["claimCode"].as_str().is_some(),
+            "claimCode must be present"
+        );
         assert_eq!(json["status"], "pending");
     }
 
@@ -336,7 +358,8 @@ mod tests {
         let code = json["claimCode"].as_str().unwrap();
         assert_eq!(code.len(), 6, "claim code must be 6 chars");
         assert!(
-            code.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()),
+            code.chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()),
             "claim code must be uppercase alphanumeric, got: {code}"
         );
     }
@@ -386,7 +409,10 @@ mod tests {
         .fetch_one(&db)
         .await
         .unwrap();
-        assert!(within_window, "claim code must expire approximately 24h from now");
+        assert!(
+            within_window,
+            "claim code must expire approximately 24h from now"
+        );
     }
 
     // ── Duplicate email ───────────────────────────────────────────────────────
@@ -415,7 +441,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(second.status(), StatusCode::CONFLICT);
-        let body = axum::body::to_bytes(second.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(second.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "ACCOUNT_EXISTS");
     }
@@ -443,7 +471,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::CONFLICT);
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "ACCOUNT_EXISTS");
     }
@@ -473,14 +503,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(second.status(), StatusCode::CONFLICT);
-        let body = axum::body::to_bytes(second.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(second.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "HANDLE_TAKEN");
     }
 
     #[tokio::test]
     async fn duplicate_handle_in_handles_returns_409() {
-        // handle_in_handles query coverage
         let state = test_state_with_admin_token().await;
 
         // Seed a fully-provisioned account with an active handle.
@@ -508,7 +539,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::CONFLICT);
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "HANDLE_TAKEN");
     }
@@ -555,9 +588,7 @@ mod tests {
     #[tokio::test]
     async fn handle_exceeding_253_chars_returns_400() {
         let long_handle = "a".repeat(254);
-        let body = format!(
-            r#"{{"email":"x@example.com","handle":"{long_handle}","tier":"free"}}"#
-        );
+        let body = format!(r#"{{"email":"x@example.com","handle":"{long_handle}","tier":"free"}}"#);
         let response = app(test_state_with_admin_token().await)
             .oneshot(post_create_account(&body, Some("test-admin-token")))
             .await
