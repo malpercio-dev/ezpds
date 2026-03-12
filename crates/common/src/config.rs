@@ -3,7 +3,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use zeroize::Zeroizing;
 
-/// A wrapper that suppresses Debug output for sensitive values.
+/// A wrapper that suppresses [`Debug`] output for sensitive values, printing `***` instead.
+///
+/// `T` is `pub` to allow deliberate access via `.0` at call sites. This is an explicit choice:
+/// any read of the raw value is visible in source, making accidental logging harder to miss in
+/// code review.
 #[derive(Clone)]
 pub struct Sensitive<T>(pub T);
 

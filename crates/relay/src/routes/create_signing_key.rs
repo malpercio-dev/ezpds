@@ -114,7 +114,7 @@ pub async fn create_signing_key(
     .execute(&state.db)
     .await
     .map_err(|e| {
-        tracing::error!(error = %e, "failed to insert relay signing key");
+        tracing::error!(error = %e, key_id = %keypair.key_id, "failed to insert relay signing key");
         ApiError::new(ErrorCode::InternalError, "failed to store signing key")
     })?;
 
@@ -352,7 +352,7 @@ mod tests {
     // --- Algorithm tests ---
 
     #[tokio::test]
-    async fn unsupported_algorithm_returns_400() {
+    async fn unsupported_algorithm_returns_422() {
         // MM-92.AC5.1: serde rejects unknown enum variant with 422 Unprocessable Entity
         let response = app(test_state_with_keys().await)
             .oneshot(post_keys(
@@ -365,7 +365,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_algorithm_returns_400() {
+    async fn empty_algorithm_returns_422() {
         // MM-92.AC5.2: serde rejects empty string for enum variant with 422 Unprocessable Entity
         let response = app(test_state_with_keys().await)
             .oneshot(post_keys(r#"{"algorithm": ""}"#, Some("test-admin-token")))
@@ -375,13 +375,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_algorithm_field_returns_400() {
+    async fn missing_algorithm_field_returns_422() {
         // MM-92.AC5.3: missing required field returns 422 Unprocessable Entity
         let response = app(test_state_with_keys().await)
             .oneshot(post_keys(r#"{}"#, Some("test-admin-token")))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn null_algorithm_returns_400() {
+        // null is a distinct JSON token that some API clients send for unset fields.
+        // Unlike missing/invalid enum variants (422), Axum's default JSON rejection treats
+        // null deserialization as a general Bad Request (400).
+        let response = app(test_state_with_keys().await)
+            .oneshot(post_keys(
+                r#"{"algorithm": null}"#,
+                Some("test-admin-token"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     // --- Master key test ---

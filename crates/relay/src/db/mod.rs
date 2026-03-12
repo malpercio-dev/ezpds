@@ -101,7 +101,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), DbError> {
         .map(|(v,)| {
             u32::try_from(v).map_err(|_| DbError::Setup {
                 step: "parse migration version from schema_migrations",
-                source: sqlx::Error::RowNotFound,
+                source: sqlx::Error::Protocol(format!("version {v} does not fit in u32")),
             })
         })
         .collect::<Result<_, _>>()?;

@@ -12,7 +12,7 @@ This is a pure functional core -- no I/O, no database, no config.
 - **P256Keypair fields**: `key_id` (full `did:key:z...` URI), `public_key` (multibase base58btc compressed point, no did:key: prefix), `private_key_bytes` (`Zeroizing<[u8; 32]>` -- zeroized on drop)
 - **Encryption format**: `base64(nonce(12) || ciphertext(32) || tag(16))` = 80 base64 chars. Fresh 12-byte nonce from OS RNG per call.
 - **did:key format**: P-256 multicodec varint `[0x80, 0x24]` + compressed public key, multibase base58btc encoded
-- **CryptoError variants**: `KeyGeneration`, `Encryption`, `Decryption`, `InvalidKeyId`
+- **CryptoError variants**: `KeyGeneration`, `Encryption`, `Decryption`
 
 ## Dependencies
 - **Uses**: p256 (ECDSA/key generation), aes-gcm (AES-256-GCM), multibase (base58btc encoding), rand_core (OS RNG), base64 (storage encoding), zeroize (secret cleanup)
