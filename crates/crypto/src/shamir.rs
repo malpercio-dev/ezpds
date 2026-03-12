@@ -6,7 +6,6 @@ use crate::CryptoError;
 /// A single Shamir secret share for a 32-byte secret.
 ///
 /// `data` contains secret material and is zeroized on drop.
-#[derive(Clone)]
 pub struct ShamirShare {
     /// Share index: 1, 2, or 3. Not secret.
     pub index: u8,
@@ -24,7 +23,9 @@ pub struct ShamirShare {
 /// p(x) = x^8 + x^4 + x^3 + x + 1 (0x11b).
 pub fn split_secret(secret: &[u8; 32]) -> Result<[ShamirShare; 3], CryptoError> {
     let mut coeffs = Zeroizing::new([0u8; 32]);
-    OsRng.fill_bytes(coeffs.as_mut());
+    OsRng
+        .try_fill_bytes(coeffs.as_mut())
+        .map_err(|e| CryptoError::SecretSharing(format!("OS RNG unavailable: {e}")))?;
 
     let mut s1 = Zeroizing::new([0u8; 32]);
     let mut s2 = Zeroizing::new([0u8; 32]);
@@ -33,9 +34,10 @@ pub fn split_secret(secret: &[u8; 32]) -> Result<[ShamirShare; 3], CryptoError> 
     // Polynomial: f(x) = secret[i] + coeffs[i]·x in GF(2^8).
     // f(0) = secret[i]. Shares are f(1), f(2), f(3).
     //
-    // The secret byte is in the first argument of gf_mul so that the
-    // second argument (the constant share index) controls branching —
-    // no timing side-channel on the secret value.
+    // Secret bytes are in the first argument of gf_mul. The polynomial
+    // reduction inside gf_mul is branchless (mask-based), so bit patterns
+    // of the secret are not observable through branch timing. The `if b & 1`
+    // branch in gf_mul is on the public share index.
     for i in 0..32 {
         let s = secret[i];
         let a = coeffs[i];
@@ -58,18 +60,18 @@ pub fn split_secret(secret: &[u8; 32]) -> Result<[ShamirShare; 3], CryptoError> 
 ///
 /// # Algorithm
 ///
-/// Lagrange interpolation at x=0 in GF(2^8):
+/// Lagrange interpolation at x=0 in GF(2^8). For two points (x_a, y_a)
+/// and (x_b, y_b) on the degree-1 polynomial f(x) = secret + coeff·x:
 ///
 /// ```text
-/// f(0) = y_a · (x_b / (x_a ⊕ x_b)) ⊕ y_b · (x_a / (x_a ⊕ x_b))
+/// Standard Lagrange:  f(0) = y_a · (0−x_b)/(x_a−x_b) + y_b · (0−x_a)/(x_b−x_a)
+/// In GF(2^8) (−x = x):  f(0) = y_a · x_b/(x_a⊕x_b) ⊕ y_b · x_a/(x_a⊕x_b)
 /// ```
-///
-/// In GF(2^8): subtraction = XOR, and (0 − x) = x.
 pub fn combine_shares(
     a: &ShamirShare,
     b: &ShamirShare,
 ) -> Result<Zeroizing<[u8; 32]>, CryptoError> {
-    if a.index == 0 || b.index == 0 {
+    if a.index == 0 || a.index > 3 || b.index == 0 || b.index > 3 {
         return Err(CryptoError::SecretReconstruction(
             "share index must be in [1, 3]".into(),
         ));
@@ -82,16 +84,15 @@ pub fn combine_shares(
 
     let x_a = a.index;
     let x_b = b.index;
-    // x_a ⊕ x_b is guaranteed nonzero since x_a ≠ x_b.
+    // x_a ⊕ x_b is guaranteed nonzero since x_a ≠ x_b; gf_div cannot fail here.
     let denom = gf_add(x_a, x_b);
-    // Lagrange basis values at x=0. These are derived from public indices,
-    // so leaking their value through timing (as the `b` arg in gf_mul) is fine.
+    // Lagrange basis values at x=0, derived from public indices — timing is fine.
     let l_a = gf_div(x_b, denom)?;
     let l_b = gf_div(x_a, denom)?;
 
     let mut secret = Zeroizing::new([0u8; 32]);
     for i in 0..32 {
-        // Secret share bytes are in the first (non-branching) argument of gf_mul.
+        // Secret share bytes are in the first argument of gf_mul (branchless reduction).
         secret[i] = gf_add(gf_mul(a.data[i], l_a), gf_mul(b.data[i], l_b));
     }
     Ok(secret)
@@ -107,30 +108,26 @@ fn gf_add(a: u8, b: u8) -> u8 {
 /// GF(2^8) multiplication using the AES irreducible polynomial
 /// p(x) = x^8 + x^4 + x^3 + x + 1 (represented as 0x11b; low byte 0x1b).
 ///
-/// Use the "Russian peasant" (double-and-add) algorithm:
+/// Uses the double-and-add algorithm (Russian peasant), processing 8 bits of
+/// `b` LSB-first. The polynomial reduction is **branchless**: an arithmetic
+/// right-shift produces a mask that selects the reduction constant without
+/// branching on bits of `a`. The `if b & 1` branch is on `b` (the public
+/// share index or Lagrange coefficient), not on secret data.
 ///
-/// For each of the 8 bits of `b` (LSB first):
-///   1. If the current bit of `b` is 1, XOR `a` into `result`.
-///   2. Check whether `a`'s high bit (0x80) is set before shifting.
-///   3. Left-shift `a` by 1.
-///   4. If the high bit was set, XOR `a` with 0x1b to reduce modulo p(x).
-///   5. Right-shift `b` by 1.
-///
-/// The loop runs exactly 8 times (constant-time with respect to `a`,
-/// which is where secret values are placed by convention).
+/// By convention, secret values are always passed as the **first argument**
+/// so that branching on `b` never leaks secret bit patterns.
 fn gf_mul(mut a: u8, mut b: u8) -> u8 {
     let mut result = 0u8;
     for _ in 0..8 {
         if b & 1 != 0 {
             result ^= a;
         }
-        // GF(2^8) "doubling": left-shift + conditional reduction.
-        // This is NOT gf_add(a, a) — that would always be 0 in characteristic 2.
-        let high_bit = (a & 0x80) != 0;
-        a <<= 1;
-        if high_bit {
-            a ^= 0x1b; // reduce mod x^8 + x^4 + x^3 + x + 1
-        }
+        // Branchless GF(2^8) doubling. Arithmetic right-shift of the signed
+        // reinterpretation of `a` fills with the high bit, producing 0xFF when
+        // bit 7 is set and 0x00 otherwise. The mask selects the reduction
+        // constant (0x1b = low byte of 0x11b) without branching on `a`.
+        let mask = (a as i8 >> 7) as u8;
+        a = (a << 1) ^ (mask & 0x1b);
         b >>= 1;
     }
     result
@@ -139,14 +136,14 @@ fn gf_mul(mut a: u8, mut b: u8) -> u8 {
 /// Multiplicative inverse in GF(2^8) via Fermat's little theorem:
 /// a^(2^8 − 2) = a^254 = a^(−1) (since |GF(2^8)*| = 255).
 ///
-/// Computed via repeated squaring on top of `gf_mul`.
+/// Computed via binary exponentiation (square-and-multiply) on top of `gf_mul`.
 fn gf_inv(a: u8) -> Result<u8, CryptoError> {
     if a == 0 {
         return Err(CryptoError::SecretReconstruction(
             "GF(2^8) inverse of 0 is undefined".into(),
         ));
     }
-    // a^254 by repeated squaring (254 = 0b11111110).
+    // a^254 by binary exponentiation (254 = 0b11111110).
     let mut result = 1u8;
     let mut base = a;
     let mut exp = 254u8;
@@ -290,8 +287,33 @@ mod tests {
             data: Zeroizing::new([0u8; 32]),
         };
         let shares = split_secret(&[0x42_u8; 32]).unwrap();
-        let result = combine_shares(&zero_share, &shares[0]);
-        assert!(matches!(result, Err(CryptoError::SecretReconstruction(_))));
+        // Both argument positions must be guarded.
+        assert!(matches!(
+            combine_shares(&zero_share, &shares[0]),
+            Err(CryptoError::SecretReconstruction(_))
+        ));
+        assert!(matches!(
+            combine_shares(&shares[0], &zero_share),
+            Err(CryptoError::SecretReconstruction(_))
+        ));
+    }
+
+    #[test]
+    fn combine_with_index_out_of_range_fails() {
+        let bad_share = ShamirShare {
+            index: 4,
+            data: Zeroizing::new([0u8; 32]),
+        };
+        let shares = split_secret(&[0x42_u8; 32]).unwrap();
+        // Both argument positions must be guarded.
+        assert!(matches!(
+            combine_shares(&bad_share, &shares[0]),
+            Err(CryptoError::SecretReconstruction(_))
+        ));
+        assert!(matches!(
+            combine_shares(&shares[0], &bad_share),
+            Err(CryptoError::SecretReconstruction(_))
+        ));
     }
 
     // ── GF(2^8) arithmetic invariants ────────────────────────────────────────
@@ -314,8 +336,8 @@ mod tests {
 
     #[test]
     fn gf_mul_is_commutative() {
-        for a in [0x00_u8, 0x01, 0x02, 0x03, 0x0A, 0x53, 0xCA, 0xFF] {
-            for b in [0x00_u8, 0x01, 0x02, 0x03, 0x0A, 0x53, 0xCA, 0xFF] {
+        for a in 0_u8..=255 {
+            for b in 0_u8..=255 {
                 assert_eq!(
                     gf_mul(a, b),
                     gf_mul(b, a),
