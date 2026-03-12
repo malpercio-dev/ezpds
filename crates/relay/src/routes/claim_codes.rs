@@ -1,21 +1,19 @@
 // pattern: Imperative Shell
 //
-// Gathers: Bearer token from Authorization header, JSON request body, config, DB pool
+// Gathers: admin Bearer token (Authorization header), JSON request body, DB pool
 // Processes: auth check → input validation → code generation → DB batch insert (transaction)
 // Returns: JSON { codes: [...] } on success; ApiError on all failure paths
 
 use axum::{extract::State, http::HeaderMap, response::Json};
-use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use subtle::ConstantTimeEq;
 
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
+use crate::routes::auth::require_admin_token;
+use crate::routes::code_gen::generate_code;
 
 const MAX_COUNT: u32 = 10;
-const CODE_LEN: usize = 6;
-const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
 fn default_expires_in_hours() -> u32 {
     24
@@ -42,43 +40,7 @@ pub async fn claim_codes(
 ) -> Result<Json<ClaimCodesResponse>, ApiError> {
     // --- Auth: require matching Bearer token ---
     // Check this first so unauthenticated callers cannot probe server configuration.
-    let expected_token = state
-        .config
-        .admin_token
-        .as_deref()
-        .ok_or_else(|| ApiError::new(ErrorCode::Unauthorized, "admin token not configured"))?;
-
-    let auth_value = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| {
-            v.to_str()
-                .inspect_err(|_| {
-                    tracing::debug!(
-                        "Authorization header contains non-UTF-8 bytes; treating as absent"
-                    );
-                })
-                .ok()
-        })
-        .unwrap_or("");
-
-    let provided_token = auth_value.strip_prefix("Bearer ").ok_or_else(|| {
-        ApiError::new(
-            ErrorCode::Unauthorized,
-            "missing or invalid Authorization header",
-        )
-    })?;
-
-    if provided_token
-        .as_bytes()
-        .ct_eq(expected_token.as_bytes())
-        .unwrap_u8()
-        != 1
-    {
-        return Err(ApiError::new(
-            ErrorCode::Unauthorized,
-            "invalid admin token",
-        ));
-    }
+    require_admin_token(&headers, &state)?;
 
     // --- Validate input ---
     if payload.count == 0 || payload.count > MAX_COUNT {
@@ -130,15 +92,6 @@ fn generate_unique_codes(count: usize) -> Vec<String> {
     codes.into_iter().collect()
 }
 
-/// Generate a single 6-character uppercase alphanumeric code.
-fn generate_code() -> String {
-    let mut buf = [0u8; CODE_LEN];
-    OsRng.fill_bytes(&mut buf);
-    buf.iter()
-        .map(|&b| CHARSET[(b as usize) % CHARSET.len()] as char)
-        .collect()
-}
-
 /// Insert all codes in a single transaction; returns Err if any INSERT fails.
 async fn insert_claim_codes(
     db: &sqlx::SqlitePool,
@@ -175,27 +128,16 @@ fn is_unique_violation(e: &sqlx::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use axum::{
         body::Body,
         http::{Request, StatusCode},
     };
     use tower::ServiceExt;
 
-    use crate::app::{app, test_state, AppState};
+    use crate::app::{app, test_state};
+    use crate::routes::test_utils::test_state_with_admin_token;
 
     // ── Helpers ──────────────────────────────────────────────────────────────
-
-    async fn test_state_with_admin_token() -> AppState {
-        let base = test_state().await;
-        let mut config = (*base.config).clone();
-        config.admin_token = Some("test-admin-token".to_string());
-        AppState {
-            config: Arc::new(config),
-            db: base.db,
-        }
-    }
 
     fn post_claim_codes(body: &str, bearer: Option<&str>) -> Request<Body> {
         let mut builder = Request::builder()

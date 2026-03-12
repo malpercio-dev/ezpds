@@ -1,16 +1,16 @@
 // pattern: Imperative Shell
 //
-// Gathers: Bearer token from Authorization header, JSON request body, config, DB pool
+// Gathers: admin Bearer token (Authorization header), JSON request body, config, DB pool
 // Processes: auth check → algorithm check → master key check → key generation → encryption → DB insert
 // Returns: JSON { key_id, public_key, algorithm } on success; ApiError on all failure paths
 
 use axum::{extract::State, http::HeaderMap, response::Json};
 use serde::{Deserialize, Serialize};
-use subtle::ConstantTimeEq;
 
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
+use crate::routes::auth::require_admin_token;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -43,35 +43,7 @@ pub async fn create_signing_key(
 ) -> Result<Json<CreateSigningKeyResponse>, ApiError> {
     // --- Auth: require matching Bearer token ---
     // Check this first so unauthenticated callers cannot probe server configuration.
-    let expected_token = state
-        .config
-        .admin_token
-        .as_deref()
-        .ok_or_else(|| ApiError::new(ErrorCode::Unauthorized, "admin token not configured"))?;
-
-    let auth_value = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-
-    let provided_token = auth_value.strip_prefix("Bearer ").ok_or_else(|| {
-        ApiError::new(
-            ErrorCode::Unauthorized,
-            "missing or invalid Authorization header",
-        )
-    })?;
-
-    if provided_token
-        .as_bytes()
-        .ct_eq(expected_token.as_bytes())
-        .unwrap_u8()
-        != 1
-    {
-        return Err(ApiError::new(
-            ErrorCode::Unauthorized,
-            "invalid admin token",
-        ));
-    }
+    require_admin_token(&headers, &state)?;
 
     // --- Master key: return 503 if not configured ---
     let master_key: &[u8; 32] = state

@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 //
-// Gathers: Bearer token from Authorization header, JSON request body, config, DB pool
+// Gathers: admin Bearer token (Authorization header), JSON request body, config, DB pool
 // Processes: auth check → handle validation → tier validation → email uniqueness →
 //            handle uniqueness → account_id generation → claim code generation →
 //            DB transaction (claim_codes + pending_accounts insert)
@@ -11,17 +11,15 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::Json,
 };
-use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
+use crate::routes::auth::require_admin_token;
+use crate::routes::code_gen::generate_code;
 
-const CODE_LEN: usize = 6;
-const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 const CLAIM_CODE_EXPIRES_IN_HOURS: u32 = 24;
 
 #[derive(Deserialize)]
@@ -47,40 +45,7 @@ pub async fn create_account(
     Json(payload): Json<CreateAccountRequest>,
 ) -> Result<(StatusCode, Json<CreateAccountResponse>), ApiError> {
     // --- Auth: require matching Bearer token ---
-    let expected_token = state
-        .config
-        .admin_token
-        .as_deref()
-        .ok_or_else(|| ApiError::new(ErrorCode::Unauthorized, "admin token not configured"))?;
-
-    let auth_value = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| {
-            v.to_str()
-                .inspect_err(|_| {
-                    tracing::debug!(
-                        "Authorization header contains non-UTF-8 bytes; treating as absent"
-                    );
-                })
-                .ok()
-        })
-        .unwrap_or("");
-
-    let provided_token = auth_value.strip_prefix("Bearer ").ok_or_else(|| {
-        ApiError::new(
-            ErrorCode::Unauthorized,
-            "missing or invalid Authorization header",
-        )
-    })?;
-
-    if provided_token
-        .as_bytes()
-        .ct_eq(expected_token.as_bytes())
-        .unwrap_u8()
-        != 1
-    {
-        return Err(ApiError::new(ErrorCode::Unauthorized, "invalid admin token"));
-    }
+    require_admin_token(&headers, &state)?;
 
     // --- Validate handle format ---
     if let Err(msg) = validate_handle(&payload.handle) {
@@ -95,60 +60,46 @@ pub async fn create_account(
         ));
     }
 
-    // --- Email uniqueness: check accounts and pending_accounts ---
-    let email_in_accounts: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM accounts WHERE email = ?)",
+    // --- Email uniqueness: check accounts and pending_accounts in one query ---
+    // Fast-path optimization: reject before the INSERT to avoid touching the claim code retry
+    // loop on a predictable failure. The unique indexes on pending_accounts.email and
+    // accounts.email are the authoritative enforcement; this is an early return.
+    // Note: pending_accounts has no cross-table FK to accounts, so both tables must be checked.
+    let email_taken: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM accounts WHERE email = ?)
+             OR EXISTS(SELECT 1 FROM pending_accounts WHERE email = ?)",
     )
+    .bind(&payload.email)
     .bind(&payload.email)
     .fetch_one(&state.db)
     .await
     .map_err(|e| {
-        tracing::error!(error = %e, "failed to check email uniqueness in accounts");
+        tracing::error!(error = %e, "failed to check email uniqueness");
         ApiError::new(ErrorCode::InternalError, "failed to create account")
     })?;
 
-    let email_in_pending: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM pending_accounts WHERE email = ?)",
-    )
-    .bind(&payload.email)
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to check email uniqueness in pending_accounts");
-        ApiError::new(ErrorCode::InternalError, "failed to create account")
-    })?;
-
-    if email_in_accounts || email_in_pending {
+    if email_taken {
         return Err(ApiError::new(
             ErrorCode::AccountExists,
             "an account with this email already exists",
         ));
     }
 
-    // --- Handle uniqueness: check handles and pending_accounts ---
-    let handle_in_handles: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM handles WHERE handle = ?)",
+    // --- Handle uniqueness: check handles and pending_accounts in one query ---
+    let handle_taken: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM handles WHERE handle = ?)
+             OR EXISTS(SELECT 1 FROM pending_accounts WHERE handle = ?)",
     )
+    .bind(&payload.handle)
     .bind(&payload.handle)
     .fetch_one(&state.db)
     .await
     .map_err(|e| {
-        tracing::error!(error = %e, "failed to check handle uniqueness in handles");
+        tracing::error!(error = %e, "failed to check handle uniqueness");
         ApiError::new(ErrorCode::InternalError, "failed to create account")
     })?;
 
-    let handle_in_pending: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM pending_accounts WHERE handle = ?)",
-    )
-    .bind(&payload.handle)
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to check handle uniqueness in pending_accounts");
-        ApiError::new(ErrorCode::InternalError, "failed to create account")
-    })?;
-
-    if handle_in_handles || handle_in_pending {
+    if handle_taken {
         return Err(ApiError::new(
             ErrorCode::HandleTaken,
             "this handle is already claimed",
@@ -240,15 +191,6 @@ fn is_valid_tier(tier: &str) -> bool {
     matches!(tier, "free" | "pro" | "business")
 }
 
-/// Generate a single 6-character uppercase alphanumeric claim code.
-fn generate_code() -> String {
-    let mut buf = [0u8; CODE_LEN];
-    OsRng.fill_bytes(&mut buf);
-    buf.iter()
-        .map(|&b| CHARSET[(b as usize) % CHARSET.len()] as char)
-        .collect()
-}
-
 /// Insert a claim code and its associated pending account in a single transaction.
 async fn insert_pending_account(
     db: &sqlx::SqlitePool,
@@ -330,27 +272,16 @@ fn unique_violation_source(e: &sqlx::Error) -> Option<UniqueConflict> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use axum::{
         body::Body,
         http::{Request, StatusCode},
     };
     use tower::ServiceExt;
 
-    use crate::app::{app, test_state, AppState};
+    use crate::app::{app, test_state};
+    use crate::routes::test_utils::test_state_with_admin_token;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
-
-    async fn test_state_with_admin_token() -> AppState {
-        let base = test_state().await;
-        let mut config = (*base.config).clone();
-        config.admin_token = Some("test-admin-token".to_string());
-        AppState {
-            config: Arc::new(config),
-            db: base.db,
-        }
-    }
 
     fn post_create_account(body: &str, bearer: Option<&str>) -> Request<Body> {
         let mut builder = Request::builder()
@@ -549,7 +480,7 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_handle_in_handles_returns_409() {
-        // handle_in_handles query (line ~129) coverage
+        // handle_in_handles query coverage
         let state = test_state_with_admin_token().await;
 
         // Seed a fully-provisioned account with an active handle.
