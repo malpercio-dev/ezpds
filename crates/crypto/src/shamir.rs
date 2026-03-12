@@ -34,10 +34,10 @@ pub fn split_secret(secret: &[u8; 32]) -> Result<[ShamirShare; 3], CryptoError> 
     // Polynomial: f(x) = secret[i] + coeffs[i]·x in GF(2^8).
     // f(0) = secret[i]. Shares are f(1), f(2), f(3).
     //
-    // Secret bytes are in the first argument of gf_mul. The polynomial
-    // reduction inside gf_mul is branchless (mask-based), so bit patterns
-    // of the secret are not observable through branch timing. The `if b & 1`
-    // branch in gf_mul is on the public share index.
+    // Secret-bearing coefficient bytes are in the first argument of gf_mul.
+    // The polynomial reduction inside gf_mul is branchless (mask-based), so
+    // bit patterns of the coefficients are not observable through branch
+    // timing. The `if b & 1` branch in gf_mul is on the public share index.
     for i in 0..32 {
         let s = secret[i];
         let a = coeffs[i];
