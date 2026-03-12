@@ -1,18 +1,20 @@
 # Crypto Crate
 
-Last verified: 2026-03-11
+Last verified: 2026-03-12
 
 ## Purpose
 Provides cryptographic primitives for the ezpds workspace: P-256 key generation,
-did:key derivation, and AES-256-GCM encryption/decryption of private key material.
+did:key derivation, AES-256-GCM encryption/decryption of private key material,
+and Shamir Secret Sharing for DID rotation key recovery.
 This is a pure functional core -- no I/O, no database, no config.
 
 ## Contracts
-- **Exposes**: `generate_p256_keypair() -> Result<P256Keypair, CryptoError>`, `encrypt_private_key(&[u8; 32], &[u8; 32]) -> Result<String, CryptoError>`, `decrypt_private_key(&str, &[u8; 32]) -> Result<Zeroizing<[u8; 32]>, CryptoError>`, `P256Keypair`, `CryptoError`
+- **Exposes**: `generate_p256_keypair() -> Result<P256Keypair, CryptoError>`, `encrypt_private_key(&[u8; 32], &[u8; 32]) -> Result<String, CryptoError>`, `decrypt_private_key(&str, &[u8; 32]) -> Result<Zeroizing<[u8; 32]>, CryptoError>`, `split_secret(&[u8; 32]) -> Result<[ShamirShare; 3], CryptoError>`, `combine_shares(&ShamirShare, &ShamirShare) -> Result<Zeroizing<[u8; 32]>, CryptoError>`, `P256Keypair`, `ShamirShare`, `CryptoError`
 - **P256Keypair fields**: `key_id` (full `did:key:z...` URI), `public_key` (multibase base58btc compressed point, no did:key: prefix), `private_key_bytes` (`Zeroizing<[u8; 32]>` -- zeroized on drop)
+- **ShamirShare fields**: `index` (u8, 1/2/3 -- not secret), `data` (`Zeroizing<[u8; 32]>` -- zeroized on drop)
 - **Encryption format**: `base64(nonce(12) || ciphertext(32) || tag(16))` = 80 base64 chars. Fresh 12-byte nonce from OS RNG per call.
 - **did:key format**: P-256 multicodec varint `[0x80, 0x24]` + compressed public key, multibase base58btc encoded
-- **CryptoError variants**: `KeyGeneration`, `Encryption`, `Decryption`
+- **CryptoError variants**: `KeyGeneration`, `Encryption`, `Decryption`, `SecretSharing`, `SecretReconstruction`
 
 ## Dependencies
 - **Uses**: p256 (ECDSA/key generation), aes-gcm (AES-256-GCM), multibase (base58btc encoding), rand_core (OS RNG), base64 (storage encoding), zeroize (secret cleanup)
@@ -22,8 +24,13 @@ This is a pure functional core -- no I/O, no database, no config.
 - Private key bytes are always wrapped in `Zeroizing` -- callers must not copy them into non-zeroizing storage
 - `encrypt_private_key` always generates a fresh nonce; two calls with identical input produce different ciphertext
 - `decrypt_private_key` returns a single opaque `CryptoError::Decryption` for all failure modes (no oracle)
+- `ShamirShare.data` is zeroized on drop -- callers must not copy share bytes into non-zeroizing storage
+- `split_secret` polynomial coefficients are fresh OS RNG per call; information-theoretic security (a single share reveals nothing)
+- `combine_shares` requires exactly 2 shares with distinct indices in [1, 3]; returns `CryptoError::SecretReconstruction` otherwise
+- GF(2^8) arithmetic uses the AES irreducible polynomial (0x11b); secret bytes are always the first argument to `gf_mul` (non-branching position)
 
 ## Key Files
 - `src/lib.rs` - Re-exports public API
 - `src/keys.rs` - P-256 key generation, AES-256-GCM encrypt/decrypt
+- `src/shamir.rs` - Shamir Secret Sharing (split/combine, GF(2^8) arithmetic)
 - `src/error.rs` - CryptoError enum

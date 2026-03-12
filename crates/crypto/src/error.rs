@@ -6,4 +6,8 @@ pub enum CryptoError {
     Encryption(String),
     #[error("decryption failed: {0}")]
     Decryption(String),
+    #[error("secret sharing failed: {0}")]
+    SecretSharing(String),
+    #[error("secret reconstruction failed: {0}")]
+    SecretReconstruction(String),
 }
