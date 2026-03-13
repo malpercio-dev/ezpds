@@ -67,6 +67,7 @@ mod tests {
         AppState {
             config: Arc::new(config),
             db: base.db,
+            http_client: base.http_client,
         }
     }
 

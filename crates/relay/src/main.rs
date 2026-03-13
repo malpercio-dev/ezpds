@@ -1,5 +1,6 @@
 use anyhow::Context;
 use clap::Parser;
+use reqwest::Client;
 use std::{path::PathBuf, sync::Arc};
 
 mod app;
@@ -99,6 +100,7 @@ async fn run() -> anyhow::Result<()> {
     let state = app::AppState {
         config: Arc::new(config),
         db: pool,
+        http_client: Client::new(),
     };
 
     let listener = tokio::net::TcpListener::bind(&addr)

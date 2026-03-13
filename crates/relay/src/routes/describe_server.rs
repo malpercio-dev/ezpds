@@ -126,6 +126,7 @@ mod tests {
         let state = AppState {
             config: Arc::new(config),
             db: base.db,
+            http_client: base.http_client,
         };
 
         let response = app(state)

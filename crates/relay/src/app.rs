@@ -8,6 +8,7 @@ use axum::{
 };
 use common::{ApiError, Config, ErrorCode};
 use opentelemetry::propagation::Extractor;
+use reqwest::Client;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -76,6 +77,7 @@ impl<B> tower_http::trace::MakeSpan<B> for OtelMakeSpan {
 pub struct AppState {
     pub config: Arc<Config>,
     pub db: sqlx::SqlitePool,
+    pub http_client: Client,
 }
 
 /// Build the Axum router with middleware and routes.
@@ -111,19 +113,20 @@ async fn xrpc_handler(Path(method): Path<String>) -> ApiError {
     )
 }
 
-/// Build a minimal `AppState` backed by an in-memory SQLite database.
-/// The pool is fully migrated, so the schema is present and ready for handler tests.
 #[cfg(test)]
 pub(crate) async fn test_state() -> AppState {
+    test_state_with_plc_url("https://plc.directory".to_string()).await
+}
+
+#[cfg(test)]
+pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
+    use crate::db::{open_pool, run_migrations};
     use common::{BlobsConfig, IrohConfig, OAuthConfig, TelemetryConfig};
     use std::path::PathBuf;
 
-    let pool = crate::db::open_pool("sqlite::memory:")
-        .await
-        .expect("failed to open test pool");
-    crate::db::run_migrations(&pool)
-        .await
-        .expect("failed to run test migrations");
+    let db = open_pool("sqlite::memory:").await.expect("test pool");
+    run_migrations(&db).await.expect("test migrations");
+
     AppState {
         config: Arc::new(Config {
             bind_address: "127.0.0.1".to_string(),
@@ -142,8 +145,10 @@ pub(crate) async fn test_state() -> AppState {
             telemetry: TelemetryConfig::default(),
             admin_token: None,
             signing_key_master_key: None,
+            plc_directory_url,
         }),
-        db: pool,
+        db,
+        http_client: Client::new(),
     }
 }
 
