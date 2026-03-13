@@ -6,6 +6,7 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 
 /// Information about an authenticated pending session.
+#[derive(Debug)]
 pub struct PendingSessionInfo {
     pub account_id: String,
     #[allow(dead_code)]
@@ -80,7 +81,15 @@ pub async fn require_pending_session(
     // Extract Bearer token from Authorization header.
     let token = headers
         .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
+        .and_then(|v| {
+            v.to_str()
+                .inspect_err(|_| {
+                    tracing::warn!(
+                        "Authorization header contains non-UTF-8 bytes; treating as absent"
+                    );
+                })
+                .ok()
+        })
         .and_then(|v| v.strip_prefix("Bearer "))
         .ok_or_else(|| {
             ApiError::new(
@@ -198,6 +207,210 @@ mod tests {
             HeaderValue::from_bytes(b"Bearer \xff\xfe").unwrap(),
         );
         let err = require_admin_token(&headers, &state).unwrap_err();
+        assert_eq!(err.status_code(), 401);
+    }
+
+    // ── require_pending_session tests ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn pending_session_missing_authorization_header_returns_401() {
+        let state = test_state().await;
+        let err = require_pending_session(&HeaderMap::new(), &state.db)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code(), 401);
+    }
+
+    #[tokio::test]
+    async fn pending_session_non_base64url_token_returns_401() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Bearer not-valid-base64url!!!".parse().unwrap(),
+        );
+        let state = test_state().await;
+        let err = require_pending_session(&headers, &state.db)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code(), 401);
+    }
+
+    #[tokio::test]
+    async fn pending_session_valid_unexpired_session_returns_ok() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        use rand_core::{OsRng, RngCore};
+        use sha2::{Digest, Sha256};
+        use uuid::Uuid;
+
+        let state = test_state().await;
+
+        // Set up a claim code, pending account, device, and pending session.
+        let claim_code = format!("TEST-{}", Uuid::new_v4());
+        sqlx::query(
+            "INSERT INTO claim_codes (code, expires_at, created_at) \
+             VALUES (?, datetime('now', '+1 hour'), datetime('now'))",
+        )
+        .bind(&claim_code)
+        .execute(&state.db)
+        .await
+        .expect("insert claim_code");
+
+        let account_id = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO pending_accounts \
+             (id, email, handle, tier, claim_code, created_at) \
+             VALUES (?, ?, ?, 'free', ?, datetime('now'))",
+        )
+        .bind(&account_id)
+        .bind(format!("test{}@example.com", &account_id[..8]))
+        .bind(format!("test{}.example.com", &account_id[..8]))
+        .bind(&claim_code)
+        .execute(&state.db)
+        .await
+        .expect("insert pending_account");
+
+        let device_id = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO devices \
+             (id, account_id, platform, public_key, device_token_hash, created_at, last_seen_at) \
+             VALUES (?, ?, 'ios', 'test_pubkey', 'test_hash', datetime('now'), datetime('now'))",
+        )
+        .bind(&device_id)
+        .bind(&account_id)
+        .execute(&state.db)
+        .await
+        .expect("insert device");
+
+        // Generate a valid session token.
+        let mut token_bytes = [0u8; 32];
+        OsRng.fill_bytes(&mut token_bytes);
+        let session_token = URL_SAFE_NO_PAD.encode(token_bytes);
+        let token_hash: String = Sha256::digest(token_bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+
+        sqlx::query(
+            "INSERT INTO pending_sessions \
+             (id, account_id, device_id, token_hash, created_at, expires_at) \
+             VALUES (?, ?, ?, ?, datetime('now'), datetime('now', '+1 hour'))",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(&account_id)
+        .bind(&device_id)
+        .bind(&token_hash)
+        .execute(&state.db)
+        .await
+        .expect("insert pending_session");
+
+        // Call require_pending_session with valid token.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {session_token}").parse().unwrap(),
+        );
+
+        let result = require_pending_session(&headers, &state.db)
+            .await
+            .expect("valid session should succeed");
+        assert_eq!(result.account_id, account_id);
+        assert_eq!(result.device_id, device_id);
+    }
+
+    #[tokio::test]
+    async fn pending_session_expired_session_returns_401() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        use rand_core::{OsRng, RngCore};
+        use sha2::{Digest, Sha256};
+        use uuid::Uuid;
+
+        let state = test_state().await;
+
+        // Set up claim code, pending account, device, and expired pending session.
+        let claim_code = format!("TEST-{}", Uuid::new_v4());
+        sqlx::query(
+            "INSERT INTO claim_codes (code, expires_at, created_at) \
+             VALUES (?, datetime('now', '+1 hour'), datetime('now'))",
+        )
+        .bind(&claim_code)
+        .execute(&state.db)
+        .await
+        .expect("insert claim_code");
+
+        let account_id = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO pending_accounts \
+             (id, email, handle, tier, claim_code, created_at) \
+             VALUES (?, ?, ?, 'free', ?, datetime('now'))",
+        )
+        .bind(&account_id)
+        .bind(format!("test{}@example.com", &account_id[..8]))
+        .bind(format!("test{}.example.com", &account_id[..8]))
+        .bind(&claim_code)
+        .execute(&state.db)
+        .await
+        .expect("insert pending_account");
+
+        let device_id = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO devices \
+             (id, account_id, platform, public_key, device_token_hash, created_at, last_seen_at) \
+             VALUES (?, ?, 'ios', 'test_pubkey', 'test_hash', datetime('now'), datetime('now'))",
+        )
+        .bind(&device_id)
+        .bind(&account_id)
+        .execute(&state.db)
+        .await
+        .expect("insert device");
+
+        // Generate a token but set it as expired.
+        let mut token_bytes = [0u8; 32];
+        OsRng.fill_bytes(&mut token_bytes);
+        let session_token = URL_SAFE_NO_PAD.encode(token_bytes);
+        let token_hash: String = Sha256::digest(token_bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+
+        sqlx::query(
+            "INSERT INTO pending_sessions \
+             (id, account_id, device_id, token_hash, created_at, expires_at) \
+             VALUES (?, ?, ?, ?, datetime('now'), datetime('now', '-1 hour'))",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(&account_id)
+        .bind(&device_id)
+        .bind(&token_hash)
+        .execute(&state.db)
+        .await
+        .expect("insert pending_session");
+
+        // Call require_pending_session with expired token.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {session_token}").parse().unwrap(),
+        );
+
+        let err = require_pending_session(&headers, &state.db)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code(), 401);
+    }
+
+    #[tokio::test]
+    async fn pending_session_non_utf8_authorization_header_returns_401() {
+        // Exercises the inspect_err / treat-as-absent path.
+        // HeaderValue::from_bytes accepts arbitrary bytes; to_str() will fail on \xff.
+        let state = test_state().await;
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_bytes(b"Bearer \xff\xfe").unwrap(),
+        );
+        let err = require_pending_session(&headers, &state.db)
+            .await
+            .unwrap_err();
         assert_eq!(err.status_code(), 401);
     }
 }
