@@ -38,6 +38,10 @@ pub enum ErrorCode {
     /// A claim code that has already been redeemed is presented again.
     /// Clients should inform the user to obtain a different code.
     ClaimCodeRedeemed,
+    /// The DID has already been fully promoted to an active account.
+    DidAlreadyExists,
+    /// The external PLC directory returned a non-success response.
+    PlcDirectoryError,
     // TODO: add remaining codes from Appendix A as endpoints are implemented:
     // 400: INVALID_DOCUMENT, INVALID_PROOF, INVALID_ENDPOINT, INVALID_CONFIRMATION
     // 401: INVALID_CREDENTIALS
@@ -69,6 +73,8 @@ impl ErrorCode {
             ErrorCode::HandleTaken => 409,
             ErrorCode::InvalidHandle => 400,
             ErrorCode::ClaimCodeRedeemed => 409,
+            ErrorCode::DidAlreadyExists => 409,
+            ErrorCode::PlcDirectoryError => 502,
         }
     }
 }
@@ -220,6 +226,8 @@ mod tests {
             (ErrorCode::HandleTaken, 409),
             (ErrorCode::InvalidHandle, 400),
             (ErrorCode::ClaimCodeRedeemed, 409),
+            (ErrorCode::DidAlreadyExists, 409),
+            (ErrorCode::PlcDirectoryError, 502),
         ];
         for (code, expected) in cases {
             assert_eq!(code.status_code(), expected, "wrong status for {code:?}");

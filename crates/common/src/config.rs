@@ -38,6 +38,8 @@ pub struct Config {
     pub admin_token: Option<String>,
     // AES-256-GCM master key for encrypting signing key private keys at rest.
     pub signing_key_master_key: Option<Sensitive<Zeroizing<[u8; 32]>>>,
+    // URL of the PLC directory service (default: https://plc.directory)
+    pub plc_directory_url: String,
 }
 
 /// Optional privacy/ToS links surfaced by `com.atproto.server.describeServer`.
@@ -117,6 +119,7 @@ pub(crate) struct RawConfig {
     #[serde(default)]
     pub(crate) telemetry: RawTelemetryConfig,
     pub(crate) admin_token: Option<String>,
+    pub(crate) plc_directory_url: Option<String>,
     #[serde(skip)]
     pub(crate) signing_key_master_key: Option<[u8; 32]>,
     /// Sentinel field — only present to detect misconfiguration.
@@ -235,6 +238,9 @@ pub(crate) fn apply_env_overrides(
     if let Some(v) = env.get("EZPDS_ADMIN_TOKEN") {
         raw.admin_token = Some(v.clone());
     }
+    if let Some(v) = env.get("EZPDS_PLC_DIRECTORY_URL") {
+        raw.plc_directory_url = Some(v.clone());
+    }
     if let Some(v) = env.get("EZPDS_SIGNING_KEY_MASTER_KEY") {
         raw.signing_key_master_key = Some(parse_hex_32("EZPDS_SIGNING_KEY_MASTER_KEY", v)?);
     }
@@ -291,6 +297,9 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         ));
     }
     let invite_code_required = raw.invite_code_required.unwrap_or(true);
+    let plc_directory_url = raw
+        .plc_directory_url
+        .unwrap_or_else(|| "https://plc.directory".to_string());
 
     let telemetry_defaults = TelemetryConfig::default();
     let otlp_endpoint = raw
@@ -335,6 +344,7 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         signing_key_master_key: raw
             .signing_key_master_key
             .map(|k| Sensitive(Zeroizing::new(k))),
+        plc_directory_url,
     })
 }
 
