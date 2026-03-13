@@ -1,6 +1,6 @@
 # ezpds
 
-Last verified: 2026-03-11
+Last verified: 2026-03-13
 
 ## Tech Stack
 - Language: Rust (stable channel via rust-toolchain.toml)
@@ -31,7 +31,7 @@ Last verified: 2026-03-11
 ## Project Structure
 - `crates/relay/` - Web relay (axum-based)
 - `crates/repo-engine/` - ATProto repo engine
-- `crates/crypto/` - Cryptographic operations (P-256 key generation, did:key derivation, AES-256-GCM encryption)
+- `crates/crypto/` - Cryptographic operations (P-256 key generation, did:key derivation, AES-256-GCM encryption, did:plc genesis ops)
 - `crates/common/` - Shared types and utilities
 - `nix/` - Nix packaging and deployment (docker.nix: container image; module.nix: NixOS module)
 - `docs/` - Specs, design plans, implementation plans
