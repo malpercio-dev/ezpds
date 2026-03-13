@@ -181,7 +181,7 @@ pub async fn create_account(
 /// ATProto handles are domain names; this enforces only the least-controversial rules
 /// (non-empty, ASCII, no whitespace, max length) to avoid incorrect rejections.
 /// More thorough validation (segment structure, domain policy) is deferred to a later wave.
-fn validate_handle(handle: &str) -> Result<(), &'static str> {
+pub(crate) fn validate_handle(handle: &str) -> Result<(), &'static str> {
     if handle.is_empty() {
         return Err("handle must not be empty");
     }

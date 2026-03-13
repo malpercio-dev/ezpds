@@ -100,7 +100,7 @@ pub async fn register_device(
     ))
 }
 
-fn is_valid_platform(platform: &str) -> bool {
+pub(crate) fn is_valid_platform(platform: &str) -> bool {
     matches!(platform, "ios" | "android" | "macos" | "linux" | "windows")
 }
 

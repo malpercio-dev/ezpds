@@ -1,0 +1,21 @@
+meta {
+  name: Create Mobile Account
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/accounts/mobile
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "email": "alice@example.com",
+    "handle": "alice.example.com",
+    "devicePublicKey": "dGVzdC1rZXk=",
+    "platform": "ios",
+    "claimCode": "ABC123"
+  }
+}

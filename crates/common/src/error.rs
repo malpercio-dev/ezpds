@@ -35,6 +35,9 @@ pub enum ErrorCode {
     HandleTaken,
     /// The handle string failed basic format validation.
     InvalidHandle,
+    /// A claim code that has already been redeemed is presented again.
+    /// Clients should inform the user to obtain a different code.
+    ClaimCodeRedeemed,
     // TODO: add remaining codes from Appendix A as endpoints are implemented:
     // 400: INVALID_DOCUMENT, INVALID_PROOF, INVALID_ENDPOINT, INVALID_CONFIRMATION
     // 401: INVALID_CREDENTIALS
@@ -65,6 +68,7 @@ impl ErrorCode {
             ErrorCode::AccountExists => 409,
             ErrorCode::HandleTaken => 409,
             ErrorCode::InvalidHandle => 400,
+            ErrorCode::ClaimCodeRedeemed => 409,
         }
     }
 }
@@ -215,6 +219,7 @@ mod tests {
             (ErrorCode::AccountExists, 409),
             (ErrorCode::HandleTaken, 409),
             (ErrorCode::InvalidHandle, 400),
+            (ErrorCode::ClaimCodeRedeemed, 409),
         ];
         for (code, expected) in cases {
             assert_eq!(code.status_code(), expected, "wrong status for {code:?}");
