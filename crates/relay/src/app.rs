@@ -125,9 +125,15 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
     use crate::db::{open_pool, run_migrations};
     use common::{BlobsConfig, IrohConfig, OAuthConfig, TelemetryConfig};
     use std::path::PathBuf;
+    use std::time::Duration;
 
     let db = open_pool("sqlite::memory:").await.expect("test pool");
     run_migrations(&db).await.expect("test migrations");
+
+    let http_client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("test http client");
 
     AppState {
         config: Arc::new(Config {
@@ -150,7 +156,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
             plc_directory_url,
         }),
         db,
-        http_client: Client::new(),
+        http_client,
     }
 }
 

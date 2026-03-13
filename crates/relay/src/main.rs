@@ -97,10 +97,15 @@ async fn run() -> anyhow::Result<()> {
             )
         })?;
 
+    let http_client = Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .expect("failed to build HTTP client");
+
     let state = app::AppState {
         config: Arc::new(config),
         db: pool,
-        http_client: Client::new(),
+        http_client,
     };
 
     let listener = tokio::net::TcpListener::bind(&addr)
