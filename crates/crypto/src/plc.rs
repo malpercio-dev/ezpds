@@ -25,8 +25,8 @@ use std::collections::BTreeMap;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ciborium::ser::into_writer;
 use p256::{
+    ecdsa::{signature::Signer, Signature, SigningKey},
     FieldBytes,
-    ecdsa::{SigningKey, Signature, signature::Signer},
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -199,7 +199,10 @@ pub fn build_did_plc_genesis_op(
     let signed_op_json = serde_json::to_string(&signed_op)
         .map_err(|e| CryptoError::PlcOperation(format!("json serialize signed op: {e}")))?;
 
-    Ok(PlcGenesisOp { did, signed_op_json })
+    Ok(PlcGenesisOp {
+        did,
+        signed_op_json,
+    })
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -223,7 +226,12 @@ mod tests {
             "https://relay.example.com",
         )
         .expect("genesis op should succeed");
-        (rotation_kp.key_id, signing_kp.key_id, private_key_bytes, result)
+        (
+            rotation_kp.key_id,
+            signing_kp.key_id,
+            private_key_bytes,
+            result,
+        )
     }
 
     /// MM-89.AC1.1: did matches ^did:plc:[a-z2-7]{24}$
@@ -237,7 +245,9 @@ mod tests {
         let suffix = op.did.strip_prefix("did:plc:").unwrap();
         assert_eq!(suffix.len(), 24, "DID suffix should be 24 chars");
         assert!(
-            suffix.chars().all(|c| c.is_ascii_lowercase() || ('2'..='7').contains(&c)),
+            suffix
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || ('2'..='7').contains(&c)),
             "DID suffix should only contain [a-z2-7], got: {suffix}"
         );
     }
@@ -246,8 +256,7 @@ mod tests {
     #[test]
     fn signed_op_json_contains_required_fields() {
         let (_, _, _, op) = make_genesis_op();
-        let v: serde_json::Value =
-            serde_json::from_str(&op.signed_op_json).expect("valid JSON");
+        let v: serde_json::Value = serde_json::from_str(&op.signed_op_json).expect("valid JSON");
 
         assert_eq!(v["type"], "plc_operation", "type field");
         assert!(v["rotationKeys"].is_array(), "rotationKeys is array");
@@ -265,8 +274,7 @@ mod tests {
     #[test]
     fn keys_placed_in_correct_positions() {
         let (rotation_key, signing_key, _, op) = make_genesis_op();
-        let v: serde_json::Value =
-            serde_json::from_str(&op.signed_op_json).expect("valid JSON");
+        let v: serde_json::Value = serde_json::from_str(&op.signed_op_json).expect("valid JSON");
         assert_eq!(
             v["rotationKeys"][0].as_str().unwrap(),
             rotation_key.0,
@@ -341,8 +349,7 @@ mod tests {
     #[test]
     fn sig_field_is_base64url_no_padding_and_64_bytes() {
         let (_, _, _, op) = make_genesis_op();
-        let v: serde_json::Value =
-            serde_json::from_str(&op.signed_op_json).expect("valid JSON");
+        let v: serde_json::Value = serde_json::from_str(&op.signed_op_json).expect("valid JSON");
         let sig_str = v["sig"].as_str().expect("sig is a string");
 
         // No padding characters
@@ -378,8 +385,7 @@ mod tests {
         )
         .expect("genesis op should succeed");
 
-        let v: serde_json::Value =
-            serde_json::from_str(&op.signed_op_json).expect("valid JSON");
+        let v: serde_json::Value = serde_json::from_str(&op.signed_op_json).expect("valid JSON");
         let also_known_as = v["alsoKnownAs"].as_array().expect("alsoKnownAs is array");
         assert!(
             also_known_as
