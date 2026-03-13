@@ -56,32 +56,33 @@ pub async fn create_did_handler(
     let session = require_pending_session(&headers, &state.db).await?;
 
     // Step 2: Load pending account details.
-    let (handle, pending_did, email): (String, Option<String>, String) = sqlx::query_as(
-        "SELECT handle, pending_did, email FROM pending_accounts WHERE id = ?",
-    )
-    .bind(&session.account_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to query pending account");
-        ApiError::new(ErrorCode::InternalError, "failed to load account")
-    })?
-    .ok_or_else(|| ApiError::new(ErrorCode::Unauthorized, "account not found"))?;
+    let (handle, pending_did, email): (String, Option<String>, String) =
+        sqlx::query_as("SELECT handle, pending_did, email FROM pending_accounts WHERE id = ?")
+            .bind(&session.account_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "failed to query pending account");
+                ApiError::new(ErrorCode::InternalError, "failed to load account")
+            })?
+            .ok_or_else(|| ApiError::new(ErrorCode::Unauthorized, "account not found"))?;
 
     // Step 3: Look up signing key in relay_signing_keys.
-    let (private_key_encrypted,): (String,) = sqlx::query_as(
-        "SELECT private_key_encrypted FROM relay_signing_keys WHERE id = ?",
-    )
-    .bind(&payload.signing_key)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to query relay signing key");
-        ApiError::new(ErrorCode::InternalError, "key lookup failed")
-    })?
-    .ok_or_else(|| {
-        ApiError::new(ErrorCode::NotFound, "signing key not found in relay_signing_keys")
-    })?;
+    let (private_key_encrypted,): (String,) =
+        sqlx::query_as("SELECT private_key_encrypted FROM relay_signing_keys WHERE id = ?")
+            .bind(&payload.signing_key)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "failed to query relay signing key");
+                ApiError::new(ErrorCode::InternalError, "key lookup failed")
+            })?
+            .ok_or_else(|| {
+                ApiError::new(
+                    ErrorCode::NotFound,
+                    "signing key not found in relay_signing_keys",
+                )
+            })?;
 
     // Step 4: Decrypt the private key using the master key from config.
     let master_key: &[u8; 32] = state
@@ -90,7 +91,10 @@ pub async fn create_did_handler(
         .as_ref()
         .map(|s| &*s.0)
         .ok_or_else(|| {
-            ApiError::new(ErrorCode::InternalError, "signing key master key not configured")
+            ApiError::new(
+                ErrorCode::InternalError,
+                "signing key master key not configured",
+            )
         })?;
 
     let private_key_bytes = crypto::decrypt_private_key(&private_key_encrypted, master_key)
@@ -112,7 +116,10 @@ pub async fn create_did_handler(
     )
     .map_err(|e| {
         tracing::error!(error = %e, "failed to build genesis op");
-        ApiError::new(ErrorCode::InternalError, "failed to build genesis operation")
+        ApiError::new(
+            ErrorCode::InternalError,
+            "failed to build genesis operation",
+        )
     })?;
 
     let did = genesis.did.clone();
@@ -126,32 +133,34 @@ pub async fn create_did_handler(
         true
     } else {
         // First attempt: write the DID before calling plc.directory.
-        sqlx::query(
-            "UPDATE pending_accounts SET pending_did = ? WHERE id = ?",
-        )
-        .bind(&did)
-        .bind(&session.account_id)
-        .execute(&state.db)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to pre-store pending_did");
-            ApiError::new(ErrorCode::InternalError, "failed to store pending DID")
-        })?;
+        sqlx::query("UPDATE pending_accounts SET pending_did = ? WHERE id = ?")
+            .bind(&did)
+            .bind(&session.account_id)
+            .execute(&state.db)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "failed to pre-store pending_did");
+                ApiError::new(ErrorCode::InternalError, "failed to store pending DID")
+            })?;
         false
     };
 
     // Step 7: Check if the account is already fully promoted (idempotency guard for AC2.10).
-    let already_promoted: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM accounts WHERE did = ?)")
-        .bind(&did)
-        .fetch_one(&state.db)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to check accounts existence");
-            ApiError::new(ErrorCode::InternalError, "database error")
-        })?;
+    let already_promoted: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM accounts WHERE did = ?)")
+            .bind(&did)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "failed to check accounts existence");
+                ApiError::new(ErrorCode::InternalError, "database error")
+            })?;
 
     if already_promoted {
-        return Err(ApiError::new(ErrorCode::DidAlreadyExists, "DID is already fully promoted"));
+        return Err(ApiError::new(
+            ErrorCode::DidAlreadyExists,
+            "DID is already fully promoted",
+        ));
     }
 
     // Step 8: POST the genesis operation to plc.directory (skipped on retry).
@@ -166,7 +175,10 @@ pub async fn create_did_handler(
             .await
             .map_err(|e| {
                 tracing::error!(error = %e, plc_url = %plc_url, "failed to contact plc.directory");
-                ApiError::new(ErrorCode::PlcDirectoryError, "failed to contact plc.directory")
+                ApiError::new(
+                    ErrorCode::PlcDirectoryError,
+                    "failed to contact plc.directory",
+                )
             })?;
 
         if !response.status().is_success() {
@@ -180,7 +192,12 @@ pub async fn create_did_handler(
     }
 
     // Step 9: Build the DID document for local storage.
-    let did_document = build_did_document(&did, &handle, &payload.signing_key, &state.config.public_url);
+    let did_document = build_did_document(
+        &did,
+        &handle,
+        &payload.signing_key,
+        &state.config.public_url,
+    );
 
     // Step 10: Atomically promote the account.
     let mut tx = state
@@ -212,15 +229,13 @@ pub async fn create_did_handler(
     .inspect_err(|e| tracing::error!(error = %e, "failed to insert did_document"))
     .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store DID document"))?;
 
-    sqlx::query(
-        "INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))",
-    )
-    .bind(&handle)
-    .bind(&did)
-    .execute(&mut *tx)
-    .await
-    .inspect_err(|e| tracing::error!(error = %e, "failed to insert handle"))
-    .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to register handle"))?;
+    sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
+        .bind(&handle)
+        .bind(&did)
+        .execute(&mut *tx)
+        .await
+        .inspect_err(|e| tracing::error!(error = %e, "failed to insert handle"))
+        .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to register handle"))?;
 
     sqlx::query("DELETE FROM pending_sessions WHERE account_id = ?")
         .bind(&session.account_id)
@@ -248,7 +263,10 @@ pub async fn create_did_handler(
         .inspect_err(|e| tracing::error!(error = %e, "failed to commit promotion transaction"))
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to commit transaction"))?;
 
-    Ok(Json(CreateDidResponse { did, status: "active" }))
+    Ok(Json(CreateDidResponse {
+        did,
+        status: "active",
+    }))
 }
 
 /// Construct a minimal DID Core document from known fields.
@@ -302,7 +320,10 @@ mod tests {
     use sha2::{Digest, Sha256};
     use tower::ServiceExt; // for `.oneshot()`
     use uuid::Uuid;
-    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::{method, path_regex}};
+    use wiremock::{
+        matchers::{method, path_regex},
+        Mock, MockServer, ResponseTemplate,
+    };
 
     // ── Test setup helpers ────────────────────────────────────────────────────
 
@@ -335,9 +356,8 @@ mod tests {
         let rotation_kp = generate_p256_keypair().expect("rotation keypair");
 
         // Encrypt the signing private key with the test master key.
-        let encrypted =
-            encrypt_private_key(&signing_kp.private_key_bytes, &TEST_MASTER_KEY)
-                .expect("encrypt key");
+        let encrypted = encrypt_private_key(&signing_kp.private_key_bytes, &TEST_MASTER_KEY)
+            .expect("encrypt key");
 
         // Insert relay_signing_key.
         sqlx::query(
@@ -489,10 +509,17 @@ mod tests {
 
         // AC2.1: 200 OK with did + status
         assert_eq!(response.status(), StatusCode::OK);
-        let body: serde_json::Value =
-            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
         let did = body["did"].as_str().expect("did field");
-        assert!(did.starts_with("did:plc:"), "did should start with did:plc:");
+        assert!(
+            did.starts_with("did:plc:"),
+            "did should start with did:plc:"
+        );
         assert_eq!(body["status"], "active");
 
         // AC2.2: accounts row with null password_hash
@@ -506,21 +533,19 @@ mod tests {
         assert!(stored_email.contains("alice"), "email should be set");
 
         // AC2.3: did_documents row with non-empty document
-        let (doc,): (String,) =
-            sqlx::query_as("SELECT document FROM did_documents WHERE did = ?")
-                .bind(did)
-                .fetch_one(&db)
-                .await
-                .expect("did_documents row should exist");
+        let (doc,): (String,) = sqlx::query_as("SELECT document FROM did_documents WHERE did = ?")
+            .bind(did)
+            .fetch_one(&db)
+            .await
+            .expect("did_documents row should exist");
         assert!(!doc.is_empty(), "did_document should be non-empty");
 
         // AC2.4: handles row
-        let (handle_did,): (String,) =
-            sqlx::query_as("SELECT did FROM handles WHERE did = ?")
-                .bind(did)
-                .fetch_one(&db)
-                .await
-                .expect("handles row should exist");
+        let (handle_did,): (String,) = sqlx::query_as("SELECT did FROM handles WHERE did = ?")
+            .bind(did)
+            .fetch_one(&db)
+            .await
+            .expect("handles row should exist");
         assert_eq!(handle_did, did);
 
         // AC2.5: pending_accounts and pending_sessions deleted
@@ -602,7 +627,9 @@ mod tests {
             .method("POST")
             .uri("/v1/dids")
             .header("Content-Type", "application/json")
-            .body(Body::from(r#"{"signingKey":"did:key:z...","rotationKey":"did:key:z..."}"#))
+            .body(Body::from(
+                r#"{"signingKey":"did:key:z...","rotationKey":"did:key:z..."}"#,
+            ))
             .unwrap();
 
         let response = app.oneshot(request).await.unwrap();
@@ -647,7 +674,7 @@ mod tests {
         let response = app
             .oneshot(create_did_request(
                 &setup.session_token,
-                "did:key:zNONEXISTENT",  // Not in relay_signing_keys
+                "did:key:zNONEXISTENT", // Not in relay_signing_keys
                 &setup.rotation_key_id,
             ))
             .await
@@ -671,7 +698,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path_regex(r"^/did:plc:.*$"))
             .respond_with(ResponseTemplate::new(200))
-            .expect(1)  // Only first call should hit plc.directory
+            .expect(1) // Only first call should hit plc.directory
             .mount(&mock_server)
             .await;
 
@@ -781,7 +808,11 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(resp2.status(), StatusCode::CONFLICT, "should return 409 DID_ALREADY_EXISTS");
+        assert_eq!(
+            resp2.status(),
+            StatusCode::CONFLICT,
+            "should return 409 DID_ALREADY_EXISTS"
+        );
     }
 
     /// MM-89.AC2.11: plc.directory returns non-2xx → 502 PLC_DIRECTORY_ERROR

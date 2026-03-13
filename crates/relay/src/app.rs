@@ -78,7 +78,6 @@ impl<B> tower_http::trace::MakeSpan<B> for OtelMakeSpan {
 pub struct AppState {
     pub config: Arc<Config>,
     pub db: sqlx::SqlitePool,
-    #[allow(dead_code)]
     pub http_client: Client,
 }
 

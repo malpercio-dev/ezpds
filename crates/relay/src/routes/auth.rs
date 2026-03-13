@@ -8,6 +8,7 @@ use crate::app::AppState;
 /// Information about an authenticated pending session.
 pub struct PendingSessionInfo {
     pub account_id: String,
+    #[allow(dead_code)]
     pub device_id: String,
 }
 
@@ -90,12 +91,9 @@ pub async fn require_pending_session(
 
     // Decode base64url → raw bytes, then SHA-256 hash → hex string.
     // Matches the storage format written by POST /v1/accounts/mobile.
-    let token_bytes = URL_SAFE_NO_PAD.decode(token).map_err(|_| {
-        ApiError::new(
-            ErrorCode::Unauthorized,
-            "invalid session token",
-        )
-    })?;
+    let token_bytes = URL_SAFE_NO_PAD
+        .decode(token)
+        .map_err(|_| ApiError::new(ErrorCode::Unauthorized, "invalid session token"))?;
     let token_hash: String = Sha256::digest(&token_bytes)
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -111,20 +109,17 @@ pub async fn require_pending_session(
     .await
     .map_err(|e| {
         tracing::error!(error = %e, "failed to query pending session");
-        ApiError::new(
-            ErrorCode::InternalError,
-            "session lookup failed",
-        )
+        ApiError::new(ErrorCode::InternalError, "session lookup failed")
     })?;
 
     let (account_id, device_id) = row.ok_or_else(|| {
-        ApiError::new(
-            ErrorCode::Unauthorized,
-            "invalid or expired session token",
-        )
+        ApiError::new(ErrorCode::Unauthorized, "invalid or expired session token")
     })?;
 
-    Ok(PendingSessionInfo { account_id, device_id })
+    Ok(PendingSessionInfo {
+        account_id,
+        device_id,
+    })
 }
 
 #[cfg(test)]
