@@ -20,6 +20,10 @@
   env.EZPDS_PUBLIC_URL = "http://localhost:8080";
   env.RUST_LOG = "info";
 
+  # Signing key master key for local development.
+  # DO NOT USE IN PRODUCTION.
+  env.EZPDS_SIGNING_KEY_MASTER_KEY = "2a55ebbdb7c0a4864a3944a443765b13602c6fbbeda38c2d6afc57b96663810e";
+
   processes.relay = {
     exec = "cargo run --package relay";
   };
