@@ -21,6 +21,9 @@ tokio = { version = "1", features = ["full"] }
 # Web framework (relay)
 axum = "0.7"
 
+# HTTP client (relay)
+reqwest = { version = "0.12", features = ["json"] }
+
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
 
