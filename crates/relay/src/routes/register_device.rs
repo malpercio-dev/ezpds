@@ -23,7 +23,8 @@ use crate::app::AppState;
 /// Maximum allowed length for a device public key string.
 /// A P-256 uncompressed public key in base64 is ~88 chars; 512 is generous
 /// enough to accommodate any standard encoding without accepting unbounded input.
-const MAX_PUBLIC_KEY_LEN: usize = 512;
+/// Shared by create_mobile_account, which also validates device_public_key.
+pub(crate) const MAX_PUBLIC_KEY_LEN: usize = 512;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -122,9 +123,13 @@ async fn redeem_and_register(
     public_key: &str,
     device_token_hash: &str,
 ) -> Result<String, ApiError> {
-    let mut tx = db.begin().await.inspect_err(|e| {
-        tracing::error!(error = %e, "failed to begin device registration transaction");
-    }).map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to register device"))?;
+    let mut tx = db
+        .begin()
+        .await
+        .inspect_err(|e| {
+            tracing::error!(error = %e, "failed to begin device registration transaction");
+        })
+        .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to register device"))?;
 
     // Attempt to mark the claim code redeemed. The WHERE guard rejects invalid, expired,
     // or previously-redeemed codes atomically — no separate SELECT needed.
@@ -149,20 +154,19 @@ async fn redeem_and_register(
     }
 
     // Resolve the pending account bound to this claim code.
-    let (account_id,): (String,) = sqlx::query_as(
-        "SELECT id FROM pending_accounts WHERE claim_code = ?",
-    )
-    .bind(claim_code)
-    .fetch_one(&mut *tx)
-    .await
-    .inspect_err(|e| {
-        if matches!(e, sqlx::Error::RowNotFound) {
-            tracing::error!("no pending_account row found for claim code — orphaned code");
-        } else {
-            tracing::error!(error = %e, "failed to fetch pending account for claim code");
-        }
-    })
-    .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to register device"))?;
+    let (account_id,): (String,) =
+        sqlx::query_as("SELECT id FROM pending_accounts WHERE claim_code = ?")
+            .bind(claim_code)
+            .fetch_one(&mut *tx)
+            .await
+            .inspect_err(|e| {
+                if matches!(e, sqlx::Error::RowNotFound) {
+                    tracing::error!("no pending_account row found for claim code — orphaned code");
+                } else {
+                    tracing::error!(error = %e, "failed to fetch pending account for claim code");
+                }
+            })
+            .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to register device"))?;
 
     sqlx::query(
         "INSERT INTO devices \
@@ -181,9 +185,12 @@ async fn redeem_and_register(
     })
     .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to register device"))?;
 
-    tx.commit().await.inspect_err(|e| {
-        tracing::error!(error = %e, "failed to commit device registration transaction");
-    }).map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to register device"))?;
+    tx.commit()
+        .await
+        .inspect_err(|e| {
+            tracing::error!(error = %e, "failed to commit device registration transaction");
+        })
+        .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to register device"))?;
 
     Ok(account_id)
 }
@@ -267,12 +274,23 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::CREATED);
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-        assert!(json["deviceId"].as_str().is_some(), "deviceId must be present");
-        assert!(json["deviceToken"].as_str().is_some(), "deviceToken must be present");
-        assert!(json["accountId"].as_str().is_some(), "accountId must be present");
+        assert!(
+            json["deviceId"].as_str().is_some(),
+            "deviceId must be present"
+        );
+        assert!(
+            json["deviceToken"].as_str().is_some(),
+            "deviceToken must be present"
+        );
+        assert!(
+            json["accountId"].as_str().is_some(),
+            "accountId must be present"
+        );
     }
 
     #[tokio::test]
@@ -288,7 +306,9 @@ mod tests {
             .await
             .unwrap();
 
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let device_id = json["deviceId"].as_str().unwrap();
 
@@ -308,17 +328,25 @@ mod tests {
             .await
             .unwrap();
 
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let token = json["deviceToken"].as_str().unwrap();
 
         // URL_SAFE_NO_PAD base64: only [A-Za-z0-9_-], no '=' padding
         assert!(
-            token.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            token
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
             "deviceToken must be base64url without padding; got: {token}"
         );
         // 32 bytes encoded as base64url (no pad) → 43 chars
-        assert_eq!(token.len(), 43, "deviceToken must be 43 chars (base64url of 32 bytes)");
+        assert_eq!(
+            token.len(),
+            43,
+            "deviceToken must be 43 chars (base64url of 32 bytes)"
+        );
     }
 
     #[tokio::test]
@@ -335,7 +363,9 @@ mod tests {
             .await
             .unwrap();
 
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(json["accountId"].as_str().unwrap(), expected_account_id);
@@ -357,7 +387,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::CREATED);
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let device_id = json["deviceId"].as_str().unwrap();
 
@@ -397,7 +429,9 @@ mod tests {
             .await
             .unwrap();
 
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let device_token = json["deviceToken"].as_str().unwrap();
         let device_id = json["deviceId"].as_str().unwrap();
@@ -440,7 +474,10 @@ mod tests {
                 .await
                 .unwrap();
 
-        assert!(redeemed_at.is_some(), "claim code must have redeemed_at set");
+        assert!(
+            redeemed_at.is_some(),
+            "claim code must have redeemed_at set"
+        );
     }
 
     #[tokio::test]
@@ -472,7 +509,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "INTERNAL_ERROR");
 
@@ -502,7 +541,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "INVALID_CLAIM");
     }
@@ -542,7 +583,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "INVALID_CLAIM");
     }
@@ -572,7 +615,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(second.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(second.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(second.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "INVALID_CLAIM");
     }
@@ -612,7 +657,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "INVALID_CLAIM");
     }
@@ -627,7 +674,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "INVALID_CLAIM");
     }
@@ -644,7 +693,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "INVALID_CLAIM");
     }
@@ -661,7 +712,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "INVALID_CLAIM");
     }
@@ -719,7 +772,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "INTERNAL_ERROR");
     }
@@ -737,7 +792,7 @@ mod tests {
     fn is_valid_platform_rejects_unknown() {
         assert!(!super::is_valid_platform("plan9"));
         assert!(!super::is_valid_platform(""));
-        assert!(!super::is_valid_platform("iOS"));     // case-sensitive
+        assert!(!super::is_valid_platform("iOS")); // case-sensitive
         assert!(!super::is_valid_platform("Windows")); // case-sensitive
     }
 }
