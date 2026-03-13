@@ -36,3 +36,4 @@ that can later serve per-user SQLite databases (Wave 3/4).
 - `migrations/V004__claim_codes_invite.sql` - Rebuilds claim_codes: removes DID FK, adds redeemed_at; status derived not stored
 - `migrations/V005__pending_accounts.sql` - pending_accounts table: pre-provisioned account slots (id, email, handle, tier, claim_code)
 - `migrations/V006__devices_v2.sql` - Rebuilds devices: replaces did FK (accounts) with account_id FK (pending_accounts); adds platform, public_key, device_token_hash; also rebuilds sessions, oauth_tokens, refresh_tokens (cascade due to FK references)
+- `migrations/V007__pending_sessions.sql` - pending_sessions table: id, account_id (FK→pending_accounts), device_id (FK→devices), token_hash (UNIQUE), created_at, expires_at; used by POST /v1/accounts/mobile to issue a pre-DID session for the DID-creation step

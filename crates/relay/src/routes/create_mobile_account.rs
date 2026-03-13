@@ -23,10 +23,7 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::routes::create_account::validate_handle;
-use crate::routes::register_device::is_valid_platform;
-
-/// Maximum allowed length for a device public key string.
-const MAX_PUBLIC_KEY_LEN: usize = 512;
+use crate::routes::register_device::{is_valid_platform, MAX_PUBLIC_KEY_LEN};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -283,6 +280,8 @@ async fn provision_mobile_account(
     }
 
     // Insert the pending account. The claim_code FK references the just-updated claim_codes row.
+    // tier is always 'free' for mobile self-registration; tier selection is reserved for
+    // admin-provisioned accounts (POST /v1/accounts) where an operator picks the tier.
     sqlx::query(
         "INSERT INTO pending_accounts (id, email, handle, tier, claim_code, created_at) \
          VALUES (?, ?, ?, 'free', ?, datetime('now'))",
@@ -343,8 +342,12 @@ async fn provision_mobile_account(
     Ok(())
 }
 
-/// Classify a unique constraint violation from pending_accounts into the appropriate ApiError.
-/// Returns InternalError for non-unique-violation errors.
+/// Classify a unique constraint violation from the pending_accounts INSERT into the
+/// appropriate ApiError. Returns InternalError for non-unique-violation errors.
+///
+/// Constraint name matching uses SQLite's stable "UNIQUE constraint failed: <table>.<column>"
+/// format. The fallthrough branch (unknown constraint) logs the constraint name so any
+/// unexpected violations surface in traces — matching the pattern in create_account.rs.
 fn classify_pending_account_error(e: &sqlx::Error) -> ApiError {
     if let sqlx::Error::Database(db_err) = e {
         if db_err.kind() == sqlx::error::ErrorKind::UniqueViolation {
@@ -361,6 +364,11 @@ fn classify_pending_account_error(e: &sqlx::Error) -> ApiError {
                     "this handle is already claimed",
                 );
             }
+            // Unknown unique constraint — log the name so it surfaces in traces.
+            tracing::error!(
+                constraint = msg,
+                "unique violation on unexpected constraint in pending_accounts insert"
+            );
         }
     }
     ApiError::new(ErrorCode::InternalError, "failed to create account")
@@ -697,16 +705,22 @@ mod tests {
     }
 
     // ── Atomicity ─────────────────────────────────────────────────────────────
+    //
+    // These tests verify that a conflicting email or handle prevents claim code
+    // consumption. The pre-flight uniqueness check fires before the transaction
+    // begins, so the claim code UPDATE is never executed and no rollback is needed.
+    // This is intentional: the pre-flight is an optimisation that avoids burning
+    // a claim code slot on a predictable conflict.
 
     #[tokio::test]
-    async fn duplicate_email_rolls_back_claim_code_redemption() {
-        // MM-84.AC4: partial failure leaves no orphans — claim code must remain unredeemed
+    async fn duplicate_email_pre_flight_protects_claim_code() {
+        // MM-84.AC4: email conflict caught pre-flight — claim code must not be consumed
         let state = test_state().await;
         let db = state.db.clone();
         let claim_code = seed_claim_code(&state.db).await;
 
-        // Seed an existing pending account with the same email.
-        let existing_code = seed_claim_code(&state.db).await;
+        // Seed a pending account with the same email as the request will use.
+        let existing_code = seed_claim_code(&db).await;
         sqlx::query(
             "INSERT INTO pending_accounts (id, email, handle, tier, claim_code, created_at) \
              VALUES (?, 'test@example.com', 'existing.example.com', 'free', ?, datetime('now'))",
@@ -724,7 +738,6 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::CONFLICT);
 
-        // Claim code must remain unredeemed.
         let redeemed_at: Option<String> =
             sqlx::query_scalar("SELECT redeemed_at FROM claim_codes WHERE code = ?")
                 .bind(&claim_code)
@@ -733,14 +746,55 @@ mod tests {
                 .unwrap();
         assert!(
             redeemed_at.is_none(),
-            "claim code must remain unredeemed after failed provisioning"
+            "claim code must not be consumed when pre-flight rejects the request"
+        );
+    }
+
+    #[tokio::test]
+    async fn duplicate_handle_pre_flight_protects_claim_code() {
+        // MM-84.AC4: handle conflict caught pre-flight — claim code must not be consumed
+        let state = test_state().await;
+        let db = state.db.clone();
+        let claim_code = seed_claim_code(&db).await;
+
+        // Seed a pending account with the same handle as the request will use.
+        let existing_code = seed_claim_code(&db).await;
+        sqlx::query(
+            "INSERT INTO pending_accounts (id, email, handle, tier, claim_code, created_at) \
+             VALUES (?, 'other@example.com', 'test.example.com', 'free', ?, datetime('now'))",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&existing_code)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let response = app(state)
+            .oneshot(post_create_mobile_account(&mobile_body(&claim_code)))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "HANDLE_TAKEN");
+
+        let redeemed_at: Option<String> =
+            sqlx::query_scalar("SELECT redeemed_at FROM claim_codes WHERE code = ?")
+                .bind(&claim_code)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(
+            redeemed_at.is_none(),
+            "claim code must not be consumed when pre-flight rejects the request"
         );
     }
 
     // ── Duplicate email / handle ───────────────────────────────────────────────
 
     #[tokio::test]
-    async fn duplicate_email_returns_409() {
+    async fn duplicate_email_in_pending_returns_409() {
         let state = test_state().await;
         let db = state.db.clone();
         let code1 = seed_claim_code(&db).await;
@@ -765,6 +819,95 @@ mod tests {
         let body = axum::body::to_bytes(resp2.into_body(), 4096).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "ACCOUNT_EXISTS");
+    }
+
+    #[tokio::test]
+    async fn duplicate_email_in_accounts_returns_409() {
+        // exercises the OR EXISTS(SELECT 1 FROM accounts WHERE email = ?) branch in the pre-flight
+        let state = test_state().await;
+
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES ('did:plc:existing', 'existing@example.com', 'hash', datetime('now'), datetime('now'))",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let code = seed_claim_code(&state.db).await;
+        let response = app(state)
+            .oneshot(post_create_mobile_account(&format!(
+                r#"{{"email":"existing@example.com","handle":"new.example.com","devicePublicKey":"dGVzdC1rZXk=","platform":"ios","claimCode":"{code}"}}"#
+            )))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "ACCOUNT_EXISTS");
+    }
+
+    #[tokio::test]
+    async fn duplicate_handle_in_pending_returns_409() {
+        let state = test_state().await;
+        let db = state.db.clone();
+        let code1 = seed_claim_code(&db).await;
+        let code2 = seed_claim_code(&db).await;
+
+        let resp1 = app(state.clone())
+            .oneshot(post_create_mobile_account(&format!(
+                r#"{{"email":"h1@example.com","handle":"taken.example.com","devicePublicKey":"dGVzdC1rZXk=","platform":"ios","claimCode":"{code1}"}}"#
+            )))
+            .await
+            .unwrap();
+        assert_eq!(resp1.status(), StatusCode::CREATED);
+
+        let resp2 = app(state)
+            .oneshot(post_create_mobile_account(&format!(
+                r#"{{"email":"h2@example.com","handle":"taken.example.com","devicePublicKey":"dGVzdC1rZXk=","platform":"ios","claimCode":"{code2}"}}"#
+            )))
+            .await
+            .unwrap();
+
+        assert_eq!(resp2.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(resp2.into_body(), 4096).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "HANDLE_TAKEN");
+    }
+
+    #[tokio::test]
+    async fn duplicate_handle_in_handles_returns_409() {
+        // exercises the OR EXISTS(SELECT 1 FROM handles WHERE handle = ?) branch in the pre-flight
+        let state = test_state().await;
+
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES ('did:plc:active', 'active@example.com', 'hash', datetime('now'), datetime('now'))",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO handles (handle, did, created_at) \
+             VALUES ('active.example.com', 'did:plc:active', datetime('now'))",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let code = seed_claim_code(&state.db).await;
+        let response = app(state)
+            .oneshot(post_create_mobile_account(&format!(
+                r#"{{"email":"new@example.com","handle":"active.example.com","devicePublicKey":"dGVzdC1rZXk=","platform":"ios","claimCode":"{code}"}}"#
+            )))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "HANDLE_TAKEN");
     }
 
     // ── Platform validation ───────────────────────────────────────────────────
@@ -796,6 +939,43 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn oversized_public_key_returns_400() {
+        use crate::routes::register_device::MAX_PUBLIC_KEY_LEN;
+        let big_key = "x".repeat(MAX_PUBLIC_KEY_LEN + 1);
+        let body = format!(
+            r#"{{"email":"a@example.com","handle":"a.example.com","devicePublicKey":"{big_key}","platform":"ios","claimCode":"ABC123"}}"#
+        );
+        let response = app(test_state().await)
+            .oneshot(post_create_mobile_account(&body))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "INVALID_CLAIM");
+    }
+
+    // ── Email validation ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn empty_email_returns_400() {
+        // Present-but-empty email must be caught by application validation (400),
+        // not the deserializer (422 — which fires only for a missing field).
+        let response = app(test_state().await)
+            .oneshot(post_create_mobile_account(
+                r#"{"email":"","handle":"a.example.com","devicePublicKey":"dGVzdC1rZXk=","platform":"ios","claimCode":"ABC123"}"#,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "INVALID_CLAIM");
     }
 
     // ── Missing required fields ───────────────────────────────────────────────
