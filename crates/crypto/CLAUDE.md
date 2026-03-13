@@ -1,6 +1,6 @@
 # Crypto Crate
 
-Last verified: 2026-03-12
+Last verified: 2026-03-13
 
 ## Purpose
 Provides cryptographic primitives for the ezpds workspace: P-256 key generation,
@@ -9,16 +9,88 @@ and Shamir Secret Sharing for DID rotation key recovery.
 This is a pure functional core -- no I/O, no database, no config.
 
 ## Contracts
-- **Exposes**: `generate_p256_keypair() -> Result<P256Keypair, CryptoError>`, `encrypt_private_key(&[u8; 32], &[u8; 32]) -> Result<String, CryptoError>`, `decrypt_private_key(&str, &[u8; 32]) -> Result<Zeroizing<[u8; 32]>, CryptoError>`, `split_secret(&[u8; 32]) -> Result<[ShamirShare; 3], CryptoError>`, `combine_shares(&ShamirShare, &ShamirShare) -> Result<Zeroizing<[u8; 32]>, CryptoError>`, `P256Keypair`, `ShamirShare`, `CryptoError`
-- **P256Keypair fields**: `key_id` (full `did:key:z...` URI), `public_key` (multibase base58btc compressed point, no did:key: prefix), `private_key_bytes` (`Zeroizing<[u8; 32]>` -- zeroized on drop)
-- **ShamirShare fields**: `index` (u8, 1/2/3 -- not secret), `data` (`Zeroizing<[u8; 32]>` -- zeroized on drop)
-- **Encryption format**: `base64(nonce(12) || ciphertext(32) || tag(16))` = 80 base64 chars. Fresh 12-byte nonce from OS RNG per call.
-- **did:key format**: P-256 multicodec varint `[0x80, 0x24]` + compressed public key, multibase base58btc encoded
-- **CryptoError variants**: `KeyGeneration`, `Encryption`, `Decryption`, `SecretSharing`, `SecretReconstruction`
+
+### Public API functions
+
+**`generate_p256_keypair`**
+```rust
+pub fn generate_p256_keypair() -> Result<P256Keypair, CryptoError>
+```
+- Generates a fresh P-256 keypair from OS RNG
+- Returns `key_id` (full `did:key:z...` URI), `public_key` (multibase base58btc, no prefix), `private_key_bytes` (zeroized)
+
+**`encrypt_private_key`**
+```rust
+pub fn encrypt_private_key(&[u8; 32], &[u8; 32]) -> Result<String, CryptoError>
+```
+- Encrypts a 32-byte secret with a 32-byte master key using AES-256-GCM
+- Fresh 12-byte nonce per call; returns `base64(nonce(12) || ciphertext(32) || tag(16))` (80 base64 chars)
+
+**`decrypt_private_key`**
+```rust
+pub fn decrypt_private_key(&str, &[u8; 32]) -> Result<Zeroizing<[u8; 32]>, CryptoError>
+```
+- Decrypts a base64-encoded ciphertext with a master key
+- Returns opaque `CryptoError::Decryption` on all failure modes (no oracle)
+
+**`split_secret`**
+```rust
+pub fn split_secret(&[u8; 32]) -> Result<[ShamirShare; 3], CryptoError>
+```
+- Shamir secret sharing (2-of-3 scheme) with fresh OS RNG polynomial coefficients
+- Information-theoretic security: a single share reveals nothing
+
+**`combine_shares`**
+```rust
+pub fn combine_shares(&ShamirShare, &ShamirShare) -> Result<Zeroizing<[u8; 32]>, CryptoError>
+```
+- Reconstructs secret from 2 distinct shares (indices [1,3])
+- Returns `CryptoError::SecretReconstruction` if indices are duplicate or out of range
+
+**`build_did_plc_genesis_op`** (new, MM-89)
+```rust
+pub fn build_did_plc_genesis_op(
+    rotation_key: &DidKeyUri,       // user's root rotation key (rotationKeys[0])
+    signing_key: &DidKeyUri,        // relay's signing key (rotationKeys[1] + verificationMethods.atproto)
+    signing_private_key: &[u8; 32], // raw P-256 private key scalar for signing_key
+    handle: &str,                   // e.g. "alice.example.com"
+    service_endpoint: &str,         // e.g. "https://relay.example.com"
+) -> Result<PlcGenesisOp, CryptoError>
+```
+- Constructs a signed did:plc genesis operation
+- Returns `PlcGenesisOp { did, signed_op_json }`
+- `did` matches `^did:plc:[a-z2-7]{24}$`; derived from SHA-256 of CBOR-encoded signed op, base32-lowercase, first 24 chars
+- `signed_op_json` is ready to POST to `https://plc.directory/{did}`
+- Deterministic: same inputs → same DID (RFC 6979 ECDSA + SHA-256 + base32)
+- Errors: `CryptoError::PlcOperation` if `signing_private_key` is an invalid P-256 scalar
+
+### Public types
+
+**`P256Keypair`**
+- `key_id`: full `did:key:z...` URI
+- `public_key`: multibase base58btc compressed point (no prefix)
+- `private_key_bytes`: `Zeroizing<[u8; 32]>` (zeroized on drop)
+
+**`PlcGenesisOp`** (new, MM-89)
+- `did`: `"did:plc:xxxx..."` (28 chars total)
+- `signed_op_json`: contains `type`, `rotationKeys`, `verificationMethods`, `alsoKnownAs`, `services`, `prev` (null), `sig`
+
+**`ShamirShare`**
+- `index`: u8 in [1, 3] (not secret)
+- `data`: `Zeroizing<[u8; 32]>` (zeroized on drop)
+
+**`CryptoError`** variants:
+- `KeyGeneration`, `Encryption`, `Decryption`, `SecretSharing`, `SecretReconstruction`, `PlcOperation` (new, MM-89)
+
+### Format guarantees
+
+- **did:key**: P-256 multicodec varint `[0x80, 0x24]` + compressed point, multibase base58btc encoded
+- **Encryption**: `base64(nonce(12) || ciphertext(32) || tag(16))` = 80 base64 chars; fresh nonce per call
+- **did:plc genesis op sig**: base64url (no padding) decoding to exactly 64 bytes (r‖s, big-endian, low-S canonical)
 
 ## Dependencies
-- **Uses**: p256 (ECDSA/key generation), aes-gcm (AES-256-GCM), multibase (base58btc encoding), rand_core (OS RNG), base64 (storage encoding), zeroize (secret cleanup)
-- **Used by**: `crates/relay/` (key generation endpoint)
+- **Uses**: p256 (ECDSA/key generation), aes-gcm (AES-256-GCM), multibase (base58btc encoding), rand_core (OS RNG), base64 (storage encoding), zeroize (secret cleanup), ciborium (CBOR serialization for did:plc), data-encoding (base32-lowercase), sha2 (SHA-256), serde/serde_json (struct serialization)
+- **Used by**: `crates/relay/` (key generation, did:plc genesis endpoint)
 
 ## Invariants
 - Private key bytes are always wrapped in `Zeroizing` -- callers must not copy them into non-zeroizing storage
@@ -32,5 +104,6 @@ This is a pure functional core -- no I/O, no database, no config.
 ## Key Files
 - `src/lib.rs` - Re-exports public API
 - `src/keys.rs` - P-256 key generation, AES-256-GCM encrypt/decrypt
+- `src/plc.rs` - did:plc genesis operation builder (MM-89)
 - `src/shamir.rs` - Shamir Secret Sharing (split/combine, GF(2^8) arithmetic)
 - `src/error.rs` - CryptoError enum
