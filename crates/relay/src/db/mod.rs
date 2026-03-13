@@ -866,4 +866,145 @@ mod tests {
             "duplicate id must be rejected by PRIMARY KEY constraint"
         );
     }
+
+    // ── V008 tests ───────────────────────────────────────────────────────────
+
+    /// Verify that V008 rebuilds accounts with nullable password_hash.
+    /// Before V008, password_hash was NOT NULL. After V008, it should be nullable.
+    #[tokio::test]
+    async fn v008_accounts_password_hash_is_nullable() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        // PRAGMA table_info returns: (cid, name, type, notnull, dflt_value, pk)
+        let columns: Vec<(i32, String, String, i32, Option<String>, i32)> =
+            sqlx::query_as("PRAGMA table_info(accounts)")
+                .fetch_all(&pool)
+                .await
+                .expect("PRAGMA table_info must succeed");
+
+        // Find the password_hash column.
+        let password_hash_col = columns
+            .iter()
+            .find(|(_, name, _, _, _, _)| name == "password_hash")
+            .expect("password_hash column must exist");
+
+        let notnull = password_hash_col.3;
+        assert_eq!(
+            notnull, 0,
+            "password_hash must be nullable (notnull=0); got notnull={}",
+            notnull
+        );
+    }
+
+    /// Verify that V008 adds pending_did column to pending_accounts.
+    #[tokio::test]
+    async fn v008_pending_accounts_has_pending_did_column() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        // PRAGMA table_info returns: (cid, name, type, notnull, dflt_value, pk)
+        let columns: Vec<(i32, String, String, i32, Option<String>, i32)> =
+            sqlx::query_as("PRAGMA table_info(pending_accounts)")
+                .fetch_all(&pool)
+                .await
+                .expect("PRAGMA table_info must succeed");
+
+        // Find the pending_did column.
+        let pending_did_col = columns
+            .iter()
+            .find(|(_, name, _, _, _, _)| name == "pending_did");
+
+        assert!(
+            pending_did_col.is_some(),
+            "pending_did column must exist in pending_accounts after V008"
+        );
+    }
+
+    /// Verify that accounts with NULL password_hash can be inserted (for mobile-provisioned accounts).
+    #[tokio::test]
+    async fn v008_accounts_can_insert_null_password_hash() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES ('did:plc:mobile', 'mobile@example.com', NULL, datetime('now'), datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert account with NULL password_hash must succeed");
+
+        let (stored_hash,): (Option<String>,) =
+            sqlx::query_as("SELECT password_hash FROM accounts WHERE did = 'did:plc:mobile'")
+                .fetch_one(&pool)
+                .await
+                .expect("query must succeed");
+
+        assert!(stored_hash.is_none(), "password_hash must be NULL");
+    }
+
+    /// Verify that pending_did can be NULL (initial state) and can be updated to a DID string.
+    #[tokio::test]
+    async fn v008_pending_accounts_pending_did_nullable_and_updatable() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        let claim_code = "TEST-CODE";
+        sqlx::query(
+            "INSERT INTO claim_codes (code, expires_at, created_at) \
+             VALUES (?, datetime('now', '+1 hour'), datetime('now'))",
+        )
+        .bind(claim_code)
+        .execute(&pool)
+        .await
+        .expect("insert claim_code");
+
+        let account_id = "acct-v008-test";
+        sqlx::query(
+            "INSERT INTO pending_accounts (id, email, handle, tier, claim_code, created_at) \
+             VALUES (?, ?, ?, 'free', ?, datetime('now'))",
+        )
+        .bind(account_id)
+        .bind("test@example.com")
+        .bind("test.example.com")
+        .bind(claim_code)
+        .execute(&pool)
+        .await
+        .expect("insert pending_account");
+
+        // Initially, pending_did should be NULL.
+        let (initial_pending_did,): (Option<String>,) =
+            sqlx::query_as("SELECT pending_did FROM pending_accounts WHERE id = ?")
+                .bind(account_id)
+                .fetch_one(&pool)
+                .await
+                .expect("query must succeed");
+
+        assert!(
+            initial_pending_did.is_none(),
+            "pending_did should be NULL initially"
+        );
+
+        // Update it to a DID value.
+        sqlx::query("UPDATE pending_accounts SET pending_did = ? WHERE id = ?")
+            .bind("did:plc:test123")
+            .bind(account_id)
+            .execute(&pool)
+            .await
+            .expect("update must succeed");
+
+        let (updated_pending_did,): (Option<String>,) =
+            sqlx::query_as("SELECT pending_did FROM pending_accounts WHERE id = ?")
+                .bind(account_id)
+                .fetch_one(&pool)
+                .await
+                .expect("query must succeed");
+
+        assert_eq!(
+            updated_pending_did,
+            Some("did:plc:test123".to_string()),
+            "pending_did should be updated"
+        );
+    }
 }
