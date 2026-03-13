@@ -16,6 +16,7 @@ use crate::routes::create_account::create_account;
 use crate::routes::create_signing_key::create_signing_key;
 use crate::routes::describe_server::describe_server;
 use crate::routes::health::health;
+use crate::routes::register_device::register_device;
 
 /// Wraps an `axum::http::HeaderMap` as an OTel text-map [`Extractor`] so that
 /// the W3C `traceparent` and `tracestate` headers can be read by the global propagator.
@@ -90,6 +91,7 @@ pub fn app(state: AppState) -> Router {
         .route("/xrpc/:method", get(xrpc_handler).post(xrpc_handler))
         .route("/v1/accounts", post(create_account))
         .route("/v1/accounts/claim-codes", post(claim_codes))
+        .route("/v1/devices", post(register_device))
         .route("/v1/relay/keys", post(create_signing_key))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http().make_span_with(OtelMakeSpan))

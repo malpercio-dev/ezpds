@@ -1,6 +1,6 @@
 # Database Module
 
-Last verified: 2026-03-11
+Last verified: 2026-03-13
 
 ## Purpose
 Owns SQLite connection lifecycle and schema migration for the relay's server-level database.
@@ -33,3 +33,6 @@ that can later serve per-user SQLite databases (Wave 3/4).
 - `migrations/V001__init.sql` - server_metadata table (WITHOUT ROWID)
 - `migrations/V002__auth_identity.sql` - 12 Wave 2 tables: accounts, handles, did_documents, signing_keys, devices, claim_codes, sessions, refresh_tokens, oauth_clients, oauth_authorization_codes, oauth_tokens, oauth_par_requests
 - `migrations/V003__relay_signing_keys.sql` - relay_signing_keys table (WITHOUT ROWID, keyed by did:key URI) for operator-level relay signing keys (not tied to a specific account DID)
+- `migrations/V004__claim_codes_invite.sql` - Rebuilds claim_codes: removes DID FK, adds redeemed_at; status derived not stored
+- `migrations/V005__pending_accounts.sql` - pending_accounts table: pre-provisioned account slots (id, email, handle, tier, claim_code)
+- `migrations/V006__devices_v2.sql` - Rebuilds devices: replaces did FK (accounts) with account_id FK (pending_accounts); adds platform, public_key, device_token_hash; also rebuilds sessions, oauth_tokens, refresh_tokens (cascade due to FK references)

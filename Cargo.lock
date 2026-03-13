@@ -1802,6 +1802,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.21.7",
  "clap",
  "common",
  "crypto",
@@ -1811,6 +1812,7 @@ dependencies = [
  "rand_core",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "subtle",
  "tempfile",

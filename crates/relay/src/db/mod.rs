@@ -48,6 +48,10 @@ static MIGRATIONS: &[Migration] = &[
         version: 5,
         sql: include_str!("migrations/V005__pending_accounts.sql"),
     },
+    Migration {
+        version: 6,
+        sql: include_str!("migrations/V006__devices_v2.sql"),
+    },
 ];
 
 /// Open a WAL-mode SQLite connection pool with a maximum of 1 connection.
@@ -522,9 +526,27 @@ mod tests {
         .await
         .unwrap();
 
+        // V006: devices now references pending_accounts.id instead of accounts.did.
+        // Set up a claim_code and pending_account so the device FK can be satisfied.
         sqlx::query(
-            "INSERT INTO devices (id, did, device_name, user_agent, created_at, last_seen_at)
-             VALUES ('dev1', 'did:plc:aaa', 'My Phone', 'Mozilla/5.0', '2024-01-01T00:00:00', '2024-01-01T00:00:00')",
+            "INSERT INTO claim_codes (code, expires_at, created_at) \
+             VALUES ('CHAIN1', datetime('now', '+24 hours'), datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO pending_accounts (id, email, handle, tier, claim_code, created_at) \
+             VALUES ('acct1', 'a@example.com', 'a.example.com', 'free', 'CHAIN1', datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO devices (id, account_id, platform, public_key, device_token_hash, created_at, last_seen_at)
+             VALUES ('dev1', 'acct1', 'ios', 'pubkey123', 'deadbeef', '2024-01-01T00:00:00', '2024-01-01T00:00:00')",
         )
         .execute(&pool)
         .await
@@ -697,17 +719,19 @@ mod tests {
         );
     }
 
-    /// EXPLAIN QUERY PLAN must show idx_devices_did for a WHERE did = ? query.
+    /// EXPLAIN QUERY PLAN must show idx_devices_account_id for a WHERE account_id = ? query.
+    /// (V006 replaced the did FK with account_id; the index is now idx_devices_account_id.)
     #[tokio::test]
-    async fn v002_index_devices_did_used() {
+    async fn v006_index_devices_account_id_used() {
         let pool = in_memory_pool().await;
         run_migrations(&pool).await.unwrap();
 
-        let plan: Vec<(i64, i64, i64, String)> =
-            sqlx::query_as("EXPLAIN QUERY PLAN SELECT * FROM devices WHERE did = 'did:plc:aaa'")
-                .fetch_all(&pool)
-                .await
-                .unwrap();
+        let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+            "EXPLAIN QUERY PLAN SELECT * FROM devices WHERE account_id = 'acct1'",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
 
         let detail = plan
             .iter()
@@ -715,8 +739,8 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            detail.contains("idx_devices_did"),
-            "devices WHERE did query must use idx_devices_did; got: {detail}"
+            detail.contains("idx_devices_account_id"),
+            "devices WHERE account_id query must use idx_devices_account_id; got: {detail}"
         );
     }
 

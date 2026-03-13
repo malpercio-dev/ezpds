@@ -1,0 +1,19 @@
+meta {
+  name: Register Device
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/devices
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "claimCode": "ABC123",
+    "devicePublicKey": "dGVzdC1rZXk=",
+    "platform": "ios"
+  }
+}
