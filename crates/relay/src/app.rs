@@ -14,6 +14,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::routes::claim_codes::claim_codes;
 use crate::routes::create_account::create_account;
+use crate::routes::create_did::create_did_handler;
 use crate::routes::create_mobile_account::create_mobile_account;
 use crate::routes::create_signing_key::create_signing_key;
 use crate::routes::describe_server::describe_server;
@@ -97,6 +98,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/accounts/claim-codes", post(claim_codes))
         .route("/v1/accounts/mobile", post(create_mobile_account))
         .route("/v1/devices", post(register_device))
+        .route("/v1/dids", post(create_did_handler))
         .route("/v1/relay/keys", post(create_signing_key))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http().make_span_with(OtelMakeSpan))
