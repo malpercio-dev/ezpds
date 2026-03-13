@@ -734,12 +734,11 @@ mod tests {
         let pool = in_memory_pool().await;
         run_migrations(&pool).await.unwrap();
 
-        let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
-            "EXPLAIN QUERY PLAN SELECT * FROM devices WHERE account_id = 'acct1'",
-        )
-        .fetch_all(&pool)
-        .await
-        .unwrap();
+        let plan: Vec<(i64, i64, i64, String)> =
+            sqlx::query_as("EXPLAIN QUERY PLAN SELECT * FROM devices WHERE account_id = 'acct1'")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
 
         let detail = plan
             .iter()

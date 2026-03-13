@@ -263,19 +263,14 @@ async fn provision_mobile_account(
                 .inspect_err(|e| {
                     tracing::error!(error = %e, "failed to classify claim code status");
                 })
-                .map_err(|_| {
-                    ApiError::new(ErrorCode::InternalError, "failed to create account")
-                })?;
+                .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to create account"))?;
 
         return Err(match row {
             Some((Some(_),)) => ApiError::new(
                 ErrorCode::ClaimCodeRedeemed,
                 "claim code has already been redeemed",
             ),
-            _ => ApiError::new(
-                ErrorCode::NotFound,
-                "claim code is invalid or has expired",
-            ),
+            _ => ApiError::new(ErrorCode::NotFound, "claim code is invalid or has expired"),
         });
     }
 
@@ -359,10 +354,7 @@ fn classify_pending_account_error(e: &sqlx::Error) -> ApiError {
                 );
             }
             if msg.contains("pending_accounts.handle") {
-                return ApiError::new(
-                    ErrorCode::HandleTaken,
-                    "this handle is already claimed",
-                );
+                return ApiError::new(ErrorCode::HandleTaken, "this handle is already claimed");
             }
             // Unknown unique constraint — log the name so it surfaces in traces.
             tracing::error!(
@@ -438,13 +430,27 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::CREATED);
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-        assert!(json["accountId"].as_str().is_some(), "accountId must be present");
-        assert!(json["deviceId"].as_str().is_some(), "deviceId must be present");
-        assert!(json["deviceToken"].as_str().is_some(), "deviceToken must be present");
-        assert!(json["sessionToken"].as_str().is_some(), "sessionToken must be present");
+        assert!(
+            json["accountId"].as_str().is_some(),
+            "accountId must be present"
+        );
+        assert!(
+            json["deviceId"].as_str().is_some(),
+            "deviceId must be present"
+        );
+        assert!(
+            json["deviceToken"].as_str().is_some(),
+            "deviceToken must be present"
+        );
+        assert!(
+            json["sessionToken"].as_str().is_some(),
+            "sessionToken must be present"
+        );
         assert_eq!(json["nextStep"], "did_creation");
     }
 
@@ -458,7 +464,9 @@ mod tests {
             .await
             .unwrap();
 
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
         uuid::Uuid::parse_str(json["accountId"].as_str().unwrap())
@@ -477,13 +485,17 @@ mod tests {
             .await
             .unwrap();
 
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
         for field in ["deviceToken", "sessionToken"] {
             let token = json[field].as_str().unwrap();
             assert!(
-                token.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+                token
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
                 "{field} must be base64url without padding; got: {token}"
             );
             assert_eq!(
@@ -507,7 +519,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::CREATED);
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
         let account_id = json["accountId"].as_str().unwrap();
@@ -528,13 +542,12 @@ mod tests {
         assert_eq!(code, claim_code);
 
         // devices row
-        let (dev_account_id, platform, public_key): (String, String, String) = sqlx::query_as(
-            "SELECT account_id, platform, public_key FROM devices WHERE id = ?",
-        )
-        .bind(device_id)
-        .fetch_one(&db)
-        .await
-        .expect("devices row must exist");
+        let (dev_account_id, platform, public_key): (String, String, String) =
+            sqlx::query_as("SELECT account_id, platform, public_key FROM devices WHERE id = ?")
+                .bind(device_id)
+                .fetch_one(&db)
+                .await
+                .expect("devices row must exist");
 
         assert_eq!(dev_account_id, account_id);
         assert_eq!(platform, "ios");
@@ -571,7 +584,10 @@ mod tests {
                 .await
                 .unwrap();
 
-        assert!(redeemed_at.is_some(), "claim code must have redeemed_at set");
+        assert!(
+            redeemed_at.is_some(),
+            "claim code must have redeemed_at set"
+        );
     }
 
     #[tokio::test]
@@ -588,15 +604,18 @@ mod tests {
             .await
             .unwrap();
 
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
         let device_id = json["deviceId"].as_str().unwrap();
         let account_id = json["accountId"].as_str().unwrap();
 
         // device token hash
-        let device_token_bytes =
-            URL_SAFE_NO_PAD.decode(json["deviceToken"].as_str().unwrap()).unwrap();
+        let device_token_bytes = URL_SAFE_NO_PAD
+            .decode(json["deviceToken"].as_str().unwrap())
+            .unwrap();
         let expected_device_hash: String = Sha256::digest(&device_token_bytes)
             .iter()
             .map(|b| format!("{b:02x}"))
@@ -608,24 +627,30 @@ mod tests {
                 .fetch_one(&db)
                 .await
                 .unwrap();
-        assert_eq!(stored_device_hash, expected_device_hash, "device_token_hash mismatch");
+        assert_eq!(
+            stored_device_hash, expected_device_hash,
+            "device_token_hash mismatch"
+        );
 
         // session token hash
-        let session_token_bytes =
-            URL_SAFE_NO_PAD.decode(json["sessionToken"].as_str().unwrap()).unwrap();
+        let session_token_bytes = URL_SAFE_NO_PAD
+            .decode(json["sessionToken"].as_str().unwrap())
+            .unwrap();
         let expected_session_hash: String = Sha256::digest(&session_token_bytes)
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
 
-        let (stored_session_hash,): (String,) = sqlx::query_as(
-            "SELECT token_hash FROM pending_sessions WHERE account_id = ?",
-        )
-        .bind(account_id)
-        .fetch_one(&db)
-        .await
-        .unwrap();
-        assert_eq!(stored_session_hash, expected_session_hash, "session token_hash mismatch");
+        let (stored_session_hash,): (String,) =
+            sqlx::query_as("SELECT token_hash FROM pending_sessions WHERE account_id = ?")
+                .bind(account_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(
+            stored_session_hash, expected_session_hash,
+            "session token_hash mismatch"
+        );
     }
 
     // ── Claim code errors ─────────────────────────────────────────────────────
@@ -641,7 +666,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "NOT_FOUND");
     }
@@ -670,7 +697,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "NOT_FOUND");
     }
@@ -699,7 +728,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(second.status(), StatusCode::CONFLICT);
-        let body = axum::body::to_bytes(second.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(second.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "CLAIM_CODE_REDEEMED");
     }
@@ -775,7 +806,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::CONFLICT);
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "HANDLE_TAKEN");
 
@@ -843,7 +876,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::CONFLICT);
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "ACCOUNT_EXISTS");
     }
@@ -905,7 +940,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::CONFLICT);
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "HANDLE_TAKEN");
     }
@@ -922,7 +959,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "INVALID_CLAIM");
     }
@@ -954,7 +993,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "INVALID_CLAIM");
     }
@@ -973,7 +1014,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "INVALID_CLAIM");
     }
@@ -1019,7 +1062,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "INTERNAL_ERROR");
     }
