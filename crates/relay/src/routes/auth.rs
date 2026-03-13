@@ -5,6 +5,12 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 
+/// Information about an authenticated pending session.
+pub struct PendingSessionInfo {
+    pub account_id: String,
+    pub device_id: String,
+}
+
 /// Validate the admin Bearer token from request headers.
 ///
 /// Returns `Ok(())` when the token is present, has the `"Bearer "` prefix, and the
@@ -50,6 +56,75 @@ pub fn require_admin_token(headers: &HeaderMap, state: &AppState) -> Result<(), 
     }
 
     Ok(())
+}
+
+/// Authenticate a `pending_session` Bearer token.
+///
+/// Extracts the Bearer token from the Authorization header, SHA-256 hashes the raw
+/// decoded bytes (matching the storage format from `POST /v1/accounts/mobile`), and
+/// queries `pending_sessions` for a matching, unexpired row.
+///
+/// # Errors
+/// Returns `ApiError::Unauthorized` if:
+/// - The Authorization header is missing
+/// - The token is not valid base64url
+/// - No unexpired session matches the token hash
+pub async fn require_pending_session(
+    headers: &HeaderMap,
+    db: &sqlx::SqlitePool,
+) -> Result<PendingSessionInfo, ApiError> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use sha2::{Digest, Sha256};
+
+    // Extract Bearer token from Authorization header.
+    let token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::Unauthorized,
+                "missing or invalid Authorization header",
+            )
+        })?;
+
+    // Decode base64url → raw bytes, then SHA-256 hash → hex string.
+    // Matches the storage format written by POST /v1/accounts/mobile.
+    let token_bytes = URL_SAFE_NO_PAD.decode(token).map_err(|_| {
+        ApiError::new(
+            ErrorCode::Unauthorized,
+            "invalid session token",
+        )
+    })?;
+    let token_hash: String = Sha256::digest(&token_bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+
+    // Look up the session by hash, rejecting expired sessions.
+    let row: Option<(String, String)> = sqlx::query_as(
+        "SELECT account_id, device_id FROM pending_sessions \
+         WHERE token_hash = ? AND expires_at > datetime('now')",
+    )
+    .bind(&token_hash)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "failed to query pending session");
+        ApiError::new(
+            ErrorCode::InternalError,
+            "session lookup failed",
+        )
+    })?;
+
+    let (account_id, device_id) = row.ok_or_else(|| {
+        ApiError::new(
+            ErrorCode::Unauthorized,
+            "invalid or expired session token",
+        )
+    })?;
+
+    Ok(PendingSessionInfo { account_id, device_id })
 }
 
 #[cfg(test)]
