@@ -1,8 +1,9 @@
 // pattern: Imperative Shell
 //
 // Gathers: JSON request body (claim_code, device_public_key, platform), DB pool
-// Processes: platform validation → public key non-empty check → atomic claim-code
-//            redemption + device registration (single transaction):
+// Processes: platform validation → public key non-empty/length check → atomic claim-code
+//            redemption + device registration (single transaction, rolls back on any step
+//            failure):
 //              UPDATE claim_codes WHERE code = ? AND unredeemed AND unexpired
 //              SELECT pending_accounts.id WHERE claim_code = ?
 //              INSERT INTO devices (...)
@@ -18,6 +19,11 @@ use uuid::Uuid;
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
+
+/// Maximum allowed length for a device public key string.
+/// A P-256 uncompressed public key in base64 is ~88 chars; 512 is generous
+/// enough to accommodate any standard encoding without accepting unbounded input.
+const MAX_PUBLIC_KEY_LEN: usize = 512;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,11 +53,17 @@ pub async fn register_device(
         ));
     }
 
-    // --- Validate device_public_key is non-empty ---
+    // --- Validate device_public_key ---
     if payload.device_public_key.is_empty() {
         return Err(ApiError::new(
             ErrorCode::InvalidClaim,
             "devicePublicKey must not be empty",
+        ));
+    }
+    if payload.device_public_key.len() > MAX_PUBLIC_KEY_LEN {
+        return Err(ApiError::new(
+            ErrorCode::InvalidClaim,
+            format!("devicePublicKey must be at most {MAX_PUBLIC_KEY_LEN} characters"),
         ));
     }
 
@@ -99,6 +111,9 @@ fn is_valid_platform(platform: &str) -> bool {
 /// redeemed — no race window, and no second SELECT is needed for the guard.
 ///
 /// Returns the `account_id` (pending_accounts.id) on success.
+/// On any failure after the transaction has begun, the transaction is dropped and
+/// SQLite rolls back all changes — the claim code remains unredeemed.
+#[tracing::instrument(skip(db), err, fields(claim_code = %claim_code))]
 async fn redeem_and_register(
     db: &sqlx::SqlitePool,
     claim_code: &str,
@@ -122,7 +137,7 @@ async fn redeem_and_register(
     .execute(&mut *tx)
     .await
     .inspect_err(|e| {
-        tracing::error!(error = %e, "failed to redeem claim code");
+        tracing::error!(error = %e, "failed to execute claim code redemption UPDATE");
     })
     .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to register device"))?;
 
@@ -141,7 +156,11 @@ async fn redeem_and_register(
     .fetch_one(&mut *tx)
     .await
     .inspect_err(|e| {
-        tracing::error!(error = %e, "failed to fetch pending account for claim code");
+        if matches!(e, sqlx::Error::RowNotFound) {
+            tracing::error!("no pending_account row found for claim code — orphaned code");
+        } else {
+            tracing::error!(error = %e, "failed to fetch pending account for claim code");
+        }
     })
     .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to register device"))?;
 
@@ -192,30 +211,43 @@ mod tests {
 
     /// Seed a pending account with a valid (unredeemed, unexpired) claim code.
     /// Returns (account_id, claim_code).
+    ///
+    /// Each call generates a unique claim code and unique email/handle so the helper
+    /// is safe to call multiple times on the same pool without UNIQUE constraint conflicts.
     async fn seed_pending_account(db: &sqlx::SqlitePool) -> (String, String) {
         let account_id = uuid::Uuid::new_v4().to_string();
-        let claim_code = "SEED01";
+        let claim_code: String = uuid::Uuid::new_v4()
+            .simple()
+            .to_string()
+            .chars()
+            .take(8)
+            .map(|c| c.to_ascii_uppercase())
+            .collect();
+        let email = format!("test-{}@example.com", &account_id[..8]);
+        let handle = format!("test-{}.example.com", &account_id[..8]);
 
         sqlx::query(
             "INSERT INTO claim_codes (code, expires_at, created_at) \
              VALUES (?, datetime('now', '+24 hours'), datetime('now'))",
         )
-        .bind(claim_code)
+        .bind(&claim_code)
         .execute(db)
         .await
         .unwrap();
 
         sqlx::query(
             "INSERT INTO pending_accounts (id, email, handle, tier, claim_code, created_at) \
-             VALUES (?, 'alice@example.com', 'alice.example.com', 'free', ?, datetime('now'))",
+             VALUES (?, ?, ?, 'free', ?, datetime('now'))",
         )
         .bind(&account_id)
-        .bind(claim_code)
+        .bind(&email)
+        .bind(&handle)
+        .bind(&claim_code)
         .execute(db)
         .await
         .unwrap();
 
-        (account_id, claim_code.to_string())
+        (account_id, claim_code)
     }
 
     // ── Happy path ────────────────────────────────────────────────────────────
@@ -411,6 +443,52 @@ mod tests {
         assert!(redeemed_at.is_some(), "claim code must have redeemed_at set");
     }
 
+    #[tokio::test]
+    async fn orphaned_claim_code_returns_500_and_does_not_redeem_code() {
+        // Atomicity: if the pending_accounts lookup fails (orphaned code — code exists in
+        // claim_codes but no matching pending_accounts row), the transaction must roll back
+        // so the claim code remains unredeemed. Verifies the UPDATE is not committed without
+        // the subsequent INSERT also succeeding.
+        let state = test_state().await;
+        let db = state.db.clone();
+        let claim_code = "ORPHAN1";
+
+        sqlx::query(
+            "INSERT INTO claim_codes (code, expires_at, created_at) \
+             VALUES (?, datetime('now', '+24 hours'), datetime('now'))",
+        )
+        .bind(claim_code)
+        .execute(&state.db)
+        .await
+        .unwrap();
+        // Deliberately omit the matching pending_accounts insert.
+
+        let body = format!(
+            r#"{{"claimCode":"{claim_code}","devicePublicKey":"dGVzdC1rZXk=","platform":"ios"}}"#
+        );
+        let response = app(state)
+            .oneshot(post_register_device(&body))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "INTERNAL_ERROR");
+
+        // Transaction must have rolled back: claim code must remain unredeemed.
+        let redeemed_at: Option<String> =
+            sqlx::query_scalar("SELECT redeemed_at FROM claim_codes WHERE code = ?")
+                .bind(claim_code)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(
+            redeemed_at.is_none(),
+            "claim code must remain unredeemed after failed registration (transaction rollback)"
+        );
+    }
+
     // ── Invalid / expired / redeemed claim codes ──────────────────────────────
 
     #[tokio::test]
@@ -434,7 +512,7 @@ mod tests {
         // MM-87.AC2: expired code returns error
         let state = test_state().await;
         let account_id = uuid::Uuid::new_v4().to_string();
-        let claim_code = "EXPIRD";
+        let claim_code = "EXPIRD1";
 
         sqlx::query(
             "INSERT INTO claim_codes (code, expires_at, created_at) \
@@ -549,9 +627,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "INVALID_CLAIM");
     }
 
-    // ── Empty public key ──────────────────────────────────────────────────────
+    // ── Public key validation ─────────────────────────────────────────────────
 
     #[tokio::test]
     async fn empty_public_key_returns_400() {
@@ -559,6 +640,23 @@ mod tests {
             .oneshot(post_register_device(
                 r#"{"claimCode":"ABC123","devicePublicKey":"","platform":"ios"}"#,
             ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "INVALID_CLAIM");
+    }
+
+    #[tokio::test]
+    async fn oversized_public_key_returns_400() {
+        let oversized_key = "A".repeat(super::MAX_PUBLIC_KEY_LEN + 1);
+        let body = format!(
+            r#"{{"claimCode":"ABC123","devicePublicKey":"{oversized_key}","platform":"ios"}}"#
+        );
+        let response = app(test_state().await)
+            .oneshot(post_register_device(&body))
             .await
             .unwrap();
 
@@ -621,6 +719,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "INTERNAL_ERROR");
     }
 
     // ── Pure unit tests ───────────────────────────────────────────────────────

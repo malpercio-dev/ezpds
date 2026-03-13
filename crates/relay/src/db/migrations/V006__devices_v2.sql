@@ -5,18 +5,22 @@
 -- and adds platform, public_key, and device_token_hash for challenge-response auth.
 --
 -- Cascade: sessions and oauth_tokens FK to devices; refresh_tokens FKs to sessions.
--- SQLite 3.26+ auto-updates FK references in child tables when a parent is renamed,
--- so renaming devices → devices_v1 also updates sessions and oauth_tokens to reference
--- devices_v1, and renaming sessions → sessions_v1 updates refresh_tokens similarly.
--- All four tables are therefore recreated here. All are empty at this migration (pre-launch).
+-- SQLite does NOT auto-update FK references in child tables when a parent is renamed
+-- (ALTER TABLE RENAME only rewrites references inside trigger and view bodies — not
+-- foreign key definitions in other tables). All FK columns still reference the original
+-- table names after the rename, which is exactly what we want: after the _v1 tables are
+-- dropped and the new tables are created under the same original names, the unchanged FK
+-- definitions automatically point to the correct new tables.
+-- All four tables are empty at this migration (pre-launch), so no DML-time FK checks fire.
 --
 -- IMPORTANT index naming: SQLite indexes follow the table when it is renamed — they
 -- retain their original names on the renamed table. Dropping the old tables (which
 -- also drops their indexes) must happen BEFORE creating the new tables, otherwise
 -- CREATE INDEX fails with "already exists". Drop order: children before parents.
 
--- Step 1: Rename all affected tables (most-derived first so FK auto-updates cascade
--- in the right direction as parent tables are renamed after their children).
+-- Step 1: Rename all affected tables (children first so that at each rename the parent
+-- table being renamed still exists; FK references in child tables are unchanged by the
+-- rename, so their outbound FKs continue pointing to the original name, not the _v1 name).
 ALTER TABLE refresh_tokens RENAME TO refresh_tokens_v1;
 ALTER TABLE oauth_tokens RENAME TO oauth_tokens_v1;
 ALTER TABLE sessions RENAME TO sessions_v1;
@@ -25,8 +29,9 @@ ALTER TABLE devices RENAME TO devices_v1;
 -- Step 2: Drop old tables in children-before-parents order. Each DROP also removes
 -- the table's indexes (idx_refresh_tokens_did, idx_oauth_tokens_did, idx_sessions_did,
 -- idx_devices_did), clearing the way for the new tables to use the same index names.
--- FK enforcement: at DROP time SQLite only checks for child rows in the table being
--- dropped, not the table's own outbound FKs. All tables are empty (pre-launch).
+-- FK enforcement at DROP time: SQLite checks only whether child rows reference the table
+-- being dropped. Since no FK was updated to reference _v1 names (see above), nothing
+-- references the _v1 tables — all FKs still point to the original names. Drop succeeds.
 DROP TABLE refresh_tokens_v1;
 DROP TABLE oauth_tokens_v1;
 DROP TABLE sessions_v1;
@@ -37,6 +42,8 @@ DROP TABLE devices_v1;
 -- public_key is stored as provided by the device (used for future challenge-response auth).
 -- device_token_hash is SHA-256(device_token); the plaintext token is returned once at
 -- registration and never stored.
+-- device_token_hash is UNIQUE: every registered device receives a distinct token;
+-- the uniqueness constraint provides defense-in-depth and documents the invariant.
 CREATE TABLE devices (
     id                TEXT NOT NULL,
     account_id        TEXT NOT NULL REFERENCES pending_accounts (id),
@@ -51,6 +58,9 @@ CREATE TABLE devices (
 
 -- Device listing by account (e.g., show all devices for a user).
 CREATE INDEX idx_devices_account_id ON devices (account_id);
+
+-- Each registered device must have a distinct token hash (defense-in-depth).
+CREATE UNIQUE INDEX idx_devices_token_hash ON devices (device_token_hash);
 
 -- Step 4: Recreate sessions, oauth_tokens, and refresh_tokens with FKs pointing to the
 -- new devices/sessions tables. Schemas are identical to V002 except for the FK targets.
