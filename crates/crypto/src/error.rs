@@ -10,4 +10,6 @@ pub enum CryptoError {
     SecretSharing(String),
     #[error("secret reconstruction failed: {0}")]
     SecretReconstruction(String),
+    #[error("plc operation failed: {0}")]
+    PlcOperation(String),
 }
