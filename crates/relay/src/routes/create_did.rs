@@ -104,6 +104,20 @@ pub async fn create_did_handler(
         })?;
 
     // Step 5: Build the genesis operation and derive the DID.
+    // Validate that both keys are proper did:key: URIs before wrapping.
+    if !payload.signing_key.starts_with("did:key:z") {
+        return Err(ApiError::new(
+            ErrorCode::InvalidClaim,
+            "signingKey must be a did:key: URI starting with 'did:key:z'",
+        ));
+    }
+    if !payload.rotation_key.starts_with("did:key:z") {
+        return Err(ApiError::new(
+            ErrorCode::InvalidClaim,
+            "rotationKey must be a did:key: URI starting with 'did:key:z'",
+        ));
+    }
+
     let rotation_key = crypto::DidKeyUri(payload.rotation_key.clone());
     let signing_key_uri = crypto::DidKeyUri(payload.signing_key.clone());
 
@@ -128,7 +142,20 @@ pub async fn create_did_handler(
     // Step 6: Pre-store the DID for retry resilience.
     // If pending_did is already set, we are on a retry path — skip the plc.directory call.
     let skip_plc_directory = if let Some(pre_stored_did) = &pending_did {
-        // Retry: use the pre-stored DID (should match — same deterministic inputs).
+        // Retry: verify that the crypto-derived DID matches the pre-stored value.
+        // If inputs changed between attempts, a different DID would be derived,
+        // which indicates a mismatch error that must be caught.
+        if did != *pre_stored_did {
+            tracing::error!(
+                derived_did = %did,
+                stored_did = %pre_stored_did,
+                "retry path: derived DID does not match pre-stored DID; inputs may have changed"
+            );
+            return Err(ApiError::new(
+                ErrorCode::InternalError,
+                "DID mismatch: derived DID does not match pre-stored value",
+            ));
+        }
         tracing::info!(did = %pre_stored_did, "retry detected: pending_did already set, skipping plc.directory");
         true
     } else {
@@ -183,7 +210,16 @@ pub async fn create_did_handler(
 
         if !response.status().is_success() {
             let status = response.status();
-            tracing::error!(status = %status, "plc.directory rejected genesis operation");
+            // Consume the response body to include in logs, ignoring errors if body read fails.
+            let body_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<failed to read body>".to_string());
+            tracing::error!(
+                status = %status,
+                body = %body_text,
+                "plc.directory rejected genesis operation"
+            );
             return Err(ApiError::new(
                 ErrorCode::PlcDirectoryError,
                 format!("plc.directory returned {status}"),
@@ -197,7 +233,7 @@ pub async fn create_did_handler(
         &handle,
         &payload.signing_key,
         &state.config.public_url,
-    );
+    )?;
 
     // Step 10: Atomically promote the account.
     let mut tx = state
@@ -272,19 +308,25 @@ pub async fn create_did_handler(
 /// Construct a minimal DID Core document from known fields.
 ///
 /// No I/O — pure construction from parameters.
+///
+/// # Errors
+/// Returns an error if signing_key_did is not a did:key: URI (e.g., missing the prefix).
 fn build_did_document(
     did: &str,
     handle: &str,
     signing_key_did: &str,
     service_endpoint: &str,
-) -> String {
+) -> Result<String, ApiError> {
     // Extract the multibase-encoded public key from the did:key URI.
     // did:key:zAbcDef... → publicKeyMultibase = "zAbcDef..."
-    let public_key_multibase = signing_key_did
-        .strip_prefix("did:key:")
-        .unwrap_or(signing_key_did);
+    let public_key_multibase = signing_key_did.strip_prefix("did:key:").ok_or_else(|| {
+        ApiError::new(
+            ErrorCode::InternalError,
+            "signing key is not a did:key: URI",
+        )
+    })?;
 
-    serde_json::json!({
+    Ok(serde_json::json!({
         "@context": [
             "https://www.w3.org/ns/did/v1"
         ],
@@ -302,7 +344,7 @@ fn build_did_document(
             "serviceEndpoint": service_endpoint
         }]
     })
-    .to_string()
+    .to_string())
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -448,15 +490,22 @@ mod tests {
     async fn test_state_for_did(plc_url: String) -> AppState {
         use common::Sensitive;
         use std::sync::Arc;
+        use std::time::Duration;
         use zeroize::Zeroizing;
 
         let base = test_state_with_plc_url(plc_url).await;
         let mut config = (*base.config).clone();
         config.signing_key_master_key = Some(Sensitive(Zeroizing::new(TEST_MASTER_KEY)));
+
+        let http_client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .expect("test http client");
+
         AppState {
             config: Arc::new(config),
             db: base.db,
-            http_client: base.http_client,
+            http_client,
         }
     }
 
@@ -585,14 +634,38 @@ mod tests {
         let db = state.db.clone();
         let setup = insert_test_data(&db).await;
 
-        // Simulate a partial-failure retry: set pending_did to any non-null value.
-        // The handler checks `pending_did.is_some()` as a boolean flag to skip
-        // plc.directory. It does NOT use the stored value — it always re-derives
-        // the DID from the crypto function (deterministic from key + handle inputs).
-        // So any syntactically valid DID string works here.
-        let any_did = "did:plc:abcdefghijklmnopqrstuvwx";
+        // Derive the DID from the same inputs that the handler will use.
+        // This ensures the pre-stored pending_did matches what the handler will derive.
+        let rotation_key = crypto::DidKeyUri(setup.rotation_key_id.clone());
+        let signing_key = crypto::DidKeyUri(setup.signing_key_id.clone());
+
+        // Look up the private key (same as handler does).
+        let (private_key_encrypted,): (String,) =
+            sqlx::query_as("SELECT private_key_encrypted FROM relay_signing_keys WHERE id = ?")
+                .bind(&setup.signing_key_id)
+                .fetch_one(&db)
+                .await
+                .expect("signing key must exist");
+
+        let private_key_bytes =
+            crypto::decrypt_private_key(&private_key_encrypted, &TEST_MASTER_KEY)
+                .expect("decrypt key");
+
+        // Build the genesis op to get the DID (same as handler does).
+        let genesis = crypto::build_did_plc_genesis_op(
+            &rotation_key,
+            &signing_key,
+            &private_key_bytes,
+            &setup.handle,
+            &state.config.public_url,
+        )
+        .expect("build genesis");
+
+        let derived_did = genesis.did.clone();
+
+        // Simulate a partial-failure retry: pre-store the same DID that will be derived.
         sqlx::query("UPDATE pending_accounts SET pending_did = ? WHERE id = ?")
-            .bind(any_did)
+            .bind(&derived_did)
             .bind(&setup.account_id)
             .execute(&db)
             .await
@@ -608,7 +681,8 @@ mod tests {
             .await
             .unwrap();
 
-        // The route skips plc.directory (enforced by .expect(0) above) and proceeds
+        // The route detects the pre-stored DID, verifies it matches the derived DID,
+        // skips plc.directory (enforced by .expect(0) above), and proceeds
         // to promote the account using the crypto-derived DID. Returns 200.
         assert_eq!(
             response.status(),
