@@ -61,17 +61,26 @@ impl TxtResolver for HickoryTxtResolver {
         name: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, DnsError>> + Send + 'a>> {
         Box::pin(async move {
-            let lookup = self
-                .inner
-                .txt_lookup(name)
-                .await
-                .map_err(|e| DnsError(e.to_string()))?;
+            let lookup = match self.inner.txt_lookup(name).await {
+                Ok(l) => l,
+                // NXDOMAIN / NODATA — the name doesn't exist; this is the normal case for
+                // handles that are not registered in DNS. Treat as empty, not as an error,
+                // so the resolver falls through to the next step (HTTP well-known → 404).
+                Err(e) if e.is_no_records_found() => return Ok(vec![]),
+                Err(e) => return Err(DnsError(e.to_string())),
+            };
 
             let mut results = Vec::new();
             for record in lookup.iter() {
                 for part in record.txt_data() {
-                    if let Ok(s) = std::str::from_utf8(part) {
-                        results.push(s.to_string());
+                    match std::str::from_utf8(part) {
+                        Ok(s) => results.push(s.to_string()),
+                        Err(_) => {
+                            tracing::warn!(
+                                name,
+                                "TXT record contains non-UTF-8 bytes; skipping part"
+                            );
+                        }
                     }
                 }
             }

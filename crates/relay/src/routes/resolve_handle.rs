@@ -78,7 +78,7 @@ pub async fn resolve_handle_handler(
 
 #[cfg(test)]
 mod tests {
-    use std::{future::Future, pin::Pin, sync::Arc};
+    use std::{future::Future, pin::Pin, sync::{Arc, Mutex}};
 
     use axum::{
         body::Body,
@@ -110,6 +110,37 @@ mod tests {
         AppState {
             txt_resolver: Some(Arc::new(FixedTxtResolver { records })),
             ..state
+        }
+    }
+
+    /// Always returns a transport-level error; simulates a broken DNS resolver.
+    struct ErrTxtResolver;
+
+    impl TxtResolver for ErrTxtResolver {
+        fn txt_lookup<'a>(
+            &'a self,
+            _name: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, DnsError>> + Send + 'a>> {
+            Box::pin(async move { Err(DnsError("connection refused".to_string())) })
+        }
+    }
+
+    /// Records the last name it was queried with; always returns an empty vec.
+    struct CapturingTxtResolver {
+        last_name: Arc<Mutex<Option<String>>>,
+    }
+
+    impl TxtResolver for CapturingTxtResolver {
+        fn txt_lookup<'a>(
+            &'a self,
+            name: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, DnsError>> + Send + 'a>> {
+            let captured = self.last_name.clone();
+            let name = name.to_string();
+            Box::pin(async move {
+                *captured.lock().unwrap() = Some(name);
+                Ok(vec![])
+            })
         }
     }
 
@@ -188,6 +219,31 @@ mod tests {
         assert_eq!(body["did"], did);
     }
 
+    // ── Local DB priority ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn local_db_takes_priority_over_dns() {
+        let state = test_state().await;
+        let local_did = "did:plc:localuser123456789012345678";
+        let dns_did = "did:plc:dnsuser1234567890123456789";
+        seed_handle(&state.db, "alice.test.example.com", local_did).await;
+        let state = state_with_dns(state, vec![format!("did={dns_did}")]);
+
+        let response = app(state)
+            .oneshot(resolve_handle_request("alice.test.example.com"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["did"], local_did);
+    }
+
     // ── DNS fallback ──────────────────────────────────────────────────────────
 
     #[tokio::test]
@@ -209,6 +265,47 @@ mod tests {
         )
         .unwrap();
         assert_eq!(body["did"], external_did);
+    }
+
+    #[tokio::test]
+    async fn dns_infrastructure_error_returns_500() {
+        let state = AppState {
+            txt_resolver: Some(Arc::new(ErrTxtResolver)),
+            ..test_state().await
+        };
+
+        let response = app(state)
+            .oneshot(resolve_handle_request("alice.external.example.com"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["error"]["code"], "INTERNAL_ERROR");
+    }
+
+    #[tokio::test]
+    async fn dns_lookup_uses_atproto_prefix() {
+        let captured = Arc::new(Mutex::new(None::<String>));
+        let state = AppState {
+            txt_resolver: Some(Arc::new(CapturingTxtResolver {
+                last_name: captured.clone(),
+            })),
+            ..test_state().await
+        };
+
+        app(state)
+            .oneshot(resolve_handle_request("alice.example.com"))
+            .await
+            .unwrap();
+
+        let name = captured.lock().unwrap().clone().expect("txt_lookup not called");
+        assert_eq!(name, "_atproto.alice.example.com");
     }
 
     #[tokio::test]
@@ -262,6 +359,13 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["error"]["code"], "HANDLE_NOT_FOUND");
     }
 
     // ── HTTP well-known fallback ───────────────────────────────────────────────
