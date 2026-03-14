@@ -13,15 +13,18 @@
 //   1. require_session → SessionInfo { did }
 //   2. Validate account_id matches session did (prevents acting on other accounts)
 //   3. validate_handle(handle, available_user_domains) → 400 INVALID_HANDLE on failure
-//   4. SELECT EXISTS(SELECT 1 FROM handles WHERE handle = ?) → 409 HANDLE_ALREADY_EXISTS
-//   5. If state.dns_provider is Some: call create_record(name, target); dns_status = "propagating"
+//   4. INSERT INTO handles (handle, did, created_at) → 409 HANDLE_TAKEN on UNIQUE violation
+//   5. If state.dns_provider is Some: call create_record(name, hostname); dns_status = "propagating"
 //      If state.dns_provider is None: dns_status = "not_configured"
-//   6. INSERT INTO handles (handle, did, created_at)
-//   7. Return { "handle": "...", "dns_status": "...", "did": "..." }
+//   6. Return { "handle": "...", "dns_status": "...", "did": "..." }
+//
+// Note: INSERT precedes the DNS call (step 4 before step 5) so that a DB row
+// without a DNS record is a recoverable/operator-fixable state, whereas a DNS
+// record without a DB row would be an invisible orphan.
 //
 // Outputs (success):  200 { "handle": "...", "dns_status": "not_configured"|"propagating", "did": "..." }
-// Outputs (error):    400 INVALID_HANDLE, 401 UNAUTHORIZED, 409 HANDLE_ALREADY_EXISTS,
-//                     500 INTERNAL_ERROR
+// Outputs (error):    400 INVALID_HANDLE, 401 UNAUTHORIZED, 409 HANDLE_TAKEN,
+//                     502 DNS_ERROR, 500 INTERNAL_ERROR
 
 use axum::{extract::State, http::HeaderMap, Json};
 use serde::{Deserialize, Serialize};
@@ -64,31 +67,42 @@ pub async fn create_handle_handler(
     let name = validate_handle(&payload.handle, &state.config.available_user_domains)
         .map_err(|msg| ApiError::new(ErrorCode::InvalidHandle, msg))?;
 
-    // Step 4: Check handle uniqueness.
-    let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM handles WHERE handle = ?)")
-            .bind(&payload.handle)
-            .fetch_one(&state.db)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "failed to check handle uniqueness");
-                ApiError::new(ErrorCode::InternalError, "database error")
-            })?;
-
-    if exists {
-        return Err(ApiError::new(
-            ErrorCode::HandleAlreadyExists,
-            "handle is already taken",
-        ));
-    }
+    // Step 4: Insert the handle. A UNIQUE violation means the handle is already taken.
+    sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
+        .bind(&payload.handle)
+        .bind(&session.did)
+        .execute(&state.db)
+        .await
+        .map_err(|e| {
+            if let sqlx::Error::Database(db_err) = &e {
+                if db_err.is_unique_violation() {
+                    return ApiError::new(ErrorCode::HandleTaken, "handle is already taken");
+                }
+            }
+            tracing::error!(error = %e, "failed to insert handle");
+            ApiError::new(ErrorCode::InternalError, "failed to register handle")
+        })?;
 
     // Step 5: Create DNS record if a provider is configured.
+    // INSERT precedes this call: a row with no DNS record is recoverable; a DNS record
+    // with no row would be an invisible orphan.
+    let public_url = &state.config.public_url;
+    let hostname = public_url
+        .strip_prefix("https://")
+        .or_else(|| public_url.strip_prefix("http://"))
+        .unwrap_or(public_url.as_str());
+
     let dns_status = if let Some(provider) = &state.dns_provider {
         provider
-            .create_record(name, &state.config.public_url)
+            .create_record(name, hostname)
             .await
             .map_err(|e| {
-                tracing::error!(error = %e, handle = %payload.handle, "DNS record creation failed");
+                tracing::error!(
+                    error = %e,
+                    handle = %payload.handle,
+                    did = %session.did,
+                    "DNS record creation failed"
+                );
                 ApiError::new(ErrorCode::DnsError, "failed to create DNS record")
             })?;
         "propagating"
@@ -96,18 +110,7 @@ pub async fn create_handle_handler(
         "not_configured"
     };
 
-    // Step 6: Insert the handle.
-    sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
-        .bind(&payload.handle)
-        .bind(&session.did)
-        .execute(&state.db)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to insert handle");
-            ApiError::new(ErrorCode::InternalError, "failed to register handle")
-        })?;
-
-    // Step 7: Return the result.
+    // Step 6: Return the result.
     Ok(Json(CreateHandleResponse {
         handle: payload.handle,
         dns_status,
@@ -118,8 +121,8 @@ pub async fn create_handle_handler(
 /// Validate a handle string against the server's available user domains.
 ///
 /// A valid handle is `<name>.<domain>` where:
-/// - `name` is non-empty, contains only ASCII alphanumerics and hyphens,
-///   and does not start or end with a hyphen.
+/// - `name` is non-empty, at most 63 characters (RFC 1035 label limit), contains only
+///   ASCII alphanumerics and hyphens, and does not start or end with a hyphen.
 /// - `domain` is one of the server's `available_user_domains`.
 ///
 /// Returns the `name` portion on success so callers can use it for DNS record creation.
@@ -139,6 +142,9 @@ fn validate_handle<'a>(
 
     if name.is_empty() {
         return Err("handle name cannot be empty");
+    }
+    if name.len() > 63 {
+        return Err("handle name exceeds maximum DNS label length of 63 characters");
     }
     if name.starts_with('-') || name.ends_with('-') {
         return Err("handle name cannot start or end with a hyphen");
@@ -169,6 +175,9 @@ mod tests {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use rand_core::{OsRng, RngCore};
     use sha2::{Digest, Sha256};
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Arc;
     use tower::ServiceExt;
     use uuid::Uuid;
 
@@ -225,6 +234,63 @@ mod tests {
     fn validate_handle_accepts_hyphen_in_middle_of_name() {
         let domains = vec!["example.com".to_string()];
         assert_eq!(validate_handle("al-ice.example.com", &domains), Ok("al-ice"));
+    }
+
+    #[test]
+    fn validate_handle_rejects_name_exceeding_63_chars() {
+        let domains = vec!["example.com".to_string()];
+        let long_name = "a".repeat(64);
+        assert!(validate_handle(&format!("{long_name}.example.com"), &domains).is_err());
+    }
+
+    #[test]
+    fn validate_handle_accepts_name_exactly_63_chars() {
+        let domains = vec!["example.com".to_string()];
+        let name = "a".repeat(63);
+        assert!(validate_handle(&format!("{name}.example.com"), &domains).is_ok());
+    }
+
+    // ── DNS provider test doubles ──────────────────────────────────────────────
+
+    struct AlwaysOkDns;
+    struct AlwaysErrDns;
+
+    impl crate::dns::DnsProvider for AlwaysOkDns {
+        fn create_record<'a>(
+            &'a self,
+            _name: &'a str,
+            _target: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), crate::dns::DnsError>> + Send + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    impl crate::dns::DnsProvider for AlwaysErrDns {
+        fn create_record<'a>(
+            &'a self,
+            _name: &'a str,
+            _target: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), crate::dns::DnsError>> + Send + 'a>> {
+            Box::pin(async {
+                Err(crate::dns::DnsError("simulated provider error".to_string()))
+            })
+        }
+    }
+
+    async fn state_with_ok_dns() -> crate::app::AppState {
+        let base = test_state().await;
+        crate::app::AppState {
+            dns_provider: Some(Arc::new(AlwaysOkDns)),
+            ..base
+        }
+    }
+
+    async fn state_with_err_dns() -> crate::app::AppState {
+        let base = test_state().await;
+        crate::app::AppState {
+            dns_provider: Some(Arc::new(AlwaysErrDns)),
+            ..base
+        }
     }
 
     // ── Integration test helpers ───────────────────────────────────────────────
@@ -328,9 +394,80 @@ mod tests {
         assert_eq!(stored_did, ts.did);
     }
 
+    // ── DNS provider tests ─────────────────────────────────────────────────────
+
+    /// DNS provider succeeds: row is inserted, response has dns_status: "propagating".
+    #[tokio::test]
+    async fn dns_provider_success_returns_propagating_status() {
+        let state = state_with_ok_dns().await;
+        let db = state.db.clone();
+        let ts = insert_account_and_session(&db).await;
+        let handle = format!("alice.{}", state.config.available_user_domains[0]);
+
+        let app = crate::app::app(state);
+        let response = app
+            .oneshot(create_handle_request(&ts.session_token, &ts.did, &handle))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["dns_status"].as_str(), Some("propagating"));
+
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT did FROM handles WHERE handle = ?")
+                .bind(&handle)
+                .fetch_optional(&db)
+                .await
+                .unwrap();
+        assert!(row.is_some(), "handles row must be inserted on DNS success");
+    }
+
+    /// DNS provider fails: returns 502 DNS_ERROR; the handles row is inserted before DNS
+    /// is attempted and persists (recoverable/retryable by an operator).
+    #[tokio::test]
+    async fn dns_provider_failure_returns_502_and_row_persists() {
+        let state = state_with_err_dns().await;
+        let db = state.db.clone();
+        let ts = insert_account_and_session(&db).await;
+        let handle = format!("alice.{}", state.config.available_user_domains[0]);
+
+        let app = crate::app::app(state);
+        let response = app
+            .oneshot(create_handle_request(&ts.session_token, &ts.did, &handle))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["error"]["code"], "DNS_ERROR");
+
+        // INSERT precedes the DNS call: the row is durable even when DNS fails.
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT did FROM handles WHERE handle = ?")
+                .bind(&handle)
+                .fetch_optional(&db)
+                .await
+                .unwrap();
+        assert!(
+            row.is_some(),
+            "handles row is inserted before DNS and persists even when DNS fails"
+        );
+    }
+
     // ── Duplicate handle ───────────────────────────────────────────────────────
 
-    /// Creating the same handle twice returns 409 HANDLE_ALREADY_EXISTS.
+    /// Creating the same handle twice returns 409 HANDLE_TAKEN.
     #[tokio::test]
     async fn duplicate_handle_returns_409() {
         let state = test_state().await;
@@ -359,7 +496,7 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(body["error"]["code"], "HANDLE_ALREADY_EXISTS");
+        assert_eq!(body["error"]["code"], "HANDLE_TAKEN");
     }
 
     // ── Invalid handle format ──────────────────────────────────────────────────

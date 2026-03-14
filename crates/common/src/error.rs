@@ -44,8 +44,6 @@ pub enum ErrorCode {
     PlcDirectoryError,
     /// A configured DNS provider returned an error when creating a subdomain record.
     DnsError,
-    /// A handle submitted for registration is already claimed.
-    HandleAlreadyExists,
     // TODO: add remaining codes from Appendix A as endpoints are implemented:
     // 400: INVALID_DOCUMENT, INVALID_PROOF, INVALID_ENDPOINT, INVALID_CONFIRMATION
     // 401: INVALID_CREDENTIALS
@@ -80,7 +78,6 @@ impl ErrorCode {
             ErrorCode::DidAlreadyExists => 409,
             ErrorCode::PlcDirectoryError => 502,
             ErrorCode::DnsError => 502,
-            ErrorCode::HandleAlreadyExists => 409,
         }
     }
 }
@@ -234,6 +231,7 @@ mod tests {
             (ErrorCode::ClaimCodeRedeemed, 409),
             (ErrorCode::DidAlreadyExists, 409),
             (ErrorCode::PlcDirectoryError, 502),
+            (ErrorCode::DnsError, 502),
         ];
         for (code, expected) in cases {
             assert_eq!(code.status_code(), expected, "wrong status for {code:?}");

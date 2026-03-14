@@ -176,7 +176,10 @@ pub async fn require_session(
 
     let token_bytes = URL_SAFE_NO_PAD
         .decode(token)
-        .map_err(|_| ApiError::new(ErrorCode::Unauthorized, "invalid session token"))?;
+        .map_err(|_| {
+            tracing::debug!("session token is not valid base64url");
+            ApiError::new(ErrorCode::Unauthorized, "invalid session token")
+        })?;
     let token_hash: String = Sha256::digest(&token_bytes)
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -194,6 +197,7 @@ pub async fn require_session(
     })?;
 
     let (did,) = row.ok_or_else(|| {
+        tracing::debug!("no unexpired session row found for token hash");
         ApiError::new(ErrorCode::Unauthorized, "invalid or expired session token")
     })?;
 
@@ -479,6 +483,135 @@ mod tests {
             HeaderValue::from_bytes(b"Bearer \xff\xfe").unwrap(),
         );
         let err = require_pending_session(&headers, &state.db)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code(), 401);
+    }
+
+    // ── require_session tests ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn session_missing_authorization_header_returns_401() {
+        let state = test_state().await;
+        let err = require_session(&HeaderMap::new(), &state.db)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code(), 401);
+    }
+
+    #[tokio::test]
+    async fn session_non_base64url_token_returns_401() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Bearer not-valid-base64url!!!".parse().unwrap(),
+        );
+        let state = test_state().await;
+        let err = require_session(&headers, &state.db)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code(), 401);
+    }
+
+    #[tokio::test]
+    async fn session_valid_unexpired_session_returns_ok() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        use rand_core::{OsRng, RngCore};
+        use sha2::{Digest, Sha256};
+        use uuid::Uuid;
+
+        let state = test_state().await;
+
+        // Insert an account (required by sessions FK constraint).
+        let did = format!("did:plc:{}", &Uuid::new_v4().to_string().replace('-', "")[..24]);
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
+        )
+        .bind(&did)
+        .bind(format!("test{}@example.com", &did[8..16]))
+        .execute(&state.db)
+        .await
+        .expect("insert account");
+
+        let mut token_bytes = [0u8; 32];
+        OsRng.fill_bytes(&mut token_bytes);
+        let session_token = URL_SAFE_NO_PAD.encode(token_bytes);
+        let token_hash: String = Sha256::digest(token_bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+
+        sqlx::query(
+            "INSERT INTO sessions (id, did, device_id, token_hash, created_at, expires_at) \
+             VALUES (?, ?, NULL, ?, datetime('now'), datetime('now', '+1 year'))",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(&did)
+        .bind(&token_hash)
+        .execute(&state.db)
+        .await
+        .expect("insert session");
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {session_token}").parse().unwrap(),
+        );
+
+        let result = require_session(&headers, &state.db)
+            .await
+            .expect("valid session should succeed");
+        assert_eq!(result.did, did);
+    }
+
+    #[tokio::test]
+    async fn session_expired_session_returns_401() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        use rand_core::{OsRng, RngCore};
+        use sha2::{Digest, Sha256};
+        use uuid::Uuid;
+
+        let state = test_state().await;
+
+        // Insert an account (required by sessions FK constraint).
+        let did = format!("did:plc:{}", &Uuid::new_v4().to_string().replace('-', "")[..24]);
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
+        )
+        .bind(&did)
+        .bind(format!("test{}@example.com", &did[8..16]))
+        .execute(&state.db)
+        .await
+        .expect("insert account");
+
+        let mut token_bytes = [0u8; 32];
+        OsRng.fill_bytes(&mut token_bytes);
+        let session_token = URL_SAFE_NO_PAD.encode(token_bytes);
+        let token_hash: String = Sha256::digest(token_bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+
+        sqlx::query(
+            "INSERT INTO sessions (id, did, device_id, token_hash, created_at, expires_at) \
+             VALUES (?, ?, NULL, ?, datetime('now'), datetime('now', '-1 hour'))",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(&did)
+        .bind(&token_hash)
+        .execute(&state.db)
+        .await
+        .expect("insert expired session");
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {session_token}").parse().unwrap(),
+        );
+
+        let err = require_session(&headers, &state.db)
             .await
             .unwrap_err();
         assert_eq!(err.status_code(), 401);
