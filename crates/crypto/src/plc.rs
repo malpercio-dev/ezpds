@@ -518,4 +518,123 @@ mod tests {
             "alsoKnownAs should contain 'at://alice.example.com', got: {also_known_as:?}"
         );
     }
+
+    // ── MM-90 verify_genesis_op tests ──────────────────────────────────────────
+
+    /// Returns (signing_key_uri, PlcGenesisOp) for MM-90 verification tests.
+    /// build_did_plc_genesis_op signs with signing_key_bytes; verify_genesis_op
+    /// must receive signing_kp.key_id as its rotation_key argument.
+    fn make_op_for_verify() -> (DidKeyUri, PlcGenesisOp) {
+        let rotation_kp = generate_p256_keypair().expect("rotation keypair");
+        let signing_kp = generate_p256_keypair().expect("signing keypair");
+        let private_key_bytes = *signing_kp.private_key_bytes;
+        let op = build_did_plc_genesis_op(
+            &rotation_kp.key_id,
+            &signing_kp.key_id,
+            &private_key_bytes,
+            "alice.example.com",
+            "https://relay.example.com",
+        )
+        .expect("genesis op");
+        (signing_kp.key_id, op)
+    }
+
+    /// MM-90.AC1.1: verify_genesis_op returns correct fields
+    #[test]
+    fn verify_valid_op_returns_correct_fields() {
+        let (signing_key, op) = make_op_for_verify();
+        let result = verify_genesis_op(&op.signed_op_json, &signing_key);
+
+        assert!(result.is_ok(), "verify should succeed");
+        let verified = result.unwrap();
+
+        assert!(verified.did.starts_with("did:plc:"), "DID should start with 'did:plc:'");
+        assert_eq!(verified.did.len(), 32, "DID should be 32 chars total (did:plc: + 24 suffix)");
+        assert!(
+            verified.also_known_as.contains(&"at://alice.example.com".to_string()),
+            "also_known_as should contain 'at://alice.example.com'"
+        );
+        assert!(
+            verified.verification_methods.contains_key("atproto"),
+            "verification_methods should contain 'atproto' key"
+        );
+        assert_eq!(
+            verified.atproto_pds_endpoint,
+            Some("https://relay.example.com".to_string()),
+            "atproto_pds_endpoint should be set correctly"
+        );
+    }
+
+    /// MM-90.AC1.2: DID from verify_genesis_op matches build_did_plc_genesis_op
+    #[test]
+    fn verify_did_matches_build_did_plc_genesis_op() {
+        let (signing_key, genesis_op) = make_op_for_verify();
+        let verified_result = verify_genesis_op(&genesis_op.signed_op_json, &signing_key);
+
+        assert!(verified_result.is_ok(), "verify should succeed");
+        let verified_op = verified_result.unwrap();
+
+        assert_eq!(
+            verified_op.did, genesis_op.did,
+            "DID from verify_genesis_op should match DID from build_did_plc_genesis_op"
+        );
+    }
+
+    /// MM-90.AC1.3: Signature verification fails with wrong rotation key
+    #[test]
+    fn verify_wrong_rotation_key_returns_error() {
+        let (_, op) = make_op_for_verify();
+        let wrong_kp = generate_p256_keypair().expect("wrong keypair");
+
+        let result = verify_genesis_op(&op.signed_op_json, &wrong_kp.key_id);
+
+        assert!(
+            matches!(result, Err(CryptoError::PlcOperation(_))),
+            "Verify with wrong rotation key should return CryptoError::PlcOperation"
+        );
+    }
+
+    /// MM-90.AC1.4: Corrupted signature returns error
+    #[test]
+    fn verify_corrupted_signature_returns_error() {
+        let (signing_key, op) = make_op_for_verify();
+
+        // Parse JSON, corrupt the signature field, re-serialize
+        let mut v: serde_json::Value =
+            serde_json::from_str(&op.signed_op_json).expect("valid JSON");
+        let sig_str = v["sig"].as_str().expect("sig is a string");
+        let mut sig_bytes = URL_SAFE_NO_PAD
+            .decode(sig_str)
+            .expect("sig should be valid base64url");
+        sig_bytes[0] ^= 0xff; // Flip all bits in first byte
+        let corrupted_sig = URL_SAFE_NO_PAD.encode(&sig_bytes);
+        v["sig"] = serde_json::json!(corrupted_sig);
+        let corrupted_json = serde_json::to_string(&v).expect("re-serialize JSON");
+
+        let result = verify_genesis_op(&corrupted_json, &signing_key);
+
+        assert!(
+            matches!(result, Err(CryptoError::PlcOperation(_))),
+            "Verify with corrupted signature should return CryptoError::PlcOperation"
+        );
+    }
+
+    /// MM-90.AC1.5: Unknown fields in JSON are rejected
+    #[test]
+    fn verify_unknown_fields_returns_error() {
+        let (signing_key, op) = make_op_for_verify();
+
+        // Parse JSON, add an unknown field, re-serialize
+        let mut v: serde_json::Value =
+            serde_json::from_str(&op.signed_op_json).expect("valid JSON");
+        v["unknownField"] = serde_json::json!("surprise");
+        let modified_json = serde_json::to_string(&v).expect("re-serialize JSON");
+
+        let result = verify_genesis_op(&modified_json, &signing_key);
+
+        assert!(
+            matches!(result, Err(CryptoError::PlcOperation(_))),
+            "Verify with unknown fields should return CryptoError::PlcOperation"
+        );
+    }
 }
