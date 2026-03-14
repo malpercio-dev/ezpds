@@ -4,6 +4,7 @@ members = [
     "crates/repo-engine",
     "crates/crypto",
     "crates/common",
+    "apps/identity-wallet/src-tauri",
 ]
 resolver = "2"
 
