@@ -94,11 +94,13 @@ pub async fn create_did_handler(
     })?;
 
     // Step 5: Verify the ECDSA signature and derive the DID.
-    let verified =
-        crypto::verify_genesis_op(&signed_op_str, &rotation_key).map_err(|e| {
-            tracing::warn!(error = %e, "genesis op verification failed");
-            ApiError::new(ErrorCode::InvalidClaim, format!("invalid signed genesis op: {e}"))
-        })?;
+    let verified = crypto::verify_genesis_op(&signed_op_str, &rotation_key).map_err(|e| {
+        tracing::warn!(error = %e, "genesis op verification failed");
+        ApiError::new(
+            ErrorCode::InvalidClaim,
+            format!("invalid signed genesis op: {e}"),
+        )
+    })?;
 
     // Step 6: Semantic validation — ensure op fields match account and server config.
     if verified.rotation_keys.first().map(String::as_str) != Some(&payload.rotation_key_public) {
@@ -180,7 +182,10 @@ pub async fn create_did_handler(
             .await
             .map_err(|e| {
                 tracing::error!(error = %e, plc_url = %plc_url, "failed to contact plc.directory");
-                ApiError::new(ErrorCode::PlcDirectoryError, "failed to contact plc.directory")
+                ApiError::new(
+                    ErrorCode::PlcDirectoryError,
+                    "failed to contact plc.directory",
+                )
             })?;
 
         if !response.status().is_success() {
@@ -295,10 +300,16 @@ fn build_did_document(verified: &crypto::VerifiedGenesisOp) -> Result<serde_json
         .verification_methods
         .get("atproto")
         .ok_or_else(|| {
-            ApiError::new(ErrorCode::InternalError, "atproto verification method not found in op")
+            ApiError::new(
+                ErrorCode::InternalError,
+                "atproto verification method not found in op",
+            )
         })?;
     let public_key_multibase = atproto_did_key.strip_prefix("did:key:").ok_or_else(|| {
-        ApiError::new(ErrorCode::InternalError, "atproto key is not a did:key: URI")
+        ApiError::new(
+            ErrorCode::InternalError,
+            "atproto key is not a did:key: URI",
+        )
     })?;
 
     let service_endpoint = verified.atproto_pds_endpoint.as_deref().unwrap_or_default();
