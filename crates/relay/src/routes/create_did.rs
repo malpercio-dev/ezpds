@@ -44,6 +44,15 @@ use crate::app::AppState;
 use crate::routes::auth::require_pending_session;
 use common::{ApiError, ErrorCode};
 
+/// Check if a sqlx::Error is a UNIQUE constraint violation.
+fn is_unique_violation(e: &sqlx::Error) -> bool {
+    matches!(
+        e,
+        sqlx::Error::Database(db_err)
+            if db_err.kind() == sqlx::error::ErrorKind::UniqueViolation
+    )
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateDidRequest {
@@ -96,17 +105,26 @@ pub async fn create_did_handler(
     // Step 5: Verify the ECDSA signature and derive the DID.
     let verified = crypto::verify_genesis_op(&signed_op_str, &rotation_key).map_err(|e| {
         tracing::warn!(error = %e, "genesis op verification failed");
-        ApiError::new(
-            ErrorCode::InvalidClaim,
-            format!("invalid signed genesis op: {e}"),
-        )
+        ApiError::new(ErrorCode::InvalidClaim, "signed genesis op is invalid")
     })?;
 
     // Step 6: Semantic validation — ensure op fields match account and server config.
+    if verified.rotation_keys.is_empty() {
+        return Err(ApiError::new(
+            ErrorCode::InvalidClaim,
+            "op rotationKeys is empty",
+        ));
+    }
     if verified.rotation_keys.first().map(String::as_str) != Some(&payload.rotation_key_public) {
         return Err(ApiError::new(
             ErrorCode::InvalidClaim,
             "rotationKeys[0] in op does not match rotationKeyPublic",
+        ));
+    }
+    if verified.also_known_as.is_empty() {
+        return Err(ApiError::new(
+            ErrorCode::InvalidClaim,
+            "op alsoKnownAs is empty",
         ));
     }
     if verified.also_known_as.first().map(String::as_str) != Some(&format!("at://{handle}")) {
@@ -140,7 +158,7 @@ pub async fn create_did_handler(
         tracing::info!(did = %pre_stored_did, "retry detected: pending_did already set, skipping plc.directory");
         true
     } else {
-        sqlx::query("UPDATE pending_accounts SET pending_did = ? WHERE id = ?")
+        let result = sqlx::query("UPDATE pending_accounts SET pending_did = ? WHERE id = ?")
             .bind(did)
             .bind(&session.account_id)
             .execute(&state.db)
@@ -149,6 +167,13 @@ pub async fn create_did_handler(
                 tracing::error!(error = %e, "failed to pre-store pending_did");
                 ApiError::new(ErrorCode::InternalError, "failed to store pending DID")
             })?;
+        if result.rows_affected() == 0 {
+            tracing::error!(account_id = %session.account_id, "pending account row vanished during DID pre-store");
+            return Err(ApiError::new(
+                ErrorCode::InternalError,
+                "account no longer exists",
+            ));
+        }
         false
     };
 
@@ -229,8 +254,14 @@ pub async fn create_did_handler(
     .bind(&email)
     .execute(&mut *tx)
     .await
-    .inspect_err(|e| tracing::error!(error = %e, "failed to insert account"))
-    .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to create account"))?;
+    .map_err(|e| {
+        tracing::error!(error = %e, "failed to insert account");
+        if is_unique_violation(&e) {
+            ApiError::new(ErrorCode::DidAlreadyExists, "DID is already fully promoted")
+        } else {
+            ApiError::new(ErrorCode::InternalError, "failed to create account")
+        }
+    })?;
 
     sqlx::query(
         "INSERT INTO did_documents (did, document, created_at, updated_at) \
@@ -312,7 +343,12 @@ fn build_did_document(verified: &crypto::VerifiedGenesisOp) -> Result<serde_json
         )
     })?;
 
-    let service_endpoint = verified.atproto_pds_endpoint.as_deref().unwrap_or_default();
+    let service_endpoint = verified.atproto_pds_endpoint.as_deref().ok_or_else(|| {
+        ApiError::new(
+            ErrorCode::InternalError,
+            "missing service endpoint in verified op",
+        )
+    })?;
 
     Ok(serde_json::json!({
         "@context": [
@@ -609,6 +645,15 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(session_count, 0, "pending_sessions rows should be deleted");
+
+        // AC2.5: devices deleted
+        let device_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM devices WHERE account_id = ?")
+                .bind(&setup.account_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(device_count, 0, "devices rows should be deleted");
     }
 
     // ── AC2.6: Retry path skips plc.directory ─────────────────────────────────
@@ -668,6 +713,51 @@ mod tests {
             "did should match pre-computed DID"
         );
         // wiremock verifies expect(0) on mock_server drop
+    }
+
+    // ── Test Gap G2: Retry with mismatched pending_did ────────────────────────
+
+    /// Retry path with a DIFFERENT signedCreationOp (tampered retry) should
+    /// derive a different DID and return 500 INTERNAL_ERROR because the
+    /// pre-stored pending_did doesn't match.
+    #[tokio::test]
+    async fn retry_with_mismatched_pending_did_returns_500() {
+        let state = test_state_for_did("https://plc.directory".to_string()).await;
+        let db = state.db.clone();
+        let setup = insert_test_data(&db).await;
+        let (rotation_key_public, signed_op) =
+            make_signed_op(&setup.handle, &state.config.public_url);
+
+        // Pre-set pending_did to a DIFFERENT value (tampered/corrupted retry).
+        let tampered_did = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
+        sqlx::query("UPDATE pending_accounts SET pending_did = ? WHERE id = ?")
+            .bind(&tampered_did)
+            .bind(&setup.account_id)
+            .execute(&db)
+            .await
+            .expect("pre-store tampered pending_did");
+
+        let app = crate::app::app(state);
+        let response = app
+            .oneshot(create_did_request(
+                &setup.session_token,
+                &rotation_key_public,
+                &signed_op,
+            ))
+            .await
+            .unwrap();
+
+        // Derived DID != tampered pending_did → 500 INTERNAL_ERROR
+        assert_eq!(
+            response.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "expected 500"
+        );
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(body["error"]["code"], "INTERNAL_ERROR");
     }
 
     // ── AC3.1: Invalid signature ───────────────────────────────────────────────
@@ -808,6 +898,40 @@ mod tests {
             ))
             .await
             .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "expected 400");
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(body["error"]["code"], "INVALID_CLAIM");
+    }
+
+    // ── Test Gap G4: Malformed rotationKeyPublic format ────────────────────────
+
+    /// rotationKeyPublic that doesn't start with "did:key:z" returns 400 INVALID_CLAIM,
+    /// even with a valid session token.
+    #[tokio::test]
+    async fn invalid_rotation_key_format_returns_400() {
+        let state = test_state_for_did("https://plc.directory".to_string()).await;
+        let db = state.db.clone();
+        let setup = insert_test_data(&db).await;
+
+        let request_body = serde_json::json!({
+            "rotationKeyPublic": "not-a-did-key",
+            "signedCreationOp": serde_json::json!({})
+        });
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/dids")
+            .header("Authorization", format!("Bearer {}", setup.session_token))
+            .header("Content-Type", "application/json")
+            .body(Body::from(request_body.to_string()))
+            .unwrap();
+
+        let app = crate::app::app(state);
+        let response = app.oneshot(request).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "expected 400");
         let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
