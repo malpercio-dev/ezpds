@@ -39,7 +39,13 @@
         };
 
         # Build deps separately so they're cached when only source changes.
-        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+        # Scope buildDepsOnly to relay-related crates only.
+        # apps/identity-wallet/src-tauri uses Tauri (webkit2gtk on Linux, Apple frameworks
+        # on macOS) which are not in commonArgs.buildInputs. Without this scope,
+        # buildDepsOnly would attempt to compile Tauri's native deps and fail in Nix.
+        cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
+          cargoExtraArgs = "--package relay --package repo-engine --package crypto --package common";
+        });
 
         relay = craneLib.buildPackage (commonArgs // {
           inherit cargoArtifacts;

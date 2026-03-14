@@ -12,6 +12,17 @@ path = "src/lib.rs"
 # rlib       → normal `cargo build` + integration tests
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[dependencies]
+# Tauri-specific — declared locally (not in workspace.dependencies per design plan)
+tauri = "2"
+# serde/serde_json are in workspace.dependencies (root Cargo.toml lines 30-32)
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[build-dependencies]
+# Tauri-specific — declared locally
+tauri-build = "2"
+
 # Tauri-recommended release optimizations for mobile binary size.
 # IMPORTANT: Cargo ignores [profile.*] in workspace member crates — these settings
 # have NO EFFECT here because src-tauri is always built as a workspace member.
