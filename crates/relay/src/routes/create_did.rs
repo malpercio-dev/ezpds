@@ -1,30 +1,40 @@
 // pattern: Imperative Shell
 //
-// POST /v1/dids — DID creation and account promotion
+// POST /v1/dids — Device-signed DID ceremony and account promotion
 //
 // Inputs:
 //   - Authorization: Bearer <pending_session_token>
-//   - JSON body: { "signingKey": "did:key:z...", "rotationKey": "did:key:z..." }
+//   - JSON body: {
+//       "rotationKeyPublic": "did:key:z...",
+//       "signedCreationOp": { ...genesis op fields... }
+//     }
 //
 // Processing steps:
 //   1. require_pending_session → PendingSessionInfo { account_id, device_id }
-//   2. SELECT handle, pending_did FROM pending_accounts WHERE id = account_id
-//   3. SELECT private_key_encrypted FROM relay_signing_keys WHERE id = signing_key
-//   4. decrypt_private_key(encrypted, master_key)
-//   5. build_did_plc_genesis_op(rotation_key, signing_key, private_key, handle, public_url)
-//   6. If pending_did IS NULL: UPDATE pending_accounts SET pending_did = did (pre-store resilience)
-//   7. If pending_did IS NOT NULL (retry): skip step 8
-//   8. POST {plc_directory_url}/{did} with signed_op_json
-//   9. Atomic transaction:
+//   2. SELECT handle, pending_did, email FROM pending_accounts WHERE id = account_id
+//   3. Validate rotationKeyPublic starts with "did:key:z" → DidKeyUri
+//   4. serde_json::to_string(signedCreationOp) → signed_op_str
+//   5. crypto::verify_genesis_op(signed_op_str, rotation_key) → VerifiedGenesisOp
+//   6. Semantic validation:
+//        verified.rotation_keys[0] == rotationKeyPublic
+//        verified.also_known_as[0] == "at://{handle}"
+//        verified.atproto_pds_endpoint  == config.public_url
+//   7. If pending_did IS NULL: UPDATE pending_accounts SET pending_did = verified.did
+//      If pending_did IS NOT NULL: verify match, set skip_plc_directory = true
+//   8. SELECT EXISTS(SELECT 1 FROM accounts WHERE did = verified.did) → 409 if true
+//   9. If !skip_plc_directory: POST {plc_directory_url}/{did} with signed_op_str
+//  10. build_did_document(&verified) → serde_json::Value
+//  11. Atomic transaction:
 //        INSERT accounts (did, email, password_hash=NULL)
 //        INSERT did_documents (did, document)
 //        INSERT handles (handle, did)
 //        DELETE pending_sessions WHERE account_id = ?
+//        DELETE devices WHERE account_id = ?
 //        DELETE pending_accounts WHERE id = ?
-//  10. Return { "did": "did:plc:...", "status": "active" }
+//  12. Return { "did": "did:plc:...", "did_document": {...}, "status": "active" }
 //
-// Outputs (success):  200 { "did": "did:plc:...", "status": "active" }
-// Outputs (error):    401 UNAUTHORIZED, 404 NOT_FOUND, 409 DID_ALREADY_EXISTS,
+// Outputs (success):  200 { "did": "did:plc:...", "did_document": {...}, "status": "active" }
+// Outputs (error):    400 INVALID_CLAIM, 401 UNAUTHORIZED, 409 DID_ALREADY_EXISTS,
 //                     502 PLC_DIRECTORY_ERROR, 500 INTERNAL_ERROR
 
 use axum::{extract::State, http::HeaderMap, Json};
@@ -37,13 +47,14 @@ use common::{ApiError, ErrorCode};
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateDidRequest {
-    pub signing_key: String,
-    pub rotation_key: String,
+    pub rotation_key_public: String,
+    pub signed_creation_op: serde_json::Value,
 }
 
 #[derive(Serialize)]
 pub struct CreateDidResponse {
     pub did: String,
+    pub did_document: serde_json::Value,
     pub status: &'static str,
 }
 
@@ -67,85 +78,53 @@ pub async fn create_did_handler(
             })?
             .ok_or_else(|| ApiError::new(ErrorCode::Unauthorized, "account not found"))?;
 
-    // Step 3: Look up signing key in relay_signing_keys.
-    let (private_key_encrypted,): (String,) =
-        sqlx::query_as("SELECT private_key_encrypted FROM relay_signing_keys WHERE id = ?")
-            .bind(&payload.signing_key)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "failed to query relay signing key");
-                ApiError::new(ErrorCode::InternalError, "key lookup failed")
-            })?
-            .ok_or_else(|| {
-                ApiError::new(
-                    ErrorCode::NotFound,
-                    "signing key not found in relay_signing_keys",
-                )
-            })?;
-
-    // Step 4: Decrypt the private key using the master key from config.
-    let master_key: &[u8; 32] = state
-        .config
-        .signing_key_master_key
-        .as_ref()
-        .map(|s| &*s.0)
-        .ok_or_else(|| {
-            ApiError::new(
-                ErrorCode::InternalError,
-                "signing key master key not configured",
-            )
-        })?;
-
-    let private_key_bytes = crypto::decrypt_private_key(&private_key_encrypted, master_key)
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to decrypt signing key");
-            ApiError::new(ErrorCode::InternalError, "failed to decrypt signing key")
-        })?;
-
-    // Step 5: Build the genesis operation and derive the DID.
-    // Validate that both keys are proper did:key: URIs before wrapping.
-    if !payload.signing_key.starts_with("did:key:z") {
+    // Step 3: Validate rotationKeyPublic format.
+    if !payload.rotation_key_public.starts_with("did:key:z") {
         return Err(ApiError::new(
             ErrorCode::InvalidClaim,
-            "signingKey must be a did:key: URI starting with 'did:key:z'",
+            "rotationKeyPublic must be a did:key: URI starting with 'did:key:z'",
         ));
     }
-    if !payload.rotation_key.starts_with("did:key:z") {
-        return Err(ApiError::new(
-            ErrorCode::InvalidClaim,
-            "rotationKey must be a did:key: URI starting with 'did:key:z'",
-        ));
-    }
+    let rotation_key = crypto::DidKeyUri(payload.rotation_key_public.clone());
 
-    let rotation_key = crypto::DidKeyUri(payload.rotation_key.clone());
-    let signing_key_uri = crypto::DidKeyUri(payload.signing_key.clone());
-
-    let genesis = crypto::build_did_plc_genesis_op(
-        &rotation_key,
-        &signing_key_uri,
-        &private_key_bytes,
-        &handle,
-        &state.config.public_url,
-    )
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to build genesis op");
-        ApiError::new(
-            ErrorCode::InternalError,
-            "failed to build genesis operation",
-        )
+    // Step 4: Serialize the submitted signed op to a JSON string for crypto verification.
+    let signed_op_str = serde_json::to_string(&payload.signed_creation_op).map_err(|e| {
+        tracing::error!(error = %e, "failed to serialize signedCreationOp");
+        ApiError::new(ErrorCode::InternalError, "failed to process signed op")
     })?;
 
-    let did = genesis.did.clone();
-    let signed_op_json = genesis.signed_op_json;
+    // Step 5: Verify the ECDSA signature and derive the DID.
+    let verified =
+        crypto::verify_genesis_op(&signed_op_str, &rotation_key).map_err(|e| {
+            tracing::warn!(error = %e, "genesis op verification failed");
+            ApiError::new(ErrorCode::InvalidClaim, format!("invalid signed genesis op: {e}"))
+        })?;
 
-    // Step 6: Pre-store the DID for retry resilience.
-    // If pending_did is already set, we are on a retry path — skip the plc.directory call.
+    // Step 6: Semantic validation — ensure op fields match account and server config.
+    if verified.rotation_keys.first().map(String::as_str) != Some(&payload.rotation_key_public) {
+        return Err(ApiError::new(
+            ErrorCode::InvalidClaim,
+            "rotationKeys[0] in op does not match rotationKeyPublic",
+        ));
+    }
+    if verified.also_known_as.first().map(String::as_str) != Some(&format!("at://{handle}")) {
+        return Err(ApiError::new(
+            ErrorCode::InvalidClaim,
+            "alsoKnownAs[0] in op does not match account handle",
+        ));
+    }
+    if verified.atproto_pds_endpoint.as_deref() != Some(&state.config.public_url) {
+        return Err(ApiError::new(
+            ErrorCode::InvalidClaim,
+            "services.atproto_pds.endpoint in op does not match server public URL",
+        ));
+    }
+
+    let did = &verified.did;
+
+    // Step 7: Pre-store the DID for retry resilience.
     let skip_plc_directory = if let Some(pre_stored_did) = &pending_did {
-        // Retry: verify that the crypto-derived DID matches the pre-stored value.
-        // If inputs changed between attempts, a different DID would be derived,
-        // which indicates a mismatch error that must be caught.
-        if did != *pre_stored_did {
+        if did != pre_stored_did {
             tracing::error!(
                 derived_did = %did,
                 stored_did = %pre_stored_did,
@@ -159,9 +138,8 @@ pub async fn create_did_handler(
         tracing::info!(did = %pre_stored_did, "retry detected: pending_did already set, skipping plc.directory");
         true
     } else {
-        // First attempt: write the DID before calling plc.directory.
         sqlx::query("UPDATE pending_accounts SET pending_did = ? WHERE id = ?")
-            .bind(&did)
+            .bind(did)
             .bind(&session.account_id)
             .execute(&state.db)
             .await
@@ -172,10 +150,10 @@ pub async fn create_did_handler(
         false
     };
 
-    // Step 7: Check if the account is already fully promoted (idempotency guard for AC2.10).
+    // Step 8: Check if the account is already fully promoted (idempotency guard).
     let already_promoted: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM accounts WHERE did = ?)")
-            .bind(&did)
+            .bind(did)
             .fetch_one(&state.db)
             .await
             .map_err(|e| {
@@ -190,27 +168,23 @@ pub async fn create_did_handler(
         ));
     }
 
-    // Step 8: POST the genesis operation to plc.directory (skipped on retry).
+    // Step 9: POST the signed genesis operation to plc.directory (skipped on retry).
     if !skip_plc_directory {
         let plc_url = format!("{}/{}", state.config.plc_directory_url, did);
         let response = state
             .http_client
             .post(&plc_url)
-            .body(signed_op_json.clone())
+            .body(signed_op_str.clone())
             .header("Content-Type", "application/json")
             .send()
             .await
             .map_err(|e| {
                 tracing::error!(error = %e, plc_url = %plc_url, "failed to contact plc.directory");
-                ApiError::new(
-                    ErrorCode::PlcDirectoryError,
-                    "failed to contact plc.directory",
-                )
+                ApiError::new(ErrorCode::PlcDirectoryError, "failed to contact plc.directory")
             })?;
 
         if !response.status().is_success() {
             let status = response.status();
-            // Consume the response body to include in logs, ignoring errors if body read fails.
             let body_text = response
                 .text()
                 .await
@@ -227,15 +201,14 @@ pub async fn create_did_handler(
         }
     }
 
-    // Step 9: Build the DID document for local storage.
-    let did_document = build_did_document(
-        &did,
-        &handle,
-        &payload.signing_key,
-        &state.config.public_url,
-    )?;
+    // Step 10: Build the DID document from verified op fields.
+    let did_document = build_did_document(&verified)?;
+    let did_document_str = serde_json::to_string(&did_document).map_err(|e| {
+        tracing::error!(error = %e, "failed to serialize DID document");
+        ApiError::new(ErrorCode::InternalError, "failed to serialize DID document")
+    })?;
 
-    // Step 10: Atomically promote the account.
+    // Step 11: Atomically promote the account.
     let mut tx = state
         .db
         .begin()
@@ -247,7 +220,7 @@ pub async fn create_did_handler(
         "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
          VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
     )
-    .bind(&did)
+    .bind(did)
     .bind(&email)
     .execute(&mut *tx)
     .await
@@ -258,8 +231,8 @@ pub async fn create_did_handler(
         "INSERT INTO did_documents (did, document, created_at, updated_at) \
          VALUES (?, ?, datetime('now'), datetime('now'))",
     )
-    .bind(&did)
-    .bind(&did_document)
+    .bind(did)
+    .bind(&did_document_str)
     .execute(&mut *tx)
     .await
     .inspect_err(|e| tracing::error!(error = %e, "failed to insert did_document"))
@@ -267,7 +240,7 @@ pub async fn create_did_handler(
 
     sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
         .bind(&handle)
-        .bind(&did)
+        .bind(did)
         .execute(&mut *tx)
         .await
         .inspect_err(|e| tracing::error!(error = %e, "failed to insert handle"))
@@ -299,39 +272,43 @@ pub async fn create_did_handler(
         .inspect_err(|e| tracing::error!(error = %e, "failed to commit promotion transaction"))
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to commit transaction"))?;
 
+    // Step 12: Return the result.
     Ok(Json(CreateDidResponse {
-        did,
+        did: did.clone(),
+        did_document,
         status: "active",
     }))
 }
 
-/// Construct a minimal DID Core document from known fields.
+/// Construct a minimal DID Core document from a verified genesis operation.
 ///
-/// No I/O — pure construction from parameters.
+/// No I/O — pure construction from [`crypto::VerifiedGenesisOp`] fields.
 ///
 /// # Errors
-/// Returns an error if signing_key_did is not a did:key: URI (e.g., missing the prefix).
-fn build_did_document(
-    did: &str,
-    handle: &str,
-    signing_key_did: &str,
-    service_endpoint: &str,
-) -> Result<String, ApiError> {
-    // Extract the multibase-encoded public key from the did:key URI.
+/// Returns `InternalError` if `verificationMethods["atproto"]` is absent or is not a did:key: URI.
+fn build_did_document(verified: &crypto::VerifiedGenesisOp) -> Result<serde_json::Value, ApiError> {
+    let did = &verified.did;
+
+    // Extract the multibase key from did:key URI for publicKeyMultibase.
     // did:key:zAbcDef... → publicKeyMultibase = "zAbcDef..."
-    let public_key_multibase = signing_key_did.strip_prefix("did:key:").ok_or_else(|| {
-        ApiError::new(
-            ErrorCode::InternalError,
-            "signing key is not a did:key: URI",
-        )
+    let atproto_did_key = verified
+        .verification_methods
+        .get("atproto")
+        .ok_or_else(|| {
+            ApiError::new(ErrorCode::InternalError, "atproto verification method not found in op")
+        })?;
+    let public_key_multibase = atproto_did_key.strip_prefix("did:key:").ok_or_else(|| {
+        ApiError::new(ErrorCode::InternalError, "atproto key is not a did:key: URI")
     })?;
+
+    let service_endpoint = verified.atproto_pds_endpoint.as_deref().unwrap_or_default();
 
     Ok(serde_json::json!({
         "@context": [
             "https://www.w3.org/ns/did/v1"
         ],
         "id": did,
-        "alsoKnownAs": [format!("at://{handle}")],
+        "alsoKnownAs": &verified.also_known_as,
         "verificationMethod": [{
             "id": format!("{did}#atproto"),
             "type": "Multikey",
@@ -343,8 +320,7 @@ fn build_did_document(
             "type": "AtprotoPersonalDataServer",
             "serviceEndpoint": service_endpoint
         }]
-    })
-    .to_string())
+    }))
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
