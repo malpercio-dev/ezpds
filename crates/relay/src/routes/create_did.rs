@@ -356,52 +356,39 @@ mod tests {
 
     // ── Test setup helpers ────────────────────────────────────────────────────
 
-    /// A test master key: 32 bytes of 0x01.
-    const TEST_MASTER_KEY: [u8; 32] = [0x01u8; 32];
-
-    /// All data needed to call POST /v1/dids in a test.
     struct TestSetup {
         session_token: String,
-        signing_key_id: String,
-        rotation_key_id: String,
         account_id: String,
-        /// The handle stored in `pending_accounts`. Needed for AC2.10 to re-create
-        /// a second pending account that derives the same DID (same keys + same handle).
         handle: String,
     }
 
-    /// Insert all prerequisite rows for a DID-creation test.
+    /// Generate a signed genesis op verifiable by the returned rotation_key_public.
     ///
-    /// Inserts: relay_signing_key, pending_account (with claim code), device, pending_session.
-    ///
-    /// Pre-step: Read `crates/relay/src/routes/test_utils.rs` to see if helpers already
-    /// exist for inserting claim codes, pending accounts, or pending sessions. Use them here
-    /// if available. If not, use the raw SQL below.
-    async fn insert_test_data(db: &sqlx::SqlitePool) -> TestSetup {
-        use crypto::{encrypt_private_key, generate_p256_keypair};
-
-        // Generate signing and rotation keypairs.
-        let signing_kp = generate_p256_keypair().expect("signing keypair");
-        let rotation_kp = generate_p256_keypair().expect("rotation keypair");
-
-        // Encrypt the signing private key with the test master key.
-        let encrypted = encrypt_private_key(&signing_kp.private_key_bytes, &TEST_MASTER_KEY)
-            .expect("encrypt key");
-
-        // Insert relay_signing_key.
-        sqlx::query(
-            "INSERT INTO relay_signing_keys \
-             (id, algorithm, public_key, private_key_encrypted, created_at) \
-             VALUES (?, 'p256', ?, ?, datetime('now'))",
+    /// Uses the same keypair for both rotation and signing: kp signs the op,
+    /// AND kp.key_id appears at rotationKeys[0]. Calling verify_genesis_op with
+    /// kp.key_id will succeed.
+    fn make_signed_op(handle: &str, public_url: &str) -> (String, serde_json::Value) {
+        use crypto::{build_did_plc_genesis_op, generate_p256_keypair};
+        let kp = generate_p256_keypair().expect("keypair");
+        let private_bytes = *kp.private_key_bytes;
+        let genesis_op = build_did_plc_genesis_op(
+            &kp.key_id,     // rotation key — placed at rotationKeys[0]
+            &kp.key_id,     // signing key (same) — kp's private key performs the signing
+            &private_bytes,
+            handle,
+            public_url,
         )
-        .bind(&signing_kp.key_id.0)
-        .bind(&signing_kp.public_key)
-        .bind(&encrypted)
-        .execute(db)
-        .await
-        .expect("insert relay_signing_key");
+        .expect("genesis op");
+        let signed_op_value: serde_json::Value =
+            serde_json::from_str(&genesis_op.signed_op_json).expect("valid JSON");
+        (kp.key_id.0, signed_op_value)
+    }
 
-        // Insert a claim_code row (required FK for pending_accounts).
+    /// Insert prerequisite rows for a DID-creation test.
+    ///
+    /// Inserts: claim_code, pending_account, device, pending_session.
+    /// No relay signing key needed for MM-90.
+    async fn insert_test_data(db: &sqlx::SqlitePool) -> TestSetup {
         let claim_code = format!("TEST-{}", Uuid::new_v4());
         sqlx::query(
             "INSERT INTO claim_codes (code, expires_at, created_at) \
@@ -412,7 +399,6 @@ mod tests {
         .await
         .expect("insert claim_code");
 
-        // Insert pending_account.
         let account_id = Uuid::new_v4().to_string();
         let handle = format!("alice{}.example.com", &account_id[..8]);
         sqlx::query(
@@ -428,7 +414,6 @@ mod tests {
         .await
         .expect("insert pending_account");
 
-        // Insert a device (required FK for pending_sessions).
         let device_id = Uuid::new_v4().to_string();
         sqlx::query(
             "INSERT INTO devices \
@@ -441,7 +426,6 @@ mod tests {
         .await
         .expect("insert device");
 
-        // Generate pending session token.
         let mut token_bytes = [0u8; 32];
         OsRng.fill_bytes(&mut token_bytes);
         let session_token = URL_SAFE_NO_PAD.encode(token_bytes);
@@ -449,8 +433,6 @@ mod tests {
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
-
-        // Insert pending_session.
         sqlx::query(
             "INSERT INTO pending_sessions \
              (id, account_id, device_id, token_hash, created_at, expires_at) \
@@ -464,47 +446,24 @@ mod tests {
         .await
         .expect("insert pending_session");
 
-        TestSetup {
-            session_token,
-            signing_key_id: signing_kp.key_id.0,
-            rotation_key_id: rotation_kp.key_id.0,
-            account_id,
-            handle,
-        }
+        TestSetup { session_token, account_id, handle }
     }
 
-    /// Create an AppState with TEST_MASTER_KEY set and plc_directory_url pointing to the mock.
+    /// Create an AppState with plc_directory_url pointing to the mock server.
+    /// No signing_key_master_key needed for MM-90.
     async fn test_state_for_did(plc_url: String) -> AppState {
-        use common::Sensitive;
-        use std::sync::Arc;
-        use std::time::Duration;
-        use zeroize::Zeroizing;
-
-        let base = test_state_with_plc_url(plc_url).await;
-        let mut config = (*base.config).clone();
-        config.signing_key_master_key = Some(Sensitive(Zeroizing::new(TEST_MASTER_KEY)));
-
-        let http_client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .expect("test http client");
-
-        AppState {
-            config: Arc::new(config),
-            db: base.db,
-            http_client,
-        }
+        test_state_with_plc_url(plc_url).await
     }
 
-    /// Build a POST /v1/dids request with the given session token and body.
+    /// Build a POST /v1/dids request with the MM-90 body shape.
     fn create_did_request(
         session_token: &str,
-        signing_key: &str,
-        rotation_key: &str,
+        rotation_key_public: &str,
+        signed_creation_op: &serde_json::Value,
     ) -> Request<Body> {
         let body = serde_json::json!({
-            "signingKey": signing_key,
-            "rotationKey": rotation_key,
+            "rotationKeyPublic": rotation_key_public,
+            "signedCreationOp": signed_creation_op,
         });
         Request::builder()
             .method("POST")
@@ -515,9 +474,10 @@ mod tests {
             .unwrap()
     }
 
-    // ── AC2.1: Valid request returns 200 with { did, status: "active" } ───────
+    // ── AC2.1/2.2/2.3/2.4/2.5/4.1/4.2/4.3: Happy path ───────────────────────
 
-    /// MM-89.AC2.1, AC2.2, AC2.3, AC2.4, AC2.5: Happy path — full promotion
+    /// MM-90.AC2.1, AC2.2, AC2.3, AC2.4, AC2.5, AC4.1, AC4.2, AC4.3:
+    /// Valid request promotes account and returns full DID response.
     #[tokio::test]
     async fn happy_path_promotes_account_and_returns_did() {
         let mock_server = MockServer::start().await;
@@ -532,57 +492,79 @@ mod tests {
         let state = test_state_for_did(mock_server.uri()).await;
         let db = state.db.clone();
         let setup = insert_test_data(&db).await;
+        let (rotation_key_public, signed_op) =
+            make_signed_op(&setup.handle, &state.config.public_url);
 
-        let app = crate::app::app(state);
+        let app = crate::app::app(state.clone());
         let response = app
-            .oneshot(create_did_request(
-                &setup.session_token,
-                &setup.signing_key_id,
-                &setup.rotation_key_id,
-            ))
+            .oneshot(create_did_request(&setup.session_token, &rotation_key_public, &signed_op))
             .await
             .unwrap();
 
-        // AC2.1: 200 OK with did + status
-        assert_eq!(response.status(), StatusCode::OK);
-        let body: serde_json::Value = serde_json::from_slice(
-            &axum::body::to_bytes(response.into_body(), usize::MAX)
-                .await
-                .unwrap(),
-        )
-        .unwrap();
-        let did = body["did"].as_str().expect("did field");
+        // AC2.1: 200 OK with { did, did_document, status: "active" }
+        assert_eq!(response.status(), StatusCode::OK, "expected 200 OK");
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert!(
-            did.starts_with("did:plc:"),
+            body["did"].as_str().map(|d| d.starts_with("did:plc:")).unwrap_or(false),
             "did should start with did:plc:"
         );
-        assert_eq!(body["status"], "active");
+        assert_eq!(body["status"], "active", "status should be active");
+        assert!(body["did_document"].is_object(), "did_document should be a JSON object");
 
-        // AC2.2: accounts row with null password_hash
-        let (stored_email, stored_hash): (String, Option<String>) =
+        let did = body["did"].as_str().unwrap();
+        let doc = &body["did_document"];
+
+        // AC4.2: alsoKnownAs contains at://{handle}
+        let also_known_as = doc["alsoKnownAs"].as_array().expect("alsoKnownAs is array");
+        assert!(
+            also_known_as.iter().any(|e| e.as_str() == Some(&format!("at://{}", setup.handle))),
+            "alsoKnownAs should contain at://{}", setup.handle
+        );
+
+        // AC4.1: verificationMethod has publicKeyMultibase starting with "z"
+        let vm = &doc["verificationMethod"][0];
+        let pkm = vm["publicKeyMultibase"].as_str().expect("publicKeyMultibase is string");
+        assert!(pkm.starts_with('z'), "publicKeyMultibase should start with 'z'");
+
+        // AC4.3: service entry has serviceEndpoint matching public_url
+        let service = &doc["service"][0];
+        assert_eq!(
+            service["serviceEndpoint"].as_str(),
+            Some("https://test.example.com"),
+            "serviceEndpoint should match config.public_url"
+        );
+
+        // AC2.2: accounts row with correct did, email; password_hash IS NULL
+        let row: Option<(String, Option<String>)> =
             sqlx::query_as("SELECT email, password_hash FROM accounts WHERE did = ?")
                 .bind(did)
-                .fetch_one(&db)
+                .fetch_optional(&db)
                 .await
-                .expect("accounts row should exist");
-        assert!(stored_hash.is_none(), "password_hash should be NULL");
-        assert!(stored_email.contains("alice"), "email should be set");
+                .unwrap();
+        let (email, password_hash) = row.expect("accounts row should exist");
+        assert!(email.contains("alice"), "email should match test account");
+        assert!(password_hash.is_none(), "password_hash should be NULL for device-provisioned account");
 
-        // AC2.3: did_documents row with non-empty document
-        let (doc,): (String,) = sqlx::query_as("SELECT document FROM did_documents WHERE did = ?")
-            .bind(did)
-            .fetch_one(&db)
-            .await
-            .expect("did_documents row should exist");
-        assert!(!doc.is_empty(), "did_document should be non-empty");
+        // AC2.3: did_documents row exists with non-empty document
+        let doc_row: Option<(String,)> =
+            sqlx::query_as("SELECT document FROM did_documents WHERE did = ?")
+                .bind(did)
+                .fetch_optional(&db)
+                .await
+                .unwrap();
+        let (document,) = doc_row.expect("did_documents row should exist");
+        assert!(!document.is_empty(), "document should be non-empty");
 
-        // AC2.4: handles row
-        let (handle_did,): (String,) = sqlx::query_as("SELECT did FROM handles WHERE did = ?")
-            .bind(did)
-            .fetch_one(&db)
-            .await
-            .expect("handles row should exist");
-        assert_eq!(handle_did, did);
+        // AC2.4: handles row links handle to did
+        let handle_row: Option<(String,)> =
+            sqlx::query_as("SELECT did FROM handles WHERE handle = ?")
+                .bind(&setup.handle)
+                .fetch_optional(&db)
+                .await
+                .unwrap();
+        let (handle_did,) = handle_row.expect("handles row should exist");
+        assert_eq!(handle_did, did, "handles.did should match response did");
 
         // AC2.5: pending_accounts and pending_sessions deleted
         let pending_count: i64 =
@@ -591,7 +573,7 @@ mod tests {
                 .fetch_one(&db)
                 .await
                 .unwrap();
-        assert_eq!(pending_count, 0, "pending_account should be deleted");
+        assert_eq!(pending_count, 0, "pending_accounts row should be deleted");
 
         let session_count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM pending_sessions WHERE account_id = ?")
@@ -599,60 +581,40 @@ mod tests {
                 .fetch_one(&db)
                 .await
                 .unwrap();
-        assert_eq!(session_count, 0, "pending_sessions should be deleted");
+        assert_eq!(session_count, 0, "pending_sessions rows should be deleted");
     }
 
-    /// MM-89.AC2.6: Retry path — pending_did pre-set, plc.directory NOT called
+    // ── AC2.6: Retry path skips plc.directory ─────────────────────────────────
+
+    /// MM-90.AC2.6: When pending_did already set, plc.directory is not called.
     #[tokio::test]
     async fn retry_with_pending_did_skips_plc_directory() {
         let mock_server = MockServer::start().await;
-        // Expect zero calls to plc.directory on a retry.
-        // MockServer auto-verifies .expect(0) on drop — if plc.directory is called,
-        // the mock panics and the test fails.
+        // plc.directory must NOT be called on retry
         Mock::given(method("POST"))
-            .and(path_regex(r"^/did:plc:.*$"))
             .respond_with(ResponseTemplate::new(200))
-            .expect(0) // Must NOT be called
-            .named("plc.directory (should not be called on retry)")
+            .expect(0)
+            .named("plc.directory should not be called")
             .mount(&mock_server)
             .await;
 
         let state = test_state_for_did(mock_server.uri()).await;
         let db = state.db.clone();
         let setup = insert_test_data(&db).await;
+        let (rotation_key_public, signed_op) =
+            make_signed_op(&setup.handle, &state.config.public_url);
 
-        // Derive the DID from the same inputs that the handler will use.
-        // This ensures the pre-stored pending_did matches what the handler will derive.
-        let rotation_key = crypto::DidKeyUri(setup.rotation_key_id.clone());
-        let signing_key = crypto::DidKeyUri(setup.signing_key_id.clone());
-
-        // Look up the private key (same as handler does).
-        let (private_key_encrypted,): (String,) =
-            sqlx::query_as("SELECT private_key_encrypted FROM relay_signing_keys WHERE id = ?")
-                .bind(&setup.signing_key_id)
-                .fetch_one(&db)
-                .await
-                .expect("signing key must exist");
-
-        let private_key_bytes =
-            crypto::decrypt_private_key(&private_key_encrypted, &TEST_MASTER_KEY)
-                .expect("decrypt key");
-
-        // Build the genesis op to get the DID (same as handler does).
-        let genesis = crypto::build_did_plc_genesis_op(
-            &rotation_key,
-            &signing_key,
-            &private_key_bytes,
-            &setup.handle,
-            &state.config.public_url,
+        // Derive the DID from the signed op to pre-store it.
+        let signed_op_str = serde_json::to_string(&signed_op).unwrap();
+        let verified = crypto::verify_genesis_op(
+            &signed_op_str,
+            &crypto::DidKeyUri(rotation_key_public.clone()),
         )
-        .expect("build genesis");
+        .expect("verify should succeed");
 
-        let derived_did = genesis.did.clone();
-
-        // Simulate a partial-failure retry: pre-store the same DID that will be derived.
+        // Pre-set pending_did to simulate a retry scenario.
         sqlx::query("UPDATE pending_accounts SET pending_did = ? WHERE id = ?")
-            .bind(&derived_did)
+            .bind(&verified.did)
             .bind(&setup.account_id)
             .execute(&db)
             .await
@@ -660,247 +622,237 @@ mod tests {
 
         let app = crate::app::app(state);
         let response = app
-            .oneshot(create_did_request(
-                &setup.session_token,
-                &setup.signing_key_id,
-                &setup.rotation_key_id,
-            ))
+            .oneshot(create_did_request(&setup.session_token, &rotation_key_public, &signed_op))
             .await
             .unwrap();
 
-        // The route detects the pre-stored DID, verifies it matches the derived DID,
-        // skips plc.directory (enforced by .expect(0) above), and proceeds
-        // to promote the account using the crypto-derived DID. Returns 200.
-        assert_eq!(
-            response.status(),
-            StatusCode::OK,
-            "retry should succeed with 200"
-        );
+        assert_eq!(response.status(), StatusCode::OK, "retry should return 200");
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(body["did"].as_str(), Some(verified.did.as_str()), "did should match pre-computed DID");
+        // wiremock verifies expect(0) on mock_server drop
     }
 
-    /// MM-89.AC2.7: Missing Authorization header returns 401
-    #[tokio::test]
-    async fn missing_auth_header_returns_401() {
-        let state = test_state_with_plc_url("https://plc.directory".to_string()).await;
-        let app = crate::app::app(state);
+    // ── AC3.1: Invalid signature ───────────────────────────────────────────────
 
+    /// MM-90.AC3.1: Corrupted signature returns 400 INVALID_CLAIM.
+    #[tokio::test]
+    async fn invalid_signature_returns_400() {
+        let state = test_state_for_did("https://plc.directory".to_string()).await;
+        let db = state.db.clone();
+        let setup = insert_test_data(&db).await;
+        let (rotation_key_public, mut signed_op) =
+            make_signed_op(&setup.handle, &state.config.public_url);
+
+        // Corrupt the sig: decode, flip one byte, re-encode.
+        let sig_str = signed_op["sig"].as_str().unwrap().to_string();
+        let mut sig_bytes = URL_SAFE_NO_PAD.decode(&sig_str).unwrap();
+        sig_bytes[0] ^= 0xff;
+        signed_op["sig"] = serde_json::json!(URL_SAFE_NO_PAD.encode(&sig_bytes));
+
+        let app = crate::app::app(state);
+        let response = app
+            .oneshot(create_did_request(&setup.session_token, &rotation_key_public, &signed_op))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "expected 400");
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(body["error"]["code"], "INVALID_CLAIM");
+    }
+
+    // ── AC3.2: Wrong handle in alsoKnownAs ────────────────────────────────────
+
+    /// MM-90.AC3.2: alsoKnownAs mismatch returns 400 INVALID_CLAIM.
+    #[tokio::test]
+    async fn wrong_handle_in_op_returns_400() {
+        let state = test_state_for_did("https://plc.directory".to_string()).await;
+        let db = state.db.clone();
+        let setup = insert_test_data(&db).await;
+        // Build op with a different handle — pending_accounts has setup.handle.
+        let (rotation_key_public, signed_op) =
+            make_signed_op("different.handle.com", &state.config.public_url);
+
+        let app = crate::app::app(state);
+        let response = app
+            .oneshot(create_did_request(&setup.session_token, &rotation_key_public, &signed_op))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "expected 400");
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(body["error"]["code"], "INVALID_CLAIM");
+    }
+
+    // ── AC3.3: Wrong service endpoint ─────────────────────────────────────────
+
+    /// MM-90.AC3.3: services.atproto_pds.endpoint mismatch returns 400 INVALID_CLAIM.
+    #[tokio::test]
+    async fn wrong_service_endpoint_returns_400() {
+        let state = test_state_for_did("https://plc.directory".to_string()).await;
+        let db = state.db.clone();
+        let setup = insert_test_data(&db).await;
+        // Build op with wrong service endpoint.
+        let (rotation_key_public, signed_op) =
+            make_signed_op(&setup.handle, "https://wrong.example.com");
+
+        let app = crate::app::app(state);
+        let response = app
+            .oneshot(create_did_request(&setup.session_token, &rotation_key_public, &signed_op))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "expected 400");
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(body["error"]["code"], "INVALID_CLAIM");
+    }
+
+    // ── AC3.4: rotationKeys[0] mismatch ───────────────────────────────────────
+
+    /// MM-90.AC3.4: rotationKeys[0] in op != rotationKeyPublic in request body → 400 INVALID_CLAIM.
+    ///
+    /// To isolate semantic validation (not crypto failure): use kp_x as the signer
+    /// (signature verifies with kp_x), but put kp_y at rotationKeys[0]. Send kp_x
+    /// as rotationKeyPublic — verify passes (kp_x signed), but rotation_keys[0] == kp_y ≠ kp_x.
+    #[tokio::test]
+    async fn wrong_rotation_key_in_op_returns_400() {
+        use crypto::{build_did_plc_genesis_op, generate_p256_keypair};
+
+        let state = test_state_for_did("https://plc.directory".to_string()).await;
+        let db = state.db.clone();
+        let setup = insert_test_data(&db).await;
+
+        let kp_x = generate_p256_keypair().expect("signer keypair");
+        let kp_y = generate_p256_keypair().expect("rotation keypair");
+        let x_private = *kp_x.private_key_bytes;
+
+        // Build op: rotationKeys[0] = kp_y, signing key = kp_x (signs with kp_x).
+        let genesis_op = build_did_plc_genesis_op(
+            &kp_y.key_id,   // rotationKeys[0] = kp_y
+            &kp_x.key_id,   // signing key = kp_x, signs with kp_x's private key
+            &x_private,
+            &setup.handle,
+            &state.config.public_url,
+        )
+        .expect("genesis op");
+        let signed_op: serde_json::Value =
+            serde_json::from_str(&genesis_op.signed_op_json).unwrap();
+
+        // Send request with rotationKeyPublic = kp_x (not kp_y).
+        // verify_genesis_op(op, kp_x) passes (kp_x signed it),
+        // but rotation_keys[0] == kp_y ≠ kp_x → semantic validation fails.
+        let app = crate::app::app(state);
+        let response = app
+            .oneshot(create_did_request(&setup.session_token, &kp_x.key_id.0, &signed_op))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "expected 400");
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(body["error"]["code"], "INVALID_CLAIM");
+    }
+
+    // ── AC3.5: Already promoted ────────────────────────────────────────────────
+
+    /// MM-90.AC3.5: Account already promoted returns 409 DID_ALREADY_EXISTS.
+    #[tokio::test]
+    async fn already_promoted_account_returns_409() {
+        let state = test_state_for_did("https://plc.directory".to_string()).await;
+        let db = state.db.clone();
+        let setup = insert_test_data(&db).await;
+        let (rotation_key_public, signed_op) =
+            make_signed_op(&setup.handle, &state.config.public_url);
+
+        // Derive the DID and pre-insert an accounts row.
+        let signed_op_str = serde_json::to_string(&signed_op).unwrap();
+        let verified = crypto::verify_genesis_op(
+            &signed_op_str,
+            &crypto::DidKeyUri(rotation_key_public.clone()),
+        )
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES (?, 'other@example.com', NULL, datetime('now'), datetime('now'))",
+        )
+        .bind(&verified.did)
+        .execute(&db)
+        .await
+        .expect("pre-insert promoted account");
+
+        let app = crate::app::app(state);
+        let response = app
+            .oneshot(create_did_request(&setup.session_token, &rotation_key_public, &signed_op))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT, "expected 409");
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(body["error"]["code"], "DID_ALREADY_EXISTS");
+    }
+
+    // ── AC3.6: Missing auth ────────────────────────────────────────────────────
+
+    /// MM-90.AC3.6: Missing Authorization header returns 401 UNAUTHORIZED.
+    #[tokio::test]
+    async fn missing_auth_returns_401() {
+        let state = test_state_for_did("https://plc.directory".to_string()).await;
+        let signed_op = serde_json::json!({});
         let request = Request::builder()
             .method("POST")
             .uri("/v1/dids")
             .header("Content-Type", "application/json")
             .body(Body::from(
-                r#"{"signingKey":"did:key:z...","rotationKey":"did:key:z..."}"#,
+                serde_json::json!({
+                    "rotationKeyPublic": "did:key:z123",
+                    "signedCreationOp": signed_op
+                })
+                .to_string(),
             ))
             .unwrap();
 
+        let app = crate::app::app(state);
         let response = app.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "expected 401");
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(body["error"]["code"], "UNAUTHORIZED");
     }
 
-    /// MM-89.AC2.8: Expired session token returns 401
-    #[tokio::test]
-    async fn expired_session_returns_401() {
-        let state = test_state_for_did("https://plc.directory".to_string()).await;
-        let db = state.db.clone();
-        let setup = insert_test_data(&db).await;
+    // ── AC3.7: plc.directory error ────────────────────────────────────────────
 
-        // Manually expire the session.
-        sqlx::query("UPDATE pending_sessions SET expires_at = datetime('now', '-1 hour') WHERE account_id = ?")
-            .bind(&setup.account_id)
-            .execute(&db)
-            .await
-            .expect("expire session");
-
-        let app = crate::app::app(state);
-        let response = app
-            .oneshot(create_did_request(
-                &setup.session_token,
-                &setup.signing_key_id,
-                &setup.rotation_key_id,
-            ))
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    /// MM-89.AC2.9: signingKey not in relay_signing_keys returns 404
-    #[tokio::test]
-    async fn unknown_signing_key_returns_404() {
-        let state = test_state_for_did("https://plc.directory".to_string()).await;
-        let db = state.db.clone();
-        let setup = insert_test_data(&db).await;
-
-        let app = crate::app::app(state);
-        let response = app
-            .oneshot(create_did_request(
-                &setup.session_token,
-                "did:key:zNONEXISTENT", // Not in relay_signing_keys
-                &setup.rotation_key_id,
-            ))
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    }
-
-    /// MM-89.AC2.10: Account already promoted returns 409 DID_ALREADY_EXISTS
-    ///
-    /// The DID is deterministic from (rotation_key, signing_key, handle, service_endpoint).
-    /// To reliably trigger 409, we:
-    ///   1. First call promotes setup's account (deletes pending_accounts + pending_sessions).
-    ///   2. Create a NEW pending account+session using the SAME signing key, rotation key,
-    ///      and handle as setup. Same inputs → same crypto-derived DID.
-    ///   3. Second call: handler derives the same DID, finds the existing `accounts` row,
-    ///      returns 409 DID_ALREADY_EXISTS.
-    #[tokio::test]
-    async fn already_promoted_account_returns_409() {
-        let mock_server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path_regex(r"^/did:plc:.*$"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(1) // Only first call should hit plc.directory
-            .mount(&mock_server)
-            .await;
-
-        let state = test_state_for_did(mock_server.uri()).await;
-        let db = state.db.clone();
-        let setup = insert_test_data(&db).await;
-        let signing_kp = crypto::generate_p256_keypair().expect("signing keypair");
-        let encrypted =
-            crypto::encrypt_private_key(&signing_kp.private_key_bytes, &TEST_MASTER_KEY)
-                .expect("encrypt key");
-        sqlx::query(
-            "INSERT INTO relay_signing_keys \
-             (id, algorithm, public_key, private_key_encrypted, created_at) \
-             VALUES (?, 'p256', ?, ?, datetime('now'))",
-        )
-        .bind(&signing_kp.key_id.0)
-        .bind(&signing_kp.public_key)
-        .bind(&encrypted)
-        .execute(&db)
-        .await
-        .expect("insert second signing key");
-
-        // First call: promotes setup's account (deletes pending_accounts + pending_sessions).
-        let app1 = crate::app::app(state);
-        let resp1 = app1
-            .oneshot(create_did_request(
-                &setup.session_token,
-                &setup.signing_key_id,
-                &setup.rotation_key_id,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(resp1.status(), StatusCode::OK, "first call should succeed");
-
-        // setup's pending_accounts row is now deleted. Create a NEW pending account
-        // with the SAME handle and signing key. Since pending_accounts.handle has no
-        // unique constraint, we can reuse setup.handle here.
-        let claim_code2 = format!("TEST-{}", Uuid::new_v4());
-        sqlx::query(
-            "INSERT INTO claim_codes (code, expires_at, created_at) \
-             VALUES (?, datetime('now', '+1 hour'), datetime('now'))",
-        )
-        .bind(&claim_code2)
-        .execute(&db)
-        .await
-        .expect("claim_code2");
-
-        let account_id2 = Uuid::new_v4().to_string();
-        sqlx::query(
-            "INSERT INTO pending_accounts \
-             (id, email, handle, tier, claim_code, created_at) \
-             VALUES (?, ?, ?, 'free', ?, datetime('now'))",
-        )
-        .bind(&account_id2)
-        .bind(format!("retry{}@example.com", &account_id2[..8]))
-        .bind(&setup.handle) // same handle → same DID with same signing/rotation keys
-        .bind(&claim_code2)
-        .execute(&db)
-        .await
-        .expect("pending_account2");
-
-        let device_id2 = Uuid::new_v4().to_string();
-        sqlx::query(
-            "INSERT INTO devices \
-             (id, account_id, platform, public_key, device_token_hash, created_at, last_seen_at) \
-             VALUES (?, ?, 'ios', 'retry_pubkey', 'retry_device_hash', datetime('now'), datetime('now'))",
-        )
-        .bind(&device_id2)
-        .bind(&account_id2)
-        .execute(&db)
-        .await
-        .expect("device2");
-
-        let mut token_bytes2 = [0u8; 32];
-        OsRng.fill_bytes(&mut token_bytes2);
-        let session_token2 = URL_SAFE_NO_PAD.encode(token_bytes2);
-        let token_hash2: String = Sha256::digest(token_bytes2)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
-        sqlx::query(
-            "INSERT INTO pending_sessions \
-             (id, account_id, device_id, token_hash, created_at, expires_at) \
-             VALUES (?, ?, ?, ?, datetime('now'), datetime('now', '+1 hour'))",
-        )
-        .bind(Uuid::new_v4().to_string())
-        .bind(&account_id2)
-        .bind(&device_id2)
-        .bind(&token_hash2)
-        .execute(&db)
-        .await
-        .expect("session2");
-
-        // Second call: same signing_key + rotation_key + handle → same DID.
-        // accounts table already has this DID → handler returns 409.
-        let state2 = test_state_for_did(mock_server.uri()).await;
-        let app2 = crate::app::app(AppState {
-            config: state2.config,
-            db: db.clone(),
-            http_client: state2.http_client,
-        });
-        let resp2 = app2
-            .oneshot(create_did_request(
-                &session_token2,
-                &setup.signing_key_id,  // same signing key
-                &setup.rotation_key_id, // same rotation key
-            ))
-            .await
-            .unwrap();
-        assert_eq!(
-            resp2.status(),
-            StatusCode::CONFLICT,
-            "should return 409 DID_ALREADY_EXISTS"
-        );
-    }
-
-    /// MM-89.AC2.11: plc.directory returns non-2xx → 502 PLC_DIRECTORY_ERROR
+    /// MM-90.AC3.7: plc.directory non-2xx returns 502 PLC_DIRECTORY_ERROR.
     #[tokio::test]
     async fn plc_directory_error_returns_502() {
         let mock_server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path_regex(r"^/did:plc:.*$"))
-            .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
+            .and(path_regex(r"^/did:plc:[a-z2-7]+$"))
+            .respond_with(ResponseTemplate::new(500))
             .expect(1)
+            .named("plc.directory returns 500")
             .mount(&mock_server)
             .await;
 
         let state = test_state_for_did(mock_server.uri()).await;
         let db = state.db.clone();
         let setup = insert_test_data(&db).await;
+        let (rotation_key_public, signed_op) =
+            make_signed_op(&setup.handle, &state.config.public_url);
 
         let app = crate::app::app(state);
         let response = app
-            .oneshot(create_did_request(
-                &setup.session_token,
-                &setup.signing_key_id,
-                &setup.rotation_key_id,
-            ))
+            .oneshot(create_did_request(&setup.session_token, &rotation_key_public, &signed_op))
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY, "expected 502");
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(body["error"]["code"], "PLC_DIRECTORY_ERROR");
     }
 }
