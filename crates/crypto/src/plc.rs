@@ -32,9 +32,14 @@ use p256::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{CryptoError, DidKeyUri};
+use crate::{keys::P256_MULTICODEC_PREFIX, CryptoError, DidKeyUri};
 
 /// The result of building a did:plc genesis operation.
+///
+/// Only valid if constructed via [`build_did_plc_genesis_op`] — the
+/// `#[non_exhaustive]` attribute ensures that direct construction is not
+/// possible outside this module.
+#[non_exhaustive]
 #[derive(Debug)]
 pub struct PlcGenesisOp {
     /// The derived DID, e.g. `"did:plc:abcdefghijklmnopqrstuvwx"`.
@@ -44,15 +49,6 @@ pub struct PlcGenesisOp {
     /// Ready to POST to plc.directory.
     pub signed_op_json: String,
 }
-
-/// P-256 multicodec varint prefix for did:key URIs.
-/// 0x1200 encoded as LEB128 varint = [0x80, 0x24].
-///
-/// This constant is redefined here rather than promoted to `pub(crate)` in
-/// `keys.rs` to avoid cross-module coupling between two sibling functional
-/// modules. Each module owns its own copy; if the value ever needs to change,
-/// both sites are easy to find via the shared literal `[0x80, 0x24]`.
-const P256_MULTICODEC_PREFIX: &[u8] = &[0x80, 0x24];
 
 // ── Internal serialization types ────────────────────────────────────────────
 //
@@ -122,6 +118,11 @@ struct SignedPlcOp {
 /// Returned by [`verify_genesis_op`]. Fields are extracted directly from the
 /// verified signed op; the relay uses them for semantic validation and DID
 /// document construction.
+///
+/// Only valid if constructed via [`verify_genesis_op`] — the `#[non_exhaustive]`
+/// attribute ensures that direct construction is not possible outside this
+/// module.
+#[non_exhaustive]
 pub struct VerifiedGenesisOp {
     /// The derived DID, e.g. `"did:plc:abcdefghijklmnopqrstuvwx"`.
     pub did: String,
@@ -237,13 +238,27 @@ pub fn build_did_plc_genesis_op(
 /// Verify a client-submitted did:plc signed genesis operation.
 ///
 /// Parses `signed_op_json` into a [`SignedPlcOp`] (rejecting unknown fields),
-/// reconstructs the unsigned operation with the same DAG-CBOR field ordering
-/// as [`build_did_plc_genesis_op`], verifies the ECDSA-SHA256 signature against
+/// validates that this is a genesis operation (not a rotation), reconstructs
+/// the unsigned operation with the same DAG-CBOR field ordering as
+/// [`build_did_plc_genesis_op`], verifies the ECDSA-SHA256 signature against
 /// `rotation_key`, derives the DID (SHA-256 of signed CBOR → base32-lowercase
 /// first 24 chars), and returns the extracted operation fields.
 ///
+/// # Important: rotation_key caller obligation
+/// The caller is responsible for verifying that the provided `rotation_key`
+/// appears in the op's `rotationKeys` array; this function only checks that
+/// the signature was made by that key.
+///
+/// # Parameters
+/// - `signed_op_json`: JSON-encoded signed genesis operation from a client.
+/// - `rotation_key`: The key that must have signed the unsigned operation — the
+///   caller determines which of the op's rotation keys to verify against.
+///   Must be a valid `did:key:` URI with P-256 multicodec prefix.
+///
 /// # Errors
-/// Returns `CryptoError::PlcOperation` for any parse, format, or cryptographic failure.
+/// Returns `CryptoError::PlcOperation` for any parse, format, cryptographic
+/// failure, or if the operation is not a genesis operation (prev != null or
+/// type != "plc_operation").
 pub fn verify_genesis_op(
     signed_op_json: &str,
     rotation_key: &DidKeyUri,
@@ -252,16 +267,29 @@ pub fn verify_genesis_op(
     let signed_op: SignedPlcOp = serde_json::from_str(signed_op_json)
         .map_err(|e| CryptoError::PlcOperation(format!("invalid signed op JSON: {e}")))?;
 
-    // Step 2: Base64url-decode the signature field.
+    // Step 2: Validate this is a genesis operation, not a rotation (C2).
+    if signed_op.prev.is_some() {
+        return Err(CryptoError::PlcOperation(
+            "genesis op must have prev = null".to_string(),
+        ));
+    }
+    if signed_op.op_type != "plc_operation" {
+        return Err(CryptoError::PlcOperation(format!(
+            "expected type 'plc_operation', got '{}'",
+            signed_op.op_type
+        )));
+    }
+
+    // Step 3: Base64url-decode the signature field.
     let sig_bytes = URL_SAFE_NO_PAD
         .decode(&signed_op.sig)
         .map_err(|e| CryptoError::PlcOperation(format!("invalid sig base64url: {e}")))?;
 
-    // Step 3: Parse the 64-byte r‖s fixed-size ECDSA signature.
+    // Step 4: Parse the 64-byte r‖s fixed-size ECDSA signature.
     let signature = Signature::try_from(sig_bytes.as_slice())
         .map_err(|e| CryptoError::PlcOperation(format!("invalid ECDSA signature bytes: {e}")))?;
 
-    // Step 4: Reconstruct the unsigned operation from signed op fields.
+    // Step 5: Reconstruct the unsigned operation from signed op fields.
     // Field order must match UnsignedPlcOp's DAG-CBOR canonical ordering.
     let unsigned_op = UnsignedPlcOp {
         prev: signed_op.prev.clone(),
@@ -272,12 +300,12 @@ pub fn verify_genesis_op(
         verification_methods: signed_op.verification_methods.clone(),
     };
 
-    // Step 5: CBOR-encode the unsigned op — byte-exact match to what was signed.
+    // Step 6: CBOR-encode the unsigned op — byte-exact match to what was signed.
     let mut unsigned_cbor = Vec::new();
     into_writer(&unsigned_op, &mut unsigned_cbor)
         .map_err(|e| CryptoError::PlcOperation(format!("cbor encode unsigned op: {e}")))?;
 
-    // Step 6: Parse rotation key URI → P-256 VerifyingKey.
+    // Step 7: Parse rotation key URI → P-256 VerifyingKey.
     let key_str = rotation_key.0.strip_prefix("did:key:").ok_or_else(|| {
         CryptoError::PlcOperation("rotation key missing did:key: prefix".to_string())
     })?;
@@ -291,12 +319,12 @@ pub fn verify_genesis_op(
     let verifying_key = VerifyingKey::from_sec1_bytes(&multikey_bytes[2..])
         .map_err(|e| CryptoError::PlcOperation(format!("invalid P-256 public key: {e}")))?;
 
-    // Step 7: Verify the ECDSA-SHA256 signature (SHA-256 applied internally by p256).
+    // Step 8: Verify the ECDSA-SHA256 signature (SHA-256 applied internally by p256).
     verifying_key
         .verify(&unsigned_cbor, &signature)
         .map_err(|e| CryptoError::PlcOperation(format!("signature verification failed: {e}")))?;
 
-    // Step 8: CBOR-encode the signed op and derive the DID.
+    // Step 9: CBOR-encode the signed op and derive the DID.
     let mut signed_cbor = Vec::new();
     into_writer(&signed_op, &mut signed_cbor)
         .map_err(|e| CryptoError::PlcOperation(format!("cbor encode signed op: {e}")))?;
@@ -311,7 +339,7 @@ pub fn verify_genesis_op(
     let encoded = base32_encoding.encode(hash.as_ref());
     let did = format!("did:plc:{}", &encoded[..24]);
 
-    // Step 9: Extract atproto_pds endpoint from services map.
+    // Step 10: Extract atproto_pds endpoint from services map.
     let atproto_pds_endpoint = signed_op
         .services
         .get("atproto_pds")
@@ -641,6 +669,76 @@ mod tests {
         assert!(
             matches!(result, Err(CryptoError::PlcOperation(_))),
             "Verify with unknown fields should return CryptoError::PlcOperation"
+        );
+    }
+
+    /// MM-90.AC2.1: Rotation op (prev != null) is rejected
+    #[test]
+    fn verify_rotation_op_with_non_null_prev_returns_error() {
+        let (signing_key, op) = make_op_for_verify();
+
+        // Parse JSON, set prev to a non-null value, re-serialize
+        let mut v: serde_json::Value =
+            serde_json::from_str(&op.signed_op_json).expect("valid JSON");
+        v["prev"] = serde_json::json!("some-hash-value");
+        let modified_json = serde_json::to_string(&v).expect("re-serialize JSON");
+
+        let result = verify_genesis_op(&modified_json, &signing_key);
+
+        assert!(
+            matches!(result, Err(CryptoError::PlcOperation(_))),
+            "Verify with non-null prev should return CryptoError::PlcOperation"
+        );
+    }
+
+    /// MM-90.AC2.2: Non-genesis op_type is rejected
+    #[test]
+    fn verify_non_genesis_op_type_returns_error() {
+        let (signing_key, op) = make_op_for_verify();
+
+        // Parse JSON, change type to a rotation type, re-serialize
+        let mut v: serde_json::Value =
+            serde_json::from_str(&op.signed_op_json).expect("valid JSON");
+        v["type"] = serde_json::json!("plc_tombstone");
+        let modified_json = serde_json::to_string(&v).expect("re-serialize JSON");
+
+        let result = verify_genesis_op(&modified_json, &signing_key);
+
+        assert!(
+            matches!(result, Err(CryptoError::PlcOperation(_))),
+            "Verify with non-genesis op_type should return CryptoError::PlcOperation"
+        );
+    }
+
+    /// MM-90.AC3: Canonical usage pattern — rotation key signs and appears at rotationKeys[0].
+    /// The same keypair is both the rotation key and the signing key.
+    #[test]
+    fn verify_rotation_key_can_verify_own_op() {
+        let kp = generate_p256_keypair().expect("keypair");
+        let private_key_bytes = *kp.private_key_bytes;
+
+        // Use the SAME keypair as both rotation and signing key.
+        // This is the canonical usage: kp appears at rotationKeys[0] AND signs the op.
+        let op = build_did_plc_genesis_op(
+            &kp.key_id,
+            &kp.key_id,
+            &private_key_bytes,
+            "alice.example.com",
+            "https://relay.example.com",
+        )
+        .expect("genesis op should succeed");
+
+        // Verify using kp.key_id (which appears in rotationKeys[0] AND made the signature).
+        let result = verify_genesis_op(&op.signed_op_json, &kp.key_id);
+
+        assert!(
+            result.is_ok(),
+            "Verify with rotation key that signed and appears at rotationKeys[0] should succeed"
+        );
+        let verified = result.unwrap();
+        assert_eq!(
+            verified.did, op.did,
+            "DID should match the original op's DID"
         );
     }
 }

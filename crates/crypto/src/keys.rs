@@ -12,7 +12,7 @@ use crate::CryptoError;
 
 /// P-256 multicodec varint prefix for did:key URIs.
 /// 0x1200 encoded as LEB128 varint = [0x80, 0x24].
-const P256_MULTICODEC_PREFIX: &[u8] = &[0x80, 0x24];
+pub(crate) const P256_MULTICODEC_PREFIX: &[u8] = &[0x80, 0x24];
 
 /// A `did:key:z...` URI — the canonical identifier for a P-256 keypair.
 ///
