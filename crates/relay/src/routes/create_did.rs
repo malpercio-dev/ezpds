@@ -372,8 +372,8 @@ mod tests {
         let kp = generate_p256_keypair().expect("keypair");
         let private_bytes = *kp.private_key_bytes;
         let genesis_op = build_did_plc_genesis_op(
-            &kp.key_id,     // rotation key — placed at rotationKeys[0]
-            &kp.key_id,     // signing key (same) — kp's private key performs the signing
+            &kp.key_id, // rotation key — placed at rotationKeys[0]
+            &kp.key_id, // signing key (same) — kp's private key performs the signing
             &private_bytes,
             handle,
             public_url,
@@ -446,7 +446,11 @@ mod tests {
         .await
         .expect("insert pending_session");
 
-        TestSetup { session_token, account_id, handle }
+        TestSetup {
+            session_token,
+            account_id,
+            handle,
+        }
     }
 
     /// Create an AppState with plc_directory_url pointing to the mock server.
@@ -497,20 +501,32 @@ mod tests {
 
         let app = crate::app::app(state.clone());
         let response = app
-            .oneshot(create_did_request(&setup.session_token, &rotation_key_public, &signed_op))
+            .oneshot(create_did_request(
+                &setup.session_token,
+                &rotation_key_public,
+                &signed_op,
+            ))
             .await
             .unwrap();
 
         // AC2.1: 200 OK with { did, did_document, status: "active" }
         assert_eq!(response.status(), StatusCode::OK, "expected 200 OK");
-        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert!(
-            body["did"].as_str().map(|d| d.starts_with("did:plc:")).unwrap_or(false),
+            body["did"]
+                .as_str()
+                .map(|d| d.starts_with("did:plc:"))
+                .unwrap_or(false),
             "did should start with did:plc:"
         );
         assert_eq!(body["status"], "active", "status should be active");
-        assert!(body["did_document"].is_object(), "did_document should be a JSON object");
+        assert!(
+            body["did_document"].is_object(),
+            "did_document should be a JSON object"
+        );
 
         let did = body["did"].as_str().unwrap();
         let doc = &body["did_document"];
@@ -518,14 +534,22 @@ mod tests {
         // AC4.2: alsoKnownAs contains at://{handle}
         let also_known_as = doc["alsoKnownAs"].as_array().expect("alsoKnownAs is array");
         assert!(
-            also_known_as.iter().any(|e| e.as_str() == Some(&format!("at://{}", setup.handle))),
-            "alsoKnownAs should contain at://{}", setup.handle
+            also_known_as
+                .iter()
+                .any(|e| e.as_str() == Some(&format!("at://{}", setup.handle))),
+            "alsoKnownAs should contain at://{}",
+            setup.handle
         );
 
         // AC4.1: verificationMethod has publicKeyMultibase starting with "z"
         let vm = &doc["verificationMethod"][0];
-        let pkm = vm["publicKeyMultibase"].as_str().expect("publicKeyMultibase is string");
-        assert!(pkm.starts_with('z'), "publicKeyMultibase should start with 'z'");
+        let pkm = vm["publicKeyMultibase"]
+            .as_str()
+            .expect("publicKeyMultibase is string");
+        assert!(
+            pkm.starts_with('z'),
+            "publicKeyMultibase should start with 'z'"
+        );
 
         // AC4.3: service entry has serviceEndpoint matching public_url
         let service = &doc["service"][0];
@@ -544,7 +568,10 @@ mod tests {
                 .unwrap();
         let (email, password_hash) = row.expect("accounts row should exist");
         assert!(email.contains("alice"), "email should match test account");
-        assert!(password_hash.is_none(), "password_hash should be NULL for device-provisioned account");
+        assert!(
+            password_hash.is_none(),
+            "password_hash should be NULL for device-provisioned account"
+        );
 
         // AC2.3: did_documents row exists with non-empty document
         let doc_row: Option<(String,)> =
@@ -622,14 +649,24 @@ mod tests {
 
         let app = crate::app::app(state);
         let response = app
-            .oneshot(create_did_request(&setup.session_token, &rotation_key_public, &signed_op))
+            .oneshot(create_did_request(
+                &setup.session_token,
+                &rotation_key_public,
+                &signed_op,
+            ))
             .await
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK, "retry should return 200");
-        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
-        assert_eq!(body["did"].as_str(), Some(verified.did.as_str()), "did should match pre-computed DID");
+        assert_eq!(
+            body["did"].as_str(),
+            Some(verified.did.as_str()),
+            "did should match pre-computed DID"
+        );
         // wiremock verifies expect(0) on mock_server drop
     }
 
@@ -652,12 +689,18 @@ mod tests {
 
         let app = crate::app::app(state);
         let response = app
-            .oneshot(create_did_request(&setup.session_token, &rotation_key_public, &signed_op))
+            .oneshot(create_did_request(
+                &setup.session_token,
+                &rotation_key_public,
+                &signed_op,
+            ))
             .await
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "expected 400");
-        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(body["error"]["code"], "INVALID_CLAIM");
     }
@@ -676,12 +719,18 @@ mod tests {
 
         let app = crate::app::app(state);
         let response = app
-            .oneshot(create_did_request(&setup.session_token, &rotation_key_public, &signed_op))
+            .oneshot(create_did_request(
+                &setup.session_token,
+                &rotation_key_public,
+                &signed_op,
+            ))
             .await
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "expected 400");
-        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(body["error"]["code"], "INVALID_CLAIM");
     }
@@ -700,12 +749,18 @@ mod tests {
 
         let app = crate::app::app(state);
         let response = app
-            .oneshot(create_did_request(&setup.session_token, &rotation_key_public, &signed_op))
+            .oneshot(create_did_request(
+                &setup.session_token,
+                &rotation_key_public,
+                &signed_op,
+            ))
             .await
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "expected 400");
-        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(body["error"]["code"], "INVALID_CLAIM");
     }
@@ -731,8 +786,8 @@ mod tests {
 
         // Build op: rotationKeys[0] = kp_y, signing key = kp_x (signs with kp_x).
         let genesis_op = build_did_plc_genesis_op(
-            &kp_y.key_id,   // rotationKeys[0] = kp_y
-            &kp_x.key_id,   // signing key = kp_x, signs with kp_x's private key
+            &kp_y.key_id, // rotationKeys[0] = kp_y
+            &kp_x.key_id, // signing key = kp_x, signs with kp_x's private key
             &x_private,
             &setup.handle,
             &state.config.public_url,
@@ -746,12 +801,18 @@ mod tests {
         // but rotation_keys[0] == kp_y ≠ kp_x → semantic validation fails.
         let app = crate::app::app(state);
         let response = app
-            .oneshot(create_did_request(&setup.session_token, &kp_x.key_id.0, &signed_op))
+            .oneshot(create_did_request(
+                &setup.session_token,
+                &kp_x.key_id.0,
+                &signed_op,
+            ))
             .await
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "expected 400");
-        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(body["error"]["code"], "INVALID_CLAIM");
     }
@@ -785,12 +846,18 @@ mod tests {
 
         let app = crate::app::app(state);
         let response = app
-            .oneshot(create_did_request(&setup.session_token, &rotation_key_public, &signed_op))
+            .oneshot(create_did_request(
+                &setup.session_token,
+                &rotation_key_public,
+                &signed_op,
+            ))
             .await
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::CONFLICT, "expected 409");
-        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(body["error"]["code"], "DID_ALREADY_EXISTS");
     }
@@ -819,7 +886,9 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "expected 401");
-        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(body["error"]["code"], "UNAUTHORIZED");
     }
@@ -846,12 +915,18 @@ mod tests {
 
         let app = crate::app::app(state);
         let response = app
-            .oneshot(create_did_request(&setup.session_token, &rotation_key_public, &signed_op))
+            .oneshot(create_did_request(
+                &setup.session_token,
+                &rotation_key_public,
+                &signed_op,
+            ))
             .await
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY, "expected 502");
-        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(body["error"]["code"], "PLC_DIRECTORY_ERROR");
     }
