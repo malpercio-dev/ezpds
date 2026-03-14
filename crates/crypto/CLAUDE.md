@@ -1,11 +1,12 @@
 # Crypto Crate
 
-Last verified: 2026-03-13
+Last verified: 2026-03-14
 
 ## Purpose
 Provides cryptographic primitives for the ezpds workspace: P-256 key generation,
 did:key derivation, AES-256-GCM encryption/decryption of private key material,
-and Shamir Secret Sharing for DID rotation key recovery.
+Shamir Secret Sharing for DID rotation key recovery, and did:plc genesis
+operation building and verification.
 This is a pure functional core -- no I/O, no database, no config.
 
 ## Contracts
@@ -64,6 +65,19 @@ pub fn build_did_plc_genesis_op(
 - Deterministic: same inputs → same DID (RFC 6979 ECDSA + SHA-256 + base32)
 - Errors: `CryptoError::PlcOperation` if `signing_private_key` is an invalid P-256 scalar
 
+**`verify_genesis_op`** (new, MM-90)
+```rust
+pub fn verify_genesis_op(
+    signed_op_json: &str,           // JSON-encoded signed genesis op from client
+    rotation_key: &DidKeyUri,       // P-256 did:key URI to verify signature against
+) -> Result<VerifiedGenesisOp, CryptoError>
+```
+- Parses signed op JSON (rejects unknown fields via `serde(deny_unknown_fields)`)
+- Reconstructs unsigned op with DAG-CBOR canonical field ordering, verifies ECDSA-SHA256 signature
+- Derives DID from SHA-256 of signed CBOR (same algorithm as `build_did_plc_genesis_op`)
+- Returns extracted op fields for semantic validation by the caller
+- Errors: `CryptoError::PlcOperation` for any parse, format, or signature failure
+
 ### Public types
 
 **`P256Keypair`**
@@ -74,6 +88,13 @@ pub fn build_did_plc_genesis_op(
 **`PlcGenesisOp`** (new, MM-89)
 - `did`: `"did:plc:xxxx..."` (28 chars total)
 - `signed_op_json`: contains `type`, `rotationKeys`, `verificationMethods`, `alsoKnownAs`, `services`, `prev` (null), `sig`
+
+**`VerifiedGenesisOp`** (new, MM-90)
+- `did`: derived DID string
+- `rotation_keys`: full `rotationKeys` array from the op
+- `also_known_as`: full `alsoKnownAs` array from the op
+- `verification_methods`: full `verificationMethods` map from the op
+- `atproto_pds_endpoint`: endpoint from `services["atproto_pds"]`, if present
 
 **`ShamirShare`**
 - `index`: u8 in [1, 3] (not secret)
@@ -90,7 +111,7 @@ pub fn build_did_plc_genesis_op(
 
 ## Dependencies
 - **Uses**: p256 (ECDSA/key generation), aes-gcm (AES-256-GCM), multibase (base58btc encoding), rand_core (OS RNG), base64 (storage encoding), zeroize (secret cleanup), ciborium (CBOR serialization for did:plc), data-encoding (base32-lowercase), sha2 (SHA-256), serde/serde_json (struct serialization)
-- **Used by**: `crates/relay/` (key generation, did:plc genesis endpoint)
+- **Used by**: `crates/relay/` (key generation, did:plc genesis building and verification in POST /v1/dids)
 
 ## Invariants
 - Private key bytes are always wrapped in `Zeroizing` -- callers must not copy them into non-zeroizing storage
@@ -104,6 +125,6 @@ pub fn build_did_plc_genesis_op(
 ## Key Files
 - `src/lib.rs` - Re-exports public API
 - `src/keys.rs` - P-256 key generation, AES-256-GCM encrypt/decrypt
-- `src/plc.rs` - did:plc genesis operation builder (MM-89)
+- `src/plc.rs` - did:plc genesis operation builder (MM-89) and verifier (MM-90)
 - `src/shamir.rs` - Shamir Secret Sharing (split/combine, GF(2^8) arithmetic)
 - `src/error.rs` - CryptoError enum
