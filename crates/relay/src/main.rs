@@ -8,6 +8,7 @@ mod db;
 mod dns;
 mod routes;
 mod telemetry;
+mod well_known;
 
 /// Convert a config database_url (which may be a plain filesystem path or a sqlx URL) to a valid sqlx URL.
 ///
@@ -118,8 +119,8 @@ async fn run() -> anyhow::Result<()> {
             }
         };
 
-    let well_known_resolver: Option<Arc<dyn dns::WellKnownResolver>> =
-        Some(Arc::new(dns::HttpWellKnownResolver::new(http_client.clone())));
+    let well_known_resolver: Option<Arc<dyn well_known::WellKnownResolver>> =
+        Some(Arc::new(well_known::HttpWellKnownResolver::new(http_client.clone())));
 
     let state = app::AppState {
         config: Arc::new(config),

@@ -87,7 +87,8 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state, AppState};
-    use crate::dns::{DnsError, TxtResolver, WellKnownError, WellKnownResolver};
+    use crate::dns::{DnsError, TxtResolver};
+    use crate::well_known::{WellKnownError, WellKnownResolver};
 
     // ── Test doubles ──────────────────────────────────────────────────────────
 

@@ -12,7 +12,8 @@ use reqwest::Client;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-use crate::dns::{DnsProvider, TxtResolver, WellKnownResolver};
+use crate::dns::{DnsProvider, TxtResolver};
+use crate::well_known::WellKnownResolver;
 use crate::routes::claim_codes::claim_codes;
 use crate::routes::create_account::create_account;
 use crate::routes::create_did::create_did_handler;
