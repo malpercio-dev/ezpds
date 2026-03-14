@@ -3,6 +3,7 @@
 Last verified: 2026-03-13
 
 ## Latest Updates
+- **V009**: Rebuilt sessions with nullable device_id (devices are deleted at DID promotion) and added token_hash UNIQUE column for Bearer token authentication (same SHA-256 hex pattern as pending_sessions)
 - **V008**: Rebuilt accounts with nullable password_hash (mobile accounts have no password); added pending_did column to pending_accounts for DID pre-store retry resilience
 
 ## Purpose
@@ -41,3 +42,4 @@ that can later serve per-user SQLite databases (Wave 3/4).
 - `migrations/V006__devices_v2.sql` - Rebuilds devices: replaces did FK (accounts) with account_id FK (pending_accounts); adds platform, public_key, device_token_hash; also rebuilds sessions, oauth_tokens, refresh_tokens (cascade due to FK references)
 - `migrations/V007__pending_sessions.sql` - pending_sessions table: id, account_id (FK→pending_accounts), device_id (FK→devices), token_hash (UNIQUE), created_at, expires_at; used by POST /v1/accounts/mobile to issue a pre-DID session for the DID-creation step
 - `migrations/V008__did_promotion.sql` - Rebuilds accounts with nullable password_hash (mobile accounts have no password); adds pending_did column to pending_accounts for DID pre-store retry resilience
+- `migrations/V009__sessions_v2.sql` - Rebuilds sessions: makes device_id nullable (devices are transient, deleted at DID promotion) and adds token_hash UNIQUE column for Bearer token auth via require_session

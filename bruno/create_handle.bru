@@ -1,0 +1,22 @@
+meta {
+  name: Create Handle
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/handles
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sessionToken}}
+}
+
+body:json {
+  {
+    "accountId": "{{did}}",
+    "handle": "{{handle}}"
+  }
+}

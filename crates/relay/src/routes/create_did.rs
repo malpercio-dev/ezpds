@@ -24,20 +24,25 @@
 //   8. SELECT EXISTS(SELECT 1 FROM accounts WHERE did = verified.did) → 409 if true
 //   9. If !skip_plc_directory: POST {plc_directory_url}/{did} with signed_op_str
 //  10. build_did_document(&verified) → serde_json::Value
-//  11. Atomic transaction:
+//  11. Generate session token: 32 random bytes → base64url (returned) + SHA-256 hex (stored)
+//  12. Atomic transaction:
 //        INSERT accounts (did, email, password_hash=NULL)
 //        INSERT did_documents (did, document)
-//        INSERT handles (handle, did)
+//        INSERT sessions (id, did, device_id=NULL, token_hash, expires_at=+1 year)
 //        DELETE pending_sessions WHERE account_id = ?
 //        DELETE devices WHERE account_id = ?
 //        DELETE pending_accounts WHERE id = ?
-//  12. Return { "did": "did:plc:...", "did_document": {...}, "status": "active" }
+//  13. Return { "did": "did:plc:...", "did_document": {...}, "status": "active", "session_token": "..." }
 //
-// Outputs (success):  200 { "did": "did:plc:...", "did_document": {...}, "status": "active" }
+// Note: handles are NOT inserted here. Handle creation is the caller's responsibility
+// via POST /v1/handles (MM-94), which validates format and optionally creates DNS records.
+//
+// Outputs (success):  200 { "did": "...", "did_document": {...}, "status": "active", "session_token": "..." }
 // Outputs (error):    400 INVALID_CLAIM, 401 UNAUTHORIZED, 409 DID_ALREADY_EXISTS,
 //                     502 PLC_DIRECTORY_ERROR, 500 INTERNAL_ERROR
 
 use axum::{extract::State, http::HeaderMap, Json};
+use rand_core::RngCore;
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
@@ -65,6 +70,7 @@ pub struct CreateDidResponse {
     pub did: String,
     pub did_document: serde_json::Value,
     pub status: &'static str,
+    pub session_token: String,
 }
 
 pub async fn create_did_handler(
@@ -238,7 +244,24 @@ pub async fn create_did_handler(
         ApiError::new(ErrorCode::InternalError, "failed to serialize DID document")
     })?;
 
-    // Step 11: Atomically promote the account.
+    // Step 11: Generate session token before entering the transaction so it can be
+    // returned in the response regardless of which transaction path commits.
+    let mut token_bytes = [0u8; 32];
+    rand_core::OsRng.fill_bytes(&mut token_bytes);
+    let session_token = {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        URL_SAFE_NO_PAD.encode(token_bytes)
+    };
+    let token_hash: String = {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(token_bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    };
+    let session_id = uuid::Uuid::new_v4().to_string();
+
+    // Step 12: Atomically promote the account.
     let mut tx = state
         .db
         .begin()
@@ -274,13 +297,17 @@ pub async fn create_did_handler(
     .inspect_err(|e| tracing::error!(error = %e, "failed to insert did_document"))
     .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store DID document"))?;
 
-    sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
-        .bind(&handle)
-        .bind(did)
-        .execute(&mut *tx)
-        .await
-        .inspect_err(|e| tracing::error!(error = %e, "failed to insert handle"))
-        .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to register handle"))?;
+    sqlx::query(
+        "INSERT INTO sessions (id, did, device_id, token_hash, created_at, expires_at) \
+         VALUES (?, ?, NULL, ?, datetime('now'), datetime('now', '+1 year'))",
+    )
+    .bind(&session_id)
+    .bind(did)
+    .bind(&token_hash)
+    .execute(&mut *tx)
+    .await
+    .inspect_err(|e| tracing::error!(error = %e, "failed to insert session"))
+    .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to create session"))?;
 
     sqlx::query("DELETE FROM pending_sessions WHERE account_id = ?")
         .bind(&session.account_id)
@@ -308,11 +335,12 @@ pub async fn create_did_handler(
         .inspect_err(|e| tracing::error!(error = %e, "failed to commit promotion transaction"))
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to commit transaction"))?;
 
-    // Step 12: Return the result.
+    // Step 13: Return the result.
     Ok(Json(CreateDidResponse {
         did: did.clone(),
         did_document,
         status: "active",
+        session_token,
     }))
 }
 
@@ -545,7 +573,7 @@ mod tests {
             .await
             .unwrap();
 
-        // AC2.1: 200 OK with { did, did_document, status: "active" }
+        // AC2.1: 200 OK with { did, did_document, status: "active", session_token }
         assert_eq!(response.status(), StatusCode::OK, "expected 200 OK");
         let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
@@ -562,6 +590,10 @@ mod tests {
         assert!(
             body["did_document"].is_object(),
             "did_document should be a JSON object"
+        );
+        assert!(
+            body["session_token"].as_str().map(|s| !s.is_empty()).unwrap_or(false),
+            "response should include a non-empty session_token"
         );
 
         let did = body["did"].as_str().unwrap();
@@ -619,15 +651,35 @@ mod tests {
         let (document,) = doc_row.expect("did_documents row should exist");
         assert!(!document.is_empty(), "document should be non-empty");
 
-        // AC2.4: handles row links handle to did
-        let handle_row: Option<(String,)> =
-            sqlx::query_as("SELECT did FROM handles WHERE handle = ?")
-                .bind(&setup.handle)
+        // AC2.4: session row created with correct did and matching token_hash
+        let session_token_str = body["session_token"].as_str().unwrap();
+        let token_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(session_token_str)
+            .expect("session_token should be valid base64url");
+        let expected_hash: String = {
+            use sha2::{Digest, Sha256};
+            Sha256::digest(&token_bytes)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        };
+        let session_row: Option<(String,)> =
+            sqlx::query_as("SELECT did FROM sessions WHERE token_hash = ?")
+                .bind(&expected_hash)
                 .fetch_optional(&db)
                 .await
                 .unwrap();
-        let (handle_did,) = handle_row.expect("handles row should exist");
-        assert_eq!(handle_did, did, "handles.did should match response did");
+        let (session_did,) = session_row.expect("sessions row should exist for token_hash");
+        assert_eq!(session_did, did, "sessions.did should match response did");
+
+        // AC2.4b: handles table should NOT have a row yet (handle created via POST /v1/handles)
+        let handle_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM handles WHERE did = ?")
+                .bind(did)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(handle_count, 0, "handles table should be empty after DID ceremony");
 
         // AC2.5: pending_accounts and pending_sessions deleted
         let pending_count: i64 =

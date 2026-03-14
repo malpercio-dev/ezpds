@@ -5,6 +5,7 @@ use std::{path::PathBuf, sync::Arc};
 
 mod app;
 mod db;
+mod dns;
 mod routes;
 mod telemetry;
 
@@ -106,6 +107,7 @@ async fn run() -> anyhow::Result<()> {
         config: Arc::new(config),
         db: pool,
         http_client,
+        dns_provider: None,
     };
 
     let listener = tokio::net::TcpListener::bind(&addr)

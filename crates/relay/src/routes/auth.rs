@@ -13,6 +13,12 @@ pub struct PendingSessionInfo {
     pub device_id: String,
 }
 
+/// Information about an authenticated promoted-account session.
+#[derive(Debug)]
+pub struct SessionInfo {
+    pub did: String,
+}
+
 /// Validate the admin Bearer token from request headers.
 ///
 /// Returns `Ok(())` when the token is present, has the `"Bearer "` prefix, and the
@@ -131,6 +137,69 @@ pub async fn require_pending_session(
     })
 }
 
+/// Authenticate a promoted-account Bearer token.
+///
+/// Extracts the Bearer token from the Authorization header, SHA-256 hashes the raw
+/// decoded bytes (matching the storage format written by `POST /v1/dids`), and
+/// queries `sessions` for a matching, unexpired row.
+///
+/// # Errors
+/// Returns `ApiError::Unauthorized` if:
+/// - The Authorization header is missing
+/// - The token is not valid base64url
+/// - No unexpired session matches the token hash
+pub async fn require_session(
+    headers: &HeaderMap,
+    db: &sqlx::SqlitePool,
+) -> Result<SessionInfo, ApiError> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use sha2::{Digest, Sha256};
+
+    let token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| {
+            v.to_str()
+                .inspect_err(|_| {
+                    tracing::warn!(
+                        "Authorization header contains non-UTF-8 bytes; treating as absent"
+                    );
+                })
+                .ok()
+        })
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::Unauthorized,
+                "missing or invalid Authorization header",
+            )
+        })?;
+
+    let token_bytes = URL_SAFE_NO_PAD
+        .decode(token)
+        .map_err(|_| ApiError::new(ErrorCode::Unauthorized, "invalid session token"))?;
+    let token_hash: String = Sha256::digest(&token_bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT did FROM sessions WHERE token_hash = ? AND expires_at > datetime('now')",
+    )
+    .bind(&token_hash)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "failed to query session");
+        ApiError::new(ErrorCode::InternalError, "session lookup failed")
+    })?;
+
+    let (did,) = row.ok_or_else(|| {
+        ApiError::new(ErrorCode::Unauthorized, "invalid or expired session token")
+    })?;
+
+    Ok(SessionInfo { did })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +216,7 @@ mod tests {
             config: Arc::new(config),
             db: base.db,
             http_client: base.http_client,
+            dns_provider: base.dns_provider,
         }
     }
 

@@ -125,6 +125,7 @@ mod tests {
             config: Arc::new(config),
             db: base.db,
             http_client: base.http_client,
+            dns_provider: base.dns_provider,
         }
     }
 
@@ -385,6 +386,7 @@ mod tests {
             config: Arc::new(config),
             db: base.db,
             http_client: base.http_client,
+            dns_provider: base.dns_provider,
         };
 
         let response = app(state)

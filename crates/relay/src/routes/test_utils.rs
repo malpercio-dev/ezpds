@@ -15,5 +15,6 @@ pub async fn test_state_with_admin_token() -> AppState {
         config: Arc::new(config),
         db: base.db,
         http_client: base.http_client,
+        dns_provider: base.dns_provider,
     }
 }
