@@ -1,0 +1,24 @@
+[package]
+name = "identity-wallet"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+name = "identity_wallet"
+path = "src/lib.rs"
+# staticlib  → iOS static binary
+# cdylib     → Android shared library
+# rlib       → normal `cargo build` + integration tests
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+# Tauri-recommended release optimizations for mobile binary size.
+# IMPORTANT: Cargo ignores [profile.*] in workspace member crates — these settings
+# have NO EFFECT here because src-tauri is always built as a workspace member.
+# They are included per the design plan as documentation of Tauri's recommendations.
+# When iOS release binary size becomes a concern, move these to the root Cargo.toml's
+# [profile.release] section (note: that will affect ALL workspace crates' release builds).
+[profile.release]
+strip = true
+lto = true
+opt-level = "z"
