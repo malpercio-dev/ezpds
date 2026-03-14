@@ -1,3 +1,159 @@
+# MM-89: DID Creation — did:plc via PLC Directory Proxy — Implementation Plan
+
+**Goal:** Implement `build_did_plc_genesis_op` as a pure function in the `crypto` crate that produces a signed did:plc genesis operation and derives the resulting DID.
+
+**Architecture:** Pure Functional Core in `crates/crypto/src/plc.rs`. No I/O, no HTTP, no DB. Takes key material and identity fields; returns a signed operation JSON string and the derived DID. The relay (Phase 2) will call this function and handle all I/O.
+
+**Tech Stack:** Rust stable; `p256` 0.13 (ECDSA-SHA256, RFC 6979), `ciborium` 0.2 (CBOR serialization), `data-encoding` 2 (base32-lowercase), `sha2` 0.10 (SHA-256), `base64` 0.21 (base64url), `serde`/`serde_json` 1 (struct serialization)
+
+**Scope:** Phase 1 of 2 from the original design
+
+**Codebase verified:** 2026-03-13
+
+---
+
+## Acceptance Criteria Coverage
+
+This phase implements and tests:
+
+### MM-89.AC1: crypto crate produces a valid did:plc genesis operation
+- **MM-89.AC1.1 Success:** `build_did_plc_genesis_op` with valid inputs returns `PlcGenesisOp` with `did` matching `^did:plc:[a-z2-7]{24}$`
+- **MM-89.AC1.2 Success:** `signed_op_json` contains all required fields: `type`, `rotationKeys`, `verificationMethods`, `alsoKnownAs`, `services`, `prev` (null), `sig`
+- **MM-89.AC1.3 Success:** `rotation_key` appears as `rotationKeys[0]`; `signing_key` appears as both `rotationKeys[1]` and `verificationMethods.atproto`
+- **MM-89.AC1.4 Success:** Calling `build_did_plc_genesis_op` twice with identical inputs returns the same `did` (RFC 6979 determinism)
+- **MM-89.AC1.5 Failure:** Invalid `signing_private_key` bytes (wrong length or invalid scalar) returns `CryptoError::PlcOperation`
+
+### MM-89.AC3: Schema migration and protocol correctness
+- **MM-89.AC3.2:** `sig` field in `signed_op_json` is a base64url string (no padding) decoding to exactly 64 bytes
+- **MM-89.AC3.3:** `alsoKnownAs` in `signed_op_json` contains `at://{handle}` (not bare handle)
+
+---
+
+## External Dependency Research Findings
+
+- ✓ **ciborium 0.2**: `ciborium::ser::into_writer(&value, &mut buf)` serializes serde-compatible structs. Struct fields serialized in declaration order — MUST match DAG-CBOR canonical ordering (sort by key byte length, then alphabetically).
+- ✓ **data-encoding 2**: No built-in lowercase base32 constant. Must build via `Specification::new()` with alphabet `"abcdefghijklmnopqrstuvwxyz234567"`. Take `[0..24]` of result for DID suffix.
+- ✓ **p256 0.13 (ecdsa feature)**: `SigningKey::from_bytes(&FieldBytes)` from 32-byte scalar. RFC 6979 deterministic by default. `Signer::sign(&bytes)` internally SHA-256 hashes and signs. `sig.to_bytes()` → `[u8; 64]` (r‖s, big-endian). Low-S canonical automatically applied.
+- ✓ **base64 0.21** (already in workspace): `URL_SAFE_NO_PAD.encode(&bytes)` for base64url without padding.
+- ✓ **did:plc spec**: `type` = `"plc_operation"`. `prev` must be `null` (present, not omitted). Sig absent during signing CBOR, present in final JSON. DID derived from SHA-256 of **signed** CBOR op (with sig field). POST target is `https://plc.directory/{did}`.
+- ⚠ **DAG-CBOR note**: did:plc spec requires DAG-CBOR (IPLD-canonical). ciborium produces regular CBOR. For determinism, struct fields must be declared in DAG-CBOR canonical order (length-then-alpha). This implementation's DID derivation will be consistent with itself but must be validated against a real plc.directory in Phase 2 integration tests.
+
+---
+
+<!-- START_SUBCOMPONENT_A (tasks 1-3) -->
+
+<!-- START_TASK_1 -->
+### Task 1: Add workspace and crate Cargo.toml dependencies
+
+**Verifies:** None (infrastructure)
+
+**Files:**
+- Modify: `Cargo.toml` (workspace root)
+- Modify: `crates/crypto/Cargo.toml`
+
+**Step 1: Add ciborium and data-encoding to workspace Cargo.toml**
+
+In `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/Cargo.toml`, in the `[workspace.dependencies]` section, add these two lines after the existing `base64` entry:
+
+```toml
+ciborium = "0.2"
+data-encoding = "2"
+```
+
+**Step 2: Add new deps to crates/crypto/Cargo.toml**
+
+In `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/crypto/Cargo.toml`, add to the `[dependencies]` section:
+
+```toml
+ciborium = { workspace = true }
+data-encoding = { workspace = true }
+serde = { workspace = true }
+sha2 = { workspace = true }
+```
+
+The file after edits:
+
+```toml
+[package]
+name = "crypto"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# crypto: signing, Shamir secret sharing, DID operations.
+# Depends on rsky-crypto (added when Wave 3 DID/key work begins).
+
+[dependencies]
+p256 = { workspace = true }
+aes-gcm = { workspace = true }
+multibase = { workspace = true }
+rand_core = { workspace = true }
+base64 = { workspace = true }
+thiserror = { workspace = true }
+zeroize = { workspace = true }
+ciborium = { workspace = true }
+data-encoding = { workspace = true }
+serde = { workspace = true }
+sha2 = { workspace = true }
+```
+
+**Step 3: Verify build resolves**
+
+```bash
+cargo check -p crypto
+```
+
+Expected: resolves without errors (plc module not yet created, but deps should resolve).
+
+**Step 4: Commit**
+
+```bash
+git add Cargo.toml Cargo.lock crates/crypto/Cargo.toml
+git commit -m "chore(crypto): add ciborium, data-encoding, sha2, serde deps for did:plc"
+```
+<!-- END_TASK_1 -->
+
+<!-- START_TASK_2 -->
+### Task 2: Add CryptoError::PlcOperation variant, implement plc.rs, and update lib.rs
+
+**Verifies:** MM-89.AC1.1, MM-89.AC1.2, MM-89.AC1.3, MM-89.AC1.4, MM-89.AC1.5, MM-89.AC3.2, MM-89.AC3.3
+
+**Files:**
+- Modify: `crates/crypto/src/error.rs` (add variant)
+- Create: `crates/crypto/src/plc.rs` (new file — pure Functional Core)
+- Modify: `crates/crypto/src/lib.rs` (add module + re-exports)
+
+---
+
+**Step 1: Add PlcOperation variant to error.rs**
+
+In `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/crypto/src/error.rs`, add the new variant to the `CryptoError` enum:
+
+```rust
+#[derive(Debug, thiserror::Error)]
+pub enum CryptoError {
+    #[error("key generation failed: {0}")]
+    KeyGeneration(String),
+    #[error("encryption failed: {0}")]
+    Encryption(String),
+    #[error("decryption failed: {0}")]
+    Decryption(String),
+    #[error("secret sharing failed: {0}")]
+    SecretSharing(String),
+    #[error("secret reconstruction failed: {0}")]
+    SecretReconstruction(String),
+    #[error("plc operation failed: {0}")]
+    PlcOperation(String),
+}
+```
+
+---
+
+**Step 2: Create crates/crypto/src/plc.rs**
+
+Create `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/crypto/src/plc.rs` with this content:
+
+```rust
 // pattern: Functional Core
 //
 // Pure did:plc genesis operation builder. No I/O, no HTTP, no DB.
@@ -25,17 +181,15 @@ use std::collections::BTreeMap;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ciborium::ser::into_writer;
 use p256::{
-    ecdsa::{signature::Signer, signature::Verifier, Signature, SigningKey, VerifyingKey},
     FieldBytes,
+    ecdsa::{SigningKey, Signature, signature::Signer},
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
-use multibase;
 
 use crate::{CryptoError, DidKeyUri};
 
 /// The result of building a did:plc genesis operation.
-#[derive(Debug)]
 pub struct PlcGenesisOp {
     /// The derived DID, e.g. `"did:plc:abcdefghijklmnopqrstuvwx"`.
     /// Ready to use as the database primary key.
@@ -44,15 +198,6 @@ pub struct PlcGenesisOp {
     /// Ready to POST to plc.directory.
     pub signed_op_json: String,
 }
-
-/// P-256 multicodec varint prefix for did:key URIs.
-/// 0x1200 encoded as LEB128 varint = [0x80, 0x24].
-///
-/// This constant is redefined here rather than promoted to `pub(crate)` in
-/// `keys.rs` to avoid cross-module coupling between two sibling functional
-/// modules. Each module owns its own copy; if the value ever needs to change,
-/// both sites are easy to find via the shared literal `[0x80, 0x24]`.
-const P256_MULTICODEC_PREFIX: &[u8] = &[0x80, 0x24];
 
 // ── Internal serialization types ────────────────────────────────────────────
 //
@@ -67,7 +212,7 @@ const P256_MULTICODEC_PREFIX: &[u8] = &[0x80, 0x24];
 //   "rotationKeys"         → 12 bytes
 //   "verificationMethods"  → 19 bytes
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Clone)]
 struct PlcService {
     // "type" → 4 bytes
     #[serde(rename = "type")]
@@ -99,8 +244,7 @@ struct UnsignedPlcOp {
 //   "rotationKeys"         → 12 bytes
 //   "verificationMethods"  → 19 bytes
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Serialize)]
 struct SignedPlcOp {
     sig: String,
     prev: Option<String>,
@@ -116,24 +260,6 @@ struct SignedPlcOp {
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
-
-/// The result of verifying a client-submitted did:plc genesis operation.
-///
-/// Returned by [`verify_genesis_op`]. Fields are extracted directly from the
-/// verified signed op; the relay uses them for semantic validation and DID
-/// document construction.
-pub struct VerifiedGenesisOp {
-    /// The derived DID, e.g. `"did:plc:abcdefghijklmnopqrstuvwx"`.
-    pub did: String,
-    /// Full `rotationKeys` array from the op.
-    pub rotation_keys: Vec<String>,
-    /// Full `alsoKnownAs` array from the op.
-    pub also_known_as: Vec<String>,
-    /// Full `verificationMethods` map from the op.
-    pub verification_methods: BTreeMap<String, String>,
-    /// Endpoint from `services["atproto_pds"]`, if present.
-    pub atproto_pds_endpoint: Option<String>,
-}
 
 /// Build and sign a did:plc genesis operation, returning the signed operation
 /// JSON and the derived DID.
@@ -193,7 +319,7 @@ pub fn build_did_plc_genesis_op(
     let sig_bytes = sig.to_bytes();
 
     // Step 5: base64url-encode the 64-byte r‖s signature (no padding).
-    let sig_str = URL_SAFE_NO_PAD.encode(&sig_bytes[..]);
+    let sig_str = URL_SAFE_NO_PAD.encode(sig_bytes.as_ref());
 
     // Step 6: Build the signed operation (same fields + sig).
     let signed_op = SignedPlcOp {
@@ -228,105 +354,7 @@ pub fn build_did_plc_genesis_op(
     let signed_op_json = serde_json::to_string(&signed_op)
         .map_err(|e| CryptoError::PlcOperation(format!("json serialize signed op: {e}")))?;
 
-    Ok(PlcGenesisOp {
-        did,
-        signed_op_json,
-    })
-}
-
-/// Verify a client-submitted did:plc signed genesis operation.
-///
-/// Parses `signed_op_json` into a [`SignedPlcOp`] (rejecting unknown fields),
-/// reconstructs the unsigned operation with the same DAG-CBOR field ordering
-/// as [`build_did_plc_genesis_op`], verifies the ECDSA-SHA256 signature against
-/// `rotation_key`, derives the DID (SHA-256 of signed CBOR → base32-lowercase
-/// first 24 chars), and returns the extracted operation fields.
-///
-/// # Errors
-/// Returns `CryptoError::PlcOperation` for any parse, format, or cryptographic failure.
-pub fn verify_genesis_op(
-    signed_op_json: &str,
-    rotation_key: &DidKeyUri,
-) -> Result<VerifiedGenesisOp, CryptoError> {
-    // Step 1: Parse the signed op, rejecting unknown fields (AC1.5).
-    let signed_op: SignedPlcOp = serde_json::from_str(signed_op_json)
-        .map_err(|e| CryptoError::PlcOperation(format!("invalid signed op JSON: {e}")))?;
-
-    // Step 2: Base64url-decode the signature field.
-    let sig_bytes = URL_SAFE_NO_PAD
-        .decode(&signed_op.sig)
-        .map_err(|e| CryptoError::PlcOperation(format!("invalid sig base64url: {e}")))?;
-
-    // Step 3: Parse the 64-byte r‖s fixed-size ECDSA signature.
-    let signature = Signature::try_from(sig_bytes.as_slice())
-        .map_err(|e| CryptoError::PlcOperation(format!("invalid ECDSA signature bytes: {e}")))?;
-
-    // Step 4: Reconstruct the unsigned operation from signed op fields.
-    // Field order must match UnsignedPlcOp's DAG-CBOR canonical ordering.
-    let unsigned_op = UnsignedPlcOp {
-        prev: signed_op.prev.clone(),
-        op_type: signed_op.op_type.clone(),
-        services: signed_op.services.clone(),
-        also_known_as: signed_op.also_known_as.clone(),
-        rotation_keys: signed_op.rotation_keys.clone(),
-        verification_methods: signed_op.verification_methods.clone(),
-    };
-
-    // Step 5: CBOR-encode the unsigned op — byte-exact match to what was signed.
-    let mut unsigned_cbor = Vec::new();
-    into_writer(&unsigned_op, &mut unsigned_cbor)
-        .map_err(|e| CryptoError::PlcOperation(format!("cbor encode unsigned op: {e}")))?;
-
-    // Step 6: Parse rotation key URI → P-256 VerifyingKey.
-    let key_str = rotation_key
-        .0
-        .strip_prefix("did:key:")
-        .ok_or_else(|| {
-            CryptoError::PlcOperation("rotation key missing did:key: prefix".to_string())
-        })?;
-    let (_, multikey_bytes) = multibase::decode(key_str)
-        .map_err(|e| CryptoError::PlcOperation(format!("decode rotation key multibase: {e}")))?;
-    if multikey_bytes.get(..2) != Some(P256_MULTICODEC_PREFIX) {
-        return Err(CryptoError::PlcOperation(
-            "rotation key is not a P-256 key (wrong multicodec prefix)".to_string(),
-        ));
-    }
-    let verifying_key = VerifyingKey::from_sec1_bytes(&multikey_bytes[2..])
-        .map_err(|e| CryptoError::PlcOperation(format!("invalid P-256 public key: {e}")))?;
-
-    // Step 7: Verify the ECDSA-SHA256 signature (SHA-256 applied internally by p256).
-    verifying_key
-        .verify(&unsigned_cbor, &signature)
-        .map_err(|e| CryptoError::PlcOperation(format!("signature verification failed: {e}")))?;
-
-    // Step 8: CBOR-encode the signed op and derive the DID.
-    let mut signed_cbor = Vec::new();
-    into_writer(&signed_op, &mut signed_cbor)
-        .map_err(|e| CryptoError::PlcOperation(format!("cbor encode signed op: {e}")))?;
-
-    let hash = Sha256::digest(&signed_cbor);
-    let base32_encoding = {
-        let mut spec = data_encoding::Specification::new();
-        spec.symbols.push_str("abcdefghijklmnopqrstuvwxyz234567");
-        spec.encoding()
-            .map_err(|e| CryptoError::PlcOperation(format!("build base32 encoding: {e}")))?
-    };
-    let encoded = base32_encoding.encode(hash.as_ref());
-    let did = format!("did:plc:{}", &encoded[..24]);
-
-    // Step 9: Extract atproto_pds endpoint from services map.
-    let atproto_pds_endpoint = signed_op
-        .services
-        .get("atproto_pds")
-        .map(|s| s.endpoint.clone());
-
-    Ok(VerifiedGenesisOp {
-        did,
-        rotation_keys: signed_op.rotation_keys,
-        also_known_as: signed_op.also_known_as,
-        verification_methods: signed_op.verification_methods,
-        atproto_pds_endpoint,
-    })
+    Ok(PlcGenesisOp { did, signed_op_json })
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -350,12 +378,7 @@ mod tests {
             "https://relay.example.com",
         )
         .expect("genesis op should succeed");
-        (
-            rotation_kp.key_id,
-            signing_kp.key_id,
-            private_key_bytes,
-            result,
-        )
+        (rotation_kp.key_id, signing_kp.key_id, private_key_bytes, result)
     }
 
     /// MM-89.AC1.1: did matches ^did:plc:[a-z2-7]{24}$
@@ -369,9 +392,7 @@ mod tests {
         let suffix = op.did.strip_prefix("did:plc:").unwrap();
         assert_eq!(suffix.len(), 24, "DID suffix should be 24 chars");
         assert!(
-            suffix
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || ('2'..='7').contains(&c)),
+            suffix.chars().all(|c| c.is_ascii_lowercase() || ('2'..='7').contains(&c)),
             "DID suffix should only contain [a-z2-7], got: {suffix}"
         );
     }
@@ -380,7 +401,8 @@ mod tests {
     #[test]
     fn signed_op_json_contains_required_fields() {
         let (_, _, _, op) = make_genesis_op();
-        let v: serde_json::Value = serde_json::from_str(&op.signed_op_json).expect("valid JSON");
+        let v: serde_json::Value =
+            serde_json::from_str(&op.signed_op_json).expect("valid JSON");
 
         assert_eq!(v["type"], "plc_operation", "type field");
         assert!(v["rotationKeys"].is_array(), "rotationKeys is array");
@@ -398,7 +420,8 @@ mod tests {
     #[test]
     fn keys_placed_in_correct_positions() {
         let (rotation_key, signing_key, _, op) = make_genesis_op();
-        let v: serde_json::Value = serde_json::from_str(&op.signed_op_json).expect("valid JSON");
+        let v: serde_json::Value =
+            serde_json::from_str(&op.signed_op_json).expect("valid JSON");
         assert_eq!(
             v["rotationKeys"][0].as_str().unwrap(),
             rotation_key.0,
@@ -473,7 +496,8 @@ mod tests {
     #[test]
     fn sig_field_is_base64url_no_padding_and_64_bytes() {
         let (_, _, _, op) = make_genesis_op();
-        let v: serde_json::Value = serde_json::from_str(&op.signed_op_json).expect("valid JSON");
+        let v: serde_json::Value =
+            serde_json::from_str(&op.signed_op_json).expect("valid JSON");
         let sig_str = v["sig"].as_str().expect("sig is a string");
 
         // No padding characters
@@ -509,7 +533,8 @@ mod tests {
         )
         .expect("genesis op should succeed");
 
-        let v: serde_json::Value = serde_json::from_str(&op.signed_op_json).expect("valid JSON");
+        let v: serde_json::Value =
+            serde_json::from_str(&op.signed_op_json).expect("valid JSON");
         let also_known_as = v["alsoKnownAs"].as_array().expect("alsoKnownAs is array");
         assert!(
             also_known_as
@@ -519,3 +544,134 @@ mod tests {
         );
     }
 }
+```
+
+---
+
+**Step 3: Add plc module to lib.rs and re-export public types**
+
+In `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/crypto/src/lib.rs`, add the new module declaration and re-exports:
+
+```rust
+// crypto: signing, Shamir secret sharing, DID operations.
+
+pub mod error;
+pub mod keys;
+pub mod plc;
+pub mod shamir;
+
+pub use error::CryptoError;
+pub use keys::{
+    decrypt_private_key, encrypt_private_key, generate_p256_keypair, DidKeyUri, P256Keypair,
+};
+pub use plc::{build_did_plc_genesis_op, PlcGenesisOp};
+pub use shamir::{combine_shares, split_secret, ShamirShare};
+```
+
+---
+
+**Step 4: Verify all tests pass**
+
+```bash
+cargo test -p crypto
+```
+
+Expected output: all tests pass, including the 7 new tests in `plc::tests`.
+
+**Step 5: Verify no clippy warnings**
+
+```bash
+cargo clippy -p crypto -- -D warnings
+```
+
+Expected: no warnings.
+
+**Step 6: Commit**
+
+```bash
+git add crates/crypto/src/error.rs crates/crypto/src/plc.rs crates/crypto/src/lib.rs
+git commit -m "feat(crypto): implement build_did_plc_genesis_op for did:plc genesis ops (MM-89)"
+```
+<!-- END_TASK_2 -->
+
+<!-- START_TASK_3 -->
+### Task 3: Update crates/crypto/CLAUDE.md
+
+**Verifies:** None (documentation)
+
+**Files:**
+- Modify: `crates/crypto/CLAUDE.md`
+
+**Step 1: Add new contracts to CLAUDE.md**
+
+In `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/crypto/CLAUDE.md`, update the "Last verified" date to `2026-03-13` and add the following to the **Public API contracts** section (add after the existing contracts):
+
+```markdown
+### `build_did_plc_genesis_op`
+
+```rust
+pub fn build_did_plc_genesis_op(
+    rotation_key: &DidKeyUri,       // user's root rotation key (rotationKeys[0])
+    signing_key: &DidKeyUri,        // relay's signing key (rotationKeys[1] + verificationMethods.atproto)
+    signing_private_key: &[u8; 32], // raw P-256 private key scalar for signing_key
+    handle: &str,                   // e.g. "alice.example.com"
+    service_endpoint: &str,         // e.g. "https://relay.example.com"
+) -> Result<PlcGenesisOp, CryptoError>
+```
+
+- Constructs a signed did:plc genesis operation.
+- Returns `PlcGenesisOp { did, signed_op_json }`.
+- `did` matches `^did:plc:[a-z2-7]{24}$`.
+- `signed_op_json` is ready to POST to `https://plc.directory/{did}`.
+- Deterministic: same inputs → same DID (RFC 6979 + SHA-256 + base32).
+- Errors: `CryptoError::PlcOperation` if `signing_private_key` is an invalid P-256 scalar.
+
+### `PlcGenesisOp`
+
+```rust
+pub struct PlcGenesisOp {
+    pub did: String,            // "did:plc:xxxx..." — 28 chars total
+    pub signed_op_json: String, // signed operation JSON
+}
+```
+
+- `did`: derived from SHA-256 of CBOR-encoded signed op, base32-lowercase, first 24 chars, prefixed with `"did:plc:"`.
+- `signed_op_json`: JSON containing `type`, `rotationKeys`, `verificationMethods`, `alsoKnownAs`, `services`, `prev` (null), `sig`.
+```
+
+**Step 2: Also update the Dependencies section** to include the new deps:
+
+Add to the existing dependencies list:
+- `ciborium` — CBOR serialization for signing and DID derivation
+- `data-encoding` — base32-lowercase encoding
+- `sha2` — SHA-256 hashing
+- `serde` — derive macros for CBOR/JSON serialization
+
+**Step 3: Commit**
+
+```bash
+git add crates/crypto/CLAUDE.md
+git commit -m "docs(crypto): update CLAUDE.md with build_did_plc_genesis_op contracts (MM-89)"
+```
+<!-- END_TASK_3 -->
+
+<!-- END_SUBCOMPONENT_A -->
+
+---
+
+## Phase Completion Verification
+
+After all three tasks, verify the complete phase:
+
+```bash
+# All crypto tests pass
+cargo test -p crypto
+
+# No clippy warnings
+cargo clippy -p crypto -- -D warnings
+
+# No formatting issues
+cargo fmt -p crypto --check
+```
+
+Expected: all tests pass (existing 9 + new 7 = 16 tests), zero warnings, formatted correctly.
