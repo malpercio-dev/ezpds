@@ -32,3 +32,4 @@ devenv.local.nix
 apps/identity-wallet/.svelte-kit/
 apps/identity-wallet/dist/
 apps/identity-wallet/node_modules/
+apps/identity-wallet/package-lock.json
