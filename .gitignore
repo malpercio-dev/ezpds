@@ -27,3 +27,8 @@ devenv.local.nix
 
 # playwright-mcp
 .playwright-mcp/
+
+# SvelteKit / frontend build artifacts
+apps/identity-wallet/.svelte-kit/
+apps/identity-wallet/dist/
+apps/identity-wallet/node_modules/
