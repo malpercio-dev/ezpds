@@ -24,13 +24,13 @@ use std::collections::BTreeMap;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ciborium::ser::into_writer;
+use multibase;
 use p256::{
     ecdsa::{signature::Signer, signature::Verifier, Signature, SigningKey, VerifyingKey},
     FieldBytes,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use multibase;
 
 use crate::{CryptoError, DidKeyUri};
 
@@ -278,12 +278,9 @@ pub fn verify_genesis_op(
         .map_err(|e| CryptoError::PlcOperation(format!("cbor encode unsigned op: {e}")))?;
 
     // Step 6: Parse rotation key URI → P-256 VerifyingKey.
-    let key_str = rotation_key
-        .0
-        .strip_prefix("did:key:")
-        .ok_or_else(|| {
-            CryptoError::PlcOperation("rotation key missing did:key: prefix".to_string())
-        })?;
+    let key_str = rotation_key.0.strip_prefix("did:key:").ok_or_else(|| {
+        CryptoError::PlcOperation("rotation key missing did:key: prefix".to_string())
+    })?;
     let (_, multikey_bytes) = multibase::decode(key_str)
         .map_err(|e| CryptoError::PlcOperation(format!("decode rotation key multibase: {e}")))?;
     if multikey_bytes.get(..2) != Some(P256_MULTICODEC_PREFIX) {
@@ -548,10 +545,19 @@ mod tests {
         assert!(result.is_ok(), "verify should succeed");
         let verified = result.unwrap();
 
-        assert!(verified.did.starts_with("did:plc:"), "DID should start with 'did:plc:'");
-        assert_eq!(verified.did.len(), 32, "DID should be 32 chars total (did:plc: + 24 suffix)");
         assert!(
-            verified.also_known_as.contains(&"at://alice.example.com".to_string()),
+            verified.did.starts_with("did:plc:"),
+            "DID should start with 'did:plc:'"
+        );
+        assert_eq!(
+            verified.did.len(),
+            32,
+            "DID should be 32 chars total (did:plc: + 24 suffix)"
+        );
+        assert!(
+            verified
+                .also_known_as
+                .contains(&"at://alice.example.com".to_string()),
             "also_known_as should contain 'at://alice.example.com'"
         );
         assert!(
