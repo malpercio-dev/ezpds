@@ -118,12 +118,16 @@ async fn run() -> anyhow::Result<()> {
             }
         };
 
+    let well_known_resolver: Option<Arc<dyn dns::WellKnownResolver>> =
+        Some(Arc::new(dns::HttpWellKnownResolver::new(http_client.clone())));
+
     let state = app::AppState {
         config: Arc::new(config),
         db: pool,
         http_client,
         dns_provider: None,
         txt_resolver,
+        well_known_resolver,
     };
 
     let listener = tokio::net::TcpListener::bind(&addr)

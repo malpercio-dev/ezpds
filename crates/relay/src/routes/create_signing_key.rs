@@ -127,6 +127,7 @@ mod tests {
             http_client: base.http_client,
             dns_provider: base.dns_provider,
             txt_resolver: base.txt_resolver,
+            well_known_resolver: base.well_known_resolver,
         }
     }
 
@@ -389,6 +390,7 @@ mod tests {
             http_client: base.http_client,
             dns_provider: base.dns_provider,
             txt_resolver: base.txt_resolver,
+            well_known_resolver: base.well_known_resolver,
         };
 
         let response = app(state)

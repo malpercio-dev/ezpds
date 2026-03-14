@@ -1,7 +1,7 @@
 // pattern: Imperative Shell
 //
-// Gathers: handle from query param, DID from local handles table or DNS TXT record
-// Processes: none (resolution priority is local → DNS)
+// Gathers: handle from query param, DID from local handles table, DNS TXT record, or HTTP well-known
+// Processes: none (resolution priority is local → DNS TXT → HTTP well-known)
 // Returns: JSON { did: "..." } matching com.atproto.identity.resolveHandle Lexicon
 
 use axum::{
@@ -58,6 +58,21 @@ pub async fn resolve_handle_handler(
         }
     }
 
+    // 3. HTTP well-known fallback: GET https://<handle>/.well-known/atproto-did
+    if let Some(resolver) = &state.well_known_resolver {
+        match resolver.resolve(&params.handle).await {
+            Ok(Some(did)) => return Ok(Json(ResolveHandleResponse { did })),
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    handle = %params.handle,
+                    "HTTP well-known lookup failed"
+                );
+            }
+        }
+    }
+
     Err(ApiError::new(ErrorCode::HandleNotFound, "handle not found"))
 }
 
@@ -72,7 +87,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state, AppState};
-    use crate::dns::{DnsError, TxtResolver};
+    use crate::dns::{DnsError, TxtResolver, WellKnownError, WellKnownResolver};
 
     // ── Test doubles ──────────────────────────────────────────────────────────
 
@@ -94,6 +109,30 @@ mod tests {
     fn state_with_dns(state: AppState, records: Vec<String>) -> AppState {
         AppState {
             txt_resolver: Some(Arc::new(FixedTxtResolver { records })),
+            ..state
+        }
+    }
+
+    // ── Well-known test doubles ────────────────────────────────────────────────
+
+    struct FixedWellKnownResolver {
+        did: Option<String>,
+    }
+
+    impl WellKnownResolver for FixedWellKnownResolver {
+        fn resolve<'a>(
+            &'a self,
+            _handle: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Option<String>, WellKnownError>> + Send + 'a>>
+        {
+            let did = self.did.clone();
+            Box::pin(async move { Ok(did) })
+        }
+    }
+
+    fn state_with_well_known(state: AppState, did: Option<String>) -> AppState {
+        AppState {
+            well_known_resolver: Some(Arc::new(FixedWellKnownResolver { did })),
             ..state
         }
     }
@@ -223,6 +262,63 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── HTTP well-known fallback ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn well_known_fallback_resolves_did() {
+        let did = "did:plc:wellknownuser12345678901234";
+        let state = state_with_well_known(test_state().await, Some(did.to_string()));
+
+        let response = app(state)
+            .oneshot(resolve_handle_request("jcsalterego.bsky.social"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["did"], did);
+    }
+
+    #[tokio::test]
+    async fn well_known_fallback_returns_404_when_resolver_returns_none() {
+        let state = state_with_well_known(test_state().await, None);
+
+        let response = app(state)
+            .oneshot(resolve_handle_request("nobody.bsky.social"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn dns_takes_priority_over_well_known() {
+        let dns_did = "did:plc:fromdns123456789012345678";
+        let well_known_did = "did:plc:fromwellknown123456789012";
+        let state = test_state().await;
+        let state = state_with_dns(state, vec![format!("did={dns_did}")]);
+        let state = state_with_well_known(state, Some(well_known_did.to_string()));
+
+        let response = app(state)
+            .oneshot(resolve_handle_request("alice.external.example.com"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["did"], dns_did);
     }
 
     // ── Response shape ────────────────────────────────────────────────────────

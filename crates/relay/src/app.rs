@@ -12,7 +12,7 @@ use reqwest::Client;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-use crate::dns::{DnsProvider, TxtResolver};
+use crate::dns::{DnsProvider, TxtResolver, WellKnownResolver};
 use crate::routes::claim_codes::claim_codes;
 use crate::routes::create_account::create_account;
 use crate::routes::create_did::create_did_handler;
@@ -90,6 +90,10 @@ pub struct AppState {
     /// When `None`, `resolveHandle` skips DNS and returns `HandleNotFound` for
     /// handles not present in the local database.
     pub txt_resolver: Option<Arc<dyn TxtResolver>>,
+    /// Optional HTTP well-known resolver for handle resolution fallback.
+    /// Used as the third step after local DB and DNS TXT: calls
+    /// `GET https://<handle>/.well-known/atproto-did`.
+    pub well_known_resolver: Option<Arc<dyn WellKnownResolver>>,
 }
 
 /// Build the Axum router with middleware and routes.
@@ -175,6 +179,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
         http_client,
         dns_provider: None,
         txt_resolver: None,
+        well_known_resolver: None,
     }
 }
 
