@@ -128,6 +128,7 @@ mod tests {
             db: base.db,
             http_client: base.http_client,
             dns_provider: base.dns_provider,
+            txt_resolver: base.txt_resolver,
         };
 
         let response = app(state)

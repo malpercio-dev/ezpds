@@ -592,7 +592,10 @@ mod tests {
             "did_document should be a JSON object"
         );
         assert!(
-            body["session_token"].as_str().map(|s| !s.is_empty()).unwrap_or(false),
+            body["session_token"]
+                .as_str()
+                .map(|s| !s.is_empty())
+                .unwrap_or(false),
             "response should include a non-empty session_token"
         );
 
@@ -673,13 +676,15 @@ mod tests {
         assert_eq!(session_did, did, "sessions.did should match response did");
 
         // AC2.4b: handles table should NOT have a row yet (handle created via POST /v1/handles)
-        let handle_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM handles WHERE did = ?")
-                .bind(did)
-                .fetch_one(&db)
-                .await
-                .unwrap();
-        assert_eq!(handle_count, 0, "handles table should be empty after DID ceremony");
+        let handle_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM handles WHERE did = ?")
+            .bind(did)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(
+            handle_count, 0,
+            "handles table should be empty after DID ceremony"
+        );
 
         // AC2.5: pending_accounts and pending_sessions deleted
         let pending_count: i64 =

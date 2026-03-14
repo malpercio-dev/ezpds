@@ -44,11 +44,13 @@ pub enum ErrorCode {
     PlcDirectoryError,
     /// A configured DNS provider returned an error when creating a subdomain record.
     DnsError,
+    /// The requested handle does not resolve to a known DID locally or via DNS.
+    HandleNotFound,
     // TODO: add remaining codes from Appendix A as endpoints are implemented:
     // 400: INVALID_DOCUMENT, INVALID_PROOF, INVALID_ENDPOINT, INVALID_CONFIRMATION
     // 401: INVALID_CREDENTIALS
     // 403: TIER_RESTRICTED, DIDWEB_REQUIRES_DOMAIN, SINGLE_DEVICE_TIER
-    // 404: DEVICE_NOT_FOUND, DID_NOT_FOUND, HANDLE_NOT_FOUND, NOT_IN_GRACE_PERIOD
+    // 404: DEVICE_NOT_FOUND, DID_NOT_FOUND, NOT_IN_GRACE_PERIOD
     // 409: ACCOUNT_NOT_FOUND, DEVICE_LIMIT, DID_EXISTS,
     //      ROTATION_IN_PROGRESS, LEASE_HELD, MIGRATION_IN_PROGRESS, ACTIVE_MIGRATION
     // 410: ALREADY_DELETED
@@ -78,6 +80,7 @@ impl ErrorCode {
             ErrorCode::DidAlreadyExists => 409,
             ErrorCode::PlcDirectoryError => 502,
             ErrorCode::DnsError => 502,
+            ErrorCode::HandleNotFound => 404,
         }
     }
 }
@@ -232,6 +235,7 @@ mod tests {
             (ErrorCode::DidAlreadyExists, 409),
             (ErrorCode::PlcDirectoryError, 502),
             (ErrorCode::DnsError, 502),
+            (ErrorCode::HandleNotFound, 404),
         ];
         for (code, expected) in cases {
             assert_eq!(code.status_code(), expected, "wrong status for {code:?}");

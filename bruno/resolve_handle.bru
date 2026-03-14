@@ -1,0 +1,16 @@
+meta {
+  name: Resolve Handle
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.identity.resolveHandle?handle={{handle}}
+  body: none
+  auth: none
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  handle: alice.example.com
+}

@@ -103,11 +103,27 @@ async fn run() -> anyhow::Result<()> {
         .build()
         .expect("failed to build HTTP client");
 
+    let txt_resolver: Option<Arc<dyn dns::TxtResolver>> =
+        match dns::HickoryTxtResolver::from_system_conf() {
+            Ok(r) => {
+                tracing::info!("DNS TXT resolver initialised (handle resolution fallback enabled)");
+                Some(Arc::new(r))
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "failed to initialise DNS TXT resolver; handle resolution will be local-only"
+                );
+                None
+            }
+        };
+
     let state = app::AppState {
         config: Arc::new(config),
         db: pool,
         http_client,
         dns_provider: None,
+        txt_resolver,
     };
 
     let listener = tokio::net::TcpListener::bind(&addr)

@@ -12,7 +12,7 @@ use reqwest::Client;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-use crate::dns::DnsProvider;
+use crate::dns::{DnsProvider, TxtResolver};
 use crate::routes::claim_codes::claim_codes;
 use crate::routes::create_account::create_account;
 use crate::routes::create_did::create_did_handler;
@@ -22,6 +22,7 @@ use crate::routes::create_signing_key::create_signing_key;
 use crate::routes::describe_server::describe_server;
 use crate::routes::health::health;
 use crate::routes::register_device::register_device;
+use crate::routes::resolve_handle::resolve_handle_handler;
 
 /// Wraps an `axum::http::HeaderMap` as an OTel text-map [`Extractor`] so that
 /// the W3C `traceparent` and `tracestate` headers can be read by the global propagator.
@@ -85,6 +86,10 @@ pub struct AppState {
     /// `None` in v0.1 — operators manage DNS records manually.
     /// Wired in by MM-142 (DNS provider integration).
     pub dns_provider: Option<Arc<dyn DnsProvider>>,
+    /// Optional DNS TXT resolver for handle resolution fallback.
+    /// When `None`, `resolveHandle` skips DNS and returns `HandleNotFound` for
+    /// handles not present in the local database.
+    pub txt_resolver: Option<Arc<dyn TxtResolver>>,
 }
 
 /// Build the Axum router with middleware and routes.
@@ -97,6 +102,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/xrpc/com.atproto.server.describeServer",
             get(describe_server),
+        )
+        .route(
+            "/xrpc/com.atproto.identity.resolveHandle",
+            get(resolve_handle_handler),
         )
         .route("/xrpc/:method", get(xrpc_handler).post(xrpc_handler))
         .route("/v1/accounts", post(create_account))
@@ -165,6 +174,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
         db,
         http_client,
         dns_provider: None,
+        txt_resolver: None,
     }
 }
 

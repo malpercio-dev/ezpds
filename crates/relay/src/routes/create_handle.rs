@@ -93,18 +93,15 @@ pub async fn create_handle_handler(
         .unwrap_or(public_url.as_str());
 
     let dns_status = if let Some(provider) = &state.dns_provider {
-        provider
-            .create_record(name, hostname)
-            .await
-            .map_err(|e| {
-                tracing::error!(
-                    error = %e,
-                    handle = %payload.handle,
-                    did = %session.did,
-                    "DNS record creation failed"
-                );
-                ApiError::new(ErrorCode::DnsError, "failed to create DNS record")
-            })?;
+        provider.create_record(name, hostname).await.map_err(|e| {
+            tracing::error!(
+                error = %e,
+                handle = %payload.handle,
+                did = %session.did,
+                "DNS record creation failed"
+            );
+            ApiError::new(ErrorCode::DnsError, "failed to create DNS record")
+        })?;
         "propagating"
     } else {
         "not_configured"
@@ -233,7 +230,10 @@ mod tests {
     #[test]
     fn validate_handle_accepts_hyphen_in_middle_of_name() {
         let domains = vec!["example.com".to_string()];
-        assert_eq!(validate_handle("al-ice.example.com", &domains), Ok("al-ice"));
+        assert_eq!(
+            validate_handle("al-ice.example.com", &domains),
+            Ok("al-ice")
+        );
     }
 
     #[test]
@@ -271,9 +271,7 @@ mod tests {
             _name: &'a str,
             _target: &'a str,
         ) -> Pin<Box<dyn Future<Output = Result<(), crate::dns::DnsError>> + Send + 'a>> {
-            Box::pin(async {
-                Err(crate::dns::DnsError("simulated provider error".to_string()))
-            })
+            Box::pin(async { Err(crate::dns::DnsError("simulated provider error".to_string())) })
         }
     }
 
@@ -304,7 +302,10 @@ mod tests {
     ///
     /// Skips the full DID ceremony — sets up only what the create_handle handler needs.
     async fn insert_account_and_session(db: &sqlx::SqlitePool) -> TestSession {
-        let did = format!("did:plc:{}", &Uuid::new_v4().to_string().replace('-', "")[..24]);
+        let did = format!(
+            "did:plc:{}",
+            &Uuid::new_v4().to_string().replace('-', "")[..24]
+        );
 
         sqlx::query(
             "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
@@ -338,11 +339,7 @@ mod tests {
         TestSession { did, session_token }
     }
 
-    fn create_handle_request(
-        session_token: &str,
-        account_id: &str,
-        handle: &str,
-    ) -> Request<Body> {
+    fn create_handle_request(session_token: &str, account_id: &str, handle: &str) -> Request<Body> {
         let body = serde_json::json!({
             "accountId": account_id,
             "handle": handle,
@@ -384,12 +381,11 @@ mod tests {
         assert_eq!(body["did"].as_str(), Some(ts.did.as_str()));
 
         // Verify handles row was inserted.
-        let row: Option<(String,)> =
-            sqlx::query_as("SELECT did FROM handles WHERE handle = ?")
-                .bind(&handle)
-                .fetch_optional(&db)
-                .await
-                .unwrap();
+        let row: Option<(String,)> = sqlx::query_as("SELECT did FROM handles WHERE handle = ?")
+            .bind(&handle)
+            .fetch_optional(&db)
+            .await
+            .unwrap();
         let (stored_did,) = row.expect("handles row should exist");
         assert_eq!(stored_did, ts.did);
     }
@@ -419,12 +415,11 @@ mod tests {
         .unwrap();
         assert_eq!(body["dns_status"].as_str(), Some("propagating"));
 
-        let row: Option<(String,)> =
-            sqlx::query_as("SELECT did FROM handles WHERE handle = ?")
-                .bind(&handle)
-                .fetch_optional(&db)
-                .await
-                .unwrap();
+        let row: Option<(String,)> = sqlx::query_as("SELECT did FROM handles WHERE handle = ?")
+            .bind(&handle)
+            .fetch_optional(&db)
+            .await
+            .unwrap();
         assert!(row.is_some(), "handles row must be inserted on DNS success");
     }
 
@@ -453,12 +448,11 @@ mod tests {
         assert_eq!(body["error"]["code"], "DNS_ERROR");
 
         // INSERT precedes the DNS call: the row is durable even when DNS fails.
-        let row: Option<(String,)> =
-            sqlx::query_as("SELECT did FROM handles WHERE handle = ?")
-                .bind(&handle)
-                .fetch_optional(&db)
-                .await
-                .unwrap();
+        let row: Option<(String,)> = sqlx::query_as("SELECT did FROM handles WHERE handle = ?")
+            .bind(&handle)
+            .fetch_optional(&db)
+            .await
+            .unwrap();
         assert!(
             row.is_some(),
             "handles row is inserted before DNS and persists even when DNS fails"
@@ -510,7 +504,11 @@ mod tests {
 
         let app = crate::app::app(state);
         let response = app
-            .oneshot(create_handle_request(&ts.session_token, &ts.did, "nodothandle"))
+            .oneshot(create_handle_request(
+                &ts.session_token,
+                &ts.did,
+                "nodothandle",
+            ))
             .await
             .unwrap();
 
@@ -585,7 +583,11 @@ mod tests {
 
         let app = crate::app::app(state);
         let response = app
-            .oneshot(create_handle_request(&ts.session_token, "did:plc:somebodyelse", &handle))
+            .oneshot(create_handle_request(
+                &ts.session_token,
+                "did:plc:somebodyelse",
+                &handle,
+            ))
             .await
             .unwrap();
 

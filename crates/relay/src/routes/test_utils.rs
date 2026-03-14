@@ -16,5 +16,6 @@ pub async fn test_state_with_admin_token() -> AppState {
         db: base.db,
         http_client: base.http_client,
         dns_provider: base.dns_provider,
+        txt_resolver: base.txt_resolver,
     }
 }

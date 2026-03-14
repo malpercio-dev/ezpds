@@ -8,6 +8,7 @@ pub mod create_signing_key;
 pub mod describe_server;
 pub mod health;
 pub mod register_device;
+pub mod resolve_handle;
 
 mod code_gen;
 

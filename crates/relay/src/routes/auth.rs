@@ -174,12 +174,10 @@ pub async fn require_session(
             )
         })?;
 
-    let token_bytes = URL_SAFE_NO_PAD
-        .decode(token)
-        .map_err(|_| {
-            tracing::debug!("session token is not valid base64url");
-            ApiError::new(ErrorCode::Unauthorized, "invalid session token")
-        })?;
+    let token_bytes = URL_SAFE_NO_PAD.decode(token).map_err(|_| {
+        tracing::debug!("session token is not valid base64url");
+        ApiError::new(ErrorCode::Unauthorized, "invalid session token")
+    })?;
     let token_hash: String = Sha256::digest(&token_bytes)
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -221,6 +219,7 @@ mod tests {
             db: base.db,
             http_client: base.http_client,
             dns_provider: base.dns_provider,
+            txt_resolver: base.txt_resolver,
         }
     }
 
@@ -507,9 +506,7 @@ mod tests {
             "Bearer not-valid-base64url!!!".parse().unwrap(),
         );
         let state = test_state().await;
-        let err = require_session(&headers, &state.db)
-            .await
-            .unwrap_err();
+        let err = require_session(&headers, &state.db).await.unwrap_err();
         assert_eq!(err.status_code(), 401);
     }
 
@@ -523,7 +520,10 @@ mod tests {
         let state = test_state().await;
 
         // Insert an account (required by sessions FK constraint).
-        let did = format!("did:plc:{}", &Uuid::new_v4().to_string().replace('-', "")[..24]);
+        let did = format!(
+            "did:plc:{}",
+            &Uuid::new_v4().to_string().replace('-', "")[..24]
+        );
         sqlx::query(
             "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
              VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
@@ -575,7 +575,10 @@ mod tests {
         let state = test_state().await;
 
         // Insert an account (required by sessions FK constraint).
-        let did = format!("did:plc:{}", &Uuid::new_v4().to_string().replace('-', "")[..24]);
+        let did = format!(
+            "did:plc:{}",
+            &Uuid::new_v4().to_string().replace('-', "")[..24]
+        );
         sqlx::query(
             "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
              VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
@@ -611,9 +614,7 @@ mod tests {
             format!("Bearer {session_token}").parse().unwrap(),
         );
 
-        let err = require_session(&headers, &state.db)
-            .await
-            .unwrap_err();
+        let err = require_session(&headers, &state.db).await.unwrap_err();
         assert_eq!(err.status_code(), 401);
     }
 }
