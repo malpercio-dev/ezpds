@@ -4,9 +4,6 @@
 //! compile-time configured: `http://localhost:8080` in debug builds,
 //! `https://relay.ezpds.com` in release builds.
 
-// Suppressed until Phase 2 wires up the IPC command that calls this client.
-#![allow(dead_code)]
-
 use reqwest::{Client, Response};
 use serde::Serialize;
 

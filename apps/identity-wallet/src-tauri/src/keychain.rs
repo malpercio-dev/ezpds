@@ -4,9 +4,6 @@
 //! service `"ezpds-identity-wallet"`. Use the `SERVICE` constant
 //! to ensure consistency.
 
-// Suppressed until Phase 2 wires up the IPC command that calls these functions.
-#![allow(dead_code)]
-
 use security_framework::passwords::{get_generic_password, set_generic_password};
 
 pub const SERVICE: &str = "ezpds-identity-wallet";
