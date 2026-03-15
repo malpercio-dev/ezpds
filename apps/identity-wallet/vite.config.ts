@@ -9,8 +9,9 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     // TAURI_DEV_HOST is set by `cargo tauri ios dev` to the machine's LAN IP;
-    // the iOS simulator connects to the dev server over LAN, not localhost
-    host: process.env.TAURI_DEV_HOST || '0.0.0.0',
+    // the iOS simulator connects to the dev server over LAN, not localhost.
+    // Falls back to 'localhost' (not '0.0.0.0') so standalone `pnpm dev` doesn't expose to the LAN.
+    host: process.env.TAURI_DEV_HOST || 'localhost',
     hmr: process.env.TAURI_DEV_HOST
       ? {
           protocol: 'ws',
