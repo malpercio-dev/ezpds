@@ -1,3 +1,6 @@
+pub mod http;
+pub mod keychain;
+
 #[tauri::command]
 fn greet(name: String) -> String {
     format!("Hello, {}!", name)
