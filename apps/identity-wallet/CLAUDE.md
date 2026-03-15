@@ -64,7 +64,9 @@ Tauri v2 iOS application — SvelteKit 2 + Svelte 5 frontend running in a native
 After cloning the repo, perform these steps once per developer machine:
 
 ```bash
-# 1. Enter the Nix dev shell (provides cargo-tauri, node 22, pnpm)
+# 1. Enter the Nix dev shell (provides cargo-tauri, node 22, pnpm, rustup)
+#    On first entry, enterShell installs the Rust toolchain + iOS targets via rustup.
+#    This reads rust-toolchain.toml and may download ~2-4 GB — takes a few minutes.
 nix develop --impure --accept-flake-config
 
 # 2. Install frontend dependencies
@@ -76,6 +78,24 @@ cargo tauri ios init
 ```
 
 Note: `src-tauri/gen/` contains a machine-specific Xcode project. It is gitignored and must be re-generated on each developer machine. Do not commit it.
+
+### Xcode build phase PATH (one-time manual step after `cargo tauri ios init`)
+
+Xcode's Run Script build phases do not inherit the Nix dev shell PATH. After regenerating `src-tauri/gen/`, the generated `project.pbxproj` script must be patched to expose both the devenv tools and the rustup-managed cargo:
+
+Open `src-tauri/gen/apple/identity-wallet.xcodeproj/project.pbxproj` and find the `shellScript` line in the PBXShellScriptBuildPhase section. Prepend:
+
+```
+export PATH="<project-root>/.devenv/state/cargo/bin:<project-root>/.devenv/profile/bin:$PATH"
+```
+
+where `<project-root>` is the absolute path to the repo root (e.g. `/Users/you/workspace/malpercio-dev/ezpds`).
+
+This step is required once per `cargo tauri ios init` run.
+
+### Why rustup instead of Nix-managed Rust
+
+`languages.rust` in devenv uses Nix's `rust-default` package, which only ships stdlibs for standard host targets. iOS Simulator requires `aarch64-apple-ios-sim` stdlib. Nix doesn't package iOS cross-compilation stdlibs; `rustup` downloads them from the Rust release infrastructure. The dev shell is configured with project-local `RUSTUP_HOME` and `CARGO_HOME` (inside `.devenv/state/`) so the toolchain is isolated per project.
 
 ## Development Workflow
 

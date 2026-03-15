@@ -1,0 +1,43 @@
+# iOS cross-compilation toolchain overrides.
+#
+# Nix's devenv shell puts its cc-wrapper (clang) in PATH via .devenv/profile/bin.
+# The cc-wrapper injects -mmacos-version-min=14.0 for the host platform, which
+# clang rejects when -mios-simulator-version-min is also present:
+#
+#   clang: error: invalid argument '-mmacos-version-min=14.0'
+#          not allowed with '-mios-simulator-version-min=14.0'
+#
+# Setting CC_* to Xcode's unwrapped clang (from XcodeDefault.xctoolchain) bypasses
+# the Nix wrapper for iOS targets while leaving macOS host builds unaffected.
+# Xcode is always installed at /Applications/Xcode.app on macOS.
+
+[env]
+CC_aarch64_apple_ios_sim = "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
+CC_aarch64_apple_ios     = "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
+AR_aarch64_apple_ios_sim = "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ar"
+AR_aarch64_apple_ios     = "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ar"
+
+# Linker overrides — for all targets, bypass the Nix cc-wrapper linker.
+#
+# The Nix cc-wrapper always injects its compiled-in macOS sysroot, which causes
+# two classes of failure:
+#
+#   HOST (aarch64-apple-darwin) proc-macros / build scripts:
+#     ld: library not found for -liconv
+#     (Nix apple-sdk stub omits some /usr/lib stubs)
+#
+#   iOS TARGET (aarch64-apple-ios-sim) final link:
+#     ld: framework not found UIKit
+#     clang: warning: using sysroot for 'MacOSX' but targeting 'iPhone'
+#     (macOS sysroot injected even when rustc passes -target arm64-apple-ios*-simulator)
+#
+# Xcode's clang handles both host and iOS sysroots correctly.
+
+[target.aarch64-apple-darwin]
+linker = "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
+
+[target.aarch64-apple-ios-sim]
+linker = "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
+
+[target.aarch64-apple-ios]
+linker = "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
