@@ -33,3 +33,6 @@ apps/identity-wallet/.svelte-kit/
 apps/identity-wallet/dist/
 apps/identity-wallet/node_modules/
 apps/identity-wallet/package-lock.json
+
+# Tauri-generated Xcode project (machine-specific; regenerated per developer via `cargo tauri ios init`)
+apps/identity-wallet/src-tauri/gen/
