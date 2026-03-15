@@ -61,6 +61,7 @@
         step = 'did_ceremony';
       } else {
         // Unexpected nextStep value — treat as success and advance anyway.
+        console.error('Unexpected nextStep:', result.nextStep);
         step = 'did_ceremony';
       }
     } catch (raw: unknown) {
@@ -97,10 +98,17 @@
         errors.handle = 'That handle is taken. Please choose another.';
         step = 'handle';
         break;
+      case 'KEYCHAIN_ERROR':
+        errors.handle = "Couldn't save credentials to your device. Try again.";
+        step = 'handle';
+        break;
       case 'NETWORK_ERROR':
+        errors.handle = "Couldn't reach the server. Check your connection.";
+        step = 'handle';
+        break;
       case 'UNKNOWN':
       default:
-        errors.handle = "Couldn't reach the server. Check your connection.";
+        errors.handle = 'Something went wrong. Please try again.';
         step = 'handle';
         break;
     }

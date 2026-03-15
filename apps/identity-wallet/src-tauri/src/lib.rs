@@ -20,6 +20,10 @@ struct CreateMobileAccountRequest {
 }
 
 /// Successful 201 response from the relay.
+///
+/// The relay returns additional fields (account_id, device_id) which are
+/// silently ignored by serde's default behavior. This struct captures only
+/// the three fields needed by the client.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateMobileAccountResponse {
@@ -63,6 +67,8 @@ pub enum CreateAccountError {
     EmailTaken,
     #[error("handle already taken")]
     HandleTaken,
+    #[error("keychain storage failed")]
+    KeychainError,
     #[error("network error: {message}")]
     NetworkError { message: String },
     #[error("unknown error: {message}")]
@@ -88,11 +94,8 @@ async fn create_account(
 
     // 2. Store private key bytes in Keychain before any network call.
     //    private_key_bytes is Zeroizing<[u8; 32]>; deref to &[u8] via AsRef.
-    keychain::store_item("device-private-key", keypair.private_key_bytes.as_ref()).map_err(
-        |e| CreateAccountError::Unknown {
-            message: e.to_string(),
-        },
-    )?;
+    keychain::store_item("device-private-key", keypair.private_key_bytes.as_ref())
+        .map_err(|_| CreateAccountError::KeychainError)?;
 
     // 3. POST to relay.
     let req = CreateMobileAccountRequest {
@@ -120,15 +123,18 @@ async fn create_account(
             })?;
 
         // 5. Store tokens in Keychain.
-        keychain::store_item("device-token", body.device_token.as_bytes()).map_err(|e| {
-            CreateAccountError::Unknown {
-                message: e.to_string(),
-            }
+        // If either token write fails, clean up the private key (best-effort) to avoid
+        // orphaning a key on the relay with no tokens to access it.
+        keychain::store_item("device-token", body.device_token.as_bytes()).map_err(|_| {
+            // Best-effort cleanup: ignore deletion errors.
+            let _ = keychain::delete_item("device-private-key");
+            CreateAccountError::KeychainError
         })?;
-        keychain::store_item("session-token", body.session_token.as_bytes()).map_err(|e| {
-            CreateAccountError::Unknown {
-                message: e.to_string(),
-            }
+
+        keychain::store_item("session-token", body.session_token.as_bytes()).map_err(|_| {
+            // Best-effort cleanup: ignore deletion errors.
+            let _ = keychain::delete_item("device-private-key");
+            CreateAccountError::KeychainError
         })?;
 
         Ok(CreateAccountResult {
@@ -137,6 +143,8 @@ async fn create_account(
     } else {
         // 6. Map relay error codes to typed variants.
         match status.as_u16() {
+            // 404: Relay returns this for both invalid (never-existed) and expired claim codes.
+            // The frontend cannot distinguish them, so we map both to ExpiredCode.
             404 => Err(CreateAccountError::ExpiredCode),
             409 => {
                 let envelope: RelayErrorEnvelope =
@@ -240,5 +248,97 @@ mod tests {
         let json = serde_json::to_value(&err).unwrap();
         assert_eq!(json["code"], "NETWORK_ERROR");
         assert_eq!(json["message"], "Connection timeout");
+    }
+
+    // -- AC3.6: CreateAccountError::KeychainError serialization --
+    #[test]
+    fn error_keychain_error_serializes_correctly() {
+        let err = CreateAccountError::KeychainError;
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["code"], "KEYCHAIN_ERROR");
+    }
+
+    // -- AC3.7: CreateAccountError::Unknown serialization --
+    #[test]
+    fn error_unknown_serializes_correctly() {
+        let err = CreateAccountError::Unknown {
+            message: "Unexpected relay response".into(),
+        };
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["code"], "UNKNOWN");
+        assert_eq!(json["message"], "Unexpected relay response");
+    }
+
+    // -- 409 subcode dispatch table --
+    #[test]
+    fn error_409_dispatch_maps_subcodes_correctly() {
+        // Test CLAIM_CODE_REDEEMED subcode
+        let envelope = RelayErrorEnvelope {
+            error: RelayErrorBody {
+                code: "CLAIM_CODE_REDEEMED".to_string(),
+            },
+        };
+        let err = match envelope.error.code.as_str() {
+            "CLAIM_CODE_REDEEMED" => CreateAccountError::RedeemedCode,
+            "ACCOUNT_EXISTS" => CreateAccountError::EmailTaken,
+            "HANDLE_TAKEN" => CreateAccountError::HandleTaken,
+            other => CreateAccountError::Unknown {
+                message: format!("409: {other}"),
+            },
+        };
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["code"], "REDEEMED_CODE");
+
+        // Test ACCOUNT_EXISTS subcode
+        let envelope = RelayErrorEnvelope {
+            error: RelayErrorBody {
+                code: "ACCOUNT_EXISTS".to_string(),
+            },
+        };
+        let err = match envelope.error.code.as_str() {
+            "CLAIM_CODE_REDEEMED" => CreateAccountError::RedeemedCode,
+            "ACCOUNT_EXISTS" => CreateAccountError::EmailTaken,
+            "HANDLE_TAKEN" => CreateAccountError::HandleTaken,
+            other => CreateAccountError::Unknown {
+                message: format!("409: {other}"),
+            },
+        };
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["code"], "EMAIL_TAKEN");
+
+        // Test HANDLE_TAKEN subcode
+        let envelope = RelayErrorEnvelope {
+            error: RelayErrorBody {
+                code: "HANDLE_TAKEN".to_string(),
+            },
+        };
+        let err = match envelope.error.code.as_str() {
+            "CLAIM_CODE_REDEEMED" => CreateAccountError::RedeemedCode,
+            "ACCOUNT_EXISTS" => CreateAccountError::EmailTaken,
+            "HANDLE_TAKEN" => CreateAccountError::HandleTaken,
+            other => CreateAccountError::Unknown {
+                message: format!("409: {other}"),
+            },
+        };
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["code"], "HANDLE_TAKEN");
+
+        // Test unknown subcode (falls through to Unknown)
+        let envelope = RelayErrorEnvelope {
+            error: RelayErrorBody {
+                code: "UNKNOWN_SUBCODE".to_string(),
+            },
+        };
+        let err = match envelope.error.code.as_str() {
+            "CLAIM_CODE_REDEEMED" => CreateAccountError::RedeemedCode,
+            "ACCOUNT_EXISTS" => CreateAccountError::EmailTaken,
+            "HANDLE_TAKEN" => CreateAccountError::HandleTaken,
+            other => CreateAccountError::Unknown {
+                message: format!("409: {other}"),
+            },
+        };
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["code"], "UNKNOWN");
+        assert!(json["message"].as_str().unwrap().contains("409:"));
     }
 }

@@ -4,7 +4,9 @@
 //! service `"ezpds-identity-wallet"`. Use the `SERVICE` constant
 //! to ensure consistency.
 
-use security_framework::passwords::{get_generic_password, set_generic_password};
+use security_framework::passwords::{
+    delete_generic_password, get_generic_password, set_generic_password,
+};
 
 pub const SERVICE: &str = "ezpds-identity-wallet";
 
@@ -26,4 +28,11 @@ pub fn store_item(account: &str, data: &[u8]) -> Result<(), KeychainError> {
 /// Returns `Err` with `errSecItemNotFound` if no entry exists.
 pub fn get_item(account: &str) -> Result<Vec<u8>, KeychainError> {
     get_generic_password(SERVICE, account).map_err(KeychainError::Security)
+}
+
+/// Delete an item from the Keychain by account name.
+///
+/// Returns `Ok(())` on successful deletion, or `Err` if the item doesn't exist.
+pub fn delete_item(account: &str) -> Result<(), KeychainError> {
+    delete_generic_password(SERVICE, account).map_err(KeychainError::Security)
 }

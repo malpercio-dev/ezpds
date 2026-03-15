@@ -9,7 +9,10 @@
     error?: string;
   } = $props();
 
-  let isValid = $derived(value.trim().length > 0);
+  // ATProto handle validation: alphanumeric start/end, dots/hyphens/underscores allowed in middle.
+  // Minimum 1 character, maximum typically 63 (per DNS labels).
+  const handleRegex = /^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$/;
+  let isValid = $derived(handleRegex.test(value.trim()));
 </script>
 
 <div class="screen">

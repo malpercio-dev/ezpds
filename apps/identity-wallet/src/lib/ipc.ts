@@ -20,7 +20,7 @@ export type CreateAccountResult = {
  * Error returned by the `create_account` Rust command.
  *
  * Serialized as `{ code: "EXPIRED_CODE" }` etc. by the Rust backend.
- * The `message` field is present only on NETWORK_ERROR and UNKNOWN variants.
+ * The `message` field is present only on variants that include it in their Rust definition.
  * This is a pure data shape used for error handling.
  */
 export type CreateAccountError = {
@@ -29,6 +29,7 @@ export type CreateAccountError = {
     | 'REDEEMED_CODE'
     | 'EMAIL_TAKEN'
     | 'HANDLE_TAKEN'
+    | 'KEYCHAIN_ERROR'
     | 'NETWORK_ERROR'
     | 'UNKNOWN';
   message?: string;

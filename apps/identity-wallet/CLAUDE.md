@@ -140,7 +140,7 @@ cargo build
 - **`tauri` and `tauri-build` declared locally**: These crates are not in `[workspace.dependencies]` because no other workspace crate uses them. `serde` and `serde_json` use `{ workspace = true }` per the standard workspace pattern.
 - **`src-tauri/.cargo/config.toml` committed**: Overrides `CC`, `AR`, and `linker` for iOS and macOS-host targets to use Xcode's unwrapped clang instead of the Nix cc-wrapper. Without this, Nix's clang wrapper injects macOS-specific flags (`-mmacos-version-min`, macOS sysroot) that are incompatible with iOS cross-compilation. See the Troubleshooting section for the full explanation.
 - **Compile-time relay URL**: `http.rs` uses `#[cfg(debug_assertions)]` to switch between localhost:8080 (debug) and relay.ezpds.com (release). No runtime configuration needed for the base URL.
-- **Keychain-before-network ordering**: `create_account` stores the private key in Keychain before POSTing to the relay -- if the network call fails, the key is already persisted and can be reused on retry.
+- **Keychain-before-network ordering**: `create_account` stores the private key in Keychain **before** POSTing to the relay. This ensures that if the network call fails, the private key is already persisted. On each new account creation attempt (whether first attempt or retry), a fresh keypair is generated and stored, overwriting any prior key. This is safe because the relay is stateless per claim code; each attempt with a new keypair is treated as a new account creation request.
 - **reqwest with rustls-tls**: Uses `default-features = false` + `rustls-tls` to avoid linking OpenSSL. On iOS, rustls handles TLS natively without additional system deps.
 
 ## Invariants
