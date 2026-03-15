@@ -79,6 +79,20 @@ pub enum CreateAccountError {
 
 static RELAY_CLIENT: LazyLock<http::RelayClient> = LazyLock::new(http::RelayClient::new);
 
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Map a relay 409 error subcode string to a typed `CreateAccountError` variant.
+fn map_409_subcode(code: &str) -> CreateAccountError {
+    match code {
+        "CLAIM_CODE_REDEEMED" => CreateAccountError::RedeemedCode,
+        "ACCOUNT_EXISTS" => CreateAccountError::EmailTaken,
+        "HANDLE_TAKEN" => CreateAccountError::HandleTaken,
+        other => CreateAccountError::Unknown {
+            message: format!("409: {other}"),
+        },
+    }
+}
+
 // ── IPC command ─────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -132,8 +146,10 @@ async fn create_account(
         })?;
 
         keychain::store_item("session-token", body.session_token.as_bytes()).map_err(|_| {
-            // Best-effort cleanup: ignore deletion errors.
+            // Best-effort cleanup: also remove the already-written device-token so the
+            // Keychain doesn't hold a credential for an account the device can't access.
             let _ = keychain::delete_item("device-private-key");
+            let _ = keychain::delete_item("device-token");
             CreateAccountError::KeychainError
         })?;
 
@@ -151,14 +167,7 @@ async fn create_account(
                     resp.json().await.map_err(|e| CreateAccountError::Unknown {
                         message: e.to_string(),
                     })?;
-                match envelope.error.code.as_str() {
-                    "CLAIM_CODE_REDEEMED" => Err(CreateAccountError::RedeemedCode),
-                    "ACCOUNT_EXISTS" => Err(CreateAccountError::EmailTaken),
-                    "HANDLE_TAKEN" => Err(CreateAccountError::HandleTaken),
-                    other => Err(CreateAccountError::Unknown {
-                        message: format!("409: {other}"),
-                    }),
-                }
+                Err(map_409_subcode(&envelope.error.code))
             }
             _ => Err(CreateAccountError::NetworkError {
                 message: format!("HTTP {}", status.as_u16()),
@@ -272,72 +281,16 @@ mod tests {
     // -- 409 subcode dispatch table --
     #[test]
     fn error_409_dispatch_maps_subcodes_correctly() {
-        // Test CLAIM_CODE_REDEEMED subcode
-        let envelope = RelayErrorEnvelope {
-            error: RelayErrorBody {
-                code: "CLAIM_CODE_REDEEMED".to_string(),
-            },
-        };
-        let err = match envelope.error.code.as_str() {
-            "CLAIM_CODE_REDEEMED" => CreateAccountError::RedeemedCode,
-            "ACCOUNT_EXISTS" => CreateAccountError::EmailTaken,
-            "HANDLE_TAKEN" => CreateAccountError::HandleTaken,
-            other => CreateAccountError::Unknown {
-                message: format!("409: {other}"),
-            },
-        };
-        let json = serde_json::to_value(&err).unwrap();
+        let json = serde_json::to_value(map_409_subcode("CLAIM_CODE_REDEEMED")).unwrap();
         assert_eq!(json["code"], "REDEEMED_CODE");
 
-        // Test ACCOUNT_EXISTS subcode
-        let envelope = RelayErrorEnvelope {
-            error: RelayErrorBody {
-                code: "ACCOUNT_EXISTS".to_string(),
-            },
-        };
-        let err = match envelope.error.code.as_str() {
-            "CLAIM_CODE_REDEEMED" => CreateAccountError::RedeemedCode,
-            "ACCOUNT_EXISTS" => CreateAccountError::EmailTaken,
-            "HANDLE_TAKEN" => CreateAccountError::HandleTaken,
-            other => CreateAccountError::Unknown {
-                message: format!("409: {other}"),
-            },
-        };
-        let json = serde_json::to_value(&err).unwrap();
+        let json = serde_json::to_value(map_409_subcode("ACCOUNT_EXISTS")).unwrap();
         assert_eq!(json["code"], "EMAIL_TAKEN");
 
-        // Test HANDLE_TAKEN subcode
-        let envelope = RelayErrorEnvelope {
-            error: RelayErrorBody {
-                code: "HANDLE_TAKEN".to_string(),
-            },
-        };
-        let err = match envelope.error.code.as_str() {
-            "CLAIM_CODE_REDEEMED" => CreateAccountError::RedeemedCode,
-            "ACCOUNT_EXISTS" => CreateAccountError::EmailTaken,
-            "HANDLE_TAKEN" => CreateAccountError::HandleTaken,
-            other => CreateAccountError::Unknown {
-                message: format!("409: {other}"),
-            },
-        };
-        let json = serde_json::to_value(&err).unwrap();
+        let json = serde_json::to_value(map_409_subcode("HANDLE_TAKEN")).unwrap();
         assert_eq!(json["code"], "HANDLE_TAKEN");
 
-        // Test unknown subcode (falls through to Unknown)
-        let envelope = RelayErrorEnvelope {
-            error: RelayErrorBody {
-                code: "UNKNOWN_SUBCODE".to_string(),
-            },
-        };
-        let err = match envelope.error.code.as_str() {
-            "CLAIM_CODE_REDEEMED" => CreateAccountError::RedeemedCode,
-            "ACCOUNT_EXISTS" => CreateAccountError::EmailTaken,
-            "HANDLE_TAKEN" => CreateAccountError::HandleTaken,
-            other => CreateAccountError::Unknown {
-                message: format!("409: {other}"),
-            },
-        };
-        let json = serde_json::to_value(&err).unwrap();
+        let json = serde_json::to_value(map_409_subcode("UNKNOWN_SUBCODE")).unwrap();
         assert_eq!(json["code"], "UNKNOWN");
         assert!(json["message"].as_str().unwrap().contains("409:"));
     }

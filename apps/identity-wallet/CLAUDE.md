@@ -29,7 +29,7 @@ Tauri v2 iOS application — SvelteKit 2 + Svelte 5 frontend running in a native
 
 **Exposes:**
 - `src/lib.rs::create_account(claim_code: String, email: String, handle: String) -> Result<CreateAccountResult, CreateAccountError>` — Tauri IPC command: generates P-256 keypair, stores private key in Keychain, POSTs to relay `/v1/accounts/mobile`, stores tokens in Keychain on success
-- `src/keychain.rs` — iOS Keychain abstraction (`store_item`, `get_item`) under service `"ezpds-identity-wallet"`
+- `src/keychain.rs` — iOS Keychain abstraction (`store_item`, `get_item`, `delete_item`) under service `"ezpds-identity-wallet"`
 - `src/http.rs` — `RelayClient` with compile-time base URL (localhost:8080 debug, relay.ezpds.com release)
 
 **Guarantees:**
@@ -157,7 +157,7 @@ cargo build
 - `src-tauri/tauri.conf.json` -- Tauri config: bundle ID, devUrl, frontendDist, window settings
 - `src-tauri/src/lib.rs` -- Tauri IPC commands (`create_account`) and `run()` (mobile entry point)
 - `src-tauri/src/main.rs` -- Desktop entry point (calls `lib::run()`)
-- `src-tauri/src/keychain.rs` -- iOS Keychain abstraction (store_item, get_item)
+- `src-tauri/src/keychain.rs` -- iOS Keychain abstraction (store_item, get_item, delete_item)
 - `src-tauri/src/http.rs` -- RelayClient with compile-time base URL
 - `src-tauri/.cargo/config.toml` -- Cargo toolchain overrides for iOS cross-compilation (CC, AR, linker per target)
 - `src/lib/ipc.ts` -- Typed TypeScript wrappers for all Tauri IPC commands (createAccount)

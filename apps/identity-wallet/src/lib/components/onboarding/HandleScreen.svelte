@@ -9,9 +9,10 @@
     error?: string;
   } = $props();
 
-  // ATProto handle validation: alphanumeric start/end, dots/hyphens/underscores allowed in middle.
-  // Minimum 1 character, maximum typically 63 (per DNS labels).
-  const handleRegex = /^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$/;
+  // ATProto handle segment: RFC 1035 DNS label — alphanumeric start/end, hyphens in middle only.
+  // Dots and underscores are excluded: dots would create multi-label handles (alice.bob instead of
+  // alice.ezpds.com); underscores are not valid in DNS labels per RFC 1035.
+  const handleRegex = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
   let isValid = $derived(handleRegex.test(value.trim()));
 </script>
 
