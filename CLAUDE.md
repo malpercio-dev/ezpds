@@ -61,3 +61,4 @@ Last verified: 2026-03-14
 ## Boundaries
 - Never edit: `flake.lock` by hand (managed by `nix flake update`)
 - Never edit: `devenv.local.nix` is gitignored for local overrides only
+- `flake.nix` `buildDepsOnly` is scoped to relay-related crates (`relay`, `repo-engine`, `crypto`, `common`). Adding a workspace crate with native dependencies not in `commonArgs.buildInputs` (e.g. Tauri's webkit2gtk/Apple frameworks) requires either adding the crate to the scope list or adding its build inputs to `commonArgs`.
