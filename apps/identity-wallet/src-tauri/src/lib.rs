@@ -3,6 +3,7 @@ pub mod keychain;
 
 use crypto::generate_p256_keypair;
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
 
 // ── Request / response types ────────────────────────────────────────────────
 
@@ -68,6 +69,10 @@ pub enum CreateAccountError {
     Unknown { message: String },
 }
 
+// ── Static relay client ─────────────────────────────────────────────────────
+
+static RELAY_CLIENT: LazyLock<http::RelayClient> = LazyLock::new(http::RelayClient::new);
+
 // ── IPC command ─────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -98,7 +103,7 @@ async fn create_account(
         claim_code,
     };
 
-    let resp = http::RelayClient::new()
+    let resp = RELAY_CLIENT
         .post("/v1/accounts/mobile", &req)
         .await
         .map_err(|e| CreateAccountError::NetworkError {
@@ -154,15 +159,10 @@ async fn create_account(
     }
 }
 
-#[tauri::command]
-fn greet(name: String) -> String {
-    format!("Hello, {}!", name)
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![greet, create_account])
+        .invoke_handler(tauri::generate_handler![create_account])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -171,21 +171,74 @@ pub fn run() {
 mod tests {
     use super::*;
 
+    // -- AC2.2: CreateMobileAccountRequest serialization --
     #[test]
-    fn greet_formats_name() {
-        assert_eq!(greet("World".to_string()), "Hello, World!");
+    fn create_mobile_account_request_serializes_camel_case() {
+        let req = CreateMobileAccountRequest {
+            email: "test@example.com".into(),
+            handle: "alice".into(),
+            device_public_key: "pubkey123".into(),
+            platform: "ios".into(),
+            claim_code: "ABC123".into(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["email"], "test@example.com");
+        assert_eq!(json["handle"], "alice");
+        assert_eq!(json["devicePublicKey"], "pubkey123");
+        assert_eq!(json["platform"], "ios");
+        assert_eq!(json["claimCode"], "ABC123");
     }
 
+    // -- AC2.5: CreateAccountResult serialization --
     #[test]
-    fn greet_empty_name() {
-        assert_eq!(greet(String::new()), "Hello, !");
+    fn create_account_result_serializes_camel_case() {
+        let result = CreateAccountResult {
+            next_step: "did_creation".into(),
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["nextStep"], "did_creation");
     }
 
+    // -- AC3.1: CreateAccountError::ExpiredCode serialization --
     #[test]
-    fn greet_special_characters() {
-        assert_eq!(
-            greet("<script>alert(1)</script>".to_string()),
-            "Hello, <script>alert(1)</script>!"
-        );
+    fn error_expired_code_serializes_correctly() {
+        let err = CreateAccountError::ExpiredCode;
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["code"], "EXPIRED_CODE");
+    }
+
+    // -- AC3.2: CreateAccountError::RedeemedCode serialization --
+    #[test]
+    fn error_redeemed_code_serializes_correctly() {
+        let err = CreateAccountError::RedeemedCode;
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["code"], "REDEEMED_CODE");
+    }
+
+    // -- AC3.3: CreateAccountError::EmailTaken serialization --
+    #[test]
+    fn error_email_taken_serializes_correctly() {
+        let err = CreateAccountError::EmailTaken;
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["code"], "EMAIL_TAKEN");
+    }
+
+    // -- AC3.4: CreateAccountError::HandleTaken serialization --
+    #[test]
+    fn error_handle_taken_serializes_correctly() {
+        let err = CreateAccountError::HandleTaken;
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["code"], "HANDLE_TAKEN");
+    }
+
+    // -- AC3.5: CreateAccountError::NetworkError serialization --
+    #[test]
+    fn error_network_error_serializes_correctly() {
+        let err = CreateAccountError::NetworkError {
+            message: "Connection timeout".into(),
+        };
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["code"], "NETWORK_ERROR");
+        assert_eq!(json["message"], "Connection timeout");
     }
 }

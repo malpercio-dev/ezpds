@@ -7,6 +7,14 @@
   import { createAccount, type CreateAccountError } from '$lib/ipc';
 
   // ── Onboarding step type ─────────────────────────────────────────────────
+  //
+  // Design plan originally specified an 'error' state for displaying errors,
+  // but the implementation uses per-screen error rewinding instead.
+  // When an error occurs (e.g., EXPIRED_CODE, EMAIL_TAKEN), the app rewinds
+  // to the relevant screen and displays an inline error message below the
+  // input field, rather than showing a separate error screen. This is a better
+  // UX pattern — users can immediately correct the issue on the same screen
+  // instead of navigating through an extra modal. No 'error' step is needed.
 
   type OnboardingStep =
     | 'welcome'

@@ -1,8 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
 
-export const greet = (name: string): Promise<string> =>
-  invoke('greet', { name });
-
 // ── create_account ──────────────────────────────────────────────────────────
 
 export interface CreateAccountParams extends Record<string, unknown> {
@@ -11,17 +8,22 @@ export interface CreateAccountParams extends Record<string, unknown> {
   handle: string;
 }
 
-export interface CreateAccountResult {
+/**
+ * Successful result from the `create_account` Rust command.
+ * This is a pure data shape returned on success.
+ */
+export type CreateAccountResult = {
   nextStep: string;
-}
+};
 
 /**
  * Error returned by the `create_account` Rust command.
  *
  * Serialized as `{ code: "EXPIRED_CODE" }` etc. by the Rust backend.
  * The `message` field is present only on NETWORK_ERROR and UNKNOWN variants.
+ * This is a pure data shape used for error handling.
  */
-export interface CreateAccountError {
+export type CreateAccountError = {
   code:
     | 'EXPIRED_CODE'
     | 'REDEEMED_CODE'
@@ -30,7 +32,7 @@ export interface CreateAccountError {
     | 'NETWORK_ERROR'
     | 'UNKNOWN';
   message?: string;
-}
+};
 
 /**
  * Create a new account via the relay.
