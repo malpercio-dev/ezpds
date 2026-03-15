@@ -1,69 +1,150 @@
 <script lang="ts">
-  import { greet } from '$lib/ipc';
+  import WelcomeScreen from '$lib/components/onboarding/WelcomeScreen.svelte';
+  import ClaimCodeScreen from '$lib/components/onboarding/ClaimCodeScreen.svelte';
+  import EmailScreen from '$lib/components/onboarding/EmailScreen.svelte';
+  import HandleScreen from '$lib/components/onboarding/HandleScreen.svelte';
+  import LoadingScreen from '$lib/components/onboarding/LoadingScreen.svelte';
+  import { createAccount, type CreateAccountError } from '$lib/ipc';
 
-  let name = $state('World');
-  let greetMsg = $state('');
+  // ── Onboarding step type ─────────────────────────────────────────────────
 
-  async function handleGreet() {
-    greetMsg = await greet(name);
+  type OnboardingStep =
+    | 'welcome'
+    | 'claim_code'
+    | 'email'
+    | 'handle'
+    | 'loading'
+    | 'did_ceremony';
+
+  // ── State ────────────────────────────────────────────────────────────────
+
+  let step = $state<OnboardingStep>('welcome');
+  let form = $state({ claimCode: '', email: '', handle: '' });
+
+  /**
+   * Per-field error messages displayed by each screen.
+   * Cleared when the user navigates forward to the next step.
+   */
+  let errors = $state<{ claimCode?: string; email?: string; handle?: string }>(
+    {}
+  );
+
+  // ── Navigation helpers ───────────────────────────────────────────────────
+
+  function goTo(next: OnboardingStep) {
+    errors = {};
+    step = next;
+  }
+
+  // ── Account creation ─────────────────────────────────────────────────────
+
+  async function submitAccount() {
+    step = 'loading';
+    errors = {};
+
+    try {
+      const result = await createAccount({
+        claimCode: form.claimCode,
+        email: form.email,
+        handle: form.handle,
+      });
+
+      if (result.nextStep === 'did_creation') {
+        step = 'did_ceremony';
+      } else {
+        // Unexpected nextStep value — treat as success and advance anyway.
+        step = 'did_ceremony';
+      }
+    } catch (raw: unknown) {
+      // Guard against non-CreateAccountError shapes (e.g. JS runtime errors).
+      if (
+        typeof raw === 'object' &&
+        raw !== null &&
+        'code' in raw &&
+        typeof (raw as CreateAccountError).code === 'string'
+      ) {
+        handleError(raw as CreateAccountError);
+      } else {
+        errors.handle = "Couldn't reach the server. Check your connection.";
+        step = 'handle';
+      }
+    }
+  }
+
+  function handleError(err: CreateAccountError) {
+    switch (err.code) {
+      case 'EXPIRED_CODE':
+        errors.claimCode = 'This claim code has expired. Please request a new one.';
+        step = 'claim_code';
+        break;
+      case 'REDEEMED_CODE':
+        errors.claimCode = 'This claim code has already been used.';
+        step = 'claim_code';
+        break;
+      case 'EMAIL_TAKEN':
+        errors.email = 'An account with that email already exists.';
+        step = 'email';
+        break;
+      case 'HANDLE_TAKEN':
+        errors.handle = 'That handle is taken. Please choose another.';
+        step = 'handle';
+        break;
+      case 'NETWORK_ERROR':
+      case 'UNKNOWN':
+      default:
+        errors.handle = "Couldn't reach the server. Check your connection.";
+        step = 'handle';
+        break;
+    }
   }
 </script>
 
-<main>
-  <h1>Identity Wallet</h1>
-  <div class="greet-form">
-    <input
-      type="text"
-      bind:value={name}
-      placeholder="Enter a name"
+<div class="app">
+  {#if step === 'welcome'}
+    <WelcomeScreen onstart={() => goTo('claim_code')} />
+  {:else if step === 'claim_code'}
+    <ClaimCodeScreen
+      bind:value={form.claimCode}
+      error={errors.claimCode}
+      onnext={() => goTo('email')}
     />
-    <button onclick={handleGreet}>Greet</button>
-  </div>
-  {#if greetMsg}
-    <p class="greeting">{greetMsg}</p>
+  {:else if step === 'email'}
+    <EmailScreen
+      bind:value={form.email}
+      error={errors.email}
+      onnext={() => goTo('handle')}
+    />
+  {:else if step === 'handle'}
+    <HandleScreen
+      bind:value={form.handle}
+      error={errors.handle}
+      onnext={submitAccount}
+    />
+  {:else if step === 'loading'}
+    <LoadingScreen statusText="Creating your account…" />
+  {:else if step === 'did_ceremony'}
+    <div class="placeholder">
+      <h2>Account Created!</h2>
+      <p>DID ceremony coming soon…</p>
+    </div>
   {/if}
-</main>
+</div>
 
 <style>
-  main {
+  .app {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .placeholder {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    min-height: 100vh;
-    padding: 1rem;
-    font-family: system-ui, sans-serif;
-    box-sizing: border-box;
-  }
-
-  .greet-form {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-    width: 100%;
-    max-width: 280px;
-    margin-top: 1rem;
-  }
-
-  input,
-  button {
-    padding: 0.5rem;
-    font-size: 1rem;
-    border-radius: 4px;
-    border: 1px solid #ccc;
-    box-sizing: border-box;
-    width: 100%;
-  }
-
-  button {
-    cursor: pointer;
-    background: #007aff;
-    color: white;
-    border-color: #007aff;
-  }
-
-  .greeting {
-    margin-top: 1rem;
-    font-size: 1.25rem;
+    height: 100%;
+    gap: 1rem;
+    text-align: center;
+    padding: 2rem;
   }
 </style>
