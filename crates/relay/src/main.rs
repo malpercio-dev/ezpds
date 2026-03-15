@@ -119,8 +119,9 @@ async fn run() -> anyhow::Result<()> {
             }
         };
 
-    let well_known_resolver: Option<Arc<dyn well_known::WellKnownResolver>> =
-        Some(Arc::new(well_known::HttpWellKnownResolver::new(http_client.clone())));
+    let well_known_resolver: Option<Arc<dyn well_known::WellKnownResolver>> = Some(Arc::new(
+        well_known::HttpWellKnownResolver::new(http_client.clone()),
+    ));
 
     let state = app::AppState {
         config: Arc::new(config),

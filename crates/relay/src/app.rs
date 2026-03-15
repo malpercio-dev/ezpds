@@ -13,7 +13,6 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::dns::{DnsProvider, TxtResolver};
-use crate::well_known::WellKnownResolver;
 use crate::routes::claim_codes::claim_codes;
 use crate::routes::create_account::create_account;
 use crate::routes::create_did::create_did_handler;
@@ -24,6 +23,7 @@ use crate::routes::describe_server::describe_server;
 use crate::routes::health::health;
 use crate::routes::register_device::register_device;
 use crate::routes::resolve_handle::resolve_handle_handler;
+use crate::well_known::WellKnownResolver;
 
 /// Wraps an `axum::http::HeaderMap` as an OTel text-map [`Extractor`] so that
 /// the W3C `traceparent` and `tracestate` headers can be read by the global propagator.

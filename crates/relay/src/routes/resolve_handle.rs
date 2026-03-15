@@ -78,7 +78,11 @@ pub async fn resolve_handle_handler(
 
 #[cfg(test)]
 mod tests {
-    use std::{future::Future, pin::Pin, sync::{Arc, Mutex}};
+    use std::{
+        future::Future,
+        pin::Pin,
+        sync::{Arc, Mutex},
+    };
 
     use axum::{
         body::Body,
@@ -305,7 +309,11 @@ mod tests {
             .await
             .unwrap();
 
-        let name = captured.lock().unwrap().clone().expect("txt_lookup not called");
+        let name = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("txt_lookup not called");
         assert_eq!(name, "_atproto.alice.example.com");
     }
 
