@@ -22,9 +22,11 @@ Last verified: 2026-03-14
 ## Dev Environment
 - Managed entirely by Nix flake + devenv; do not install tools globally
 - direnv auto-activates via `.envrc` (`use flake . --impure --accept-flake-config`)
-- Rust toolchain pinned in `rust-toolchain.toml` (stable, with rustfmt + clippy + rust-analyzer)
-- Shell provides: just, cargo-audit, sqlite (runtime binary + dev headers/library for sqlx's libsqlite3-sys), pkg-config, cargo-tauri, node (22.x), pnpm
+- **Always run `nix develop` from the workspace root**, not from a subdirectory — `CARGO_HOME` and `RUSTUP_HOME` resolve relative to devenv root
+- Rust toolchain managed by **rustup** (not Nix's `rust-default`); pinned in `rust-toolchain.toml` (stable, with rustfmt + clippy + rust-analyzer + iOS targets). On first shell entry, `enterShell` runs `rustup toolchain install` automatically.
+- Shell provides: just, cargo-audit, sqlite (runtime binary + dev headers/library for sqlx's libsqlite3-sys), pkg-config, cargo-tauri, node (22.x), pnpm, rustup
 - `LIBSQLITE3_SYS_USE_PKG_CONFIG=1` is set automatically by devenv (links sqlx against Nix-provided SQLite instead of bundled)
+- `DEVELOPER_DIR` is set to `/Applications/Xcode.app/Contents/Developer` in `enterShell` — Nix's Darwin hooks override it to a stub SDK; the re-export restores real Xcode for iOS tooling (xcrun, simctl, xcodebuild)
 - Binary cache: devenv.cachix.org (activated by `--accept-flake-config`); speeds up cold shell builds significantly
 - nixpkgs pin: `cachix/devenv-nixpkgs/rolling` (devenv's own nixpkgs fork — package versions may differ from upstream nixpkgs.search.dev)
 
