@@ -5,7 +5,7 @@ export const greet = (name: string): Promise<string> =>
 
 // ── create_account ──────────────────────────────────────────────────────────
 
-export interface CreateAccountParams {
+export interface CreateAccountParams extends Record<string, unknown> {
   claimCode: string;
   email: string;
   handle: string;
