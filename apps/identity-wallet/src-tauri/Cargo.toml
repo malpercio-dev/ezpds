@@ -29,7 +29,7 @@ tauri-build = "2"
 # They are included per the design plan as documentation of Tauri's recommendations.
 # When iOS release binary size becomes a concern, move these to the root Cargo.toml's
 # [profile.release] section (note: that will affect ALL workspace crates' release builds).
-[profile.release]
-strip = true
-lto = true
-opt-level = "z"
+# [profile.release]
+# strip = true
+# lto = true
+# opt-level = "z"

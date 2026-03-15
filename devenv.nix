@@ -10,6 +10,9 @@
     pkgs.cargo-audit
     pkgs.sqlite
     pkgs.pkg-config
+    pkgs.cargo-tauri
+    pkgs.nodejs_22
+    pkgs.pnpm
   ];
 
   env.LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
