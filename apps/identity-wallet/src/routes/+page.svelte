@@ -57,13 +57,9 @@
         handle: form.handle,
       });
 
-      if (result.nextStep === 'did_creation') {
-        step = 'did_ceremony';
-      } else {
-        // Unexpected nextStep value — treat as success and advance anyway.
-        console.error('Unexpected nextStep:', result.nextStep);
-        step = 'did_ceremony';
-      }
+      // Rust guarantees nextStep is 'did_creation' on success; unrecognized
+      // relay values fail deserialization and surface as CreateAccountError::Unknown.
+      step = 'did_ceremony';
     } catch (raw: unknown) {
       // Guard against non-CreateAccountError shapes (e.g. JS runtime errors).
       if (

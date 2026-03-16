@@ -29,7 +29,7 @@ struct CreateMobileAccountRequest {
 struct CreateMobileAccountResponse {
     device_token: String,
     session_token: String,
-    next_step: String,
+    next_step: NextStep,
 }
 
 /// Relay error envelope: { "error": { "code": "...", "message": "..." } }
@@ -45,11 +45,22 @@ struct RelayErrorBody {
 
 // ── IPC result / error types (returned to the frontend) ─────────────────────
 
+/// The next step the client should take after successful account creation.
+///
+/// If the relay returns an unrecognized value, serde deserialization fails and
+/// `create_account` returns `CreateAccountError::Unknown` — unrecognized relay
+/// protocol values are caught here rather than silently forwarded to the frontend.
+#[derive(Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum NextStep {
+    DidCreation,
+}
+
 /// Successful result returned to the Svelte frontend.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateAccountResult {
-    pub next_step: String,
+    pub next_step: NextStep,
 }
 
 /// Typed error returned to the Svelte frontend as a rejected Promise.
@@ -210,10 +221,29 @@ mod tests {
     #[test]
     fn create_account_result_serializes_camel_case() {
         let result = CreateAccountResult {
-            next_step: "did_creation".into(),
+            next_step: NextStep::DidCreation,
         };
         let json = serde_json::to_value(&result).unwrap();
         assert_eq!(json["nextStep"], "did_creation");
+    }
+
+    // -- NextStep serde round-trip --
+    #[test]
+    fn next_step_did_creation_deserializes_correctly() {
+        let result: NextStep = serde_json::from_str(r#""did_creation""#).unwrap();
+        assert_eq!(result, NextStep::DidCreation);
+    }
+
+    #[test]
+    fn next_step_did_creation_serializes_correctly() {
+        let json = serde_json::to_value(NextStep::DidCreation).unwrap();
+        assert_eq!(json, "did_creation");
+    }
+
+    #[test]
+    fn next_step_unknown_value_fails_deserialization() {
+        let result: Result<NextStep, _> = serde_json::from_str(r#""email_verification""#);
+        assert!(result.is_err());
     }
 
     // -- AC3.1: CreateAccountError::ExpiredCode serialization --

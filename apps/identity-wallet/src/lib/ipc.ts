@@ -13,7 +13,7 @@ export interface CreateAccountParams extends Record<string, unknown> {
  * This is a pure data shape returned on success.
  */
 export type CreateAccountResult = {
-  nextStep: string;
+  nextStep: 'did_creation';
 };
 
 /**
