@@ -154,7 +154,6 @@ mod tests {
 
     #[tokio::test]
     async fn returns_200_with_one_code() {
-        // MM-86.AC1.1
         let response = app(test_state_with_admin_token().await)
             .oneshot(post_claim_codes(
                 r#"{"count": 1, "expiresInHours": 24}"#,
@@ -174,7 +173,6 @@ mod tests {
 
     #[tokio::test]
     async fn returns_ten_codes_for_batch() {
-        // MM-86.AC1.2
         let response = app(test_state_with_admin_token().await)
             .oneshot(post_claim_codes(
                 r#"{"count": 10, "expiresInHours": 24}"#,
@@ -193,7 +191,7 @@ mod tests {
 
     #[tokio::test]
     async fn defaults_expires_in_hours_to_24() {
-        // MM-86.AC1.3: expiresInHours is optional; default = 24h
+        // expiresInHours is optional; default = 24h
         let state = test_state_with_admin_token().await;
         let db = state.db.clone();
 
@@ -237,7 +235,6 @@ mod tests {
 
     #[tokio::test]
     async fn codes_are_6_char_uppercase_alphanumeric() {
-        // MM-86.AC2.1
         let response = app(test_state_with_admin_token().await)
             .oneshot(post_claim_codes(
                 r#"{"count": 5, "expiresInHours": 1}"#,
@@ -263,7 +260,6 @@ mod tests {
 
     #[tokio::test]
     async fn codes_in_batch_are_unique() {
-        // MM-86.AC2.2
         let response = app(test_state_with_admin_token().await)
             .oneshot(post_claim_codes(
                 r#"{"count": 10, "expiresInHours": 1}"#,
@@ -294,7 +290,7 @@ mod tests {
 
     #[tokio::test]
     async fn codes_persisted_in_db_with_pending_status() {
-        // MM-86.AC3.1: stored with redeemed_at NULL (pending) and correct expiry
+        // stored with redeemed_at NULL (pending) and correct expiry
         let state = test_state_with_admin_token().await;
         let db = state.db.clone();
 
@@ -366,7 +362,6 @@ mod tests {
 
     #[tokio::test]
     async fn count_zero_returns_400() {
-        // MM-86.AC4.1
         let response = app(test_state_with_admin_token().await)
             .oneshot(post_claim_codes(
                 r#"{"count": 0, "expiresInHours": 24}"#,
@@ -379,7 +374,6 @@ mod tests {
 
     #[tokio::test]
     async fn count_eleven_returns_400() {
-        // MM-86.AC4.2
         let response = app(test_state_with_admin_token().await)
             .oneshot(post_claim_codes(
                 r#"{"count": 11, "expiresInHours": 24}"#,
@@ -392,7 +386,6 @@ mod tests {
 
     #[tokio::test]
     async fn expires_in_hours_zero_returns_400() {
-        // MM-86.AC4.3
         let response = app(test_state_with_admin_token().await)
             .oneshot(post_claim_codes(
                 r#"{"count": 1, "expiresInHours": 0}"#,
@@ -405,7 +398,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_count_returns_422() {
-        // MM-86.AC4.4: serde rejects missing required field
+        // serde rejects missing required field
         let response = app(test_state_with_admin_token().await)
             .oneshot(post_claim_codes(
                 r#"{"expiresInHours": 24}"#,
@@ -420,7 +413,6 @@ mod tests {
 
     #[tokio::test]
     async fn missing_authorization_header_returns_401() {
-        // MM-86.AC5.1
         let response = app(test_state_with_admin_token().await)
             .oneshot(post_claim_codes(r#"{"count": 1}"#, None))
             .await
@@ -430,7 +422,6 @@ mod tests {
 
     #[tokio::test]
     async fn wrong_bearer_token_returns_401() {
-        // MM-86.AC5.2
         let response = app(test_state_with_admin_token().await)
             .oneshot(post_claim_codes(r#"{"count": 1}"#, Some("wrong-token")))
             .await
@@ -440,7 +431,6 @@ mod tests {
 
     #[tokio::test]
     async fn bare_token_without_bearer_prefix_returns_401() {
-        // MM-86.AC5.3
         let request = Request::builder()
             .method("POST")
             .uri("/v1/accounts/claim-codes")
@@ -458,7 +448,7 @@ mod tests {
 
     #[tokio::test]
     async fn admin_token_not_configured_returns_401() {
-        // MM-86.AC5.4: test_state() leaves admin_token as None
+        // test_state() leaves admin_token as None
         let response = app(test_state().await)
             .oneshot(post_claim_codes(
                 r#"{"count": 1}"#,

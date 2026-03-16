@@ -59,6 +59,7 @@ Last verified: 2026-03-14
 - Workspace-level dependency versions in root Cargo.toml; crates use `{ workspace = true }`
 - All crates share version (0.1.0) and edition (2021) via workspace.package
 - publish = false (not intended for crates.io)
+- **No ticket or AC references in source code.** Do not add comments like `// MM-123`, `// AC2.1:`, or `// MM-84.AC3: description` to `.rs` files or CLAUDE.md files. Design plans and test plans in `docs/` are the right home for ticket traceability. Source code comments should describe *why* in terms of the system, not which ticket required it.
 
 ## Boundaries
 - Never edit: `flake.lock` by hand (managed by `nix flake update`)

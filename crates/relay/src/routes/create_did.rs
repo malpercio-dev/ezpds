@@ -35,7 +35,7 @@
 //  13. Return { "did": "did:plc:...", "did_document": {...}, "status": "active", "session_token": "..." }
 //
 // Note: handles are NOT inserted here. Handle creation is the caller's responsibility
-// via POST /v1/handles (MM-94), which validates format and optionally creates DNS records.
+// via POST /v1/handles, which validates format and optionally creates DNS records.
 //
 // Outputs (success):  200 { "did": "...", "did_document": {...}, "status": "active", "session_token": "..." }
 // Outputs (error):    400 INVALID_CLAIM, 401 UNAUTHORIZED, 409 DID_ALREADY_EXISTS,
@@ -451,7 +451,7 @@ mod tests {
     /// Insert prerequisite rows for a DID-creation test.
     ///
     /// Inserts: claim_code, pending_account, device, pending_session.
-    /// No relay signing key needed for MM-90.
+    /// No relay signing key needed.
     async fn insert_test_data(db: &sqlx::SqlitePool) -> TestSetup {
         let claim_code = format!("TEST-{}", Uuid::new_v4());
         sqlx::query(
@@ -518,12 +518,12 @@ mod tests {
     }
 
     /// Create an AppState with plc_directory_url pointing to the mock server.
-    /// No signing_key_master_key needed for MM-90.
+    /// No signing_key_master_key needed.
     async fn test_state_for_did(plc_url: String) -> AppState {
         test_state_with_plc_url(plc_url).await
     }
 
-    /// Build a POST /v1/dids request with the MM-90 body shape.
+    /// Build a POST /v1/dids request.
     fn create_did_request(
         session_token: &str,
         rotation_key_public: &str,
@@ -542,9 +542,8 @@ mod tests {
             .unwrap()
     }
 
-    // ── AC2.1/2.2/2.3/2.4/2.5/4.1/4.2/4.3: Happy path ───────────────────────
+    // ── Happy path ────────────────────────────────────────────────────────────
 
-    /// MM-90.AC2.1, AC2.2, AC2.3, AC2.4, AC2.5, AC4.1, AC4.2, AC4.3:
     /// Valid request promotes account and returns full DID response.
     #[tokio::test]
     async fn happy_path_promotes_account_and_returns_did() {
@@ -573,7 +572,7 @@ mod tests {
             .await
             .unwrap();
 
-        // AC2.1: 200 OK with { did, did_document, status: "active", session_token }
+        // 200 OK with { did, did_document, status: "active", session_token }
         assert_eq!(response.status(), StatusCode::OK, "expected 200 OK");
         let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
@@ -602,7 +601,7 @@ mod tests {
         let did = body["did"].as_str().unwrap();
         let doc = &body["did_document"];
 
-        // AC4.2: alsoKnownAs contains at://{handle}
+        // alsoKnownAs contains at://{handle}
         let also_known_as = doc["alsoKnownAs"].as_array().expect("alsoKnownAs is array");
         assert!(
             also_known_as
@@ -612,7 +611,7 @@ mod tests {
             setup.handle
         );
 
-        // AC4.1: verificationMethod has publicKeyMultibase starting with "z"
+        // verificationMethod has publicKeyMultibase starting with "z"
         let vm = &doc["verificationMethod"][0];
         let pkm = vm["publicKeyMultibase"]
             .as_str()
@@ -622,7 +621,7 @@ mod tests {
             "publicKeyMultibase should start with 'z'"
         );
 
-        // AC4.3: service entry has serviceEndpoint matching public_url
+        // service entry has serviceEndpoint matching public_url
         let service = &doc["service"][0];
         assert_eq!(
             service["serviceEndpoint"].as_str(),
@@ -630,7 +629,7 @@ mod tests {
             "serviceEndpoint should match config.public_url"
         );
 
-        // AC2.2: accounts row with correct did, email; password_hash IS NULL
+        // accounts row with correct did, email; password_hash IS NULL
         let row: Option<(String, Option<String>)> =
             sqlx::query_as("SELECT email, password_hash FROM accounts WHERE did = ?")
                 .bind(did)
@@ -644,7 +643,7 @@ mod tests {
             "password_hash should be NULL for device-provisioned account"
         );
 
-        // AC2.3: did_documents row exists with non-empty document
+        // did_documents row exists with non-empty document
         let doc_row: Option<(String,)> =
             sqlx::query_as("SELECT document FROM did_documents WHERE did = ?")
                 .bind(did)
@@ -654,7 +653,7 @@ mod tests {
         let (document,) = doc_row.expect("did_documents row should exist");
         assert!(!document.is_empty(), "document should be non-empty");
 
-        // AC2.4: session row created with correct did and matching token_hash
+        // session row created with correct did and matching token_hash
         let session_token_str = body["session_token"].as_str().unwrap();
         let token_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(session_token_str)
@@ -675,7 +674,7 @@ mod tests {
         let (session_did,) = session_row.expect("sessions row should exist for token_hash");
         assert_eq!(session_did, did, "sessions.did should match response did");
 
-        // AC2.4b: handles table should NOT have a row yet (handle created via POST /v1/handles)
+        // handles table should NOT have a row yet (handle created via POST /v1/handles)
         let handle_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM handles WHERE did = ?")
             .bind(did)
             .fetch_one(&db)
@@ -686,7 +685,7 @@ mod tests {
             "handles table should be empty after DID ceremony"
         );
 
-        // AC2.5: pending_accounts and pending_sessions deleted
+        // pending_accounts and pending_sessions deleted
         let pending_count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM pending_accounts WHERE id = ?")
                 .bind(&setup.account_id)
@@ -703,7 +702,7 @@ mod tests {
                 .unwrap();
         assert_eq!(session_count, 0, "pending_sessions rows should be deleted");
 
-        // AC2.5: devices deleted
+        // devices deleted
         let device_count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM devices WHERE account_id = ?")
                 .bind(&setup.account_id)
@@ -713,9 +712,9 @@ mod tests {
         assert_eq!(device_count, 0, "devices rows should be deleted");
     }
 
-    // ── AC2.6: Retry path skips plc.directory ─────────────────────────────────
+    // ── Retry path skips plc.directory ────────────────────────────────────────
 
-    /// MM-90.AC2.6: When pending_did already set, plc.directory is not called.
+    /// When pending_did already set, plc.directory is not called.
     #[tokio::test]
     async fn retry_with_pending_did_skips_plc_directory() {
         let mock_server = MockServer::start().await;
@@ -817,9 +816,9 @@ mod tests {
         assert_eq!(body["error"]["code"], "INTERNAL_ERROR");
     }
 
-    // ── AC3.1: Invalid signature ───────────────────────────────────────────────
+    // ── Invalid signature ─────────────────────────────────────────────────────
 
-    /// MM-90.AC3.1: Corrupted signature returns 400 INVALID_CLAIM.
+    /// Corrupted signature returns 400 INVALID_CLAIM.
     #[tokio::test]
     async fn invalid_signature_returns_400() {
         let state = test_state_for_did("https://plc.directory".to_string()).await;
@@ -852,9 +851,9 @@ mod tests {
         assert_eq!(body["error"]["code"], "INVALID_CLAIM");
     }
 
-    // ── AC3.2: Wrong handle in alsoKnownAs ────────────────────────────────────
+    // ── Wrong handle in alsoKnownAs ───────────────────────────────────────────
 
-    /// MM-90.AC3.2: alsoKnownAs mismatch returns 400 INVALID_CLAIM.
+    /// alsoKnownAs mismatch returns 400 INVALID_CLAIM.
     #[tokio::test]
     async fn wrong_handle_in_op_returns_400() {
         let state = test_state_for_did("https://plc.directory".to_string()).await;
@@ -882,9 +881,9 @@ mod tests {
         assert_eq!(body["error"]["code"], "INVALID_CLAIM");
     }
 
-    // ── AC3.3: Wrong service endpoint ─────────────────────────────────────────
+    // ── Wrong service endpoint ────────────────────────────────────────────────
 
-    /// MM-90.AC3.3: services.atproto_pds.endpoint mismatch returns 400 INVALID_CLAIM.
+    /// services.atproto_pds.endpoint mismatch returns 400 INVALID_CLAIM.
     #[tokio::test]
     async fn wrong_service_endpoint_returns_400() {
         let state = test_state_for_did("https://plc.directory".to_string()).await;
@@ -912,9 +911,9 @@ mod tests {
         assert_eq!(body["error"]["code"], "INVALID_CLAIM");
     }
 
-    // ── AC3.4: rotationKeys[0] mismatch ───────────────────────────────────────
+    // ── rotationKeys[0] mismatch ──────────────────────────────────────────────
 
-    /// MM-90.AC3.4: rotationKeys[0] in op != rotationKeyPublic in request body → 400 INVALID_CLAIM.
+    /// rotationKeys[0] in op != rotationKeyPublic in request body → 400 INVALID_CLAIM.
     ///
     /// To isolate semantic validation (not crypto failure): use kp_x as the signer
     /// (signature verifies with kp_x), but put kp_y at rotationKeys[0]. Send kp_x
@@ -998,9 +997,9 @@ mod tests {
         assert_eq!(body["error"]["code"], "INVALID_CLAIM");
     }
 
-    // ── AC3.5: Already promoted ────────────────────────────────────────────────
+    // ── Already promoted ──────────────────────────────────────────────────────
 
-    /// MM-90.AC3.5: Account already promoted returns 409 DID_ALREADY_EXISTS.
+    /// Account already promoted returns 409 DID_ALREADY_EXISTS.
     #[tokio::test]
     async fn already_promoted_account_returns_409() {
         let state = test_state_for_did("https://plc.directory".to_string()).await;
@@ -1043,9 +1042,9 @@ mod tests {
         assert_eq!(body["error"]["code"], "DID_ALREADY_EXISTS");
     }
 
-    // ── AC3.6: Missing auth ────────────────────────────────────────────────────
+    // ── Missing auth ──────────────────────────────────────────────────────────
 
-    /// MM-90.AC3.6: Missing Authorization header returns 401 UNAUTHORIZED.
+    /// Missing Authorization header returns 401 UNAUTHORIZED.
     #[tokio::test]
     async fn missing_auth_returns_401() {
         let state = test_state_for_did("https://plc.directory".to_string()).await;
@@ -1074,9 +1073,9 @@ mod tests {
         assert_eq!(body["error"]["code"], "UNAUTHORIZED");
     }
 
-    // ── AC3.7: plc.directory error ────────────────────────────────────────────
+    // ── plc.directory error ───────────────────────────────────────────────────
 
-    /// MM-90.AC3.7: plc.directory non-2xx returns 502 PLC_DIRECTORY_ERROR.
+    /// plc.directory non-2xx returns 502 PLC_DIRECTORY_ERROR.
     #[tokio::test]
     async fn plc_directory_error_returns_502() {
         let mock_server = MockServer::start().await;

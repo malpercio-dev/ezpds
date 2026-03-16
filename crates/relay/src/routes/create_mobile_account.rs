@@ -420,7 +420,6 @@ mod tests {
 
     #[tokio::test]
     async fn returns_201_with_correct_shape() {
-        // MM-84.AC1: single POST completes account + device + session setup
         let state = test_state().await;
         let claim_code = seed_claim_code(&state.db).await;
 
@@ -508,7 +507,6 @@ mod tests {
 
     #[tokio::test]
     async fn all_rows_persisted_in_db() {
-        // MM-84.AC1: transaction atomicity — all three rows must be written
         let state = test_state().await;
         let db = state.db.clone();
         let claim_code = seed_claim_code(&state.db).await;
@@ -657,7 +655,6 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_claim_code_returns_404() {
-        // MM-84.AC2: invalid claim code returns 404
         let response = app(test_state().await)
             .oneshot(post_create_mobile_account(
                 r#"{"email":"a@example.com","handle":"a.example.com","devicePublicKey":"dGVzdC1rZXk=","platform":"ios","claimCode":"INVALID"}"#,
@@ -675,7 +672,6 @@ mod tests {
 
     #[tokio::test]
     async fn expired_claim_code_returns_404() {
-        // MM-84.AC2: expired claim code returns 404
         let state = test_state().await;
         let code = "EXPRD001";
 
@@ -706,7 +702,6 @@ mod tests {
 
     #[tokio::test]
     async fn already_redeemed_claim_code_returns_409() {
-        // MM-84.AC3: already-redeemed claim code returns 409
         let state = test_state().await;
         let claim_code = seed_claim_code(&state.db).await;
         let application = app(state);
@@ -745,7 +740,7 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_email_pre_flight_protects_claim_code() {
-        // MM-84.AC4: email conflict caught pre-flight — claim code must not be consumed
+        // email conflict caught pre-flight — claim code must not be consumed
         let state = test_state().await;
         let db = state.db.clone();
         let claim_code = seed_claim_code(&state.db).await;
@@ -783,7 +778,7 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_handle_pre_flight_protects_claim_code() {
-        // MM-84.AC4: handle conflict caught pre-flight — claim code must not be consumed
+        // handle conflict caught pre-flight — claim code must not be consumed
         let state = test_state().await;
         let db = state.db.clone();
         let claim_code = seed_claim_code(&db).await;

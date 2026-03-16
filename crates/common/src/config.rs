@@ -750,20 +750,17 @@ mod tests {
     #[test]
     fn admin_token_is_optional() {
         let config = validate_and_build(minimal_raw()).unwrap();
-        // MM-92.AC7.5
         assert!(config.admin_token.is_none());
     }
 
     #[test]
     fn signing_key_master_key_is_optional() {
         let config = validate_and_build(minimal_raw()).unwrap();
-        // MM-92.AC7.5
         assert!(config.signing_key_master_key.is_none());
     }
 
     #[test]
     fn env_override_admin_token() {
-        // MM-92.AC7.1
         let env = HashMap::from([("EZPDS_ADMIN_TOKEN".to_string(), "secret-token".to_string())]);
         let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
         let config = validate_and_build(raw).unwrap();
@@ -772,7 +769,7 @@ mod tests {
 
     #[test]
     fn env_override_signing_key_master_key_valid_hex() {
-        // MM-92.AC7.2: 64 valid hex chars → [u8; 32]
+        // 64 valid hex chars → [u8; 32]
         let hex_key = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
         let env = HashMap::from([(
             "EZPDS_SIGNING_KEY_MASTER_KEY".to_string(),
@@ -794,7 +791,7 @@ mod tests {
 
     #[test]
     fn env_override_signing_key_master_key_wrong_length_returns_error() {
-        // MM-92.AC7.3: 62 hex chars (31 bytes) — wrong length
+        // 62 hex chars (31 bytes) — wrong length
         let short_key = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
         let env = HashMap::from([(
             "EZPDS_SIGNING_KEY_MASTER_KEY".to_string(),
@@ -807,7 +804,7 @@ mod tests {
 
     #[test]
     fn env_override_signing_key_master_key_non_hex_returns_error() {
-        // MM-92.AC7.4: contains 'g' which is not a valid hex character
+        // contains 'g' which is not a valid hex character
         let invalid_key = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1fgg";
         let env = HashMap::from([(
             "EZPDS_SIGNING_KEY_MASTER_KEY".to_string(),

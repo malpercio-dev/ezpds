@@ -184,7 +184,7 @@ mod tests {
         assert_eq!(keypair.private_key_bytes.len(), 32);
     }
 
-    /// MM-92.AC3.1: Round-trip encrypt → decrypt returns original bytes.
+    /// Round-trip encrypt → decrypt returns original bytes.
     #[test]
     fn encrypt_decrypt_round_trip() {
         let master_key = [0xab_u8; 32];
@@ -196,7 +196,7 @@ mod tests {
         assert_eq!(*decrypted, private_key);
     }
 
-    /// MM-92.AC3.2: Wrong master key returns CryptoError::Decryption.
+    /// Wrong master key returns CryptoError::Decryption.
     #[test]
     fn decrypt_with_wrong_master_key_fails() {
         let master_key = [0xab_u8; 32];
@@ -212,7 +212,7 @@ mod tests {
         );
     }
 
-    /// MM-92.AC3.3: Malformed base64 returns CryptoError::Decryption.
+    /// Malformed base64 returns CryptoError::Decryption.
     #[test]
     fn decrypt_invalid_base64_fails() {
         let master_key = [0xab_u8; 32];
@@ -221,7 +221,7 @@ mod tests {
         assert!(matches!(result, Err(CryptoError::Decryption(_))));
     }
 
-    /// MM-92.AC3.3 (variant): Base64 that decodes but is wrong length.
+    /// Base64 that decodes but is wrong length.
     #[test]
     fn decrypt_wrong_length_fails() {
         let master_key = [0xab_u8; 32];
@@ -231,7 +231,7 @@ mod tests {
         assert!(matches!(result, Err(CryptoError::Decryption(_))));
     }
 
-    /// MM-92.AC3.4: Two encryptions of the same key produce different ciphertexts (random nonce).
+    /// Two encryptions of the same key produce different ciphertexts (random nonce).
     #[test]
     fn encrypt_produces_different_ciphertexts_for_same_input() {
         let master_key = [0xab_u8; 32];

@@ -147,7 +147,6 @@ mod tests {
 
     #[tokio::test]
     async fn create_signing_key_returns_200_with_key_fields() {
-        // MM-92.AC1.1
         let response = app(test_state_with_keys().await)
             .oneshot(post_keys(
                 r#"{"algorithm": "p256"}"#,
@@ -163,12 +162,11 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json["keyId"].is_string(), "keyId must be present");
         assert!(json["publicKey"].is_string(), "publicKey must be present");
-        assert_eq!(json["algorithm"], "p256"); // MM-92.AC1.4
+        assert_eq!(json["algorithm"], "p256");
     }
 
     #[tokio::test]
     async fn key_id_is_did_key_uri() {
-        // MM-92.AC1.2
         let response = app(test_state_with_keys().await)
             .oneshot(post_keys(
                 r#"{"algorithm": "p256"}"#,
@@ -190,7 +188,6 @@ mod tests {
 
     #[tokio::test]
     async fn public_key_is_multibase_base58btc() {
-        // MM-92.AC1.3
         let response = app(test_state_with_keys().await)
             .oneshot(post_keys(
                 r#"{"algorithm": "p256"}"#,
@@ -216,7 +213,6 @@ mod tests {
 
     #[tokio::test]
     async fn response_has_no_private_key_field() {
-        // MM-92.AC2.1
         let response = app(test_state_with_keys().await)
             .oneshot(post_keys(
                 r#"{"algorithm": "p256"}"#,
@@ -241,7 +237,6 @@ mod tests {
 
     #[tokio::test]
     async fn row_persisted_in_db_with_encrypted_private_key() {
-        // MM-92.AC1.5, MM-92.AC2.2
         let state = test_state_with_keys().await;
         let db = state.db.clone();
 
@@ -289,7 +284,6 @@ mod tests {
 
     #[tokio::test]
     async fn missing_authorization_header_returns_401() {
-        // MM-92.AC4.1
         let response = app(test_state_with_keys().await)
             .oneshot(post_keys(r#"{"algorithm": "p256"}"#, None))
             .await
@@ -299,7 +293,6 @@ mod tests {
 
     #[tokio::test]
     async fn wrong_bearer_token_returns_401() {
-        // MM-92.AC4.2
         let response = app(test_state_with_keys().await)
             .oneshot(post_keys(r#"{"algorithm": "p256"}"#, Some("wrong-token")))
             .await
@@ -309,7 +302,7 @@ mod tests {
 
     #[tokio::test]
     async fn bare_token_without_bearer_prefix_returns_401() {
-        // MM-92.AC4.3: Authorization header present but "Bearer " prefix missing
+        // Authorization header present but "Bearer " prefix missing
         let request = Request::builder()
             .method("POST")
             .uri("/v1/relay/keys")
@@ -329,7 +322,6 @@ mod tests {
 
     #[tokio::test]
     async fn unsupported_algorithm_returns_422() {
-        // MM-92.AC5.1: serde rejects unknown enum variant with 422 Unprocessable Entity
         let response = app(test_state_with_keys().await)
             .oneshot(post_keys(
                 r#"{"algorithm": "k256"}"#,
@@ -342,7 +334,6 @@ mod tests {
 
     #[tokio::test]
     async fn empty_algorithm_returns_422() {
-        // MM-92.AC5.2: serde rejects empty string for enum variant with 422 Unprocessable Entity
         let response = app(test_state_with_keys().await)
             .oneshot(post_keys(r#"{"algorithm": ""}"#, Some("test-admin-token")))
             .await
@@ -352,7 +343,6 @@ mod tests {
 
     #[tokio::test]
     async fn missing_algorithm_field_returns_422() {
-        // MM-92.AC5.3: missing required field returns 422 Unprocessable Entity
         let response = app(test_state_with_keys().await)
             .oneshot(post_keys(r#"{}"#, Some("test-admin-token")))
             .await
@@ -379,7 +369,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_master_key_returns_503() {
-        // MM-92.AC6.1: valid Bearer token, but signing_key_master_key not configured → 503
+        // signing_key_master_key not configured → 503
         let base = test_state().await;
         let mut config = (*base.config).clone();
         config.admin_token = Some("test-admin-token".to_string());

@@ -85,7 +85,7 @@ pub struct AppState {
     pub http_client: Client,
     /// Optional DNS provider for subdomain record creation on handle registration.
     /// `None` in v0.1 — operators manage DNS records manually.
-    /// Wired in by MM-142 (DNS provider integration).
+    /// Populated by real provider implementations (Cloudflare, Route53) when configured.
     pub dns_provider: Option<Arc<dyn DnsProvider>>,
     /// Optional DNS TXT resolver for handle resolution fallback.
     /// When `None`, `resolveHandle` skips DNS and returns `HandleNotFound` for

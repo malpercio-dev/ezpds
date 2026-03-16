@@ -48,7 +48,7 @@ pub fn combine_shares(&ShamirShare, &ShamirShare) -> Result<Zeroizing<[u8; 32]>,
 - Reconstructs secret from 2 distinct shares (indices [1,3])
 - Returns `CryptoError::SecretReconstruction` if indices are duplicate or out of range
 
-**`build_did_plc_genesis_op`** (new, MM-89)
+**`build_did_plc_genesis_op`**
 ```rust
 pub fn build_did_plc_genesis_op(
     rotation_key: &DidKeyUri,       // user's root rotation key (rotationKeys[0])
@@ -65,7 +65,7 @@ pub fn build_did_plc_genesis_op(
 - Deterministic: same inputs → same DID (RFC 6979 ECDSA + SHA-256 + base32)
 - Errors: `CryptoError::PlcOperation` if `signing_private_key` is an invalid P-256 scalar
 
-**`verify_genesis_op`** (new, MM-90)
+**`verify_genesis_op`**
 ```rust
 pub fn verify_genesis_op(
     signed_op_json: &str,           // JSON-encoded signed genesis op from client
@@ -85,11 +85,11 @@ pub fn verify_genesis_op(
 - `public_key`: multibase base58btc compressed point (no prefix)
 - `private_key_bytes`: `Zeroizing<[u8; 32]>` (zeroized on drop)
 
-**`PlcGenesisOp`** (new, MM-89)
+**`PlcGenesisOp`**
 - `did`: `"did:plc:xxxx..."` (28 chars total)
 - `signed_op_json`: contains `type`, `rotationKeys`, `verificationMethods`, `alsoKnownAs`, `services`, `prev` (null), `sig`
 
-**`VerifiedGenesisOp`** (new, MM-90)
+**`VerifiedGenesisOp`**
 - `did`: derived DID string
 - `rotation_keys`: full `rotationKeys` array from the op
 - `also_known_as`: full `alsoKnownAs` array from the op
@@ -101,7 +101,7 @@ pub fn verify_genesis_op(
 - `data`: `Zeroizing<[u8; 32]>` (zeroized on drop)
 
 **`CryptoError`** variants:
-- `KeyGeneration`, `Encryption`, `Decryption`, `SecretSharing`, `SecretReconstruction`, `PlcOperation` (new, MM-89)
+- `KeyGeneration`, `Encryption`, `Decryption`, `SecretSharing`, `SecretReconstruction`, `PlcOperation`
 
 ### Format guarantees
 
@@ -125,6 +125,6 @@ pub fn verify_genesis_op(
 ## Key Files
 - `src/lib.rs` - Re-exports public API
 - `src/keys.rs` - P-256 key generation, AES-256-GCM encrypt/decrypt
-- `src/plc.rs` - did:plc genesis operation builder (MM-89) and verifier (MM-90)
+- `src/plc.rs` - did:plc genesis operation builder and verifier
 - `src/shamir.rs` - Shamir Secret Sharing (split/combine, GF(2^8) arithmetic)
 - `src/error.rs` - CryptoError enum

@@ -314,7 +314,6 @@ mod tests {
 
     #[tokio::test]
     async fn returns_201_with_correct_shape() {
-        // MM-83.AC1: POST creates account and returns claim code
         let response = app(test_state_with_admin_token().await)
             .oneshot(post_create_account(
                 r#"{"email":"alice@example.com","handle":"alice.example.com","tier":"free"}"#,
@@ -342,7 +341,6 @@ mod tests {
 
     #[tokio::test]
     async fn claim_code_is_6_char_uppercase_alphanumeric() {
-        // MM-83.AC1: claim code format
         let response = app(test_state_with_admin_token().await)
             .oneshot(post_create_account(
                 r#"{"email":"bob@example.com","handle":"bob.example.com","tier":"pro"}"#,
@@ -366,7 +364,6 @@ mod tests {
 
     #[tokio::test]
     async fn records_persisted_in_db() {
-        // MM-83.AC1: account and claim code stored in DB
         let state = test_state_with_admin_token().await;
         let db = state.db.clone();
 
@@ -419,7 +416,6 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_email_in_pending_returns_409() {
-        // MM-83.AC2: duplicate email returns 409 Conflict
         let state = test_state_with_admin_token().await;
         let app = app(state);
 
@@ -450,7 +446,7 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_email_in_accounts_returns_409() {
-        // MM-83.AC2: email already used by a fully-provisioned account also returns 409
+        // email already used by a fully-provisioned account also returns 409
         let state = test_state_with_admin_token().await;
 
         // Seed a fully-provisioned account directly.
@@ -550,7 +546,6 @@ mod tests {
 
     #[tokio::test]
     async fn empty_handle_returns_400() {
-        // MM-83.AC3: invalid handle format returns 400
         let response = app(test_state_with_admin_token().await)
             .oneshot(post_create_account(
                 r#"{"email":"x@example.com","handle":"","tier":"free"}"#,
@@ -652,7 +647,6 @@ mod tests {
 
     #[tokio::test]
     async fn missing_authorization_header_returns_401() {
-        // MM-83.AC auth
         let response = app(test_state_with_admin_token().await)
             .oneshot(post_create_account(
                 r#"{"email":"x@example.com","handle":"x.example.com","tier":"free"}"#,

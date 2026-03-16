@@ -383,7 +383,7 @@ mod tests {
         )
     }
 
-    /// MM-89.AC1.1: did matches ^did:plc:[a-z2-7]{24}$
+    /// did matches ^did:plc:[a-z2-7]{24}$
     #[test]
     fn did_matches_expected_format() {
         let (_, _, _, op) = make_genesis_op();
@@ -401,7 +401,7 @@ mod tests {
         );
     }
 
-    /// MM-89.AC1.2: signed_op_json contains all required fields with correct values
+    /// signed_op_json contains all required fields with correct values
     #[test]
     fn signed_op_json_contains_required_fields() {
         let (_, _, _, op) = make_genesis_op();
@@ -419,7 +419,7 @@ mod tests {
         assert!(v["sig"].is_string(), "sig is string");
     }
 
-    /// MM-89.AC1.3: rotation_key at rotationKeys[0]; signing_key at rotationKeys[1] and verificationMethods.atproto
+    /// rotation_key at rotationKeys[0]; signing_key at rotationKeys[1] and verificationMethods.atproto
     #[test]
     fn keys_placed_in_correct_positions() {
         let (rotation_key, signing_key, _, op) = make_genesis_op();
@@ -441,7 +441,7 @@ mod tests {
         );
     }
 
-    /// MM-89.AC1.4: RFC 6979 determinism — same inputs produce same DID
+    /// RFC 6979 determinism — same inputs produce same DID
     #[test]
     fn same_inputs_produce_same_did() {
         let rotation_kp = generate_p256_keypair().expect("rotation keypair");
@@ -473,7 +473,7 @@ mod tests {
         );
     }
 
-    /// MM-89.AC1.5: Invalid signing key (all-zero scalar) returns CryptoError::PlcOperation
+    /// Invalid signing key (all-zero scalar) returns CryptoError::PlcOperation
     #[test]
     fn invalid_signing_key_returns_error() {
         let rotation_kp = generate_p256_keypair().expect("rotation keypair");
@@ -494,7 +494,7 @@ mod tests {
         );
     }
 
-    /// MM-89.AC3.2: sig field is base64url (no padding) decoding to exactly 64 bytes
+    /// sig field is base64url (no padding) decoding to exactly 64 bytes
     #[test]
     fn sig_field_is_base64url_no_padding_and_64_bytes() {
         let (_, _, _, op) = make_genesis_op();
@@ -518,7 +518,7 @@ mod tests {
         );
     }
 
-    /// MM-89.AC3.3: alsoKnownAs contains at://{handle}
+    /// alsoKnownAs contains at://{handle}
     #[test]
     fn also_known_as_contains_at_uri() {
         let rotation_kp = generate_p256_keypair().expect("rotation keypair");
@@ -544,9 +544,9 @@ mod tests {
         );
     }
 
-    // ── MM-90 verify_genesis_op tests ──────────────────────────────────────────
+    // ── verify_genesis_op tests ────────────────────────────────────────────────
 
-    /// Returns (signing_key_uri, PlcGenesisOp) for MM-90 verification tests.
+    /// Returns (signing_key_uri, PlcGenesisOp) for verify_genesis_op tests.
     /// build_did_plc_genesis_op signs with signing_key_bytes; verify_genesis_op
     /// must receive signing_kp.key_id as its rotation_key argument.
     fn make_op_for_verify() -> (DidKeyUri, PlcGenesisOp) {
@@ -564,7 +564,7 @@ mod tests {
         (signing_kp.key_id, op)
     }
 
-    /// MM-90.AC1.1: verify_genesis_op returns correct fields
+    /// verify_genesis_op returns correct fields
     #[test]
     fn verify_valid_op_returns_correct_fields() {
         let (signing_key, op) = make_op_for_verify();
@@ -599,7 +599,7 @@ mod tests {
         );
     }
 
-    /// MM-90.AC1.2: DID from verify_genesis_op matches build_did_plc_genesis_op
+    /// DID from verify_genesis_op matches build_did_plc_genesis_op
     #[test]
     fn verify_did_matches_build_did_plc_genesis_op() {
         let (signing_key, genesis_op) = make_op_for_verify();
@@ -614,7 +614,7 @@ mod tests {
         );
     }
 
-    /// MM-90.AC1.3: Signature verification fails with wrong rotation key
+    /// Signature verification fails with wrong rotation key
     #[test]
     fn verify_wrong_rotation_key_returns_error() {
         let (_, op) = make_op_for_verify();
@@ -628,7 +628,7 @@ mod tests {
         );
     }
 
-    /// MM-90.AC1.4: Corrupted signature returns error
+    /// Corrupted signature returns error
     #[test]
     fn verify_corrupted_signature_returns_error() {
         let (signing_key, op) = make_op_for_verify();
@@ -653,7 +653,7 @@ mod tests {
         );
     }
 
-    /// MM-90.AC1.5: Unknown fields in JSON are rejected
+    /// Unknown fields in JSON are rejected
     #[test]
     fn verify_unknown_fields_returns_error() {
         let (signing_key, op) = make_op_for_verify();
@@ -672,7 +672,7 @@ mod tests {
         );
     }
 
-    /// MM-90.AC2.1: Rotation op (prev != null) is rejected
+    /// Rotation op (prev != null) is rejected
     #[test]
     fn verify_rotation_op_with_non_null_prev_returns_error() {
         let (signing_key, op) = make_op_for_verify();
@@ -691,7 +691,7 @@ mod tests {
         );
     }
 
-    /// MM-90.AC2.2: Non-genesis op_type is rejected
+    /// Non-genesis op_type is rejected
     #[test]
     fn verify_non_genesis_op_type_returns_error() {
         let (signing_key, op) = make_op_for_verify();
@@ -710,7 +710,7 @@ mod tests {
         );
     }
 
-    /// MM-90.AC3: Canonical usage pattern — rotation key signs and appears at rotationKeys[0].
+    /// Canonical usage pattern — rotation key signs and appears at rotationKeys[0].
     /// The same keypair is both the rotation key and the signing key.
     #[test]
     fn verify_rotation_key_can_verify_own_op() {

@@ -2,7 +2,7 @@
 //
 // DnsProvider — creates DNS records when handles are registered (POST /v1/handles).
 //   For v0.1, AppState carries `dns_provider: None`; operators manage DNS manually.
-//   MM-142 wires in real provider implementations (Cloudflare, Route53).
+//   Real provider implementations (Cloudflare, Route53) are wired in when configured.
 //
 // TxtResolver — resolves DNS TXT records for handle lookup fallback
 //   (GET /xrpc/com.atproto.identity.resolveHandle).

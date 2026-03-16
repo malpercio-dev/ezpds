@@ -261,7 +261,6 @@ mod tests {
 
     #[tokio::test]
     async fn returns_201_with_correct_shape() {
-        // MM-87.AC1: valid claim code registers device and returns credentials
         let state = test_state().await;
         let (_, claim_code) = seed_pending_account(&state.db).await;
 
@@ -351,7 +350,7 @@ mod tests {
 
     #[tokio::test]
     async fn account_id_matches_pending_account() {
-        // MM-87.AC1: returned account_id matches the pending account bound to the claim code
+        // returned account_id matches the pending account bound to the claim code
         let state = test_state().await;
         let (expected_account_id, claim_code) = seed_pending_account(&state.db).await;
 
@@ -373,7 +372,6 @@ mod tests {
 
     #[tokio::test]
     async fn device_persisted_in_db() {
-        // MM-87.AC3: device appears in account's device list after registration
         let state = test_state().await;
         let db = state.db.clone();
         let (account_id, claim_code) = seed_pending_account(&state.db).await;
@@ -454,7 +452,7 @@ mod tests {
 
     #[tokio::test]
     async fn claim_code_marked_redeemed_after_registration() {
-        // MM-87 requirement: claim code is single-use; marked redeemed on success
+        // claim code is single-use; marked redeemed on success
         let state = test_state().await;
         let db = state.db.clone();
         let (_, claim_code) = seed_pending_account(&state.db).await;
@@ -532,7 +530,6 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_claim_code_returns_400() {
-        // MM-87.AC2: invalid code returns error
         let response = app(test_state().await)
             .oneshot(post_register_device(
                 r#"{"claimCode":"ZZZZZZ","devicePublicKey":"dGVzdC1rZXk=","platform":"ios"}"#,
@@ -550,7 +547,6 @@ mod tests {
 
     #[tokio::test]
     async fn expired_claim_code_returns_400() {
-        // MM-87.AC2: expired code returns error
         let state = test_state().await;
         let account_id = uuid::Uuid::new_v4().to_string();
         let claim_code = "EXPIRD1";
@@ -592,7 +588,7 @@ mod tests {
 
     #[tokio::test]
     async fn already_redeemed_claim_code_returns_400() {
-        // MM-87 requirement: claim code is single-use; second use returns error
+        // claim code is single-use; second use returns error
         let state = test_state().await;
         let (_, claim_code) = seed_pending_account(&state.db).await;
 
@@ -626,7 +622,7 @@ mod tests {
 
     #[tokio::test]
     async fn all_valid_platforms_accepted() {
-        // MM-87 requirement: platform validation (ios, android, macos, linux, windows)
+        // platform validation (ios, android, macos, linux, windows)
         for platform in ["ios", "android", "macos", "linux", "windows"] {
             let state = test_state().await;
             let (_, claim_code) = seed_pending_account(&state.db).await;
