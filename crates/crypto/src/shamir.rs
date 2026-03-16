@@ -168,7 +168,7 @@ fn gf_div(a: u8, b: u8) -> Result<u8, CryptoError> {
 mod tests {
     use super::*;
 
-    // ── AC: Splitting a 32-byte secret produces 3 shares ─────────────────────
+    // ── Splitting a 32-byte secret produces 3 shares ──────────────────────────
 
     #[test]
     fn split_shares_have_correct_indices() {
@@ -188,7 +188,7 @@ mod tests {
         }
     }
 
-    // ── AC: Any 2 shares reconstruct the original secret ─────────────────────
+    // ── Any 2 shares reconstruct the original secret ──────────────────────────
 
     #[test]
     fn combine_shares_1_and_2_reconstructs_secret() {
@@ -252,7 +252,7 @@ mod tests {
         }
     }
 
-    // ── AC: Single share reveals nothing ─────────────────────────────────────
+    // ── Single share reveals nothing ───────────────────────────────────────────
 
     /// Sanity check: with overwhelming probability, share data ≠ plaintext.
     /// (Not a proof of information-theoretic security; the math guarantees that.)

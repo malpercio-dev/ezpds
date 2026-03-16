@@ -149,6 +149,15 @@ pub struct VerifiedGenesisOp {
 /// # Errors
 /// Returns `CryptoError::PlcOperation` if `signing_private_key` is not a valid P-256 scalar
 /// (e.g. all-zero bytes, or a value ≥ the curve order).
+/// RFC 4648 base32 with lowercase symbols (a-z, 2-7).
+/// Used by the did:plc spec to derive the DID from a SHA-256 hash.
+fn base32_lowercase() -> Result<data_encoding::Encoding, CryptoError> {
+    let mut spec = data_encoding::Specification::new();
+    spec.symbols.push_str("abcdefghijklmnopqrstuvwxyz234567");
+    spec.encoding()
+        .map_err(|e| CryptoError::PlcOperation(format!("build base32 encoding: {e}")))
+}
+
 pub fn build_did_plc_genesis_op(
     rotation_key: &DidKeyUri,
     signing_key: &DidKeyUri,
@@ -216,13 +225,7 @@ pub fn build_did_plc_genesis_op(
     let hash = Sha256::digest(&signed_cbor);
 
     // Step 9: base32-lowercase, take first 24 characters.
-    let base32_encoding = {
-        let mut spec = data_encoding::Specification::new();
-        spec.symbols.push_str("abcdefghijklmnopqrstuvwxyz234567");
-        spec.encoding()
-            .map_err(|e| CryptoError::PlcOperation(format!("build base32 encoding: {e}")))?
-    };
-    let encoded = base32_encoding.encode(hash.as_ref());
+    let encoded = base32_lowercase()?.encode(hash.as_ref());
     let did = format!("did:plc:{}", &encoded[..24]);
 
     // Step 10: JSON-serialize the signed operation.
@@ -330,13 +333,7 @@ pub fn verify_genesis_op(
         .map_err(|e| CryptoError::PlcOperation(format!("cbor encode signed op: {e}")))?;
 
     let hash = Sha256::digest(&signed_cbor);
-    let base32_encoding = {
-        let mut spec = data_encoding::Specification::new();
-        spec.symbols.push_str("abcdefghijklmnopqrstuvwxyz234567");
-        spec.encoding()
-            .map_err(|e| CryptoError::PlcOperation(format!("build base32 encoding: {e}")))?
-    };
-    let encoded = base32_encoding.encode(hash.as_ref());
+    let encoded = base32_lowercase()?.encode(hash.as_ref());
     let did = format!("did:plc:{}", &encoded[..24]);
 
     // Step 10: Extract atproto_pds endpoint from services map.

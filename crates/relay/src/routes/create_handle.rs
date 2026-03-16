@@ -74,10 +74,8 @@ pub async fn create_handle_handler(
         .execute(&state.db)
         .await
         .map_err(|e| {
-            if let sqlx::Error::Database(db_err) = &e {
-                if db_err.is_unique_violation() {
-                    return ApiError::new(ErrorCode::HandleTaken, "handle is already taken");
-                }
+            if crate::db::is_unique_violation(&e) {
+                return ApiError::new(ErrorCode::HandleTaken, "handle is already taken");
             }
             tracing::error!(error = %e, "failed to insert handle");
             ApiError::new(ErrorCode::InternalError, "failed to register handle")
@@ -165,13 +163,11 @@ fn validate_handle<'a>(
 mod tests {
     use super::*;
     use crate::app::test_state;
+    use crate::routes::token::generate_token;
     use axum::{
         body::Body,
         http::{Request, StatusCode},
     };
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-    use rand_core::{OsRng, RngCore};
-    use sha2::{Digest, Sha256};
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::Arc;
@@ -317,13 +313,7 @@ mod tests {
         .await
         .expect("insert account");
 
-        let mut token_bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut token_bytes);
-        let session_token = URL_SAFE_NO_PAD.encode(token_bytes);
-        let token_hash: String = Sha256::digest(token_bytes)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let token = generate_token();
 
         sqlx::query(
             "INSERT INTO sessions (id, did, device_id, token_hash, created_at, expires_at) \
@@ -331,12 +321,15 @@ mod tests {
         )
         .bind(Uuid::new_v4().to_string())
         .bind(&did)
-        .bind(&token_hash)
+        .bind(&token.hash)
         .execute(db)
         .await
         .expect("insert session");
 
-        TestSession { did, session_token }
+        TestSession {
+            did,
+            session_token: token.plaintext,
+        }
     }
 
     fn create_handle_request(session_token: &str, account_id: &str, handle: &str) -> Request<Body> {

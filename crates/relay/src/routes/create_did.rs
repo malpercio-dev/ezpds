@@ -42,21 +42,13 @@
 //                     502 PLC_DIRECTORY_ERROR, 500 INTERNAL_ERROR
 
 use axum::{extract::State, http::HeaderMap, Json};
-use rand_core::RngCore;
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
+use crate::db::is_unique_violation;
 use crate::routes::auth::require_pending_session;
+use crate::routes::token::generate_token;
 use common::{ApiError, ErrorCode};
-
-/// Check if a sqlx::Error is a UNIQUE constraint violation.
-fn is_unique_violation(e: &sqlx::Error) -> bool {
-    matches!(
-        e,
-        sqlx::Error::Database(db_err)
-            if db_err.kind() == sqlx::error::ErrorKind::UniqueViolation
-    )
-}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -78,21 +70,86 @@ pub async fn create_did_handler(
     headers: HeaderMap,
     Json(payload): Json<CreateDidRequest>,
 ) -> Result<Json<CreateDidResponse>, ApiError> {
-    // Step 1: Authenticate via pending_session Bearer token.
+    // Phase 1: Authenticate and load pending account.
     let session = require_pending_session(&headers, &state.db).await?;
+    let pending = load_pending_account(&state.db, &session.account_id).await?;
 
-    // Step 2: Load pending account details.
+    // Phase 2: Verify the genesis op and validate it against account + server config.
+    let (verified, signed_op_str) =
+        verify_and_validate_genesis_op(&payload, &pending.handle, &state.config.public_url)?;
+    let did = &verified.did;
+
+    // Phase 3: Pre-store DID for retry resilience, then POST to plc.directory.
+    let skip_plc = pre_store_did(&state.db, &session.account_id, did, &pending.pending_did).await?;
+    check_already_promoted(&state.db, did).await?;
+    if !skip_plc {
+        post_to_plc_directory(
+            &state.http_client,
+            &state.config.plc_directory_url,
+            did,
+            &signed_op_str,
+        )
+        .await?;
+    }
+
+    // Phase 4: Build DID document, generate session, atomically promote.
+    let did_document = build_did_document(&verified)?;
+    let session_token = generate_token();
+    promote_account(
+        &state.db,
+        did,
+        &pending.email,
+        &session.account_id,
+        &did_document,
+        &session_token.hash,
+    )
+    .await?;
+
+    Ok(Json(CreateDidResponse {
+        did: did.clone(),
+        did_document,
+        status: "active",
+        session_token: session_token.plaintext,
+    }))
+}
+
+// ── Phase helpers ─────────────────────────────────────────────────────────────
+
+struct PendingAccount {
+    handle: String,
+    pending_did: Option<String>,
+    email: String,
+}
+
+/// Load pending account details (Step 2).
+async fn load_pending_account(
+    db: &sqlx::SqlitePool,
+    account_id: &str,
+) -> Result<PendingAccount, ApiError> {
     let (handle, pending_did, email): (String, Option<String>, String) =
         sqlx::query_as("SELECT handle, pending_did, email FROM pending_accounts WHERE id = ?")
-            .bind(&session.account_id)
-            .fetch_optional(&state.db)
+            .bind(account_id)
+            .fetch_optional(db)
             .await
             .map_err(|e| {
                 tracing::error!(error = %e, "failed to query pending account");
                 ApiError::new(ErrorCode::InternalError, "failed to load account")
             })?
             .ok_or_else(|| ApiError::new(ErrorCode::Unauthorized, "account not found"))?;
+    Ok(PendingAccount {
+        handle,
+        pending_did,
+        email,
+    })
+}
 
+/// Validate the rotation key format, verify the genesis op signature, and check
+/// that the op fields match the account handle and server config (Steps 3-6).
+fn verify_and_validate_genesis_op(
+    payload: &CreateDidRequest,
+    handle: &str,
+    public_url: &str,
+) -> Result<(crypto::VerifiedGenesisOp, String), ApiError> {
     // Step 3: Validate rotationKeyPublic format.
     if !payload.rotation_key_public.starts_with("did:key:z") {
         return Err(ApiError::new(
@@ -139,17 +196,26 @@ pub async fn create_did_handler(
             "alsoKnownAs[0] in op does not match account handle",
         ));
     }
-    if verified.atproto_pds_endpoint.as_deref() != Some(&state.config.public_url) {
+    if verified.atproto_pds_endpoint.as_deref() != Some(public_url) {
         return Err(ApiError::new(
             ErrorCode::InvalidClaim,
             "services.atproto_pds.endpoint in op does not match server public URL",
         ));
     }
 
-    let did = &verified.did;
+    Ok((verified, signed_op_str))
+}
 
-    // Step 7: Pre-store the DID for retry resilience.
-    let skip_plc_directory = if let Some(pre_stored_did) = &pending_did {
+/// Pre-store the DID in pending_accounts for retry resilience (Step 7).
+///
+/// Returns `true` if a previous attempt already stored this DID (skip plc.directory).
+async fn pre_store_did(
+    db: &sqlx::SqlitePool,
+    account_id: &str,
+    did: &str,
+    pending_did: &Option<String>,
+) -> Result<bool, ApiError> {
+    if let Some(pre_stored_did) = pending_did {
         if did != pre_stored_did {
             tracing::error!(
                 derived_did = %did,
@@ -162,32 +228,35 @@ pub async fn create_did_handler(
             ));
         }
         tracing::info!(did = %pre_stored_did, "retry detected: pending_did already set, skipping plc.directory");
-        true
-    } else {
-        let result = sqlx::query("UPDATE pending_accounts SET pending_did = ? WHERE id = ?")
-            .bind(did)
-            .bind(&session.account_id)
-            .execute(&state.db)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "failed to pre-store pending_did");
-                ApiError::new(ErrorCode::InternalError, "failed to store pending DID")
-            })?;
-        if result.rows_affected() == 0 {
-            tracing::error!(account_id = %session.account_id, "pending account row vanished during DID pre-store");
-            return Err(ApiError::new(
-                ErrorCode::InternalError,
-                "account no longer exists",
-            ));
-        }
-        false
-    };
+        return Ok(true);
+    }
 
-    // Step 8: Check if the account is already fully promoted (idempotency guard).
+    let result = sqlx::query("UPDATE pending_accounts SET pending_did = ? WHERE id = ?")
+        .bind(did)
+        .bind(account_id)
+        .execute(db)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to pre-store pending_did");
+            ApiError::new(ErrorCode::InternalError, "failed to store pending DID")
+        })?;
+
+    if result.rows_affected() == 0 {
+        tracing::error!(account_id = %account_id, "pending account row vanished during DID pre-store");
+        return Err(ApiError::new(
+            ErrorCode::InternalError,
+            "account no longer exists",
+        ));
+    }
+    Ok(false)
+}
+
+/// Check if the DID is already fully promoted (Step 8).
+async fn check_already_promoted(db: &sqlx::SqlitePool, did: &str) -> Result<(), ApiError> {
     let already_promoted: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM accounts WHERE did = ?)")
             .bind(did)
-            .fetch_one(&state.db)
+            .fetch_one(db)
             .await
             .map_err(|e| {
                 tracing::error!(error = %e, "failed to check accounts existence");
@@ -200,70 +269,69 @@ pub async fn create_did_handler(
             "DID is already fully promoted",
         ));
     }
+    Ok(())
+}
 
-    // Step 9: POST the signed genesis operation to plc.directory (skipped on retry).
-    if !skip_plc_directory {
-        let plc_url = format!("{}/{}", state.config.plc_directory_url, did);
-        let response = state
-            .http_client
-            .post(&plc_url)
-            .body(signed_op_str.clone())
-            .header("Content-Type", "application/json")
-            .send()
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, plc_url = %plc_url, "failed to contact plc.directory");
-                ApiError::new(
-                    ErrorCode::PlcDirectoryError,
-                    "failed to contact plc.directory",
-                )
-            })?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "<failed to read body>".to_string());
-            tracing::error!(
-                status = %status,
-                body = %body_text,
-                "plc.directory rejected genesis operation"
-            );
-            return Err(ApiError::new(
+/// POST the signed genesis operation to plc.directory (Step 9).
+async fn post_to_plc_directory(
+    http_client: &reqwest::Client,
+    plc_directory_url: &str,
+    did: &str,
+    signed_op_str: &str,
+) -> Result<(), ApiError> {
+    let plc_url = format!("{plc_directory_url}/{did}");
+    let response = http_client
+        .post(&plc_url)
+        .body(signed_op_str.to_string())
+        .header("Content-Type", "application/json")
+        .send()
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, plc_url = %plc_url, "failed to contact plc.directory");
+            ApiError::new(
                 ErrorCode::PlcDirectoryError,
-                format!("plc.directory returned {status}"),
-            ));
-        }
-    }
+                "failed to contact plc.directory",
+            )
+        })?;
 
-    // Step 10: Build the DID document from verified op fields.
-    let did_document = build_did_document(&verified)?;
-    let did_document_str = serde_json::to_string(&did_document).map_err(|e| {
+    if !response.status().is_success() {
+        let status = response.status();
+        let body_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "<failed to read body>".to_string());
+        tracing::error!(
+            status = %status,
+            body = %body_text,
+            "plc.directory rejected genesis operation"
+        );
+        return Err(ApiError::new(
+            ErrorCode::PlcDirectoryError,
+            format!("plc.directory returned {status}"),
+        ));
+    }
+    Ok(())
+}
+
+/// Atomically promote a pending account to a full account (Steps 10-12).
+///
+/// In a single transaction: INSERT accounts + did_documents + sessions,
+/// then DELETE pending_sessions + devices + pending_accounts.
+async fn promote_account(
+    db: &sqlx::SqlitePool,
+    did: &str,
+    email: &str,
+    account_id: &str,
+    did_document: &serde_json::Value,
+    token_hash: &str,
+) -> Result<(), ApiError> {
+    let did_document_str = serde_json::to_string(did_document).map_err(|e| {
         tracing::error!(error = %e, "failed to serialize DID document");
         ApiError::new(ErrorCode::InternalError, "failed to serialize DID document")
     })?;
-
-    // Step 11: Generate session token before entering the transaction so it can be
-    // returned in the response regardless of which transaction path commits.
-    let mut token_bytes = [0u8; 32];
-    rand_core::OsRng.fill_bytes(&mut token_bytes);
-    let session_token = {
-        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-        URL_SAFE_NO_PAD.encode(token_bytes)
-    };
-    let token_hash: String = {
-        use sha2::{Digest, Sha256};
-        Sha256::digest(token_bytes)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect()
-    };
     let session_id = uuid::Uuid::new_v4().to_string();
 
-    // Step 12: Atomically promote the account.
-    let mut tx = state
-        .db
+    let mut tx = db
         .begin()
         .await
         .inspect_err(|e| tracing::error!(error = %e, "failed to begin promotion transaction"))
@@ -274,7 +342,7 @@ pub async fn create_did_handler(
          VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
     )
     .bind(did)
-    .bind(&email)
+    .bind(email)
     .execute(&mut *tx)
     .await
     .map_err(|e| {
@@ -303,28 +371,28 @@ pub async fn create_did_handler(
     )
     .bind(&session_id)
     .bind(did)
-    .bind(&token_hash)
+    .bind(token_hash)
     .execute(&mut *tx)
     .await
     .inspect_err(|e| tracing::error!(error = %e, "failed to insert session"))
     .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to create session"))?;
 
     sqlx::query("DELETE FROM pending_sessions WHERE account_id = ?")
-        .bind(&session.account_id)
+        .bind(account_id)
         .execute(&mut *tx)
         .await
         .inspect_err(|e| tracing::error!(error = %e, "failed to delete pending sessions"))
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to clean up sessions"))?;
 
     sqlx::query("DELETE FROM devices WHERE account_id = ?")
-        .bind(&session.account_id)
+        .bind(account_id)
         .execute(&mut *tx)
         .await
         .inspect_err(|e| tracing::error!(error = %e, "failed to delete devices"))
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to clean up devices"))?;
 
     sqlx::query("DELETE FROM pending_accounts WHERE id = ?")
-        .bind(&session.account_id)
+        .bind(account_id)
         .execute(&mut *tx)
         .await
         .inspect_err(|e| tracing::error!(error = %e, "failed to delete pending account"))
@@ -335,13 +403,7 @@ pub async fn create_did_handler(
         .inspect_err(|e| tracing::error!(error = %e, "failed to commit promotion transaction"))
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to commit transaction"))?;
 
-    // Step 13: Return the result.
-    Ok(Json(CreateDidResponse {
-        did: did.clone(),
-        did_document,
-        status: "active",
-        session_token,
-    }))
+    Ok(())
 }
 
 /// Construct a minimal DID Core document from a verified genesis operation.
@@ -404,13 +466,11 @@ fn build_did_document(verified: &crypto::VerifiedGenesisOp) -> Result<serde_json
 mod tests {
     use super::*;
     use crate::app::test_state_with_plc_url;
+    use crate::routes::token::generate_token;
     use axum::{
         body::Body,
         http::{Request, StatusCode},
     };
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-    use rand_core::{OsRng, RngCore};
-    use sha2::{Digest, Sha256};
     use tower::ServiceExt; // for `.oneshot()`
     use uuid::Uuid;
     use wiremock::{
@@ -490,13 +550,7 @@ mod tests {
         .await
         .expect("insert device");
 
-        let mut token_bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut token_bytes);
-        let session_token = URL_SAFE_NO_PAD.encode(token_bytes);
-        let token_hash: String = Sha256::digest(token_bytes)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let token = generate_token();
         sqlx::query(
             "INSERT INTO pending_sessions \
              (id, account_id, device_id, token_hash, created_at, expires_at) \
@@ -505,13 +559,13 @@ mod tests {
         .bind(Uuid::new_v4().to_string())
         .bind(&account_id)
         .bind(&device_id)
-        .bind(&token_hash)
+        .bind(&token.hash)
         .execute(db)
         .await
         .expect("insert pending_session");
 
         TestSetup {
-            session_token,
+            session_token: token.plaintext,
             account_id,
             handle,
         }
@@ -655,16 +709,7 @@ mod tests {
 
         // session row created with correct did and matching token_hash
         let session_token_str = body["session_token"].as_str().unwrap();
-        let token_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(session_token_str)
-            .expect("session_token should be valid base64url");
-        let expected_hash: String = {
-            use sha2::{Digest, Sha256};
-            Sha256::digest(&token_bytes)
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect()
-        };
+        let expected_hash = crate::routes::token::hash_bearer_token(session_token_str).unwrap();
         let session_row: Option<(String,)> =
             sqlx::query_as("SELECT did FROM sessions WHERE token_hash = ?")
                 .bind(&expected_hash)
@@ -828,6 +873,7 @@ mod tests {
             make_signed_op(&setup.handle, &state.config.public_url);
 
         // Corrupt the sig: decode, flip one byte, re-encode.
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
         let sig_str = signed_op["sig"].as_str().unwrap().to_string();
         let mut sig_bytes = URL_SAFE_NO_PAD.decode(&sig_str).unwrap();
         sig_bytes[0] ^= 0xff;

@@ -81,8 +81,7 @@ pub async fn require_pending_session(
     headers: &HeaderMap,
     db: &sqlx::SqlitePool,
 ) -> Result<PendingSessionInfo, ApiError> {
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-    use sha2::{Digest, Sha256};
+    use crate::routes::token::hash_bearer_token;
 
     // Extract Bearer token from Authorization header.
     let token = headers
@@ -106,13 +105,7 @@ pub async fn require_pending_session(
 
     // Decode base64url → raw bytes, then SHA-256 hash → hex string.
     // Matches the storage format written by POST /v1/accounts/mobile.
-    let token_bytes = URL_SAFE_NO_PAD
-        .decode(token)
-        .map_err(|_| ApiError::new(ErrorCode::Unauthorized, "invalid session token"))?;
-    let token_hash: String = Sha256::digest(&token_bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    let token_hash = hash_bearer_token(token)?;
 
     // Look up the session by hash, rejecting expired sessions.
     let row: Option<(String, String)> = sqlx::query_as(
@@ -152,8 +145,7 @@ pub async fn require_session(
     headers: &HeaderMap,
     db: &sqlx::SqlitePool,
 ) -> Result<SessionInfo, ApiError> {
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-    use sha2::{Digest, Sha256};
+    use crate::routes::token::hash_bearer_token;
 
     let token = headers
         .get(axum::http::header::AUTHORIZATION)
@@ -174,14 +166,7 @@ pub async fn require_session(
             )
         })?;
 
-    let token_bytes = URL_SAFE_NO_PAD.decode(token).map_err(|_| {
-        tracing::debug!("session token is not valid base64url");
-        ApiError::new(ErrorCode::Unauthorized, "invalid session token")
-    })?;
-    let token_hash: String = Sha256::digest(&token_bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    let token_hash = hash_bearer_token(token)?;
 
     let row: Option<(String,)> = sqlx::query_as(
         "SELECT did FROM sessions WHERE token_hash = ? AND expires_at > datetime('now')",
@@ -311,9 +296,7 @@ mod tests {
 
     #[tokio::test]
     async fn pending_session_valid_unexpired_session_returns_ok() {
-        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-        use rand_core::{OsRng, RngCore};
-        use sha2::{Digest, Sha256};
+        use crate::routes::token::generate_token;
         use uuid::Uuid;
 
         let state = test_state().await;
@@ -356,13 +339,7 @@ mod tests {
         .expect("insert device");
 
         // Generate a valid session token.
-        let mut token_bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut token_bytes);
-        let session_token = URL_SAFE_NO_PAD.encode(token_bytes);
-        let token_hash: String = Sha256::digest(token_bytes)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let token = generate_token();
 
         sqlx::query(
             "INSERT INTO pending_sessions \
@@ -372,7 +349,7 @@ mod tests {
         .bind(Uuid::new_v4().to_string())
         .bind(&account_id)
         .bind(&device_id)
-        .bind(&token_hash)
+        .bind(&token.hash)
         .execute(&state.db)
         .await
         .expect("insert pending_session");
@@ -381,7 +358,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             axum::http::header::AUTHORIZATION,
-            format!("Bearer {session_token}").parse().unwrap(),
+            format!("Bearer {}", token.plaintext).parse().unwrap(),
         );
 
         let result = require_pending_session(&headers, &state.db)
@@ -393,9 +370,7 @@ mod tests {
 
     #[tokio::test]
     async fn pending_session_expired_session_returns_401() {
-        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-        use rand_core::{OsRng, RngCore};
-        use sha2::{Digest, Sha256};
+        use crate::routes::token::generate_token;
         use uuid::Uuid;
 
         let state = test_state().await;
@@ -438,13 +413,7 @@ mod tests {
         .expect("insert device");
 
         // Generate a token but set it as expired.
-        let mut token_bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut token_bytes);
-        let session_token = URL_SAFE_NO_PAD.encode(token_bytes);
-        let token_hash: String = Sha256::digest(token_bytes)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let token = generate_token();
 
         sqlx::query(
             "INSERT INTO pending_sessions \
@@ -454,7 +423,7 @@ mod tests {
         .bind(Uuid::new_v4().to_string())
         .bind(&account_id)
         .bind(&device_id)
-        .bind(&token_hash)
+        .bind(&token.hash)
         .execute(&state.db)
         .await
         .expect("insert pending_session");
@@ -463,7 +432,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             axum::http::header::AUTHORIZATION,
-            format!("Bearer {session_token}").parse().unwrap(),
+            format!("Bearer {}", token.plaintext).parse().unwrap(),
         );
 
         let err = require_pending_session(&headers, &state.db)
@@ -513,9 +482,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_valid_unexpired_session_returns_ok() {
-        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-        use rand_core::{OsRng, RngCore};
-        use sha2::{Digest, Sha256};
+        use crate::routes::token::generate_token;
         use uuid::Uuid;
 
         let state = test_state().await;
@@ -535,13 +502,7 @@ mod tests {
         .await
         .expect("insert account");
 
-        let mut token_bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut token_bytes);
-        let session_token = URL_SAFE_NO_PAD.encode(token_bytes);
-        let token_hash: String = Sha256::digest(token_bytes)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let token = generate_token();
 
         sqlx::query(
             "INSERT INTO sessions (id, did, device_id, token_hash, created_at, expires_at) \
@@ -549,7 +510,7 @@ mod tests {
         )
         .bind(Uuid::new_v4().to_string())
         .bind(&did)
-        .bind(&token_hash)
+        .bind(&token.hash)
         .execute(&state.db)
         .await
         .expect("insert session");
@@ -557,7 +518,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             axum::http::header::AUTHORIZATION,
-            format!("Bearer {session_token}").parse().unwrap(),
+            format!("Bearer {}", token.plaintext).parse().unwrap(),
         );
 
         let result = require_session(&headers, &state.db)
@@ -568,9 +529,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_expired_session_returns_401() {
-        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-        use rand_core::{OsRng, RngCore};
-        use sha2::{Digest, Sha256};
+        use crate::routes::token::generate_token;
         use uuid::Uuid;
 
         let state = test_state().await;
@@ -590,13 +549,7 @@ mod tests {
         .await
         .expect("insert account");
 
-        let mut token_bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut token_bytes);
-        let session_token = URL_SAFE_NO_PAD.encode(token_bytes);
-        let token_hash: String = Sha256::digest(token_bytes)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let token = generate_token();
 
         sqlx::query(
             "INSERT INTO sessions (id, did, device_id, token_hash, created_at, expires_at) \
@@ -604,7 +557,7 @@ mod tests {
         )
         .bind(Uuid::new_v4().to_string())
         .bind(&did)
-        .bind(&token_hash)
+        .bind(&token.hash)
         .execute(&state.db)
         .await
         .expect("insert expired session");
@@ -612,7 +565,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             axum::http::header::AUTHORIZATION,
-            format!("Bearer {session_token}").parse().unwrap(),
+            format!("Bearer {}", token.plaintext).parse().unwrap(),
         );
 
         let err = require_session(&headers, &state.db).await.unwrap_err();

@@ -183,6 +183,34 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), DbError> {
     Ok(())
 }
 
+// ── Unique constraint helpers ─────────────────────────────────────────────
+
+/// Check if a sqlx::Error is a UNIQUE constraint violation.
+pub fn is_unique_violation(e: &sqlx::Error) -> bool {
+    matches!(
+        e,
+        sqlx::Error::Database(db_err)
+            if db_err.kind() == sqlx::error::ErrorKind::UniqueViolation
+    )
+}
+
+/// Extract the column name from a UNIQUE constraint violation on a specific table.
+///
+/// SQLite's stable error format is `"UNIQUE constraint failed: <table>.<column>"`.
+/// Returns `Some(column)` if the error matches, `None` otherwise.
+pub fn unique_violation_column<'a>(e: &'a sqlx::Error, table: &str) -> Option<&'a str> {
+    if let sqlx::Error::Database(db_err) = e {
+        if db_err.kind() == sqlx::error::ErrorKind::UniqueViolation {
+            let prefix = format!("UNIQUE constraint failed: {table}.");
+            let msg = db_err.message();
+            if let Some(column) = msg.strip_prefix(&prefix) {
+                return Some(column);
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

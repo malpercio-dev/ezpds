@@ -13,17 +13,15 @@
 //          ApiError on all failure paths
 
 use axum::{extract::State, http::StatusCode, response::Json};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::routes::create_account::validate_handle;
-use crate::routes::register_device::{is_valid_platform, MAX_PUBLIC_KEY_LEN};
+use crate::routes::register_device::{Platform, MAX_PUBLIC_KEY_LEN};
+use crate::routes::token::generate_token;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,7 +29,7 @@ pub struct CreateMobileAccountRequest {
     email: String,
     handle: String,
     device_public_key: String,
-    platform: String,
+    platform: Platform,
     claim_code: String,
 }
 
@@ -49,14 +47,6 @@ pub async fn create_mobile_account(
     State(state): State<AppState>,
     Json(payload): Json<CreateMobileAccountRequest>,
 ) -> Result<(StatusCode, Json<CreateMobileAccountResponse>), ApiError> {
-    // --- Validate platform ---
-    if !is_valid_platform(&payload.platform) {
-        return Err(ApiError::new(
-            ErrorCode::InvalidClaim,
-            "platform must be one of: ios, android, macos, linux, windows",
-        ));
-    }
-
     // --- Validate device_public_key ---
     if payload.device_public_key.is_empty() {
         return Err(ApiError::new(
@@ -84,48 +74,28 @@ pub async fn create_mobile_account(
         return Err(ApiError::new(ErrorCode::InvalidHandle, msg));
     }
 
-    // --- Email uniqueness: check accounts and pending_accounts in one query ---
-    // Fast-path rejection before the INSERT to avoid consuming a claim code slot on a
-    // predictable conflict. The unique indexes remain the authoritative enforcement.
-    let email_taken: i64 = sqlx::query_scalar(
-        "SELECT CAST(
-             (EXISTS(SELECT 1 FROM accounts WHERE email = ?)
-              OR EXISTS(SELECT 1 FROM pending_accounts WHERE email = ?))
-         AS INTEGER)",
-    )
-    .bind(&payload.email)
-    .bind(&payload.email)
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to check email uniqueness");
-        ApiError::new(ErrorCode::InternalError, "failed to create account")
-    })?;
-
-    if email_taken != 0 {
+    // --- Email uniqueness: fast-path rejection before INSERT ---
+    if crate::routes::uniqueness::email_taken(&state.db, &payload.email)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to check email uniqueness");
+            ApiError::new(ErrorCode::InternalError, "failed to create account")
+        })?
+    {
         return Err(ApiError::new(
             ErrorCode::AccountExists,
             "an account with this email already exists",
         ));
     }
 
-    // --- Handle uniqueness: check handles and pending_accounts in one query ---
-    let handle_taken: i64 = sqlx::query_scalar(
-        "SELECT CAST(
-             (EXISTS(SELECT 1 FROM handles WHERE handle = ?)
-              OR EXISTS(SELECT 1 FROM pending_accounts WHERE handle = ?))
-         AS INTEGER)",
-    )
-    .bind(&payload.handle)
-    .bind(&payload.handle)
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to check handle uniqueness");
-        ApiError::new(ErrorCode::InternalError, "failed to create account")
-    })?;
-
-    if handle_taken != 0 {
+    // --- Handle uniqueness: fast-path rejection before INSERT ---
+    if crate::routes::uniqueness::handle_taken(&state.db, &payload.handle)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to check handle uniqueness");
+            ApiError::new(ErrorCode::InternalError, "failed to create account")
+        })?
+    {
         return Err(ApiError::new(
             ErrorCode::HandleTaken,
             "this handle is already claimed",
@@ -133,28 +103,12 @@ pub async fn create_mobile_account(
     }
 
     // --- Generate IDs and credentials ---
-    // device_token / session_token: 32 random bytes → base64url (no padding) for the wire;
-    // SHA-256 of the raw bytes → 64-char hex for the DB.
-    // Plaintext tokens are returned once and never stored; future auth uses the hashes.
     let account_id = Uuid::new_v4().to_string();
     let device_id = Uuid::new_v4().to_string();
     let session_id = Uuid::new_v4().to_string();
 
-    let mut device_token_bytes = [0u8; 32];
-    OsRng.fill_bytes(&mut device_token_bytes);
-    let device_token = URL_SAFE_NO_PAD.encode(device_token_bytes);
-    let device_token_hash: String = Sha256::digest(device_token_bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-
-    let mut session_token_bytes = [0u8; 32];
-    OsRng.fill_bytes(&mut session_token_bytes);
-    let session_token = URL_SAFE_NO_PAD.encode(session_token_bytes);
-    let session_token_hash: String = Sha256::digest(session_token_bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    let device_token = generate_token();
+    let session_token = generate_token();
 
     // --- Atomically provision: redeem claim code + create account + register device + issue session ---
     provision_mobile_account(
@@ -165,11 +119,11 @@ pub async fn create_mobile_account(
             email: &payload.email,
             handle: &payload.handle,
             device_id: &device_id,
-            platform: &payload.platform,
+            platform: payload.platform.as_str(),
             public_key: &payload.device_public_key,
-            device_token_hash: &device_token_hash,
+            device_token_hash: &device_token.hash,
             session_id: &session_id,
-            session_token_hash: &session_token_hash,
+            session_token_hash: &session_token.hash,
         },
     )
     .await?;
@@ -179,8 +133,8 @@ pub async fn create_mobile_account(
         Json(CreateMobileAccountResponse {
             account_id,
             device_id,
-            device_token,
-            session_token,
+            device_token: device_token.plaintext,
+            session_token: session_token.plaintext,
             next_step: "did_creation".to_string(),
         }),
     ))
@@ -339,29 +293,24 @@ async fn provision_mobile_account(
 
 /// Classify a unique constraint violation from the pending_accounts INSERT into the
 /// appropriate ApiError. Returns InternalError for non-unique-violation errors.
-///
-/// Constraint name matching uses SQLite's stable "UNIQUE constraint failed: <table>.<column>"
-/// format. The fallthrough branch (unknown constraint) logs the constraint name so any
-/// unexpected violations surface in traces — matching the pattern in create_account.rs.
 fn classify_pending_account_error(e: &sqlx::Error) -> ApiError {
-    if let sqlx::Error::Database(db_err) = e {
-        if db_err.kind() == sqlx::error::ErrorKind::UniqueViolation {
-            let msg = db_err.message();
-            if msg.contains("pending_accounts.email") {
-                return ApiError::new(
-                    ErrorCode::AccountExists,
-                    "an account with this email already exists",
-                );
-            }
-            if msg.contains("pending_accounts.handle") {
-                return ApiError::new(ErrorCode::HandleTaken, "this handle is already claimed");
-            }
-            // Unknown unique constraint — log the name so it surfaces in traces.
-            tracing::error!(
-                constraint = msg,
-                "unique violation on unexpected constraint in pending_accounts insert"
+    match crate::db::unique_violation_column(e, "pending_accounts") {
+        Some("email") => {
+            return ApiError::new(
+                ErrorCode::AccountExists,
+                "an account with this email already exists",
             );
         }
+        Some("handle") => {
+            return ApiError::new(ErrorCode::HandleTaken, "this handle is already claimed");
+        }
+        Some(col) => {
+            tracing::error!(
+                column = col,
+                "unique violation on unexpected column in pending_accounts insert"
+            );
+        }
+        None => {}
     }
     ApiError::new(ErrorCode::InternalError, "failed to create account")
 }
@@ -590,8 +539,7 @@ mod tests {
 
     #[tokio::test]
     async fn token_hashes_are_sha256_of_tokens() {
-        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-        use sha2::{Digest, Sha256};
+        use crate::routes::token::hash_bearer_token;
 
         let state = test_state().await;
         let db = state.db.clone();
@@ -611,13 +559,8 @@ mod tests {
         let account_id = json["accountId"].as_str().unwrap();
 
         // device token hash
-        let device_token_bytes = URL_SAFE_NO_PAD
-            .decode(json["deviceToken"].as_str().unwrap())
-            .unwrap();
-        let expected_device_hash: String = Sha256::digest(&device_token_bytes)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let expected_device_hash =
+            hash_bearer_token(json["deviceToken"].as_str().unwrap()).unwrap();
 
         let (stored_device_hash,): (String,) =
             sqlx::query_as("SELECT device_token_hash FROM devices WHERE id = ?")
@@ -631,13 +574,8 @@ mod tests {
         );
 
         // session token hash
-        let session_token_bytes = URL_SAFE_NO_PAD
-            .decode(json["sessionToken"].as_str().unwrap())
-            .unwrap();
-        let expected_session_hash: String = Sha256::digest(&session_token_bytes)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let expected_session_hash =
+            hash_bearer_token(json["sessionToken"].as_str().unwrap()).unwrap();
 
         let (stored_session_hash,): (String,) =
             sqlx::query_as("SELECT token_hash FROM pending_sessions WHERE account_id = ?")
@@ -945,7 +883,8 @@ mod tests {
     // ── Platform validation ───────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn invalid_platform_returns_400() {
+    async fn invalid_platform_returns_422() {
+        // Invalid platform is caught by serde deserialization (422), not application logic (400).
         let response = app(test_state().await)
             .oneshot(post_create_mobile_account(
                 r#"{"email":"a@example.com","handle":"a.example.com","devicePublicKey":"dGVzdC1rZXk=","platform":"plan9","claimCode":"ABC123"}"#,
@@ -953,12 +892,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 4096)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["error"]["code"], "INVALID_CLAIM");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     // ── Public key validation ─────────────────────────────────────────────────

@@ -10,15 +10,13 @@
 // Returns: JSON { device_id, device_token, account_id } on success; ApiError on all failure paths
 
 use axum::{extract::State, http::StatusCode, response::Json};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
+use crate::routes::token::generate_token;
 
 /// Maximum allowed length for a device public key string.
 /// A P-256 uncompressed public key in base64 is ~88 chars; 512 is generous
@@ -31,7 +29,7 @@ pub(crate) const MAX_PUBLIC_KEY_LEN: usize = 512;
 pub struct RegisterDeviceRequest {
     claim_code: String,
     device_public_key: String,
-    platform: String,
+    platform: Platform,
 }
 
 #[derive(Serialize)]
@@ -46,14 +44,6 @@ pub async fn register_device(
     State(state): State<AppState>,
     Json(payload): Json<RegisterDeviceRequest>,
 ) -> Result<(StatusCode, Json<RegisterDeviceResponse>), ApiError> {
-    // --- Validate platform ---
-    if !is_valid_platform(&payload.platform) {
-        return Err(ApiError::new(
-            ErrorCode::InvalidClaim,
-            "platform must be one of: ios, android, macos, linux, windows",
-        ));
-    }
-
     // --- Validate device_public_key ---
     if payload.device_public_key.is_empty() {
         return Err(ApiError::new(
@@ -69,25 +59,17 @@ pub async fn register_device(
     }
 
     // --- Generate device credentials ---
-    // 32 random bytes → base64url (no padding) for the wire; SHA-256 hex for the DB.
-    // The plaintext token is returned once and never stored; future auth uses the hash.
     let device_id = Uuid::new_v4().to_string();
-    let mut token_bytes = [0u8; 32];
-    OsRng.fill_bytes(&mut token_bytes);
-    let device_token = URL_SAFE_NO_PAD.encode(token_bytes);
-    let device_token_hash: String = Sha256::digest(token_bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    let device_token = generate_token();
 
     // --- Atomically redeem claim code and register device ---
     let account_id = redeem_and_register(
         &state.db,
         &payload.claim_code,
         &device_id,
-        &payload.platform,
+        payload.platform.as_str(),
         &payload.device_public_key,
-        &device_token_hash,
+        &device_token.hash,
     )
     .await?;
 
@@ -95,14 +77,36 @@ pub async fn register_device(
         StatusCode::CREATED,
         Json(RegisterDeviceResponse {
             device_id,
-            device_token,
+            device_token: device_token.plaintext,
             account_id,
         }),
     ))
 }
 
-pub(crate) fn is_valid_platform(platform: &str) -> bool {
-    matches!(platform, "ios" | "android" | "macos" | "linux" | "windows")
+/// Supported device platforms.
+///
+/// Deserialized from lowercase strings (`"ios"`, `"android"`, etc.) by serde.
+/// Stored as the same lowercase string in the database via `as_str()`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Platform {
+    Ios,
+    Android,
+    Macos,
+    Linux,
+    Windows,
+}
+
+impl Platform {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Platform::Ios => "ios",
+            Platform::Android => "android",
+            Platform::Macos => "macos",
+            Platform::Linux => "linux",
+            Platform::Windows => "windows",
+        }
+    }
 }
 
 /// Atomically redeem a claim code and register the device in a single transaction.
@@ -412,8 +416,7 @@ mod tests {
 
     #[tokio::test]
     async fn token_hash_is_sha256_of_token() {
-        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-        use sha2::{Digest, Sha256};
+        use crate::routes::token::hash_bearer_token;
 
         let state = test_state().await;
         let db = state.db.clone();
@@ -434,11 +437,7 @@ mod tests {
         let device_token = json["deviceToken"].as_str().unwrap();
         let device_id = json["deviceId"].as_str().unwrap();
 
-        let token_bytes = URL_SAFE_NO_PAD.decode(device_token).unwrap();
-        let expected_hash: String = Sha256::digest(&token_bytes)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let expected_hash = hash_bearer_token(device_token).unwrap();
 
         let stored_hash: (String,) =
             sqlx::query_as("SELECT device_token_hash FROM devices WHERE id = ?")
@@ -644,7 +643,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_platform_returns_400() {
+    async fn invalid_platform_returns_422() {
+        // Invalid platform is caught by serde deserialization (422), not application logic.
         let response = app(test_state().await)
             .oneshot(post_register_device(
                 r#"{"claimCode":"ABC123","devicePublicKey":"dGVzdC1rZXk=","platform":"plan9"}"#,
@@ -652,16 +652,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 4096)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["error"]["code"], "INVALID_CLAIM");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[tokio::test]
     async fn platform_is_case_sensitive() {
+        // serde's rename_all = "lowercase" is strict: "iOS" != "ios".
         let response = app(test_state().await)
             .oneshot(post_register_device(
                 r#"{"claimCode":"ABC123","devicePublicKey":"dGVzdC1rZXk=","platform":"iOS"}"#,
@@ -669,12 +665,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 4096)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["error"]["code"], "INVALID_CLAIM");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     // ── Public key validation ─────────────────────────────────────────────────
@@ -775,20 +766,21 @@ mod tests {
         assert_eq!(json["error"]["code"], "INTERNAL_ERROR");
     }
 
-    // ── Pure unit tests ───────────────────────────────────────────────────────
+    // ── Platform enum unit tests ────────────────────────────────────────────
 
     #[test]
-    fn is_valid_platform_accepts_known_platforms() {
+    fn platform_deserializes_known_values() {
         for p in ["ios", "android", "macos", "linux", "windows"] {
-            assert!(super::is_valid_platform(p), "{p} must be valid");
+            let result: Result<super::Platform, _> = serde_json::from_str(&format!("\"{p}\""));
+            assert!(result.is_ok(), "{p} must deserialize");
         }
     }
 
     #[test]
-    fn is_valid_platform_rejects_unknown() {
-        assert!(!super::is_valid_platform("plan9"));
-        assert!(!super::is_valid_platform(""));
-        assert!(!super::is_valid_platform("iOS")); // case-sensitive
-        assert!(!super::is_valid_platform("Windows")); // case-sensitive
+    fn platform_rejects_unknown_values() {
+        for p in ["plan9", "", "iOS", "Windows"] {
+            let result: Result<super::Platform, _> = serde_json::from_str(&format!("\"{p}\""));
+            assert!(result.is_err(), "{p} must be rejected");
+        }
     }
 }

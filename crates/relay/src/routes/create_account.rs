@@ -60,53 +60,28 @@ pub async fn create_account(
         ));
     }
 
-    // --- Email uniqueness: check accounts and pending_accounts in one query ---
-    // Fast-path: reject before the INSERT to avoid burning a claim_code slot on a
-    // predictable conflict. The unique indexes are the authoritative enforcement; this
-    // is an optimization that also provides an early error for fully-provisioned accounts.
-    // Note: pending_accounts has no cross-table FK to accounts, so both tables must be checked.
-    // CAST ensures sqlx maps the result as INTEGER regardless of SQLite's type affinity
-    // rules on untyped OR expressions.
-    let email_taken: i64 = sqlx::query_scalar(
-        "SELECT CAST(
-             (EXISTS(SELECT 1 FROM accounts WHERE email = ?)
-              OR EXISTS(SELECT 1 FROM pending_accounts WHERE email = ?))
-         AS INTEGER)",
-    )
-    .bind(&payload.email)
-    .bind(&payload.email)
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to check email uniqueness");
-        ApiError::new(ErrorCode::InternalError, "failed to create account")
-    })?;
-
-    if email_taken != 0 {
+    // --- Email uniqueness: fast-path rejection before INSERT ---
+    if crate::routes::uniqueness::email_taken(&state.db, &payload.email)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to check email uniqueness");
+            ApiError::new(ErrorCode::InternalError, "failed to create account")
+        })?
+    {
         return Err(ApiError::new(
             ErrorCode::AccountExists,
             "an account with this email already exists",
         ));
     }
 
-    // --- Handle uniqueness: check handles and pending_accounts in one query ---
-    // handles.handle is the PRIMARY KEY (uniqueness enforced by the PK, not a separate index).
-    let handle_taken: i64 = sqlx::query_scalar(
-        "SELECT CAST(
-             (EXISTS(SELECT 1 FROM handles WHERE handle = ?)
-              OR EXISTS(SELECT 1 FROM pending_accounts WHERE handle = ?))
-         AS INTEGER)",
-    )
-    .bind(&payload.handle)
-    .bind(&payload.handle)
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to check handle uniqueness");
-        ApiError::new(ErrorCode::InternalError, "failed to create account")
-    })?;
-
-    if handle_taken != 0 {
+    // --- Handle uniqueness: fast-path rejection before INSERT ---
+    if crate::routes::uniqueness::handle_taken(&state.db, &payload.handle)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to check handle uniqueness");
+            ApiError::new(ErrorCode::InternalError, "failed to create account")
+        })?
+    {
         return Err(ApiError::new(
             ErrorCode::HandleTaken,
             "this handle is already claimed",
@@ -142,31 +117,34 @@ pub async fn create_account(
                     }),
                 ))
             }
-            Err(e) => match unique_violation_source(&e) {
-                Some(UniqueConflict::ClaimCode) => {
-                    tracing::warn!(attempt, "claim code collision; retrying");
-                    continue;
+            Err(e) if crate::db::is_unique_violation(&e) => {
+                match unique_violation_column_in_pending(&e) {
+                    Some("email") => {
+                        return Err(ApiError::new(
+                            ErrorCode::AccountExists,
+                            "an account with this email already exists",
+                        ));
+                    }
+                    Some("handle") => {
+                        return Err(ApiError::new(
+                            ErrorCode::HandleTaken,
+                            "this handle is already claimed",
+                        ));
+                    }
+                    _ => {
+                        // Not a pending_accounts constraint — treat as claim code collision.
+                        tracing::warn!(attempt, "claim code collision; retrying");
+                        continue;
+                    }
                 }
-                Some(UniqueConflict::Email) => {
-                    return Err(ApiError::new(
-                        ErrorCode::AccountExists,
-                        "an account with this email already exists",
-                    ));
-                }
-                Some(UniqueConflict::Handle) => {
-                    return Err(ApiError::new(
-                        ErrorCode::HandleTaken,
-                        "this handle is already claimed",
-                    ));
-                }
-                None => {
-                    tracing::error!(error = %e, "failed to insert pending account");
-                    return Err(ApiError::new(
-                        ErrorCode::InternalError,
-                        "failed to create account",
-                    ));
-                }
-            },
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to insert pending account");
+                return Err(ApiError::new(
+                    ErrorCode::InternalError,
+                    "failed to create account",
+                ));
+            }
         }
     }
 
@@ -249,41 +227,11 @@ async fn insert_pending_account(
     Ok(())
 }
 
-/// Classification of a unique constraint violation by which column fired.
-enum UniqueConflict {
-    /// `claim_codes.code` — safe to retry with a freshly generated code.
-    ClaimCode,
-    /// `pending_accounts.email` — return `AccountExists` immediately.
-    Email,
-    /// `pending_accounts.handle` — return `HandleTaken` immediately.
-    Handle,
-}
-
-/// Inspect a unique constraint violation to determine which column caused it.
-/// Returns `None` for non-unique-violation errors.
-///
-/// SQLite unique violation messages take the stable form
-/// "UNIQUE constraint failed: <table>.<column>", which is not locale-dependent.
-fn unique_violation_source(e: &sqlx::Error) -> Option<UniqueConflict> {
-    if let sqlx::Error::Database(db_err) = e {
-        if db_err.kind() == sqlx::error::ErrorKind::UniqueViolation {
-            let msg = db_err.message();
-            if msg.contains("pending_accounts.email") {
-                return Some(UniqueConflict::Email);
-            }
-            if msg.contains("pending_accounts.handle") {
-                return Some(UniqueConflict::Handle);
-            }
-            // Treat any other unique violation as a claim_codes.code collision.
-            // Log the constraint name so unexpected constraints are visible in traces.
-            tracing::debug!(
-                constraint = msg,
-                "unique violation on unknown constraint; treating as claim code collision"
-            );
-            return Some(UniqueConflict::ClaimCode);
-        }
-    }
-    None
+/// Classify a unique violation from the transaction (which spans claim_codes and
+/// pending_accounts). Returns `Some("email")` or `Some("handle")` for pending_accounts
+/// violations, `None` (treated as claim_code collision) for everything else.
+fn unique_violation_column_in_pending(e: &sqlx::Error) -> Option<&str> {
+    crate::db::unique_violation_column(e, "pending_accounts")
 }
 
 #[cfg(test)]

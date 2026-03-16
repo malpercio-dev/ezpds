@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
+use crate::db::is_unique_violation;
 use crate::routes::auth::require_admin_token;
 use crate::routes::code_gen::generate_code;
 
@@ -116,14 +117,6 @@ async fn insert_claim_codes(
         tracing::error!(error = %e, "failed to commit claim_codes transaction");
     })?;
     Ok(())
-}
-
-fn is_unique_violation(e: &sqlx::Error) -> bool {
-    matches!(
-        e,
-        sqlx::Error::Database(db_err)
-            if db_err.kind() == sqlx::error::ErrorKind::UniqueViolation
-    )
 }
 
 #[cfg(test)]

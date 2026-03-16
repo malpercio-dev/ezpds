@@ -11,6 +11,8 @@ pub mod register_device;
 pub mod resolve_handle;
 
 mod code_gen;
+pub(crate) mod token;
+pub(crate) mod uniqueness;
 
 #[cfg(test)]
 pub(crate) mod test_utils;
