@@ -153,7 +153,7 @@ pub fn get_or_create() -> Result<DevicePublicKey, DeviceKeyError> {
     // Generate a new SE-backed P-256 key.
     // set_location(DataProtectionKeychain) is required — without it, security_framework sets
     // kSecAttrIsPermanent = false, meaning the key is not persisted to the Keychain and will
-    // not survive app restart (breaking AC2.1).
+    // not survive app restart (key would not survive app restart).
     // set_access_control with PRIVATE_KEY_USAGE is required for SE keys — the SE enforces
     // that only explicitly-authorized operations can use the private key for signing.
     //
@@ -206,13 +206,14 @@ pub fn get_or_create() -> Result<DevicePublicKey, DeviceKeyError> {
 
     // Store the application_label (OS-assigned SHA1 of public key, 20 bytes)
     // so sign() can locate the SE private key on future app launches.
-    if let Some(app_label) = priv_key.application_label() {
-        crate::keychain::store_item(SE_APP_LABEL_ACCOUNT, &app_label).map_err(|e| {
-            DeviceKeyError::KeychainError {
-                message: e.to_string(),
-            }
-        })?;
-    }
+    let app_label = priv_key
+        .application_label()
+        .ok_or(DeviceKeyError::KeyGenerationFailed)?;
+    crate::keychain::store_item(SE_APP_LABEL_ACCOUNT, &app_label).map_err(|e| {
+        DeviceKeyError::KeychainError {
+            message: e.to_string(),
+        }
+    })?;
 
     let multibase = multibase::encode(multibase::Base::Base58Btc, &compressed);
     // did:key requires the P-256 multicodec varint prefix [0x80, 0x24] (0x1200 as LEB128).
@@ -277,7 +278,7 @@ mod tests {
     // Tests use the real macOS Keychain under service "ezpds-identity-wallet".
     // Run with `cargo test -- --test-threads=1` to prevent Keychain races between tests.
 
-    // AC1.1 — multibase starts with 'z' and decodes to 33 bytes
+    // multibase starts with 'z' and decodes to 33 bytes
     #[test]
     fn get_or_create_returns_valid_multibase() {
         let result = get_or_create().expect("get_or_create should succeed");
@@ -289,7 +290,7 @@ mod tests {
         assert_eq!(decoded.len(), 33, "compressed P-256 point must be 33 bytes");
     }
 
-    // AC1.2 — two successive calls are idempotent
+    // two successive calls are idempotent
     #[test]
     fn get_or_create_is_idempotent() {
         let first = get_or_create().expect("first call should succeed");
@@ -301,7 +302,7 @@ mod tests {
         assert_eq!(first.key_id, second.key_id, "key_id must be stable");
     }
 
-    // AC1.3 — key_id starts with "did:key:z"
+    // key_id starts with "did:key:z"
     #[test]
     fn key_id_has_did_key_prefix() {
         let result = get_or_create().expect("get_or_create should succeed");
@@ -312,7 +313,7 @@ mod tests {
         );
     }
 
-    // AC3.1 — sign returns exactly 64 bytes
+    // sign returns exactly 64 bytes
     #[test]
     fn sign_returns_64_bytes() {
         get_or_create().expect("must have key before signing");
@@ -320,7 +321,7 @@ mod tests {
         assert_eq!(sig.len(), 64, "raw r||s signature must be 64 bytes");
     }
 
-    // AC3.2 — signing is deterministic (RFC 6979)
+    // signing is deterministic (RFC 6979)
     #[test]
     fn sign_is_deterministic() {
         get_or_create().expect("must have key before signing");
@@ -332,7 +333,7 @@ mod tests {
         );
     }
 
-    // AC3.3 — sign before get_or_create returns KeyNotFound
+    // sign before get_or_create returns KeyNotFound
     #[test]
     fn sign_before_generate_returns_key_not_found() {
         // Delete any key left by previous tests to simulate a fresh state.
@@ -345,7 +346,7 @@ mod tests {
         );
     }
 
-    // AC4.1 — DeviceKeyError variants serialize as { "code": "SCREAMING_SNAKE_CASE" }
+    // DeviceKeyError variants serialize as { "code": "SCREAMING_SNAKE_CASE" }
     #[test]
     fn device_key_error_serializes_as_code() {
         let err = DeviceKeyError::KeyGenerationFailed;

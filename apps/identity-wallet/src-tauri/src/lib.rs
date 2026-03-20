@@ -206,7 +206,7 @@ pub fn run() {
 mod tests {
     use super::*;
 
-    // -- AC2.2: CreateMobileAccountRequest serialization --
+    // -- CreateMobileAccountRequest serialization --
     #[test]
     fn create_mobile_account_request_serializes_camel_case() {
         let req = CreateMobileAccountRequest {
@@ -224,7 +224,7 @@ mod tests {
         assert_eq!(json["claimCode"], "ABC123");
     }
 
-    // -- AC2.5: CreateAccountResult serialization --
+    // -- CreateAccountResult serialization --
     #[test]
     fn create_account_result_serializes_camel_case() {
         let result = CreateAccountResult {
@@ -253,7 +253,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // -- AC3.1: CreateAccountError::ExpiredCode serialization --
+    // -- CreateAccountError::ExpiredCode serialization --
     #[test]
     fn error_expired_code_serializes_correctly() {
         let err = CreateAccountError::ExpiredCode;
@@ -261,7 +261,7 @@ mod tests {
         assert_eq!(json["code"], "EXPIRED_CODE");
     }
 
-    // -- AC3.2: CreateAccountError::RedeemedCode serialization --
+    // -- CreateAccountError::RedeemedCode serialization --
     #[test]
     fn error_redeemed_code_serializes_correctly() {
         let err = CreateAccountError::RedeemedCode;
@@ -269,7 +269,7 @@ mod tests {
         assert_eq!(json["code"], "REDEEMED_CODE");
     }
 
-    // -- AC3.3: CreateAccountError::EmailTaken serialization --
+    // -- CreateAccountError::EmailTaken serialization --
     #[test]
     fn error_email_taken_serializes_correctly() {
         let err = CreateAccountError::EmailTaken;
@@ -277,7 +277,7 @@ mod tests {
         assert_eq!(json["code"], "EMAIL_TAKEN");
     }
 
-    // -- AC3.4: CreateAccountError::HandleTaken serialization --
+    // -- CreateAccountError::HandleTaken serialization --
     #[test]
     fn error_handle_taken_serializes_correctly() {
         let err = CreateAccountError::HandleTaken;
@@ -285,7 +285,7 @@ mod tests {
         assert_eq!(json["code"], "HANDLE_TAKEN");
     }
 
-    // -- AC3.5: CreateAccountError::NetworkError serialization --
+    // -- CreateAccountError::NetworkError serialization --
     #[test]
     fn error_network_error_serializes_correctly() {
         let err = CreateAccountError::NetworkError {
@@ -296,7 +296,7 @@ mod tests {
         assert_eq!(json["message"], "Connection timeout");
     }
 
-    // -- AC3.6: CreateAccountError::KeychainError serialization --
+    // -- CreateAccountError::KeychainError serialization --
     #[test]
     fn error_keychain_error_serializes_correctly() {
         let err = CreateAccountError::KeychainError;
@@ -304,7 +304,7 @@ mod tests {
         assert_eq!(json["code"], "KEYCHAIN_ERROR");
     }
 
-    // -- AC3.7: CreateAccountError::Unknown serialization --
+    // -- CreateAccountError::Unknown serialization --
     #[test]
     fn error_unknown_serializes_correctly() {
         let err = CreateAccountError::Unknown {
@@ -332,7 +332,7 @@ mod tests {
         assert!(json["message"].as_str().unwrap().contains("409:"));
     }
 
-    // AC5.1 — create_account will use this key as device_public_key.
+    // create_account uses device_key::get_or_create() as its public key source
     // We verify: (a) the key exists and is correctly formatted, (b) it's stable so
     // create_account always sends the same device_public_key for this device.
     #[test]
