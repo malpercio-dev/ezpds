@@ -2,7 +2,6 @@ pub mod device_key;
 pub mod http;
 pub mod keychain;
 
-use crypto::generate_p256_keypair;
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 
@@ -113,21 +112,16 @@ async fn create_account(
     email: String,
     handle: String,
 ) -> Result<CreateAccountResult, CreateAccountError> {
-    // 1. Generate P-256 device keypair.
-    let keypair = generate_p256_keypair().map_err(|e| CreateAccountError::Unknown {
+    // 1. Get or create the device's SE-backed (or simulator-fallback) P-256 key.
+    let device_key = device_key::get_or_create().map_err(|e| CreateAccountError::Unknown {
         message: e.to_string(),
     })?;
 
-    // 2. Store private key bytes in Keychain before any network call.
-    //    private_key_bytes is Zeroizing<[u8; 32]>; deref to &[u8] via AsRef.
-    keychain::store_item("device-private-key", keypair.private_key_bytes.as_ref())
-        .map_err(|_| CreateAccountError::KeychainError)?;
-
-    // 3. POST to relay.
+    // 2. POST to relay.
     let req = CreateMobileAccountRequest {
         email,
         handle,
-        device_public_key: keypair.public_key,
+        device_public_key: device_key.multibase,
         platform: "ios".to_string(),
         claim_code,
     };
@@ -152,15 +146,12 @@ async fn create_account(
         // If either token write fails, clean up the private key (best-effort) to avoid
         // orphaning a key on the relay with no tokens to access it.
         keychain::store_item("device-token", body.device_token.as_bytes()).map_err(|_| {
-            // Best-effort cleanup: ignore deletion errors.
-            let _ = keychain::delete_item("device-private-key");
+            // device-token write failed — nothing to clean up; the device key is persistent by design.
             CreateAccountError::KeychainError
         })?;
 
         keychain::store_item("session-token", body.session_token.as_bytes()).map_err(|_| {
-            // Best-effort cleanup: also remove the already-written device-token so the
-            // Keychain doesn't hold a credential for an account the device can't access.
-            let _ = keychain::delete_item("device-private-key");
+            // Best-effort cleanup: remove the already-written device-token.
             let _ = keychain::delete_item("device-token");
             CreateAccountError::KeychainError
         })?;
@@ -324,5 +315,26 @@ mod tests {
         let json = serde_json::to_value(map_409_subcode("UNKNOWN_SUBCODE")).unwrap();
         assert_eq!(json["code"], "UNKNOWN");
         assert!(json["message"].as_str().unwrap().contains("409:"));
+    }
+
+    // AC5.1 — create_account will use this key as device_public_key.
+    // We verify: (a) the key exists and is correctly formatted, (b) it's stable so
+    // create_account always sends the same device_public_key for this device.
+    #[test]
+    fn create_account_uses_device_key_public_key() {
+        let key = crate::device_key::get_or_create()
+            .expect("device_key::get_or_create must succeed — create_account depends on it");
+        // The relay expects multibase: 'z' + base58btc(33-byte compressed P-256 point).
+        assert!(
+            key.multibase.starts_with('z'),
+            "device_public_key sent to relay must be multibase base58btc ('z' prefix), got: {}",
+            key.multibase
+        );
+        // Calling again returns the same key — create_account sends consistent device_public_key.
+        let key2 = crate::device_key::get_or_create().expect("second call must also succeed");
+        assert_eq!(
+            key.multibase, key2.multibase,
+            "device_public_key must be stable across calls (idempotent)"
+        );
     }
 }
