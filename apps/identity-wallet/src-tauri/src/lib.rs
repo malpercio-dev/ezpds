@@ -143,8 +143,8 @@ async fn create_account(
             })?;
 
         // 5. Store tokens in Keychain.
-        // If either token write fails, clean up the private key (best-effort) to avoid
-        // orphaning a key on the relay with no tokens to access it.
+        // If session-token write fails, best-effort remove the already-written device-token.
+        // The device key is persistent by design and is NOT cleaned up on failure.
         keychain::store_item("device-token", body.device_token.as_bytes()).map_err(|_| {
             // device-token write failed — nothing to clean up; the device key is persistent by design.
             CreateAccountError::KeychainError
