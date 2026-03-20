@@ -158,19 +158,32 @@ fn base32_lowercase() -> Result<data_encoding::Encoding, CryptoError> {
         .map_err(|e| CryptoError::PlcOperation(format!("build base32 encoding: {e}")))
 }
 
-pub fn build_did_plc_genesis_op(
+/// Build and sign a did:plc genesis operation using an external signing callback.
+///
+/// This variant accepts a signing callback instead of raw private key bytes, enabling
+/// use with non-extractable keys such as Apple Secure Enclave keys.
+///
+/// # Parameters
+/// - `rotation_key`: The user's device key (highest-priority rotation key). Placed at `rotationKeys[0]`.
+/// - `signing_key`: The relay's signing key. Placed at `rotationKeys[1]` and `verificationMethods.atproto`.
+/// - `handle`: The account handle, e.g. `"alice.example.com"`. Stored as `"at://alice.example.com"` in `alsoKnownAs`.
+/// - `service_endpoint`: The relay's public URL, e.g. `"https://relay.example.com"`.
+/// - `sign`: A callback that receives the CBOR-encoded unsigned op bytes and must return the
+///   raw 64-byte r‖s P-256 ECDSA signature bytes (big-endian, low-S canonical).
+///
+/// # Errors
+/// Returns `CryptoError::PlcOperation` if `sign` returns `Err`, or if any serialization step fails.
+pub fn build_did_plc_genesis_op_with_external_signer<F>(
     rotation_key: &DidKeyUri,
     signing_key: &DidKeyUri,
-    signing_private_key: &[u8; 32],
     handle: &str,
     service_endpoint: &str,
-) -> Result<PlcGenesisOp, CryptoError> {
-    // Step 1: Construct signing key from raw scalar bytes.
-    let field_bytes: FieldBytes = (*signing_private_key).into();
-    let sk = SigningKey::from_bytes(&field_bytes)
-        .map_err(|e| CryptoError::PlcOperation(format!("invalid signing key: {e}")))?;
-
-    // Step 2: Build the unsigned operation.
+    sign: F,
+) -> Result<PlcGenesisOp, CryptoError>
+where
+    F: FnOnce(&[u8]) -> Result<Vec<u8>, CryptoError>,
+{
+    // Step 1: Build the unsigned operation.
     let mut verification_methods = BTreeMap::new();
     verification_methods.insert("atproto".to_string(), signing_key.0.clone());
 
@@ -192,20 +205,19 @@ pub fn build_did_plc_genesis_op(
         verification_methods: verification_methods.clone(),
     };
 
-    // Step 3: CBOR-encode the unsigned operation.
+    // Step 2: CBOR-encode the unsigned operation.
     let mut unsigned_cbor = Vec::new();
     into_writer(&unsigned_op, &mut unsigned_cbor)
         .map_err(|e| CryptoError::PlcOperation(format!("cbor encode unsigned op: {e}")))?;
 
-    // Step 4: ECDSA-SHA256 sign (RFC 6979 deterministic, low-S canonical).
-    // Signer::sign internally hashes with SHA-256 before signing.
-    let sig: Signature = sk.sign(&unsigned_cbor);
-    let sig_bytes = sig.to_bytes();
+    // Step 3: Call external signer with the CBOR bytes.
+    // The callback must return raw 64-byte r‖s P-256 ECDSA signature bytes.
+    let sig_bytes = sign(&unsigned_cbor)?;
 
-    // Step 5: base64url-encode the 64-byte r‖s signature (no padding).
-    let sig_str = URL_SAFE_NO_PAD.encode(&sig_bytes[..]);
+    // Step 4: base64url-encode the signature (no padding).
+    let sig_str = URL_SAFE_NO_PAD.encode(&sig_bytes);
 
-    // Step 6: Build the signed operation (same fields + sig).
+    // Step 5: Build the signed operation (same fields + sig).
     let signed_op = SignedPlcOp {
         sig: sig_str,
         prev: None,
@@ -216,19 +228,19 @@ pub fn build_did_plc_genesis_op(
         verification_methods,
     };
 
-    // Step 7: CBOR-encode the signed operation.
+    // Step 6: CBOR-encode the signed operation.
     let mut signed_cbor = Vec::new();
     into_writer(&signed_op, &mut signed_cbor)
         .map_err(|e| CryptoError::PlcOperation(format!("cbor encode signed op: {e}")))?;
 
-    // Step 8: SHA-256 hash of the signed CBOR.
+    // Step 7: SHA-256 hash of the signed CBOR.
     let hash = Sha256::digest(&signed_cbor);
 
-    // Step 9: base32-lowercase, take first 24 characters.
+    // Step 8: base32-lowercase, take first 24 characters.
     let encoded = base32_lowercase()?.encode(hash.as_ref());
     let did = format!("did:plc:{}", &encoded[..24]);
 
-    // Step 10: JSON-serialize the signed operation.
+    // Step 9: JSON-serialize the signed operation.
     let signed_op_json = serde_json::to_string(&signed_op)
         .map_err(|e| CryptoError::PlcOperation(format!("json serialize signed op: {e}")))?;
 
@@ -236,6 +248,28 @@ pub fn build_did_plc_genesis_op(
         did,
         signed_op_json,
     })
+}
+
+pub fn build_did_plc_genesis_op(
+    rotation_key: &DidKeyUri,
+    signing_key: &DidKeyUri,
+    signing_private_key: &[u8; 32],
+    handle: &str,
+    service_endpoint: &str,
+) -> Result<PlcGenesisOp, CryptoError> {
+    let field_bytes: FieldBytes = (*signing_private_key).into();
+    let sk = SigningKey::from_bytes(&field_bytes)
+        .map_err(|e| CryptoError::PlcOperation(format!("invalid signing key: {e}")))?;
+    build_did_plc_genesis_op_with_external_signer(
+        rotation_key,
+        signing_key,
+        handle,
+        service_endpoint,
+        |data| {
+            let sig: Signature = Signer::sign(&sk, data);
+            Ok(sig.to_bytes().to_vec())
+        },
+    )
 }
 
 /// Verify a client-submitted did:plc signed genesis operation.
@@ -737,5 +771,63 @@ mod tests {
             verified.did, op.did,
             "DID should match the original op's DID"
         );
+    }
+
+    // MM-146.AC2.1: Callback receives CBOR bytes; returned PlcGenesisOp passes verify_genesis_op.
+    #[test]
+    fn external_signer_callback_produces_valid_genesis_op() {
+        let rotation_kp = generate_p256_keypair().expect("rotation keypair");
+        let signing_kp = generate_p256_keypair().expect("signing keypair");
+        let private_key_bytes: [u8; 32] = *signing_kp.private_key_bytes;
+
+        // Simulate SE: the key is available for signing but bytes are not "exposed" to the caller.
+        let field_bytes: FieldBytes = private_key_bytes.into();
+        let sk = SigningKey::from_bytes(&field_bytes).expect("valid signing key");
+
+        let result = build_did_plc_genesis_op_with_external_signer(
+            &rotation_kp.key_id,
+            &signing_kp.key_id,
+            "alice.example.com",
+            "https://relay.example.com",
+            |data| {
+                let sig: Signature = Signer::sign(&sk, data);
+                Ok(sig.to_bytes().to_vec())
+            },
+        )
+        .expect("external signer should succeed");
+
+        // The resulting op must pass verify_genesis_op with the signing key (which made the signature).
+        let verified = verify_genesis_op(&result.signed_op_json, &signing_kp.key_id)
+            .expect("signed op must be verifiable with signing key");
+        assert_eq!(
+            verified.did, result.did,
+            "verified DID must match the DID returned by the builder"
+        );
+    }
+
+    // MM-146.AC2.2: Callback returning Err propagates as CryptoError::PlcOperation.
+    #[test]
+    fn external_signer_callback_error_propagates_as_plc_operation() {
+        let rotation_kp = generate_p256_keypair().expect("rotation keypair");
+        let signing_kp = generate_p256_keypair().expect("signing keypair");
+
+        let result = build_did_plc_genesis_op_with_external_signer(
+            &rotation_kp.key_id,
+            &signing_kp.key_id,
+            "alice.example.com",
+            "https://relay.example.com",
+            |_data| Err(CryptoError::PlcOperation("SE signing failed".to_string())),
+        );
+
+        assert!(result.is_err(), "must return error when callback fails");
+        match result.unwrap_err() {
+            CryptoError::PlcOperation(msg) => {
+                assert!(
+                    msg.contains("SE signing failed"),
+                    "error message must propagate from callback, got: {msg}"
+                );
+            }
+            other => panic!("expected CryptoError::PlcOperation, got: {other:?}"),
+        }
     }
 }

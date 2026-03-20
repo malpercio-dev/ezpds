@@ -9,5 +9,8 @@ pub use error::CryptoError;
 pub use keys::{
     decrypt_private_key, encrypt_private_key, generate_p256_keypair, DidKeyUri, P256Keypair,
 };
-pub use plc::{build_did_plc_genesis_op, verify_genesis_op, PlcGenesisOp, VerifiedGenesisOp};
+pub use plc::{
+    build_did_plc_genesis_op, build_did_plc_genesis_op_with_external_signer, verify_genesis_op,
+    PlcGenesisOp, VerifiedGenesisOp,
+};
 pub use shamir::{combine_shares, split_secret, ShamirShare};
