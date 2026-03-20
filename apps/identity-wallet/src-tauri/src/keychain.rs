@@ -36,3 +36,11 @@ pub fn get_item(account: &str) -> Result<Vec<u8>, KeychainError> {
 pub fn delete_item(account: &str) -> Result<(), KeychainError> {
     delete_generic_password(SERVICE, account).map_err(KeychainError::Security)
 }
+
+/// Returns true if the error is errSecItemNotFound (OS status -25300).
+/// Use this to distinguish "item does not exist" from transient OS errors.
+pub fn is_not_found(err: &KeychainError) -> bool {
+    match err {
+        KeychainError::Security(e) => e.code() == -25300,
+    }
+}

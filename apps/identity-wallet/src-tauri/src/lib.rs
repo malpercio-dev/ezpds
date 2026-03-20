@@ -113,9 +113,7 @@ async fn create_account(
     handle: String,
 ) -> Result<CreateAccountResult, CreateAccountError> {
     // 1. Get or create the device's SE-backed (or simulator-fallback) P-256 key.
-    let device_key = device_key::get_or_create().map_err(|e| CreateAccountError::Unknown {
-        message: e.to_string(),
-    })?;
+    let device_key = device_key::get_or_create().map_err(|_| CreateAccountError::KeychainError)?;
 
     // 2. POST to relay.
     let req = CreateMobileAccountRequest {
@@ -332,11 +330,10 @@ mod tests {
         assert!(json["message"].as_str().unwrap().contains("409:"));
     }
 
-    // create_account uses device_key::get_or_create() as its public key source
-    // We verify: (a) the key exists and is correctly formatted, (b) it's stable so
-    // create_account always sends the same device_public_key for this device.
+    // Tests the device_key contract that create_account depends on: the returned key
+    // is correctly formatted (multibase base58btc) and is idempotent (stable across calls).
     #[test]
-    fn create_account_uses_device_key_public_key() {
+    fn device_key_contract_satisfies_relay_format() {
         let key = crate::device_key::get_or_create()
             .expect("device_key::get_or_create must succeed — create_account depends on it");
         // The relay expects multibase: 'z' + base58btc(33-byte compressed P-256 point).

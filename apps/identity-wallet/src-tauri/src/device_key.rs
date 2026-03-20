@@ -62,7 +62,7 @@ pub fn get_or_create() -> Result<DevicePublicKey, DeviceKeyError> {
             // No key yet — generate a new P-256 keypair via the crypto crate.
             let keypair =
                 crypto::generate_p256_keypair().map_err(|_| DeviceKeyError::KeyGenerationFailed)?;
-            // Deref Zeroizing<[u8; 32]> to [u8; 32], then collect as Vec<u8>.
+            // to_vec(): Deref gives &[u8; 32], coerces to &[u8], allocates into Vec<u8>.
             let bytes = keypair.private_key_bytes.to_vec();
             crate::keychain::store_item(ACCOUNT, &bytes).map_err(|e| {
                 DeviceKeyError::KeychainError {
@@ -105,8 +105,16 @@ pub fn sign(data: &[u8]) -> Result<Vec<u8>, DeviceKeyError> {
     const ACCOUNT: &str = "device-rotation-key-priv";
 
     // If the key doesn't exist, signal that get_or_create must be called first.
-    let private_bytes =
-        crate::keychain::get_item(ACCOUNT).map_err(|_| DeviceKeyError::KeyNotFound)?;
+    // Distinguish ItemNotFound from other OS errors.
+    let private_bytes = crate::keychain::get_item(ACCOUNT).map_err(|e| {
+        if crate::keychain::is_not_found(&e) {
+            DeviceKeyError::KeyNotFound
+        } else {
+            DeviceKeyError::KeychainError {
+                message: e.to_string(),
+            }
+        }
+    })?;
 
     let signing_key =
         SigningKey::from_slice(&private_bytes).map_err(|_| DeviceKeyError::SigningFailed)?;
@@ -121,7 +129,6 @@ pub fn sign(data: &[u8]) -> Result<Vec<u8>, DeviceKeyError> {
 
 // ── Real device (Secure Enclave) path ────────────────────────────────────────
 //
-// Phase 2 implementation using security_framework 3.x safe wrapper.
 // The SE private key is permanent and non-extractable; the public key and
 // application_label (SHA1 hash) are stored in the regular Keychain for lookup.
 
@@ -134,20 +141,36 @@ const SE_APP_LABEL_ACCOUNT: &str = "device-rotation-key-app-label";
 
 #[cfg(all(target_os = "ios", not(target_env = "sim")))]
 pub fn get_or_create() -> Result<DevicePublicKey, DeviceKeyError> {
-    // Fast path: if we already stored the compressed public key, return it directly.
+    // Fast path: if we already stored the compressed public key and app_label, return it directly.
     // This avoids SE hardware interaction on every call after first generation.
-    if let Ok(compressed) = crate::keychain::get_item(SE_PUB_ACCOUNT) {
-        let multibase = multibase::encode(multibase::Base::Base58Btc, &compressed);
-        // did:key requires the P-256 multicodec varint prefix [0x80, 0x24] (0x1200 as LEB128).
-        const P256_MULTICODEC: &[u8] = &[0x80, 0x24];
-        let mut multikey = Vec::with_capacity(2 + compressed.len());
-        multikey.extend_from_slice(P256_MULTICODEC);
-        multikey.extend_from_slice(&compressed);
-        let key_id = format!(
-            "did:key:{}",
-            multibase::encode(multibase::Base::Base58Btc, &multikey)
-        );
-        return Ok(DevicePublicKey { multibase, key_id });
+    // Check BOTH SE_PUB_ACCOUNT and SE_APP_LABEL_ACCOUNT to ensure state consistency.
+    match (
+        crate::keychain::get_item(SE_PUB_ACCOUNT),
+        crate::keychain::get_item(SE_APP_LABEL_ACCOUNT),
+    ) {
+        (Ok(compressed), Ok(_)) => {
+            // Both present — fast path. Return the cached public key.
+            let multibase = multibase::encode(multibase::Base::Base58Btc, &compressed);
+            // did:key requires the P-256 multicodec varint prefix [0x80, 0x24] (0x1200 as LEB128).
+            const P256_MULTICODEC: &[u8] = &[0x80, 0x24];
+            let mut multikey = Vec::with_capacity(2 + compressed.len());
+            multikey.extend_from_slice(P256_MULTICODEC);
+            multikey.extend_from_slice(&compressed);
+            let key_id = format!(
+                "did:key:{}",
+                multibase::encode(multibase::Base::Base58Btc, &multikey)
+            );
+            return Ok(DevicePublicKey { multibase, key_id });
+        }
+        (Err(e), _) | (_, Err(e)) if !crate::keychain::is_not_found(&e) => {
+            // Transient OS error — do not fall through to generation.
+            return Err(DeviceKeyError::KeychainError {
+                message: e.to_string(),
+            });
+        }
+        _ => {
+            // One or both missing — fall through to generate.
+        }
     }
 
     // Generate a new SE-backed P-256 key.
@@ -156,10 +179,7 @@ pub fn get_or_create() -> Result<DevicePublicKey, DeviceKeyError> {
     // not survive app restart.
     // set_access_control with PRIVATE_KEY_USAGE is required for SE keys — the SE enforces
     // that only explicitly-authorized operations can use the private key for signing.
-    //
-    // Note: SecAccessControl::create_with_protection takes Option<ProtectionMode> and a raw
-    // flags u64. The PRIVATE_KEY_USAGE flag is kSecAccessControlPrivateKeyUsage = 1 << 30.
-    // If the compiler reports an ambiguous type on the flags argument, use `0x4000_0000_u64`.
+    // The PRIVATE_KEY_USAGE flag is kSecAccessControlPrivateKeyUsage = 1 << 30.
     let access_control = SecAccessControl::create_with_protection(
         Some(ProtectionMode::AccessibleWhenUnlockedThisDeviceOnly),
         1 << 30, // kSecAccessControlPrivateKeyUsage
@@ -204,12 +224,15 @@ pub fn get_or_create() -> Result<DevicePublicKey, DeviceKeyError> {
         }
     })?;
 
-    // Store the application_label (OS-assigned SHA1 of public key, 20 bytes)
-    // so sign() can locate the SE private key on future app launches.
-    let app_label = priv_key
-        .application_label()
-        .ok_or(DeviceKeyError::KeyGenerationFailed)?;
+    // Get and store application_label. Roll back SE_PUB_ACCOUNT if this fails.
+    let app_label = priv_key.application_label().ok_or_else(|| {
+        let _ = crate::keychain::delete_item(SE_PUB_ACCOUNT);
+        DeviceKeyError::KeychainError {
+            message: "SE key created but application_label returned None; do not retry".into(),
+        }
+    })?;
     crate::keychain::store_item(SE_APP_LABEL_ACCOUNT, &app_label).map_err(|e| {
+        let _ = crate::keychain::delete_item(SE_PUB_ACCOUNT);
         DeviceKeyError::KeychainError {
             message: e.to_string(),
         }
@@ -246,7 +269,9 @@ pub fn sign(data: &[u8]) -> Result<Vec<u8>, DeviceKeyError> {
         .load_refs(true)
         .limit(1);
 
-    let results = search.search().map_err(|_| DeviceKeyError::KeyNotFound)?;
+    let results = search.search().map_err(|e| DeviceKeyError::KeychainError {
+        message: e.to_string(),
+    })?;
 
     // Extract the SecKey from the typed Reference result.
     // SearchResult::Ref wraps a Reference enum; Reference::Key holds the already-wrapped SecKey.
@@ -265,7 +290,7 @@ pub fn sign(data: &[u8]) -> Result<Vec<u8>, DeviceKeyError> {
 
     // Convert DER to raw 64-byte r||s (the format expected by ATProto/did:plc).
     // from_der() is a pure parser — it does NOT normalize low-S. Apple's SE may return
-    // high-S signatures. normalize_s() ensures s <= order/2 as required by ATProto.
+    // high-S signatures. normalize_s() returns None if already low-S (no-op), Some(normalized) if high-S was reduced.
     let sig = Signature::from_der(&der_sig).map_err(|_| DeviceKeyError::InvalidSignature)?;
     let sig = sig.normalize_s().unwrap_or(sig);
     Ok(sig.to_bytes().to_vec())
@@ -333,6 +358,21 @@ mod tests {
         );
     }
 
+    // Verify that signatures produced by sign() actually verify against the public key
+    #[test]
+    fn sign_output_verifies_against_public_key() {
+        use p256::ecdsa::{signature::Verifier, Signature, VerifyingKey};
+        let key = get_or_create().expect("must have key");
+        let (_, compressed) = multibase::decode(&key.multibase).expect("must decode");
+        let verifying_key = VerifyingKey::from_sec1_bytes(&compressed).expect("must parse");
+        let data = b"verification test";
+        let sig_bytes = sign(data).expect("sign must succeed");
+        let sig = Signature::from_bytes(sig_bytes.as_slice().into()).expect("must parse sig");
+        verifying_key
+            .verify(data, &sig)
+            .expect("signature must verify");
+    }
+
     // sign before get_or_create returns KeyNotFound
     #[test]
     fn sign_before_generate_returns_key_not_found() {
@@ -357,12 +397,20 @@ mod tests {
         let json2 = serde_json::to_value(&err2).unwrap();
         assert_eq!(json2["code"], "KEY_NOT_FOUND");
 
-        let err3 = DeviceKeyError::KeychainError {
+        let err3 = DeviceKeyError::SigningFailed;
+        let json3 = serde_json::to_value(&err3).unwrap();
+        assert_eq!(json3["code"], "SIGNING_FAILED");
+
+        let err4 = DeviceKeyError::InvalidSignature;
+        let json4 = serde_json::to_value(&err4).unwrap();
+        assert_eq!(json4["code"], "INVALID_SIGNATURE");
+
+        let err5 = DeviceKeyError::KeychainError {
             message: "os error".into(),
         };
-        let json3 = serde_json::to_value(&err3).unwrap();
-        assert_eq!(json3["code"], "KEYCHAIN_ERROR");
-        assert_eq!(json3["message"], "os error");
+        let json5 = serde_json::to_value(&err5).unwrap();
+        assert_eq!(json5["code"], "KEYCHAIN_ERROR");
+        assert_eq!(json5["message"], "os error");
     }
 
     // Ensures DevicePublicKey serializes key_id as keyId (camelCase) for Tauri IPC.
