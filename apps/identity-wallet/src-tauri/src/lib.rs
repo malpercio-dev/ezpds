@@ -179,10 +179,25 @@ async fn create_account(
     }
 }
 
+#[tauri::command]
+async fn get_or_create_device_key(
+) -> Result<device_key::DevicePublicKey, device_key::DeviceKeyError> {
+    device_key::get_or_create()
+}
+
+#[tauri::command]
+async fn sign_with_device_key(data: Vec<u8>) -> Result<Vec<u8>, device_key::DeviceKeyError> {
+    device_key::sign(&data)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![create_account])
+        .invoke_handler(tauri::generate_handler![
+            create_account,
+            get_or_create_device_key,
+            sign_with_device_key,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

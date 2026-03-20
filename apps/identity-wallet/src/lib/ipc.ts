@@ -45,3 +45,62 @@ export const createAccount = (
   params: CreateAccountParams
 ): Promise<CreateAccountResult> =>
   invoke('create_account', params);
+
+// ── Device Key types ──────────────────────────────────────────────────────────
+
+/**
+ * Device public key returned by the `get_or_create_device_key` Rust command.
+ * Matches DevicePublicKey struct with #[serde(rename_all = "camelCase")].
+ */
+export type DevicePublicKey = {
+  /** 'z' + base58btc(33-byte compressed P-256 public key point). */
+  multibase: string;
+  /** Full did:key URI: 'did:key:z...' */
+  keyId: string;
+};
+
+/**
+ * Error returned by device key commands.
+ *
+ * Serialized as `{ code: "KEY_GENERATION_FAILED" }` etc. by the Rust backend.
+ * `message` is present only for KEYCHAIN_ERROR.
+ */
+export type DeviceKeyError = {
+  code:
+    | 'KEY_GENERATION_FAILED'
+    | 'KEY_NOT_FOUND'
+    | 'SIGNING_FAILED'
+    | 'INVALID_SIGNATURE'
+    | 'KEYCHAIN_ERROR';
+  message?: string;
+};
+
+// ── get_or_create_device_key ─────────────────────────────────────────────────
+
+/**
+ * Get or create the device's SE-backed (or simulator-fallback) P-256 keypair.
+ *
+ * Idempotent — returns the same key on every call for a given device.
+ * On failure, the Promise rejects with a `DeviceKeyError`.
+ */
+export const getOrCreateDeviceKey = (): Promise<DevicePublicKey> =>
+  invoke('get_or_create_device_key');
+
+// ── sign_with_device_key ─────────────────────────────────────────────────────
+
+/**
+ * Sign arbitrary bytes using the device's SE-backed (or simulator-fallback) P-256 key.
+ *
+ * Returns the raw 64-byte ECDSA r||s signature as a Uint8Array.
+ *
+ * IMPORTANT: `data` is converted to `number[]` before passing to Tauri's IPC
+ * because Tauri v2's JSON deserializer cannot accept a `Uint8Array` nested inside
+ * an object property — it must be a plain number array. See tauri#10336.
+ *
+ * On failure, the Promise rejects with a `DeviceKeyError` (code: KEY_NOT_FOUND
+ * if `getOrCreateDeviceKey` has never been called for this device).
+ */
+export const signWithDeviceKey = (data: Uint8Array): Promise<Uint8Array> =>
+  (invoke('sign_with_device_key', { data: Array.from(data) }) as Promise<number[]>).then(
+    (bytes) => new Uint8Array(bytes),
+  );

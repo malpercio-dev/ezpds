@@ -10,6 +10,7 @@ use security_framework::{
 // ── Public types ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DevicePublicKey {
     /// Multibase base58btc-encoded compressed P-256 public key point.
     /// Format: 'z' + base58btc(33-byte SEC1 compressed point).
@@ -361,5 +362,26 @@ mod tests {
         let json3 = serde_json::to_value(&err3).unwrap();
         assert_eq!(json3["code"], "KEYCHAIN_ERROR");
         assert_eq!(json3["message"], "os error");
+    }
+
+    // Ensures DevicePublicKey serializes key_id as keyId (camelCase) for Tauri IPC.
+    // Without #[serde(rename_all = "camelCase")], this test fails.
+    #[test]
+    fn device_public_key_serializes_camel_case() {
+        let key = DevicePublicKey {
+            multibase: "zTest".into(),
+            key_id: "did:key:zTest".into(),
+        };
+        let json = serde_json::to_value(&key).unwrap();
+        assert_eq!(json["multibase"], "zTest");
+        assert_eq!(
+            json["keyId"], "did:key:zTest",
+            "key_id must serialize as keyId for TypeScript"
+        );
+        // Confirm the snake_case version is NOT present.
+        assert!(
+            json.get("key_id").is_none(),
+            "key_id must not appear as snake_case in JSON"
+        );
     }
 }
