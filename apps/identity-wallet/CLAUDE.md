@@ -226,7 +226,7 @@ The Nix cc-wrapper (in `.devenv/profile/bin/clang`) injects `-mmacos-version-min
 
 Rust proc-macros (e.g. `phf_macros`) are compiled for the host (`aarch64-apple-darwin`) even during an iOS cross-compilation build. The Nix cc-wrapper uses a partial Nix apple-sdk as sysroot, which omits some `/usr/lib` stubs including `libiconv.tbd`. The linker passes `-liconv` but can't find it.
 
-**Fix:** Already resolved. `src-tauri/.cargo/config.toml` sets `[target.aarch64-apple-darwin].linker` to Xcode's clang, which resolves all macOS system libraries correctly.
+**Fix:** Already resolved. `src-tauri/.cargo/config.toml` sets `[target.aarch64-apple-darwin].linker` to Xcode's clang and adds `rustflags = ["-L", ".../MacOSX.sdk/usr/lib"]` so the linker finds `/usr/lib` stubs (including `libiconv.tbd`) from the real Xcode SDK sysroot.
 
 ---
 
