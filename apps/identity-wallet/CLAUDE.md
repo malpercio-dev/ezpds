@@ -242,7 +242,7 @@ The final link of `identity-wallet.dylib` for `aarch64-apple-ios-sim` uses `cc` 
 
 Swift Package Manager sandboxes its manifest compilation using `sandbox-exec`. On macOS 26 (Tahoe), `sandbox_apply()` returns `EPERM` in this context, causing `swift-rs`'s build script (used by Tauri) to fail with "Failed to compile swift package Tauri".
 
-**Fix:** Already resolved. `src-tauri/.cargo/config.toml` sets `SWIFTPM_ENABLE_SANDBOX = "0"` in `[env]`, which tells SPM not to apply a sandbox when compiling `Package.swift` manifests. This is inherited by the `tauri` build script's child `swift` process.
+**Fix:** Already resolved. A local patch of `swift-rs` 1.0.7 at `apps/identity-wallet/swift-rs-patch/` adds `--disable-sandbox` to the `swift build` invocation inside `SwiftLinker::link`. The workspace `Cargo.toml` wires this in via `[patch.crates-io]`. Remove the patch entry when swift-rs ships a fix upstream.
 
 ---
 
