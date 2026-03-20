@@ -1,6 +1,6 @@
 # Crypto Crate
 
-Last verified: 2026-03-14
+Last verified: 2026-03-20
 
 ## Purpose
 Provides cryptographic primitives for the ezpds workspace: P-256 key generation,
@@ -64,6 +64,23 @@ pub fn build_did_plc_genesis_op(
 - `signed_op_json` is ready to POST to `https://plc.directory/{did}`
 - Deterministic: same inputs → same DID (RFC 6979 ECDSA + SHA-256 + base32)
 - Errors: `CryptoError::PlcOperation` if `signing_private_key` is an invalid P-256 scalar
+- Delegates internally to `build_did_plc_genesis_op_with_external_signer` with a closure wrapping `SigningKey::sign`
+
+**`build_did_plc_genesis_op_with_external_signer`**
+```rust
+pub fn build_did_plc_genesis_op_with_external_signer<F>(
+    rotation_key: &DidKeyUri,       // user's device key (rotationKeys[0])
+    signing_key: &DidKeyUri,        // relay's signing key (rotationKeys[1] + verificationMethods.atproto)
+    handle: &str,                   // e.g. "alice.example.com"
+    service_endpoint: &str,         // e.g. "https://relay.example.com"
+    sign: F,                        // callback: &[u8] -> Result<Vec<u8>, CryptoError>
+) -> Result<PlcGenesisOp, CryptoError>
+where F: FnOnce(&[u8]) -> Result<Vec<u8>, CryptoError>
+```
+- Same as `build_did_plc_genesis_op` but accepts a signing callback instead of raw private key bytes
+- Enables signing with non-extractable keys (e.g. Apple Secure Enclave)
+- Callback receives CBOR-encoded unsigned op bytes; must return raw 64-byte r||s P-256 ECDSA signature (big-endian, low-S canonical)
+- Errors: propagates any `CryptoError` returned by the callback, or `CryptoError::PlcOperation` for serialization failures
 
 **`verify_genesis_op`**
 ```rust
@@ -111,7 +128,7 @@ pub fn verify_genesis_op(
 
 ## Dependencies
 - **Uses**: p256 (ECDSA/key generation), aes-gcm (AES-256-GCM), multibase (base58btc encoding), rand_core (OS RNG), base64 (storage encoding), zeroize (secret cleanup), ciborium (CBOR serialization for did:plc), data-encoding (base32-lowercase), sha2 (SHA-256), serde/serde_json (struct serialization)
-- **Used by**: `crates/relay/` (key generation, did:plc genesis building and verification in POST /v1/dids)
+- **Used by**: `crates/relay/` (key generation, did:plc genesis building and verification in POST /v1/dids), `apps/identity-wallet/` (external signer genesis op building in DID ceremony)
 
 ## Invariants
 - Private key bytes are always wrapped in `Zeroizing` -- callers must not copy them into non-zeroizing storage
