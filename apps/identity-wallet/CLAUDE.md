@@ -1,6 +1,6 @@
 # Identity Wallet Mobile App
 
-Last verified: 2026-03-15
+Last verified: 2026-03-20
 
 ## Purpose
 
@@ -11,7 +11,7 @@ Tauri v2 iOS application — SvelteKit 2 + Svelte 5 frontend running in a native
 ### Frontend (SvelteKit 2 + Svelte 5)
 
 **Exposes:**
-- `src/lib/ipc.ts` — typed wrappers for all Tauri IPC commands; import these instead of calling `invoke()` directly
+- `src/lib/ipc.ts` — typed wrappers for all Tauri IPC commands; import these instead of calling `invoke()` directly. Exports: `createAccount()`, `getOrCreateDeviceKey()`, `signWithDeviceKey()`, and their associated types (`DevicePublicKey`, `DeviceKeyError`, `CreateAccountResult`, `CreateAccountError`)
 - `src/lib/components/onboarding/` — five onboarding screen components (WelcomeScreen, ClaimCodeScreen, EmailScreen, HandleScreen, LoadingScreen)
 - `src/routes/+page.svelte` — root page: five-screen onboarding state machine (welcome -> claim_code -> email -> handle -> loading -> did_ceremony)
 
@@ -28,7 +28,10 @@ Tauri v2 iOS application — SvelteKit 2 + Svelte 5 frontend running in a native
 ### Rust Backend (src-tauri/)
 
 **Exposes:**
-- `src/lib.rs::create_account(claim_code: String, email: String, handle: String) -> Result<CreateAccountResult, CreateAccountError>` — Tauri IPC command: generates P-256 keypair, stores private key in Keychain, POSTs to relay `/v1/accounts/mobile`, stores tokens in Keychain on success
+- `src/lib.rs::create_account(claim_code, email, handle) -> Result<CreateAccountResult, CreateAccountError>` — Tauri IPC command: gets or creates device key via `device_key::get_or_create()`, POSTs to relay `/v1/accounts/mobile`, stores tokens in Keychain on success
+- `src/lib.rs::get_or_create_device_key() -> Result<DevicePublicKey, DeviceKeyError>` — Tauri IPC command: delegates to `device_key::get_or_create()`
+- `src/lib.rs::sign_with_device_key(data: Vec<u8>) -> Result<Vec<u8>, DeviceKeyError>` — Tauri IPC command: delegates to `device_key::sign()`
+- `src/device_key.rs` — P-256 device key management with `#[cfg]`-based dispatch: macOS/simulator uses software keys via `crypto` crate + Keychain storage; real iOS device uses Secure Enclave via `security-framework`. Public API: `get_or_create() -> Result<DevicePublicKey, DeviceKeyError>` (idempotent), `sign(data) -> Result<Vec<u8>, DeviceKeyError>`
 - `src/keychain.rs` — iOS Keychain abstraction (`store_item`, `get_item`, `delete_item`) under service `"ezpds-identity-wallet"`
 - `src/http.rs` — `RelayClient` with compile-time base URL (localhost:8080 debug, relay.ezpds.com release)
 
@@ -37,7 +40,10 @@ Tauri v2 iOS application — SvelteKit 2 + Svelte 5 frontend running in a native
 - `src/main.rs` is the desktop entry point; `src/lib.rs::run()` is the iOS/Android entry point (via `#[cfg_attr(mobile, tauri::mobile_entry_point)]`)
 - `tauri.conf.json` configures the bundle identifier, dev URL (`http://localhost:5173`), and frontend dist path (`../dist`)
 - `create_account` maps relay HTTP error codes to typed `CreateAccountError` variants (EXPIRED_CODE, REDEEMED_CODE, EMAIL_TAKEN, HANDLE_TAKEN, NETWORK_ERROR, UNKNOWN) serialized as `{ code: "SCREAMING_SNAKE" }` for the frontend
-- Private key is stored in Keychain before any network call (fail-safe ordering)
+- `device_key::get_or_create()` is idempotent -- returns the same key on every call for a given device
+- `device_key::sign()` returns raw 64-byte r||s ECDSA signatures; deterministic (RFC 6979) on simulator, low-S normalized on real device
+- `DeviceKeyError` variants serialize as `{ code: "SCREAMING_SNAKE_CASE" }` matching the `CreateAccountError` pattern
+- Device key dispatch: `#[cfg(any(target_os = "macos", all(target_os = "ios", target_env = "sim")))]` for software path, `#[cfg(all(target_os = "ios", not(target_env = "sim")))]` for Secure Enclave path
 
 **Expects:**
 - `tauri.conf.json` exists in `src-tauri/` before `cargo build` runs — the config is read at compile time by `generate_context!()`
@@ -49,9 +55,12 @@ Tauri v2 iOS application — SvelteKit 2 + Svelte 5 frontend running in a native
 
 - Frontend -> Rust backend (via Tauri IPC -- `@tauri-apps/api/core` `invoke()`)
 - Rust backend -> Cargo workspace (inherits `version`, `edition`, `publish` from root `Cargo.toml`)
-- Rust backend -> `crates/crypto` (workspace dep: P-256 key generation for `create_account`)
+- Rust backend -> `crates/crypto` (workspace dep: P-256 key generation in simulator/macOS software path)
+- Rust backend -> `p256` (workspace dep: key reconstruction, signature types in both paths)
+- Rust backend -> `multibase` (workspace dep: base58btc encoding for multibase/did:key output)
 - Rust backend -> relay `/v1/accounts/mobile` endpoint (via `reqwest` HTTP at runtime)
-- Rust backend -> iOS Keychain (via `security-framework` crate)
+- Rust backend -> iOS Keychain (via `security-framework` crate with `OSX_10_12` feature for SE access control APIs)
+- Rust backend -> Secure Enclave hardware (real iOS device only; via `security-framework` `SecKey`/`GenerateKeyOptions`/`Token::SecureEnclave`)
 - `src-tauri/gen/` -> NOT tracked in git; generated per-developer by `cargo tauri ios init` (gitignored)
 
 ## Prerequisites (macOS/iOS Development)
@@ -138,9 +147,12 @@ cargo build
 - **`generate_context!()` is compile-time**: `tauri.conf.json` must exist when `src-tauri/` is compiled — the macro embeds the config at compile time and will fail to compile if the file is missing.
 - **`src-tauri/gen/` is gitignored**: The Xcode project generated by `cargo tauri ios init` is machine-specific. Committing it causes merge conflicts and bloats the repo.
 - **`tauri` and `tauri-build` declared locally**: These crates are not in `[workspace.dependencies]` because no other workspace crate uses them. `serde` and `serde_json` use `{ workspace = true }` per the standard workspace pattern.
-- **`src-tauri/.cargo/config.toml` committed**: Overrides `CC`, `AR`, and `linker` for iOS and macOS-host targets to use Xcode's unwrapped clang instead of the Nix cc-wrapper. Without this, Nix's clang wrapper injects macOS-specific flags (`-mmacos-version-min`, macOS sysroot) that are incompatible with iOS cross-compilation. See the Troubleshooting section for the full explanation.
+- **`src-tauri/.cargo/config.toml` committed**: Overrides `CC`, `AR`, and `linker` for iOS, iOS Simulator, and macOS-host targets to use Xcode's unwrapped clang instead of the Nix cc-wrapper. The macOS-host `CC`/`AR` overrides (`CC_aarch64_apple_darwin`, `AR_aarch64_apple_darwin`) were added for `security-framework`'s C build scripts which fail under Nix's cc-wrapper. See the Troubleshooting section for the full explanation.
 - **Compile-time relay URL**: `http.rs` uses `#[cfg(debug_assertions)]` to switch between localhost:8080 (debug) and relay.ezpds.com (release). No runtime configuration needed for the base URL.
-- **Keychain-before-network ordering**: `create_account` stores the private key in Keychain **before** POSTing to the relay. This ensures that if the network call fails, the private key is already persisted. On each new account creation attempt (whether first attempt or retry), a fresh keypair is generated and stored, overwriting any prior key. This is safe because the relay is stateless per claim code; each attempt with a new keypair is treated as a new account creation request.
+- **Device key module (`device_key.rs`) with `#[cfg]` dispatch**: Two compile-time paths share the same public API (`get_or_create`, `sign`). macOS and iOS Simulator use software P-256 via `crypto` crate with private key bytes in Keychain. Real iOS device uses Secure Enclave -- private key never leaves the SE; only the compressed public key and application_label (SE-assigned SHA1) are stored in regular Keychain for lookup.
+- **Idempotent key lifecycle**: `get_or_create()` generates on first call, returns the same key on subsequent calls. `create_account` delegates to `device_key::get_or_create()` so the same device key is sent to the relay on every attempt (retries are safe).
+- **P-256 multicodec prefix duplicated**: `device_key.rs` duplicates the `[0x80, 0x24]` P-256 multicodec varint prefix from `crates/crypto/src/keys.rs` because the constant is `pub(crate)` there. This is intentional -- the identity-wallet crate should not depend on internal crypto crate layout.
+- **Low-S normalization on SE path**: Apple's Secure Enclave may produce high-S ECDSA signatures. The SE `sign()` path applies `normalize_s()` to ensure ATProto-compatible low-S form. The simulator path uses RFC 6979 deterministic nonces which already produce low-S.
 - **reqwest with rustls-tls**: Uses `default-features = false` + `rustls-tls` to avoid linking OpenSSL. On iOS, rustls handles TLS natively without additional system deps.
 
 ## Invariants
@@ -151,16 +163,21 @@ cargo build
 - `pnpm-lock.yaml` is committed and kept in sync with `package.json`
 - Keychain service name is always `"ezpds-identity-wallet"` (constant `keychain::SERVICE`); changing it orphans previously stored credentials
 - `CreateAccountError` variant names serialize as SCREAMING_SNAKE_CASE to the frontend -- the TypeScript `CreateAccountError.code` union must match exactly
+- `DeviceKeyError` variant names serialize as SCREAMING_SNAKE_CASE to the frontend -- the TypeScript `DeviceKeyError.code` union must match exactly
+- Keychain account `"device-rotation-key-priv"` stores the software P-256 private key (simulator/macOS path only); changing it orphans existing keys
+- Keychain accounts `"device-rotation-key-pub"` and `"device-rotation-key-app-label"` store SE metadata (real iOS device path only); changing them orphans the SE key lookup
+- `DevicePublicKey` serializes with `#[serde(rename_all = "camelCase")]` -- TypeScript receives `{ multibase, keyId }` (not `key_id`)
 
 ## Key Files
 
 - `src-tauri/tauri.conf.json` -- Tauri config: bundle ID, devUrl, frontendDist, window settings
-- `src-tauri/src/lib.rs` -- Tauri IPC commands (`create_account`) and `run()` (mobile entry point)
+- `src-tauri/src/lib.rs` -- Tauri IPC commands (`create_account`, `get_or_create_device_key`, `sign_with_device_key`) and `run()` (mobile entry point)
+- `src-tauri/src/device_key.rs` -- P-256 device key module: `#[cfg]`-dispatched `get_or_create()` and `sign()` (simulator software path vs. Secure Enclave)
 - `src-tauri/src/main.rs` -- Desktop entry point (calls `lib::run()`)
 - `src-tauri/src/keychain.rs` -- iOS Keychain abstraction (store_item, get_item, delete_item)
 - `src-tauri/src/http.rs` -- RelayClient with compile-time base URL
 - `src-tauri/.cargo/config.toml` -- Cargo toolchain overrides for iOS cross-compilation (CC, AR, linker per target)
-- `src/lib/ipc.ts` -- Typed TypeScript wrappers for all Tauri IPC commands (createAccount)
+- `src/lib/ipc.ts` -- Typed TypeScript wrappers for all Tauri IPC commands (createAccount, getOrCreateDeviceKey, signWithDeviceKey)
 - `src/lib/components/onboarding/` -- Five onboarding screen components
 - `src/routes/+page.svelte` -- Onboarding state machine (welcome -> claim_code -> email -> handle -> loading -> did_ceremony)
 - `src/routes/+layout.ts` -- `ssr = false; prerender = false` (global SPA config)

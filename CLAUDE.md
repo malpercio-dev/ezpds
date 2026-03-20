@@ -1,6 +1,6 @@
 # ezpds
 
-Last verified: 2026-03-14
+Last verified: 2026-03-20
 
 ## Tech Stack
 - Language: Rust (stable channel via rust-toolchain.toml)
