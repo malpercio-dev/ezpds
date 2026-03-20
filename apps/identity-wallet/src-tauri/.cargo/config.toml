@@ -13,6 +13,10 @@
 
 [env]
 RUST_TEST_THREADS = "1"
+# Swift Package Manager uses sandbox-exec to sandbox manifest compilation.
+# On macOS 26 (Tahoe), sandbox_apply() returns EPERM, failing the Tauri ios-api
+# build step. Disabling the SPM sandbox is safe for local dev builds.
+SWIFTPM_ENABLE_SANDBOX = "0"
 CC_aarch64_apple_ios_sim = "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
 CC_aarch64_apple_ios     = "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
 CC_aarch64_apple_darwin  = "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"

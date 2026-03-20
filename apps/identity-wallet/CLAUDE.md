@@ -238,6 +238,14 @@ The final link of `identity-wallet.dylib` for `aarch64-apple-ios-sim` uses `cc` 
 
 ---
 
+### `sandbox-exec: sandbox_apply: Operation not permitted` (Tauri ios-api build)
+
+Swift Package Manager sandboxes its manifest compilation using `sandbox-exec`. On macOS 26 (Tahoe), `sandbox_apply()` returns `EPERM` in this context, causing `swift-rs`'s build script (used by Tauri) to fail with "Failed to compile swift package Tauri".
+
+**Fix:** Already resolved. `src-tauri/.cargo/config.toml` sets `SWIFTPM_ENABLE_SANDBOX = "0"` in `[env]`, which tells SPM not to apply a sandbox when compiling `Package.swift` manifests. This is inherited by the `tauri` build script's child `swift` process.
+
+---
+
 ### Xcode build phase: `cargo: command not found`
 
 After running `cargo tauri ios init`, the generated `project.pbxproj` build script has the system PATH which doesn't include the Nix dev shell or rustup-managed cargo.
