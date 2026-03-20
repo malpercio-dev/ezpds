@@ -2,9 +2,9 @@ pub mod device_key;
 pub mod http;
 pub mod keychain;
 
+use crypto::{build_did_plc_genesis_op_with_external_signer, CryptoError, DidKeyUri};
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
-use crypto::{build_did_plc_genesis_op_with_external_signer, CryptoError, DidKeyUri};
 
 // ── Request / response types ────────────────────────────────────────────────
 
@@ -257,27 +257,26 @@ async fn perform_did_ceremony(handle: String) -> Result<DIDCeremonyResult, DIDCe
     })?;
 
     // Step 2: Fetch the relay's active signing key (public, no auth required).
-    let resp = RELAY_CLIENT
-        .get("/v1/relay/keys")
-        .await
-        .map_err(|e| DIDCeremonyError::NetworkError {
-            message: e.to_string(),
-        })?;
+    let resp =
+        RELAY_CLIENT
+            .get("/v1/relay/keys")
+            .await
+            .map_err(|e| DIDCeremonyError::NetworkError {
+                message: e.to_string(),
+            })?;
 
     if resp.status().as_u16() == 503 {
         return Err(DIDCeremonyError::NoRelaySigningKey);
     }
     if !resp.status().is_success() {
+        tracing::warn!(status = %resp.status(), "GET /v1/relay/keys returned non-success status");
         return Err(DIDCeremonyError::RelayKeyFetchFailed);
     }
 
-    let relay_key: RelaySigningKey = resp
-        .json()
-        .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "failed to deserialize relay signing key response");
-            DIDCeremonyError::RelayKeyFetchFailed
-        })?;
+    let relay_key: RelaySigningKey = resp.json().await.map_err(|e| {
+        tracing::warn!(error = %e, "failed to deserialize relay signing key response");
+        DIDCeremonyError::RelayKeyFetchFailed
+    })?;
 
     // Step 3: Build signed genesis op — device key as rotation key, relay key as signing key.
     // The sign callback calls device_key::sign() so the private key never leaves the SE.
@@ -323,26 +322,22 @@ async fn perform_did_ceremony(handle: String) -> Result<DIDCeremonyResult, DIDCe
         })?;
 
     if !resp.status().is_success() {
+        tracing::warn!(status = %resp.status(), "POST /v1/dids returned non-success status");
         return Err(DIDCeremonyError::DidCreationFailed);
     }
 
-    let create_did_resp: CreateDidResponse = resp
-        .json()
-        .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "failed to deserialize POST /v1/dids response");
-            DIDCeremonyError::DidCreationFailed
-        })?;
+    let create_did_resp: CreateDidResponse = resp.json().await.map_err(|e| {
+        tracing::warn!(error = %e, "failed to deserialize POST /v1/dids response");
+        DIDCeremonyError::DidCreationFailed
+    })?;
 
     // Step 6: Overwrite session-token with the upgraded full session token.
-    keychain::store_item(
-        "session-token",
-        create_did_resp.session_token.as_bytes(),
-    )
-    .map_err(|e| {
-        tracing::warn!(error = %e, "failed to persist upgraded session-token to keychain");
-        DIDCeremonyError::KeychainError
-    })?;
+    keychain::store_item("session-token", create_did_resp.session_token.as_bytes()).map_err(
+        |e| {
+            tracing::warn!(error = %e, "failed to persist upgraded session-token to keychain");
+            DIDCeremonyError::KeychainError
+        },
+    )?;
 
     // Step 7: Persist the DID for use in subsequent app sessions.
     keychain::store_item("did", create_did_resp.did.as_bytes()).map_err(|e| {
