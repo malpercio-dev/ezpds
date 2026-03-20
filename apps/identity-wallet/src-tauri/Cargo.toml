@@ -24,6 +24,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 security-framework = "3"
 thiserror = { workspace = true }
 crypto = { workspace = true }
+p256 = { workspace = true }
+multibase = { workspace = true }
 
 [build-dependencies]
 # Tauri-specific — declared locally
