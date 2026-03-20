@@ -20,6 +20,7 @@ use crate::routes::create_handle::create_handle_handler;
 use crate::routes::create_mobile_account::create_mobile_account;
 use crate::routes::create_signing_key::create_signing_key;
 use crate::routes::describe_server::describe_server;
+use crate::routes::get_relay_signing_key::get_relay_signing_key;
 use crate::routes::health::health;
 use crate::routes::register_device::register_device;
 use crate::routes::resolve_handle::resolve_handle_handler;
@@ -119,7 +120,10 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/devices", post(register_device))
         .route("/v1/dids", post(create_did_handler))
         .route("/v1/handles", post(create_handle_handler))
-        .route("/v1/relay/keys", post(create_signing_key))
+        .route(
+            "/v1/relay/keys",
+            get(get_relay_signing_key).post(create_signing_key),
+        )
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http().make_span_with(OtelMakeSpan))
         .with_state(state)
