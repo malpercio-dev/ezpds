@@ -112,6 +112,23 @@ where `<project-root>` is the absolute path to the repo root (e.g. `/Users/you/w
 
 This step is required once per `cargo tauri ios init` run.
 
+### Disable user script sandboxing (one-time manual step after `cargo tauri ios init`)
+
+Xcode 14+ sets `ENABLE_USER_SCRIPT_SANDBOXING = YES` in generated projects, which wraps Run Script build phases in `sandbox-exec`. On macOS 26 (Tahoe), this blocks Cargo's directory walk (package fingerprinting) with:
+
+```
+Failed to update the excludes stack to see if a path is excluded
+```
+
+After regenerating `src-tauri/gen/`, run:
+
+```bash
+sed -i '' 's/ENABLE_USER_SCRIPT_SANDBOXING = YES/ENABLE_USER_SCRIPT_SANDBOXING = NO/g' \
+  src-tauri/gen/apple/identity-wallet.xcodeproj/project.pbxproj
+```
+
+This step is required once per `cargo tauri ios init` run.
+
 ### Why rustup instead of Nix-managed Rust
 
 `languages.rust` in devenv uses Nix's `rust-default` package, which only ships stdlibs for standard host targets. iOS Simulator requires `aarch64-apple-ios-sim` stdlib. Nix doesn't package iOS cross-compilation stdlibs; `rustup` downloads them from the Rust release infrastructure. The dev shell is configured with project-local `RUSTUP_HOME` and `CARGO_HOME` (inside `.devenv/state/`) so the toolchain is isolated per project.
@@ -251,3 +268,16 @@ Swift Package Manager sandboxes its manifest compilation using `sandbox-exec`. O
 After running `cargo tauri ios init`, the generated `project.pbxproj` build script has the system PATH which doesn't include the Nix dev shell or rustup-managed cargo.
 
 **Fix:** See "Xcode build phase PATH" in the First-Time Setup section above. Patch `project.pbxproj` to prepend `.devenv/state/cargo/bin` and `.devenv/profile/bin`.
+
+---
+
+### `Failed to update the excludes stack to see if a path is excluded` (Xcode user script sandbox)
+
+Xcode 14+ enables `ENABLE_USER_SCRIPT_SANDBOXING=YES` by default in generated projects, wrapping Run Script build phases in `sandbox-exec`. On macOS 26 (Tahoe), this sandbox blocks Cargo's `readdir()` calls during package fingerprinting, producing:
+
+```
+error: failed to determine package fingerprint for build script for identity-wallet v0.1.0
+Caused by: Failed to update the excludes stack to see if a path is excluded
+```
+
+**Fix:** See "Disable user script sandboxing" in the First-Time Setup section. Run the `sed` one-liner against `project.pbxproj` after each `cargo tauri ios init`.
