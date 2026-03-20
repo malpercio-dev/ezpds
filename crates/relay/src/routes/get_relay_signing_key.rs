@@ -88,14 +88,12 @@ mod tests {
             .unwrap()
     }
 
-    // MM-146.AC1.3: Returns 503 when no signing key is provisioned.
     #[tokio::test]
     async fn get_relay_keys_returns_503_when_no_key_provisioned() {
         let response = app(test_state().await).oneshot(get_keys()).await.unwrap();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
-    // MM-146.AC1.1: Returns 200 with { keyId, publicKey, algorithm } when a key is provisioned.
     #[tokio::test]
     async fn get_relay_keys_returns_200_with_active_key() {
         let state = test_state().await;
@@ -113,7 +111,6 @@ mod tests {
         assert!(json["publicKey"].is_string(), "publicKey must be present");
     }
 
-    // MM-146.AC1.2: Returns the most recently created key when multiple keys exist.
     #[tokio::test]
     async fn get_relay_keys_returns_most_recently_created_key() {
         let state = test_state().await;
@@ -132,7 +129,6 @@ mod tests {
         );
     }
 
-    // MM-146.AC1.4: Endpoint requires no authentication.
     #[tokio::test]
     async fn get_relay_keys_requires_no_authentication() {
         // test_state() has no admin_token configured.

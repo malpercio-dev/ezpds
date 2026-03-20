@@ -773,7 +773,6 @@ mod tests {
         );
     }
 
-    // MM-146.AC2.1: Callback receives CBOR bytes; returned PlcGenesisOp passes verify_genesis_op.
     #[test]
     fn external_signer_callback_produces_valid_genesis_op() {
         let rotation_kp = generate_p256_keypair().expect("rotation keypair");
@@ -805,7 +804,6 @@ mod tests {
         );
     }
 
-    // MM-146.AC2.2: Callback returning Err propagates as CryptoError::PlcOperation.
     #[test]
     fn external_signer_callback_error_propagates_as_plc_operation() {
         let rotation_kp = generate_p256_keypair().expect("rotation keypair");
