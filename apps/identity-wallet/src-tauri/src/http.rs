@@ -35,6 +35,41 @@ impl RelayClient {
         let url = format!("{}{}", self.base_url, path);
         self.client.post(&url).json(body).send().await
     }
+
+    /// GET `path` (relative, e.g. `"/v1/relay/keys"`).
+    ///
+    /// Returns the raw `Response` so callers can inspect the status code
+    /// before attempting to deserialize the body.
+    pub async fn get(&self, path: &str) -> reqwest::Result<Response> {
+        let url = format!("{}{}", self.base_url, path);
+        self.client.get(&url).send().await
+    }
+
+    /// POST JSON to `path` with a Bearer token in the Authorization header.
+    ///
+    /// Used for authenticated relay endpoints (e.g. `POST /v1/dids` which
+    /// requires the pending session token).
+    pub async fn post_with_bearer<T: Serialize>(
+        &self,
+        path: &str,
+        body: &T,
+        bearer_token: &str,
+    ) -> reqwest::Result<Response> {
+        let url = format!("{}{}", self.base_url, path);
+        self.client
+            .post(&url)
+            .bearer_auth(bearer_token)
+            .json(body)
+            .send()
+            .await
+    }
+
+    /// Returns the compile-time base URL for this relay client instance.
+    ///
+    /// Used as the `service_endpoint` parameter in DID ceremony genesis op construction.
+    pub const fn base_url() -> &'static str {
+        RELAY_BASE_URL
+    }
 }
 
 impl Default for RelayClient {

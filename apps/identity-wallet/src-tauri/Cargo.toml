@@ -26,6 +26,7 @@ thiserror = { workspace = true }
 crypto = { workspace = true }
 p256 = { workspace = true }
 multibase = { workspace = true }
+tracing = { workspace = true }
 
 [build-dependencies]
 # Tauri-specific — declared locally

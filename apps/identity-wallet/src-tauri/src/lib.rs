@@ -4,6 +4,7 @@ pub mod keychain;
 
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
+use crypto::{build_did_plc_genesis_op_with_external_signer, CryptoError, DidKeyUri};
 
 // ── Request / response types ────────────────────────────────────────────────
 
@@ -30,6 +31,35 @@ struct CreateMobileAccountResponse {
     device_token: String,
     session_token: String,
     next_step: NextStep,
+}
+
+/// Response from GET /v1/relay/keys — the relay's active signing key.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RelaySigningKey {
+    key_id: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    public_key: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    algorithm: String,
+}
+
+/// Request body for POST /v1/dids — submit the signed genesis op for DID promotion.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateDidRequest {
+    rotation_key_public: String,
+    signed_creation_op: String,
+}
+
+/// Response from POST /v1/dids — the promoted DID and upgraded session token.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateDidResponse {
+    did: String,
+    session_token: String,
 }
 
 /// Relay error envelope: { "error": { "code": "...", "message": "..." } }
@@ -84,6 +114,36 @@ pub enum CreateAccountError {
     NetworkError { message: String },
     #[error("unknown error: {message}")]
     Unknown { message: String },
+}
+
+/// Successful result returned to the Svelte frontend after DID ceremony completes.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DIDCeremonyResult {
+    pub did: String,
+}
+
+/// Typed error returned to the Svelte frontend as a rejected Promise.
+///
+/// Serializes as `{ "code": "NO_RELAY_SIGNING_KEY" }` (SCREAMING_SNAKE_CASE) so
+/// the TypeScript catch block can switch on `error.code`.
+#[derive(Debug, Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum DIDCeremonyError {
+    #[error("device key not found; call get_or_create before ceremony")]
+    KeyNotFound,
+    #[error("failed to fetch relay signing key")]
+    RelayKeyFetchFailed,
+    #[error("relay has no signing key provisioned")]
+    NoRelaySigningKey,
+    #[error("device signing failed")]
+    SigningFailed,
+    #[error("DID creation request failed")]
+    DidCreationFailed,
+    #[error("keychain operation failed")]
+    KeychainError,
+    #[error("network error: {message}")]
+    NetworkError { message: String },
 }
 
 // ── Static relay client ─────────────────────────────────────────────────────
@@ -188,6 +248,113 @@ async fn sign_with_device_key(data: Vec<u8>) -> Result<Vec<u8>, device_key::Devi
     device_key::sign(&data)
 }
 
+#[tauri::command]
+async fn perform_did_ceremony(handle: String) -> Result<DIDCeremonyResult, DIDCeremonyError> {
+    // Step 1: Get or create the device's P-256 key (serves as rotation key).
+    let device_key = device_key::get_or_create().map_err(|e| {
+        tracing::warn!(error = %e, "device key creation failed during DID ceremony");
+        DIDCeremonyError::KeyNotFound
+    })?;
+
+    // Step 2: Fetch the relay's active signing key (public, no auth required).
+    let resp = RELAY_CLIENT
+        .get("/v1/relay/keys")
+        .await
+        .map_err(|e| DIDCeremonyError::NetworkError {
+            message: e.to_string(),
+        })?;
+
+    if resp.status().as_u16() == 503 {
+        return Err(DIDCeremonyError::NoRelaySigningKey);
+    }
+    if !resp.status().is_success() {
+        return Err(DIDCeremonyError::RelayKeyFetchFailed);
+    }
+
+    let relay_key: RelaySigningKey = resp
+        .json()
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "failed to deserialize relay signing key response");
+            DIDCeremonyError::RelayKeyFetchFailed
+        })?;
+
+    // Step 3: Build signed genesis op — device key as rotation key, relay key as signing key.
+    // The sign callback calls device_key::sign() so the private key never leaves the SE.
+    let rotation_key = DidKeyUri(device_key.key_id.clone());
+    let signing_key = DidKeyUri(relay_key.key_id.clone());
+
+    let genesis_op = build_did_plc_genesis_op_with_external_signer(
+        &rotation_key,
+        &signing_key,
+        &handle,
+        http::RelayClient::base_url(),
+        |data| {
+            device_key::sign(data)
+                .map_err(|e| CryptoError::PlcOperation(format!("device signing failed: {e}")))
+        },
+    )
+    .map_err(|e| {
+        tracing::warn!(error = %e, "genesis op signing failed during DID ceremony");
+        DIDCeremonyError::SigningFailed
+    })?;
+
+    // Step 4: Retrieve the pending session token from Keychain.
+    let token_bytes = keychain::get_item("session-token").map_err(|e| {
+        tracing::warn!(error = %e, "failed to retrieve session-token from keychain");
+        DIDCeremonyError::KeychainError
+    })?;
+    let pending_token = String::from_utf8(token_bytes).map_err(|e| {
+        tracing::warn!(error = %e, "session-token bytes are not valid UTF-8");
+        DIDCeremonyError::KeychainError
+    })?;
+
+    // Step 5: POST the signed genesis op to the relay to promote the account to a full DID.
+    let create_did_req = CreateDidRequest {
+        rotation_key_public: device_key.multibase,
+        signed_creation_op: genesis_op.signed_op_json,
+    };
+
+    let resp = RELAY_CLIENT
+        .post_with_bearer("/v1/dids", &create_did_req, &pending_token)
+        .await
+        .map_err(|e| DIDCeremonyError::NetworkError {
+            message: e.to_string(),
+        })?;
+
+    if !resp.status().is_success() {
+        return Err(DIDCeremonyError::DidCreationFailed);
+    }
+
+    let create_did_resp: CreateDidResponse = resp
+        .json()
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "failed to deserialize POST /v1/dids response");
+            DIDCeremonyError::DidCreationFailed
+        })?;
+
+    // Step 6: Overwrite session-token with the upgraded full session token.
+    keychain::store_item(
+        "session-token",
+        create_did_resp.session_token.as_bytes(),
+    )
+    .map_err(|e| {
+        tracing::warn!(error = %e, "failed to persist upgraded session-token to keychain");
+        DIDCeremonyError::KeychainError
+    })?;
+
+    // Step 7: Persist the DID for use in subsequent app sessions.
+    keychain::store_item("did", create_did_resp.did.as_bytes()).map_err(|e| {
+        tracing::warn!(error = %e, "failed to persist DID to keychain");
+        DIDCeremonyError::KeychainError
+    })?;
+
+    Ok(DIDCeremonyResult {
+        did: create_did_resp.did,
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -195,6 +362,7 @@ pub fn run() {
             create_account,
             get_or_create_device_key,
             sign_with_device_key,
+            perform_did_ceremony,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -348,5 +516,62 @@ mod tests {
             key.multibase, key2.multibase,
             "device_public_key must be stable across calls (idempotent)"
         );
+    }
+
+    // -- DIDCeremonyResult serialization --
+    #[test]
+    fn did_ceremony_result_serializes_did_in_camel_case() {
+        let result = DIDCeremonyResult {
+            did: "did:plc:abcdefghijklmnopqrstuvwx".into(),
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["did"], "did:plc:abcdefghijklmnopqrstuvwx");
+    }
+
+    // -- DIDCeremonyError serialization (one test per variant) --
+    #[test]
+    fn did_ceremony_error_key_not_found_serializes_correctly() {
+        let json = serde_json::to_value(&DIDCeremonyError::KeyNotFound).unwrap();
+        assert_eq!(json["code"], "KEY_NOT_FOUND");
+    }
+
+    #[test]
+    fn did_ceremony_error_relay_key_fetch_failed_serializes_correctly() {
+        let json = serde_json::to_value(&DIDCeremonyError::RelayKeyFetchFailed).unwrap();
+        assert_eq!(json["code"], "RELAY_KEY_FETCH_FAILED");
+    }
+
+    #[test]
+    fn did_ceremony_error_no_relay_signing_key_serializes_correctly() {
+        let json = serde_json::to_value(&DIDCeremonyError::NoRelaySigningKey).unwrap();
+        assert_eq!(json["code"], "NO_RELAY_SIGNING_KEY");
+    }
+
+    #[test]
+    fn did_ceremony_error_signing_failed_serializes_correctly() {
+        let json = serde_json::to_value(&DIDCeremonyError::SigningFailed).unwrap();
+        assert_eq!(json["code"], "SIGNING_FAILED");
+    }
+
+    #[test]
+    fn did_ceremony_error_did_creation_failed_serializes_correctly() {
+        let json = serde_json::to_value(&DIDCeremonyError::DidCreationFailed).unwrap();
+        assert_eq!(json["code"], "DID_CREATION_FAILED");
+    }
+
+    #[test]
+    fn did_ceremony_error_keychain_error_serializes_correctly() {
+        let json = serde_json::to_value(&DIDCeremonyError::KeychainError).unwrap();
+        assert_eq!(json["code"], "KEYCHAIN_ERROR");
+    }
+
+    #[test]
+    fn did_ceremony_error_network_error_serializes_with_message() {
+        let err = DIDCeremonyError::NetworkError {
+            message: "Connection refused".into(),
+        };
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["code"], "NETWORK_ERROR");
+        assert_eq!(json["message"], "Connection refused");
     }
 }
