@@ -4,6 +4,8 @@
   import EmailScreen from '$lib/components/onboarding/EmailScreen.svelte';
   import HandleScreen from '$lib/components/onboarding/HandleScreen.svelte';
   import LoadingScreen from '$lib/components/onboarding/LoadingScreen.svelte';
+  import DIDCeremonyScreen from '$lib/components/onboarding/DIDCeremonyScreen.svelte';
+  import DIDSuccessScreen from '$lib/components/onboarding/DIDSuccessScreen.svelte';
   import { createAccount, type CreateAccountError } from '$lib/ipc';
 
   // ── Onboarding step type ─────────────────────────────────────────────────
@@ -22,12 +24,14 @@
     | 'email'
     | 'handle'
     | 'loading'
-    | 'did_ceremony';
+    | 'did_ceremony'
+    | 'did_success'
+    | 'shamir_backup';
 
   // ── State ────────────────────────────────────────────────────────────────
 
   let step = $state<OnboardingStep>('welcome');
-  let form = $state({ claimCode: '', email: '', handle: '' });
+  let form = $state({ claimCode: '', email: '', handle: '', did: '' });
 
   /**
    * Per-field error messages displayed by each screen.
@@ -135,9 +139,19 @@
   {:else if step === 'loading'}
     <LoadingScreen statusText="Creating your account…" />
   {:else if step === 'did_ceremony'}
+    <DIDCeremonyScreen
+      handle={form.handle}
+      onsuccess={(did) => { form.did = did; step = 'did_success'; }}
+    />
+  {:else if step === 'did_success'}
+    <DIDSuccessScreen
+      did={form.did}
+      oncontinue={() => { step = 'shamir_backup'; }}
+    />
+  {:else if step === 'shamir_backup'}
     <div class="placeholder">
-      <h2>Account Created!</h2>
-      <p>DID ceremony coming soon…</p>
+      <h2>Backup</h2>
+      <p>Shamir backup coming soon…</p>
     </div>
   {/if}
 </div>

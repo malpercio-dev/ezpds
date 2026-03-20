@@ -104,3 +104,42 @@ export const signWithDeviceKey = (data: Uint8Array): Promise<Uint8Array> =>
   (invoke('sign_with_device_key', { data: Array.from(data) }) as Promise<number[]>).then(
     (bytes) => new Uint8Array(bytes),
   );
+
+// ── perform_did_ceremony ─────────────────────────────────────────────────────
+
+/**
+ * Successful result from the `perform_did_ceremony` Rust command.
+ * This is a pure data shape returned on success.
+ */
+export type DIDCeremonyResult = {
+  did: string;
+};
+
+/**
+ * Error returned by the `perform_did_ceremony` Rust command.
+ *
+ * Serialized as `{ code: "NO_RELAY_SIGNING_KEY" }` etc. by the Rust backend.
+ * The `message` field is present only on the NETWORK_ERROR variant.
+ * This is a pure data shape used for error handling.
+ */
+export type DIDCeremonyError = {
+  code:
+    | 'KEY_NOT_FOUND'
+    | 'RELAY_KEY_FETCH_FAILED'
+    | 'NO_RELAY_SIGNING_KEY'
+    | 'SIGNING_FAILED'
+    | 'DID_CREATION_FAILED'
+    | 'KEYCHAIN_ERROR'
+    | 'NETWORK_ERROR';
+  message?: string;
+};
+
+/**
+ * Perform the DID ceremony: fetch relay key, build signed genesis op, post to relay,
+ * persist DID and upgraded session token in Keychain.
+ *
+ * On success, the DID and new session token are stored in Keychain by the Rust backend.
+ * On failure, the Promise rejects with a `DIDCeremonyError`.
+ */
+export const performDIDCeremony = (handle: string): Promise<DIDCeremonyResult> =>
+  invoke('perform_did_ceremony', { handle });
