@@ -1,5 +1,12 @@
 use serde::Serialize;
 
+#[cfg(all(target_os = "ios", not(target_env = "sim")))]
+use security_framework::{
+    access_control::{ProtectionMode, SecAccessControl},
+    item::{ItemClass, ItemSearchOptions, KeyClass, Location, Reference, SearchResult},
+    key::{Algorithm, GenerateKeyOptions, KeyType, SecKey, Token},
+};
+
 // ── Public types ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -111,19 +118,155 @@ pub fn sign(data: &[u8]) -> Result<Vec<u8>, DeviceKeyError> {
     Ok(signature.to_bytes().to_vec())
 }
 
-// ── Real device (Secure Enclave) stubs ───────────────────────────────────────
+// ── Real device (Secure Enclave) path ────────────────────────────────────────
 //
-// Phase 1 placeholder. The SE path is implemented in Phase 2.
-// These compile for `cargo build --target aarch64-apple-ios` but always error.
+// Phase 2 implementation using security_framework 3.x safe wrapper.
+// The SE private key is permanent and non-extractable; the public key and
+// application_label (SHA1 hash) are stored in the regular Keychain for lookup.
+
+/// Account names used to store SE key metadata in the regular Keychain.
+/// The SE private key itself is stored in the Secure Enclave and never leaves it.
+#[cfg(all(target_os = "ios", not(target_env = "sim")))]
+const SE_PUB_ACCOUNT: &str = "device-rotation-key-pub";
+#[cfg(all(target_os = "ios", not(target_env = "sim")))]
+const SE_APP_LABEL_ACCOUNT: &str = "device-rotation-key-app-label";
 
 #[cfg(all(target_os = "ios", not(target_env = "sim")))]
 pub fn get_or_create() -> Result<DevicePublicKey, DeviceKeyError> {
-    Err(DeviceKeyError::KeyGenerationFailed)
+    // Fast path: if we already stored the compressed public key, return it directly.
+    // This avoids SE hardware interaction on every call after first generation.
+    if let Ok(compressed) = crate::keychain::get_item(SE_PUB_ACCOUNT) {
+        let multibase = multibase::encode(multibase::Base::Base58Btc, &compressed);
+        // did:key requires the P-256 multicodec varint prefix [0x80, 0x24] (0x1200 as LEB128).
+        const P256_MULTICODEC: &[u8] = &[0x80, 0x24];
+        let mut multikey = Vec::with_capacity(2 + compressed.len());
+        multikey.extend_from_slice(P256_MULTICODEC);
+        multikey.extend_from_slice(&compressed);
+        let key_id = format!(
+            "did:key:{}",
+            multibase::encode(multibase::Base::Base58Btc, &multikey)
+        );
+        return Ok(DevicePublicKey { multibase, key_id });
+    }
+
+    // Generate a new SE-backed P-256 key.
+    // set_location(DataProtectionKeychain) is required — without it, security_framework sets
+    // kSecAttrIsPermanent = false, meaning the key is not persisted to the Keychain and will
+    // not survive app restart (breaking AC2.1).
+    // set_access_control with PRIVATE_KEY_USAGE is required for SE keys — the SE enforces
+    // that only explicitly-authorized operations can use the private key for signing.
+    //
+    // Note: SecAccessControl::create_with_protection takes Option<ProtectionMode> and a raw
+    // flags u64. The PRIVATE_KEY_USAGE flag is kSecAccessControlPrivateKeyUsage = 1 << 30.
+    // If the compiler reports an ambiguous type on the flags argument, use `0x4000_0000_u64`.
+    let access_control = SecAccessControl::create_with_protection(
+        Some(ProtectionMode::AccessibleWhenUnlockedThisDeviceOnly),
+        1 << 30, // kSecAccessControlPrivateKeyUsage
+    )
+    .map_err(|_| DeviceKeyError::KeyGenerationFailed)?;
+
+    let mut opts = GenerateKeyOptions::default();
+    opts.set_key_type(KeyType::ec())
+        .set_size_in_bits(256)
+        .set_token(Token::SecureEnclave)
+        .set_label("ezpds-device-rotation-key")
+        .set_location(Location::DataProtectionKeychain)
+        .set_access_control(access_control); // takes ownership (by value)
+
+    let priv_key = SecKey::new(&opts).map_err(|_| DeviceKeyError::KeyGenerationFailed)?;
+
+    // Retrieve the public key and its external representation.
+    // SecKeyCopyExternalRepresentation on the *public* key returns the uncompressed
+    // 65-byte X9.62 point (0x04 || x[32] || y[32]).
+    let pub_key = priv_key
+        .public_key()
+        .ok_or(DeviceKeyError::KeyGenerationFailed)?;
+    let pub_repr = pub_key
+        .external_representation()
+        .ok_or(DeviceKeyError::KeyGenerationFailed)?;
+    let uncompressed: Vec<u8> = pub_repr.to_vec(); // 65 bytes
+
+    // Compress: prefix byte = 0x02 (even y) or 0x03 (odd y); keep x[32].
+    // The last byte of the y coordinate determines parity.
+    let mut compressed = [0u8; 33];
+    compressed[0] = if uncompressed[64] & 1 == 0 {
+        0x02
+    } else {
+        0x03
+    };
+    compressed[1..].copy_from_slice(&uncompressed[1..33]);
+
+    // Store the compressed public key for the fast path on future calls.
+    crate::keychain::store_item(SE_PUB_ACCOUNT, &compressed).map_err(|e| {
+        DeviceKeyError::KeychainError {
+            message: e.to_string(),
+        }
+    })?;
+
+    // Store the application_label (OS-assigned SHA1 of public key, 20 bytes)
+    // so sign() can locate the SE private key on future app launches.
+    if let Some(app_label) = priv_key.application_label() {
+        crate::keychain::store_item(SE_APP_LABEL_ACCOUNT, &app_label).map_err(|e| {
+            DeviceKeyError::KeychainError {
+                message: e.to_string(),
+            }
+        })?;
+    }
+
+    let multibase = multibase::encode(multibase::Base::Base58Btc, &compressed);
+    // did:key requires the P-256 multicodec varint prefix [0x80, 0x24] (0x1200 as LEB128).
+    const P256_MULTICODEC: &[u8] = &[0x80, 0x24];
+    let mut multikey = Vec::with_capacity(2 + compressed.len());
+    multikey.extend_from_slice(P256_MULTICODEC);
+    multikey.extend_from_slice(&compressed);
+    let key_id = format!(
+        "did:key:{}",
+        multibase::encode(multibase::Base::Base58Btc, &multikey)
+    );
+    Ok(DevicePublicKey { multibase, key_id })
 }
 
 #[cfg(all(target_os = "ios", not(target_env = "sim")))]
-pub fn sign(_data: &[u8]) -> Result<Vec<u8>, DeviceKeyError> {
-    Err(DeviceKeyError::KeyGenerationFailed)
+pub fn sign(data: &[u8]) -> Result<Vec<u8>, DeviceKeyError> {
+    use p256::ecdsa::Signature;
+
+    // Load the application_label to look up the SE private key.
+    let app_label =
+        crate::keychain::get_item(SE_APP_LABEL_ACCOUNT).map_err(|_| DeviceKeyError::KeyNotFound)?;
+
+    // Find the SE private key in the Keychain by its application_label.
+    // load_refs(true) returns SearchResult::Ref(CFType) containing the SecKeyRef.
+    let mut search = ItemSearchOptions::new();
+    search
+        .class(ItemClass::key())
+        .key_class(KeyClass::private())
+        .application_label(&app_label)
+        .load_refs(true)
+        .limit(1);
+
+    let results = search.search().map_err(|_| DeviceKeyError::KeyNotFound)?;
+
+    // Extract the SecKey from the typed Reference result.
+    // SearchResult::Ref wraps a Reference enum; Reference::Key holds the already-wrapped SecKey.
+    // No unsafe code is needed — security_framework handles the SecKeyRef wrapping internally.
+    let sec_key = match results.into_iter().next() {
+        Some(SearchResult::Ref(Reference::Key(key))) => key,
+        _ => return Err(DeviceKeyError::KeyNotFound),
+    };
+
+    // create_signature uses kSecKeyAlgorithmECDSASignatureMessageX962SHA256.
+    // The SE hashes `data` with SHA-256 internally before signing.
+    // Returns DER-encoded ECDSA signature (70–72 bytes).
+    let der_sig = sec_key
+        .create_signature(Algorithm::ECDSASignatureMessageX962SHA256, data)
+        .map_err(|_| DeviceKeyError::SigningFailed)?;
+
+    // Convert DER to raw 64-byte r||s (the format expected by ATProto/did:plc).
+    // from_der() is a pure parser — it does NOT normalize low-S. Apple's SE may return
+    // high-S signatures. normalize_s() ensures s <= order/2 as required by ATProto.
+    let sig = Signature::from_der(&der_sig).map_err(|_| DeviceKeyError::InvalidSignature)?;
+    let sig = sig.normalize_s().unwrap_or(sig);
+    Ok(sig.to_bytes().to_vec())
 }
 
 #[cfg(test)]

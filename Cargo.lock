@@ -2350,6 +2350,8 @@ name = "identity-wallet"
 version = "0.1.0"
 dependencies = [
  "crypto",
+ "multibase",
+ "p256",
  "reqwest 0.12.28",
  "security-framework",
  "serde",
