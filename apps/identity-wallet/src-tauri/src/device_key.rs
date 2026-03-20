@@ -153,7 +153,7 @@ pub fn get_or_create() -> Result<DevicePublicKey, DeviceKeyError> {
     // Generate a new SE-backed P-256 key.
     // set_location(DataProtectionKeychain) is required — without it, security_framework sets
     // kSecAttrIsPermanent = false, meaning the key is not persisted to the Keychain and will
-    // not survive app restart (key would not survive app restart).
+    // not survive app restart.
     // set_access_control with PRIVATE_KEY_USAGE is required for SE keys — the SE enforces
     // that only explicitly-authorized operations can use the private key for signing.
     //
