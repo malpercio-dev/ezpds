@@ -1,6 +1,6 @@
+pub mod device_key;
 pub mod http;
 pub mod keychain;
-pub mod device_key;
 
 use crypto::generate_p256_keypair;
 use serde::{Deserialize, Serialize};

@@ -52,19 +52,24 @@ pub fn get_or_create() -> Result<DevicePublicKey, DeviceKeyError> {
         Ok(bytes) => bytes,
         Err(_) => {
             // No key yet — generate a new P-256 keypair via the crypto crate.
-            let keypair = crypto::generate_p256_keypair()
-                .map_err(|_| DeviceKeyError::KeyGenerationFailed)?;
+            let keypair =
+                crypto::generate_p256_keypair().map_err(|_| DeviceKeyError::KeyGenerationFailed)?;
             // Deref Zeroizing<[u8; 32]> to [u8; 32], then collect as Vec<u8>.
             let bytes = keypair.private_key_bytes.to_vec();
-            crate::keychain::store_item(ACCOUNT, &bytes)
-                .map_err(|e| DeviceKeyError::KeychainError { message: e.to_string() })?;
+            crate::keychain::store_item(ACCOUNT, &bytes).map_err(|e| {
+                DeviceKeyError::KeychainError {
+                    message: e.to_string(),
+                }
+            })?;
             bytes
         }
     };
 
     // Reconstruct the public key from stored private bytes.
-    let signing_key = SigningKey::from_slice(&private_bytes)
-        .map_err(|_| DeviceKeyError::KeychainError { message: "invalid stored key bytes".into() })?;
+    let signing_key =
+        SigningKey::from_slice(&private_bytes).map_err(|_| DeviceKeyError::KeychainError {
+            message: "invalid stored key bytes".into(),
+        })?;
     let encoded = signing_key.verifying_key().to_encoded_point(true); // compressed (33 bytes)
     let compressed = encoded.as_bytes();
     let multibase = multibase::encode(multibase::Base::Base58Btc, compressed);
@@ -76,24 +81,27 @@ pub fn get_or_create() -> Result<DevicePublicKey, DeviceKeyError> {
     let mut multikey = Vec::with_capacity(2 + compressed.len());
     multikey.extend_from_slice(P256_MULTICODEC);
     multikey.extend_from_slice(compressed);
-    let key_id = format!("did:key:{}", multibase::encode(multibase::Base::Base58Btc, &multikey));
+    let key_id = format!(
+        "did:key:{}",
+        multibase::encode(multibase::Base::Base58Btc, &multikey)
+    );
 
     Ok(DevicePublicKey { multibase, key_id })
 }
 
 #[cfg(any(target_os = "macos", all(target_os = "ios", target_env = "sim")))]
 pub fn sign(data: &[u8]) -> Result<Vec<u8>, DeviceKeyError> {
-    use p256::ecdsa::{Signature, SigningKey};
     use p256::ecdsa::signature::Signer;
+    use p256::ecdsa::{Signature, SigningKey};
 
     const ACCOUNT: &str = "device-rotation-key-priv";
 
     // If the key doesn't exist, signal that get_or_create must be called first.
-    let private_bytes = crate::keychain::get_item(ACCOUNT)
-        .map_err(|_| DeviceKeyError::KeyNotFound)?;
+    let private_bytes =
+        crate::keychain::get_item(ACCOUNT).map_err(|_| DeviceKeyError::KeyNotFound)?;
 
-    let signing_key = SigningKey::from_slice(&private_bytes)
-        .map_err(|_| DeviceKeyError::SigningFailed)?;
+    let signing_key =
+        SigningKey::from_slice(&private_bytes).map_err(|_| DeviceKeyError::SigningFailed)?;
 
     // sign() uses the deterministic Signer impl (RFC 6979 nonce).
     // It internally hashes `data` with SHA-256 before signing.
@@ -129,7 +137,10 @@ mod tests {
     #[test]
     fn get_or_create_returns_valid_multibase() {
         let result = get_or_create().expect("get_or_create should succeed");
-        assert!(result.multibase.starts_with('z'), "multibase must start with 'z'");
+        assert!(
+            result.multibase.starts_with('z'),
+            "multibase must start with 'z'"
+        );
         let (_, decoded) = multibase::decode(&result.multibase).expect("multibase must decode");
         assert_eq!(decoded.len(), 33, "compressed P-256 point must be 33 bytes");
     }
@@ -139,7 +150,10 @@ mod tests {
     fn get_or_create_is_idempotent() {
         let first = get_or_create().expect("first call should succeed");
         let second = get_or_create().expect("second call should succeed");
-        assert_eq!(first.multibase, second.multibase, "multibase must be stable");
+        assert_eq!(
+            first.multibase, second.multibase,
+            "multibase must be stable"
+        );
         assert_eq!(first.key_id, second.key_id, "key_id must be stable");
     }
 
@@ -168,7 +182,10 @@ mod tests {
         get_or_create().expect("must have key before signing");
         let sig1 = sign(b"determinism test").expect("first sign should succeed");
         let sig2 = sign(b"determinism test").expect("second sign should succeed");
-        assert_eq!(sig1, sig2, "same data with same key must produce same signature");
+        assert_eq!(
+            sig1, sig2,
+            "same data with same key must produce same signature"
+        );
     }
 
     // AC3.3 — sign before get_or_create returns KeyNotFound
@@ -195,7 +212,9 @@ mod tests {
         let json2 = serde_json::to_value(&err2).unwrap();
         assert_eq!(json2["code"], "KEY_NOT_FOUND");
 
-        let err3 = DeviceKeyError::KeychainError { message: "os error".into() };
+        let err3 = DeviceKeyError::KeychainError {
+            message: "os error".into(),
+        };
         let json3 = serde_json::to_value(&err3).unwrap();
         assert_eq!(json3["code"], "KEYCHAIN_ERROR");
         assert_eq!(json3["message"], "os error");
