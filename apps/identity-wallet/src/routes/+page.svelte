@@ -6,6 +6,7 @@
   import LoadingScreen from '$lib/components/onboarding/LoadingScreen.svelte';
   import DIDCeremonyScreen from '$lib/components/onboarding/DIDCeremonyScreen.svelte';
   import DIDSuccessScreen from '$lib/components/onboarding/DIDSuccessScreen.svelte';
+  import ShamirBackupScreen from '$lib/components/onboarding/ShamirBackupScreen.svelte';
   import { createAccount, type CreateAccountError } from '$lib/ipc';
 
   // ── Onboarding step type ─────────────────────────────────────────────────
@@ -26,12 +27,13 @@
     | 'loading'
     | 'did_ceremony'
     | 'did_success'
-    | 'shamir_backup';
+    | 'shamir_backup'
+    | 'complete';
 
   // ── State ────────────────────────────────────────────────────────────────
 
   let step = $state<OnboardingStep>('welcome');
-  let form = $state({ claimCode: '', email: '', handle: '', did: '' });
+  let form = $state({ claimCode: '', email: '', handle: '', did: '', share3: '' });
 
   /**
    * Per-field error messages displayed by each screen.
@@ -141,7 +143,7 @@
   {:else if step === 'did_ceremony'}
     <DIDCeremonyScreen
       handle={form.handle}
-      onsuccess={(did) => { form.did = did; step = 'did_success'; }}
+      onsuccess={(result) => { form.did = result.did; form.share3 = result.share3; step = 'did_success'; }}
     />
   {:else if step === 'did_success'}
     <DIDSuccessScreen
@@ -149,9 +151,15 @@
       oncontinue={() => { step = 'shamir_backup'; }}
     />
   {:else if step === 'shamir_backup'}
-    <div class="placeholder">
-      <h2>Backup</h2>
-      <p>Shamir backup coming soon…</p>
+    <ShamirBackupScreen
+      share3={form.share3}
+      oncomplete={() => { step = 'complete'; }}
+    />
+  {:else if step === 'complete'}
+    <div class="complete">
+      <div class="complete-icon" aria-hidden="true">✓</div>
+      <h2>You're All Set!</h2>
+      <p>Your identity is ready. Your recovery key has been safely backed up.</p>
     </div>
   {/if}
 </div>
@@ -163,14 +171,39 @@
     flex-direction: column;
   }
 
-  .placeholder {
+  .complete {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     height: 100%;
-    gap: 1rem;
+    gap: 1.25rem;
     text-align: center;
     padding: 2rem;
+  }
+
+  .complete-icon {
+    width: 64px;
+    height: 64px;
+    background: #007aff;
+    color: #fff;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 2rem;
+    font-weight: 700;
+  }
+
+  .complete h2 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin: 0;
+  }
+
+  .complete p {
+    font-size: 0.95rem;
+    color: #6b7280;
+    margin: 0;
   }
 </style>

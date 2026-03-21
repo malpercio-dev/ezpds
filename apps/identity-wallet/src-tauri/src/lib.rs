@@ -52,11 +52,15 @@ struct CreateDidRequest {
     signed_creation_op: serde_json::Value,
 }
 
-/// Response from POST /v1/dids — the promoted DID and upgraded session token.
+/// Response from POST /v1/dids — the promoted DID, upgraded session token, and Shamir shares.
 #[derive(Deserialize)]
 struct CreateDidResponse {
     did: String,
     session_token: String,
+    /// Share 1 of 3 — to be stored in iCloud Keychain by the app.
+    shamir_share_1: String,
+    /// Share 3 of 3 — to be shown to the user for manual backup.
+    shamir_share_3: String,
 }
 
 /// Relay error envelope: { "error": { "code": "...", "message": "..." } }
@@ -118,6 +122,9 @@ pub enum CreateAccountError {
 #[serde(rename_all = "camelCase")]
 pub struct DIDCeremonyResult {
     pub did: String,
+    /// Share 3 of 3 — the user's manual backup share.
+    /// Share 1 has already been stored in iCloud Keychain by the Rust backend.
+    pub share3: String,
 }
 
 /// Typed error returned to the Svelte frontend as a rejected Promise.
@@ -349,8 +356,19 @@ async fn perform_did_ceremony(handle: String) -> Result<DIDCeremonyResult, DIDCe
         DIDCeremonyError::KeychainError
     })?;
 
+    // Step 8: Store Share 1 in iCloud Keychain for automatic backup.
+    keychain::store_item(
+        "recovery-share-1",
+        create_did_resp.shamir_share_1.as_bytes(),
+    )
+    .map_err(|e| {
+        tracing::error!(error = %e, "failed to store recovery share 1 in keychain");
+        DIDCeremonyError::KeychainError
+    })?;
+
     Ok(DIDCeremonyResult {
         did: create_did_resp.did,
+        share3: create_did_resp.shamir_share_3,
     })
 }
 
@@ -522,9 +540,21 @@ mod tests {
     fn did_ceremony_result_serializes_did_in_camel_case() {
         let result = DIDCeremonyResult {
             did: "did:plc:abcdefghijklmnopqrstuvwx".into(),
+            share3: "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRST".into(),
         };
         let json = serde_json::to_value(&result).unwrap();
         assert_eq!(json["did"], "did:plc:abcdefghijklmnopqrstuvwx");
+    }
+
+    #[test]
+    fn did_ceremony_result_serializes_share3_in_camel_case() {
+        let share = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRST";
+        let result = DIDCeremonyResult {
+            did: "did:plc:abcdefghijklmnopqrstuvwx".into(),
+            share3: share.into(),
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["share3"], share);
     }
 
     // -- DIDCeremonyError serialization (one test per variant) --

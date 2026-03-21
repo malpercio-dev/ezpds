@@ -113,6 +113,12 @@ export const signWithDeviceKey = (data: Uint8Array): Promise<Uint8Array> =>
  */
 export type DIDCeremonyResult = {
   did: string;
+  /**
+   * Share 3 of 3 — the user's manual backup share.
+   * Base32-encoded (RFC 4648, no padding), 52 uppercase A-Z/2-7 characters.
+   * Share 1 has already been stored in iCloud Keychain by the Rust backend.
+   */
+  share3: string;
 };
 
 /**

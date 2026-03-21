@@ -8,7 +8,7 @@
     onsuccess,
   }: {
     handle: string;
-    onsuccess: (did: string) => void;
+    onsuccess: (result: import('$lib/ipc').DIDCeremonyResult) => void;
   } = $props();
 
   let loading = $state(true);
@@ -20,7 +20,7 @@
     try {
       const result = await performDIDCeremony(handle);
       loading = false;
-      onsuccess(result.did);
+      onsuccess(result);
     } catch (raw: unknown) {
       loading = false;
       if (

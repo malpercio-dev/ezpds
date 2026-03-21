@@ -4100,6 +4100,7 @@ dependencies = [
  "clap",
  "common",
  "crypto",
+ "data-encoding",
  "hickory-resolver",
  "opentelemetry",
  "opentelemetry-otlp",

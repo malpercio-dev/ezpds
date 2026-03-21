@@ -42,6 +42,8 @@
 //                     502 PLC_DIRECTORY_ERROR, 500 INTERNAL_ERROR
 
 use axum::{extract::State, http::HeaderMap, Json};
+use data_encoding::BASE32_NOPAD;
+use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
@@ -63,6 +65,12 @@ pub struct CreateDidResponse {
     pub did_document: serde_json::Value,
     pub status: &'static str,
     pub session_token: String,
+    /// Share 1 of 3 — for storage in the user's iCloud Keychain.
+    /// Base32-encoded (RFC 4648, no padding), 52 uppercase chars.
+    pub shamir_share_1: String,
+    /// Share 3 of 3 — for user-directed manual backup.
+    /// Base32-encoded (RFC 4648, no padding), 52 uppercase chars.
+    pub shamir_share_3: String,
 }
 
 pub async fn create_did_handler(
@@ -92,9 +100,10 @@ pub async fn create_did_handler(
         .await?;
     }
 
-    // Phase 4: Build DID document, generate session, atomically promote.
+    // Phase 4: Build DID document, generate session, generate Shamir shares, atomically promote.
     let did_document = build_did_document(&verified)?;
     let session_token = generate_token();
+    let (share1, share2, share3) = generate_recovery_shares()?;
     promote_account(
         &state.db,
         did,
@@ -102,6 +111,7 @@ pub async fn create_did_handler(
         &session.account_id,
         &did_document,
         &session_token.hash,
+        &share2,
     )
     .await?;
 
@@ -110,6 +120,8 @@ pub async fn create_did_handler(
         did_document,
         status: "active",
         session_token: session_token.plaintext,
+        shamir_share_1: share1,
+        shamir_share_3: share3,
     }))
 }
 
@@ -272,6 +284,33 @@ async fn check_already_promoted(db: &sqlx::SqlitePool, did: &str) -> Result<(), 
     Ok(())
 }
 
+/// Generate a fresh 32-byte recovery secret, split it into 3 Shamir shares,
+/// and return the shares base32-encoded as `(share1, share2, share3)`.
+///
+/// Share 1 → user's iCloud Keychain (returned to app).
+/// Share 2 → relay DB custody (stored in accounts.recovery_share).
+/// Share 3 → user-directed manual backup (returned to app).
+///
+/// Any 2 of the 3 shares can reconstruct the original secret.
+fn generate_recovery_shares() -> Result<(String, String, String), ApiError> {
+    let mut secret = [0u8; 32];
+    OsRng.try_fill_bytes(&mut secret).map_err(|e| {
+        tracing::error!(error = %e, "OS RNG unavailable during recovery share generation");
+        ApiError::new(ErrorCode::InternalError, "failed to generate recovery secret")
+    })?;
+
+    let [s1, s2, s3] = crypto::split_secret(&secret).map_err(|e| {
+        tracing::error!(error = %e, "shamir split failed");
+        ApiError::new(ErrorCode::InternalError, "failed to split recovery secret")
+    })?;
+
+    Ok((
+        BASE32_NOPAD.encode(&*s1.data),
+        BASE32_NOPAD.encode(&*s2.data),
+        BASE32_NOPAD.encode(&*s3.data),
+    ))
+}
+
 /// POST the signed genesis operation to plc.directory (Step 9).
 async fn post_to_plc_directory(
     http_client: &reqwest::Client,
@@ -317,6 +356,7 @@ async fn post_to_plc_directory(
 ///
 /// In a single transaction: INSERT accounts + did_documents + sessions,
 /// then DELETE pending_sessions + devices + pending_accounts.
+/// `recovery_share` is Share 2 of the Shamir split; stored for relay-side custody.
 async fn promote_account(
     db: &sqlx::SqlitePool,
     did: &str,
@@ -324,6 +364,7 @@ async fn promote_account(
     account_id: &str,
     did_document: &serde_json::Value,
     token_hash: &str,
+    recovery_share: &str,
 ) -> Result<(), ApiError> {
     let did_document_str = serde_json::to_string(did_document).map_err(|e| {
         tracing::error!(error = %e, "failed to serialize DID document");
@@ -338,11 +379,12 @@ async fn promote_account(
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to begin transaction"))?;
 
     sqlx::query(
-        "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-         VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
+        "INSERT INTO accounts (did, email, password_hash, recovery_share, created_at, updated_at) \
+         VALUES (?, ?, NULL, ?, datetime('now'), datetime('now'))",
     )
     .bind(did)
     .bind(email)
+    .bind(recovery_share)
     .execute(&mut *tx)
     .await
     .map_err(|e| {

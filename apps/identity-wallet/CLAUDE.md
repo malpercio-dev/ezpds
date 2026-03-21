@@ -1,6 +1,6 @@
 # Identity Wallet Mobile App
 
-Last verified: 2026-03-20
+Last verified: 2026-03-21
 
 ## Purpose
 
@@ -12,8 +12,8 @@ Tauri v2 iOS application — SvelteKit 2 + Svelte 5 frontend running in a native
 
 **Exposes:**
 - `src/lib/ipc.ts` — typed wrappers for all Tauri IPC commands; import these instead of calling `invoke()` directly. Exports: `createAccount()`, `getOrCreateDeviceKey()`, `signWithDeviceKey()`, `performDIDCeremony()`, and their associated types (`DevicePublicKey`, `DeviceKeyError`, `CreateAccountResult`, `CreateAccountError`, `DIDCeremonyResult`, `DIDCeremonyError`)
-- `src/lib/components/onboarding/` — seven onboarding screen components (WelcomeScreen, ClaimCodeScreen, EmailScreen, HandleScreen, LoadingScreen, DIDCeremonyScreen, DIDSuccessScreen)
-- `src/routes/+page.svelte` — root page: eight-step onboarding state machine (welcome -> claim_code -> email -> handle -> loading -> did_ceremony -> did_success -> shamir_backup)
+- `src/lib/components/onboarding/` — eight onboarding screen components (WelcomeScreen, ClaimCodeScreen, EmailScreen, HandleScreen, LoadingScreen, DIDCeremonyScreen, DIDSuccessScreen, ShamirBackupScreen)
+- `src/routes/+page.svelte` — root page: nine-step onboarding state machine (welcome -> claim_code -> email -> handle -> loading -> did_ceremony -> did_success -> shamir_backup -> complete)
 
 **Guarantees:**
 - SSR is disabled globally (`ssr = false` in `src/routes/+layout.ts`); the frontend is a fully static SPA loaded from disk by WKWebView
@@ -31,7 +31,7 @@ Tauri v2 iOS application — SvelteKit 2 + Svelte 5 frontend running in a native
 - `src/lib.rs::create_account(claim_code, email, handle) -> Result<CreateAccountResult, CreateAccountError>` — Tauri IPC command: gets or creates device key via `device_key::get_or_create()`, POSTs to relay `/v1/accounts/mobile`, stores tokens in Keychain on success
 - `src/lib.rs::get_or_create_device_key() -> Result<DevicePublicKey, DeviceKeyError>` — Tauri IPC command: delegates to `device_key::get_or_create()`
 - `src/lib.rs::sign_with_device_key(data: Vec<u8>) -> Result<Vec<u8>, DeviceKeyError>` — Tauri IPC command: delegates to `device_key::sign()`
-- `src/lib.rs::perform_did_ceremony(handle: String) -> Result<DIDCeremonyResult, DIDCeremonyError>` — Tauri IPC command: fetches relay signing key (GET /v1/relay/keys), builds signed did:plc genesis op via `crypto::build_did_plc_genesis_op_with_external_signer` using device key as signer, POSTs genesis op to relay (POST /v1/dids with Bearer token), persists DID and upgraded session token in Keychain
+- `src/lib.rs::perform_did_ceremony(handle: String) -> Result<DIDCeremonyResult, DIDCeremonyError>` — Tauri IPC command: fetches relay signing key (GET /v1/relay/keys), builds signed did:plc genesis op via `crypto::build_did_plc_genesis_op_with_external_signer` using device key as signer, POSTs genesis op to relay (POST /v1/dids with Bearer token), persists DID + upgraded session token + Share 1 in Keychain, returns `{ did, share3 }` to frontend
 - `src/device_key.rs` — P-256 device key management with `#[cfg]`-based dispatch: macOS/simulator uses software keys via `crypto` crate + Keychain storage; real iOS device uses Secure Enclave via `security-framework`. Public API: `get_or_create() -> Result<DevicePublicKey, DeviceKeyError>` (idempotent), `sign(data) -> Result<Vec<u8>, DeviceKeyError>`
 - `src/keychain.rs` — iOS Keychain abstraction (`store_item`, `get_item`, `delete_item`) under service `"ezpds-identity-wallet"`
 - `src/http.rs` — `RelayClient` with compile-time base URL (localhost:8080 debug, relay.ezpds.com release); methods: `post()`, `get()`, `post_with_bearer()`; static `base_url()` accessor
@@ -190,6 +190,7 @@ cargo build
 - Keychain accounts `"device-rotation-key-pub"` and `"device-rotation-key-app-label"` store SE metadata (real iOS device path only); changing them orphans the SE key lookup
 - Keychain account `"session-token"` stores the pending (pre-DID) or full (post-DID) session token; `perform_did_ceremony` reads the pending token and overwrites it with the upgraded token on success
 - Keychain account `"did"` stores the user's did:plc after successful DID ceremony; persisted for use in subsequent app sessions
+- Keychain account `"recovery-share-1"` stores Share 1 of the Shamir recovery split (base32, 52 chars); written by `perform_did_ceremony` immediately after DID promotion; never displayed to the user (iCloud Keychain automatic backup)
 - `DevicePublicKey` serializes with `#[serde(rename_all = "camelCase")]` -- TypeScript receives `{ multibase, keyId }` (not `key_id`)
 
 ## Key Files
