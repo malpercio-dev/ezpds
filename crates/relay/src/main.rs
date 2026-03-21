@@ -1,9 +1,11 @@
 use anyhow::Context;
 use clap::Parser;
+use rand_core::RngCore;
 use reqwest::Client;
 use std::{path::PathBuf, sync::Arc};
 
 mod app;
+mod auth;
 mod db;
 mod dns;
 mod routes;
@@ -123,6 +125,10 @@ async fn run() -> anyhow::Result<()> {
         well_known::HttpWellKnownResolver::new(http_client.clone()),
     ));
 
+    let mut jwt_secret = [0u8; 32];
+    rand_core::OsRng.fill_bytes(&mut jwt_secret);
+    tracing::info!("JWT signing secret generated (ephemeral — rotates on restart)");
+
     let state = app::AppState {
         config: Arc::new(config),
         db: pool,
@@ -130,6 +136,7 @@ async fn run() -> anyhow::Result<()> {
         dns_provider: None,
         txt_resolver,
         well_known_resolver,
+        jwt_secret,
     };
 
     let listener = tokio::net::TcpListener::bind(&addr)

@@ -37,6 +37,7 @@ subtle = { workspace = true }
 uuid = { workspace = true }
 zeroize = { workspace = true }
 hickory-resolver = { workspace = true }
+jsonwebtoken = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true }

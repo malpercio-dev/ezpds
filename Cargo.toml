@@ -70,6 +70,9 @@ zeroize = "1"
 subtle = "2"
 uuid = { version = "1", features = ["v4"] }
 
+# JWT (relay auth)
+jsonwebtoken = "9"
+
 # ATProto handle resolution — DNS TXT fallback (relay)
 hickory-resolver = { version = "0.25", features = ["tokio", "system-config"] }
 

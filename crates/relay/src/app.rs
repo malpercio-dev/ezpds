@@ -96,6 +96,9 @@ pub struct AppState {
     /// Used as the third step after local DB and DNS TXT: calls
     /// `GET https://<handle>/.well-known/atproto-did`.
     pub well_known_resolver: Option<Arc<dyn WellKnownResolver>>,
+    /// HS256 signing secret for JWT access/refresh tokens.
+    /// Loaded from EZPDS_JWT_SECRET (hex-encoded) or generated randomly at startup.
+    pub jwt_secret: [u8; 32],
 }
 
 /// Build the Axum router with middleware and routes.
@@ -185,6 +188,8 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
         dns_provider: None,
         txt_resolver: None,
         well_known_resolver: None,
+        // Fixed key for tests — predictable JWTs in unit tests.
+        jwt_secret: [0x42u8; 32],
     }
 }
 

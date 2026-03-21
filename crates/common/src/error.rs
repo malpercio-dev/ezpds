@@ -46,6 +46,10 @@ pub enum ErrorCode {
     DnsError,
     /// The requested handle does not resolve to a known DID locally or via DNS.
     HandleNotFound,
+    /// Missing or absent Authorization header on a protected endpoint.
+    AuthenticationRequired,
+    /// Token is structurally invalid, has wrong signature, wrong audience, or DPoP mismatch.
+    InvalidToken,
     // TODO: add remaining codes from Appendix A as endpoints are implemented:
     // 400: INVALID_DOCUMENT, INVALID_PROOF, INVALID_ENDPOINT, INVALID_CONFIRMATION
     // 401: INVALID_CREDENTIALS
@@ -81,6 +85,8 @@ impl ErrorCode {
             ErrorCode::PlcDirectoryError => 502,
             ErrorCode::DnsError => 502,
             ErrorCode::HandleNotFound => 404,
+            ErrorCode::AuthenticationRequired => 401,
+            ErrorCode::InvalidToken => 401,
         }
     }
 }

@@ -128,6 +128,7 @@ mod tests {
             dns_provider: base.dns_provider,
             txt_resolver: base.txt_resolver,
             well_known_resolver: base.well_known_resolver,
+            jwt_secret: base.jwt_secret,
         }
     }
 
@@ -381,6 +382,7 @@ mod tests {
             dns_provider: base.dns_provider,
             txt_resolver: base.txt_resolver,
             well_known_resolver: base.well_known_resolver,
+            jwt_secret: base.jwt_secret,
         };
 
         let response = app(state)
