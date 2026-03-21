@@ -130,16 +130,26 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
         // 3. Decode and verify the access token (HS256).
         let claims = verify_access_token(token_str, state)?;
 
-        // 4. Enforce DPoP binding (RFC 9449 §7.1): if the access token carries a
-        //    `cnf.jkt` binding, the DPoP proof header is mandatory. Accepting the
-        //    token as a plain Bearer would allow an attacker with a stolen access
-        //    token to bypass the key binding entirely.
-        let token_is_dpop_bound = claims.cnf.as_ref().map_or(false, |c| c.jkt.is_some());
-        if token_is_dpop_bound && !has_dpop {
-            return Err(ApiError::new(
-                ErrorCode::InvalidToken,
-                "DPoP-bound token requires a DPoP proof header",
-            ));
+        // 4. Enforce DPoP binding (RFC 9449 §7.1).
+        //    When `cnf` is present the token carries a proof-of-possession claim; we
+        //    must require a DPoP proof to honour that binding.
+        //    * `cnf` present but no `jkt` → explicit rejection: a future cnf variant
+        //      (e.g. `x5t#S256` for cert binding) could be silently downgraded to plain
+        //      Bearer if we only check `jkt.is_some()`.
+        //    * `cnf.jkt` present but no DPoP header → downgrade attack; reject.
+        if let Some(cnf) = &claims.cnf {
+            if cnf.jkt.is_none() {
+                return Err(ApiError::new(
+                    ErrorCode::InvalidToken,
+                    "access token cnf present without jkt binding",
+                ));
+            }
+            if !has_dpop {
+                return Err(ApiError::new(
+                    ErrorCode::InvalidToken,
+                    "DPoP-bound token requires a DPoP proof header",
+                ));
+            }
         }
 
         // 5. Resolve scope enum.
@@ -230,7 +240,10 @@ fn verify_access_token(token: &str, state: &AppState) -> Result<AccessTokenClaim
                 ErrorKind::ExpiredSignature => {
                     ApiError::new(ErrorCode::TokenExpired, "token has expired")
                 }
-                _ => ApiError::new(ErrorCode::InvalidToken, "invalid token"),
+                _ => {
+                    tracing::debug!(error = %e, error_kind = ?e.kind(), "access token verification failed");
+                    ApiError::new(ErrorCode::InvalidToken, "invalid token")
+                }
             }
         })
 }
@@ -283,29 +296,8 @@ fn validate_dpop(
         ));
     }
 
-    // Compute JWK thumbprint (RFC 7638) from the embedded public key.
-    let thumbprint = jwk_thumbprint(&dpop_header.jwk).map_err(|e| {
-        tracing::debug!(error = %e, "failed to compute JWK thumbprint from DPoP proof header");
-        invalid()
-    })?;
-
-    // Verify that the access token was bound to this DPoP key.
-    let bound_thumbprint = access_claims
-        .cnf
-        .as_ref()
-        .and_then(|c| c.jkt.as_deref())
-        .ok_or_else(|| {
-            ApiError::new(ErrorCode::InvalidToken, "access token missing DPoP binding")
-        })?;
-    if thumbprint != bound_thumbprint {
-        tracing::debug!("DPoP proof key thumbprint does not match cnf.jkt in access token");
-        return Err(ApiError::new(
-            ErrorCode::InvalidToken,
-            "DPoP key thumbprint does not match token binding",
-        ));
-    }
-
-    // Verify the DPoP JWT signature using the embedded public JWK.
+    // Verify the DPoP JWT signature first (before making any binding decisions based
+    // on the embedded JWK — defence-in-depth: prove key control before trusting claims).
     let jwk: jsonwebtoken::jwk::Jwk =
         serde_json::from_value(dpop_header.jwk.clone()).map_err(|e| {
             tracing::debug!(error = %e, "failed to parse JWK from DPoP proof header");
@@ -327,10 +319,31 @@ fn validate_dpop(
     validation.validate_aud = false;
 
     let dpop_data = decode::<DPopClaims>(dpop_token, &decoding_key, &validation).map_err(|e| {
-        tracing::debug!(error = %e, "DPoP proof signature verification failed");
+        tracing::debug!(error = %e, "DPoP proof decoding or signature verification failed");
         invalid()
     })?;
     let dpop_claims = dpop_data.claims;
+
+    // Compute JWK thumbprint (RFC 7638) and verify the access token was bound to this key.
+    // Signature has already been verified above, so the JWK is authentic.
+    let thumbprint = jwk_thumbprint(&dpop_header.jwk).map_err(|e| {
+        tracing::debug!(error = %e, "failed to compute JWK thumbprint from DPoP proof header");
+        invalid()
+    })?;
+    let bound_thumbprint = access_claims
+        .cnf
+        .as_ref()
+        .and_then(|c| c.jkt.as_deref())
+        .ok_or_else(|| {
+            ApiError::new(ErrorCode::InvalidToken, "access token missing DPoP binding")
+        })?;
+    if thumbprint != bound_thumbprint {
+        tracing::debug!("DPoP proof key thumbprint does not match cnf.jkt in access token");
+        return Err(ApiError::new(
+            ErrorCode::InvalidToken,
+            "DPoP key thumbprint does not match token binding",
+        ));
+    }
 
     // Require `jti` for replay protection (existence check only — full deduplication
     // per RFC 9449 §11.1 requires a server-side nonce store, not yet implemented).
@@ -378,7 +391,10 @@ fn validate_dpop(
             ApiError::new(ErrorCode::InternalError, "internal server error")
         })?
         .as_secs() as i64;
-    if (now - dpop_claims.iat).abs() > 60 {
+    // Widen to i128 before subtracting to prevent i64 overflow when a malicious
+    // client sends iat = i64::MIN (debug panic; release wraparound bypass).
+    let diff = (now as i128) - (dpop_claims.iat as i128);
+    if diff.unsigned_abs() > 60 {
         return Err(ApiError::new(ErrorCode::InvalidToken, "DPoP proof is stale"));
     }
 
@@ -516,8 +532,13 @@ mod tests {
         serde_json::json!({ "kty": "EC", "crv": "P-256", "x": x, "y": y })
     }
 
-    /// Build a valid DPoP proof JWT signed with the given P-256 key.
+    /// Build a valid DPoP proof JWT signed with the given P-256 key using current time as `iat`.
     fn make_dpop_proof(key: &SigningKey, htm: &str, htu: &str) -> String {
+        make_dpop_proof_with_iat(key, htm, htu, now_secs() as i64)
+    }
+
+    /// Build a DPoP proof JWT with an explicit `iat` — used to test freshness rejection.
+    fn make_dpop_proof_with_iat(key: &SigningKey, htm: &str, htu: &str, iat: i64) -> String {
         let jwk = dpop_key_to_jwk(key);
         let header = serde_json::json!({
             "typ": "dpop+jwt",
@@ -527,8 +548,8 @@ mod tests {
         let payload = serde_json::json!({
             "htm": htm,
             "htu": htu,
-            "iat": now_secs() as i64,
-            "jti": "test-jti-unique-value",
+            "iat": iat,
+            "jti": uuid::Uuid::new_v4().to_string(),
         });
 
         let hdr_b64 =
@@ -945,6 +966,69 @@ mod tests {
         let dpop_proof =
             format!("{hdr_b64}.{pay_b64}.{}", URL_SAFE_NO_PAD.encode(sig.to_bytes().as_ref() as &[u8]));
 
+        let req = Request::builder()
+            .uri("/protected")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("DPoP", dpop_proof)
+            .body(Body::empty())
+            .unwrap();
+        let resp = protected_app(state).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let json = json_body(resp).await;
+        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+    }
+
+    #[tokio::test]
+    async fn dpop_stale_proof_returns_401() {
+        let state = test_state().await;
+        let dpop_key = SigningKey::random(&mut OsRng);
+        let thumbprint = dpop_key_thumbprint(&dpop_key);
+        let token = mint_token(
+            "did:plc:alice",
+            "com.atproto.access",
+            3600,
+            &state.jwt_secret,
+            Some(serde_json::json!({ "jkt": thumbprint })),
+        );
+        // iat = now - 120: 120 s in the past — outside the ±60 s freshness window.
+        let dpop_proof = make_dpop_proof_with_iat(
+            &dpop_key,
+            "GET",
+            &format!("{}/protected", state.config.public_url),
+            now_secs() as i64 - 120,
+        );
+        let req = Request::builder()
+            .uri("/protected")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("DPoP", dpop_proof)
+            .body(Body::empty())
+            .unwrap();
+        let resp = protected_app(state).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let json = json_body(resp).await;
+        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+    }
+
+    #[tokio::test]
+    async fn dpop_future_dated_proof_returns_401() {
+        let state = test_state().await;
+        let dpop_key = SigningKey::random(&mut OsRng);
+        let thumbprint = dpop_key_thumbprint(&dpop_key);
+        let token = mint_token(
+            "did:plc:alice",
+            "com.atproto.access",
+            3600,
+            &state.jwt_secret,
+            Some(serde_json::json!({ "jkt": thumbprint })),
+        );
+        // iat = now + 120: 120 s in the future — also outside the ±60 s window.
+        // This exercises the abs() branch (unsigned_abs() after widening).
+        let dpop_proof = make_dpop_proof_with_iat(
+            &dpop_key,
+            "GET",
+            &format!("{}/protected", state.config.public_url),
+            now_secs() as i64 + 120,
+        );
         let req = Request::builder()
             .uri("/protected")
             .header("Authorization", format!("Bearer {token}"))
