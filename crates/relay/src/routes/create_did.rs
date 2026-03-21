@@ -11,7 +11,7 @@
 //
 // Processing steps:
 //   1. require_pending_session → PendingSessionInfo { account_id, device_id }
-//   2. SELECT handle, pending_did, email FROM pending_accounts WHERE id = account_id
+//   2. SELECT handle, pending_did, email, pending_share_{1,2,3} FROM pending_accounts WHERE id = account_id
 //   3. Validate rotationKeyPublic starts with "did:key:z" → DidKeyUri
 //   4. serde_json::to_string(signedCreationOp) → signed_op_str
 //   5. crypto::verify_genesis_op(signed_op_str, rotation_key) → VerifiedGenesisOp
@@ -19,25 +19,28 @@
 //        verified.rotation_keys[0] == rotationKeyPublic
 //        verified.also_known_as[0] == "at://{handle}"
 //        verified.atproto_pds_endpoint  == config.public_url
-//   7. If pending_did IS NULL: UPDATE pending_accounts SET pending_did = verified.did
-//      If pending_did IS NOT NULL: verify match, set skip_plc_directory = true
+//   7. If pending_did IS NULL: generate 3 Shamir shares; UPDATE pending_accounts SET
+//        pending_did = verified.did, pending_share_{1,2,3} = <base32 shares>
+//      If pending_did IS NOT NULL: verify match, reuse stored shares, set skip_plc = true
 //   8. SELECT EXISTS(SELECT 1 FROM accounts WHERE did = verified.did) → 409 if true
-//   9. If !skip_plc_directory: POST {plc_directory_url}/{did} with signed_op_str
+//   9. If !skip_plc: POST {plc_directory_url}/{did} with signed_op_str
 //  10. build_did_document(&verified) → serde_json::Value
 //  11. Generate session token: 32 random bytes → base64url (returned) + SHA-256 hex (stored)
 //  12. Atomic transaction:
-//        INSERT accounts (did, email, password_hash=NULL)
+//        INSERT accounts (did, email, password_hash=NULL, recovery_share=pending_share_2)
 //        INSERT did_documents (did, document)
 //        INSERT sessions (id, did, device_id=NULL, token_hash, expires_at=+1 year)
 //        DELETE pending_sessions WHERE account_id = ?
 //        DELETE devices WHERE account_id = ?
 //        DELETE pending_accounts WHERE id = ?
-//  13. Return { "did": "did:plc:...", "did_document": {...}, "status": "active", "session_token": "..." }
+//  13. Return { "did", "did_document", "status": "active", "session_token",
+//               "shamirShare1": <base32>, "shamirShare3": <base32> }
 //
 // Note: handles are NOT inserted here. Handle creation is the caller's responsibility
 // via POST /v1/handles, which validates format and optionally creates DNS records.
 //
-// Outputs (success):  200 { "did": "...", "did_document": {...}, "status": "active", "session_token": "..." }
+// Outputs (success):  200 { "did": "...", "did_document": {...}, "status": "active",
+//                          "session_token": "...", "shamirShare1": "...", "shamirShare3": "..." }
 // Outputs (error):    400 INVALID_CLAIM, 401 UNAUTHORIZED, 409 DID_ALREADY_EXISTS,
 //                     502 PLC_DIRECTORY_ERROR, 500 INTERNAL_ERROR
 
@@ -45,6 +48,7 @@ use axum::{extract::State, http::HeaderMap, Json};
 use data_encoding::BASE32_NOPAD;
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::app::AppState;
 use crate::db::is_unique_violation;
@@ -87,8 +91,11 @@ pub async fn create_did_handler(
         verify_and_validate_genesis_op(&payload, &pending.handle, &state.config.public_url)?;
     let did = &verified.did;
 
-    // Phase 3: Pre-store DID for retry resilience, then POST to plc.directory.
-    let skip_plc = pre_store_did(&state.db, &session.account_id, did, &pending.pending_did).await?;
+    // Phase 3: Pre-store DID and Shamir shares for retry resilience, then POST to plc.directory.
+    // Shares are generated once and stored alongside pending_did so that retries return the
+    // same shares — preventing Share 2 from being orphaned in accounts.recovery_share.
+    let (skip_plc, share1, share2, share3) =
+        pre_store_did_and_shares(&state.db, &session.account_id, did, &pending).await?;
     check_already_promoted(&state.db, did).await?;
     if !skip_plc {
         post_to_plc_directory(
@@ -100,10 +107,9 @@ pub async fn create_did_handler(
         .await?;
     }
 
-    // Phase 4: Build DID document, generate session, generate Shamir shares, atomically promote.
+    // Phase 4: Build DID document, generate session, atomically promote.
     let did_document = build_did_document(&verified)?;
     let session_token = generate_token();
-    let (share1, share2, share3) = generate_recovery_shares()?;
     promote_account(
         &state.db,
         did,
@@ -131,6 +137,9 @@ struct PendingAccount {
     handle: String,
     pending_did: Option<String>,
     email: String,
+    pending_share_1: Option<String>,
+    pending_share_2: Option<String>,
+    pending_share_3: Option<String>,
 }
 
 /// Load pending account details (Step 2).
@@ -138,20 +147,26 @@ async fn load_pending_account(
     db: &sqlx::SqlitePool,
     account_id: &str,
 ) -> Result<PendingAccount, ApiError> {
-    let (handle, pending_did, email): (String, Option<String>, String) =
-        sqlx::query_as("SELECT handle, pending_did, email FROM pending_accounts WHERE id = ?")
-            .bind(account_id)
-            .fetch_optional(db)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "failed to query pending account");
-                ApiError::new(ErrorCode::InternalError, "failed to load account")
-            })?
-            .ok_or_else(|| ApiError::new(ErrorCode::Unauthorized, "account not found"))?;
+    let row: (String, Option<String>, String, Option<String>, Option<String>, Option<String>) =
+        sqlx::query_as(
+            "SELECT handle, pending_did, email, pending_share_1, pending_share_2, pending_share_3 \
+             FROM pending_accounts WHERE id = ?",
+        )
+        .bind(account_id)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to query pending account");
+            ApiError::new(ErrorCode::InternalError, "failed to load account")
+        })?
+        .ok_or_else(|| ApiError::new(ErrorCode::Unauthorized, "account not found"))?;
     Ok(PendingAccount {
-        handle,
-        pending_did,
-        email,
+        handle: row.0,
+        pending_did: row.1,
+        email: row.2,
+        pending_share_1: row.3,
+        pending_share_2: row.4,
+        pending_share_3: row.5,
     })
 }
 
@@ -218,16 +233,23 @@ fn verify_and_validate_genesis_op(
     Ok((verified, signed_op_str))
 }
 
-/// Pre-store the DID in pending_accounts for retry resilience (Step 7).
+/// Pre-store the DID and Shamir shares in pending_accounts for retry resilience (Step 7).
 ///
-/// Returns `true` if a previous attempt already stored this DID (skip plc.directory).
-async fn pre_store_did(
+/// On first attempt: generates 3 Shamir shares, stores `pending_did` + all three shares
+/// in a single UPDATE so they are available to any retry.
+///
+/// On retry (pending_did already set): reuses the stored shares and returns `skip_plc = true`
+/// to skip the plc.directory call. This guarantees every attempt returns the same shares,
+/// preventing Share 2 from being orphaned in accounts.recovery_share.
+///
+/// Returns `(skip_plc, share1, share2, share3)`.
+async fn pre_store_did_and_shares(
     db: &sqlx::SqlitePool,
     account_id: &str,
     did: &str,
-    pending_did: &Option<String>,
-) -> Result<bool, ApiError> {
-    if let Some(pre_stored_did) = pending_did {
+    pending: &PendingAccount,
+) -> Result<(bool, String, String, String), ApiError> {
+    if let Some(pre_stored_did) = &pending.pending_did {
         if did != pre_stored_did {
             tracing::error!(
                 derived_did = %did,
@@ -239,19 +261,40 @@ async fn pre_store_did(
                 "DID mismatch: derived DID does not match pre-stored value",
             ));
         }
-        tracing::info!(did = %pre_stored_did, "retry detected: pending_did already set, skipping plc.directory");
-        return Ok(true);
+        tracing::info!(did = %pre_stored_did, "retry detected: pending_did already set, reusing shares, skipping plc.directory");
+        let s1 = pending.pending_share_1.clone().ok_or_else(|| {
+            tracing::error!("retry: pending_share_1 is NULL; shares were not stored on first attempt");
+            ApiError::new(ErrorCode::InternalError, "retry: missing shares from first attempt")
+        })?;
+        let s2 = pending.pending_share_2.clone().ok_or_else(|| {
+            tracing::error!("retry: pending_share_2 is NULL; shares were not stored on first attempt");
+            ApiError::new(ErrorCode::InternalError, "retry: missing shares from first attempt")
+        })?;
+        let s3 = pending.pending_share_3.clone().ok_or_else(|| {
+            tracing::error!("retry: pending_share_3 is NULL; shares were not stored on first attempt");
+            ApiError::new(ErrorCode::InternalError, "retry: missing shares from first attempt")
+        })?;
+        return Ok((true, s1, s2, s3));
     }
 
-    let result = sqlx::query("UPDATE pending_accounts SET pending_did = ? WHERE id = ?")
-        .bind(did)
-        .bind(account_id)
-        .execute(db)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to pre-store pending_did");
-            ApiError::new(ErrorCode::InternalError, "failed to store pending DID")
-        })?;
+    let (s1, s2, s3) = generate_recovery_shares()?;
+
+    let result = sqlx::query(
+        "UPDATE pending_accounts \
+         SET pending_did = ?, pending_share_1 = ?, pending_share_2 = ?, pending_share_3 = ? \
+         WHERE id = ?",
+    )
+    .bind(did)
+    .bind(&s1)
+    .bind(&s2)
+    .bind(&s3)
+    .bind(account_id)
+    .execute(db)
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "failed to pre-store pending DID and shares");
+        ApiError::new(ErrorCode::InternalError, "failed to store pending DID")
+    })?;
 
     if result.rows_affected() == 0 {
         tracing::error!(account_id = %account_id, "pending account row vanished during DID pre-store");
@@ -260,7 +303,7 @@ async fn pre_store_did(
             "account no longer exists",
         ));
     }
-    Ok(false)
+    Ok((false, s1, s2, s3))
 }
 
 /// Check if the DID is already fully promoted (Step 8).
@@ -293,21 +336,21 @@ async fn check_already_promoted(db: &sqlx::SqlitePool, did: &str) -> Result<(), 
 ///
 /// Any 2 of the 3 shares can reconstruct the original secret.
 fn generate_recovery_shares() -> Result<(String, String, String), ApiError> {
-    let mut secret = [0u8; 32];
-    OsRng.try_fill_bytes(&mut secret).map_err(|e| {
+    let mut secret = Zeroizing::new([0u8; 32]);
+    OsRng.try_fill_bytes(secret.as_mut()).map_err(|e| {
         tracing::error!(error = %e, "OS RNG unavailable during recovery share generation");
         ApiError::new(ErrorCode::InternalError, "failed to generate recovery secret")
     })?;
 
-    let [s1, s2, s3] = crypto::split_secret(&secret).map_err(|e| {
+    let [s1, s2, s3] = crypto::split_secret(&*secret).map_err(|e| {
         tracing::error!(error = %e, "shamir split failed");
         ApiError::new(ErrorCode::InternalError, "failed to split recovery secret")
     })?;
 
     Ok((
-        BASE32_NOPAD.encode(&*s1.data),
-        BASE32_NOPAD.encode(&*s2.data),
-        BASE32_NOPAD.encode(&*s3.data),
+        BASE32_NOPAD.encode(s1.data.as_ref()),
+        BASE32_NOPAD.encode(s2.data.as_ref()),
+        BASE32_NOPAD.encode(s3.data.as_ref()),
     ))
 }
 

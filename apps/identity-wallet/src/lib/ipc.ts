@@ -136,6 +136,9 @@ export type DIDCeremonyError = {
     | 'SIGNING_FAILED'
     | 'DID_CREATION_FAILED'
     | 'KEYCHAIN_ERROR'
+    /** DID was committed at the relay but Share 1 Keychain write failed. Retrying the
+     *  ceremony will fail (DID already exists). Share storage can be retried separately. */
+    | 'SHARE_STORAGE_FAILED'
     | 'NETWORK_ERROR';
   message?: string;
 };

@@ -49,10 +49,18 @@
         return "Couldn't create your identity. Please try again.";
       case 'KEYCHAIN_ERROR':
         return "Couldn't save to your device. Please try again.";
+      case 'SHARE_STORAGE_FAILED':
+        return 'Your identity was created, but we couldn\u2019t save your recovery key. Please contact support — do not retry setup.';
       case 'KEY_NOT_FOUND':
       default:
         return 'Something went wrong. Please try again.';
     }
+  }
+
+  function canRetry(err: DIDCeremonyError): boolean {
+    // SHARE_STORAGE_FAILED means the DID is already committed — retrying the full
+    // ceremony will fail with DID_ALREADY_EXISTS. Only recoverable out-of-band.
+    return err.code !== 'SHARE_STORAGE_FAILED';
   }
 
   onMount(() => runCeremony());
@@ -63,7 +71,9 @@
 {:else if error}
   <div class="screen">
     <p class="error-text">{errorMessage(error)}</p>
-    <button class="retry" onclick={() => runCeremony()}>Retry</button>
+    {#if canRetry(error)}
+      <button class="retry" onclick={() => runCeremony()}>Retry</button>
+    {/if}
   </div>
 {/if}
 

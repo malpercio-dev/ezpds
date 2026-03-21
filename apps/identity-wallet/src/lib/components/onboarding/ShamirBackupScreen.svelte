@@ -12,26 +12,42 @@
 
   let confirmed = $state(false);
   let copied = $state(false);
+  let copyFailed = $state(false);
   let qrSvg = $state('');
+  let qrFailed = $state(false);
 
   // Format share as groups of 4 for readability (52 chars → 13 groups of 4).
   // Mirrors hardware wallet recovery key display conventions.
   let formattedShare = $derived(share3.match(/.{1,4}/g)?.join(' ') ?? share3);
 
   onMount(async () => {
-    qrSvg = await QRCode.toString(share3, {
-      type: 'svg',
-      width: 200,
-      margin: 2,
-    });
+    try {
+      qrSvg = await QRCode.toString(share3, {
+        type: 'svg',
+        width: 200,
+        margin: 2,
+      });
+    } catch {
+      // QR generation failed — share text and copy button remain the primary backup methods.
+      qrFailed = true;
+    }
   });
 
   async function copyShare() {
-    await navigator.clipboard.writeText(share3);
-    copied = true;
-    setTimeout(() => {
-      copied = false;
-    }, 2000);
+    try {
+      await navigator.clipboard.writeText(share3);
+      copied = true;
+      copyFailed = false;
+      setTimeout(() => {
+        copied = false;
+      }, 2000);
+    } catch {
+      // Clipboard denied or bridge error — show failure so the user knows to use another method.
+      copyFailed = true;
+      setTimeout(() => {
+        copyFailed = false;
+      }, 3000);
+    }
   }
 </script>
 
@@ -60,11 +76,16 @@
     <button class="copy-btn" onclick={copyShare}>
       {copied ? 'Copied!' : 'Copy'}
     </button>
+    {#if copyFailed}
+      <p class="inline-error" role="alert">Copy failed. Please write it down or use the QR code.</p>
+    {/if}
 
     {#if qrSvg}
       <div class="qr-container" aria-label="QR code for recovery key part 3">
         {@html qrSvg}
       </div>
+    {:else if qrFailed}
+      <p class="inline-error">QR code unavailable — use Copy or write down the key above.</p>
     {/if}
 
     <div class="backup-tips">
@@ -199,6 +220,12 @@
   .qr-container :global(svg) {
     max-width: 180px;
     height: auto;
+  }
+
+  .inline-error {
+    font-size: 0.8rem;
+    color: #ef4444;
+    margin: 0;
   }
 
   .backup-tips {

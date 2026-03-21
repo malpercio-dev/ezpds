@@ -146,6 +146,11 @@ pub enum DIDCeremonyError {
     DidCreationFailed,
     #[error("keychain operation failed")]
     KeychainError,
+    /// DID was committed at the relay but Share 1 could not be stored in Keychain.
+    /// The DID exists — retrying the ceremony will fail. The user can retry the share
+    /// storage separately once the Keychain is available.
+    #[error("DID created but recovery share storage failed")]
+    ShareStorageFailed,
     #[error("network error: {message}")]
     NetworkError { message: String },
 }
@@ -177,7 +182,10 @@ async fn create_account(
     handle: String,
 ) -> Result<CreateAccountResult, CreateAccountError> {
     // 1. Get or create the device's SE-backed (or simulator-fallback) P-256 key.
-    let device_key = device_key::get_or_create().map_err(|_| CreateAccountError::KeychainError)?;
+    let device_key = device_key::get_or_create().map_err(|e| {
+        tracing::warn!(error = %e, "device key creation failed during account creation");
+        CreateAccountError::KeychainError
+    })?;
 
     // 2. POST to relay.
     let req = CreateMobileAccountRequest {
@@ -357,13 +365,16 @@ async fn perform_did_ceremony(handle: String) -> Result<DIDCeremonyResult, DIDCe
     })?;
 
     // Step 8: Store Share 1 in iCloud Keychain for automatic backup.
+    // Uses ShareStorageFailed (not KeychainError) because the DID is already committed:
+    // retrying the ceremony will hit DidAlreadyExists. The frontend can surface a distinct
+    // message rather than telling the user to retry the whole ceremony.
     keychain::store_item(
         "recovery-share-1",
         create_did_resp.shamir_share_1.as_bytes(),
     )
     .map_err(|e| {
-        tracing::error!(error = %e, "failed to store recovery share 1 in keychain");
-        DIDCeremonyError::KeychainError
+        tracing::error!(error = %e, "DID committed but recovery share 1 keychain write failed");
+        DIDCeremonyError::ShareStorageFailed
     })?;
 
     Ok(DIDCeremonyResult {
@@ -544,6 +555,7 @@ mod tests {
         };
         let json = serde_json::to_value(&result).unwrap();
         assert_eq!(json["did"], "did:plc:abcdefghijklmnopqrstuvwx");
+        assert_eq!(json["share3"], "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRST");
     }
 
     #[test]
@@ -602,5 +614,11 @@ mod tests {
         let json = serde_json::to_value(&err).unwrap();
         assert_eq!(json["code"], "NETWORK_ERROR");
         assert_eq!(json["message"], "Connection refused");
+    }
+
+    #[test]
+    fn did_ceremony_error_share_storage_failed_serializes_correctly() {
+        let json = serde_json::to_value(&DIDCeremonyError::ShareStorageFailed).unwrap();
+        assert_eq!(json["code"], "SHARE_STORAGE_FAILED");
     }
 }
