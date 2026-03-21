@@ -28,7 +28,7 @@ This phase is infrastructure. It establishes the dependency but introduces no be
 
 **Step 1: Insert sqlx into [workspace.dependencies]**
 
-Open `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/Cargo.toml`.
+Open `/Users/malpercio/workspace/malpercio-dev/ezpds/Cargo.toml`.
 
 After the `axum = "0.7"` entry and its blank line, add a `# Database` section:
 
@@ -79,7 +79,7 @@ git commit -m "chore(deps): add sqlx 0.8 to workspace dependencies"
 
 **Step 1: Insert sqlx into relay [dependencies]**
 
-Open `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/relay/Cargo.toml`.
+Open `/Users/malpercio/workspace/malpercio-dev/ezpds/crates/relay/Cargo.toml`.
 
 After the `tower-http = { workspace = true }` entry in `[dependencies]`, add:
 

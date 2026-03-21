@@ -55,7 +55,7 @@ This phase implements and tests:
 
 **Step 1: Add reqwest to workspace Cargo.toml**
 
-In `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/Cargo.toml`, in the `[workspace.dependencies]` section, add after the existing entries:
+In `/Users/malpercio/workspace/malpercio-dev/ezpds/Cargo.toml`, in the `[workspace.dependencies]` section, add after the existing entries:
 
 ```toml
 reqwest = { version = "0.12", features = ["json"] }
@@ -63,7 +63,7 @@ reqwest = { version = "0.12", features = ["json"] }
 
 **Step 2: Update crates/relay/Cargo.toml**
 
-In `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/relay/Cargo.toml`, add to `[dependencies]`:
+In `/Users/malpercio/workspace/malpercio-dev/ezpds/crates/relay/Cargo.toml`, add to `[dependencies]`:
 
 ```toml
 reqwest = { workspace = true }
@@ -106,7 +106,7 @@ git commit -m "chore(relay): add reqwest 0.12 and wiremock 0.6 deps for POST /v1
 
 **Step 1: Create the migration file**
 
-Create `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/relay/src/db/migrations/V008__did_promotion.sql`:
+Create `/Users/malpercio/workspace/malpercio-dev/ezpds/crates/relay/src/db/migrations/V008__did_promotion.sql`:
 
 ```sql
 -- V008: DID promotion support
@@ -154,7 +154,7 @@ ALTER TABLE pending_accounts ADD COLUMN pending_did TEXT;
 
 **Step 2: Add V008 to the MIGRATIONS array in db/mod.rs**
 
-In `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/relay/src/db/mod.rs`, find the `MIGRATIONS` static array. Add the V008 entry after V007:
+In `/Users/malpercio/workspace/malpercio-dev/ezpds/crates/relay/src/db/mod.rs`, find the `MIGRATIONS` static array. Add the V008 entry after V007:
 
 ```rust
 Migration { version: 8, sql: include_str!("migrations/V008__did_promotion.sql") },
@@ -177,7 +177,7 @@ static MIGRATIONS: &[Migration] = &[
 
 **Step 3: Update crates/relay/src/db/CLAUDE.md**
 
-In `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/relay/src/db/CLAUDE.md`, update the "Last verified" date to `2026-03-13` and add to the Key Files section:
+In `/Users/malpercio/workspace/malpercio-dev/ezpds/crates/relay/src/db/CLAUDE.md`, update the "Last verified" date to `2026-03-13` and add to the Key Files section:
 
 ```
 - `migrations/V008__did_promotion.sql` - Rebuilds accounts with nullable password_hash (mobile accounts have no password); adds pending_did column to pending_accounts for DID pre-store retry resilience
@@ -210,7 +210,7 @@ git commit -m "feat(relay): V008 migration — nullable accounts.password_hash, 
 
 **Step 1: Add plc_directory_url to Config struct**
 
-In `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/common/src/config.rs`:
+In `/Users/malpercio/workspace/malpercio-dev/ezpds/crates/common/src/config.rs`:
 
 **1a. Add to `Config` struct** (after `signing_key_master_key`):
 
@@ -253,7 +253,7 @@ Ok(Config {
 
 **Step 2: Add ErrorCode variants**
 
-In `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/common/src/error.rs`, add to the `ErrorCode` enum (keeping the existing variants unchanged). Match the existing pattern — bare variants with doc comments, no `#[error(...)]` attribute (the enum derives `Serialize` for wire format, not `thiserror::Error`):
+In `/Users/malpercio/workspace/malpercio-dev/ezpds/crates/common/src/error.rs`, add to the `ErrorCode` enum (keeping the existing variants unchanged). Match the existing pattern — bare variants with doc comments, no `#[error(...)]` attribute (the enum derives `Serialize` for wire format, not `thiserror::Error`):
 
 ```rust
 /// The DID has already been fully promoted to an active account.
@@ -308,7 +308,7 @@ git commit -m "feat(common): add plc_directory_url to Config and DID error codes
 
 **Step 1: Add http_client field to AppState**
 
-In `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/relay/src/app.rs`:
+In `/Users/malpercio/workspace/malpercio-dev/ezpds/crates/relay/src/app.rs`:
 
 **1a. Add reqwest use import** (at the top of the file with other imports):
 
@@ -552,7 +552,7 @@ Read the full file to understand the exact import pattern, master key access pat
 
 **Step 2: Create crates/relay/src/routes/create_did.rs**
 
-Create `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/relay/src/routes/create_did.rs`:
+Create `/Users/malpercio/workspace/malpercio-dev/ezpds/crates/relay/src/routes/create_did.rs`:
 
 ```rust
 // pattern: Imperative Shell
@@ -1368,7 +1368,7 @@ mod tests {
 
 **Step 3: Add create_did module to routes/mod.rs**
 
-In `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/relay/src/routes/mod.rs`, add:
+In `/Users/malpercio/workspace/malpercio-dev/ezpds/crates/relay/src/routes/mod.rs`, add:
 
 ```rust
 pub mod create_did;
@@ -1380,7 +1380,7 @@ Keep the existing module declarations; add this line in alphabetical order (afte
 
 **Step 4: Register POST /v1/dids in app.rs router**
 
-In `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/relay/src/app.rs`, in the `app(state: AppState)` function:
+In `/Users/malpercio/workspace/malpercio-dev/ezpds/crates/relay/src/app.rs`, in the `app(state: AppState)` function:
 
 **4a. Add the import** at the top of the function body or via `use`:
 
@@ -1398,7 +1398,7 @@ use crate::routes::create_did::create_did_handler;
 
 **Step 5: Create bruno/create-did.bru**
 
-Create `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/bruno/create-did.bru`:
+Create `/Users/malpercio/workspace/malpercio-dev/ezpds/bruno/create-did.bru`:
 
 ```
 meta {

@@ -14,13 +14,28 @@
       ? `did:plc:${did.slice(8, 13)}…${did.slice(-4)}`
       : did
   );
+
+  let copied = $state(false);
+
+  async function copyDid() {
+    try {
+      await navigator.clipboard.writeText(did);
+      copied = true;
+      setTimeout(() => { copied = false; }, 2000);
+    } catch (e) {
+      console.error('clipboard write failed:', e);
+    }
+  }
 </script>
 
 <div class="screen">
   <div class="success-icon" aria-hidden="true">✓</div>
   <h2>Identity Created!</h2>
   <p class="label">Your decentralized identifier</p>
-  <code class="did">{displayDid}</code>
+  <button class="did" onclick={copyDid} title="Tap to copy full DID">
+    {displayDid}
+    <span class="copy-hint">{copied ? 'Copied!' : 'Tap to copy'}</span>
+  </button>
   <button class="cta" onclick={oncontinue}>Continue</button>
 </div>
 
@@ -68,6 +83,20 @@
     padding: 0.5rem 1rem;
     border-radius: 8px;
     word-break: break-all;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+    width: 100%;
+    max-width: 320px;
+  }
+
+  .copy-hint {
+    font-family: system-ui, sans-serif;
+    font-size: 0.75rem;
+    color: #6b7280;
   }
 
   .cta {

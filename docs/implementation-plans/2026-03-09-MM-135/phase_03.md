@@ -93,7 +93,7 @@ Expected: `[ "default" ]`
 
 **Files:** None (read-only validation)
 
-All `nix eval` commands below must be run from the repo root (`/Users/jacob.zweifel/workspace/malpercio-dev/ezpds`).
+All `nix eval` commands below must be run from the repo root (`/Users/malpercio/workspace/malpercio-dev/ezpds`).
 
 **Step 1: Verify ExecStart with minimal config**
 
@@ -373,7 +373,7 @@ Expected: `PASS: settings changes do not affect ExecStart`
 
 **Step 1: Add nix-check recipe**
 
-Append to `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/justfile`:
+Append to `/Users/malpercio/workspace/malpercio-dev/ezpds/justfile`:
 
 ```just
 # Validate NixOS module evaluation (flake structure check).

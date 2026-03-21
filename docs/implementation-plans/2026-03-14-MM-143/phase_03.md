@@ -39,7 +39,7 @@ This phase implements and verifies operationally:
 **Verifies:** MM-143.AC5.1 (cargo-tauri in PATH), MM-143.AC5.2 (node 22.x in PATH), MM-143.AC5.3 (pnpm in PATH)
 
 **Files:**
-- Modify: `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/devenv.nix`
+- Modify: `/Users/malpercio/workspace/malpercio-dev/ezpds/devenv.nix`
 
 **Step 1: Update the `packages` list in `devenv.nix`**
 
@@ -114,7 +114,7 @@ Note: Re-entering the dev shell may take several minutes on first run as Nix dow
 **Verifies:** MM-143.AC5.6 (`apps/identity-wallet/src-tauri/gen/` in .gitignore)
 
 **Files:**
-- Modify: `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.gitignore`
+- Modify: `/Users/malpercio/workspace/malpercio-dev/ezpds/.gitignore`
 
 **Step 1: Append Tauri gen pattern to `.gitignore`**
 
@@ -305,7 +305,7 @@ git commit -m "docs(MM-143): add apps/identity-wallet/CLAUDE.md with iOS develop
 **Verifies:** MM-143.AC5.5 (root CLAUDE.md contains pointer to apps/identity-wallet/CLAUDE.md)
 
 **Files:**
-- Modify: `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/CLAUDE.md`
+- Modify: `/Users/malpercio/workspace/malpercio-dev/ezpds/CLAUDE.md`
 
 **Step 1: Read the current root `CLAUDE.md`**
 

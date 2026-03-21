@@ -56,7 +56,7 @@ The design plan option table (line 86) lists `configFile` as `nullOr path`. This
 
 **Step 1: Create nix/module.nix**
 
-Create `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/nix/module.nix` with the following contents:
+Create `/Users/malpercio/workspace/malpercio-dev/ezpds/nix/module.nix` with the following contents:
 
 ```nix
 { lib, pkgs, config, ... }:

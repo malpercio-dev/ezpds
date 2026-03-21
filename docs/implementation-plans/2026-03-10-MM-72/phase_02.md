@@ -41,7 +41,7 @@
 
 **Step 1: Add thiserror to [dependencies] and tempfile to [dev-dependencies]**
 
-Open `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/relay/Cargo.toml`.
+Open `/Users/malpercio/workspace/malpercio-dev/ezpds/crates/relay/Cargo.toml`.
 
 After Phase 1, the file looks like:
 ```toml
@@ -111,10 +111,10 @@ git commit -m "chore(deps): add thiserror + tempfile to relay crate"
 **Step 1: Create the directory and SQL file**
 
 ```bash
-mkdir -p /Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/relay/src/db/migrations
+mkdir -p /Users/malpercio/workspace/malpercio-dev/ezpds/crates/relay/src/db/migrations
 ```
 
-Create `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/relay/src/db/migrations/V001__init.sql` with this exact content:
+Create `/Users/malpercio/workspace/malpercio-dev/ezpds/crates/relay/src/db/migrations/V001__init.sql` with this exact content:
 
 ```sql
 CREATE TABLE server_metadata (
@@ -146,7 +146,7 @@ git commit -m "feat(db): add V001__init.sql Wave 1 schema (server_metadata)"
 
 **Step 1: Create the file with the following exact content**
 
-Create `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/relay/src/db/mod.rs`:
+Create `/Users/malpercio/workspace/malpercio-dev/ezpds/crates/relay/src/db/mod.rs`:
 
 ```rust
 // pattern: Imperative Shell
@@ -407,7 +407,7 @@ git commit -m "feat(db): add db module with pool factory, migration runner, and 
 
 **Step 1: Add mod db declaration**
 
-Open `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/relay/src/main.rs`.
+Open `/Users/malpercio/workspace/malpercio-dev/ezpds/crates/relay/src/main.rs`.
 
 After line 5 (`mod app;`), add:
 

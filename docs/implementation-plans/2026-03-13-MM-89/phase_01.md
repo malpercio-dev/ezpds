@@ -53,7 +53,7 @@ This phase implements and tests:
 
 **Step 1: Add ciborium and data-encoding to workspace Cargo.toml**
 
-In `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/Cargo.toml`, in the `[workspace.dependencies]` section, add these two lines after the existing `base64` entry:
+In `/Users/malpercio/workspace/malpercio-dev/ezpds/Cargo.toml`, in the `[workspace.dependencies]` section, add these two lines after the existing `base64` entry:
 
 ```toml
 ciborium = "0.2"
@@ -62,7 +62,7 @@ data-encoding = "2"
 
 **Step 2: Add new deps to crates/crypto/Cargo.toml**
 
-In `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/crypto/Cargo.toml`, add to the `[dependencies]` section:
+In `/Users/malpercio/workspace/malpercio-dev/ezpds/crates/crypto/Cargo.toml`, add to the `[dependencies]` section:
 
 ```toml
 ciborium = { workspace = true }
@@ -127,7 +127,7 @@ git commit -m "chore(crypto): add ciborium, data-encoding, sha2, serde deps for 
 
 **Step 1: Add PlcOperation variant to error.rs**
 
-In `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/crypto/src/error.rs`, add the new variant to the `CryptoError` enum:
+In `/Users/malpercio/workspace/malpercio-dev/ezpds/crates/crypto/src/error.rs`, add the new variant to the `CryptoError` enum:
 
 ```rust
 #[derive(Debug, thiserror::Error)]
@@ -151,7 +151,7 @@ pub enum CryptoError {
 
 **Step 2: Create crates/crypto/src/plc.rs**
 
-Create `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/crypto/src/plc.rs` with this content:
+Create `/Users/malpercio/workspace/malpercio-dev/ezpds/crates/crypto/src/plc.rs` with this content:
 
 ```rust
 // pattern: Functional Core
@@ -550,7 +550,7 @@ mod tests {
 
 **Step 3: Add plc module to lib.rs and re-export public types**
 
-In `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/crypto/src/lib.rs`, add the new module declaration and re-exports:
+In `/Users/malpercio/workspace/malpercio-dev/ezpds/crates/crypto/src/lib.rs`, add the new module declaration and re-exports:
 
 ```rust
 // crypto: signing, Shamir secret sharing, DID operations.
@@ -604,7 +604,7 @@ git commit -m "feat(crypto): implement build_did_plc_genesis_op for did:plc gene
 
 **Step 1: Add new contracts to CLAUDE.md**
 
-In `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/crypto/CLAUDE.md`, update the "Last verified" date to `2026-03-13` and add the following to the **Public API contracts** section (add after the existing contracts):
+In `/Users/malpercio/workspace/malpercio-dev/ezpds/crates/crypto/CLAUDE.md`, update the "Last verified" date to `2026-03-13` and add the following to the **Public API contracts** section (add after the existing contracts):
 
 ```markdown
 ### `build_did_plc_genesis_op`

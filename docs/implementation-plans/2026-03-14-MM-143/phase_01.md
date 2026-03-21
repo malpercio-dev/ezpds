@@ -191,7 +191,7 @@ Static placeholder only — the Greet button and IPC demo are added in Phase 2.
 
 **Step 10: Update `.gitignore` to exclude frontend build artifacts**
 
-The workspace `.gitignore` is at `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.gitignore`. Append these lines at the end of the file:
+The workspace `.gitignore` is at `/Users/malpercio/workspace/malpercio-dev/ezpds/.gitignore`. Append these lines at the end of the file:
 
 ```
 # SvelteKit / frontend build artifacts
@@ -314,12 +314,12 @@ fn main() {
 **Verifies:** MM-143.AC2.1, MM-143.AC2.2, MM-143.AC2.3, MM-143.AC2.4, MM-143.AC2.5
 
 **Files:**
-- Modify: `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/Cargo.toml` (add workspace member)
-- Modify: `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/rust-toolchain.toml` (add iOS targets)
+- Modify: `/Users/malpercio/workspace/malpercio-dev/ezpds/Cargo.toml` (add workspace member)
+- Modify: `/Users/malpercio/workspace/malpercio-dev/ezpds/rust-toolchain.toml` (add iOS targets)
 
 **Step 1: Add `apps/identity-wallet/src-tauri` to workspace members**
 
-In `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/Cargo.toml`, the current `members` block is:
+In `/Users/malpercio/workspace/malpercio-dev/ezpds/Cargo.toml`, the current `members` block is:
 
 ```toml
 members = [
@@ -344,7 +344,7 @@ members = [
 
 **Step 2: Add iOS targets to `rust-toolchain.toml`**
 
-In `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/rust-toolchain.toml`, the current `targets` line is:
+In `/Users/malpercio/workspace/malpercio-dev/ezpds/rust-toolchain.toml`, the current `targets` line is:
 
 ```toml
 targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]

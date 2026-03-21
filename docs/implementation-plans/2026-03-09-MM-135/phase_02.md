@@ -33,7 +33,7 @@ Note: use the context code blocks below to locate the insertion point — do not
 
 **Step 1: Edit flake.nix**
 
-In `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/flake.nix`, insert the `nixosModules.default` output after the closing `);` of the `devShells` output and before the `};` that closes the outputs let block.
+In `/Users/malpercio/workspace/malpercio-dev/ezpds/flake.nix`, insert the `nixosModules.default` output after the closing `);` of the `devShells` output and before the `};` that closes the outputs let block.
 
 The current end of the outputs block is:
 

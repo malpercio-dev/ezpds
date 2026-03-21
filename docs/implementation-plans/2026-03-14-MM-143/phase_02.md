@@ -47,7 +47,7 @@ This phase implements and verifies operationally:
 - Modify: `apps/identity-wallet/src-tauri/Cargo.toml` (add tauri and tauri-build deps)
 - Create: `apps/identity-wallet/src-tauri/build.rs`
 - Create: `apps/identity-wallet/src-tauri/tauri.conf.json`
-- Modify: `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/flake.nix` (scope `buildDepsOnly` to relay-only packages)
+- Modify: `/Users/malpercio/workspace/malpercio-dev/ezpds/flake.nix` (scope `buildDepsOnly` to relay-only packages)
 
 **IMPORTANT — ordering:** `tauri::generate_context!()` (added in Task 2) reads `tauri.conf.json` at compile time. Both `tauri.conf.json` and the `tauri-build` build script must exist BEFORE updating `lib.rs` in Task 2. Create all three files in this task, then verify `cargo build` succeeds with the Phase 1 stub `lib.rs` before proceeding to Task 2.
 
@@ -144,7 +144,7 @@ Adding `tauri = "2"` to the workspace means `buildDepsOnly` (which builds deps f
 
 Fix: scope `buildDepsOnly` to only the 4 relay-related packages.
 
-In `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/flake.nix`, the current `cargoArtifacts` line (line 42) is:
+In `/Users/malpercio/workspace/malpercio-dev/ezpds/flake.nix`, the current `cargoArtifacts` line (line 42) is:
 
 ```nix
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;

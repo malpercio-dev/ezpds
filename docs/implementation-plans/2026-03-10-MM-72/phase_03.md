@@ -45,7 +45,7 @@
 
 **Step 1: Update AppState struct**
 
-Open `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/relay/src/app.rs`.
+Open `/Users/malpercio/workspace/malpercio-dev/ezpds/crates/relay/src/app.rs`.
 
 The current `AppState` (lines 7–13):
 ```rust
@@ -196,7 +196,7 @@ git commit -m "feat(relay): add db: SqlitePool to AppState and update test fixtu
 
 **Step 1: Review current main.rs structure**
 
-The relevant section of `run()` in `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/relay/src/main.rs` currently looks like this (lines 23–45):
+The relevant section of `run()` in `/Users/malpercio/workspace/malpercio-dev/ezpds/crates/relay/src/main.rs` currently looks like this (lines 23–45):
 
 ```rust
 async fn run() -> anyhow::Result<()> {
