@@ -63,9 +63,8 @@ mod tests {
     /// `private_key_encrypted` is a NOT NULL column, but the GET handler never reads it,
     /// so any valid base64 value satisfies the constraint. The real format is
     /// base64(nonce(12) || ciphertext(32) || tag(16)) = 80 base64 chars. The 84-char
-    /// placeholder below (60 zero-bytes base64-encoded + padding) is intentionally a
-    /// dummy — replace with a correct 80-char value if a test ever needs to read
-    /// private_key_encrypted back.
+    /// placeholder below encodes 63 bytes (with padding characters) — replace with a valid 80-char value
+    /// (60 bytes, no padding) if a test ever needs to read private_key_encrypted back.
     async fn insert_test_key(db: &sqlx::SqlitePool, key_id: &str, created_at: &str) {
         sqlx::query(
             "INSERT INTO relay_signing_keys \
@@ -108,7 +107,7 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["keyId"], "did:key:zTestKey1");
         assert_eq!(json["algorithm"], "p256");
-        assert!(json["publicKey"].is_string(), "publicKey must be present");
+        assert_eq!(json["publicKey"], "zTestPublicKey123");
     }
 
     #[tokio::test]

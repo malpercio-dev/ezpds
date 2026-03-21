@@ -38,10 +38,8 @@ struct CreateMobileAccountResponse {
 #[serde(rename_all = "camelCase")]
 struct RelaySigningKey {
     key_id: String,
-    #[serde(default)]
     #[allow(dead_code)]
     public_key: String,
-    #[serde(default)]
     #[allow(dead_code)]
     algorithm: String,
 }
@@ -51,12 +49,11 @@ struct RelaySigningKey {
 #[serde(rename_all = "camelCase")]
 struct CreateDidRequest {
     rotation_key_public: String,
-    signed_creation_op: String,
+    signed_creation_op: serde_json::Value,
 }
 
 /// Response from POST /v1/dids — the promoted DID and upgraded session token.
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct CreateDidResponse {
     did: String,
     session_token: String,
@@ -130,7 +127,7 @@ pub struct DIDCeremonyResult {
 #[derive(Debug, Serialize, thiserror::Error)]
 #[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum DIDCeremonyError {
-    #[error("device key not found; call get_or_create before ceremony")]
+    #[error("failed to get or create device key")]
     KeyNotFound,
     #[error("failed to fetch relay signing key")]
     RelayKeyFetchFailed,
@@ -265,21 +262,23 @@ async fn perform_did_ceremony(handle: String) -> Result<DIDCeremonyResult, DIDCe
                 message: e.to_string(),
             })?;
 
-    if resp.status().as_u16() == 503 {
+    let status = resp.status();
+    if status.as_u16() == 503 {
         return Err(DIDCeremonyError::NoRelaySigningKey);
     }
-    if !resp.status().is_success() {
-        tracing::warn!(status = %resp.status(), "GET /v1/relay/keys returned non-success status");
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        tracing::error!(status = %status, body = %body, "GET /v1/relay/keys returned non-success status");
         return Err(DIDCeremonyError::RelayKeyFetchFailed);
     }
 
     let relay_key: RelaySigningKey = resp.json().await.map_err(|e| {
-        tracing::warn!(error = %e, "failed to deserialize relay signing key response");
+        tracing::error!(error = %e, "failed to deserialize relay signing key response");
         DIDCeremonyError::RelayKeyFetchFailed
     })?;
 
     // Step 3: Build signed genesis op — device key as rotation key, relay key as signing key.
-    // The sign callback calls device_key::sign() so the private key never leaves the SE.
+    // On device, the private key never leaves the Secure Enclave; on Simulator and macOS, a software key is used instead.
     let rotation_key = DidKeyUri(device_key.key_id.clone());
     let signing_key = DidKeyUri(relay_key.key_id.clone());
 
@@ -294,7 +293,7 @@ async fn perform_did_ceremony(handle: String) -> Result<DIDCeremonyResult, DIDCe
         },
     )
     .map_err(|e| {
-        tracing::warn!(error = %e, "genesis op signing failed during DID ceremony");
+        tracing::error!(error = %e, "genesis op signing failed during DID ceremony");
         DIDCeremonyError::SigningFailed
     })?;
 
@@ -310,8 +309,11 @@ async fn perform_did_ceremony(handle: String) -> Result<DIDCeremonyResult, DIDCe
 
     // Step 5: POST the signed genesis op to the relay to promote the account to a full DID.
     let create_did_req = CreateDidRequest {
-        rotation_key_public: device_key.multibase,
-        signed_creation_op: genesis_op.signed_op_json,
+        rotation_key_public: device_key.key_id,
+        signed_creation_op: serde_json::from_str(&genesis_op.signed_op_json).map_err(|e| {
+            tracing::error!(error = %e, "genesis op JSON is not valid JSON");
+            DIDCeremonyError::SigningFailed
+        })?,
     };
 
     let resp = RELAY_CLIENT
@@ -322,26 +324,28 @@ async fn perform_did_ceremony(handle: String) -> Result<DIDCeremonyResult, DIDCe
         })?;
 
     if !resp.status().is_success() {
-        tracing::warn!(status = %resp.status(), "POST /v1/dids returned non-success status");
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        tracing::error!(status = %status, body = %body, "POST /v1/dids returned non-success status");
         return Err(DIDCeremonyError::DidCreationFailed);
     }
 
     let create_did_resp: CreateDidResponse = resp.json().await.map_err(|e| {
-        tracing::warn!(error = %e, "failed to deserialize POST /v1/dids response");
+        tracing::error!(error = %e, "failed to deserialize POST /v1/dids response");
         DIDCeremonyError::DidCreationFailed
     })?;
 
     // Step 6: Overwrite session-token with the upgraded full session token.
     keychain::store_item("session-token", create_did_resp.session_token.as_bytes()).map_err(
         |e| {
-            tracing::warn!(error = %e, "failed to persist upgraded session-token to keychain");
+            tracing::error!(error = %e, "failed to persist upgraded session-token to keychain");
             DIDCeremonyError::KeychainError
         },
     )?;
 
     // Step 7: Persist the DID for use in subsequent app sessions.
     keychain::store_item("did", create_did_resp.did.as_bytes()).map_err(|e| {
-        tracing::warn!(error = %e, "failed to persist DID to keychain");
+        tracing::error!(error = %e, did = %create_did_resp.did, "failed to persist DID to keychain");
         DIDCeremonyError::KeychainError
     })?;
 

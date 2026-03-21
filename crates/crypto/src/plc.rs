@@ -214,6 +214,13 @@ where
     // The callback must return raw 64-byte r‖s P-256 ECDSA signature bytes.
     let sig_bytes = sign(&unsigned_cbor)?;
 
+    if sig_bytes.len() != 64 {
+        return Err(CryptoError::PlcOperation(format!(
+            "signing callback returned {} bytes, expected 64",
+            sig_bytes.len()
+        )));
+    }
+
     // Step 4: base64url-encode the signature (no padding).
     let sig_str = URL_SAFE_NO_PAD.encode(&sig_bytes);
 
@@ -250,6 +257,21 @@ where
     })
 }
 
+/// Convenience wrapper for callers with extractable P-256 private key bytes.
+///
+/// Constructs an inline signing callback from the provided private key bytes and delegates to
+/// [`build_did_plc_genesis_op_with_external_signer`].
+///
+/// # Parameters
+/// - `rotation_key`: The user's device key (highest-priority rotation key). Placed at `rotationKeys[0]`.
+/// - `signing_key`: The relay's signing key. Placed at `rotationKeys[1]` and `verificationMethods.atproto`.
+/// - `signing_private_key`: Raw 32-byte P-256 private key scalar for `signing_key`.
+/// - `handle`: The account handle, e.g. `"alice.example.com"`. Stored as `"at://alice.example.com"` in `alsoKnownAs`.
+/// - `service_endpoint`: The relay's public URL, e.g. `"https://relay.example.com"`.
+///
+/// # Errors
+/// Returns `CryptoError::PlcOperation` if `signing_private_key` is not a valid P-256 scalar
+/// (e.g. all-zero bytes, or a value ≥ the curve order).
 pub fn build_did_plc_genesis_op(
     rotation_key: &DidKeyUri,
     signing_key: &DidKeyUri,
