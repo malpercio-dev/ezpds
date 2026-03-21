@@ -123,6 +123,12 @@ pub fn sign(data: &[u8]) -> Result<Vec<u8>, DeviceKeyError> {
     // It internally hashes `data` with SHA-256 before signing.
     let signature: Signature = signing_key.sign(data);
 
+    // Normalize to low-S form. ATProto/PLC directory requires low-S ECDSA
+    // signatures; without this, roughly half of all signatures would be
+    // rejected by the PLC directory even though they are mathematically valid.
+    // normalize_s() returns Some(normalized) if s was high, None if already low.
+    let signature = signature.normalize_s().unwrap_or(signature);
+
     // to_bytes() returns a fixed 64-byte GenericArray<u8, U64> (raw r||s).
     Ok(signature.to_bytes().to_vec())
 }
@@ -411,6 +417,20 @@ mod tests {
         let json5 = serde_json::to_value(&err5).unwrap();
         assert_eq!(json5["code"], "KEYCHAIN_ERROR");
         assert_eq!(json5["message"], "os error");
+    }
+
+    // Signatures must be in low-S form; PLC directory (via @noble/curves) rejects high-S.
+    // normalize_s() returns None when the signature is already low-S.
+    #[test]
+    fn sign_produces_low_s_signature() {
+        use p256::ecdsa::Signature;
+        get_or_create().expect("must have key");
+        let sig_bytes = sign(b"low-s test").expect("sign must succeed");
+        let sig = Signature::from_bytes(sig_bytes.as_slice().into()).expect("must parse sig");
+        assert!(
+            sig.normalize_s().is_none(),
+            "signature must already be in low-S form (normalize_s returns None when already low-S)"
+        );
     }
 
     // Ensures DevicePublicKey serializes key_id as keyId (camelCase) for Tauri IPC.

@@ -43,7 +43,7 @@ Tauri v2 iOS application — SvelteKit 2 + Svelte 5 frontend running in a native
 - `create_account` maps relay HTTP error codes to typed `CreateAccountError` variants (EXPIRED_CODE, REDEEMED_CODE, EMAIL_TAKEN, HANDLE_TAKEN, NETWORK_ERROR, UNKNOWN) serialized as `{ code: "SCREAMING_SNAKE" }` for the frontend
 - `perform_did_ceremony` maps failures to typed `DIDCeremonyError` variants (KEY_NOT_FOUND, RELAY_KEY_FETCH_FAILED, NO_RELAY_SIGNING_KEY, SIGNING_FAILED, DID_CREATION_FAILED, KEYCHAIN_ERROR, NETWORK_ERROR) serialized as `{ code: "SCREAMING_SNAKE_CASE" }` for the frontend
 - `device_key::get_or_create()` is idempotent -- returns the same key on every call for a given device
-- `device_key::sign()` returns raw 64-byte r||s ECDSA signatures; deterministic (RFC 6979) on simulator, low-S normalized on real device
+- `device_key::sign()` returns raw 64-byte r||s ECDSA signatures; low-S normalized on both paths (ATProto/PLC directory requires low-S); deterministic (RFC 6979) on simulator
 - `DeviceKeyError` variants serialize as `{ code: "SCREAMING_SNAKE_CASE" }` matching the `CreateAccountError` pattern
 - Device key dispatch: `#[cfg(any(target_os = "macos", all(target_os = "ios", target_env = "sim")))]` for software path, `#[cfg(all(target_os = "ios", not(target_env = "sim")))]` for Secure Enclave path
 
@@ -173,7 +173,7 @@ cargo build
 - **Device key module (`device_key.rs`) with `#[cfg]` dispatch**: Two compile-time paths share the same public API (`get_or_create`, `sign`). macOS and iOS Simulator use software P-256 via `crypto` crate with private key bytes in Keychain. Real iOS device uses Secure Enclave -- private key never leaves the SE; only the compressed public key and application_label (SE-assigned SHA1) are stored in regular Keychain for lookup.
 - **Idempotent key lifecycle**: `get_or_create()` generates on first call, returns the same key on subsequent calls. `create_account` delegates to `device_key::get_or_create()` so the same device key is sent to the relay on every attempt (retries are safe).
 - **P-256 multicodec prefix duplicated**: `device_key.rs` duplicates the `[0x80, 0x24]` P-256 multicodec varint prefix from `crates/crypto/src/keys.rs` because the constant is `pub(crate)` there. This is intentional -- the identity-wallet crate should not depend on internal crypto crate layout.
-- **Low-S normalization on SE path**: Apple's Secure Enclave may produce high-S ECDSA signatures. The SE `sign()` path applies `normalize_s()` to ensure ATProto-compatible low-S form. The simulator path uses RFC 6979 deterministic nonces which already produce low-S.
+- **Low-S normalization on both paths**: ATProto/PLC directory requires low-S ECDSA signatures (enforced by `@noble/curves` in strict mode). Both the SE path and the simulator path apply `normalize_s()` after signing. RFC 6979 only provides deterministic nonces — it does NOT guarantee low-S; that requires an explicit normalization step.
 - **reqwest with rustls-tls**: Uses `default-features = false` + `rustls-tls` to avoid linking OpenSSL. On iOS, rustls handles TLS natively without additional system deps.
 
 ## Invariants
