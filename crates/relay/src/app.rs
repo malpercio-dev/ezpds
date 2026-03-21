@@ -97,7 +97,7 @@ pub struct AppState {
     /// `GET https://<handle>/.well-known/atproto-did`.
     pub well_known_resolver: Option<Arc<dyn WellKnownResolver>>,
     /// HS256 signing secret for JWT access/refresh tokens.
-    /// Loaded from EZPDS_JWT_SECRET (hex-encoded) or generated randomly at startup.
+    /// Generated randomly at startup via OsRng (ephemeral — rotates on restart).
     pub jwt_secret: [u8; 32],
 }
 

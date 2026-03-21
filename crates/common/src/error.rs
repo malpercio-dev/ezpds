@@ -242,6 +242,8 @@ mod tests {
             (ErrorCode::PlcDirectoryError, 502),
             (ErrorCode::DnsError, 502),
             (ErrorCode::HandleNotFound, 404),
+            (ErrorCode::AuthenticationRequired, 401),
+            (ErrorCode::InvalidToken, 401),
         ];
         for (code, expected) in cases {
             assert_eq!(code.status_code(), expected, "wrong status for {code:?}");
