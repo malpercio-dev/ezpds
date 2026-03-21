@@ -34,13 +34,13 @@
 //        DELETE devices WHERE account_id = ?
 //        DELETE pending_accounts WHERE id = ?
 //  13. Return { "did", "did_document", "status": "active", "session_token",
-//               "shamirShare1": <base32>, "shamirShare3": <base32> }
+//               "shamir_share_1": <base32>, "shamir_share_3": <base32> }
 //
 // Note: handles are NOT inserted here. Handle creation is the caller's responsibility
 // via POST /v1/handles, which validates format and optionally creates DNS records.
 //
 // Outputs (success):  200 { "did": "...", "did_document": {...}, "status": "active",
-//                          "session_token": "...", "shamirShare1": "...", "shamirShare3": "..." }
+//                          "session_token": "...", "shamir_share_1": "...", "shamir_share_3": "..." }
 // Outputs (error):    400 INVALID_CLAIM, 401 UNAUTHORIZED, 409 DID_ALREADY_EXISTS,
 //                     502 PLC_DIRECTORY_ERROR, 500 INTERNAL_ERROR
 
@@ -347,6 +347,8 @@ fn generate_recovery_shares() -> Result<(String, String, String), ApiError> {
         ApiError::new(ErrorCode::InternalError, "failed to split recovery secret")
     })?;
 
+    // The raw 32-byte secret is cleared on drop via Zeroizing. The base32 String
+    // outputs are plain heap allocations; String does not implement Zeroize.
     Ok((
         BASE32_NOPAD.encode(s1.data.as_ref()),
         BASE32_NOPAD.encode(s2.data.as_ref()),
@@ -737,6 +739,25 @@ mod tests {
             "response should include a non-empty session_token"
         );
 
+        // shamir_share_1 and shamir_share_3 must be present, 52-char BASE32 (A-Z, 2-7).
+        // Missing fields or wrong alphabet here means a rename or swap would go undetected.
+        let share1 = body["shamir_share_1"]
+            .as_str()
+            .expect("shamir_share_1 missing from response");
+        let share3 = body["shamir_share_3"]
+            .as_str()
+            .expect("shamir_share_3 missing from response");
+        assert_eq!(share1.len(), 52, "shamir_share_1 should be 52 chars");
+        assert_eq!(share3.len(), 52, "shamir_share_3 should be 52 chars");
+        assert!(
+            share1.chars().all(|c| matches!(c, 'A'..='Z' | '2'..='7')),
+            "shamir_share_1 should be valid BASE32 (A-Z, 2-7), got: {share1}"
+        );
+        assert!(
+            share3.chars().all(|c| matches!(c, 'A'..='Z' | '2'..='7')),
+            "shamir_share_3 should be valid BASE32 (A-Z, 2-7), got: {share3}"
+        );
+
         let did = body["did"].as_str().unwrap();
         let doc = &body["did_document"];
 
@@ -768,18 +789,26 @@ mod tests {
             "serviceEndpoint should match config.public_url"
         );
 
-        // accounts row with correct did, email; password_hash IS NULL
-        let row: Option<(String, Option<String>)> =
-            sqlx::query_as("SELECT email, password_hash FROM accounts WHERE did = ?")
+        // accounts row with correct did, email; password_hash IS NULL; recovery_share persisted.
+        let row: Option<(String, Option<String>, Option<String>)> =
+            sqlx::query_as("SELECT email, password_hash, recovery_share FROM accounts WHERE did = ?")
                 .bind(did)
                 .fetch_optional(&db)
                 .await
                 .unwrap();
-        let (email, password_hash) = row.expect("accounts row should exist");
+        let (email, password_hash, recovery_share) = row.expect("accounts row should exist");
         assert!(email.contains("alice"), "email should match test account");
         assert!(
             password_hash.is_none(),
             "password_hash should be NULL for device-provisioned account"
+        );
+        let rs = recovery_share
+            .as_deref()
+            .expect("recovery_share should not be NULL — Share 2 must be stored for relay custody");
+        assert_eq!(rs.len(), 52, "recovery_share should be 52 chars");
+        assert!(
+            rs.chars().all(|c| matches!(c, 'A'..='Z' | '2'..='7')),
+            "recovery_share should be valid BASE32 (A-Z, 2-7), got: {rs}"
         );
 
         // did_documents row exists with non-empty document
@@ -870,13 +899,25 @@ mod tests {
         )
         .expect("verify should succeed");
 
-        // Pre-set pending_did to simulate a retry scenario.
-        sqlx::query("UPDATE pending_accounts SET pending_did = ? WHERE id = ?")
-            .bind(&verified.did)
-            .bind(&setup.account_id)
-            .execute(&db)
-            .await
-            .expect("pre-store pending_did");
+        // Pre-set pending_did and all three shares to simulate a retry scenario.
+        // The retry branch in pre_store_did_and_shares requires all share columns to be
+        // non-NULL; leaving them NULL would cause a 500 instead of 200.
+        let pre_share_1 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let pre_share_2 = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+        let pre_share_3 = "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC";
+        sqlx::query(
+            "UPDATE pending_accounts \
+             SET pending_did = ?, pending_share_1 = ?, pending_share_2 = ?, pending_share_3 = ? \
+             WHERE id = ?",
+        )
+        .bind(&verified.did)
+        .bind(pre_share_1)
+        .bind(pre_share_2)
+        .bind(pre_share_3)
+        .bind(&setup.account_id)
+        .execute(&db)
+        .await
+        .expect("pre-store pending_did and shares");
 
         let app = crate::app::app(state);
         let response = app
@@ -897,6 +938,19 @@ mod tests {
             body["did"].as_str(),
             Some(verified.did.as_str()),
             "did should match pre-computed DID"
+        );
+        // Shares returned must be the pre-stored ones, not freshly generated ones.
+        // This is the core invariant of idempotent share storage: retrying the ceremony
+        // must return the same shares so Share 2 in accounts.recovery_share stays consistent.
+        assert_eq!(
+            body["shamir_share_1"].as_str(),
+            Some(pre_share_1),
+            "retry should return pre-stored share 1, not a new one"
+        );
+        assert_eq!(
+            body["shamir_share_3"].as_str(),
+            Some(pre_share_3),
+            "retry should return pre-stored share 3, not a new one"
         );
         // wiremock verifies expect(0) on mock_server drop
     }

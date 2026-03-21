@@ -41,8 +41,9 @@
       setTimeout(() => {
         copied = false;
       }, 2000);
-    } catch {
+    } catch (e) {
       // Clipboard denied or bridge error — show failure so the user knows to use another method.
+      console.error('clipboard write failed:', e);
       copyFailed = true;
       setTimeout(() => {
         copyFailed = false;
