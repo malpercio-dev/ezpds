@@ -312,8 +312,14 @@ mod tests {
             .expect("key should exist after storage");
 
         assert_eq!(row.id, "test-key-uuid-01");
-        assert_eq!(row.public_key_jwk, r#"{"kty":"EC","crv":"P-256","x":"abc","y":"def","kid":"test-key-uuid-01"}"#);
-        assert_eq!(row.private_key_encrypted, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+        assert_eq!(
+            row.public_key_jwk,
+            r#"{"kty":"EC","crv":"P-256","x":"abc","y":"def","kid":"test-key-uuid-01"}"#
+        );
+        assert_eq!(
+            row.private_key_encrypted,
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        );
     }
 
     #[tokio::test]
