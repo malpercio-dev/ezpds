@@ -6,6 +6,7 @@ use axum::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use common::{ApiError, ErrorCode};
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+use rand_core::{OsRng, RngCore};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -218,6 +219,44 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
 /// Create an empty `DpopNonceStore`.
 pub fn new_nonce_store() -> DpopNonceStore {
     Arc::new(Mutex::new(HashMap::new()))
+}
+
+/// Issue a fresh DPoP nonce with a 5-minute TTL.
+///
+/// Returns a 22-character base64url string (16 random bytes). The nonce is
+/// inserted into the store with an expiry of `Instant::now() + 5 minutes`.
+#[allow(dead_code)]
+pub(crate) async fn issue_nonce(store: &DpopNonceStore) -> String {
+    let mut bytes = [0u8; 16];
+    OsRng.fill_bytes(&mut bytes);
+    let nonce = URL_SAFE_NO_PAD.encode(bytes);
+    let expiry = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    store.lock().await.insert(nonce.clone(), expiry);
+    nonce
+}
+
+/// Validate and consume a DPoP nonce.
+///
+/// Returns `true` if the nonce is present in the store and has not expired.
+/// Removes the nonce unconditionally (whether valid or expired) to prevent reuse.
+/// Returns `false` for unknown nonces.
+#[allow(dead_code)]
+pub(crate) async fn validate_and_consume_nonce(store: &DpopNonceStore, nonce: &str) -> bool {
+    let mut map = store.lock().await;
+    match map.remove(nonce) {
+        Some(expiry) => expiry > std::time::Instant::now(),
+        None => false,
+    }
+}
+
+/// Remove all expired nonces from the store.
+///
+/// Call this on every token request to prevent unbounded memory growth.
+/// Under normal relay load (low request volume) this is sufficient without a background task.
+#[allow(dead_code)]
+pub(crate) async fn cleanup_expired_nonces(store: &DpopNonceStore) {
+    let now = std::time::Instant::now();
+    store.lock().await.retain(|_, expiry| *expiry > now);
 }
 
 /// Load the OAuth signing key from the database, or generate a new one on first boot.
@@ -1368,6 +1407,103 @@ mod tests {
         );
         // Stable regression guard — verified against this implementation.
         assert_eq!(thumb, "oKIywvGUpTVTyxMQ3bwIIeQUudfr_CkLMjCE19ECD-U");
+    }
+
+    // ── DPoP nonce store tests ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn issued_nonce_validates_once() {
+        // AC3.1: Valid unexpired nonce is accepted.
+        let store = new_nonce_store();
+        let nonce = issue_nonce(&store).await;
+
+        // First use: valid.
+        assert!(
+            validate_and_consume_nonce(&store, &nonce).await,
+            "freshly issued nonce must validate"
+        );
+
+        // Second use: consumed — must fail (even though not expired).
+        assert!(
+            !validate_and_consume_nonce(&store, &nonce).await,
+            "already-consumed nonce must not validate again"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_nonce_is_rejected() {
+        // AC3.4: Fabricated nonce not in store.
+        let store = new_nonce_store();
+        assert!(
+            !validate_and_consume_nonce(&store, "this-nonce-was-never-issued").await,
+            "unknown nonce must be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_nonce_is_rejected() {
+        // AC3.3: Expired nonce returns false.
+        let store = new_nonce_store();
+        // Manually insert a nonce that expired 1 second in the past.
+        let nonce = "expired-nonce-test";
+        {
+            let mut map = store.lock().await;
+            let past = std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(1))
+                .unwrap();
+            map.insert(nonce.to_string(), past);
+        }
+
+        assert!(
+            !validate_and_consume_nonce(&store, nonce).await,
+            "expired nonce must be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_removes_only_expired_nonces() {
+        let store = new_nonce_store();
+
+        // Insert one fresh nonce (not yet expired).
+        let fresh_nonce = issue_nonce(&store).await;
+
+        // Insert one already-expired nonce directly.
+        {
+            let mut map = store.lock().await;
+            let past = std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(1))
+                .unwrap();
+            map.insert("stale-nonce".to_string(), past);
+        }
+
+        cleanup_expired_nonces(&store).await;
+
+        let map = store.lock().await;
+        assert!(
+            map.contains_key(&fresh_nonce),
+            "fresh nonce must survive cleanup"
+        );
+        assert!(
+            !map.contains_key("stale-nonce"),
+            "stale nonce must be pruned by cleanup"
+        );
+    }
+
+    #[tokio::test]
+    async fn issued_nonce_is_22_chars_base64url() {
+        let store = new_nonce_store();
+        let nonce = issue_nonce(&store).await;
+        assert_eq!(
+            nonce.len(),
+            22,
+            "nonce must be 22 chars (16 bytes base64url no-pad)"
+        );
+        assert!(
+            nonce
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            "nonce must be base64url charset"
+        );
     }
 
     #[test]
