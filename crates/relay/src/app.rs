@@ -22,6 +22,7 @@ use crate::routes::create_signing_key::create_signing_key;
 use crate::routes::describe_server::describe_server;
 use crate::routes::get_relay_signing_key::get_relay_signing_key;
 use crate::routes::health::health;
+use crate::routes::oauth_authorize::{get_authorization, post_authorization};
 use crate::routes::oauth_server_metadata::oauth_server_metadata;
 use crate::routes::register_device::register_device;
 use crate::routes::resolve_handle::resolve_handle_handler;
@@ -111,6 +112,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/.well-known/oauth-authorization-server",
             get(oauth_server_metadata),
+        )
+        .route(
+            "/oauth/authorize",
+            get(get_authorization).post(post_authorization),
         )
         .route("/xrpc/_health", get(health))
         .route(

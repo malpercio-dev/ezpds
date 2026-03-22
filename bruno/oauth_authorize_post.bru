@@ -1,0 +1,25 @@
+meta {
+  name: OAuth Authorize — POST (Approve)
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/oauth/authorize
+  body: formUrlEncoded
+  auth: none
+}
+
+body:form-urlencoded {
+  action: approve
+  client_id: https://app.example.com/client-metadata.json
+  redirect_uri: https://app.example.com/callback
+  code_challenge: e3b0c44298fc1c149afbf4c8996fb924
+  code_challenge_method: S256
+  state: randomstate123
+  scope: atproto
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}

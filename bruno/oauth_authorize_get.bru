@@ -1,0 +1,19 @@
+meta {
+  name: OAuth Authorize — GET (Consent Page)
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/oauth/authorize?client_id={{clientId}}&redirect_uri={{redirectUri}}&code_challenge={{codeChallenge}}&code_challenge_method=S256&state={{state}}&response_type=code&scope=atproto
+  body: none
+  auth: none
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  clientId: https://app.example.com/client-metadata.json
+  redirectUri: https://app.example.com/callback
+  codeChallenge: e3b0c44298fc1c149afbf4c8996fb924
+  state: randomstate123
+}
