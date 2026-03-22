@@ -83,7 +83,6 @@ impl<B> tower_http::trace::MakeSpan<B> for OtelMakeSpan {
 
 /// Shared application state cloned into every request handler via Axum's `State` extractor.
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct AppState {
     pub config: Arc<Config>,
     pub db: sqlx::SqlitePool,
@@ -105,8 +104,10 @@ pub struct AppState {
     pub jwt_secret: [u8; 32],
     /// Persistent ES256 keypair for signing OAuth access tokens.
     /// Loaded at startup from `oauth_signing_key` table (or generated + stored on first boot).
+    #[allow(dead_code)]
     pub oauth_signing_keypair: OAuthSigningKey,
     /// In-memory store for server-issued DPoP nonces. Shared across all token endpoint requests.
+    #[allow(dead_code)]
     pub dpop_nonces: DpopNonceStore,
 }
 

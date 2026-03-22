@@ -10,8 +10,6 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::app::AppState;
-#[allow(unused_imports)]
-use p256::elliptic_curve::sec1::ToEncodedPoint;
 use p256::pkcs8::EncodePrivateKey;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
