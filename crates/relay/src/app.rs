@@ -12,6 +12,7 @@ use reqwest::Client;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
+use crate::auth::{new_nonce_store, DpopNonceStore, OAuthSigningKey};
 use crate::dns::{DnsProvider, TxtResolver};
 use crate::routes::claim_codes::claim_codes;
 use crate::routes::create_account::create_account;
@@ -101,6 +102,11 @@ pub struct AppState {
     /// HS256 signing secret for JWT access/refresh tokens.
     /// Generated randomly at startup via OsRng (ephemeral — rotates on restart).
     pub jwt_secret: [u8; 32],
+    /// Persistent ES256 keypair for signing OAuth access tokens.
+    /// Loaded at startup from `oauth_signing_key` table (or generated + stored on first boot).
+    pub oauth_signing_keypair: OAuthSigningKey,
+    /// In-memory store for server-issued DPoP nonces. Shared across all token endpoint requests.
+    pub dpop_nonces: DpopNonceStore,
 }
 
 /// Build the Axum router with middleware and routes.
@@ -162,6 +168,8 @@ pub(crate) async fn test_state() -> AppState {
 pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
     use crate::db::{open_pool, run_migrations};
     use common::{BlobsConfig, IrohConfig, OAuthConfig, TelemetryConfig};
+    use p256::pkcs8::EncodePrivateKey;
+    use rand_core::OsRng;
     use std::path::PathBuf;
     use std::time::Duration;
 
@@ -172,6 +180,17 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
         .timeout(Duration::from_secs(10))
         .build()
         .expect("test http client");
+
+    // Generate a fresh ephemeral P-256 keypair for tests (no DB persistence needed).
+    let test_signing_key = {
+        let sk = p256::ecdsa::SigningKey::random(&mut OsRng);
+        let pkcs8 = sk.to_pkcs8_der().expect("PKCS#8 encoding must succeed for test key");
+        OAuthSigningKey {
+            key_id: "test-oauth-key-01".to_string(),
+            encoding_key: jsonwebtoken::EncodingKey::from_ec_der(pkcs8.as_bytes()),
+        }
+    };
+    let dpop_nonces = new_nonce_store();
 
     AppState {
         config: Arc::new(Config {
@@ -200,6 +219,8 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
         well_known_resolver: None,
         // Fixed key for tests — predictable JWTs in unit tests.
         jwt_secret: [0x42u8; 32],
+        oauth_signing_keypair: test_signing_key,
+        dpop_nonces,
     }
 }
 

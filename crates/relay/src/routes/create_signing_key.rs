@@ -129,6 +129,8 @@ mod tests {
             txt_resolver: base.txt_resolver,
             well_known_resolver: base.well_known_resolver,
             jwt_secret: base.jwt_secret,
+            oauth_signing_keypair: base.oauth_signing_keypair,
+            dpop_nonces: base.dpop_nonces,
         }
     }
 
@@ -383,6 +385,8 @@ mod tests {
             txt_resolver: base.txt_resolver,
             well_known_resolver: base.well_known_resolver,
             jwt_secret: base.jwt_secret,
+            oauth_signing_keypair: base.oauth_signing_keypair,
+            dpop_nonces: base.dpop_nonces,
         };
 
         let response = app(state)
