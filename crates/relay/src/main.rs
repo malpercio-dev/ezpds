@@ -101,6 +101,18 @@ async fn run() -> anyhow::Result<()> {
             )
         })?;
 
+    let oauth_signing_keypair =
+        auth::load_or_create_oauth_signing_key(
+            &pool,
+            config.signing_key_master_key.as_ref().map(|s| &*s.0),
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "fatal: failed to load OAuth signing key");
+            e
+        })
+        .with_context(|| "failed to load or create OAuth signing keypair")?;
+
     let http_client = Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
@@ -137,6 +149,8 @@ async fn run() -> anyhow::Result<()> {
         txt_resolver,
         well_known_resolver,
         jwt_secret,
+        oauth_signing_keypair,
+        dpop_nonces: auth::new_nonce_store(),
     };
 
     let listener = tokio::net::TcpListener::bind(&addr)
