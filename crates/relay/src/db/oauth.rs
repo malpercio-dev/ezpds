@@ -1,7 +1,7 @@
-// pattern: Functional Core (pure data access — no business logic)
+// pattern: Imperative Shell
 //
 // Storage adapter for OAuth server-side state in the `oauth_clients` table.
-// Future tickets add authorization code and token functions as the full OAuth
+// Authorization code and token functions will be added when the full OAuth
 // flow is implemented.
 
 use sqlx::SqlitePool;
@@ -10,7 +10,7 @@ use sqlx::SqlitePool;
 ///
 /// `client_metadata` is stored as a raw JSON string (RFC 7591 client metadata).
 /// Callers are responsible for serializing/deserializing the JSON.
-// Not yet wired to a handler — will be used when the OAuth authorization flow is implemented.
+// Wired to handlers when the OAuth authorization flow is implemented.
 #[allow(dead_code)]
 pub struct OAuthClientRow {
     pub client_id: String,
@@ -25,7 +25,7 @@ pub struct OAuthClientRow {
 ///
 /// Returns `sqlx::Error` on failure. Callers should use `crate::db::is_unique_violation`
 /// to detect duplicate `client_id` conflicts.
-// Not yet wired to a handler — will be used when the OAuth authorization flow is implemented.
+// Wired to handlers when the OAuth authorization flow is implemented.
 #[allow(dead_code)]
 pub async fn register_oauth_client(
     pool: &SqlitePool,
@@ -44,7 +44,7 @@ pub async fn register_oauth_client(
 }
 
 /// Look up a registered OAuth client by `client_id`. Returns `None` if not found.
-// Not yet wired to a handler — will be used when the OAuth authorization flow is implemented.
+// Wired to handlers when the OAuth authorization flow is implemented.
 #[allow(dead_code)]
 pub async fn get_oauth_client(
     pool: &SqlitePool,

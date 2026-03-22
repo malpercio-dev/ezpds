@@ -18,20 +18,24 @@ use crate::app::AppState;
 /// camelCase used by XRPC/AT Protocol Lexicon endpoints in this codebase.
 ///
 /// AT Protocol OAuth extensions:
+/// - `scopes_supported`: the AT Protocol scopes this server recognises.
 /// - `dpop_signing_alg_values_supported`: signals that DPoP (RFC 9449) is required.
-/// - `token_endpoint_auth_methods_supported: ["none"]`: public clients only — no client secrets.
+/// - `token_endpoint_auth_methods_supported`: public clients + private_key_jwt per spec §1.2.
+/// - `require_pushed_authorization_requests`: PAR is mandatory per AT Protocol OAuth spec.
 #[derive(Serialize)]
-pub struct OAuthServerMetadata {
+struct OAuthServerMetadata {
     issuer: String,
     authorization_endpoint: String,
     token_endpoint: String,
     pushed_authorization_request_endpoint: String,
     jwks_uri: String,
+    scopes_supported: Vec<String>,
     response_types_supported: Vec<String>,
     grant_types_supported: Vec<String>,
+    token_endpoint_auth_methods_supported: Vec<String>,
     code_challenge_methods_supported: Vec<String>,
     dpop_signing_alg_values_supported: Vec<String>,
-    token_endpoint_auth_methods_supported: Vec<String>,
+    require_pushed_authorization_requests: bool,
 }
 
 pub async fn oauth_server_metadata(State(state): State<AppState>) -> impl IntoResponse {
@@ -41,27 +45,34 @@ pub async fn oauth_server_metadata(State(state): State<AppState>) -> impl IntoRe
         authorization_endpoint: format!("{base}/oauth/authorize"),
         token_endpoint: format!("{base}/oauth/token"),
         pushed_authorization_request_endpoint: format!("{base}/oauth/par"),
-        jwks_uri: format!("{base}/oauth/jwks.json"),
+        jwks_uri: format!("{base}/oauth/jwks"),
+        scopes_supported: vec!["atproto".to_string(), "transition:generic".to_string()],
         response_types_supported: vec!["code".to_string()],
         grant_types_supported: vec![
             "authorization_code".to_string(),
             "refresh_token".to_string(),
         ],
+        token_endpoint_auth_methods_supported: vec![
+            "none".to_string(),
+            "private_key_jwt".to_string(),
+        ],
         code_challenge_methods_supported: vec!["S256".to_string()],
         dpop_signing_alg_values_supported: vec!["ES256".to_string()],
-        token_endpoint_auth_methods_supported: vec!["none".to_string()],
+        require_pushed_authorization_requests: true,
     })
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use axum::{
         body::Body,
         http::{Request, StatusCode},
     };
     use tower::ServiceExt;
 
-    use crate::app::{app, test_state};
+    use crate::app::{app, test_state, AppState};
 
     async fn metadata_json() -> serde_json::Value {
         let response = app(test_state().await)
@@ -100,6 +111,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn accessible_without_auth_headers() {
+        // Lock in that the discovery endpoint requires no credentials.
+        // A future global auth middleware must not inadvertently protect this route.
+        let response = app(test_state().await)
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/oauth-authorization-server")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn issuer_matches_public_url() {
         let json = metadata_json().await;
         assert_eq!(json["issuer"], "https://test.example.com");
@@ -120,17 +147,25 @@ mod tests {
             json["pushed_authorization_request_endpoint"],
             "https://test.example.com/oauth/par"
         );
-        assert_eq!(json["jwks_uri"], "https://test.example.com/oauth/jwks.json");
+        assert_eq!(json["jwks_uri"], "https://test.example.com/oauth/jwks");
     }
 
     #[tokio::test]
-    async fn response_types_contains_code() {
+    async fn scopes_supported_are_atproto_scopes() {
         let json = metadata_json().await;
-        assert!(json["response_types_supported"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|v| v == "code"));
+        assert_eq!(
+            json["scopes_supported"],
+            serde_json::json!(["atproto", "transition:generic"])
+        );
+    }
+
+    #[tokio::test]
+    async fn response_types_is_exactly_code() {
+        let json = metadata_json().await;
+        assert_eq!(
+            json["response_types_supported"],
+            serde_json::json!(["code"])
+        );
     }
 
     #[tokio::test]
@@ -139,6 +174,22 @@ mod tests {
         let grants = json["grant_types_supported"].as_array().unwrap();
         assert!(grants.iter().any(|v| v == "authorization_code"));
         assert!(grants.iter().any(|v| v == "refresh_token"));
+    }
+
+    #[tokio::test]
+    async fn token_endpoint_auth_methods_are_none_and_private_key_jwt() {
+        let json = metadata_json().await;
+        let methods: Vec<&str> = json["token_endpoint_auth_methods_supported"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(methods.contains(&"none"), "must support public clients");
+        assert!(
+            methods.contains(&"private_key_jwt"),
+            "must support private_key_jwt per AT Protocol OAuth spec §1.2"
+        );
     }
 
     #[tokio::test]
@@ -152,41 +203,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn token_endpoint_auth_method_is_none() {
+    async fn pkce_method_is_exactly_s256() {
+        // AT Protocol OAuth prohibits plain — assert the exact set, not just contains.
         let json = metadata_json().await;
-        assert!(json["token_endpoint_auth_methods_supported"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|v| v == "none"));
+        assert_eq!(
+            json["code_challenge_methods_supported"],
+            serde_json::json!(["S256"])
+        );
     }
 
     #[tokio::test]
-    async fn pkce_method_is_s256() {
+    async fn par_is_required() {
         let json = metadata_json().await;
-        assert!(json["code_challenge_methods_supported"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|v| v == "S256"));
+        assert_eq!(json["require_pushed_authorization_requests"], true);
     }
 
     #[tokio::test]
     async fn trailing_slash_in_public_url_does_not_double_slash_endpoints() {
-        use crate::app::AppState;
-        use std::sync::Arc;
-
         let base = test_state().await;
         let mut config = (*base.config).clone();
         config.public_url = "https://pds.example.com/".to_string();
         let state = AppState {
             config: Arc::new(config),
-            db: base.db,
-            http_client: base.http_client,
-            dns_provider: base.dns_provider,
-            txt_resolver: base.txt_resolver,
-            well_known_resolver: base.well_known_resolver,
-            jwt_secret: base.jwt_secret,
+            ..base
         };
 
         let response = app(state)
@@ -204,10 +243,20 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-        // public_url with trailing slash must not produce "...com//oauth/..."
+        // All four URL-bearing fields must not produce "...com//oauth/..." when
+        // public_url has a trailing slash.
         assert_eq!(
             json["authorization_endpoint"],
             "https://pds.example.com/oauth/authorize"
         );
+        assert_eq!(
+            json["token_endpoint"],
+            "https://pds.example.com/oauth/token"
+        );
+        assert_eq!(
+            json["pushed_authorization_request_endpoint"],
+            "https://pds.example.com/oauth/par"
+        );
+        assert_eq!(json["jwks_uri"], "https://pds.example.com/oauth/jwks");
     }
 }

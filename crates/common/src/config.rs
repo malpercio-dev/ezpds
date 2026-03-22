@@ -286,6 +286,11 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
     let public_url = raw.public_url.ok_or(ConfigError::MissingField {
         field: "public_url",
     })?;
+    if !public_url.starts_with("https://") {
+        return Err(ConfigError::Invalid(format!(
+            "public_url must start with https:// (RFC 8414 requires HTTPS for the OAuth issuer), got: {public_url:?}"
+        )));
+    }
     let available_user_domains = raw
         .available_user_domains
         .ok_or(ConfigError::MissingField {
@@ -553,6 +558,32 @@ mod tests {
             Some("https://example.com/tos")
         );
         assert_eq!(config.contact.email.as_deref(), Some("admin@example.com"));
+    }
+
+    #[test]
+    fn public_url_without_https_scheme_returns_error() {
+        for bad_url in &[
+            "pds.example.com",
+            "http://pds.example.com",
+            "ftp://pds.example.com",
+            "",
+        ] {
+            let raw = RawConfig {
+                data_dir: Some("/var/pds".to_string()),
+                public_url: Some(bad_url.to_string()),
+                available_user_domains: Some(vec!["example.com".to_string()]),
+                ..Default::default()
+            };
+            let err = validate_and_build(raw).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::Invalid(_)),
+                "expected Invalid error for public_url={bad_url:?}, got: {err}"
+            );
+            assert!(
+                err.to_string().contains("https://"),
+                "error message should mention https:// for public_url={bad_url:?}"
+            );
+        }
     }
 
     #[test]
