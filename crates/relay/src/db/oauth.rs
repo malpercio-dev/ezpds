@@ -114,6 +114,7 @@ pub async fn get_single_account_did(pool: &SqlitePool) -> Result<Option<String>,
 }
 
 /// A row from the `oauth_signing_key` table.
+#[allow(dead_code)]
 pub struct OAuthSigningKeyRow {
     pub id: String,
     pub public_key_jwk: String,
@@ -130,11 +131,13 @@ pub async fn get_oauth_signing_key(
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(|(id, public_key_jwk, private_key_encrypted)| OAuthSigningKeyRow {
-        id,
-        public_key_jwk,
-        private_key_encrypted,
-    }))
+    Ok(row.map(
+        |(id, public_key_jwk, private_key_encrypted)| OAuthSigningKeyRow {
+            id,
+            public_key_jwk,
+            private_key_encrypted,
+        },
+    ))
 }
 
 /// Persist a newly generated OAuth signing key.

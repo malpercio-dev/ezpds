@@ -10,6 +10,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::app::AppState;
+#[allow(unused_imports)]
 use p256::elliptic_curve::sec1::ToEncodedPoint;
 use p256::pkcs8::EncodePrivateKey;
 use sqlx::SqlitePool;
@@ -63,6 +64,7 @@ pub struct AuthenticatedUser {
 /// `encoding_key` is derived from the P-256 private key in PKCS#8 DER format, as required by
 /// `jsonwebtoken`. `key_id` is a UUID that appears as the `kid` header in issued access tokens.
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct OAuthSigningKey {
     /// UUID identifier embedded in JWT `kid` header.
     pub key_id: String,
@@ -244,9 +246,9 @@ pub(crate) async fn load_or_create_oauth_signing_key(
     let key_id = Uuid::new_v4().to_string();
 
     // Build JWK for the public key (uncompressed EC point → x, y coordinates).
-    let signing_key = p256::ecdsa::SigningKey::from_bytes(
-        p256::FieldBytes::from_slice(keypair.private_key_bytes.as_ref()),
-    )
+    let signing_key = p256::ecdsa::SigningKey::from_bytes(p256::FieldBytes::from_slice(
+        keypair.private_key_bytes.as_ref(),
+    ))
     .map_err(|e| anyhow::anyhow!("invalid P-256 private key bytes: {e}"))?;
 
     let vk = signing_key.verifying_key();
@@ -264,9 +266,8 @@ pub(crate) async fn load_or_create_oauth_signing_key(
 
     match master_key {
         Some(key) => {
-            let encrypted =
-                crypto::encrypt_private_key(&*keypair.private_key_bytes, key)
-                    .map_err(|e| anyhow::anyhow!("key encryption failed: {e}"))?;
+            let encrypted = crypto::encrypt_private_key(&keypair.private_key_bytes, key)
+                .map_err(|e| anyhow::anyhow!("key encryption failed: {e}"))?;
             store_oauth_signing_key(pool, &key_id, &public_key_jwk, &encrypted).await?;
             tracing::info!(key_id = %key_id, "OAuth signing key generated and persisted");
         }
@@ -279,7 +280,10 @@ pub(crate) async fn load_or_create_oauth_signing_key(
     }
 
     let encoding_key = build_encoding_key(&signing_key)?;
-    Ok(OAuthSigningKey { key_id, encoding_key })
+    Ok(OAuthSigningKey {
+        key_id,
+        encoding_key,
+    })
 }
 
 /// Decode a stored OAuth signing key row into an `OAuthSigningKey`.
@@ -298,10 +302,9 @@ fn decode_oauth_signing_key(
     let raw_bytes = crypto::decrypt_private_key(private_key_encrypted, master_key)
         .map_err(|e| anyhow::anyhow!("failed to decrypt OAuth signing key: {e}"))?;
 
-    let signing_key = p256::ecdsa::SigningKey::from_bytes(
-        p256::FieldBytes::from_slice(raw_bytes.as_ref()),
-    )
-    .map_err(|e| anyhow::anyhow!("invalid stored P-256 private key: {e}"))?;
+    let signing_key =
+        p256::ecdsa::SigningKey::from_bytes(p256::FieldBytes::from_slice(raw_bytes.as_ref()))
+            .map_err(|e| anyhow::anyhow!("invalid stored P-256 private key: {e}"))?;
 
     let encoding_key = build_encoding_key(&signing_key)?;
     Ok(OAuthSigningKey {

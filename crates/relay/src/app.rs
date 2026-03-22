@@ -12,7 +12,7 @@ use reqwest::Client;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-use crate::auth::{new_nonce_store, DpopNonceStore, OAuthSigningKey};
+use crate::auth::{DpopNonceStore, OAuthSigningKey};
 use crate::dns::{DnsProvider, TxtResolver};
 use crate::routes::claim_codes::claim_codes;
 use crate::routes::create_account::create_account;
@@ -83,6 +83,7 @@ impl<B> tower_http::trace::MakeSpan<B> for OtelMakeSpan {
 
 /// Shared application state cloned into every request handler via Axum's `State` extractor.
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct AppState {
     pub config: Arc<Config>,
     pub db: sqlx::SqlitePool,
@@ -166,6 +167,7 @@ pub(crate) async fn test_state() -> AppState {
 
 #[cfg(test)]
 pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
+    use crate::auth::new_nonce_store;
     use crate::db::{open_pool, run_migrations};
     use common::{BlobsConfig, IrohConfig, OAuthConfig, TelemetryConfig};
     use p256::pkcs8::EncodePrivateKey;
@@ -184,7 +186,9 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
     // Generate a fresh ephemeral P-256 keypair for tests (no DB persistence needed).
     let test_signing_key = {
         let sk = p256::ecdsa::SigningKey::random(&mut OsRng);
-        let pkcs8 = sk.to_pkcs8_der().expect("PKCS#8 encoding must succeed for test key");
+        let pkcs8 = sk
+            .to_pkcs8_der()
+            .expect("PKCS#8 encoding must succeed for test key");
         OAuthSigningKey {
             key_id: "test-oauth-key-01".to_string(),
             encoding_key: jsonwebtoken::EncodingKey::from_ec_der(pkcs8.as_bytes()),

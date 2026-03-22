@@ -555,7 +555,10 @@ mod tests {
         };
         let json = serde_json::to_value(&result).unwrap();
         assert_eq!(json["did"], "did:plc:abcdefghijklmnopqrstuvwx");
-        assert_eq!(json["share3"], "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRST");
+        assert_eq!(
+            json["share3"],
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRST"
+        );
     }
 
     #[test]

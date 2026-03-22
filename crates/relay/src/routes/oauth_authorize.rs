@@ -79,8 +79,11 @@ pub async fn get_authorization(
         }
         Err(e) => {
             tracing::error!(error = %e, "db error looking up OAuth client");
-            return error_page("Server Error", "A database error occurred. Please try again.")
-                .into_response();
+            return error_page(
+                "Server Error",
+                "A database error occurred. Please try again.",
+            )
+            .into_response();
         }
     };
 
@@ -177,8 +180,11 @@ pub async fn post_authorization(
                 error = %e,
                 "failed to parse stored client metadata"
             );
-            return error_page("Client Configuration Error", "Client metadata is malformed.")
-                .into_response();
+            return error_page(
+                "Client Configuration Error",
+                "Client metadata is malformed.",
+            )
+            .into_response();
         }
     };
 
@@ -627,10 +633,7 @@ mod tests {
             .unwrap()
     }
 
-    async fn post_authorize(
-        state: crate::app::AppState,
-        body: &str,
-    ) -> axum::response::Response {
+    async fn post_authorize(state: crate::app::AppState, body: &str) -> axum::response::Response {
         app(state)
             .oneshot(
                 Request::builder()
@@ -675,14 +678,13 @@ mod tests {
     async fn get_returns_200_with_html_content_type() {
         let resp = get_authorize(state_with_client().await, &authorize_url("")).await;
         assert_eq!(resp.status(), StatusCode::OK);
-        assert!(
-            resp.headers()
-                .get("content-type")
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .starts_with("text/html")
-        );
+        assert!(resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("text/html"));
     }
 
     #[tokio::test]
@@ -720,8 +722,8 @@ mod tests {
 
     #[tokio::test]
     async fn get_redirects_with_error_for_non_s256_challenge_method() {
-        let url = authorize_url("")
-            .replace("code_challenge_method=S256", "code_challenge_method=plain");
+        let url =
+            authorize_url("").replace("code_challenge_method=S256", "code_challenge_method=plain");
         let resp = get_authorize(state_with_client().await, &url).await;
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
@@ -733,7 +735,10 @@ mod tests {
         let resp = get_authorize(state_with_client().await, &authorize_url("")).await;
         let body = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
-        assert!(html.contains("Test App"), "client_name should appear in the consent page");
+        assert!(
+            html.contains("Test App"),
+            "client_name should appear in the consent page"
+        );
     }
 
     #[tokio::test]
@@ -762,20 +767,31 @@ mod tests {
         let resp = get_authorize(state, &authorize_url("")).await;
         let body = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
-        assert!(!html.contains("<script>"), "raw <script> must not appear in output");
-        assert!(html.contains("&lt;script&gt;"), "script tag must be HTML-escaped");
+        assert!(
+            !html.contains("<script>"),
+            "raw <script> must not appear in output"
+        );
+        assert!(
+            html.contains("&lt;script&gt;"),
+            "script tag must be HTML-escaped"
+        );
     }
 
     #[tokio::test]
     async fn get_consent_page_escapes_xss_in_scope() {
         // scope=<b>bold</b> URL-encoded in the request
-        let url =
-            authorize_url("").replace("scope=atproto", "scope=%3Cb%3Ebold%3C%2Fb%3E");
+        let url = authorize_url("").replace("scope=atproto", "scope=%3Cb%3Ebold%3C%2Fb%3E");
         let resp = get_authorize(state_with_client().await, &url).await;
         let body = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
-        assert!(!html.contains("<b>"), "raw HTML tags must not appear in scope output");
-        assert!(html.contains("&lt;b&gt;"), "scope tags must be HTML-escaped");
+        assert!(
+            !html.contains("<b>"),
+            "raw HTML tags must not appear in scope output"
+        );
+        assert!(
+            html.contains("&lt;b&gt;"),
+            "scope tags must be HTML-escaped"
+        );
     }
 
     #[tokio::test]
@@ -783,7 +799,10 @@ mod tests {
         let resp = get_authorize(state_with_client().await, &authorize_url("")).await;
         let body = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
-        assert!(html.contains("atproto"), "requested scope should appear in the consent page");
+        assert!(
+            html.contains("atproto"),
+            "requested scope should appear in the consent page"
+        );
     }
 
     #[tokio::test]
@@ -843,8 +862,7 @@ mod tests {
 
     #[tokio::test]
     async fn post_approve_redirects_with_code() {
-        let resp =
-            post_authorize(state_with_client_and_account().await, &approve_form("")).await;
+        let resp = post_authorize(state_with_client_and_account().await, &approve_form("")).await;
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         assert!(location.starts_with(REDIRECT_URI));
@@ -896,7 +914,8 @@ mod tests {
 
     #[tokio::test]
     async fn post_approve_redirects_with_error_for_non_s256_method() {
-        let body = approve_form("").replace("code_challenge_method=S256", "code_challenge_method=plain");
+        let body =
+            approve_form("").replace("code_challenge_method=S256", "code_challenge_method=plain");
         let resp = post_authorize(state_with_client_and_account().await, &body).await;
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
