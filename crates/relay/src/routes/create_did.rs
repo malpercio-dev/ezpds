@@ -147,19 +147,25 @@ async fn load_pending_account(
     db: &sqlx::SqlitePool,
     account_id: &str,
 ) -> Result<PendingAccount, ApiError> {
-    let row: (String, Option<String>, String, Option<String>, Option<String>, Option<String>) =
-        sqlx::query_as(
-            "SELECT handle, pending_did, email, pending_share_1, pending_share_2, pending_share_3 \
+    let row: (
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = sqlx::query_as(
+        "SELECT handle, pending_did, email, pending_share_1, pending_share_2, pending_share_3 \
              FROM pending_accounts WHERE id = ?",
-        )
-        .bind(account_id)
-        .fetch_optional(db)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to query pending account");
-            ApiError::new(ErrorCode::InternalError, "failed to load account")
-        })?
-        .ok_or_else(|| ApiError::new(ErrorCode::Unauthorized, "account not found"))?;
+    )
+    .bind(account_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "failed to query pending account");
+        ApiError::new(ErrorCode::InternalError, "failed to load account")
+    })?
+    .ok_or_else(|| ApiError::new(ErrorCode::Unauthorized, "account not found"))?;
     Ok(PendingAccount {
         handle: row.0,
         pending_did: row.1,
@@ -263,16 +269,31 @@ async fn pre_store_did_and_shares(
         }
         tracing::info!(did = %pre_stored_did, "retry detected: pending_did already set, reusing shares, skipping plc.directory");
         let s1 = pending.pending_share_1.clone().ok_or_else(|| {
-            tracing::error!("retry: pending_share_1 is NULL; shares were not stored on first attempt");
-            ApiError::new(ErrorCode::InternalError, "retry: missing shares from first attempt")
+            tracing::error!(
+                "retry: pending_share_1 is NULL; shares were not stored on first attempt"
+            );
+            ApiError::new(
+                ErrorCode::InternalError,
+                "retry: missing shares from first attempt",
+            )
         })?;
         let s2 = pending.pending_share_2.clone().ok_or_else(|| {
-            tracing::error!("retry: pending_share_2 is NULL; shares were not stored on first attempt");
-            ApiError::new(ErrorCode::InternalError, "retry: missing shares from first attempt")
+            tracing::error!(
+                "retry: pending_share_2 is NULL; shares were not stored on first attempt"
+            );
+            ApiError::new(
+                ErrorCode::InternalError,
+                "retry: missing shares from first attempt",
+            )
         })?;
         let s3 = pending.pending_share_3.clone().ok_or_else(|| {
-            tracing::error!("retry: pending_share_3 is NULL; shares were not stored on first attempt");
-            ApiError::new(ErrorCode::InternalError, "retry: missing shares from first attempt")
+            tracing::error!(
+                "retry: pending_share_3 is NULL; shares were not stored on first attempt"
+            );
+            ApiError::new(
+                ErrorCode::InternalError,
+                "retry: missing shares from first attempt",
+            )
         })?;
         return Ok((true, s1, s2, s3));
     }
@@ -339,10 +360,13 @@ fn generate_recovery_shares() -> Result<(String, String, String), ApiError> {
     let mut secret = Zeroizing::new([0u8; 32]);
     OsRng.try_fill_bytes(secret.as_mut()).map_err(|e| {
         tracing::error!(error = %e, "OS RNG unavailable during recovery share generation");
-        ApiError::new(ErrorCode::InternalError, "failed to generate recovery secret")
+        ApiError::new(
+            ErrorCode::InternalError,
+            "failed to generate recovery secret",
+        )
     })?;
 
-    let [s1, s2, s3] = crypto::split_secret(&*secret).map_err(|e| {
+    let [s1, s2, s3] = crypto::split_secret(&secret).map_err(|e| {
         tracing::error!(error = %e, "shamir split failed");
         ApiError::new(ErrorCode::InternalError, "failed to split recovery secret")
     })?;
@@ -790,12 +814,13 @@ mod tests {
         );
 
         // accounts row with correct did, email; password_hash IS NULL; recovery_share persisted.
-        let row: Option<(String, Option<String>, Option<String>)> =
-            sqlx::query_as("SELECT email, password_hash, recovery_share FROM accounts WHERE did = ?")
-                .bind(did)
-                .fetch_optional(&db)
-                .await
-                .unwrap();
+        let row: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT email, password_hash, recovery_share FROM accounts WHERE did = ?",
+        )
+        .bind(did)
+        .fetch_optional(&db)
+        .await
+        .unwrap();
         let (email, password_hash, recovery_share) = row.expect("accounts row should exist");
         assert!(email.contains("alice"), "email should match test account");
         assert!(

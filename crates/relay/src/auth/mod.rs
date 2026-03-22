@@ -126,9 +126,7 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
             .and_then(|v| {
                 v.to_str()
                     .inspect_err(|_| {
-                        tracing::warn!(
-                            "DPoP header contains non-UTF-8 bytes; treating as absent"
-                        );
+                        tracing::warn!("DPoP header contains non-UTF-8 bytes; treating as absent");
                     })
                     .ok()
             })
@@ -215,7 +213,7 @@ fn extract_bearer_token(headers: &axum::http::HeaderMap) -> Result<&str, ApiErro
     const BEARER_LEN: usize = 7; // "Bearer ".len() — scheme name + single SP
     if !auth_value
         .get(..BEARER_LEN)
-        .map_or(false, |s| s.eq_ignore_ascii_case("Bearer "))
+        .is_some_and(|s| s.eq_ignore_ascii_case("Bearer "))
     {
         return Err(ApiError::new(
             ErrorCode::AuthenticationRequired,
@@ -268,7 +266,10 @@ fn parse_scope(scope: &str) -> Result<AuthScope, ApiError> {
         "com.atproto.access" => Ok(AuthScope::Access),
         "com.atproto.refresh" => Ok(AuthScope::Refresh),
         "com.atproto.appPass" => Ok(AuthScope::AppPass),
-        _ => Err(ApiError::new(ErrorCode::InvalidToken, "unrecognised token scope")),
+        _ => Err(ApiError::new(
+            ErrorCode::InvalidToken,
+            "unrecognised token scope",
+        )),
     }
 }
 
@@ -362,7 +363,10 @@ fn validate_dpop(
     // Require `jti` for replay protection (existence check only — full deduplication
     // per RFC 9449 §11.1 requires a server-side nonce store, not yet implemented).
     if dpop_claims.jti.is_empty() {
-        return Err(ApiError::new(ErrorCode::InvalidToken, "DPoP proof missing jti"));
+        return Err(ApiError::new(
+            ErrorCode::InvalidToken,
+            "DPoP proof missing jti",
+        ));
     }
 
     // Validate `htm` (HTTP method).
@@ -409,7 +413,10 @@ fn validate_dpop(
     // client sends iat = i64::MIN (debug panic; release wraparound bypass).
     let diff = (now as i128) - (dpop_claims.iat as i128);
     if diff.unsigned_abs() > 60 {
-        return Err(ApiError::new(ErrorCode::InvalidToken, "DPoP proof is stale"));
+        return Err(ApiError::new(
+            ErrorCode::InvalidToken,
+            "DPoP proof is stale",
+        ));
     }
 
     Ok(())
@@ -566,10 +573,8 @@ mod tests {
             "jti": uuid::Uuid::new_v4().to_string(),
         });
 
-        let hdr_b64 =
-            URL_SAFE_NO_PAD.encode(serde_json::to_string(&header).unwrap().as_bytes());
-        let pay_b64 =
-            URL_SAFE_NO_PAD.encode(serde_json::to_string(&payload).unwrap().as_bytes());
+        let hdr_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&header).unwrap().as_bytes());
+        let pay_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&payload).unwrap().as_bytes());
         let signing_input = format!("{hdr_b64}.{pay_b64}");
 
         let sig: Signature = key.sign(signing_input.as_bytes());
@@ -596,7 +601,9 @@ mod tests {
         if let Some(t) = token {
             builder = builder.header("Authorization", format!("Bearer {t}"));
         }
-        app.oneshot(builder.body(Body::empty()).unwrap()).await.unwrap()
+        app.oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
     }
 
     async fn json_body(resp: axum::response::Response) -> serde_json::Value {
@@ -683,9 +690,13 @@ mod tests {
         );
         let resp = get_protected(protected_app(state), Some(&token)).await;
         assert_eq!(resp.status(), StatusCode::OK);
-        let text =
-            String::from_utf8(axum::body::to_bytes(resp.into_body(), 4096).await.unwrap().to_vec())
-                .unwrap();
+        let text = String::from_utf8(
+            axum::body::to_bytes(resp.into_body(), 4096)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
         assert!(text.contains("did=did:plc:alice"));
         assert!(text.contains("scope=Access"));
     }
@@ -693,24 +704,44 @@ mod tests {
     #[tokio::test]
     async fn valid_refresh_token_extracts_refresh_scope() {
         let state = test_state().await;
-        let token = mint_token("did:plc:alice", "com.atproto.refresh", 3600, &state.jwt_secret, None);
+        let token = mint_token(
+            "did:plc:alice",
+            "com.atproto.refresh",
+            3600,
+            &state.jwt_secret,
+            None,
+        );
         let resp = get_protected(protected_app(state), Some(&token)).await;
         assert_eq!(resp.status(), StatusCode::OK);
-        let text =
-            String::from_utf8(axum::body::to_bytes(resp.into_body(), 4096).await.unwrap().to_vec())
-                .unwrap();
+        let text = String::from_utf8(
+            axum::body::to_bytes(resp.into_body(), 4096)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
         assert!(text.contains("scope=Refresh"));
     }
 
     #[tokio::test]
     async fn valid_app_pass_token_extracts_app_pass_scope() {
         let state = test_state().await;
-        let token = mint_token("did:plc:alice", "com.atproto.appPass", 3600, &state.jwt_secret, None);
+        let token = mint_token(
+            "did:plc:alice",
+            "com.atproto.appPass",
+            3600,
+            &state.jwt_secret,
+            None,
+        );
         let resp = get_protected(protected_app(state), Some(&token)).await;
         assert_eq!(resp.status(), StatusCode::OK);
-        let text =
-            String::from_utf8(axum::body::to_bytes(resp.into_body(), 4096).await.unwrap().to_vec())
-                .unwrap();
+        let text = String::from_utf8(
+            axum::body::to_bytes(resp.into_body(), 4096)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
         assert!(text.contains("scope=AppPass"));
     }
 
@@ -719,7 +750,13 @@ mod tests {
     #[tokio::test]
     async fn unknown_scope_returns_401_invalid_token() {
         let state = test_state().await;
-        let token = mint_token("did:plc:user", "com.example.unknown", 3600, &state.jwt_secret, None);
+        let token = mint_token(
+            "did:plc:user",
+            "com.example.unknown",
+            3600,
+            &state.jwt_secret,
+            None,
+        );
         let resp = get_protected(protected_app(state), Some(&token)).await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         let json = json_body(resp).await;
@@ -734,10 +771,19 @@ mod tests {
         let base = test_state().await;
         let mut config = (*base.config).clone();
         config.server_did = Some("did:plc:server".to_string());
-        let state = AppState { config: Arc::new(config), ..base };
+        let state = AppState {
+            config: Arc::new(config),
+            ..base
+        };
 
         // mint_token encodes aud = "did:plc:test" — wrong for did:plc:server
-        let token = mint_token("did:plc:user", "com.atproto.access", 3600, &state.jwt_secret, None);
+        let token = mint_token(
+            "did:plc:user",
+            "com.atproto.access",
+            3600,
+            &state.jwt_secret,
+            None,
+        );
         let resp = get_protected(protected_app(state), Some(&token)).await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         let json = json_body(resp).await;
@@ -775,7 +821,13 @@ mod tests {
         // decode and never reached the binding check).
         let state = test_state().await;
         let dpop_key = SigningKey::random(&mut OsRng);
-        let token = mint_token("did:plc:user", "com.atproto.access", 3600, &state.jwt_secret, None);
+        let token = mint_token(
+            "did:plc:user",
+            "com.atproto.access",
+            3600,
+            &state.jwt_secret,
+            None,
+        );
         let dpop_proof = make_dpop_proof(
             &dpop_key,
             "GET",
@@ -957,13 +1009,13 @@ mod tests {
             "iat": now_secs() as i64,
             "jti": "test-jti",
         });
-        let hdr_b64 =
-            URL_SAFE_NO_PAD.encode(serde_json::to_string(&header).unwrap().as_bytes());
-        let pay_b64 =
-            URL_SAFE_NO_PAD.encode(serde_json::to_string(&payload).unwrap().as_bytes());
+        let hdr_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&header).unwrap().as_bytes());
+        let pay_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&payload).unwrap().as_bytes());
         let sig: Signature = dpop_key.sign(format!("{hdr_b64}.{pay_b64}").as_bytes());
-        let dpop_proof =
-            format!("{hdr_b64}.{pay_b64}.{}", URL_SAFE_NO_PAD.encode(sig.to_bytes().as_ref() as &[u8]));
+        let dpop_proof = format!(
+            "{hdr_b64}.{pay_b64}.{}",
+            URL_SAFE_NO_PAD.encode(sig.to_bytes().as_ref() as &[u8])
+        );
 
         let req = Request::builder()
             .uri("/protected")
@@ -999,13 +1051,13 @@ mod tests {
             "iat": now_secs() as i64,
             "jti": "",
         });
-        let hdr_b64 =
-            URL_SAFE_NO_PAD.encode(serde_json::to_string(&header).unwrap().as_bytes());
-        let pay_b64 =
-            URL_SAFE_NO_PAD.encode(serde_json::to_string(&payload).unwrap().as_bytes());
+        let hdr_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&header).unwrap().as_bytes());
+        let pay_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&payload).unwrap().as_bytes());
         let sig: Signature = dpop_key.sign(format!("{hdr_b64}.{pay_b64}").as_bytes());
-        let dpop_proof =
-            format!("{hdr_b64}.{pay_b64}.{}", URL_SAFE_NO_PAD.encode(sig.to_bytes().as_ref() as &[u8]));
+        let dpop_proof = format!(
+            "{hdr_b64}.{pay_b64}.{}",
+            URL_SAFE_NO_PAD.encode(sig.to_bytes().as_ref() as &[u8])
+        );
 
         let req = Request::builder()
             .uri("/protected")
@@ -1175,7 +1227,9 @@ mod tests {
         let thumb = jwk_thumbprint(&jwk).unwrap();
         assert_eq!(thumb.len(), 43, "thumbprint must be 43 base64url chars");
         assert!(
-            thumb.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_'),
+            thumb
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '-' || c == '_'),
             "thumbprint must be base64url"
         );
         // Stable regression guard — verified against this implementation.
@@ -1193,7 +1247,9 @@ mod tests {
         });
         let thumb = jwk_thumbprint(&jwk).unwrap();
         assert_eq!(thumb.len(), 43);
-        assert!(thumb.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_'));
+        assert!(thumb
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_'));
         // Stable regression guard.
         assert_eq!(thumb, "kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k");
     }

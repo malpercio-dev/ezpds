@@ -22,6 +22,7 @@ use crate::routes::create_signing_key::create_signing_key;
 use crate::routes::describe_server::describe_server;
 use crate::routes::get_relay_signing_key::get_relay_signing_key;
 use crate::routes::health::health;
+use crate::routes::oauth_server_metadata::oauth_server_metadata;
 use crate::routes::register_device::register_device;
 use crate::routes::resolve_handle::resolve_handle_handler;
 use crate::well_known::WellKnownResolver;
@@ -107,6 +108,10 @@ pub struct AppState {
 /// listener — callers can use `tower::ServiceExt::oneshot` to drive requests in tests.
 pub fn app(state: AppState) -> Router {
     Router::new()
+        .route(
+            "/.well-known/oauth-authorization-server",
+            get(oauth_server_metadata),
+        )
         .route("/xrpc/_health", get(health))
         .route(
             "/xrpc/com.atproto.server.describeServer",

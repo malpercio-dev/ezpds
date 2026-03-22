@@ -1,0 +1,15 @@
+meta {
+  name: OAuth Server Metadata
+  type: http
+  seq: 12
+}
+
+get {
+  url: {{baseUrl}}/.well-known/oauth-authorization-server
+  body: none
+  auth: none
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
