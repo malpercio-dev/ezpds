@@ -3,8 +3,8 @@
 // Gathers: query params (client_id, redirect_uri, code_challenge, code_challenge_method,
 //          state, scope, response_type) on GET; form body (action + same fields) on POST
 // Processes:
-//   GET:  validates params → looks up client → validates redirect_uri → renders consent HTML
-//   POST: validates action → re-validates params → generates/stores auth code → redirects
+//   GET:  looks up client → validates redirect_uri → validates remaining params → renders HTML
+//   POST: validates client + redirect_uri first → handles deny/approve → generates auth code
 // Returns:
 //   GET:  HTML consent page (200) or HTML error page (400) when redirect is unsafe
 //   POST: 303 redirect to redirect_uri?code=...&state=... or redirect_uri?error=...
@@ -47,6 +47,7 @@ pub struct ConsentForm {
     pub code_challenge_method: String,
     pub state: String,
     pub scope: String,
+    pub response_type: String,
 }
 
 /// Subset of RFC 7591 client metadata fields used by the authorization endpoint.
@@ -66,14 +67,7 @@ pub async fn get_authorization(
     State(state): State<AppState>,
     Query(params): Query<AuthorizeQuery>,
 ) -> Response {
-    if params.response_type != "code" {
-        return error_page(
-            "Unsupported Response Type",
-            "This server only supports the authorization code flow (response_type=code).",
-        )
-        .into_response();
-    }
-
+    // Client and redirect_uri must be validated before any redirect is issued.
     let client = match get_oauth_client(&state.db, &params.client_id).await {
         Ok(Some(row)) => row,
         Ok(None) => {
@@ -92,12 +86,17 @@ pub async fn get_authorization(
 
     let metadata: ClientMetadata = match serde_json::from_str(&client.client_metadata) {
         Ok(m) => m,
-        Err(_) => {
+        Err(e) => {
+            tracing::error!(
+                client_id = %client.client_id,
+                error = %e,
+                "failed to parse stored client metadata"
+            );
             return error_page(
                 "Client Configuration Error",
                 "The client's registered metadata is malformed.",
             )
-            .into_response()
+            .into_response();
         }
     };
 
@@ -109,7 +108,17 @@ pub async fn get_authorization(
         .into_response();
     }
 
-    // From here on redirect_uri is validated — errors go there, not to an error page.
+    // From here on redirect_uri is validated — errors redirect there, not to an error page.
+    if params.response_type != "code" {
+        return error_redirect(
+            &params.redirect_uri,
+            "unsupported_response_type",
+            "only response_type=code is supported",
+            &params.state,
+        )
+        .into_response();
+    }
+
     if params.code_challenge_method != "S256" {
         return error_redirect(
             &params.redirect_uri,
@@ -132,6 +141,7 @@ pub async fn get_authorization(
         &params.code_challenge_method,
         &params.state,
         &params.scope,
+        &params.response_type,
         &state.config.public_url,
     ))
     .into_response()
@@ -139,12 +149,48 @@ pub async fn get_authorization(
 
 /// `POST /oauth/authorize` — handle the user's approval or denial of the consent request.
 ///
-/// Re-validates all parameters against the database regardless of what the form
-/// contains — hidden form fields could be tampered with by a malicious browser.
+/// Re-validates client_id and redirect_uri against the database, and enforces
+/// code_challenge_method=S256, before issuing an authorization code or redirect.
+/// Hidden form fields could be tampered with by a malicious browser.
 pub async fn post_authorization(
     State(state): State<AppState>,
     Form(form): Form<ConsentForm>,
 ) -> Response {
+    // Validate client and redirect_uri first — deny/approve both redirect there,
+    // so we must confirm it is safe before using it as a redirect target.
+    let client = match get_oauth_client(&state.db, &form.client_id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            return error_page("Unknown Client", "The client_id is not registered.").into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "db error looking up OAuth client");
+            return error_page("Server Error", "A database error occurred.").into_response();
+        }
+    };
+
+    let metadata: ClientMetadata = match serde_json::from_str(&client.client_metadata) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!(
+                client_id = %client.client_id,
+                error = %e,
+                "failed to parse stored client metadata"
+            );
+            return error_page("Client Configuration Error", "Client metadata is malformed.")
+                .into_response();
+        }
+    };
+
+    if !metadata.redirect_uris.contains(&form.redirect_uri) {
+        return error_page(
+            "Invalid Redirect URI",
+            "The redirect_uri does not match the client's registered URIs.",
+        )
+        .into_response();
+    }
+
+    // redirect_uri is now validated — denial and all subsequent errors redirect there.
     if form.action == "deny" {
         return error_redirect(
             &form.redirect_uri,
@@ -165,30 +211,12 @@ pub async fn post_authorization(
         .into_response();
     }
 
-    // Re-validate client and redirect_uri — hidden fields could be tampered with.
-    let client = match get_oauth_client(&state.db, &form.client_id).await {
-        Ok(Some(row)) => row,
-        Ok(None) => {
-            return error_page("Unknown Client", "The client_id is not registered.").into_response()
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "db error looking up OAuth client during approval");
-            return error_page("Server Error", "A database error occurred.").into_response();
-        }
-    };
-
-    let metadata: ClientMetadata = match serde_json::from_str(&client.client_metadata) {
-        Ok(m) => m,
-        Err(_) => {
-            return error_page("Client Configuration Error", "Client metadata is malformed.")
-                .into_response()
-        }
-    };
-
-    if !metadata.redirect_uris.contains(&form.redirect_uri) {
-        return error_page(
-            "Invalid Redirect URI",
-            "The redirect_uri does not match the client's registered URIs.",
+    if form.response_type != "code" {
+        return error_redirect(
+            &form.redirect_uri,
+            "unsupported_response_type",
+            "only response_type=code is supported",
+            &form.state,
         )
         .into_response();
     }
@@ -226,10 +254,13 @@ pub async fn post_authorization(
         }
     };
 
+    // Store the SHA-256 hash of the code, matching the session/refresh-token pattern.
+    // The token endpoint hashes the presented code before lookup, consistent with all
+    // other tokens in this codebase.
     let token = generate_token();
     if let Err(e) = store_authorization_code(
         &state.db,
-        &token.plaintext,
+        &token.hash,
         &form.client_id,
         &did,
         &form.code_challenge,
@@ -249,6 +280,7 @@ pub async fn post_authorization(
         .into_response();
     }
 
+    // Return plaintext to the client; the DB stores only the hash.
     let sep = if form.redirect_uri.contains('?') {
         '&'
     } else {
@@ -325,6 +357,7 @@ fn error_page(title: &str, message: &str) -> (StatusCode, Html<String>) {
 /// Render the neobrutal OAuth consent page.
 ///
 /// All user-controlled values are HTML-escaped before insertion.
+#[allow(clippy::too_many_arguments)]
 fn render_consent_page(
     client_name: &str,
     client_id: &str,
@@ -333,16 +366,12 @@ fn render_consent_page(
     code_challenge_method: &str,
     state: &str,
     scope: &str,
+    response_type: &str,
     public_url: &str,
 ) -> String {
     let scope_tags: String = scope
         .split_whitespace()
-        .map(|s| {
-            format!(
-                "<span class=\"scope-tag\">{}</span>",
-                html_escape(s)
-            )
-        })
+        .map(|s| format!("<span class=\"scope-tag\">{}</span>", html_escape(s)))
         .collect::<Vec<_>>()
         .join("\n      ");
 
@@ -375,6 +404,7 @@ fn render_consent_page(
         ("code_challenge_method", code_challenge_method),
         ("state", state),
         ("scope", scope),
+        ("response_type", response_type),
     ] {
         html.push_str(&format!(
             "      <input type=\"hidden\" name=\"{}\" value=\"{}\" />\n",
@@ -546,6 +576,7 @@ mod tests {
 
     use crate::app::{app, test_state};
     use crate::db::oauth::register_oauth_client;
+    use crate::routes::token::hash_bearer_token;
 
     const CLIENT_ID: &str = "https://app.example.com/client-metadata.json";
     const REDIRECT_URI: &str = "https://app.example.com/callback";
@@ -622,8 +653,20 @@ mod tests {
              &code_challenge_method=S256\
              &state=teststate\
              &scope=atproto\
+             &response_type=code\
              {extra}"
         )
+    }
+
+    fn deny_form() -> &'static str {
+        "action=deny\
+         &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json\
+         &redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback\
+         &code_challenge=e3b0c44298fc1c149afb\
+         &code_challenge_method=S256\
+         &state=teststate\
+         &scope=atproto\
+         &response_type=code"
     }
 
     // ── GET tests ─────────────────────────────────────────────────────────────
@@ -663,13 +706,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_returns_400_for_wrong_response_type() {
+    async fn get_redirects_with_error_for_wrong_response_type() {
+        // response_type check happens after redirect_uri validation — redirects, not error page.
         let resp = get_authorize(
             state_with_client().await,
             &authorize_url("").replace("response_type=code", "response_type=token"),
         )
         .await;
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        assert!(location.contains("error=unsupported_response_type"));
     }
 
     #[tokio::test]
@@ -677,7 +723,6 @@ mod tests {
         let url = authorize_url("")
             .replace("code_challenge_method=S256", "code_challenge_method=plain");
         let resp = get_authorize(state_with_client().await, &url).await;
-        // Redirect to redirect_uri with error — 303
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         assert!(location.contains("error=invalid_request"));
@@ -692,14 +737,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_consent_page_falls_back_to_client_id_when_no_client_name() {
+        let state = test_state().await;
+        let metadata_no_name = r#"{"redirect_uris":["https://app.example.com/callback"]}"#;
+        register_oauth_client(&state.db, CLIENT_ID, metadata_no_name)
+            .await
+            .unwrap();
+        let resp = get_authorize(state, &authorize_url("")).await;
+        let body = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+        assert!(
+            html.contains("app.example.com"),
+            "client_id should appear when client_name is absent"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_consent_page_escapes_xss_in_client_name() {
+        let state = test_state().await;
+        let xss_metadata = r#"{"redirect_uris":["https://app.example.com/callback"],"client_name":"<script>alert(1)</script>"}"#;
+        register_oauth_client(&state.db, CLIENT_ID, xss_metadata)
+            .await
+            .unwrap();
+        let resp = get_authorize(state, &authorize_url("")).await;
+        let body = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+        assert!(!html.contains("<script>"), "raw <script> must not appear in output");
+        assert!(html.contains("&lt;script&gt;"), "script tag must be HTML-escaped");
+    }
+
+    #[tokio::test]
+    async fn get_consent_page_escapes_xss_in_scope() {
+        // scope=<b>bold</b> URL-encoded in the request
+        let url =
+            authorize_url("").replace("scope=atproto", "scope=%3Cb%3Ebold%3C%2Fb%3E");
+        let resp = get_authorize(state_with_client().await, &url).await;
+        let body = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+        assert!(!html.contains("<b>"), "raw HTML tags must not appear in scope output");
+        assert!(html.contains("&lt;b&gt;"), "scope tags must be HTML-escaped");
+    }
+
+    #[tokio::test]
     async fn get_consent_page_contains_scope_tag() {
         let resp = get_authorize(state_with_client().await, &authorize_url("")).await;
         let body = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
-        assert!(
-            html.contains("atproto"),
-            "requested scope should appear in the consent page"
-        );
+        assert!(html.contains("atproto"), "requested scope should appear in the consent page");
     }
 
     #[tokio::test]
@@ -716,28 +800,45 @@ mod tests {
         let resp = get_authorize(state_with_client().await, &authorize_url("")).await;
         let body = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
-        // Hidden inputs must carry forward the original request params for the POST.
         assert!(html.contains("name=\"state\""));
         assert!(html.contains("name=\"code_challenge\""));
         assert!(html.contains("name=\"redirect_uri\""));
+        assert!(html.contains("name=\"response_type\""));
     }
 
     // ── POST tests ────────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn post_deny_redirects_with_access_denied() {
-        let body = "action=deny\
-                    &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json\
-                    &redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback\
-                    &code_challenge=e3b0c44298fc1c149afb\
-                    &code_challenge_method=S256\
-                    &state=teststate\
-                    &scope=atproto";
-        let resp = post_authorize(state_with_client_and_account().await, body).await;
+        let resp = post_authorize(state_with_client_and_account().await, deny_form()).await;
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         assert!(location.contains("error=access_denied"));
         assert!(location.contains("state=teststate"));
+    }
+
+    #[tokio::test]
+    async fn post_deny_with_tampered_redirect_uri_returns_400() {
+        // Tampered redirect_uri fails DB validation before the deny redirect is issued.
+        let body = deny_form().replace(
+            "redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback",
+            "redirect_uri=https%3A%2F%2Fevil.example.com%2Fcallback",
+        );
+        let resp = post_authorize(state_with_client_and_account().await, &body).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "tampered redirect_uri must return an error page, not redirect to attacker URI"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_invalid_action_redirects_with_invalid_request() {
+        let body = approve_form("").replace("action=approve", "action=blah");
+        let resp = post_authorize(state_with_client_and_account().await, &body).await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        assert!(location.contains("error=invalid_request"));
     }
 
     #[tokio::test]
@@ -753,33 +854,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn post_approve_stores_code_in_db() {
+    async fn post_approve_stores_hashed_code_in_db() {
+        // The DB stores the SHA-256 hash of the code; the plaintext goes in the redirect URL.
         let state = state_with_client_and_account().await;
         let db = state.db.clone();
         let resp = post_authorize(state, &approve_form("")).await;
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
 
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
-        let code = location
+        let plaintext = location
             .split("code=")
             .nth(1)
             .unwrap()
             .split('&')
             .next()
             .unwrap();
+        let code_hash = hash_bearer_token(plaintext).unwrap();
 
         let row: Option<(String,)> =
             sqlx::query_as("SELECT code FROM oauth_authorization_codes WHERE code = ?")
-                .bind(code)
+                .bind(&code_hash)
                 .fetch_optional(&db)
                 .await
                 .unwrap();
-        assert!(row.is_some(), "auth code should be persisted in DB");
+        assert!(row.is_some(), "DB must store the hash, not the plaintext");
+    }
+
+    #[tokio::test]
+    async fn post_approve_encodes_special_chars_in_state() {
+        // state with &, =, spaces must be percent-encoded in the Location header.
+        let body = approve_form("").replace("state=teststate", "state=a%26b%3Dc%20d");
+        let resp = post_authorize(state_with_client_and_account().await, &body).await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        // a&b=c d percent-encoded: a%26b%3Dc%20d
+        assert!(
+            location.contains("state=a%26b%3Dc%20d"),
+            "special chars in state must be percent-encoded: {location}"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_approve_redirects_with_error_for_non_s256_method() {
+        let body = approve_form("").replace("code_challenge_method=S256", "code_challenge_method=plain");
+        let resp = post_authorize(state_with_client_and_account().await, &body).await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        assert!(location.contains("error=invalid_request"));
     }
 
     #[tokio::test]
     async fn post_approve_with_no_account_redirects_with_server_error() {
-        // No account inserted — server not set up.
         let resp = post_authorize(state_with_client().await, &approve_form("")).await;
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
@@ -793,7 +918,6 @@ mod tests {
             "redirect_uri=https%3A%2F%2Fevil.example.com%2Fcallback",
         );
         let resp = post_authorize(state_with_client_and_account().await, &body).await;
-        // redirect_uri mismatch → can't safely redirect → error page
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
@@ -804,6 +928,25 @@ mod tests {
             "client_id=https%3A%2F%2Fevil.example.com%2Fclient-metadata.json",
         );
         let resp = post_authorize(state_with_client_and_account().await, &body).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn post_approve_returns_400_for_malformed_client_metadata() {
+        let state = test_state().await;
+        register_oauth_client(&state.db, CLIENT_ID, "not valid json")
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
+        )
+        .bind(DID)
+        .bind("test@example.com")
+        .execute(&state.db)
+        .await
+        .unwrap();
+        let resp = post_authorize(state, &approve_form("")).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }

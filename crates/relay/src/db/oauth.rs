@@ -10,11 +10,10 @@ use sqlx::SqlitePool;
 /// `client_metadata` is stored as a raw JSON string (RFC 7591 client metadata).
 /// Callers are responsible for serializing/deserializing the JSON.
 pub struct OAuthClientRow {
-    // client_id and created_at are read by future handlers (dynamic client registration,
-    // admin listing); only client_metadata is needed by the authorization endpoint now.
-    #[allow(dead_code)]
     pub client_id: String,
     pub client_metadata: String,
+    // created_at is included for future handlers (admin listing, DCR);
+    // not read by any handler yet.
     #[allow(dead_code)]
     pub created_at: String,
 }
@@ -26,7 +25,9 @@ pub struct OAuthClientRow {
 ///
 /// Returns `sqlx::Error` on failure. Callers should use `crate::db::is_unique_violation`
 /// to detect duplicate `client_id` conflicts.
-// Wired to handlers when the OAuth authorization flow is implemented.
+///
+/// No HTTP handler calls this yet; a future dynamic client registration endpoint (RFC 7591)
+/// will call it.
 #[allow(dead_code)]
 pub async fn register_oauth_client(
     pool: &SqlitePool,
@@ -67,8 +68,11 @@ pub async fn get_oauth_client(
 
 /// Store a newly generated authorization code.
 ///
+/// `code` must be the SHA-256 hex hash of the raw token bytes — callers pass `token.hash`,
+/// not `token.plaintext`. The token endpoint (not yet implemented) hashes the presented code
+/// before lookup, consistent with the session and refresh-token patterns in this codebase.
+///
 /// The code expires 60 seconds after creation (single-use, short-lived per RFC 6749 §4.1.2).
-/// The token endpoint is responsible for consuming and deleting the code on exchange.
 pub async fn store_authorization_code(
     pool: &SqlitePool,
     code: &str,
@@ -97,14 +101,15 @@ pub async fn store_authorization_code(
     Ok(())
 }
 
-/// Return the DID of the single promoted account on this PDS.
+/// Return the DID of the first account on this single-user PDS.
 ///
-/// For a single-user PDS there is exactly one account after DID promotion.
-/// Returns `None` when no promoted account exists yet (server not yet set up).
+/// `ORDER BY created_at ASC` makes selection deterministic if the single-account
+/// invariant is ever violated. Returns `None` when no account row exists yet.
 pub async fn get_single_account_did(pool: &SqlitePool) -> Result<Option<String>, sqlx::Error> {
-    let row: Option<(String,)> = sqlx::query_as("SELECT did FROM accounts LIMIT 1")
-        .fetch_optional(pool)
-        .await?;
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT did FROM accounts ORDER BY created_at ASC LIMIT 1")
+            .fetch_optional(pool)
+            .await?;
     Ok(row.map(|(did,)| did))
 }
 
