@@ -74,6 +74,10 @@ static MIGRATIONS: &[Migration] = &[
         version: 11,
         sql: include_str!("migrations/V011__pending_shares.sql"),
     },
+    Migration {
+        version: 12,
+        sql: include_str!("migrations/V012__oauth_token_endpoint.sql"),
+    },
 ];
 
 /// Open a WAL-mode SQLite connection pool with a maximum of 1 connection.
