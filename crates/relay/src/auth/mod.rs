@@ -112,6 +112,14 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
         let token_str = extract_bearer_token(&parts.headers)?;
 
         // 2. Detect the DPoP header before decoding the access token.
+        //    RFC 9449 §11.1: reject if multiple DPoP headers are present — a
+        //    header-prepending proxy could inject a forged proof as the first value.
+        if parts.headers.get_all("DPoP").iter().count() > 1 {
+            return Err(ApiError::new(
+                ErrorCode::InvalidToken,
+                "multiple DPoP headers are not permitted",
+            ));
+        }
         let dpop_value = parts
             .headers
             .get("DPoP")
@@ -203,12 +211,18 @@ fn extract_bearer_token(headers: &axum::http::HeaderMap) -> Result<&str, ApiErro
             )
         })?;
 
-    auth_value.strip_prefix("Bearer ").ok_or_else(|| {
-        ApiError::new(
+    // RFC 7235 §2.1: auth scheme names are case-insensitive ("bearer", "BEARER", etc.).
+    const BEARER_LEN: usize = 7; // "Bearer ".len() — scheme name + single SP
+    if !auth_value
+        .get(..BEARER_LEN)
+        .map_or(false, |s| s.eq_ignore_ascii_case("Bearer "))
+    {
+        return Err(ApiError::new(
             ErrorCode::AuthenticationRequired,
             "Authorization header must use Bearer scheme",
-        )
-    })
+        ));
+    }
+    Ok(&auth_value[BEARER_LEN..])
 }
 
 /// Decode and verify the HS256 access/refresh JWT issued by this server.
@@ -755,16 +769,43 @@ mod tests {
 
     #[tokio::test]
     async fn dpop_header_present_but_access_token_has_no_cnf_returns_401() {
+        // Access token has no cnf claim at all. DPoP header is present with a valid
+        // proof — must be rejected at the "access token missing DPoP binding" guard,
+        // not earlier (the old test used "dummy.dpop.value" which failed at base64
+        // decode and never reached the binding check).
         let state = test_state().await;
-        // Access token has no cnf claim.
+        let dpop_key = SigningKey::random(&mut OsRng);
         let token = mint_token("did:plc:user", "com.atproto.access", 3600, &state.jwt_secret, None);
+        let dpop_proof = make_dpop_proof(
+            &dpop_key,
+            "GET",
+            &format!("{}/protected", state.config.public_url),
+        );
         let req = Request::builder()
             .uri("/protected")
             .header("Authorization", format!("Bearer {token}"))
-            .header("DPoP", "dummy.dpop.value")
+            .header("DPoP", dpop_proof)
             .body(Body::empty())
             .unwrap();
         let resp = protected_app(state).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let json = json_body(resp).await;
+        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+    }
+
+    #[tokio::test]
+    async fn dpop_cnf_present_without_jkt_returns_401() {
+        // Token with cnf:{} — cnf present but no jkt field. Must be rejected before
+        // any DPoP proof is considered (guard added in round 2).
+        let state = test_state().await;
+        let token = mint_token(
+            "did:plc:user",
+            "com.atproto.access",
+            3600,
+            &state.jwt_secret,
+            Some(serde_json::json!({})), // cnf present but empty — no jkt
+        );
+        let resp = get_protected(protected_app(state), Some(&token)).await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         let json = json_body(resp).await;
         assert_eq!(json["error"]["code"], "INVALID_TOKEN");
@@ -1033,6 +1074,69 @@ mod tests {
             .uri("/protected")
             .header("Authorization", format!("Bearer {token}"))
             .header("DPoP", dpop_proof)
+            .body(Body::empty())
+            .unwrap();
+        let resp = protected_app(state).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let json = json_body(resp).await;
+        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+    }
+
+    #[tokio::test]
+    async fn dpop_iat_at_i64_min_returns_401() {
+        // i64::MIN is the specific iat value that motivated the i128 widening fix:
+        // `now - i64::MIN` overflows in debug (panic → DoS) and wraps in release
+        // (magnitude check bypass). The widened arithmetic must reject it as stale.
+        let state = test_state().await;
+        let dpop_key = SigningKey::random(&mut OsRng);
+        let thumbprint = dpop_key_thumbprint(&dpop_key);
+        let token = mint_token(
+            "did:plc:alice",
+            "com.atproto.access",
+            3600,
+            &state.jwt_secret,
+            Some(serde_json::json!({ "jkt": thumbprint })),
+        );
+        let dpop_proof = make_dpop_proof_with_iat(
+            &dpop_key,
+            "GET",
+            &format!("{}/protected", state.config.public_url),
+            i64::MIN,
+        );
+        let req = Request::builder()
+            .uri("/protected")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("DPoP", dpop_proof)
+            .body(Body::empty())
+            .unwrap();
+        let resp = protected_app(state).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let json = json_body(resp).await;
+        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+    }
+
+    #[tokio::test]
+    async fn multiple_dpop_headers_returns_401() {
+        // RFC 9449 §11.1: multiple DPoP headers must be rejected.
+        // A header-prepending proxy could inject a forged proof as the first value.
+        let state = test_state().await;
+        let dpop_key = SigningKey::random(&mut OsRng);
+        let thumbprint = dpop_key_thumbprint(&dpop_key);
+        let token = mint_token(
+            "did:plc:alice",
+            "com.atproto.access",
+            3600,
+            &state.jwt_secret,
+            Some(serde_json::json!({ "jkt": thumbprint })),
+        );
+        let htu = format!("{}/protected", state.config.public_url);
+        let proof1 = make_dpop_proof(&dpop_key, "GET", &htu);
+        let proof2 = make_dpop_proof(&dpop_key, "GET", &htu);
+        let req = Request::builder()
+            .uri("/protected")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("DPoP", proof1)
+            .header("DPoP", proof2)
             .body(Body::empty())
             .unwrap();
         let resp = protected_app(state).oneshot(req).await.unwrap();
