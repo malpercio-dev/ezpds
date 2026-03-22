@@ -113,6 +113,52 @@ pub async fn get_single_account_did(pool: &SqlitePool) -> Result<Option<String>,
     Ok(row.map(|(did,)| did))
 }
 
+/// A row from the `oauth_signing_key` table.
+pub struct OAuthSigningKeyRow {
+    pub id: String,
+    pub public_key_jwk: String,
+    pub private_key_encrypted: String,
+}
+
+/// Load the server's OAuth signing key row. Returns `None` if no key has been generated yet.
+pub async fn get_oauth_signing_key(
+    pool: &SqlitePool,
+) -> Result<Option<OAuthSigningKeyRow>, sqlx::Error> {
+    let row: Option<(String, String, String)> = sqlx::query_as(
+        "SELECT id, public_key_jwk, private_key_encrypted FROM oauth_signing_key LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|(id, public_key_jwk, private_key_encrypted)| OAuthSigningKeyRow {
+        id,
+        public_key_jwk,
+        private_key_encrypted,
+    }))
+}
+
+/// Persist a newly generated OAuth signing key.
+///
+/// `id` is a UUID string. `public_key_jwk` is a JWK JSON string for the P-256 public key.
+/// `private_key_encrypted` is the AES-256-GCM-encrypted private key (base64, 80 chars).
+pub async fn store_oauth_signing_key(
+    pool: &SqlitePool,
+    id: &str,
+    public_key_jwk: &str,
+    private_key_encrypted: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO oauth_signing_key (id, public_key_jwk, private_key_encrypted, created_at) \
+         VALUES (?, ?, ?, datetime('now'))",
+    )
+    .bind(id)
+    .bind(public_key_jwk)
+    .bind(private_key_encrypted)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,5 +289,34 @@ mod tests {
 
         let result = get_single_account_did(&pool).await.unwrap();
         assert_eq!(result.as_deref(), Some(did));
+    }
+
+    #[tokio::test]
+    async fn store_and_retrieve_oauth_signing_key() {
+        let pool = test_pool().await;
+        store_oauth_signing_key(
+            &pool,
+            "test-key-uuid-01",
+            r#"{"kty":"EC","crv":"P-256","x":"abc","y":"def","kid":"test-key-uuid-01"}"#,
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        )
+        .await
+        .unwrap();
+
+        let row = get_oauth_signing_key(&pool)
+            .await
+            .unwrap()
+            .expect("key should exist after storage");
+
+        assert_eq!(row.id, "test-key-uuid-01");
+        assert!(!row.public_key_jwk.is_empty());
+        assert!(!row.private_key_encrypted.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_oauth_signing_key_returns_none_when_empty() {
+        let pool = test_pool().await;
+        let result = get_oauth_signing_key(&pool).await.unwrap();
+        assert!(result.is_none());
     }
 }
