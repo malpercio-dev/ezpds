@@ -404,7 +404,9 @@ pub(crate) async fn validate_dpop_for_token_endpoint(
         .map_err(|_| DpopTokenEndpointError::InvalidProof("DPoP header JSON malformed"))?;
 
     if dpop_header.typ != "dpop+jwt" {
-        return Err(DpopTokenEndpointError::InvalidProof("DPoP typ must be dpop+jwt"));
+        return Err(DpopTokenEndpointError::InvalidProof(
+            "DPoP typ must be dpop+jwt",
+        ));
     }
 
     // Verify the signature against the embedded JWK.

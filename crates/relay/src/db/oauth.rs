@@ -457,18 +457,28 @@ mod tests {
             .unwrap()
             .expect("code should be found");
 
-        assert_eq!(row.client_id, "https://app.example.com/client-metadata.json");
+        assert_eq!(
+            row.client_id,
+            "https://app.example.com/client-metadata.json"
+        );
         assert_eq!(row.did, "did:plc:testaccount000000000000");
 
         // Second consume: must return None (already deleted).
-        let second = consume_authorization_code(&pool, "hash-abc123").await.unwrap();
-        assert!(second.is_none(), "consumed code must not be found again (AC1.6)");
+        let second = consume_authorization_code(&pool, "hash-abc123")
+            .await
+            .unwrap();
+        assert!(
+            second.is_none(),
+            "consumed code must not be found again (AC1.6)"
+        );
     }
 
     #[tokio::test]
     async fn consume_authorization_code_returns_none_for_unknown_code() {
         let pool = test_pool().await;
-        let result = consume_authorization_code(&pool, "nonexistent-hash").await.unwrap();
+        let result = consume_authorization_code(&pool, "nonexistent-hash")
+            .await
+            .unwrap();
         assert!(result.is_none());
     }
 
@@ -511,7 +521,10 @@ mod tests {
         let result = consume_authorization_code(&pool, "expired-code-hash")
             .await
             .unwrap();
-        assert!(result.is_none(), "expired auth code must return None (AC1.5)");
+        assert!(
+            result.is_none(),
+            "expired auth code must return None (AC1.5)"
+        );
     }
 
     #[tokio::test]
@@ -545,7 +558,10 @@ mod tests {
 
         let (id, scope, jkt) = row.expect("refresh token row must exist");
         assert_eq!(id, "refresh-token-hash-01");
-        assert_eq!(scope, "com.atproto.refresh", "scope must be com.atproto.refresh (AC1.3)");
+        assert_eq!(
+            scope, "com.atproto.refresh",
+            "scope must be com.atproto.refresh (AC1.3)"
+        );
         assert_eq!(jkt.as_deref(), Some("jkt-thumbprint"));
     }
 }
