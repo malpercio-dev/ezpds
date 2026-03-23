@@ -2,8 +2,11 @@
 -- Applied in a single transaction by the migration runner.
 --
 -- 1. Rebuilds the accounts table with nullable password_hash.
---    Mobile-provisioned accounts (via POST /v1/dids) have no password;
---    only accounts created via POST /v1/accounts have a password_hash.
+--    At V008 time, mobile-provisioned accounts (via POST /v1/dids) had no password;
+--    only accounts created via POST /v1/accounts had a password_hash.
+--    This assumption changed: POST /v1/dids now requires a password (set during the
+--    DID ceremony), so all accounts get an argon2id PHC hash in password_hash.
+--    The column remains nullable for schema flexibility, but new rows are always non-NULL.
 --    SQLite does not support ALTER COLUMN, so a full table rebuild is required.
 --
 -- 2. Adds pending_did to pending_accounts for retry-safe DID pre-storage.

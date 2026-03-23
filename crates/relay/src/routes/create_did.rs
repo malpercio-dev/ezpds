@@ -13,6 +13,7 @@
 // Processing steps:
 //   1. require_pending_session → PendingSessionInfo { account_id, device_id }
 //   2. SELECT handle, pending_did, email, pending_share_{1,2,3} FROM pending_accounts WHERE id = account_id
+//   2a. Reject if password is empty (400 INVALID_CLAIM) — argon2 hashes "" so guard is explicit
 //   3. Validate rotationKeyPublic starts with "did:key:z" → DidKeyUri
 //   4. serde_json::to_string(signedCreationOp) → signed_op_str
 //   5. crypto::verify_genesis_op(signed_op_str, rotation_key) → VerifiedGenesisOp
@@ -95,6 +96,15 @@ pub async fn create_did_handler(
     let session = require_pending_session(&headers, &state.db).await?;
     let pending = load_pending_account(&state.db, &session.account_id).await?;
 
+    // Guard: reject empty passwords before doing any expensive work.
+    // argon2 happily hashes "" — this ensures the relay never stores a zero-length password.
+    if payload.password.is_empty() {
+        return Err(ApiError::new(
+            ErrorCode::InvalidClaim,
+            "password must not be empty",
+        ));
+    }
+
     // Phase 2: Verify the genesis op and validate it against account + server config.
     let (verified, signed_op_str) =
         verify_and_validate_genesis_op(&payload, &pending.handle, &state.config.public_url)?;
@@ -146,7 +156,7 @@ pub async fn create_did_handler(
 
 /// Hash `password` with argon2id and return the PHC string.
 ///
-/// Uses `Argon2::default()` (argon2id, m=19456, t=2, p=1) with a freshly generated
+/// Uses `Argon2::default()` (argon2id, m=19456 KiB ≈19 MiB, t=2, p=1) with a freshly generated
 /// random salt. The PHC string embeds the algorithm, parameters, salt, and hash —
 /// everything `verify_password` in `create_session.rs` needs for later verification.
 fn hash_password(password: &str) -> Result<String, ApiError> {
@@ -1398,6 +1408,16 @@ mod tests {
             "password_hash should be an argon2id PHC string, got: {hash_str}"
         );
 
+        // Directly verify the PHC string round-trip: parse the stored hash and verify
+        // the ceremony password against it without going through createSession.
+        {
+            use argon2::{password_hash::PasswordHash, Argon2, PasswordVerifier};
+            let parsed = PasswordHash::new(&hash_str).expect("stored PHC string should parse");
+            Argon2::default()
+                .verify_password(b"mysecretpassword", &parsed)
+                .expect("stored hash should verify against the ceremony password");
+        }
+
         // createSession with the correct password should return 200.
         let cs_request = Request::builder()
             .method("POST")
@@ -1416,6 +1436,152 @@ mod tests {
             StatusCode::OK,
             "createSession should return 200 after password-provisioned DID ceremony"
         );
+    }
+
+    /// Wrong password after ceremony returns 401 from createSession.
+    ///
+    /// Verifies that the stored argon2id hash correctly rejects a wrong password,
+    /// confirming the PHC round-trip works end-to-end (store → verify).
+    #[tokio::test]
+    async fn wrong_password_returns_401_from_create_session() {
+        let state = test_state_for_did("https://plc.directory".to_string()).await;
+        let db = state.db.clone();
+        let setup = insert_test_data(&db).await;
+        let (rotation_key_public, signed_op) =
+            make_signed_op(&setup.handle, &state.config.public_url);
+
+        // Pre-store pending_did to use the skip_plc path (no network required).
+        let signed_op_str = serde_json::to_string(&signed_op).unwrap();
+        let verified = crypto::verify_genesis_op(
+            &signed_op_str,
+            &crypto::DidKeyUri(rotation_key_public.clone()),
+        )
+        .expect("verify should succeed");
+        sqlx::query(
+            "UPDATE pending_accounts \
+             SET pending_did = ?, pending_share_1 = ?, pending_share_2 = ?, pending_share_3 = ? \
+             WHERE id = ?",
+        )
+        .bind(&verified.did)
+        .bind("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        .bind("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")
+        .bind("CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC")
+        .bind(&setup.account_id)
+        .execute(&db)
+        .await
+        .expect("pre-store pending_did and shares");
+
+        // Promote with password "correct-password".
+        let body = serde_json::json!({
+            "rotationKeyPublic": rotation_key_public,
+            "signedCreationOp": signed_op,
+            "password": "correct-password",
+        });
+        let did_response = crate::app::app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/dids")
+                    .header("Authorization", format!("Bearer {}", setup.session_token))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(did_response.status(), StatusCode::OK, "DID ceremony should succeed");
+        let body_bytes = axum::body::to_bytes(did_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let did_body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        let did = did_body["did"].as_str().unwrap().to_string();
+
+        // createSession with the WRONG password should return 401.
+        let cs_response = crate::app::app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.server.createSession")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"identifier":"{did}","password":"wrong-password"}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            cs_response.status(),
+            StatusCode::UNAUTHORIZED,
+            "createSession should return 401 for wrong password"
+        );
+    }
+
+    /// Missing password field in request body returns 422 Unprocessable Entity.
+    ///
+    /// Axum rejects deserialization of `CreateDidRequest` when a required field is absent.
+    #[tokio::test]
+    async fn missing_password_field_returns_422() {
+        let state = test_state_for_did("https://plc.directory".to_string()).await;
+        let db = state.db.clone();
+        let setup = insert_test_data(&db).await;
+
+        let request_body = serde_json::json!({
+            "rotationKeyPublic": "did:key:z123",
+            "signedCreationOp": serde_json::json!({}),
+            // "password" field intentionally omitted
+        });
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/dids")
+            .header("Authorization", format!("Bearer {}", setup.session_token))
+            .header("Content-Type", "application/json")
+            .body(Body::from(request_body.to_string()))
+            .unwrap();
+
+        let response = crate::app::app(state).oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "missing password field should return 422"
+        );
+    }
+
+    /// Empty password string returns 400 INVALID_CLAIM.
+    ///
+    /// Argon2 would happily hash "" — the server-side guard prevents this.
+    #[tokio::test]
+    async fn empty_password_returns_400() {
+        let state = test_state_for_did("https://plc.directory".to_string()).await;
+        let db = state.db.clone();
+        let setup = insert_test_data(&db).await;
+        let (rotation_key_public, signed_op) =
+            make_signed_op(&setup.handle, &state.config.public_url);
+
+        let request_body = serde_json::json!({
+            "rotationKeyPublic": rotation_key_public,
+            "signedCreationOp": signed_op,
+            "password": "",
+        });
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/dids")
+            .header("Authorization", format!("Bearer {}", setup.session_token))
+            .header("Content-Type", "application/json")
+            .body(Body::from(request_body.to_string()))
+            .unwrap();
+
+        let response = crate::app::app(state).oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "empty password should return 400"
+        );
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(body["error"]["code"], "INVALID_CLAIM");
     }
 
     // ── plc.directory error ───────────────────────────────────────────────────

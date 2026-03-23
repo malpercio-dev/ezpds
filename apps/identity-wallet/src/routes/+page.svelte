@@ -41,7 +41,7 @@
    * Per-field error messages displayed by each screen.
    * Cleared when the user navigates forward to the next step.
    */
-  let errors = $state<{ claimCode?: string; email?: string; handle?: string }>(
+  let errors = $state<{ claimCode?: string; email?: string; handle?: string; password?: string }>(
     {}
   );
 
@@ -103,17 +103,17 @@
         step = 'handle';
         break;
       case 'KEYCHAIN_ERROR':
-        errors.handle = "Couldn't save credentials to your device. Try again.";
-        step = 'handle';
+        errors.password = "Couldn't save credentials to your device. Try again.";
+        step = 'password';
         break;
       case 'NETWORK_ERROR':
-        errors.handle = "Couldn't reach the server. Check your connection.";
-        step = 'handle';
+        errors.password = "Couldn't reach the server. Check your connection.";
+        step = 'password';
         break;
       case 'UNKNOWN':
       default:
-        errors.handle = 'Something went wrong. Please try again.';
-        step = 'handle';
+        errors.password = 'Something went wrong. Please try again.';
+        step = 'password';
         break;
     }
   }
@@ -143,6 +143,7 @@
   {:else if step === 'password'}
     <PasswordScreen
       bind:value={form.password}
+      error={errors.password}
       onnext={submitAccount}
     />
   {:else if step === 'loading'}

@@ -203,8 +203,8 @@ cargo build
 - `src-tauri/src/http.rs` -- RelayClient with compile-time base URL
 - `src-tauri/.cargo/config.toml` -- Cargo toolchain overrides for iOS cross-compilation (CC, AR, linker per target)
 - `src/lib/ipc.ts` -- Typed TypeScript wrappers for all Tauri IPC commands (createAccount, getOrCreateDeviceKey, signWithDeviceKey, performDIDCeremony)
-- `src/lib/components/onboarding/` -- Eight onboarding screen components (WelcomeScreen, ClaimCodeScreen, EmailScreen, HandleScreen, LoadingScreen, DIDCeremonyScreen, DIDSuccessScreen, ShamirBackupScreen)
-- `src/routes/+page.svelte` -- Onboarding state machine (welcome -> claim_code -> email -> handle -> loading -> did_ceremony -> did_success -> shamir_backup -> complete)
+- `src/lib/components/onboarding/` -- Nine onboarding screen components (WelcomeScreen, ClaimCodeScreen, EmailScreen, HandleScreen, PasswordScreen, LoadingScreen, DIDCeremonyScreen, DIDSuccessScreen, ShamirBackupScreen)
+- `src/routes/+page.svelte` -- Onboarding state machine (welcome -> claim_code -> email -> handle -> password -> loading -> did_ceremony -> did_success -> shamir_backup -> complete)
 - `src/routes/+layout.ts` -- `ssr = false; prerender = false` (global SPA config)
 - `svelte.config.js` -- adapter-static with `pages: 'dist'` (SPA mode, matches tauri.conf.json)
 - `vite.config.ts` -- Tauri-compatible Vite server (clearScreen, HMR via TAURI_DEV_HOST, envPrefix)

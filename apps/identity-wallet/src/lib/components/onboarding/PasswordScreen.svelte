@@ -1,9 +1,11 @@
 <script lang="ts">
   let {
     value = $bindable(''),
+    error,
     onnext,
   }: {
     value: string;
+    error?: string;
     onnext: () => void;
   } = $props();
 
@@ -37,6 +39,8 @@
 
   {#if mismatchError}
     <p class="error-text">{mismatchError}</p>
+  {:else if error}
+    <p class="error-text">{error}</p>
   {/if}
 
   <button disabled={!isValid} onclick={onnext}>Continue</button>

@@ -19,6 +19,13 @@
   async function runCeremony() {
     loading = true;
     error = null;
+    // Defense-in-depth: guard against an empty password reaching the relay.
+    // The PasswordScreen enforces ≥8 chars, but this makes the ceremony self-contained.
+    if (!password || password.length === 0) {
+      error = { code: 'DID_CREATION_FAILED', message: 'Password is required.' };
+      loading = false;
+      return;
+    }
     try {
       const result = await performDIDCeremony(handle, password);
       loading = false;

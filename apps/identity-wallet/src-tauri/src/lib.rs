@@ -287,7 +287,10 @@ async fn perform_did_ceremony(
         return Err(DIDCeremonyError::NoRelaySigningKey);
     }
     if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
+        let body = resp.text().await.unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to read GET /v1/relay/keys error body");
+            "<body read failed>".to_string()
+        });
         tracing::error!(status = %status, body = %body, "GET /v1/relay/keys returned non-success status");
         return Err(DIDCeremonyError::RelayKeyFetchFailed);
     }
@@ -346,7 +349,10 @@ async fn perform_did_ceremony(
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
+        let body = resp.text().await.unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to read POST /v1/dids error body");
+            "<body read failed>".to_string()
+        });
         tracing::error!(status = %status, body = %body, "POST /v1/dids returned non-success status");
         return Err(DIDCeremonyError::DidCreationFailed);
     }
