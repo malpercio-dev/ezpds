@@ -47,10 +47,6 @@
 // Outputs (error):    400 INVALID_CLAIM, 401 UNAUTHORIZED, 409 DID_ALREADY_EXISTS,
 //                     502 PLC_DIRECTORY_ERROR, 500 INTERNAL_ERROR
 
-use argon2::{
-    password_hash::{rand_core::OsRng as ArgonOsRng, SaltString},
-    Argon2, PasswordHasher,
-};
 use axum::{extract::State, http::HeaderMap, Json};
 use data_encoding::BASE32_NOPAD;
 use rand_core::{OsRng, RngCore};
@@ -58,6 +54,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::app::AppState;
+use crate::auth::password::hash_password;
 use crate::db::is_unique_violation;
 use crate::routes::auth::require_pending_session;
 use crate::routes::token::generate_token;
@@ -153,22 +150,6 @@ pub async fn create_did_handler(
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
-
-/// Hash `password` with argon2id and return the PHC string.
-///
-/// Uses `Argon2::default()` (argon2id, m=19456 KiB ≈19 MiB, t=2, p=1) with a freshly generated
-/// random salt. The PHC string embeds the algorithm, parameters, salt, and hash —
-/// everything `verify_password` in `create_session.rs` needs for later verification.
-fn hash_password(password: &str) -> Result<String, ApiError> {
-    let salt = SaltString::generate(&mut ArgonOsRng);
-    Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
-        .map(|h| h.to_string())
-        .map_err(|e| {
-            tracing::error!(error = %e, "argon2id hashing failed");
-            ApiError::new(ErrorCode::InternalError, "failed to process password")
-        })
-}
 
 // ── Phase helpers ─────────────────────────────────────────────────────────────
 

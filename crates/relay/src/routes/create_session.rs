@@ -7,10 +7,8 @@
 //
 // Implements: POST /xrpc/com.atproto.server.createSession
 
-use std::collections::{HashMap, VecDeque};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use axum::{extract::State, http::StatusCode, response::Json};
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
@@ -19,11 +17,12 @@ use uuid::Uuid;
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
+use crate::auth::password::verify_password;
+use crate::auth::rate_limit::{clear_failures, is_rate_limited, record_failure};
+use crate::db::accounts::resolve_identifier;
 
 const ACCESS_TOKEN_TTL_SECS: u64 = 2 * 60 * 60; // 2 hours
 const REFRESH_TOKEN_TTL_SECS: u64 = 90 * 24 * 60 * 60; // 90 days
-pub(crate) const RATE_LIMIT_WINDOW_SECS: u64 = 60;
-pub(crate) const RATE_LIMIT_MAX_FAILURES: usize = 5;
 
 // ── Request / Response types ─────────────────────────────────────────────────
 
@@ -67,17 +66,6 @@ struct LegacyRefreshClaims {
     jti: String,
     iat: u64,
     exp: u64,
-}
-
-// ── Internal account record ──────────────────────────────────────────────────
-
-pub(crate) struct AccountRow {
-    pub(crate) did: String,
-    pub(crate) email: String,
-    /// Argon2id PHC string. `None` for mobile accounts (password auth not allowed).
-    pub(crate) password_hash: Option<String>,
-    /// One associated handle (if any). Empty string returned in the response when absent.
-    pub(crate) handle: Option<String>,
 }
 
 // ── Handler ──────────────────────────────────────────────────────────────────
@@ -228,72 +216,6 @@ pub async fn create_session(
     ))
 }
 
-// ── Private helpers ──────────────────────────────────────────────────────────
-
-/// Resolve a handle or DID to an active (non-deactivated) account.
-///
-/// Returns `None` when not found; `Err` only on DB errors.
-pub(crate) async fn resolve_identifier(
-    db: &sqlx::SqlitePool,
-    identifier: &str,
-) -> Result<Option<AccountRow>, ApiError> {
-    if identifier.starts_with("did:") {
-        let row: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
-            "SELECT a.email, a.password_hash, h.handle \
-             FROM accounts a \
-             LEFT JOIN handles h ON h.did = a.did \
-             WHERE a.did = ? AND a.deactivated_at IS NULL \
-             LIMIT 1",
-        )
-        .bind(identifier)
-        .fetch_optional(db)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "DB error resolving DID");
-            ApiError::new(ErrorCode::InternalError, "failed to resolve identifier")
-        })?;
-
-        Ok(row.map(|(email, password_hash, handle)| AccountRow {
-            did: identifier.to_string(),
-            email,
-            password_hash,
-            handle,
-        }))
-    } else {
-        let row: Option<(String, String, Option<String>, String)> = sqlx::query_as(
-            "SELECT a.did, a.email, a.password_hash, h.handle \
-             FROM handles h \
-             JOIN accounts a ON a.did = h.did \
-             WHERE h.handle = ? AND a.deactivated_at IS NULL \
-             LIMIT 1",
-        )
-        .bind(identifier)
-        .fetch_optional(db)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "DB error resolving handle");
-            ApiError::new(ErrorCode::InternalError, "failed to resolve identifier")
-        })?;
-
-        Ok(row.map(|(did, email, password_hash, handle)| AccountRow {
-            did,
-            email,
-            password_hash,
-            handle: Some(handle),
-        }))
-    }
-}
-
-/// Verify `password` against a stored argon2id PHC-format hash string.
-pub(crate) fn verify_password(stored_hash: &str, password: &str) -> bool {
-    let Ok(hash) = PasswordHash::new(stored_hash) else {
-        tracing::error!("stored password_hash is not a valid PHC string; possible DB corruption");
-        return false;
-    };
-    Argon2::default()
-        .verify_password(password.as_bytes(), &hash)
-        .is_ok()
-}
 
 /// Sign an HS256 access JWT with a 2-hour lifetime.
 fn issue_access_jwt(secret: &[u8; 32], did: &str, aud: &str, now: u64) -> Result<String, ApiError> {
@@ -340,50 +262,10 @@ fn issue_refresh_jwt(
     })
 }
 
-// ── Rate limiting ────────────────────────────────────────────────────────────
-
-/// Returns `true` if `identifier` has had ≥ `RATE_LIMIT_MAX_FAILURES` failed login
-/// attempts within the last `RATE_LIMIT_WINDOW_SECS` seconds (sliding window).
-///
-/// Prunes expired entries from the front of the deque during the check, keeping
-/// memory bounded without a separate background task.
-pub(crate) fn is_rate_limited(
-    attempts: &mut HashMap<String, VecDeque<Instant>>,
-    identifier: &str,
-) -> bool {
-    let deque = attempts.get_mut(identifier);
-    if let Some(deque) = deque {
-        let now = Instant::now();
-        while let Some(&oldest) = deque.front() {
-            if now - oldest > Duration::from_secs(RATE_LIMIT_WINDOW_SECS) {
-                deque.pop_front();
-            } else {
-                break;
-            }
-        }
-        return deque.len() >= RATE_LIMIT_MAX_FAILURES;
-    }
-    false
-}
-
-/// Record a new failed attempt timestamp for `identifier`.
-pub(crate) fn record_failure(attempts: &mut HashMap<String, VecDeque<Instant>>, identifier: &str) {
-    attempts
-        .entry(identifier.to_string())
-        .or_default()
-        .push_back(Instant::now());
-}
-
-/// Clear the failure history for `identifier` on successful authentication.
-pub(crate) fn clear_failures(attempts: &mut HashMap<String, VecDeque<Instant>>, identifier: &str) {
-    attempts.remove(identifier);
-}
-
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use argon2::{
         password_hash::{rand_core::OsRng, SaltString},
         Argon2, PasswordHasher,
@@ -395,6 +277,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
+    use crate::auth::rate_limit::RATE_LIMIT_MAX_FAILURES;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 

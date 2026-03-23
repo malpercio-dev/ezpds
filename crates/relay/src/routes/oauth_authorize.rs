@@ -19,9 +19,9 @@ use std::sync::OnceLock;
 
 use crate::app::AppState;
 use crate::db::oauth::{get_oauth_client, store_authorization_code};
-use crate::routes::create_session::{
-    clear_failures, is_rate_limited, record_failure, resolve_identifier, verify_password,
-};
+use crate::auth::password::verify_password;
+use crate::auth::rate_limit::{clear_failures, is_rate_limited, record_failure};
+use crate::db::accounts::resolve_identifier;
 use crate::routes::oauth_templates::{
     encode_param, error_page, error_redirect, render_consent_page,
 };
@@ -1072,7 +1072,7 @@ mod tests {
 
     #[tokio::test]
     async fn post_approve_rate_limited_rerenders_form() {
-        use crate::routes::create_session::RATE_LIMIT_MAX_FAILURES;
+        use crate::auth::rate_limit::RATE_LIMIT_MAX_FAILURES;
         let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
         // Exhaust the failure budget.
         for _ in 0..RATE_LIMIT_MAX_FAILURES {
