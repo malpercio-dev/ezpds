@@ -150,5 +150,8 @@ export type DIDCeremonyError = {
  * On success, the DID and new session token are stored in Keychain by the Rust backend.
  * On failure, the Promise rejects with a `DIDCeremonyError`.
  */
-export const performDIDCeremony = (handle: string): Promise<DIDCeremonyResult> =>
-  invoke('perform_did_ceremony', { handle });
+export const performDIDCeremony = (
+  handle: string,
+  password: string,
+): Promise<DIDCeremonyResult> =>
+  invoke('perform_did_ceremony', { handle, password });

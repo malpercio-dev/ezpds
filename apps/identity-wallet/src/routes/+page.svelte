@@ -3,6 +3,7 @@
   import ClaimCodeScreen from '$lib/components/onboarding/ClaimCodeScreen.svelte';
   import EmailScreen from '$lib/components/onboarding/EmailScreen.svelte';
   import HandleScreen from '$lib/components/onboarding/HandleScreen.svelte';
+  import PasswordScreen from '$lib/components/onboarding/PasswordScreen.svelte';
   import LoadingScreen from '$lib/components/onboarding/LoadingScreen.svelte';
   import DIDCeremonyScreen from '$lib/components/onboarding/DIDCeremonyScreen.svelte';
   import DIDSuccessScreen from '$lib/components/onboarding/DIDSuccessScreen.svelte';
@@ -24,6 +25,7 @@
     | 'claim_code'
     | 'email'
     | 'handle'
+    | 'password'
     | 'loading'
     | 'did_ceremony'
     | 'did_success'
@@ -33,7 +35,7 @@
   // ── State ────────────────────────────────────────────────────────────────
 
   let step = $state<OnboardingStep>('welcome');
-  let form = $state({ claimCode: '', email: '', handle: '', did: '', share3: '' });
+  let form = $state({ claimCode: '', email: '', handle: '', password: '', did: '', share3: '' });
 
   /**
    * Per-field error messages displayed by each screen.
@@ -136,6 +138,11 @@
     <HandleScreen
       bind:value={form.handle}
       error={errors.handle}
+      onnext={() => goTo('password')}
+    />
+  {:else if step === 'password'}
+    <PasswordScreen
+      bind:value={form.password}
       onnext={submitAccount}
     />
   {:else if step === 'loading'}
@@ -143,6 +150,7 @@
   {:else if step === 'did_ceremony'}
     <DIDCeremonyScreen
       handle={form.handle}
+      password={form.password}
       onsuccess={(result) => { form.did = result.did; form.share3 = result.share3; step = 'did_success'; }}
     />
   {:else if step === 'did_success'}

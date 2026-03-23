@@ -6,7 +6,8 @@
 //   - Authorization: Bearer <pending_session_token>
 //   - JSON body: {
 //       "rotationKeyPublic": "did:key:z...",
-//       "signedCreationOp": { ...genesis op fields... }
+//       "signedCreationOp": { ...genesis op fields... },
+//       "password": "<plaintext>"  // required; stored as argon2id PHC string
 //     }
 //
 // Processing steps:
@@ -26,14 +27,15 @@
 //   9. If !skip_plc: POST {plc_directory_url}/{did} with signed_op_str
 //  10. build_did_document(&verified) → serde_json::Value
 //  11. Generate session token: 32 random bytes → base64url (returned) + SHA-256 hex (stored)
-//  12. Atomic transaction:
-//        INSERT accounts (did, email, password_hash=NULL, recovery_share=pending_share_2)
+//  12. Hash password with argon2id → password_hash
+//  13. Atomic transaction:
+//        INSERT accounts (did, email, password_hash=argon2id(password), recovery_share=pending_share_2)
 //        INSERT did_documents (did, document)
 //        INSERT sessions (id, did, device_id=NULL, token_hash, expires_at=+1 year)
 //        DELETE pending_sessions WHERE account_id = ?
 //        DELETE devices WHERE account_id = ?
 //        DELETE pending_accounts WHERE id = ?
-//  13. Return { "did", "did_document", "status": "active", "session_token",
+//  14. Return { "did", "did_document", "status": "active", "session_token",
 //               "shamir_share_1": <base32>, "shamir_share_3": <base32> }
 //
 // Note: handles are NOT inserted here. Handle creation is the caller's responsibility
@@ -44,6 +46,10 @@
 // Outputs (error):    400 INVALID_CLAIM, 401 UNAUTHORIZED, 409 DID_ALREADY_EXISTS,
 //                     502 PLC_DIRECTORY_ERROR, 500 INTERNAL_ERROR
 
+use argon2::{
+    password_hash::{rand_core::OsRng as ArgonOsRng, SaltString},
+    Argon2, PasswordHasher,
+};
 use axum::{extract::State, http::HeaderMap, Json};
 use data_encoding::BASE32_NOPAD;
 use rand_core::{OsRng, RngCore};
@@ -61,6 +67,9 @@ use common::{ApiError, ErrorCode};
 pub struct CreateDidRequest {
     pub rotation_key_public: String,
     pub signed_creation_op: serde_json::Value,
+    /// Initial password, stored as an argon2id PHC string.
+    /// Enables `createSession` for this account after promotion.
+    pub password: String,
 }
 
 #[derive(Serialize)]
@@ -107,9 +116,10 @@ pub async fn create_did_handler(
         .await?;
     }
 
-    // Phase 4: Build DID document, generate session, atomically promote.
+    // Phase 4: Build DID document, generate session, hash password, atomically promote.
     let did_document = build_did_document(&verified)?;
     let session_token = generate_token();
+    let password_hash = hash_password(&payload.password)?;
     promote_account(
         &state.db,
         did,
@@ -118,6 +128,7 @@ pub async fn create_did_handler(
         &did_document,
         &session_token.hash,
         &share2,
+        &password_hash,
     )
     .await?;
 
@@ -129,6 +140,24 @@ pub async fn create_did_handler(
         shamir_share_1: share1,
         shamir_share_3: share3,
     }))
+}
+
+// ── Private helpers ───────────────────────────────────────────────────────────
+
+/// Hash `password` with argon2id and return the PHC string.
+///
+/// Uses `Argon2::default()` (argon2id, m=19456, t=2, p=1) with a freshly generated
+/// random salt. The PHC string embeds the algorithm, parameters, salt, and hash —
+/// everything `verify_password` in `create_session.rs` needs for later verification.
+fn hash_password(password: &str) -> Result<String, ApiError> {
+    let salt = SaltString::generate(&mut ArgonOsRng);
+    Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map(|h| h.to_string())
+        .map_err(|e| {
+            tracing::error!(error = %e, "argon2id hashing failed");
+            ApiError::new(ErrorCode::InternalError, "failed to process password")
+        })
 }
 
 // ── Phase helpers ─────────────────────────────────────────────────────────────
@@ -421,11 +450,12 @@ async fn post_to_plc_directory(
     Ok(())
 }
 
-/// Atomically promote a pending account to a full account (Steps 10-12).
+/// Atomically promote a pending account to a full account (Steps 10-13).
 ///
 /// In a single transaction: INSERT accounts + did_documents + sessions,
 /// then DELETE pending_sessions + devices + pending_accounts.
 /// `recovery_share` is Share 2 of the Shamir split; stored for relay-side custody.
+/// `password_hash` is the argon2id PHC string for the account's password set during the ceremony.
 async fn promote_account(
     db: &sqlx::SqlitePool,
     did: &str,
@@ -434,6 +464,7 @@ async fn promote_account(
     did_document: &serde_json::Value,
     token_hash: &str,
     recovery_share: &str,
+    password_hash: &str,
 ) -> Result<(), ApiError> {
     let did_document_str = serde_json::to_string(did_document).map_err(|e| {
         tracing::error!(error = %e, "failed to serialize DID document");
@@ -449,10 +480,11 @@ async fn promote_account(
 
     sqlx::query(
         "INSERT INTO accounts (did, email, password_hash, recovery_share, created_at, updated_at) \
-         VALUES (?, ?, NULL, ?, datetime('now'), datetime('now'))",
+         VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))",
     )
     .bind(did)
     .bind(email)
+    .bind(password_hash)
     .bind(recovery_share)
     .execute(&mut *tx)
     .await
@@ -688,7 +720,7 @@ mod tests {
         test_state_with_plc_url(plc_url).await
     }
 
-    /// Build a POST /v1/dids request.
+    /// Build a POST /v1/dids request with a default test password.
     fn create_did_request(
         session_token: &str,
         rotation_key_public: &str,
@@ -697,6 +729,7 @@ mod tests {
         let body = serde_json::json!({
             "rotationKeyPublic": rotation_key_public,
             "signedCreationOp": signed_creation_op,
+            "password": "test-password",
         });
         Request::builder()
             .method("POST")
@@ -813,7 +846,8 @@ mod tests {
             "serviceEndpoint should match config.public_url"
         );
 
-        // accounts row with correct did, email; password_hash IS NULL; recovery_share persisted.
+        // accounts row with correct did, email; password_hash is a non-NULL argon2id PHC string;
+        // recovery_share persisted.
         let row: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
             "SELECT email, password_hash, recovery_share FROM accounts WHERE did = ?",
         )
@@ -823,9 +857,10 @@ mod tests {
         .unwrap();
         let (email, password_hash, recovery_share) = row.expect("accounts row should exist");
         assert!(email.contains("alice"), "email should match test account");
+        let hash_str = password_hash.expect("password_hash should not be NULL after DID ceremony");
         assert!(
-            password_hash.is_none(),
-            "password_hash should be NULL for device-provisioned account"
+            hash_str.starts_with("$argon2id$"),
+            "password_hash should be an argon2id PHC string, got: {hash_str}"
         );
         let rs = recovery_share
             .as_deref()
@@ -1185,7 +1220,8 @@ mod tests {
 
         let request_body = serde_json::json!({
             "rotationKeyPublic": "not-a-did-key",
-            "signedCreationOp": serde_json::json!({})
+            "signedCreationOp": serde_json::json!({}),
+            "password": "test-password",
         });
 
         let request = Request::builder()
@@ -1266,7 +1302,8 @@ mod tests {
             .body(Body::from(
                 serde_json::json!({
                     "rotationKeyPublic": "did:key:z123",
-                    "signedCreationOp": signed_op
+                    "signedCreationOp": signed_op,
+                    "password": "test-password",
                 })
                 .to_string(),
             ))
@@ -1281,6 +1318,104 @@ mod tests {
             .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(body["error"]["code"], "UNAUTHORIZED");
+    }
+
+    // ── Password provisioning ─────────────────────────────────────────────────
+
+    /// Account promoted with a password can authenticate via createSession.
+    ///
+    /// Uses the retry path (pre-stored pending_did) so plc.directory is never called,
+    /// making the test runnable without network access.
+    #[tokio::test]
+    async fn with_password_account_can_call_create_session() {
+        // Use any URL — plc.directory will not be contacted on the retry path.
+        let state = test_state_for_did("https://plc.directory".to_string()).await;
+        let db = state.db.clone();
+        let setup = insert_test_data(&db).await;
+        let (rotation_key_public, signed_op) =
+            make_signed_op(&setup.handle, &state.config.public_url);
+
+        // Derive DID and pre-store it with dummy shares to trigger the skip_plc path.
+        let signed_op_str = serde_json::to_string(&signed_op).unwrap();
+        let verified = crypto::verify_genesis_op(
+            &signed_op_str,
+            &crypto::DidKeyUri(rotation_key_public.clone()),
+        )
+        .expect("verify should succeed");
+        sqlx::query(
+            "UPDATE pending_accounts \
+             SET pending_did = ?, pending_share_1 = ?, pending_share_2 = ?, pending_share_3 = ? \
+             WHERE id = ?",
+        )
+        .bind(&verified.did)
+        .bind("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        .bind("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")
+        .bind("CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC")
+        .bind(&setup.account_id)
+        .execute(&db)
+        .await
+        .expect("pre-store pending_did and shares");
+
+        // POST /v1/dids with a password.
+        let body = serde_json::json!({
+            "rotationKeyPublic": rotation_key_public,
+            "signedCreationOp": signed_op,
+            "password": "mysecretpassword",
+        });
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/dids")
+            .header("Authorization", format!("Bearer {}", setup.session_token))
+            .header("Content-Type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+
+        let did_response = crate::app::app(state.clone())
+            .oneshot(request)
+            .await
+            .unwrap();
+        assert_eq!(
+            did_response.status(),
+            StatusCode::OK,
+            "DID ceremony should succeed"
+        );
+        let body_bytes = axum::body::to_bytes(did_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let did_body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        let did = did_body["did"].as_str().unwrap().to_string();
+
+        // password_hash should be a non-NULL argon2id PHC string.
+        let stored_hash: Option<String> =
+            sqlx::query_scalar("SELECT password_hash FROM accounts WHERE did = ?")
+                .bind(&did)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        let hash_str = stored_hash.expect("password_hash should not be NULL when password provided");
+        assert!(
+            hash_str.starts_with("$argon2id$"),
+            "password_hash should be an argon2id PHC string, got: {hash_str}"
+        );
+
+        // createSession with the correct password should return 200.
+        let cs_request = Request::builder()
+            .method("POST")
+            .uri("/xrpc/com.atproto.server.createSession")
+            .header("Content-Type", "application/json")
+            .body(Body::from(format!(
+                r#"{{"identifier":"{did}","password":"mysecretpassword"}}"#
+            )))
+            .unwrap();
+        let cs_response = crate::app::app(state)
+            .oneshot(cs_request)
+            .await
+            .unwrap();
+        assert_eq!(
+            cs_response.status(),
+            StatusCode::OK,
+            "createSession should return 200 after password-provisioned DID ceremony"
+        );
     }
 
     // ── plc.directory error ───────────────────────────────────────────────────

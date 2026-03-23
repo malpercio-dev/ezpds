@@ -50,6 +50,8 @@ struct RelaySigningKey {
 struct CreateDidRequest {
     rotation_key_public: String,
     signed_creation_op: serde_json::Value,
+    /// Initial password stored as an argon2id PHC string by the relay.
+    password: String,
 }
 
 /// Response from POST /v1/dids — the promoted DID, upgraded session token, and Shamir shares.
@@ -261,7 +263,10 @@ async fn sign_with_device_key(data: Vec<u8>) -> Result<Vec<u8>, device_key::Devi
 }
 
 #[tauri::command]
-async fn perform_did_ceremony(handle: String) -> Result<DIDCeremonyResult, DIDCeremonyError> {
+async fn perform_did_ceremony(
+    handle: String,
+    password: String,
+) -> Result<DIDCeremonyResult, DIDCeremonyError> {
     // Step 1: Get or create the device's P-256 key (serves as rotation key).
     let device_key = device_key::get_or_create().map_err(|e| {
         tracing::warn!(error = %e, "device key creation failed during DID ceremony");
@@ -329,6 +334,7 @@ async fn perform_did_ceremony(handle: String) -> Result<DIDCeremonyResult, DIDCe
             tracing::error!(error = %e, "genesis op JSON is not valid JSON");
             DIDCeremonyError::SigningFailed
         })?,
+        password,
     };
 
     let resp = RELAY_CLIENT
@@ -399,6 +405,20 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- CreateDidRequest serialization --
+    #[test]
+    fn create_did_request_serializes_password_and_camel_case() {
+        let req = CreateDidRequest {
+            rotation_key_public: "did:key:z123".into(),
+            signed_creation_op: serde_json::json!({"type": "plc_operation"}),
+            password: "mysecretpassword".into(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["rotationKeyPublic"], "did:key:z123");
+        assert_eq!(json["password"], "mysecretpassword");
+        assert!(json["signedCreationOp"].is_object());
+    }
 
     // -- CreateMobileAccountRequest serialization --
     #[test]

@@ -5,9 +5,11 @@
 
   let {
     handle,
+    password,
     onsuccess,
   }: {
     handle: string;
+    password: string;
     onsuccess: (result: import('$lib/ipc').DIDCeremonyResult) => void;
   } = $props();
 
@@ -18,7 +20,7 @@
     loading = true;
     error = null;
     try {
-      const result = await performDIDCeremony(handle);
+      const result = await performDIDCeremony(handle, password);
       loading = false;
       onsuccess(result);
     } catch (raw: unknown) {
