@@ -61,6 +61,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `oauth_authorize.rs` | `GET/POST /oauth/authorize` |
 | `oauth_token.rs` | `POST /oauth/token` |
 | `oauth_server_metadata.rs` | `GET /.well-known/oauth-authorization-server` |
+| `oauth_jwks.rs` | `GET /oauth/jwks` |
 | `oauth_templates.rs` | Pure HTML rendering helpers (Functional Core, no handler) |
 | `create_session.rs` | `POST /xrpc/com.atproto.server.createSession` |
 | `create_did.rs` | `POST /v1/dids` |
