@@ -16,10 +16,35 @@ use axum::{
 };
 use serde::Deserialize;
 
+use std::sync::OnceLock;
+
 use crate::app::AppState;
 use crate::db::oauth::{get_oauth_client, store_authorization_code};
-use crate::routes::create_session::{resolve_identifier, verify_password};
+use crate::routes::create_session::{
+    clear_failures, is_rate_limited, record_failure, resolve_identifier, verify_password,
+};
 use crate::routes::token::generate_token;
+
+/// Dummy argon2id hash for timing equalization when an identifier is not found.
+///
+/// Calling `verify_password` against this hash in the "account not found" arm keeps
+/// response time consistent with the "wrong password" arm, preventing timing-based
+/// account enumeration despite the identical "Invalid credentials." message.
+static DUMMY_HASH: OnceLock<String> = OnceLock::new();
+
+fn dummy_hash() -> &'static str {
+    DUMMY_HASH.get_or_init(|| {
+        use argon2::{
+            password_hash::{rand_core::OsRng, SaltString},
+            Argon2, PasswordHasher,
+        };
+        let salt = SaltString::generate(&mut OsRng);
+        Argon2::default()
+            .hash_password(b"__dummy_placeholder__", &salt)
+            .unwrap()
+            .to_string()
+    })
+}
 
 /// Query parameters for `GET /oauth/authorize`.
 #[derive(Deserialize)]
@@ -249,71 +274,81 @@ pub async fn post_authorization(
     }
 
     // Resolve the identifier and verify the password before issuing any auth code.
-    // We re-render the consent form (200) on credential errors rather than redirecting
-    // to the client, so the user can retry without the client seeing a denial.
-    // Both "not found" and "wrong password" produce the same message to prevent enumeration.
+    // Re-render the consent form (200) on all credential errors so the user can retry
+    // without the OAuth client seeing a denial. "Not found" and "wrong password" produce
+    // identical messages and timing to prevent enumeration.
     let client_name_str = metadata
         .client_name
         .clone()
         .unwrap_or_else(|| form.client_id.clone());
 
+    // Helper closure to re-render the consent page without redirecting to the client.
+    let rerender = |hint: Option<&str>, error: &str| -> Response {
+        Html(render_consent_page(
+            &client_name_str,
+            &form.client_id,
+            &form.redirect_uri,
+            &form.code_challenge,
+            &form.code_challenge_method,
+            &form.state,
+            &form.scope,
+            &form.response_type,
+            &state.config.public_url,
+            hint,
+            Some(error),
+        ))
+        .into_response()
+    };
+
     let identifier = match form.identifier.as_deref().filter(|s| !s.trim().is_empty()) {
         Some(id) => id.to_string(),
-        None => {
-            return Html(render_consent_page(
-                &client_name_str,
-                &form.client_id,
-                &form.redirect_uri,
-                &form.code_challenge,
-                &form.code_challenge_method,
-                &form.state,
-                &form.scope,
-                &form.response_type,
-                &state.config.public_url,
-                None,
-                Some("Please enter your handle or DID."),
-            ))
-            .into_response();
-        }
+        None => return rerender(None, "Please enter your handle or DID."),
     };
+
+    // Rate-limit check: guard before any DB work or argon2 to shed load early.
+    {
+        let mut attempts = match state.failed_login_attempts.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                tracing::error!("failed_login_attempts mutex is poisoned");
+                return error_redirect(
+                    &form.redirect_uri,
+                    "server_error",
+                    "Internal server error",
+                    &form.state,
+                )
+                .into_response();
+            }
+        };
+        if is_rate_limited(&mut attempts, &identifier) {
+            return rerender(
+                Some(&identifier),
+                "Too many failed attempts. Please try again later.",
+            );
+        }
+    }
 
     let password = match form.password.as_deref().filter(|s| !s.is_empty()) {
         Some(p) => p.to_string(),
-        None => {
-            return Html(render_consent_page(
-                &client_name_str,
-                &form.client_id,
-                &form.redirect_uri,
-                &form.code_challenge,
-                &form.code_challenge_method,
-                &form.state,
-                &form.scope,
-                &form.response_type,
-                &state.config.public_url,
-                Some(&identifier),
-                Some("Please enter your password."),
-            ))
-            .into_response();
-        }
+        None => return rerender(Some(&identifier), "Please enter your password."),
     };
 
     let account = match resolve_identifier(&state.db, &identifier).await {
         Ok(Some(a)) => a,
         Ok(None) => {
-            return Html(render_consent_page(
-                &client_name_str,
-                &form.client_id,
-                &form.redirect_uri,
-                &form.code_challenge,
-                &form.code_challenge_method,
-                &form.state,
-                &form.scope,
-                &form.response_type,
-                &state.config.public_url,
-                Some(&identifier),
-                Some("Invalid credentials."),
-            ))
-            .into_response();
+            // Run a dummy argon2 to equalize timing with the wrong-password path,
+            // preventing timing-based account enumeration.
+            verify_password(dummy_hash(), &password);
+            tracing::debug!(
+                identifier = %identifier,
+                "OAuth consent: identifier not found or account deactivated"
+            );
+            let mut attempts = state
+                .failed_login_attempts
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            record_failure(&mut attempts, &identifier);
+            return rerender(Some(&identifier), "Invalid credentials.");
         }
         Err(e) => {
             tracing::error!(error = %e, "db error resolving identifier for OAuth approval");
@@ -334,20 +369,26 @@ pub async fn post_authorization(
         .unwrap_or(false);
 
     if !auth_ok {
-        return Html(render_consent_page(
-            &client_name_str,
-            &form.client_id,
-            &form.redirect_uri,
-            &form.code_challenge,
-            &form.code_challenge_method,
-            &form.state,
-            &form.scope,
-            &form.response_type,
-            &state.config.public_url,
-            Some(&identifier),
-            Some("Invalid credentials."),
-        ))
-        .into_response();
+        tracing::warn!(
+            client_id = %form.client_id,
+            did = %account.did,
+            has_password_hash = account.password_hash.is_some(),
+            "OAuth consent: credential verification failed"
+        );
+        let mut attempts = state
+            .failed_login_attempts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        record_failure(&mut attempts, &identifier);
+        return rerender(Some(&identifier), "Invalid credentials.");
+    }
+
+    {
+        let mut attempts = state
+            .failed_login_attempts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        clear_failures(&mut attempts, &identifier);
     }
 
     let did = account.did;
@@ -788,9 +829,42 @@ mod tests {
              &state=teststate\
              &scope=atproto\
              &response_type=code\
-             &identifier={identifier}\
-             &password={password}"
+             &identifier={}&password={}",
+            super::encode_param(identifier),
+            super::encode_param(password),
         )
+    }
+
+    /// Test state with a mobile-provisioned account: handle is set but password_hash is NULL.
+    async fn state_with_client_and_mobile_account() -> crate::app::AppState {
+        let state = state_with_client().await;
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
+        )
+        .bind(DID)
+        .bind("test@example.com")
+        .execute(&state.db)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
+            .bind(TEST_HANDLE)
+            .bind(DID)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        state
+    }
+
+    /// Test state with a deactivated account (deactivated_at is set).
+    async fn state_with_client_and_deactivated_account() -> crate::app::AppState {
+        let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
+        sqlx::query("UPDATE accounts SET deactivated_at = datetime('now') WHERE did = ?")
+            .bind(DID)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        state
     }
 
     fn authorize_url(extra_params: &str) -> String {
@@ -1185,8 +1259,12 @@ mod tests {
         let body_bytes = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
         let html = std::str::from_utf8(&body_bytes).unwrap();
         assert!(
-            html.contains("Invalid"),
-            "error message should appear on wrong password"
+            html.contains("Invalid credentials."),
+            "exact error message must appear"
+        );
+        assert!(
+            html.contains(TEST_HANDLE),
+            "identifier should be pre-populated on re-render so the user can correct only the password"
         );
     }
 
@@ -1199,8 +1277,8 @@ mod tests {
         let body_bytes = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
         let html = std::str::from_utf8(&body_bytes).unwrap();
         assert!(
-            html.contains("Invalid"),
-            "error message should appear when identifier not found"
+            html.contains("Invalid credentials."),
+            "must show same message as wrong-password to prevent enumeration"
         );
     }
 
@@ -1254,5 +1332,75 @@ mod tests {
         .unwrap();
         let resp = post_authorize(state, &approve_form("")).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ── Additional credential-gate tests ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn post_approve_with_mobile_account_rerenders_consent_page() {
+        // Mobile accounts have NULL password_hash — they can't log in via the consent page.
+        let state = state_with_client_and_mobile_account().await;
+        let body = approve_form_with_credentials(TEST_HANDLE, "anypassword");
+        let resp = post_authorize(state, &body).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let html = std::str::from_utf8(&body_bytes).unwrap();
+        assert!(
+            html.contains("Invalid credentials."),
+            "mobile account (NULL password_hash) must not pass the credential gate"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_approve_with_deactivated_account_rerenders_consent_page() {
+        let state = state_with_client_and_deactivated_account().await;
+        let body = approve_form_with_credentials(TEST_HANDLE, TEST_PASSWORD);
+        let resp = post_authorize(state, &body).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let html = std::str::from_utf8(&body_bytes).unwrap();
+        assert!(
+            html.contains("Invalid credentials."),
+            "deactivated account must be rejected with the same message as unknown identifier"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_approve_with_did_identifier_redirects_with_code() {
+        // The DID branch of resolve_identifier must also work through the OAuth consent path.
+        let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
+        let body = approve_form_with_credentials(DID, TEST_PASSWORD);
+        let resp = post_authorize(state, &body).await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        assert!(location.contains("code="));
+        assert!(!location.contains("error="));
+    }
+
+    #[tokio::test]
+    async fn post_approve_rate_limited_rerenders_form() {
+        use crate::routes::create_session::RATE_LIMIT_MAX_FAILURES;
+        let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
+        // Exhaust the failure budget.
+        for _ in 0..RATE_LIMIT_MAX_FAILURES {
+            post_authorize(
+                state.clone(),
+                &approve_form_with_credentials(TEST_HANDLE, "wrongpassword"),
+            )
+            .await;
+        }
+        // Next attempt must be rate-limited — the form re-renders with a rate-limit message.
+        let resp = post_authorize(
+            state,
+            &approve_form_with_credentials(TEST_HANDLE, "wrongpassword"),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let html = std::str::from_utf8(&body_bytes).unwrap();
+        assert!(
+            html.contains("Too many"),
+            "rate-limited attempt must show a rate-limit message, not an auth error"
+        );
     }
 }

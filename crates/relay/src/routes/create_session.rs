@@ -347,7 +347,10 @@ fn issue_refresh_jwt(
 ///
 /// Prunes expired entries from the front of the deque during the check, keeping
 /// memory bounded without a separate background task.
-fn is_rate_limited(attempts: &mut HashMap<String, VecDeque<Instant>>, identifier: &str) -> bool {
+pub(crate) fn is_rate_limited(
+    attempts: &mut HashMap<String, VecDeque<Instant>>,
+    identifier: &str,
+) -> bool {
     let deque = attempts.get_mut(identifier);
     if let Some(deque) = deque {
         let now = Instant::now();
@@ -364,7 +367,7 @@ fn is_rate_limited(attempts: &mut HashMap<String, VecDeque<Instant>>, identifier
 }
 
 /// Record a new failed attempt timestamp for `identifier`.
-fn record_failure(attempts: &mut HashMap<String, VecDeque<Instant>>, identifier: &str) {
+pub(crate) fn record_failure(attempts: &mut HashMap<String, VecDeque<Instant>>, identifier: &str) {
     attempts
         .entry(identifier.to_string())
         .or_default()
@@ -372,7 +375,7 @@ fn record_failure(attempts: &mut HashMap<String, VecDeque<Instant>>, identifier:
 }
 
 /// Clear the failure history for `identifier` on successful authentication.
-fn clear_failures(attempts: &mut HashMap<String, VecDeque<Instant>>, identifier: &str) {
+pub(crate) fn clear_failures(attempts: &mut HashMap<String, VecDeque<Instant>>, identifier: &str) {
     attempts.remove(identifier);
 }
 
