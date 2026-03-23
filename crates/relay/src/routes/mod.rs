@@ -11,6 +11,7 @@ pub mod get_relay_signing_key;
 pub mod health;
 pub mod oauth_authorize;
 pub mod oauth_server_metadata;
+pub(super) mod oauth_templates;
 pub mod oauth_token;
 pub mod register_device;
 pub mod resolve_handle;
