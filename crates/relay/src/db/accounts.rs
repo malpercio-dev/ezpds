@@ -1,7 +1,7 @@
 // pattern: Imperative Shell
 //
-// Account lookup queries. Gathers from the accounts + handles tables; returns
-// plain data structs. No business logic — callers decide what to do with the result.
+// Account lookup queries. Gathers from the accounts + handles + did_documents tables;
+// returns plain data structs. No business logic — callers decide what to do with the result.
 
 use common::{ApiError, ErrorCode};
 
@@ -13,6 +13,52 @@ pub(crate) struct AccountRow {
     pub(crate) password_hash: Option<String>,
     /// One associated handle (if any). `None` means no row exists in the `handles` table.
     pub(crate) handle: Option<String>,
+}
+
+/// Flat account row used by `getSession` — includes confirmation status and DID document.
+pub(crate) struct SessionAccountRow {
+    pub(crate) did: String,
+    pub(crate) email: String,
+    /// `true` when `email_confirmed_at` is non-NULL in the DB.
+    pub(crate) email_confirmed: bool,
+    /// One associated handle (if any).
+    pub(crate) handle: Option<String>,
+    /// Raw JSON string from `did_documents.document`, if present.
+    pub(crate) did_doc: Option<String>,
+}
+
+/// Fetch account info needed for `getSession` by DID.
+///
+/// Returns `None` when the DID is not found or the account is deactivated.
+pub(crate) async fn get_session_account(
+    db: &sqlx::SqlitePool,
+    did: &str,
+) -> Result<Option<SessionAccountRow>, ApiError> {
+    // (email, email_confirmed_at, handle, did_document)
+    type Row = (String, Option<String>, Option<String>, Option<String>);
+    let row: Option<Row> = sqlx::query_as(
+        "SELECT a.email, a.email_confirmed_at, h.handle, d.document \
+         FROM accounts a \
+         LEFT JOIN handles h ON h.did = a.did \
+         LEFT JOIN did_documents d ON d.did = a.did \
+         WHERE a.did = ? AND a.deactivated_at IS NULL \
+         LIMIT 1",
+    )
+    .bind(did)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| {
+        tracing::error!(did = %did, error = %e, "DB error fetching session account");
+        ApiError::new(ErrorCode::InternalError, "failed to load account")
+    })?;
+
+    Ok(row.map(|(email, email_confirmed_at, handle, did_doc)| SessionAccountRow {
+        did: did.to_string(),
+        email,
+        email_confirmed: email_confirmed_at.is_some(),
+        handle,
+        did_doc,
+    }))
 }
 
 /// Resolve a handle or DID to an active (non-deactivated) account.

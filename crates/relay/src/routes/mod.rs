@@ -8,6 +8,7 @@ pub mod create_session;
 pub mod create_signing_key;
 pub mod describe_server;
 pub mod get_relay_signing_key;
+pub mod get_session;
 pub mod health;
 pub mod oauth_authorize;
 pub mod oauth_jwks;

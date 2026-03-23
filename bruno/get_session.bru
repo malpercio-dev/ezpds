@@ -1,0 +1,19 @@
+meta {
+  name: Get Session (getSession)
+  type: http
+  seq: 18
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.server.getSession
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}

@@ -25,6 +25,7 @@ use crate::routes::create_session::create_session;
 use crate::routes::create_signing_key::create_signing_key;
 use crate::routes::describe_server::describe_server;
 use crate::routes::get_relay_signing_key::get_relay_signing_key;
+use crate::routes::get_session::get_session;
 use crate::routes::health::health;
 use crate::routes::oauth_authorize::{get_authorization, post_authorization};
 use crate::routes::oauth_jwks::oauth_jwks;
@@ -147,6 +148,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/xrpc/com.atproto.server.createSession",
             post(create_session),
+        )
+        .route(
+            "/xrpc/com.atproto.server.getSession",
+            get(get_session),
         )
         .route(
             "/xrpc/com.atproto.identity.resolveHandle",
@@ -341,7 +346,7 @@ mod tests {
         let response = app(test_state().await)
             .oneshot(
                 Request::builder()
-                    .uri("/xrpc/com.atproto.server.getSession")
+                    .uri("/xrpc/com.atproto.server.refreshSession")
                     .body(Body::empty())
                     .unwrap(),
             )

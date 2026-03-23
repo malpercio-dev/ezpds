@@ -7,8 +7,6 @@ use serde::Deserialize;
 use crate::app::AppState;
 
 /// Scope embedded in the JWT `scope` claim.
-// Dead-code lint: foundational type; used once authenticated routes are wired up.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthScope {
     Access,
@@ -17,8 +15,6 @@ pub enum AuthScope {
 }
 
 /// Whether this token was presented as a plain Bearer or a DPoP-bound token.
-// Dead-code lint: foundational type; used once authenticated routes are wired up.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenType {
     /// Simple Bearer JWT issued by `createSession`.

@@ -16,12 +16,12 @@ use super::jwt::{parse_scope, verify_access_token, AuthScope, TokenType};
 /// ```rust,ignore
 /// async fn my_handler(user: AuthenticatedUser) -> impl IntoResponse { ... }
 /// ```
-// Dead-code lint: foundational type; used once authenticated routes are wired up.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AuthenticatedUser {
     pub did: String,
     pub scope: AuthScope,
+    /// Available for routes that need to distinguish DPoP-bound from plain Bearer tokens.
+    #[allow(dead_code)]
     pub token_type: TokenType,
 }
 
