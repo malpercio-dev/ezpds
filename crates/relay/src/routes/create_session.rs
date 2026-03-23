@@ -8,7 +8,7 @@
 // Implements: POST /xrpc/com.atproto.server.createSession
 
 use std::collections::{HashMap, VecDeque};
-use std::time::{Instant, SystemTime, UNIX_EPOCH, Duration};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use axum::{extract::State, http::StatusCode, response::Json};
@@ -20,7 +20,7 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 
-const ACCESS_TOKEN_TTL_SECS: u64 = 2 * 60 * 60;        // 2 hours
+const ACCESS_TOKEN_TTL_SECS: u64 = 2 * 60 * 60; // 2 hours
 const REFRESH_TOKEN_TTL_SECS: u64 = 90 * 24 * 60 * 60; // 90 days
 pub(crate) const RATE_LIMIT_WINDOW_SECS: u64 = 60;
 pub(crate) const RATE_LIMIT_MAX_FAILURES: usize = 5;
@@ -71,13 +71,13 @@ struct LegacyRefreshClaims {
 
 // ── Internal account record ──────────────────────────────────────────────────
 
-struct AccountRow {
-    did: String,
-    email: String,
+pub(crate) struct AccountRow {
+    pub(crate) did: String,
+    pub(crate) email: String,
     /// Argon2id PHC string. `None` for mobile accounts (password auth not allowed).
-    password_hash: Option<String>,
+    pub(crate) password_hash: Option<String>,
     /// One associated handle (if any). Empty string returned in the response when absent.
-    handle: Option<String>,
+    pub(crate) handle: Option<String>,
 }
 
 // ── Handler ──────────────────────────────────────────────────────────────────
@@ -93,13 +93,10 @@ pub async fn create_session(
     // --- Rate limit gate ---
     // Check before any DB work to shed load on targeted accounts.
     {
-        let mut attempts = state
-            .failed_login_attempts
-            .lock()
-            .map_err(|_| {
-                tracing::error!("failed_login_attempts mutex is poisoned");
-                ApiError::new(ErrorCode::InternalError, "internal error")
-            })?;
+        let mut attempts = state.failed_login_attempts.lock().map_err(|_| {
+            tracing::error!("failed_login_attempts mutex is poisoned");
+            ApiError::new(ErrorCode::InternalError, "internal error")
+        })?;
         if is_rate_limited(&mut attempts, &payload.identifier) {
             return Err(ApiError::new(
                 ErrorCode::RateLimited,
@@ -121,13 +118,10 @@ pub async fn create_session(
                 .map(|h| !h.is_empty() && verify_password(h, &payload.password))
                 .unwrap_or(false); // mobile accounts (NULL password_hash) cannot use createSession
             if !auth_ok {
-                let mut attempts = state
-                    .failed_login_attempts
-                    .lock()
-                    .map_err(|_| {
-                        tracing::error!("failed_login_attempts mutex is poisoned");
-                        ApiError::new(ErrorCode::InternalError, "internal error")
-                    })?;
+                let mut attempts = state.failed_login_attempts.lock().map_err(|_| {
+                    tracing::error!("failed_login_attempts mutex is poisoned");
+                    ApiError::new(ErrorCode::InternalError, "internal error")
+                })?;
                 record_failure(&mut attempts, &payload.identifier);
                 return Err(ApiError::new(
                     ErrorCode::AuthenticationRequired,
@@ -137,13 +131,10 @@ pub async fn create_session(
             row
         }
         None => {
-            let mut attempts = state
-                .failed_login_attempts
-                .lock()
-                .map_err(|_| {
-                    tracing::error!("failed_login_attempts mutex is poisoned");
-                    ApiError::new(ErrorCode::InternalError, "internal error")
-                })?;
+            let mut attempts = state.failed_login_attempts.lock().map_err(|_| {
+                tracing::error!("failed_login_attempts mutex is poisoned");
+                ApiError::new(ErrorCode::InternalError, "internal error")
+            })?;
             record_failure(&mut attempts, &payload.identifier);
             return Err(ApiError::new(
                 ErrorCode::AuthenticationRequired,
@@ -173,8 +164,7 @@ pub async fn create_session(
     let access_jwt = issue_access_jwt(&state.jwt_secret, &account.did, &aud, now)?;
 
     let refresh_jti = Uuid::new_v4().to_string();
-    let refresh_jwt =
-        issue_refresh_jwt(&state.jwt_secret, &account.did, &aud, &refresh_jti, now)?;
+    let refresh_jwt = issue_refresh_jwt(&state.jwt_secret, &account.did, &aud, &refresh_jti, now)?;
 
     // --- Persist session and refresh token atomically ---
     let session_id = Uuid::new_v4().to_string();
@@ -219,13 +209,10 @@ pub async fn create_session(
     // Doing this earlier would reset the counter even if JWT issuance or the
     // DB transaction subsequently fails.
     {
-        let mut attempts = state
-            .failed_login_attempts
-            .lock()
-            .map_err(|_| {
-                tracing::error!("failed_login_attempts mutex is poisoned");
-                ApiError::new(ErrorCode::InternalError, "internal error")
-            })?;
+        let mut attempts = state.failed_login_attempts.lock().map_err(|_| {
+            tracing::error!("failed_login_attempts mutex is poisoned");
+            ApiError::new(ErrorCode::InternalError, "internal error")
+        })?;
         clear_failures(&mut attempts, &payload.identifier);
     }
 
@@ -246,7 +233,7 @@ pub async fn create_session(
 /// Resolve a handle or DID to an active (non-deactivated) account.
 ///
 /// Returns `None` when not found; `Err` only on DB errors.
-async fn resolve_identifier(
+pub(crate) async fn resolve_identifier(
     db: &sqlx::SqlitePool,
     identifier: &str,
 ) -> Result<Option<AccountRow>, ApiError> {
@@ -298,7 +285,7 @@ async fn resolve_identifier(
 }
 
 /// Verify `password` against a stored argon2id PHC-format hash string.
-fn verify_password(stored_hash: &str, password: &str) -> bool {
+pub(crate) fn verify_password(stored_hash: &str, password: &str) -> bool {
     let Ok(hash) = PasswordHash::new(stored_hash) else {
         tracing::error!("stored password_hash is not a valid PHC string; possible DB corruption");
         return false;
@@ -309,12 +296,7 @@ fn verify_password(stored_hash: &str, password: &str) -> bool {
 }
 
 /// Sign an HS256 access JWT with a 2-hour lifetime.
-fn issue_access_jwt(
-    secret: &[u8; 32],
-    did: &str,
-    aud: &str,
-    now: u64,
-) -> Result<String, ApiError> {
+fn issue_access_jwt(secret: &[u8; 32], did: &str, aud: &str, now: u64) -> Result<String, ApiError> {
     encode(
         &Header::new(Algorithm::HS256),
         &LegacyAccessClaims {
@@ -365,10 +347,7 @@ fn issue_refresh_jwt(
 ///
 /// Prunes expired entries from the front of the deque during the check, keeping
 /// memory bounded without a separate background task.
-fn is_rate_limited(
-    attempts: &mut HashMap<String, VecDeque<Instant>>,
-    identifier: &str,
-) -> bool {
+fn is_rate_limited(attempts: &mut HashMap<String, VecDeque<Instant>>, identifier: &str) -> bool {
     let deque = attempts.get_mut(identifier);
     if let Some(deque) = deque {
         let now = Instant::now();
@@ -451,14 +430,12 @@ mod tests {
         .await
         .unwrap();
 
-        sqlx::query(
-            "INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))",
-        )
-        .bind(handle)
-        .bind(did)
-        .execute(db)
-        .await
-        .unwrap();
+        sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
+            .bind(handle)
+            .bind(did)
+            .execute(db)
+            .await
+            .unwrap();
     }
 
     async fn body_json(response: axum::response::Response) -> serde_json::Value {
@@ -767,7 +744,10 @@ mod tests {
         assert_eq!(wrong_pw.status(), unknown.status());
         let wrong_pw_json = body_json(wrong_pw).await;
         let unknown_json = body_json(unknown).await;
-        assert_eq!(wrong_pw_json["error"]["code"], unknown_json["error"]["code"]);
+        assert_eq!(
+            wrong_pw_json["error"]["code"],
+            unknown_json["error"]["code"]
+        );
         assert_eq!(
             wrong_pw_json["error"]["message"],
             unknown_json["error"]["message"]

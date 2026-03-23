@@ -17,7 +17,8 @@ use axum::{
 use serde::Deserialize;
 
 use crate::app::AppState;
-use crate::db::oauth::{get_oauth_client, get_single_account_did, store_authorization_code};
+use crate::db::oauth::{get_oauth_client, store_authorization_code};
+use crate::routes::create_session::{resolve_identifier, verify_password};
 use crate::routes::token::generate_token;
 
 /// Query parameters for `GET /oauth/authorize`.
@@ -31,6 +32,9 @@ pub struct AuthorizeQuery {
     pub response_type: String,
     #[serde(default = "default_scope")]
     pub scope: String,
+    /// ATProto extension: the client's hint about which account is authorizing.
+    /// Pre-populates the identifier field on the consent page.
+    pub login_hint: Option<String>,
 }
 
 fn default_scope() -> String {
@@ -48,6 +52,11 @@ pub struct ConsentForm {
     pub state: String,
     pub scope: String,
     pub response_type: String,
+    /// Handle or DID entered by the user to identify the account being authorized.
+    /// `None` when the field is absent (e.g. deny submissions don't send credentials).
+    pub identifier: Option<String>,
+    /// Password for the identified account. `None` when absent (same as above).
+    pub password: Option<String>,
 }
 
 /// Subset of RFC 7591 client metadata fields used by the authorization endpoint.
@@ -146,6 +155,8 @@ pub async fn get_authorization(
         &params.scope,
         &params.response_type,
         &state.config.public_url,
+        params.login_hint.as_deref(),
+        None,
     ))
     .into_response()
 }
@@ -237,19 +248,75 @@ pub async fn post_authorization(
         .into_response();
     }
 
-    let did = match get_single_account_did(&state.db).await {
-        Ok(Some(did)) => did,
-        Ok(None) => {
-            return error_redirect(
+    // Resolve the identifier and verify the password before issuing any auth code.
+    // We re-render the consent form (200) on credential errors rather than redirecting
+    // to the client, so the user can retry without the client seeing a denial.
+    // Both "not found" and "wrong password" produce the same message to prevent enumeration.
+    let client_name_str = metadata
+        .client_name
+        .clone()
+        .unwrap_or_else(|| form.client_id.clone());
+
+    let identifier = match form.identifier.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(id) => id.to_string(),
+        None => {
+            return Html(render_consent_page(
+                &client_name_str,
+                &form.client_id,
                 &form.redirect_uri,
-                "server_error",
-                "No account exists on this server",
+                &form.code_challenge,
+                &form.code_challenge_method,
                 &form.state,
-            )
-            .into_response()
+                &form.scope,
+                &form.response_type,
+                &state.config.public_url,
+                None,
+                Some("Please enter your handle or DID."),
+            ))
+            .into_response();
+        }
+    };
+
+    let password = match form.password.as_deref().filter(|s| !s.is_empty()) {
+        Some(p) => p.to_string(),
+        None => {
+            return Html(render_consent_page(
+                &client_name_str,
+                &form.client_id,
+                &form.redirect_uri,
+                &form.code_challenge,
+                &form.code_challenge_method,
+                &form.state,
+                &form.scope,
+                &form.response_type,
+                &state.config.public_url,
+                Some(&identifier),
+                Some("Please enter your password."),
+            ))
+            .into_response();
+        }
+    };
+
+    let account = match resolve_identifier(&state.db, &identifier).await {
+        Ok(Some(a)) => a,
+        Ok(None) => {
+            return Html(render_consent_page(
+                &client_name_str,
+                &form.client_id,
+                &form.redirect_uri,
+                &form.code_challenge,
+                &form.code_challenge_method,
+                &form.state,
+                &form.scope,
+                &form.response_type,
+                &state.config.public_url,
+                Some(&identifier),
+                Some("Invalid credentials."),
+            ))
+            .into_response();
         }
         Err(e) => {
-            tracing::error!(error = %e, "db error fetching account DID for OAuth approval");
+            tracing::error!(error = %e, "db error resolving identifier for OAuth approval");
             return error_redirect(
                 &form.redirect_uri,
                 "server_error",
@@ -259,6 +326,31 @@ pub async fn post_authorization(
             .into_response();
         }
     };
+
+    let auth_ok = account
+        .password_hash
+        .as_deref()
+        .map(|h: &str| !h.is_empty() && verify_password(h, &password))
+        .unwrap_or(false);
+
+    if !auth_ok {
+        return Html(render_consent_page(
+            &client_name_str,
+            &form.client_id,
+            &form.redirect_uri,
+            &form.code_challenge,
+            &form.code_challenge_method,
+            &form.state,
+            &form.scope,
+            &form.response_type,
+            &state.config.public_url,
+            Some(&identifier),
+            Some("Invalid credentials."),
+        ))
+        .into_response();
+    }
+
+    let did = account.did;
 
     // Store the SHA-256 hash of the code, matching the session/refresh-token pattern.
     // The token endpoint hashes the presented code before lookup, consistent with all
@@ -363,6 +455,9 @@ fn error_page(title: &str, message: &str) -> (StatusCode, Html<String>) {
 /// Render the neobrutal OAuth consent page.
 ///
 /// All user-controlled values are HTML-escaped before insertion.
+/// `login_hint` pre-populates the identifier field (from the ATProto `login_hint` param
+/// or from a previous failed submission so the user can correct their handle).
+/// `error` renders an error banner above the form when credential validation fails.
 #[allow(clippy::too_many_arguments)]
 fn render_consent_page(
     client_name: &str,
@@ -374,6 +469,8 @@ fn render_consent_page(
     scope: &str,
     response_type: &str,
     public_url: &str,
+    login_hint: Option<&str>,
+    error: Option<&str>,
 ) -> String {
     let scope_tags: String = scope
         .split_whitespace()
@@ -402,6 +499,11 @@ fn render_consent_page(
     html.push_str("    <div class=\"scopes\">\n      ");
     html.push_str(&scope_tags);
     html.push_str("\n    </div>\n");
+    if let Some(msg) = error {
+        html.push_str("    <div class=\"error-banner\">");
+        html.push_str(&html_escape(msg));
+        html.push_str("</div>\n");
+    }
     html.push_str("    <form method=\"POST\" action=\"/oauth/authorize\">\n");
     for (name, value) in [
         ("client_id", client_id),
@@ -418,6 +520,16 @@ fn render_consent_page(
             html_escape(value)
         ));
     }
+    html.push_str("      <div class=\"section-label\">Your Account</div>\n");
+    html.push_str(&format!(
+        "      <input type=\"text\" name=\"identifier\" placeholder=\"Handle or DID\" \
+         autocomplete=\"username\" value=\"{}\" class=\"field\" />\n",
+        html_escape(login_hint.unwrap_or(""))
+    ));
+    html.push_str(
+        "      <input type=\"password\" name=\"password\" placeholder=\"Password\" \
+         autocomplete=\"current-password\" class=\"field\" />\n",
+    );
     html.push_str("      <div class=\"actions\">\n");
     html.push_str("        <button type=\"submit\" name=\"action\" value=\"deny\" class=\"btn btn-deny\">Deny</button>\n");
     html.push_str("        <button type=\"submit\" name=\"action\" value=\"approve\" class=\"btn btn-approve\">Approve</button>\n");
@@ -513,6 +625,26 @@ const CONSENT_CSS: &str = r#"
     .btn-approve:hover { background: #00E676; }
     .btn-deny { background: #fff; box-shadow: 4px 4px 0 #000; }
     .btn-deny:hover { background: #FFE600; }
+    .error-banner {
+      background: #FFE5E5;
+      border: 2px solid #000;
+      padding: .6rem 1rem;
+      font-size: .88rem;
+      font-weight: 600;
+      color: #c00;
+      margin-bottom: 1rem;
+    }
+    .field {
+      display: block;
+      width: 100%;
+      border: 2px solid #000;
+      padding: .6rem .75rem;
+      font-size: .95rem;
+      margin-bottom: .75rem;
+      background: #fff;
+      outline: none;
+    }
+    .field:focus { box-shadow: 3px 3px 0 #000; }
     .server-info {
       margin-top: 1.25rem;
       padding-top: 1rem;
@@ -574,6 +706,10 @@ const ERROR_PAGE_HEADER: &str = concat!(
 
 #[cfg(test)]
 mod tests {
+    use argon2::{
+        password_hash::{rand_core::OsRng, SaltString},
+        Argon2, PasswordHasher,
+    };
     use axum::{
         body::Body,
         http::{Request, StatusCode},
@@ -589,6 +725,8 @@ mod tests {
     const CLIENT_METADATA: &str =
         r#"{"redirect_uris":["https://app.example.com/callback"],"client_name":"Test App"}"#;
     const DID: &str = "did:plc:testaccount000000000000";
+    const TEST_HANDLE: &str = "alice.test";
+    const TEST_PASSWORD: &str = "correcthorse";
 
     async fn state_with_client() -> crate::app::AppState {
         let state = test_state().await;
@@ -610,6 +748,49 @@ mod tests {
         .await
         .unwrap();
         state
+    }
+
+    /// Creates a test state with a registered client and an account that has a real Argon2id
+    /// password hash, plus an associated handle for identifier-based login tests.
+    async fn state_with_client_and_account_with_password(password: &str) -> crate::app::AppState {
+        let state = state_with_client().await;
+        let salt = SaltString::generate(&mut OsRng);
+        let password_hash = Argon2::default()
+            .hash_password(password.as_bytes(), &salt)
+            .unwrap()
+            .to_string();
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES (?, ?, ?, datetime('now'), datetime('now'))",
+        )
+        .bind(DID)
+        .bind("test@example.com")
+        .bind(&password_hash)
+        .execute(&state.db)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
+            .bind(TEST_HANDLE)
+            .bind(DID)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        state
+    }
+
+    fn approve_form_with_credentials(identifier: &str, password: &str) -> String {
+        format!(
+            "action=approve\
+             &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json\
+             &redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback\
+             &code_challenge=e3b0c44298fc1c149afb\
+             &code_challenge_method=S256\
+             &state=teststate\
+             &scope=atproto\
+             &response_type=code\
+             &identifier={identifier}\
+             &password={password}"
+        )
     }
 
     fn authorize_url(extra_params: &str) -> String {
@@ -862,7 +1043,12 @@ mod tests {
 
     #[tokio::test]
     async fn post_approve_redirects_with_code() {
-        let resp = post_authorize(state_with_client_and_account().await, &approve_form("")).await;
+        let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
+        let resp = post_authorize(
+            state,
+            &approve_form_with_credentials(TEST_HANDLE, TEST_PASSWORD),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         assert!(location.starts_with(REDIRECT_URI));
@@ -874,9 +1060,13 @@ mod tests {
     #[tokio::test]
     async fn post_approve_stores_hashed_code_in_db() {
         // The DB stores the SHA-256 hash of the code; the plaintext goes in the redirect URL.
-        let state = state_with_client_and_account().await;
+        let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
         let db = state.db.clone();
-        let resp = post_authorize(state, &approve_form("")).await;
+        let resp = post_authorize(
+            state,
+            &approve_form_with_credentials(TEST_HANDLE, TEST_PASSWORD),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
 
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
@@ -901,8 +1091,10 @@ mod tests {
     #[tokio::test]
     async fn post_approve_encodes_special_chars_in_state() {
         // state with &, =, spaces must be percent-encoded in the Location header.
-        let body = approve_form("").replace("state=teststate", "state=a%26b%3Dc%20d");
-        let resp = post_authorize(state_with_client_and_account().await, &body).await;
+        let body = approve_form_with_credentials(TEST_HANDLE, TEST_PASSWORD)
+            .replace("state=teststate", "state=a%26b%3Dc%20d");
+        let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
+        let resp = post_authorize(state, &body).await;
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         // a&b=c d percent-encoded: a%26b%3Dc%20d
@@ -923,11 +1115,106 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn post_approve_with_no_account_redirects_with_server_error() {
+    async fn post_approve_without_credentials_rerenders_form() {
+        // No identifier submitted → re-render the consent page asking the user to identify
+        // themselves. The client never sees a denial; the user can try again.
         let resp = post_authorize(state_with_client().await, &approve_form("")).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+        assert!(
+            html.contains("type=\"password\""),
+            "should re-render the consent form with credential fields"
+        );
+    }
+
+    // ── Credential-gate tests ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_consent_page_renders_identifier_input() {
+        let resp = get_authorize(state_with_client().await, &authorize_url("")).await;
+        let body = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+        assert!(
+            html.contains("name=\"identifier\""),
+            "consent page must have identifier input"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_consent_page_renders_password_input() {
+        let resp = get_authorize(state_with_client().await, &authorize_url("")).await;
+        let body = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+        assert!(
+            html.contains("type=\"password\""),
+            "consent page must have a password input"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_consent_page_prepopulates_identifier_from_login_hint() {
+        let url = authorize_url("&login_hint=alice.test");
+        let resp = get_authorize(state_with_client().await, &url).await;
+        let body = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+        assert!(
+            html.contains("alice.test"),
+            "login_hint value should appear in the identifier input"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_approve_with_valid_credentials_redirects_with_code() {
+        let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
+        let body = approve_form_with_credentials(TEST_HANDLE, TEST_PASSWORD);
+        let resp = post_authorize(state, &body).await;
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
-        assert!(location.contains("error=server_error"));
+        assert!(location.starts_with(REDIRECT_URI));
+        assert!(location.contains("code="));
+        assert!(!location.contains("error="));
+    }
+
+    #[tokio::test]
+    async fn post_approve_with_wrong_password_rerenders_consent_page() {
+        let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
+        let body = approve_form_with_credentials(TEST_HANDLE, "wrongpassword");
+        let resp = post_authorize(state, &body).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let html = std::str::from_utf8(&body_bytes).unwrap();
+        assert!(
+            html.contains("Invalid"),
+            "error message should appear on wrong password"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_approve_with_unknown_identifier_rerenders_consent_page() {
+        let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
+        let body = approve_form_with_credentials("nobody.test", TEST_PASSWORD);
+        let resp = post_authorize(state, &body).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let html = std::str::from_utf8(&body_bytes).unwrap();
+        assert!(
+            html.contains("Invalid"),
+            "error message should appear when identifier not found"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_approve_without_identifier_rerenders_consent_page() {
+        let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
+        let resp = post_authorize(state, &approve_form("")).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let html = std::str::from_utf8(&body_bytes).unwrap();
+        assert!(
+            html.contains("type=\"password\""),
+            "should re-render the consent form"
+        );
     }
 
     #[tokio::test]

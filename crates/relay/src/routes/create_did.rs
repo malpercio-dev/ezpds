@@ -466,6 +466,7 @@ async fn post_to_plc_directory(
 /// then DELETE pending_sessions + devices + pending_accounts.
 /// `recovery_share` is Share 2 of the Shamir split; stored for relay-side custody.
 /// `password_hash` is the argon2id PHC string for the account's password set during the ceremony.
+#[allow(clippy::too_many_arguments)]
 async fn promote_account(
     db: &sqlx::SqlitePool,
     did: &str,
@@ -1402,7 +1403,8 @@ mod tests {
                 .fetch_one(&db)
                 .await
                 .unwrap();
-        let hash_str = stored_hash.expect("password_hash should not be NULL when password provided");
+        let hash_str =
+            stored_hash.expect("password_hash should not be NULL when password provided");
         assert!(
             hash_str.starts_with("$argon2id$"),
             "password_hash should be an argon2id PHC string, got: {hash_str}"
@@ -1427,10 +1429,7 @@ mod tests {
                 r#"{{"identifier":"{did}","password":"mysecretpassword"}}"#
             )))
             .unwrap();
-        let cs_response = crate::app::app(state)
-            .oneshot(cs_request)
-            .await
-            .unwrap();
+        let cs_response = crate::app::app(state).oneshot(cs_request).await.unwrap();
         assert_eq!(
             cs_response.status(),
             StatusCode::OK,
@@ -1489,7 +1488,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(did_response.status(), StatusCode::OK, "DID ceremony should succeed");
+        assert_eq!(
+            did_response.status(),
+            StatusCode::OK,
+            "DID ceremony should succeed"
+        );
         let body_bytes = axum::body::to_bytes(did_response.into_body(), usize::MAX)
             .await
             .unwrap();

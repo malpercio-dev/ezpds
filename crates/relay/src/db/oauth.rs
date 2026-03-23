@@ -102,18 +102,6 @@ pub async fn store_authorization_code(
     Ok(())
 }
 
-/// Return the DID of the first account on this single-user PDS.
-///
-/// `ORDER BY created_at ASC` makes selection deterministic if the single-account
-/// invariant is ever violated. Returns `None` when no account row exists yet.
-pub async fn get_single_account_did(pool: &SqlitePool) -> Result<Option<String>, sqlx::Error> {
-    let row: Option<(String,)> =
-        sqlx::query_as("SELECT did FROM accounts ORDER BY created_at ASC LIMIT 1")
-            .fetch_optional(pool)
-            .await?;
-    Ok(row.map(|(did,)| did))
-}
-
 /// A row from the `oauth_signing_key` table.
 #[allow(dead_code)]
 pub struct OAuthSigningKeyRow {
@@ -534,32 +522,6 @@ mod tests {
                 .unwrap();
 
         assert!(row.is_some(), "authorization code should be stored");
-    }
-
-    #[tokio::test]
-    async fn get_single_account_did_returns_none_when_no_accounts() {
-        let pool = test_pool().await;
-        let result = get_single_account_did(&pool).await.unwrap();
-        assert!(result.is_none());
-    }
-
-    #[tokio::test]
-    async fn get_single_account_did_returns_did_when_account_exists() {
-        let pool = test_pool().await;
-        let did = "did:plc:testaccount000000000000";
-
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind("test@example.com")
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let result = get_single_account_did(&pool).await.unwrap();
-        assert_eq!(result.as_deref(), Some(did));
     }
 
     #[tokio::test]
