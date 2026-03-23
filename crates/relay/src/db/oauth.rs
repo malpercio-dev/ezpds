@@ -249,7 +249,6 @@ pub async fn store_oauth_refresh_token(
 /// A row read from `oauth_tokens` during refresh token rotation.
 pub struct RefreshTokenRow {
     pub client_id: String,
-    #[allow(dead_code)]
     pub did: String,
     pub scope: String,
     /// DPoP key thumbprint bound to this refresh token. `None` for tokens
@@ -640,6 +639,7 @@ mod tests {
         );
         assert_eq!(row.scope, "com.atproto.refresh");
         assert_eq!(row.jkt.as_deref(), Some("test-jkt-thumbprint"));
+        assert_eq!(row.did, "did:plc:testaccount000000000000");
 
         // Second consume must return None (already deleted) — AC4.2.
         let second = consume_oauth_refresh_token(&pool, "consume-test-token-hash")

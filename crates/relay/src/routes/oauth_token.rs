@@ -39,7 +39,6 @@ pub struct TokenRequestForm {
     pub client_id: Option<String>,
     pub code_verifier: Option<String>,
     // refresh_token grant
-    #[allow(dead_code)]
     pub refresh_token: Option<String>,
 }
 
