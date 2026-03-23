@@ -188,13 +188,25 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
 
     // Generate a fresh ephemeral P-256 keypair for tests (no DB persistence needed).
     let test_signing_key = {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
         let sk = p256::ecdsa::SigningKey::random(&mut OsRng);
         let pkcs8 = sk
             .to_pkcs8_der()
             .expect("PKCS#8 encoding must succeed for test key");
+        let vk = sk.verifying_key();
+        let point = vk.to_encoded_point(false);
+        let x = URL_SAFE_NO_PAD.encode(point.x().expect("P-256 x"));
+        let y = URL_SAFE_NO_PAD.encode(point.y().expect("P-256 y"));
+        let public_key_jwk = serde_json::json!({
+            "kty": "EC",
+            "crv": "P-256",
+            "x": x,
+            "y": y,
+        });
         OAuthSigningKey {
             key_id: "test-oauth-key-01".to_string(),
             encoding_key: jsonwebtoken::EncodingKey::from_ec_der(pkcs8.as_bytes()),
+            public_key_jwk,
         }
     };
     let dpop_nonces = new_nonce_store();

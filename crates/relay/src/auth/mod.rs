@@ -74,6 +74,8 @@ pub struct OAuthSigningKey {
     pub key_id: String,
     /// PKCS#8 DER ES256 encoding key for JWT signing.
     pub encoding_key: jsonwebtoken::EncodingKey,
+    /// Public JWK for verifying ES256 AT+JWT tokens at resource endpoints.
+    pub public_key_jwk: serde_json::Value,
 }
 
 /// In-memory store for server-issued DPoP nonces.
@@ -131,6 +133,10 @@ struct DPopClaims {
     /// Server-issued DPoP nonce (RFC 9449 §8). Required when the server has issued one.
     #[serde(default)]
     nonce: Option<String>,
+    /// Access token hash (RFC 9449 §4.3). Required at resource endpoints.
+    /// `ath = base64url(SHA-256(ASCII(access_token)))`.
+    #[serde(default)]
+    ath: Option<String>,
 }
 
 // ── Extractor implementation ─────────────────────────────────────────────────
@@ -205,6 +211,7 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
                 &parts.uri,
                 &state.config.public_url,
                 &claims,
+                token_str,
             )?;
         }
 
@@ -288,7 +295,12 @@ pub(crate) async fn load_or_create_oauth_signing_key(
 
     // Attempt to load an existing key.
     if let Some(row) = get_oauth_signing_key(pool).await? {
-        let key = decode_oauth_signing_key(&row.id, &row.private_key_encrypted, master_key)?;
+        let key = decode_oauth_signing_key(
+            &row.id,
+            &row.private_key_encrypted,
+            &row.public_key_jwk,
+            master_key,
+        )?;
         tracing::info!(key_id = %row.id, "OAuth signing key loaded from database");
         return Ok(key);
     }
@@ -334,9 +346,12 @@ pub(crate) async fn load_or_create_oauth_signing_key(
     }
 
     let encoding_key = build_encoding_key(&signing_key)?;
+    let public_key_jwk_json: serde_json::Value = serde_json::from_str(&public_key_jwk)
+        .map_err(|e| anyhow::anyhow!("JWK JSON invalid after serialization: {e}"))?;
     Ok(OAuthSigningKey {
         key_id,
         encoding_key,
+        public_key_jwk: public_key_jwk_json,
     })
 }
 
@@ -344,6 +359,7 @@ pub(crate) async fn load_or_create_oauth_signing_key(
 fn decode_oauth_signing_key(
     key_id: &str,
     private_key_encrypted: &str,
+    public_key_jwk_str: &str,
     master_key: Option<&[u8; 32]>,
 ) -> anyhow::Result<OAuthSigningKey> {
     let master_key = master_key.ok_or_else(|| {
@@ -361,9 +377,12 @@ fn decode_oauth_signing_key(
             .map_err(|e| anyhow::anyhow!("invalid stored P-256 private key: {e}"))?;
 
     let encoding_key = build_encoding_key(&signing_key)?;
+    let public_key_jwk: serde_json::Value = serde_json::from_str(public_key_jwk_str)
+        .map_err(|e| anyhow::anyhow!("public JWK JSON invalid: {e}"))?;
     Ok(OAuthSigningKey {
         key_id: key_id.to_string(),
         encoding_key,
+        public_key_jwk,
     })
 }
 
@@ -423,6 +442,15 @@ pub(crate) async fn validate_dpop_for_token_endpoint(
     if dpop_header.typ != "dpop+jwt" {
         return Err(DpopTokenEndpointError::InvalidProof(
             "DPoP typ must be dpop+jwt",
+        ));
+    }
+
+    // Validate that the embedded JWK curve matches the declared algorithm (F10).
+    if dpop_header.alg == "ES256"
+        && dpop_header.jwk.get("crv").and_then(|v| v.as_str()) != Some("P-256")
+    {
+        return Err(DpopTokenEndpointError::InvalidProof(
+            "DPoP JWK crv must be P-256 for ES256",
         ));
     }
 
@@ -525,8 +553,59 @@ fn extract_bearer_token(headers: &axum::http::HeaderMap) -> Result<&str, ApiErro
     Ok(&auth_value[BEARER_LEN..])
 }
 
-/// Decode and verify the HS256 access/refresh JWT issued by this server.
+/// Peek at the JWT header's `typ` field without verifying the signature.
+/// Returns the `typ` value in lowercase, or `None` if parsing fails.
+fn peek_jwt_typ(token: &str) -> Option<String> {
+    let header_b64 = token.split('.').next()?;
+    let header_bytes = URL_SAFE_NO_PAD.decode(header_b64).ok()?;
+    let header: serde_json::Value = serde_json::from_slice(&header_bytes).ok()?;
+    header["typ"].as_str().map(|s| s.to_ascii_lowercase())
+}
+
+/// Dispatch to the correct verification function based on token type.
+/// Uses `typ` header as algorithm discriminator to prevent algorithm confusion attacks.
 fn verify_access_token(token: &str, state: &AppState) -> Result<AccessTokenClaims, ApiError> {
+    if peek_jwt_typ(token).as_deref() == Some("at+jwt") {
+        verify_es256_access_token(token, state)
+    } else {
+        verify_hs256_access_token(token, state)
+    }
+}
+
+/// Verify ES256 AT+JWT tokens issued by the OAuth token endpoint.
+fn verify_es256_access_token(token: &str, state: &AppState) -> Result<AccessTokenClaims, ApiError> {
+    let invalid = || ApiError::new(ErrorCode::InvalidToken, "invalid token");
+    let jwk: jsonwebtoken::jwk::Jwk = serde_json::from_value(
+        state.oauth_signing_keypair.public_key_jwk.clone(),
+    )
+    .map_err(|_| {
+        tracing::error!("failed to parse OAuth signing key JWK for ES256 token verification");
+        invalid()
+    })?;
+    let decoding_key = DecodingKey::from_jwk(&jwk).map_err(|e| {
+        tracing::error!(error = %e, "failed to build ES256 DecodingKey from OAuth signing key JWK");
+        invalid()
+    })?;
+    let mut validation = Validation::new(Algorithm::ES256);
+    validation.set_required_spec_claims(&["exp", "sub"]);
+    validation.leeway = 0;
+    validation.set_audience(&[state.config.public_url.as_str()]);
+    decode::<AccessTokenClaims>(token, &decoding_key, &validation)
+        .map(|data| data.claims)
+        .map_err(|e| {
+            use jsonwebtoken::errors::ErrorKind;
+            match e.kind() {
+                ErrorKind::ExpiredSignature => ApiError::new(ErrorCode::TokenExpired, "token has expired"),
+                _ => {
+                    tracing::debug!(error = %e, error_kind = ?e.kind(), "ES256 access token verification failed");
+                    invalid()
+                }
+            }
+        })
+}
+
+/// Verify HS256 access/refresh JWT issued by this server (legacy tokens).
+fn verify_hs256_access_token(token: &str, state: &AppState) -> Result<AccessTokenClaims, ApiError> {
     let decoding_key = DecodingKey::from_secret(&state.jwt_secret);
 
     let mut validation = Validation::new(Algorithm::HS256);
@@ -584,12 +663,14 @@ fn parse_scope(scope: &str) -> Result<AuthScope, ApiError> {
 /// - `jti` is present and non-empty
 /// - `iat` is within the 60-second freshness window
 /// - Access token `cnf.jkt` matches the computed JWK thumbprint
+/// - `ath` claim is present and matches the access token
 fn validate_dpop(
     dpop_token: &str,
     method: &Method,
     uri: &axum::http::Uri,
     public_url: &str,
     access_claims: &AccessTokenClaims,
+    access_token_str: &str,
 ) -> Result<(), ApiError> {
     let invalid = || ApiError::new(ErrorCode::InvalidToken, "DPoP proof invalid");
 
@@ -610,6 +691,16 @@ fn validate_dpop(
         return Err(ApiError::new(
             ErrorCode::InvalidToken,
             "DPoP proof typ must be dpop+jwt",
+        ));
+    }
+
+    // Validate that the embedded JWK curve matches the declared algorithm (F10).
+    if dpop_header.alg == "ES256"
+        && dpop_header.jwk.get("crv").and_then(|v| v.as_str()) != Some("P-256")
+    {
+        return Err(ApiError::new(
+            ErrorCode::InvalidToken,
+            "DPoP JWK crv must be P-256 for ES256",
         ));
     }
 
@@ -660,6 +751,30 @@ fn validate_dpop(
             ErrorCode::InvalidToken,
             "DPoP key thumbprint does not match token binding",
         ));
+    }
+
+    // Validate ath (RFC 9449 §4.3): binds the proof to a specific access token.
+    let expected_ath = {
+        let hash = Sha256::digest(access_token_str.as_bytes());
+        URL_SAFE_NO_PAD.encode(hash)
+    };
+    match dpop_claims.ath.as_deref() {
+        None | Some("") => {
+            return Err(ApiError::new(
+                ErrorCode::InvalidToken,
+                "DPoP proof missing ath claim",
+            ));
+        }
+        Some(ath) => {
+            use subtle::ConstantTimeEq;
+            if !bool::from(ath.as_bytes().ct_eq(expected_ath.as_bytes())) {
+                tracing::debug!("DPoP proof ath does not match access token hash");
+                return Err(ApiError::new(
+                    ErrorCode::InvalidToken,
+                    "DPoP proof ath does not match access token",
+                ));
+            }
+        }
     }
 
     // Require `jti` for replay protection. Full deduplication per RFC 9449 §11.1
@@ -853,11 +968,15 @@ mod tests {
     }
 
     /// Build a valid DPoP proof JWT signed with the given P-256 key using current time as `iat`.
+    /// Includes the ath (access token hash) claim for use at resource endpoints.
     fn make_dpop_proof(key: &SigningKey, htm: &str, htu: &str) -> String {
-        make_dpop_proof_with_iat(key, htm, htu, now_secs() as i64)
+        // Use a dummy access token for tests — the ath is computed from this.
+        let dummy_access_token = "eyJhbGciOiJFUzI1NiIsInR5cCI6ImF0K2p3dCJ9.eyJpc3MiOiJodHRwczovL3Rlc3QuZXhhbXBsZS5jb20iLCJqdGkiOiIxMjM0NTY3OC1hYmNkLWVmZ2gtaWprbCIsInN1YiI6ImRpZDpwbGM6YWxpY2UiLCJhdWQiOiJodHRwczovL3Rlc3QuZXhhbXBsZS5jb20iLCJpYXQiOjE2NzcwMDAwMDAsImV4cCI6MTY3NzAwMzAwMCwic2NvcGUiOiJjb20uYXRwcm90by5hY2Nlc3MiLCJjbmYiOnsianRrIjoiMTIzNDU2Nzg5MCJ9fQ.signature";
+        make_dpop_proof_with_iat_and_ath(key, htm, htu, now_secs() as i64, dummy_access_token)
     }
 
     /// Build a DPoP proof JWT with an explicit `iat` — used to test freshness rejection.
+    /// Does NOT include ath claim (for token endpoint tests where ath is not required).
     fn make_dpop_proof_with_iat(key: &SigningKey, htm: &str, htu: &str, iat: i64) -> String {
         let jwk = dpop_key_to_jwk(key);
         let header = serde_json::json!({
@@ -870,6 +989,42 @@ mod tests {
             "htu": htu,
             "iat": iat,
             "jti": uuid::Uuid::new_v4().to_string(),
+        });
+
+        let hdr_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&header).unwrap().as_bytes());
+        let pay_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&payload).unwrap().as_bytes());
+        let signing_input = format!("{hdr_b64}.{pay_b64}");
+
+        let sig: Signature = key.sign(signing_input.as_bytes());
+        let sig_b64 = URL_SAFE_NO_PAD.encode(sig.to_bytes().as_ref() as &[u8]);
+
+        format!("{hdr_b64}.{pay_b64}.{sig_b64}")
+    }
+
+    /// Build a DPoP proof JWT with explicit `iat` and `ath` claim (for resource endpoint testing).
+    fn make_dpop_proof_with_iat_and_ath(
+        key: &SigningKey,
+        htm: &str,
+        htu: &str,
+        iat: i64,
+        access_token: &str,
+    ) -> String {
+        let jwk = dpop_key_to_jwk(key);
+        let header = serde_json::json!({
+            "typ": "dpop+jwt",
+            "alg": "ES256",
+            "jwk": jwk,
+        });
+        let ath = {
+            let hash = Sha256::digest(access_token.as_bytes());
+            URL_SAFE_NO_PAD.encode(hash)
+        };
+        let payload = serde_json::json!({
+            "htm": htm,
+            "htu": htu,
+            "iat": iat,
+            "jti": uuid::Uuid::new_v4().to_string(),
+            "ath": ath,
         });
 
         let hdr_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&header).unwrap().as_bytes());
@@ -1179,7 +1334,9 @@ mod tests {
         );
         // htu = public_url + path (matches how the extractor builds expected_htu)
         let htu = format!("{}/protected", state.config.public_url);
-        let dpop_proof = make_dpop_proof(&dpop_key, "GET", &htu);
+        // DPoP proof needs the ath (access token hash) claim for resource endpoint verification.
+        let dpop_proof =
+            make_dpop_proof_with_iat_and_ath(&dpop_key, "GET", &htu, now_secs() as i64, &token);
 
         let req = Request::builder()
             .uri("/protected")

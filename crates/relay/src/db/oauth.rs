@@ -168,7 +168,6 @@ pub struct AuthCodeRow {
     pub client_id: String,
     pub did: String,
     pub code_challenge: String,
-    #[allow(dead_code)]
     pub code_challenge_method: String,
     pub redirect_uri: String,
     #[allow(dead_code)]
@@ -361,6 +360,28 @@ pub async fn delete_oauth_refresh_token(
 ) -> Result<(), sqlx::Error> {
     sqlx::query("DELETE FROM oauth_tokens WHERE id = ?")
         .bind(token_hash)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Delete all expired authorization codes from the database.
+///
+/// Call alongside `cleanup_expired_nonces` on every token request to prevent unbounded
+/// DB growth from abandoned authorization flows.
+pub async fn cleanup_expired_auth_codes(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM oauth_authorization_codes WHERE expires_at <= datetime('now')")
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Delete all expired refresh tokens from the database.
+///
+/// Call alongside `cleanup_expired_nonces` on every token request to prevent unbounded
+/// DB growth from expired sessions.
+pub async fn cleanup_expired_refresh_tokens(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM oauth_tokens WHERE expires_at <= datetime('now')")
         .execute(pool)
         .await?;
     Ok(())

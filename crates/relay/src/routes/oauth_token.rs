@@ -22,8 +22,9 @@ use crate::auth::{
     cleanup_expired_nonces, issue_nonce, validate_dpop_for_token_endpoint, DpopTokenEndpointError,
 };
 use crate::db::oauth::{
-    delete_authorization_code, delete_oauth_refresh_token, get_authorization_code,
-    get_oauth_refresh_token, store_oauth_refresh_token,
+    cleanup_expired_auth_codes, cleanup_expired_refresh_tokens, delete_authorization_code,
+    delete_oauth_refresh_token, get_authorization_code, get_oauth_refresh_token,
+    store_oauth_refresh_token,
 };
 use crate::routes::token::generate_token;
 
@@ -124,6 +125,8 @@ impl IntoResponse for OAuthTokenError {
 struct AccessTokenClaims {
     /// Issuer (RFC 9068 §2.2): the server's public URL.
     iss: String,
+    /// Unique JWT identifier (RFC 7519).
+    jti: String,
     /// Subject (RFC 9068 §2.2): the authenticated user's DID.
     sub: String,
     /// Audience (RFC 9068 §2.2): typically the server's URL; used for token binding validation.
@@ -150,6 +153,8 @@ fn issue_access_token(
     jkt: &str,
     public_url: &str,
 ) -> Result<String, OAuthTokenError> {
+    use uuid::Uuid;
+
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| OAuthTokenError::new("server_error", "system clock error"))?
@@ -157,6 +162,7 @@ fn issue_access_token(
 
     let claims = AccessTokenClaims {
         iss: public_url.to_string(),
+        jti: Uuid::new_v4().to_string(),
         sub: did.to_string(),
         aud: public_url.to_string(),
         iat: now,
@@ -224,6 +230,17 @@ async fn handle_authorization_code(
 ) -> Response {
     // Prune stale nonces on every request.
     cleanup_expired_nonces(&state.dpop_nonces).await;
+    // F6: Clean up expired auth codes and refresh tokens to prevent DB growth.
+    cleanup_expired_auth_codes(&state.db)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to clean up expired auth codes");
+        });
+    cleanup_expired_refresh_tokens(&state.db)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to clean up expired refresh tokens");
+        });
 
     // Required fields: code, redirect_uri, client_id, code_verifier.
     let code = match form.code.as_deref() {
@@ -254,6 +271,22 @@ async fn handle_authorization_code(
                 .into_response()
         }
     };
+
+    // RFC 7636 §4.1: 43–128 unreserved characters [A-Za-z0-9\-._~] (F7).
+    {
+        const CV_UNRESERVED: fn(u8) -> bool =
+            |b: u8| b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b == b'_' || b == b'~';
+        if code_verifier.len() < 43
+            || code_verifier.len() > 128
+            || !code_verifier.bytes().all(CV_UNRESERVED)
+        {
+            return OAuthTokenError::new(
+                "invalid_grant",
+                "code_verifier must be 43–128 unreserved characters [A-Za-z0-9-._~]",
+            )
+            .into_response();
+        }
+    }
 
     // Reject multiple DPoP headers (RFC 9449 §11.1).
     if headers.get_all("DPoP").iter().count() > 1 {
@@ -332,6 +365,12 @@ async fn handle_authorization_code(
         return OAuthTokenError::new("invalid_grant", "redirect_uri mismatch").into_response();
     }
 
+    // Enforce S256 — reject plain (or any other method) in case it ever enters the DB (F2).
+    if auth_code.code_challenge_method != "S256" {
+        return OAuthTokenError::new("invalid_grant", "unsupported code_challenge_method")
+            .into_response();
+    }
+
     // Verify PKCE S256 challenge before consuming.
     if !verify_pkce_s256(code_verifier, &auth_code.code_challenge) {
         return OAuthTokenError::new(
@@ -391,6 +430,12 @@ async fn handle_authorization_code(
                 .into_response();
         }
     }
+    // F5: Add Cache-Control headers to prevent caching of sensitive token response.
+    response_headers.insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response_headers.insert("Pragma", axum::http::HeaderValue::from_static("no-cache"));
 
     (
         StatusCode::OK,
@@ -413,6 +458,17 @@ async fn handle_refresh_token(
 ) -> Response {
     // Prune stale nonces on every request.
     cleanup_expired_nonces(&state.dpop_nonces).await;
+    // F6: Clean up expired auth codes and refresh tokens to prevent DB growth.
+    cleanup_expired_auth_codes(&state.db)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to clean up expired auth codes");
+        });
+    cleanup_expired_refresh_tokens(&state.db)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to clean up expired refresh tokens");
+        });
 
     // Required fields.
     let refresh_token_plaintext = match form.refresh_token.as_deref() {
@@ -503,9 +559,20 @@ async fn handle_refresh_token(
     }
 
     // DPoP binding check before consuming: if the refresh token was bound to a specific key, the same key must be used.
-    if let Some(ref stored_jkt) = stored.jkt {
-        if *stored_jkt != jkt {
-            return OAuthTokenError::new("invalid_grant", "DPoP key mismatch").into_response();
+    // F3: NULL jkt on refresh token bypasses DPoP binding — treat None jkt as invalid_grant.
+    match stored.jkt.as_deref() {
+        None => {
+            // Refresh tokens issued after V012 always have a jkt. A NULL jkt means
+            // the token predates DPoP binding enforcement — reject rather than
+            // silently accepting any key.
+            return OAuthTokenError::new("invalid_grant", "refresh token not found or expired")
+                .into_response();
+        }
+        Some(stored_jkt) => {
+            use subtle::ConstantTimeEq;
+            if !bool::from(stored_jkt.as_bytes().ct_eq(jkt.as_bytes())) {
+                return OAuthTokenError::new("invalid_grant", "DPoP key mismatch").into_response();
+            }
         }
     }
 
@@ -559,6 +626,12 @@ async fn handle_refresh_token(
                 .into_response();
         }
     }
+    // F5: Add Cache-Control headers to prevent caching of sensitive token response.
+    response_headers.insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response_headers.insert("Pragma", axum::http::HeaderValue::from_static("no-cache"));
 
     (
         StatusCode::OK,
@@ -776,7 +849,7 @@ mod tests {
     async fn missing_dpop_header_returns_invalid_dpop_proof() {
         let resp = app(test_state().await)
             .oneshot(post_token(
-                "grant_type=authorization_code&code=x&redirect_uri=x&client_id=x&code_verifier=x",
+                "grant_type=authorization_code&code=x&redirect_uri=x&client_id=x&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
             ))
             .await
             .unwrap();
@@ -800,7 +873,7 @@ mod tests {
 
         let resp = app(state)
             .oneshot(post_token_with_dpop(
-                "grant_type=authorization_code&code=x&redirect_uri=x&client_id=x&code_verifier=x",
+                "grant_type=authorization_code&code=x&redirect_uri=x&client_id=x&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
                 &dpop,
             ))
             .await
@@ -828,7 +901,7 @@ mod tests {
 
         let resp = app(state)
             .oneshot(post_token_with_dpop(
-                "grant_type=authorization_code&code=x&redirect_uri=x&client_id=x&code_verifier=x",
+                "grant_type=authorization_code&code=x&redirect_uri=x&client_id=x&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
                 &dpop,
             ))
             .await
@@ -853,7 +926,7 @@ mod tests {
 
         let resp = app(state)
             .oneshot(post_token_with_dpop(
-                "grant_type=authorization_code&code=x&redirect_uri=x&client_id=x&code_verifier=x",
+                "grant_type=authorization_code&code=x&redirect_uri=x&client_id=x&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
                 &dpop,
             ))
             .await
@@ -879,7 +952,7 @@ mod tests {
 
         let resp = app(state)
             .oneshot(post_token_with_dpop(
-                "grant_type=authorization_code&code=x&redirect_uri=x&client_id=x&code_verifier=x",
+                "grant_type=authorization_code&code=x&redirect_uri=x&client_id=x&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
                 &dpop,
             ))
             .await
@@ -908,7 +981,7 @@ mod tests {
 
         let resp = app(state)
             .oneshot(post_token_with_dpop(
-                "grant_type=authorization_code&code=x&redirect_uri=x&client_id=x&code_verifier=x",
+                "grant_type=authorization_code&code=x&redirect_uri=x&client_id=x&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
                 &dpop,
             ))
             .await
