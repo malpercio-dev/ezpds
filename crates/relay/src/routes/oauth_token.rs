@@ -21,7 +21,10 @@ use crate::app::AppState;
 use crate::auth::{
     cleanup_expired_nonces, issue_nonce, validate_dpop_for_token_endpoint, DpopTokenEndpointError,
 };
-use crate::db::oauth::{consume_oauth_refresh_token, store_oauth_refresh_token};
+use crate::db::oauth::{
+    delete_authorization_code, delete_oauth_refresh_token, get_authorization_code,
+    get_oauth_refresh_token, store_oauth_refresh_token,
+};
 use crate::routes::token::generate_token;
 
 // ── Request / response types ──────────────────────────────────────────────────
@@ -94,9 +97,23 @@ impl IntoResponse for OAuthTokenError {
             "application/json".parse().unwrap(),
         );
         if let Some(nonce) = self.dpop_nonce {
-            headers.insert("DPoP-Nonce", nonce.parse().unwrap());
+            match axum::http::HeaderValue::from_str(&nonce) {
+                Ok(hval) => {
+                    headers.insert("DPoP-Nonce", hval);
+                }
+                Err(e) => {
+                    tracing::warn!(nonce = ?nonce, error = %e, "failed to insert DPoP-Nonce header, nonce format invalid");
+                }
+            }
         }
-        (StatusCode::BAD_REQUEST, headers, Json(body)).into_response()
+
+        // RFC 6749 §5.2: most errors are 400, but server_error is 500.
+        let status = if self.error == "server_error" {
+            StatusCode::INTERNAL_SERVER_ERROR
+        } else {
+            StatusCode::BAD_REQUEST
+        };
+        (status, headers, Json(body)).into_response()
     }
 }
 
@@ -105,9 +122,17 @@ impl IntoResponse for OAuthTokenError {
 /// Claims for an OAuth 2.0 AT+JWT access token (RFC 9068).
 #[derive(Serialize)]
 struct AccessTokenClaims {
+    /// Issuer (RFC 9068 §2.2): the server's public URL.
+    iss: String,
+    /// Subject (RFC 9068 §2.2): the authenticated user's DID.
     sub: String,
+    /// Audience (RFC 9068 §2.2): typically the server's URL; used for token binding validation.
+    aud: String,
+    /// Issued-at (Unix timestamp).
     iat: u64,
+    /// Expiration (Unix timestamp).
     exp: u64,
+    /// Scope string from the AT Protocol spec.
     scope: String,
     /// DPoP confirmation claim (RFC 9449 §4.3): binds the token to the client's keypair.
     cnf: CnfClaim,
@@ -123,6 +148,7 @@ fn issue_access_token(
     did: &str,
     scope: &str,
     jkt: &str,
+    public_url: &str,
 ) -> Result<String, OAuthTokenError> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -130,7 +156,9 @@ fn issue_access_token(
         .as_secs();
 
     let claims = AccessTokenClaims {
+        iss: public_url.to_string(),
         sub: did.to_string(),
+        aud: public_url.to_string(),
         iat: now,
         exp: now + 300,
         scope: scope.to_string(),
@@ -227,6 +255,15 @@ async fn handle_authorization_code(
         }
     };
 
+    // Reject multiple DPoP headers (RFC 9449 §11.1).
+    if headers.get_all("DPoP").iter().count() > 1 {
+        return OAuthTokenError::new(
+            "invalid_dpop_proof",
+            "multiple DPoP headers are not permitted",
+        )
+        .into_response();
+    }
+
     // Validate DPoP proof.
     let dpop_token = match headers.get("DPoP").and_then(|v| v.to_str().ok()) {
         Some(t) => t.to_string(),
@@ -264,37 +301,38 @@ async fn handle_authorization_code(
         };
 
     // Hash the presented code for DB lookup.
-    let code_hash = crate::routes::token::sha256_hex(
-        &URL_SAFE_NO_PAD
-            .decode(code)
-            .unwrap_or_else(|_| code.as_bytes().to_vec()),
-    );
+    let code_hash = match URL_SAFE_NO_PAD.decode(code) {
+        Ok(bytes) => crate::routes::token::sha256_hex(&bytes),
+        Err(_) => {
+            return OAuthTokenError::new("invalid_grant", "authorization code invalid or expired")
+                .into_response();
+        }
+    };
 
-    // Atomically consume the authorization code.
-    let auth_code = match crate::db::oauth::consume_authorization_code(&state.db, &code_hash).await
-    {
+    // Retrieve the authorization code (without consuming yet).
+    let auth_code = match get_authorization_code(&state.db, &code_hash).await {
         Ok(Some(row)) => row,
         Ok(None) => {
             return OAuthTokenError::new("invalid_grant", "authorization code invalid or expired")
                 .into_response();
         }
         Err(e) => {
-            tracing::error!(error = %e, "failed to consume authorization code");
+            tracing::error!(error = %e, "failed to retrieve authorization code");
             return OAuthTokenError::new("server_error", "database error").into_response();
         }
     };
 
-    // Verify client_id matches.
+    // Verify client_id matches before consuming.
     if auth_code.client_id != client_id {
         return OAuthTokenError::new("invalid_grant", "client_id mismatch").into_response();
     }
 
-    // Verify redirect_uri matches.
+    // Verify redirect_uri matches before consuming.
     if auth_code.redirect_uri != redirect_uri {
         return OAuthTokenError::new("invalid_grant", "redirect_uri mismatch").into_response();
     }
 
-    // Verify PKCE S256 challenge.
+    // Verify PKCE S256 challenge before consuming.
     if !verify_pkce_s256(code_verifier, &auth_code.code_challenge) {
         return OAuthTokenError::new(
             "invalid_grant",
@@ -303,12 +341,22 @@ async fn handle_authorization_code(
         .into_response();
     }
 
+    // All validations passed; now consume the code.
+    if let Err(e) = delete_authorization_code(&state.db, &code_hash).await {
+        tracing::error!(error = %e, "failed to delete authorization code");
+        return OAuthTokenError::new("server_error", "database error").into_response();
+    }
+
+    // Normalize scope for access token: AT Protocol uses "com.atproto.access".
+    let access_scope = "com.atproto.access".to_string();
+
     // Issue ES256 access token.
     let access_token = match issue_access_token(
         &state.oauth_signing_keypair,
         &auth_code.did,
-        &auth_code.scope,
+        &access_scope,
         &jkt,
+        &state.config.public_url,
     ) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
@@ -333,7 +381,16 @@ async fn handle_authorization_code(
     let fresh_nonce = issue_nonce(&state.dpop_nonces).await;
 
     let mut response_headers = axum::http::HeaderMap::new();
-    response_headers.insert("DPoP-Nonce", fresh_nonce.parse().unwrap());
+    match axum::http::HeaderValue::from_str(&fresh_nonce) {
+        Ok(hval) => {
+            response_headers.insert("DPoP-Nonce", hval);
+        }
+        Err(e) => {
+            tracing::error!(nonce = ?fresh_nonce, error = %e, "failed to insert fresh DPoP-Nonce header, nonce format invalid");
+            return OAuthTokenError::new("server_error", "failed to generate nonce header")
+                .into_response();
+        }
+    }
 
     (
         StatusCode::OK,
@@ -343,7 +400,7 @@ async fn handle_authorization_code(
             token_type: "DPoP",
             expires_in: 300,
             refresh_token: refresh.plaintext,
-            scope: auth_code.scope,
+            scope: access_scope,
         }),
     )
         .into_response()
@@ -372,6 +429,15 @@ async fn handle_refresh_token(
                 .into_response();
         }
     };
+
+    // Reject multiple DPoP headers (RFC 9449 §11.1).
+    if headers.get_all("DPoP").iter().count() > 1 {
+        return OAuthTokenError::new(
+            "invalid_dpop_proof",
+            "multiple DPoP headers are not permitted",
+        )
+        .into_response();
+    }
 
     // Validate DPoP proof — must be present, structurally valid, and carry a valid server nonce.
     let dpop_token = match headers.get("DPoP").and_then(|v| v.to_str().ok()) {
@@ -410,43 +476,55 @@ async fn handle_refresh_token(
         };
 
     // Hash the presented refresh token for DB lookup.
-    let token_hash = crate::routes::token::sha256_hex(
-        &URL_SAFE_NO_PAD
-            .decode(refresh_token_plaintext.as_str())
-            .unwrap_or_else(|_| refresh_token_plaintext.as_bytes().to_vec()),
-    );
+    let token_hash = match URL_SAFE_NO_PAD.decode(refresh_token_plaintext.as_str()) {
+        Ok(bytes) => crate::routes::token::sha256_hex(&bytes),
+        Err(_) => {
+            return OAuthTokenError::new("invalid_grant", "refresh token not found or expired")
+                .into_response();
+        }
+    };
 
-    // Atomically consume the refresh token (SELECT + DELETE).
-    let stored = match consume_oauth_refresh_token(&state.db, &token_hash).await {
+    // Retrieve the refresh token (without consuming yet).
+    let stored = match get_oauth_refresh_token(&state.db, &token_hash).await {
         Ok(Some(row)) => row,
         Ok(None) => {
             return OAuthTokenError::new("invalid_grant", "refresh token not found or expired")
                 .into_response();
         }
         Err(e) => {
-            tracing::error!(error = %e, "failed to consume refresh token");
+            tracing::error!(error = %e, "failed to retrieve refresh token");
             return OAuthTokenError::new("server_error", "database error").into_response();
         }
     };
 
-    // Verify client_id matches the stored value.
+    // Verify client_id matches before consuming.
     if stored.client_id != client_id {
         return OAuthTokenError::new("invalid_grant", "client_id mismatch").into_response();
     }
 
-    // DPoP binding check: if the refresh token was bound to a specific key, the same key must be used.
+    // DPoP binding check before consuming: if the refresh token was bound to a specific key, the same key must be used.
     if let Some(ref stored_jkt) = stored.jkt {
         if *stored_jkt != jkt {
             return OAuthTokenError::new("invalid_grant", "DPoP key mismatch").into_response();
         }
     }
 
+    // All validations passed; now consume the token.
+    if let Err(e) = delete_oauth_refresh_token(&state.db, &token_hash).await {
+        tracing::error!(error = %e, "failed to delete refresh token");
+        return OAuthTokenError::new("server_error", "database error").into_response();
+    }
+
+    // Normalize scope for access token: AT Protocol uses "com.atproto.access".
+    let access_scope = "com.atproto.access".to_string();
+
     // Issue new ES256 access token.
     let access_token = match issue_access_token(
         &state.oauth_signing_keypair,
         &stored.did,
-        &stored.scope,
+        &access_scope,
         &jkt,
+        &state.config.public_url,
     ) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
@@ -471,7 +549,16 @@ async fn handle_refresh_token(
     let fresh_nonce = issue_nonce(&state.dpop_nonces).await;
 
     let mut response_headers = axum::http::HeaderMap::new();
-    response_headers.insert("DPoP-Nonce", fresh_nonce.parse().unwrap());
+    match axum::http::HeaderValue::from_str(&fresh_nonce) {
+        Ok(hval) => {
+            response_headers.insert("DPoP-Nonce", hval);
+        }
+        Err(e) => {
+            tracing::error!(nonce = ?fresh_nonce, error = %e, "failed to insert fresh DPoP-Nonce header, nonce format invalid");
+            return OAuthTokenError::new("server_error", "failed to generate nonce header")
+                .into_response();
+        }
+    }
 
     (
         StatusCode::OK,
@@ -481,7 +568,7 @@ async fn handle_refresh_token(
             token_type: "DPoP",
             expires_in: 300,
             refresh_token: new_refresh.plaintext,
-            scope: stored.scope,
+            scope: "com.atproto.refresh".to_string(),
         }),
     )
         .into_response()
@@ -621,7 +708,6 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_grant_type_returns_400_unsupported() {
-        // AC5.2
         let resp = app(test_state().await)
             .oneshot(post_token("grant_type=client_credentials"))
             .await
@@ -633,7 +719,6 @@ mod tests {
 
     #[tokio::test]
     async fn missing_grant_type_returns_400_invalid_request() {
-        // AC5.3
         let resp = app(test_state().await)
             .oneshot(post_token("code=abc123"))
             .await
@@ -645,7 +730,6 @@ mod tests {
 
     #[tokio::test]
     async fn error_response_content_type_is_json() {
-        // AC5.4
         let resp = app(test_state().await)
             .oneshot(post_token("grant_type=bad"))
             .await
@@ -661,7 +745,6 @@ mod tests {
 
     #[tokio::test]
     async fn error_response_has_error_and_error_description_fields() {
-        // AC5.1
         let resp = app(test_state().await)
             .oneshot(post_token("grant_type=bad"))
             .await
@@ -691,7 +774,6 @@ mod tests {
 
     #[tokio::test]
     async fn missing_dpop_header_returns_invalid_dpop_proof() {
-        // AC2.3
         let resp = app(test_state().await)
             .oneshot(post_token(
                 "grant_type=authorization_code&code=x&redirect_uri=x&client_id=x&code_verifier=x",
@@ -705,7 +787,6 @@ mod tests {
 
     #[tokio::test]
     async fn dpop_wrong_htm_returns_invalid_dpop_proof() {
-        // AC2.4
         let state = test_state().await;
         let key = SigningKey::random(&mut OsRng);
         let nonce = issue_nonce(&state.dpop_nonces).await;
@@ -734,7 +815,6 @@ mod tests {
 
     #[tokio::test]
     async fn dpop_wrong_htu_returns_invalid_dpop_proof() {
-        // AC2.5
         let state = test_state().await;
         let key = SigningKey::random(&mut OsRng);
         let nonce = issue_nonce(&state.dpop_nonces).await;
@@ -760,7 +840,6 @@ mod tests {
 
     #[tokio::test]
     async fn dpop_stale_iat_returns_invalid_dpop_proof() {
-        // AC2.6
         let state = test_state().await;
         let key = SigningKey::random(&mut OsRng);
         let nonce = issue_nonce(&state.dpop_nonces).await;
@@ -788,7 +867,6 @@ mod tests {
 
     #[tokio::test]
     async fn dpop_without_nonce_returns_use_dpop_nonce_with_header() {
-        // AC3.2
         let state = test_state().await;
         let key = SigningKey::random(&mut OsRng);
         let dpop = make_dpop_proof(
@@ -818,7 +896,6 @@ mod tests {
 
     #[tokio::test]
     async fn dpop_with_unknown_nonce_returns_use_dpop_nonce() {
-        // AC3.4
         let state = test_state().await;
         let key = SigningKey::random(&mut OsRng);
         let dpop = make_dpop_proof(
@@ -845,7 +922,6 @@ mod tests {
 
     #[tokio::test]
     async fn authorization_code_happy_path_returns_200_with_tokens() {
-        // AC1.1, AC1.2, AC1.3, AC2.1, AC2.2, AC3.5, AC6.3
         let state = test_state().await;
         let key = SigningKey::random(&mut OsRng);
 
@@ -887,7 +963,6 @@ mod tests {
 
         assert_eq!(resp.status(), StatusCode::OK, "happy path must return 200");
 
-        // AC3.5 — DPoP-Nonce header in success response.
         assert!(
             resp.headers().contains_key("DPoP-Nonce"),
             "success response must include fresh DPoP-Nonce header"
@@ -895,7 +970,6 @@ mod tests {
 
         let json = json_body(resp).await;
 
-        // AC1.1 — TokenResponse fields.
         assert!(
             json["access_token"].is_string(),
             "access_token must be present"
@@ -907,12 +981,14 @@ mod tests {
             "refresh_token must be present"
         );
         assert!(json["scope"].is_string(), "scope must be present");
+        assert_eq!(
+            json["scope"], "com.atproto.access",
+            "scope must be com.atproto.access"
+        );
 
-        // AC1.3 — refresh token is 43-char base64url.
         let rt = json["refresh_token"].as_str().unwrap();
-        assert_eq!(rt.len(), 43, "refresh_token must be 43 chars (AC1.3)");
+        assert_eq!(rt.len(), 43, "refresh_token must be 43 chars");
 
-        // AC1.2 + AC6.3 — access token is ES256 JWT with typ=at+jwt.
         let at = json["access_token"].as_str().unwrap();
         let header_b64 = at.split('.').next().unwrap();
         let header_json = String::from_utf8(URL_SAFE_NO_PAD.decode(header_b64).unwrap()).unwrap();
@@ -926,7 +1002,6 @@ mod tests {
             "access token alg must be ES256 (AC6.3)"
         );
 
-        // AC2.2 — cnf.jkt in access token matches DPoP key thumbprint.
         let payload_b64 = at.split('.').nth(1).unwrap();
         let payload_json = String::from_utf8(URL_SAFE_NO_PAD.decode(payload_b64).unwrap()).unwrap();
         let payload: serde_json::Value = serde_json::from_str(&payload_json).unwrap();
@@ -940,7 +1015,6 @@ mod tests {
 
     #[tokio::test]
     async fn wrong_code_verifier_returns_invalid_grant() {
-        // AC1.4
         let state = test_state().await;
         let key = SigningKey::random(&mut OsRng);
 
@@ -981,7 +1055,6 @@ mod tests {
 
     #[tokio::test]
     async fn consumed_code_returns_invalid_grant() {
-        // AC1.6
         let state = test_state().await;
         let key = SigningKey::random(&mut OsRng);
         let code_verifier = "testcodeverifier1234567890abcdefghijklmnopqr";
@@ -1039,7 +1112,6 @@ mod tests {
 
     #[tokio::test]
     async fn client_id_mismatch_returns_invalid_grant() {
-        // AC1.7
         let state = test_state().await;
         let key = SigningKey::random(&mut OsRng);
         let code_verifier = "testcodeverifier1234567890abcdefghijklmnopqr";
@@ -1079,7 +1151,6 @@ mod tests {
 
     #[tokio::test]
     async fn redirect_uri_mismatch_returns_invalid_grant() {
-        // AC1.8
         let state = test_state().await;
         let key = SigningKey::random(&mut OsRng);
         let code_verifier = "testcodeverifier1234567890abcdefghijklmnopqr";
@@ -1189,7 +1260,6 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_token_happy_path_returns_200_with_new_tokens() {
-        // AC4.1 — valid rotation returns 200 with fresh token pair.
         let state = test_state().await;
         let key = SigningKey::random(&mut OsRng);
         let jkt = dpop_thumbprint(&key);
@@ -1236,9 +1306,14 @@ mod tests {
             json["refresh_token"].is_string(),
             "rotated refresh_token must be present"
         );
+        assert_eq!(
+            json["scope"], "com.atproto.refresh",
+            "scope must be com.atproto.refresh"
+        );
 
-        // Rotated token must differ from the original.
+        // Rotated token must differ from the original and be the correct length.
         let new_rt = json["refresh_token"].as_str().unwrap();
+        assert_eq!(new_rt.len(), 43, "rotated refresh_token must be 43 chars");
         assert_ne!(
             new_rt,
             plaintext.as_str(),
@@ -1248,7 +1323,6 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_token_second_use_returns_invalid_grant() {
-        // AC4.2 — after rotation the original token is deleted; second use must fail.
         let state = test_state().await;
         let key = SigningKey::random(&mut OsRng);
         let jkt = dpop_thumbprint(&key);
@@ -1307,7 +1381,6 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_token_expired_returns_invalid_grant() {
-        // AC4.3 — expired refresh tokens are rejected.
         let state = test_state().await;
         let key = SigningKey::random(&mut OsRng);
         let jkt = dpop_thumbprint(&key);
@@ -1343,7 +1416,6 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_token_jkt_mismatch_returns_invalid_grant() {
-        // AC4.4 — DPoP key in proof must match the thumbprint bound to the refresh token.
         let state = test_state().await;
         let stored_key = SigningKey::random(&mut OsRng);
         let stored_jkt = dpop_thumbprint(&stored_key);
@@ -1383,7 +1455,6 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_token_client_id_mismatch_returns_invalid_grant() {
-        // AC4.5 — client_id in the request must match the stored client_id.
         let state = test_state().await;
         let key = SigningKey::random(&mut OsRng);
         let jkt = dpop_thumbprint(&key);

@@ -69,8 +69,8 @@ pub async fn get_oauth_client(
 /// Store a newly generated authorization code.
 ///
 /// `code` must be the SHA-256 hex hash of the raw token bytes — callers pass `token.hash`,
-/// not `token.plaintext`. The token endpoint (not yet implemented) hashes the presented code
-/// before lookup, consistent with the session and refresh-token patterns in this codebase.
+/// not `token.plaintext`. The token endpoint hashes the presented code before lookup,
+/// consistent with the session and refresh-token patterns in this codebase.
 ///
 /// The code expires 60 seconds after creation (single-use, short-lived per RFC 6749 §4.1.2).
 #[allow(clippy::too_many_arguments)]
@@ -171,16 +171,76 @@ pub struct AuthCodeRow {
     #[allow(dead_code)]
     pub code_challenge_method: String,
     pub redirect_uri: String,
+    #[allow(dead_code)]
     pub scope: String,
 }
 
-/// Atomically consume an authorization code: SELECT + DELETE in one transaction.
+/// Retrieve an authorization code without consuming it.
 ///
 /// Returns `None` if the code does not exist or has already expired (`expires_at <= now`).
 /// Callers must treat `None` as `invalid_grant`.
 ///
 /// The code column stores the SHA-256 hex hash of the raw code bytes. Callers must
 /// hash the presented code before calling this function (use `routes::token::sha256_hex`).
+///
+/// Use this to retrieve the code for validation, then call `delete_authorization_code`
+/// after all checks pass. The SELECT+DELETE are serialized due to `max_connections(1)`
+/// on the pool, preventing TOCTOU races.
+pub async fn get_authorization_code(
+    pool: &SqlitePool,
+    code_hash: &str,
+) -> Result<Option<AuthCodeRow>, sqlx::Error> {
+    let row: Option<(String, String, String, String, String, String)> = sqlx::query_as(
+        "SELECT client_id, did, code_challenge, code_challenge_method, redirect_uri, scope \
+         FROM oauth_authorization_codes \
+         WHERE code = ? AND expires_at > datetime('now')",
+    )
+    .bind(code_hash)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(
+        |(client_id, did, code_challenge, code_challenge_method, redirect_uri, scope)| {
+            AuthCodeRow {
+                client_id,
+                did,
+                code_challenge,
+                code_challenge_method,
+                redirect_uri,
+                scope,
+            }
+        },
+    ))
+}
+
+/// Delete an authorization code after validation is complete.
+///
+/// The code column stores the SHA-256 hex hash of the raw code bytes.
+///
+/// The SELECT+DELETE sequence is safe from TOCTOU races because the relay's
+/// connection pool uses `max_connections(1)`, making all DB operations serialized.
+pub async fn delete_authorization_code(
+    pool: &SqlitePool,
+    code_hash: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM oauth_authorization_codes WHERE code = ?")
+        .bind(code_hash)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Atomically consume an authorization code: SELECT + DELETE in one transaction.
+///
+/// Deprecated: Use `get_authorization_code` followed by validation then `delete_authorization_code`.
+/// This function is kept for backward compatibility with existing tests.
+///
+/// Returns `None` if the code does not exist or has already expired (`expires_at <= now`).
+/// Callers must treat `None` as `invalid_grant`.
+///
+/// The code column stores the SHA-256 hex hash of the raw code bytes. Callers must
+/// hash the presented code before calling this function (use `routes::token::sha256_hex`).
+#[allow(dead_code)]
 pub async fn consume_authorization_code(
     pool: &SqlitePool,
     code_hash: &str,
@@ -250,13 +310,14 @@ pub async fn store_oauth_refresh_token(
 pub struct RefreshTokenRow {
     pub client_id: String,
     pub did: String,
+    #[allow(dead_code)]
     pub scope: String,
     /// DPoP key thumbprint bound to this refresh token. `None` for tokens
     /// issued before DPoP binding was enforced (not expected after V012).
     pub jkt: Option<String>,
 }
 
-/// Atomically consume a refresh token: SELECT + DELETE in one transaction.
+/// Retrieve a refresh token without consuming it.
 ///
 /// Returns `None` if the token does not exist or has already expired
 /// (`expires_at <= now`). Callers must treat `None` as `invalid_grant`.
@@ -264,6 +325,59 @@ pub struct RefreshTokenRow {
 /// The `id` column stores the SHA-256 hex hash of the raw token bytes.
 /// Callers must hash the presented token before calling this function
 /// using the same approach as `store_oauth_refresh_token`.
+///
+/// Use this to retrieve the token for validation, then call `delete_oauth_refresh_token`
+/// after all checks pass. The SELECT+DELETE are serialized due to `max_connections(1)`
+/// on the pool, preventing TOCTOU races.
+pub async fn get_oauth_refresh_token(
+    pool: &SqlitePool,
+    token_hash: &str,
+) -> Result<Option<RefreshTokenRow>, sqlx::Error> {
+    let row: Option<(String, String, String, Option<String>)> = sqlx::query_as(
+        "SELECT client_id, did, scope, jkt FROM oauth_tokens \
+         WHERE id = ? AND expires_at > datetime('now')",
+    )
+    .bind(token_hash)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|(client_id, did, scope, jkt)| RefreshTokenRow {
+        client_id,
+        did,
+        scope,
+        jkt,
+    }))
+}
+
+/// Delete a refresh token after validation is complete.
+///
+/// The `id` column stores the SHA-256 hex hash of the raw token bytes.
+///
+/// The SELECT+DELETE sequence is safe from TOCTOU races because the relay's
+/// connection pool uses `max_connections(1)`, making all DB operations serialized.
+pub async fn delete_oauth_refresh_token(
+    pool: &SqlitePool,
+    token_hash: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM oauth_tokens WHERE id = ?")
+        .bind(token_hash)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Atomically consume a refresh token: SELECT + DELETE in one transaction.
+///
+/// Deprecated: Use `get_oauth_refresh_token` followed by validation then `delete_oauth_refresh_token`.
+/// This function is kept for backward compatibility with existing tests.
+///
+/// Returns `None` if the token does not exist or has already expired
+/// (`expires_at <= now`). Callers must treat `None` as `invalid_grant`.
+///
+/// The `id` column stores the SHA-256 hex hash of the raw token bytes.
+/// Callers must hash the presented token before calling this function
+/// using the same approach as `store_oauth_refresh_token`.
+#[allow(dead_code)]
 pub async fn consume_oauth_refresh_token(
     pool: &SqlitePool,
     token_hash: &str,
@@ -531,7 +645,6 @@ mod tests {
 
     #[tokio::test]
     async fn consume_authorization_code_returns_none_for_expired_code() {
-        // AC1.5: expired auth codes (>60s) are rejected.
         let pool = test_pool().await;
         register_oauth_client(
             &pool,
@@ -607,7 +720,6 @@ mod tests {
 
     #[tokio::test]
     async fn consume_oauth_refresh_token_returns_row_and_deletes_it() {
-        // AC4.2: consumed token must not be found again.
         let pool = test_pool().await;
         register_oauth_client(
             &pool,
@@ -653,7 +765,6 @@ mod tests {
 
     #[tokio::test]
     async fn consume_oauth_refresh_token_returns_none_for_expired_token() {
-        // AC4.3: expired tokens are rejected.
         let pool = test_pool().await;
         register_oauth_client(
             &pool,

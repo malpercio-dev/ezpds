@@ -62,6 +62,11 @@ pub struct AuthenticatedUser {
 ///
 /// `encoding_key` is derived from the P-256 private key in PKCS#8 DER format, as required by
 /// `jsonwebtoken`. `key_id` is a UUID that appears as the `kid` header in issued access tokens.
+///
+/// # Dead Code Lint
+///
+/// Axum's `State<AppState>` extractor is opaque to Rust's dead code analyzer — fields read
+/// through `State<AppState>` appear unused even though they are accessed by every handler.
 #[derive(Clone)]
 #[allow(dead_code)]
 pub struct OAuthSigningKey {
@@ -120,8 +125,8 @@ struct DPopClaims {
     /// Issued-at (Unix timestamp). Used for freshness; replaces `exp`.
     iat: i64,
     /// Unique token ID — must be present and non-empty for replay protection.
-    /// Full deduplication (RFC 9449 §11.1) requires a server-side nonce store,
-    /// not yet implemented; this check only enforces presence.
+    /// Full deduplication is enforced by the server-issued nonce validated
+    /// in `validate_dpop_for_token_endpoint` (RFC 9449 §11.1).
     jti: String,
     /// Server-issued DPoP nonce (RFC 9449 §8). Required when the server has issued one.
     #[serde(default)]
@@ -242,11 +247,23 @@ pub(crate) async fn issue_nonce(store: &DpopNonceStore) -> String {
 /// Returns `true` if the nonce is present in the store and has not expired.
 /// Removes the nonce unconditionally (whether valid or expired) to prevent reuse.
 /// Returns `false` for unknown nonces.
+///
+/// Logs rejection reasons so operators can distinguish replay attempts from expiry from server restarts.
 pub(crate) async fn validate_and_consume_nonce(store: &DpopNonceStore, nonce: &str) -> bool {
     let mut map = store.lock().await;
     match map.remove(nonce) {
-        Some(expiry) => expiry > std::time::Instant::now(),
-        None => false,
+        Some(expiry) => {
+            if expiry > std::time::Instant::now() {
+                true
+            } else {
+                tracing::debug!(nonce = %nonce, "DPoP nonce rejected: expired");
+                false
+            }
+        }
+        None => {
+            tracing::debug!(nonce = %nonce, "DPoP nonce rejected: unknown (possible replay or server restart)");
+            false
+        }
     }
 }
 
@@ -645,8 +662,8 @@ fn validate_dpop(
         ));
     }
 
-    // Require `jti` for replay protection (existence check only — full deduplication
-    // per RFC 9449 §11.1 requires a server-side nonce store, not yet implemented).
+    // Require `jti` for replay protection. Full deduplication per RFC 9449 §11.1
+    // is enforced by the server-issued nonce mechanism in the token endpoint.
     if dpop_claims.jti.is_empty() {
         return Err(ApiError::new(
             ErrorCode::InvalidToken,
@@ -708,17 +725,14 @@ fn validate_dpop(
 }
 
 /// Map a DPoP `alg` header string to a [`jsonwebtoken::Algorithm`].
+///
+/// Only elliptic curve algorithms are accepted to match the server metadata
+/// (which advertises ES256 as the sole supported algorithm for DPoP proofs).
+/// RSA and EdDSA are excluded despite being valid JWT algorithms.
 fn dpop_alg_from_str(alg: &str) -> Option<Algorithm> {
     match alg {
         "ES256" => Some(Algorithm::ES256),
         "ES384" => Some(Algorithm::ES384),
-        "EdDSA" => Some(Algorithm::EdDSA),
-        "RS256" => Some(Algorithm::RS256),
-        "RS384" => Some(Algorithm::RS384),
-        "RS512" => Some(Algorithm::RS512),
-        "PS256" => Some(Algorithm::PS256),
-        "PS384" => Some(Algorithm::PS384),
-        "PS512" => Some(Algorithm::PS512),
         _ => None,
     }
 }
@@ -1525,7 +1539,6 @@ mod tests {
 
     #[tokio::test]
     async fn issued_nonce_validates_once() {
-        // AC3.1: Valid unexpired nonce is accepted.
         let store = new_nonce_store();
         let nonce = issue_nonce(&store).await;
 
@@ -1544,7 +1557,6 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_nonce_is_rejected() {
-        // AC3.4: Fabricated nonce not in store.
         let store = new_nonce_store();
         assert!(
             !validate_and_consume_nonce(&store, "this-nonce-was-never-issued").await,
@@ -1554,7 +1566,6 @@ mod tests {
 
     #[tokio::test]
     async fn expired_nonce_is_rejected() {
-        // AC3.3: Expired nonce returns false.
         let store = new_nonce_store();
         // Manually insert a nonce that expired 1 second in the past.
         let nonce = "expired-nonce-test";
