@@ -246,6 +246,56 @@ pub async fn store_oauth_refresh_token(
     Ok(())
 }
 
+/// A row read from `oauth_tokens` during refresh token rotation.
+pub struct RefreshTokenRow {
+    pub client_id: String,
+    #[allow(dead_code)]
+    pub did: String,
+    pub scope: String,
+    /// DPoP key thumbprint bound to this refresh token. `None` for tokens
+    /// issued before DPoP binding was enforced (not expected after V012).
+    pub jkt: Option<String>,
+}
+
+/// Atomically consume a refresh token: SELECT + DELETE in one transaction.
+///
+/// Returns `None` if the token does not exist or has already expired
+/// (`expires_at <= now`). Callers must treat `None` as `invalid_grant`.
+///
+/// The `id` column stores the SHA-256 hex hash of the raw token bytes.
+/// Callers must hash the presented token before calling this function
+/// using the same approach as `store_oauth_refresh_token`.
+pub async fn consume_oauth_refresh_token(
+    pool: &SqlitePool,
+    token_hash: &str,
+) -> Result<Option<RefreshTokenRow>, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    let row: Option<(String, String, String, Option<String>)> = sqlx::query_as(
+        "SELECT client_id, did, scope, jkt FROM oauth_tokens \
+         WHERE id = ? AND expires_at > datetime('now')",
+    )
+    .bind(token_hash)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    if row.is_some() {
+        sqlx::query("DELETE FROM oauth_tokens WHERE id = ?")
+            .bind(token_hash)
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    tx.commit().await?;
+
+    Ok(row.map(|(client_id, did, scope, jkt)| RefreshTokenRow {
+        client_id,
+        did,
+        scope,
+        jkt,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -554,5 +604,83 @@ mod tests {
             "scope must be com.atproto.refresh (AC1.3)"
         );
         assert_eq!(jkt.as_deref(), Some("jkt-thumbprint"));
+    }
+
+    #[tokio::test]
+    async fn consume_oauth_refresh_token_returns_row_and_deletes_it() {
+        // AC4.2: consumed token must not be found again.
+        let pool = test_pool().await;
+        register_oauth_client(
+            &pool,
+            "https://app.example.com/client-metadata.json",
+            r#"{"redirect_uris":["https://app.example.com/callback"]}"#,
+        )
+        .await
+        .unwrap();
+        insert_test_account(&pool).await;
+
+        store_oauth_refresh_token(
+            &pool,
+            "consume-test-token-hash",
+            "https://app.example.com/client-metadata.json",
+            "did:plc:testaccount000000000000",
+            "test-jkt-thumbprint",
+        )
+        .await
+        .unwrap();
+
+        let row = consume_oauth_refresh_token(&pool, "consume-test-token-hash")
+            .await
+            .unwrap()
+            .expect("token must be found on first use");
+
+        assert_eq!(row.client_id, "https://app.example.com/client-metadata.json");
+        assert_eq!(row.scope, "com.atproto.refresh");
+        assert_eq!(row.jkt.as_deref(), Some("test-jkt-thumbprint"));
+
+        // Second consume must return None (already deleted) — AC4.2.
+        let second = consume_oauth_refresh_token(&pool, "consume-test-token-hash")
+            .await
+            .unwrap();
+        assert!(second.is_none(), "consumed token must not be found again (AC4.2)");
+    }
+
+    #[tokio::test]
+    async fn consume_oauth_refresh_token_returns_none_for_expired_token() {
+        // AC4.3: expired tokens are rejected.
+        let pool = test_pool().await;
+        register_oauth_client(
+            &pool,
+            "https://app.example.com/client-metadata.json",
+            r#"{"redirect_uris":["https://app.example.com/callback"]}"#,
+        )
+        .await
+        .unwrap();
+        insert_test_account(&pool).await;
+
+        // Insert an already-expired row directly (bypassing store_oauth_refresh_token's +24h default).
+        sqlx::query(
+            "INSERT INTO oauth_tokens (id, client_id, did, scope, jkt, expires_at, created_at) \
+             VALUES (?, ?, ?, 'com.atproto.refresh', ?, datetime('now', '-1 seconds'), datetime('now'))",
+        )
+        .bind("expired-hash")
+        .bind("https://app.example.com/client-metadata.json")
+        .bind("did:plc:testaccount000000000000")
+        .bind("test-jkt")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let result = consume_oauth_refresh_token(&pool, "expired-hash")
+            .await
+            .unwrap();
+        assert!(result.is_none(), "expired refresh token must return None (AC4.3)");
+    }
+
+    #[tokio::test]
+    async fn consume_oauth_refresh_token_returns_none_for_unknown_token() {
+        let pool = test_pool().await;
+        let result = consume_oauth_refresh_token(&pool, "nonexistent-hash").await.unwrap();
+        assert!(result.is_none());
     }
 }
