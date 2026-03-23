@@ -64,11 +64,7 @@ impl OAuthTokenError {
         }
     }
 
-    pub fn with_nonce(
-        error: &'static str,
-        error_description: &'static str,
-        nonce: String,
-    ) -> Self {
+    pub fn with_nonce(error: &'static str, error_description: &'static str, nonce: String) -> Self {
         Self {
             error,
             error_description,
@@ -120,8 +116,11 @@ pub async fn post_token(
     match grant_type {
         "authorization_code" => {
             // Implemented in Phase 5.
-            OAuthTokenError::new("invalid_grant", "authorization_code grant not yet implemented")
-                .into_response()
+            OAuthTokenError::new(
+                "invalid_grant",
+                "authorization_code grant not yet implemented",
+            )
+            .into_response()
         }
         "refresh_token" => {
             // Implemented in Phase 6.
@@ -200,7 +199,10 @@ mod tests {
             .unwrap()
             .to_str()
             .unwrap();
-        assert!(ct.contains("application/json"), "content-type must be application/json");
+        assert!(
+            ct.contains("application/json"),
+            "content-type must be application/json"
+        );
     }
 
     // AC5.1 partial — errors have expected field shape
