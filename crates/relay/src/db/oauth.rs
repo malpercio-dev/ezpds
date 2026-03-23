@@ -630,7 +630,7 @@ mod tests {
             .unwrap();
         assert!(
             second.is_none(),
-            "consumed code must not be found again (AC1.6)"
+            "consumed code must not be found again"
         );
     }
 
@@ -676,7 +676,7 @@ mod tests {
             .unwrap();
         assert!(
             result.is_none(),
-            "expired auth code must return None (AC1.5)"
+            "expired auth code must return None"
         );
     }
 
@@ -713,7 +713,7 @@ mod tests {
         assert_eq!(id, "refresh-token-hash-01");
         assert_eq!(
             scope, "com.atproto.refresh",
-            "scope must be com.atproto.refresh (AC1.3)"
+            "scope must be com.atproto.refresh"
         );
         assert_eq!(jkt.as_deref(), Some("jkt-thumbprint"));
     }
@@ -759,7 +759,7 @@ mod tests {
             .unwrap();
         assert!(
             second.is_none(),
-            "consumed token must not be found again (AC4.2)"
+            "consumed token must not be found again"
         );
     }
 
@@ -793,7 +793,7 @@ mod tests {
             .unwrap();
         assert!(
             result.is_none(),
-            "expired refresh token must return None (AC4.3)"
+            "expired refresh token must return None"
         );
     }
 

@@ -995,11 +995,11 @@ mod tests {
         let header: serde_json::Value = serde_json::from_str(&header_json).unwrap();
         assert_eq!(
             header["typ"], "at+jwt",
-            "access token typ must be at+jwt (AC1.2)"
+            "access token typ must be at+jwt"
         );
         assert_eq!(
             header["alg"], "ES256",
-            "access token alg must be ES256 (AC6.3)"
+            "access token alg must be ES256"
         );
 
         let payload_b64 = at.split('.').nth(1).unwrap();
@@ -1009,8 +1009,10 @@ mod tests {
         let expected_jkt = dpop_thumbprint(&key);
         assert_eq!(
             cnf_jkt, expected_jkt,
-            "cnf.jkt must match DPoP key thumbprint (AC2.2)"
+            "cnf.jkt must match DPoP key thumbprint"
         );
+        assert_eq!(payload["iss"], "https://test.example.com", "iss must be public_url");
+        assert_eq!(payload["aud"], "https://test.example.com", "aud must be public_url");
     }
 
     #[tokio::test]
@@ -1049,7 +1051,7 @@ mod tests {
         let json = json_body(resp).await;
         assert_eq!(
             json["error"], "invalid_grant",
-            "wrong code_verifier must return invalid_grant (AC1.4)"
+            "wrong code_verifier must return invalid_grant"
         );
     }
 
@@ -1106,7 +1108,7 @@ mod tests {
         let json2 = json_body(resp2).await;
         assert_eq!(
             json2["error"], "invalid_grant",
-            "second use must return invalid_grant (AC1.6)"
+            "second use must return invalid_grant"
         );
     }
 
@@ -1145,7 +1147,7 @@ mod tests {
         let json = json_body(resp).await;
         assert_eq!(
             json["error"], "invalid_grant",
-            "client_id mismatch must return invalid_grant (AC1.7)"
+            "client_id mismatch must return invalid_grant"
         );
     }
 
@@ -1184,7 +1186,7 @@ mod tests {
         let json = json_body(resp).await;
         assert_eq!(
             json["error"], "invalid_grant",
-            "redirect_uri mismatch must return invalid_grant (AC1.8)"
+            "redirect_uri mismatch must return invalid_grant"
         );
     }
 
@@ -1319,6 +1321,14 @@ mod tests {
             plaintext.as_str(),
             "rotated refresh token must differ from original"
         );
+
+        // Verify access token has correct iss and aud.
+        let at = json["access_token"].as_str().unwrap();
+        let payload_b64 = at.split('.').nth(1).unwrap();
+        let payload_json = String::from_utf8(URL_SAFE_NO_PAD.decode(payload_b64).unwrap()).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&payload_json).unwrap();
+        assert_eq!(payload["iss"], "https://test.example.com", "iss must be public_url");
+        assert_eq!(payload["aud"], "https://test.example.com", "aud must be public_url");
     }
 
     #[tokio::test]
@@ -1375,7 +1385,7 @@ mod tests {
         let json = json_body(resp2).await;
         assert_eq!(
             json["error"], "invalid_grant",
-            "second use of consumed token must return invalid_grant (AC4.2)"
+            "second use of consumed token must return invalid_grant"
         );
     }
 
@@ -1410,7 +1420,7 @@ mod tests {
         let json = json_body(resp).await;
         assert_eq!(
             json["error"], "invalid_grant",
-            "expired refresh token must return invalid_grant (AC4.3)"
+            "expired refresh token must return invalid_grant"
         );
     }
 
@@ -1449,7 +1459,7 @@ mod tests {
         let json = json_body(resp).await;
         assert_eq!(
             json["error"], "invalid_grant",
-            "DPoP key mismatch must return invalid_grant (AC4.4)"
+            "DPoP key mismatch must return invalid_grant"
         );
     }
 
@@ -1485,7 +1495,7 @@ mod tests {
         let json = json_body(resp).await;
         assert_eq!(
             json["error"], "invalid_grant",
-            "client_id mismatch must return invalid_grant (AC4.5)"
+            "client_id mismatch must return invalid_grant"
         );
     }
 }
