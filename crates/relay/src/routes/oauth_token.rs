@@ -25,15 +25,21 @@ use crate::app::AppState;
 pub struct TokenRequestForm {
     pub grant_type: Option<String>,
     // authorization_code grant
+    #[allow(dead_code)]
     pub code: Option<String>,
+    #[allow(dead_code)]
     pub redirect_uri: Option<String>,
+    #[allow(dead_code)]
     pub client_id: Option<String>,
+    #[allow(dead_code)]
     pub code_verifier: Option<String>,
     // refresh_token grant
+    #[allow(dead_code)]
     pub refresh_token: Option<String>,
 }
 
 /// Successful token endpoint response body (RFC 6749 §5.1).
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 pub struct TokenResponse {
     pub access_token: String,
@@ -64,6 +70,7 @@ impl OAuthTokenError {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_nonce(error: &'static str, error_description: &'static str, nonce: String) -> Self {
         Self {
             error,
