@@ -10,6 +10,7 @@ pub mod describe_server;
 pub mod get_relay_signing_key;
 pub mod health;
 pub mod oauth_authorize;
+pub mod oauth_jwks;
 pub mod oauth_server_metadata;
 pub(super) mod oauth_templates;
 pub mod oauth_token;

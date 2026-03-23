@@ -27,6 +27,7 @@ use crate::routes::describe_server::describe_server;
 use crate::routes::get_relay_signing_key::get_relay_signing_key;
 use crate::routes::health::health;
 use crate::routes::oauth_authorize::{get_authorization, post_authorization};
+use crate::routes::oauth_jwks::oauth_jwks;
 use crate::routes::oauth_server_metadata::oauth_server_metadata;
 use crate::routes::oauth_token::post_token;
 use crate::routes::register_device::register_device;
@@ -137,6 +138,7 @@ pub fn app(state: AppState) -> Router {
             "/oauth/authorize",
             get(get_authorization).post(post_authorization),
         )
+        .route("/oauth/jwks", get(oauth_jwks))
         .route("/oauth/token", post(post_token))
         .route("/xrpc/_health", get(health))
         .route(

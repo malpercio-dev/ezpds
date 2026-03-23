@@ -1,0 +1,15 @@
+meta {
+  name: OAuth JWKS
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/oauth/jwks
+  body: none
+  auth: none
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
