@@ -55,6 +55,11 @@ Last verified: 2026-03-22
 - Open in Bruno desktop app; select the `local` environment and set `adminToken` to your relay admin token
 - **Mandatory:** When adding, removing, or changing any route (path, method, request body, response shape, auth), update the corresponding `.bru` file in `bruno/`. New routes get a new `.bru` file with the next `seq` number.
 
+## Relay Architecture
+See [`crates/relay/CLAUDE.md`](crates/relay/CLAUDE.md) for relay-specific module structure,
+hard rules (route isolation, pattern comments, DB ownership), and step-by-step guides for
+adding routes and DB queries.
+
 ## Conventions
 - Workspace-level dependency versions in root Cargo.toml; crates use `{ workspace = true }`
 - All crates share version (0.1.0) and edition (2021) via workspace.package
