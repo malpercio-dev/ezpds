@@ -21,7 +21,9 @@ use crate::app::AppState;
 use crate::auth::{
     cleanup_expired_nonces, issue_nonce, validate_dpop_for_token_endpoint, DpopTokenEndpointError,
 };
-use crate::db::oauth::store_oauth_refresh_token;
+use crate::db::oauth::{
+    consume_oauth_refresh_token, store_oauth_refresh_token,
+};
 use crate::routes::token::generate_token;
 
 // ── Request / response types ──────────────────────────────────────────────────
@@ -182,9 +184,7 @@ pub async fn post_token(
     match grant_type {
         "authorization_code" => handle_authorization_code(&state, &headers, form).await,
         "refresh_token" => {
-            // Implemented in Phase 6.
-            OAuthTokenError::new("invalid_grant", "refresh_token grant not yet implemented")
-                .into_response()
+            handle_refresh_token(&state, &headers, form).await
         }
         _ => OAuthTokenError::new(
             "unsupported_grant_type",
@@ -349,6 +349,144 @@ async fn handle_authorization_code(
             expires_in: 300,
             refresh_token: refresh.plaintext,
             scope: auth_code.scope,
+        }),
+    )
+        .into_response()
+}
+
+async fn handle_refresh_token(
+    state: &AppState,
+    headers: &HeaderMap,
+    form: TokenRequestForm,
+) -> Response {
+    // Prune stale nonces on every request.
+    cleanup_expired_nonces(&state.dpop_nonces).await;
+
+    // Required fields.
+    let refresh_token_plaintext = match form.refresh_token.as_deref() {
+        Some(t) if !t.is_empty() => t.to_string(),
+        _ => {
+            return OAuthTokenError::new("invalid_request", "missing parameter: refresh_token")
+                .into_response();
+        }
+    };
+    let client_id = match form.client_id.as_deref() {
+        Some(id) if !id.is_empty() => id.to_string(),
+        _ => {
+            return OAuthTokenError::new("invalid_request", "missing parameter: client_id")
+                .into_response();
+        }
+    };
+
+    // Validate DPoP proof — must be present, structurally valid, and carry a valid server nonce.
+    let dpop_token = match headers.get("DPoP").and_then(|v| v.to_str().ok()) {
+        Some(t) => t.to_string(),
+        None => {
+            return OAuthTokenError::new("invalid_dpop_proof", "DPoP header required")
+                .into_response();
+        }
+    };
+
+    let token_url = format!(
+        "{}/oauth/token",
+        state.config.public_url.trim_end_matches('/')
+    );
+
+    let jkt = match validate_dpop_for_token_endpoint(
+        &dpop_token,
+        "POST",
+        &token_url,
+        &state.dpop_nonces,
+    )
+    .await
+    {
+        Ok(jkt) => jkt,
+        Err(DpopTokenEndpointError::MissingHeader) => {
+            return OAuthTokenError::new("invalid_dpop_proof", "DPoP header required")
+                .into_response();
+        }
+        Err(DpopTokenEndpointError::InvalidProof(msg)) => {
+            return OAuthTokenError::new("invalid_dpop_proof", msg).into_response();
+        }
+        Err(DpopTokenEndpointError::UseNonce(fresh_nonce)) => {
+            return OAuthTokenError::with_nonce(
+                "use_dpop_nonce",
+                "DPoP nonce required",
+                fresh_nonce,
+            )
+            .into_response();
+        }
+    };
+
+    // Hash the presented refresh token for DB lookup.
+    let token_hash = crate::routes::token::sha256_hex(
+        &URL_SAFE_NO_PAD
+            .decode(refresh_token_plaintext.as_str())
+            .unwrap_or_else(|_| refresh_token_plaintext.as_bytes().to_vec()),
+    );
+
+    // Atomically consume the refresh token (SELECT + DELETE).
+    let stored = match consume_oauth_refresh_token(&state.db, &token_hash).await {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            return OAuthTokenError::new("invalid_grant", "refresh token not found or expired")
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to consume refresh token");
+            return OAuthTokenError::new("server_error", "database error").into_response();
+        }
+    };
+
+    // Verify client_id matches the stored value.
+    if stored.client_id != client_id {
+        return OAuthTokenError::new("invalid_grant", "client_id mismatch").into_response();
+    }
+
+    // DPoP binding check: if the refresh token was bound to a specific key, the same key must be used.
+    if let Some(ref stored_jkt) = stored.jkt {
+        if *stored_jkt != jkt {
+            return OAuthTokenError::new("invalid_grant", "DPoP key mismatch").into_response();
+        }
+    }
+
+    // Issue new ES256 access token.
+    let access_token =
+        match issue_access_token(&state.oauth_signing_keypair, &stored.did, &stored.scope, &jkt) {
+            Ok(t) => t,
+            Err(e) => return e.into_response(),
+        };
+
+    // Generate and store new refresh token (rotation: old token already deleted above).
+    let new_refresh = generate_token();
+    if let Err(e) = store_oauth_refresh_token(
+        &state.db,
+        &new_refresh.hash,
+        &stored.client_id,
+        &stored.did,
+        &jkt,
+    )
+    .await
+    {
+        tracing::error!(error = %e, "failed to store rotated refresh token");
+        return OAuthTokenError::new("server_error", "database error").into_response();
+    }
+
+    // Issue fresh DPoP nonce for the next request.
+    let fresh_nonce = issue_nonce(&state.dpop_nonces).await;
+
+    let mut response_headers = axum::http::HeaderMap::new();
+    response_headers.insert("DPoP-Nonce", fresh_nonce.parse().unwrap());
+
+    (
+        StatusCode::OK,
+        response_headers,
+        Json(TokenResponse {
+            access_token,
+            token_type: "DPoP",
+            expires_in: 300,
+            refresh_token: new_refresh.plaintext,
+            scope: stored.scope,
         }),
     )
         .into_response()
