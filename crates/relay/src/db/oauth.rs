@@ -73,6 +73,7 @@ pub async fn get_oauth_client(
 /// before lookup, consistent with the session and refresh-token patterns in this codebase.
 ///
 /// The code expires 60 seconds after creation (single-use, short-lived per RFC 6749 §4.1.2).
+#[allow(clippy::too_many_arguments)]
 pub async fn store_authorization_code(
     pool: &SqlitePool,
     code: &str,
@@ -163,16 +164,13 @@ pub async fn store_oauth_signing_key(
 }
 
 /// A row read from `oauth_authorization_codes` during code exchange.
+#[allow(dead_code)]
 pub struct AuthCodeRow {
     pub client_id: String,
     pub did: String,
-    #[allow(dead_code)]
     pub code_challenge: String,
-    #[allow(dead_code)]
     pub code_challenge_method: String,
-    #[allow(dead_code)]
     pub redirect_uri: String,
-    #[allow(dead_code)]
     pub scope: String,
 }
 
@@ -183,6 +181,7 @@ pub struct AuthCodeRow {
 ///
 /// The code column stores the SHA-256 hex hash of the raw code bytes. Callers must
 /// hash the presented code before calling this function (use `routes::token::sha256_hex`).
+#[allow(dead_code)]
 pub async fn consume_authorization_code(
     pool: &SqlitePool,
     code_hash: &str,
@@ -228,6 +227,7 @@ pub async fn consume_authorization_code(
 /// `scope` is always `'com.atproto.refresh'` for OAuth refresh tokens.
 /// `jkt` is the DPoP key thumbprint binding this token to the client's keypair.
 /// Expires 24 hours after insertion.
+#[allow(dead_code)]
 pub async fn store_oauth_refresh_token(
     pool: &SqlitePool,
     token_hash: &str,

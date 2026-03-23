@@ -123,6 +123,9 @@ struct DPopClaims {
     /// Full deduplication (RFC 9449 §11.1) requires a server-side nonce store,
     /// not yet implemented; this check only enforces presence.
     jti: String,
+    /// Server-issued DPoP nonce (RFC 9449 §8). Required when the server has issued one.
+    #[serde(default)]
+    nonce: Option<String>,
 }
 
 // ── Extractor implementation ─────────────────────────────────────────────────
@@ -358,6 +361,113 @@ fn build_encoding_key(
         .to_pkcs8_der()
         .map_err(|e| anyhow::anyhow!("PKCS#8 DER encoding failed: {e}"))?;
     Ok(jsonwebtoken::EncodingKey::from_ec_der(pkcs8_der.as_bytes()))
+}
+
+/// Error from DPoP validation at the token endpoint.
+///
+/// Converted to `OAuthTokenError` by the handler in `routes/oauth_token.rs`.
+#[allow(dead_code)]
+pub(crate) enum DpopTokenEndpointError {
+    /// `DPoP:` header is absent.
+    MissingHeader,
+    /// DPoP proof is syntactically or semantically invalid.
+    InvalidProof(&'static str),
+    /// Nonce is missing, unknown, or expired — fresh nonce included for the response header.
+    UseNonce(String),
+}
+
+/// Validate the DPoP proof at the token endpoint and return the JWK thumbprint.
+///
+/// This is a token-endpoint-specific variant of `validate_dpop`:
+/// - Does NOT check `cnf.jkt` against an existing access token (no token yet).
+/// - DOES validate the `nonce` claim against the nonce store.
+/// - Returns the JWK thumbprint (jkt) so the handler can embed it in `cnf.jkt`.
+///
+/// `htm` must be `"POST"`. `htu` must be the token endpoint URL (e.g.
+/// `"https://relay.example.com/oauth/token"`).
+#[allow(dead_code)]
+pub(crate) async fn validate_dpop_for_token_endpoint(
+    dpop_token: &str,
+    htm: &str,
+    htu: &str,
+    nonce_store: &DpopNonceStore,
+) -> Result<String, DpopTokenEndpointError> {
+    // Decode the DPoP proof header manually (same pattern as validate_dpop).
+    let header_b64 = dpop_token
+        .split('.')
+        .next()
+        .ok_or(DpopTokenEndpointError::InvalidProof("malformed DPoP JWT"))?;
+    let header_bytes = URL_SAFE_NO_PAD
+        .decode(header_b64)
+        .map_err(|_| DpopTokenEndpointError::InvalidProof("DPoP header base64 invalid"))?;
+    let dpop_header: DPopHeader = serde_json::from_slice(&header_bytes)
+        .map_err(|_| DpopTokenEndpointError::InvalidProof("DPoP header JSON malformed"))?;
+
+    if dpop_header.typ != "dpop+jwt" {
+        return Err(DpopTokenEndpointError::InvalidProof("DPoP typ must be dpop+jwt"));
+    }
+
+    // Verify the signature against the embedded JWK.
+    let jwk: jsonwebtoken::jwk::Jwk = serde_json::from_value(dpop_header.jwk.clone())
+        .map_err(|_| DpopTokenEndpointError::InvalidProof("DPoP JWK parse failed"))?;
+    let decoding_key = DecodingKey::from_jwk(&jwk)
+        .map_err(|_| DpopTokenEndpointError::InvalidProof("DPoP DecodingKey build failed"))?;
+    let alg = dpop_alg_from_str(&dpop_header.alg)
+        .ok_or(DpopTokenEndpointError::InvalidProof("DPoP unsupported alg"))?;
+
+    let mut validation = Validation::new(alg);
+    validation.validate_exp = false;
+    validation.set_required_spec_claims::<&str>(&[]);
+    validation.validate_aud = false;
+
+    let dpop_data = decode::<DPopClaims>(dpop_token, &decoding_key, &validation)
+        .map_err(|_| DpopTokenEndpointError::InvalidProof("DPoP signature verification failed"))?;
+    let claims = dpop_data.claims;
+
+    // Validate htm (HTTP method).
+    if claims.htm.to_uppercase() != htm.to_uppercase() {
+        return Err(DpopTokenEndpointError::InvalidProof("DPoP htm mismatch"));
+    }
+
+    // Validate htu (target URI).
+    if claims.htu != htu {
+        return Err(DpopTokenEndpointError::InvalidProof("DPoP htu mismatch"));
+    }
+
+    // Validate jti (presence only — server nonce provides replay protection).
+    if claims.jti.is_empty() {
+        return Err(DpopTokenEndpointError::InvalidProof("DPoP jti missing"));
+    }
+
+    // Freshness: reject proofs older than 60 seconds or from the future.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| DpopTokenEndpointError::InvalidProof("system clock error"))?
+        .as_secs() as i64;
+    let diff = (now as i128) - (claims.iat as i128);
+    if diff.unsigned_abs() > 60 {
+        return Err(DpopTokenEndpointError::InvalidProof("DPoP proof stale"));
+    }
+
+    // Validate nonce claim.
+    match claims.nonce.as_deref() {
+        None | Some("") => {
+            // No nonce — issue a fresh one for the client to retry with.
+            let fresh = issue_nonce(nonce_store).await;
+            return Err(DpopTokenEndpointError::UseNonce(fresh));
+        }
+        Some(nonce) => {
+            if !validate_and_consume_nonce(nonce_store, nonce).await {
+                // Unknown or expired nonce — issue a fresh one.
+                let fresh = issue_nonce(nonce_store).await;
+                return Err(DpopTokenEndpointError::UseNonce(fresh));
+            }
+        }
+    }
+
+    // Compute and return the JWK thumbprint.
+    jwk_thumbprint(&dpop_header.jwk)
+        .map_err(|_| DpopTokenEndpointError::InvalidProof("JWK thumbprint computation failed"))
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
