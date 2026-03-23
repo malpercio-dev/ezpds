@@ -228,7 +228,6 @@ pub fn new_nonce_store() -> DpopNonceStore {
 ///
 /// Returns a 22-character base64url string (16 random bytes). The nonce is
 /// inserted into the store with an expiry of `Instant::now() + 5 minutes`.
-#[allow(dead_code)]
 pub(crate) async fn issue_nonce(store: &DpopNonceStore) -> String {
     let mut bytes = [0u8; 16];
     OsRng.fill_bytes(&mut bytes);
@@ -243,7 +242,6 @@ pub(crate) async fn issue_nonce(store: &DpopNonceStore) -> String {
 /// Returns `true` if the nonce is present in the store and has not expired.
 /// Removes the nonce unconditionally (whether valid or expired) to prevent reuse.
 /// Returns `false` for unknown nonces.
-#[allow(dead_code)]
 pub(crate) async fn validate_and_consume_nonce(store: &DpopNonceStore, nonce: &str) -> bool {
     let mut map = store.lock().await;
     match map.remove(nonce) {
@@ -256,7 +254,6 @@ pub(crate) async fn validate_and_consume_nonce(store: &DpopNonceStore, nonce: &s
 ///
 /// Call this on every token request to prevent unbounded memory growth.
 /// Under normal relay load (low request volume) this is sufficient without a background task.
-#[allow(dead_code)]
 pub(crate) async fn cleanup_expired_nonces(store: &DpopNonceStore) {
     let now = std::time::Instant::now();
     store.lock().await.retain(|_, expiry| *expiry > now);
@@ -366,9 +363,9 @@ fn build_encoding_key(
 /// Error from DPoP validation at the token endpoint.
 ///
 /// Converted to `OAuthTokenError` by the handler in `routes/oauth_token.rs`.
-#[allow(dead_code)]
 pub(crate) enum DpopTokenEndpointError {
     /// `DPoP:` header is absent.
+    #[allow(dead_code)]
     MissingHeader,
     /// DPoP proof is syntactically or semantically invalid.
     InvalidProof(&'static str),
@@ -385,7 +382,6 @@ pub(crate) enum DpopTokenEndpointError {
 ///
 /// `htm` must be `"POST"`. `htu` must be the token endpoint URL (e.g.
 /// `"https://relay.example.com/oauth/token"`).
-#[allow(dead_code)]
 pub(crate) async fn validate_dpop_for_token_endpoint(
     dpop_token: &str,
     htm: &str,

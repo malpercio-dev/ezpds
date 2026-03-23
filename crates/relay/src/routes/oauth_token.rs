@@ -34,13 +34,9 @@ use crate::routes::token::generate_token;
 pub struct TokenRequestForm {
     pub grant_type: Option<String>,
     // authorization_code grant
-    #[allow(dead_code)]
     pub code: Option<String>,
-    #[allow(dead_code)]
     pub redirect_uri: Option<String>,
-    #[allow(dead_code)]
     pub client_id: Option<String>,
-    #[allow(dead_code)]
     pub code_verifier: Option<String>,
     // refresh_token grant
     #[allow(dead_code)]
@@ -48,7 +44,6 @@ pub struct TokenRequestForm {
 }
 
 /// Successful token endpoint response body (RFC 6749 §5.1).
-#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 pub struct TokenResponse {
     pub access_token: String,
@@ -79,7 +74,6 @@ impl OAuthTokenError {
         }
     }
 
-    #[allow(dead_code)]
     pub fn with_nonce(error: &'static str, error_description: &'static str, nonce: String) -> Self {
         Self {
             error,
@@ -396,6 +390,8 @@ mod tests {
 
     fn dpop_thumbprint(key: &SigningKey) -> String {
         let jwk = dpop_key_to_jwk(key);
+        // RFC 7638 requires keys to be in lexicographic order (crv, kty, x, y for EC keys).
+        // Do NOT reorder these keys, or the thumbprint will differ silently.
         let canonical = serde_json::to_string(&serde_json::json!({
             "crv": jwk["crv"],
             "kty": jwk["kty"],
@@ -489,6 +485,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_grant_type_returns_400_unsupported() {
+        // AC5.2
         let resp = app(test_state().await)
             .oneshot(post_token("grant_type=client_credentials"))
             .await
@@ -500,6 +497,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_grant_type_returns_400_invalid_request() {
+        // AC5.3
         let resp = app(test_state().await)
             .oneshot(post_token("code=abc123"))
             .await
@@ -511,6 +509,7 @@ mod tests {
 
     #[tokio::test]
     async fn error_response_content_type_is_json() {
+        // AC5.4
         let resp = app(test_state().await)
             .oneshot(post_token("grant_type=bad"))
             .await
@@ -526,6 +525,7 @@ mod tests {
 
     #[tokio::test]
     async fn error_response_has_error_and_error_description_fields() {
+        // AC5.1
         let resp = app(test_state().await)
             .oneshot(post_token("grant_type=bad"))
             .await
@@ -537,6 +537,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_token_endpoint_returns_405() {
+        // Method routing (no AC)
         let resp = app(test_state().await)
             .oneshot(
                 Request::builder()
@@ -870,19 +871,17 @@ mod tests {
             Some(&nonce1),
             now_secs(),
         );
-        let state_arc = std::sync::Arc::new(state);
 
         // Build the app twice using different oneshot calls on the same state.
         // Clone state so the DB pool is shared across both calls.
-        let state1 = (*state_arc).clone();
-        let resp1 = app(state1)
+        let resp1 = app(state.clone())
             .oneshot(post_token_with_dpop(&body, &dpop1))
             .await
             .unwrap();
         assert_eq!(resp1.status(), StatusCode::OK, "first use must succeed");
 
         // Second use — code was consumed.
-        let state2 = (*state_arc).clone();
+        let state2 = state.clone();
         let nonce2 = issue_nonce(&state2.dpop_nonces).await;
         let dpop2 = make_dpop_proof(
             &key,
