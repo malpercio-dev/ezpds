@@ -7,17 +7,23 @@ mod bearer;
 
 // Re-export the public API so callers don't need to know the internal layout.
 pub use dpop::{
-    cleanup_expired_nonces, issue_nonce, new_nonce_store, validate_and_consume_nonce,
-    validate_dpop_for_token_endpoint, DpopNonceStore, DpopTokenEndpointError,
+    cleanup_expired_nonces, issue_nonce, new_nonce_store, validate_dpop_for_token_endpoint,
+    DpopNonceStore, DpopTokenEndpointError,
 };
+// Foundational types: used once authenticated routes are wired up.
+#[allow(unused_imports)]
 pub use extractors::AuthenticatedUser;
+#[allow(unused_imports)]
 pub use jwt::{AuthScope, TokenType};
 pub use signing_key::{load_or_create_oauth_signing_key, OAuthSigningKey};
 
-// Make private helpers visible to the test module below (which uses `use super::*`).
-pub use bearer::extract_bearer_token;
-pub use dpop::{dpop_alg_from_str, jwk_thumbprint, validate_dpop};
-pub use jwt::{parse_scope, peek_jwt_typ, verify_access_token};
+// Test-only: make private helpers visible to the test module below (which uses `use super::*`).
+#[cfg(test)]
+pub(super) use bearer::extract_bearer_token;
+#[cfg(test)]
+pub(super) use dpop::{dpop_alg_from_str, jwk_thumbprint, validate_and_consume_nonce, validate_dpop};
+#[cfg(test)]
+pub(super) use jwt::{parse_scope, peek_jwt_typ, verify_access_token};
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
