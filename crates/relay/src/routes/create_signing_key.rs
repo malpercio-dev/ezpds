@@ -131,6 +131,7 @@ mod tests {
             jwt_secret: base.jwt_secret,
             oauth_signing_keypair: base.oauth_signing_keypair,
             dpop_nonces: base.dpop_nonces,
+            failed_login_attempts: base.failed_login_attempts,
         }
     }
 
@@ -387,6 +388,7 @@ mod tests {
             jwt_secret: base.jwt_secret,
             oauth_signing_keypair: base.oauth_signing_keypair,
             dpop_nonces: base.dpop_nonces,
+            failed_login_attempts: base.failed_login_attempts,
         };
 
         let response = app(state)

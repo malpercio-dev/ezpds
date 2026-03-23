@@ -1,4 +1,6 @@
-use std::sync::Arc;
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use axum::{
     extract::Path,
@@ -25,10 +27,16 @@ use crate::routes::get_relay_signing_key::get_relay_signing_key;
 use crate::routes::health::health;
 use crate::routes::oauth_authorize::{get_authorization, post_authorization};
 use crate::routes::oauth_server_metadata::oauth_server_metadata;
+use crate::routes::create_session::create_session;
 use crate::routes::oauth_token::post_token;
 use crate::routes::register_device::register_device;
 use crate::routes::resolve_handle::resolve_handle_handler;
 use crate::well_known::WellKnownResolver;
+
+/// In-memory store for failed login attempts per identifier (for createSession rate limiting).
+/// Maps identifier (DID or handle) → timestamps of recent failures.
+/// `std::sync::Mutex` is used because the critical section never awaits.
+pub type FailedLoginStore = Arc<Mutex<HashMap<String, VecDeque<Instant>>>>;
 
 /// Wraps an `axum::http::HeaderMap` as an OTel text-map [`Extractor`] so that
 /// the W3C `traceparent` and `tracestate` headers can be read by the global propagator.
@@ -110,6 +118,9 @@ pub struct AppState {
     /// In-memory store for server-issued DPoP nonces. Shared across all token endpoint requests.
     #[allow(dead_code)]
     pub dpop_nonces: DpopNonceStore,
+    /// In-memory sliding-window store for failed createSession attempts (rate limiting).
+    /// Shared across all requests via Arc<Mutex<...>>.
+    pub failed_login_attempts: FailedLoginStore,
 }
 
 /// Build the Axum router with middleware and routes.
@@ -131,6 +142,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/xrpc/com.atproto.server.describeServer",
             get(describe_server),
+        )
+        .route(
+            "/xrpc/com.atproto.server.createSession",
+            post(create_session),
         )
         .route(
             "/xrpc/com.atproto.identity.resolveHandle",
@@ -240,6 +255,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
         jwt_secret: [0x42u8; 32],
         oauth_signing_keypair: test_signing_key,
         dpop_nonces,
+        failed_login_attempts: Arc::new(Mutex::new(HashMap::new())),
     }
 }
 
@@ -324,7 +340,7 @@ mod tests {
         let response = app(test_state().await)
             .oneshot(
                 Request::builder()
-                    .uri("/xrpc/com.atproto.server.createSession")
+                    .uri("/xrpc/com.atproto.server.getSession")
                     .body(Body::empty())
                     .unwrap(),
             )

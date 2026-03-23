@@ -21,5 +21,6 @@ pub async fn test_state_with_admin_token() -> AppState {
         jwt_secret: base.jwt_secret,
         oauth_signing_keypair: base.oauth_signing_keypair,
         dpop_nonces: base.dpop_nonces,
+        failed_login_attempts: base.failed_login_attempts,
     }
 }

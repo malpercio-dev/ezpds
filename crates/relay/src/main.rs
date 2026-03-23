@@ -150,6 +150,7 @@ async fn run() -> anyhow::Result<()> {
         jwt_secret,
         oauth_signing_keypair,
         dpop_nonces: auth::new_nonce_store(),
+        failed_login_attempts: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     };
 
     let listener = tokio::net::TcpListener::bind(&addr)

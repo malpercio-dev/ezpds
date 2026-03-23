@@ -1,5 +1,6 @@
 pub(crate) mod auth;
 pub mod claim_codes;
+pub mod create_session;
 pub mod create_account;
 pub mod create_did;
 pub mod create_handle;
