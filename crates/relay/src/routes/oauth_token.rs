@@ -507,7 +507,8 @@ mod tests {
 
     use crate::app::{app, test_state, AppState};
     use crate::auth::issue_nonce;
-    use crate::db::oauth::{register_oauth_client, store_authorization_code};
+    use crate::db::oauth::{register_oauth_client, store_authorization_code, store_oauth_refresh_token};
+    use crate::routes::token::generate_token;
 
     // ── DPoP proof test helpers ───────────────────────────────────────────────
 
@@ -1116,6 +1117,288 @@ mod tests {
         assert_eq!(
             json["error"], "invalid_grant",
             "redirect_uri mismatch must return invalid_grant (AC1.8)"
+        );
+    }
+
+    // ── AC4 — refresh_token grant ─────────────────────────────────────────────
+
+    /// Seed the DB with a client + account + fresh refresh token bound to `jkt`.
+    ///
+    /// Returns the base64url plaintext of the seeded refresh token.
+    async fn seed_refresh_token(state: &AppState, jkt: &str) -> String {
+        register_oauth_client(
+            &state.db,
+            "https://app.example.com/client-metadata.json",
+            r#"{"redirect_uris":["https://app.example.com/callback"]}"#,
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES ('did:plc:testaccount000000000000', 'test@example.com', NULL, \
+             datetime('now'), datetime('now'))",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let token = generate_token();
+        store_oauth_refresh_token(
+            &state.db,
+            &token.hash,
+            "https://app.example.com/client-metadata.json",
+            "did:plc:testaccount000000000000",
+            jkt,
+        )
+        .await
+        .unwrap();
+        token.plaintext
+    }
+
+    /// Seed the DB with an already-expired refresh token (bypasses store_oauth_refresh_token's +24h).
+    ///
+    /// Returns the base64url plaintext.
+    async fn seed_expired_refresh_token(state: &AppState, jkt: &str) -> String {
+        register_oauth_client(
+            &state.db,
+            "https://app.example.com/client-metadata.json",
+            r#"{"redirect_uris":["https://app.example.com/callback"]}"#,
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES ('did:plc:testaccount000000000000', 'test@example.com', NULL, \
+             datetime('now'), datetime('now'))",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let token = generate_token();
+        sqlx::query(
+            "INSERT INTO oauth_tokens (id, client_id, did, scope, jkt, expires_at, created_at) \
+             VALUES (?, ?, ?, 'com.atproto.refresh', ?, datetime('now', '-1 seconds'), datetime('now'))",
+        )
+        .bind(&token.hash)
+        .bind("https://app.example.com/client-metadata.json")
+        .bind("did:plc:testaccount000000000000")
+        .bind(jkt)
+        .execute(&state.db)
+        .await
+        .unwrap();
+        token.plaintext
+    }
+
+    #[tokio::test]
+    async fn refresh_token_happy_path_returns_200_with_new_tokens() {
+        // AC4.1 — valid rotation returns 200 with fresh token pair.
+        let state = test_state().await;
+        let key = SigningKey::random(&mut OsRng);
+        let jkt = dpop_thumbprint(&key);
+
+        let plaintext = seed_refresh_token(&state, &jkt).await;
+        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let dpop = make_dpop_proof(
+            &key,
+            "POST",
+            "https://test.example.com/oauth/token",
+            Some(&nonce),
+            now_secs(),
+        );
+
+        let body = format!(
+            "grant_type=refresh_token\
+             &refresh_token={plaintext}\
+             &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json"
+        );
+
+        let resp = app(state)
+            .oneshot(post_token_with_dpop(&body, &dpop))
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK, "valid rotation must return 200");
+        assert!(
+            resp.headers().contains_key("DPoP-Nonce"),
+            "success response must include DPoP-Nonce header"
+        );
+
+        let json = json_body(resp).await;
+        assert!(json["access_token"].is_string(), "access_token must be present");
+        assert_eq!(json["token_type"], "DPoP");
+        assert_eq!(json["expires_in"], 300);
+        assert!(json["refresh_token"].is_string(), "rotated refresh_token must be present");
+
+        // Rotated token must differ from the original.
+        let new_rt = json["refresh_token"].as_str().unwrap();
+        assert_ne!(
+            new_rt, plaintext.as_str(),
+            "rotated refresh token must differ from original"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_token_second_use_returns_invalid_grant() {
+        // AC4.2 — after rotation the original token is deleted; second use must fail.
+        let state = test_state().await;
+        let key = SigningKey::random(&mut OsRng);
+        let jkt = dpop_thumbprint(&key);
+
+        let plaintext = seed_refresh_token(&state, &jkt).await;
+        let body = format!(
+            "grant_type=refresh_token\
+             &refresh_token={plaintext}\
+             &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json"
+        );
+
+        // First use: succeeds. Clone state so the second request shares the same DB.
+        let nonce1 = issue_nonce(&state.dpop_nonces).await;
+        let dpop1 = make_dpop_proof(
+            &key,
+            "POST",
+            "https://test.example.com/oauth/token",
+            Some(&nonce1),
+            now_secs(),
+        );
+        let first_resp = app(state.clone())
+            .oneshot(post_token_with_dpop(&body, &dpop1))
+            .await
+            .unwrap();
+        assert_eq!(first_resp.status(), StatusCode::OK, "first use must succeed");
+
+        // Second use of the same original token: must return invalid_grant.
+        let nonce2 = issue_nonce(&state.dpop_nonces).await;
+        let dpop2 = make_dpop_proof(
+            &key,
+            "POST",
+            "https://test.example.com/oauth/token",
+            Some(&nonce2),
+            now_secs(),
+        );
+        let resp2 = app(state)
+            .oneshot(post_token_with_dpop(&body, &dpop2))
+            .await
+            .unwrap();
+
+        assert_eq!(resp2.status(), StatusCode::BAD_REQUEST, "second use must return 400");
+        let json = json_body(resp2).await;
+        assert_eq!(
+            json["error"], "invalid_grant",
+            "second use of consumed token must return invalid_grant (AC4.2)"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_token_expired_returns_invalid_grant() {
+        // AC4.3 — expired refresh tokens are rejected.
+        let state = test_state().await;
+        let key = SigningKey::random(&mut OsRng);
+        let jkt = dpop_thumbprint(&key);
+
+        let plaintext = seed_expired_refresh_token(&state, &jkt).await;
+        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let dpop = make_dpop_proof(
+            &key,
+            "POST",
+            "https://test.example.com/oauth/token",
+            Some(&nonce),
+            now_secs(),
+        );
+
+        let body = format!(
+            "grant_type=refresh_token\
+             &refresh_token={plaintext}\
+             &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json"
+        );
+
+        let resp = app(state)
+            .oneshot(post_token_with_dpop(&body, &dpop))
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = json_body(resp).await;
+        assert_eq!(
+            json["error"], "invalid_grant",
+            "expired refresh token must return invalid_grant (AC4.3)"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_token_jkt_mismatch_returns_invalid_grant() {
+        // AC4.4 — DPoP key in proof must match the thumbprint bound to the refresh token.
+        let state = test_state().await;
+        let stored_key = SigningKey::random(&mut OsRng);
+        let stored_jkt = dpop_thumbprint(&stored_key);
+
+        // Seed token bound to stored_key's thumbprint.
+        let plaintext = seed_refresh_token(&state, &stored_jkt).await;
+
+        // Build proof with a DIFFERENT key — thumbprint will not match stored_jkt.
+        let different_key = SigningKey::random(&mut OsRng);
+        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let dpop = make_dpop_proof(
+            &different_key,
+            "POST",
+            "https://test.example.com/oauth/token",
+            Some(&nonce),
+            now_secs(),
+        );
+
+        let body = format!(
+            "grant_type=refresh_token\
+             &refresh_token={plaintext}\
+             &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json"
+        );
+
+        let resp = app(state)
+            .oneshot(post_token_with_dpop(&body, &dpop))
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = json_body(resp).await;
+        assert_eq!(
+            json["error"], "invalid_grant",
+            "DPoP key mismatch must return invalid_grant (AC4.4)"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_token_client_id_mismatch_returns_invalid_grant() {
+        // AC4.5 — client_id in the request must match the stored client_id.
+        let state = test_state().await;
+        let key = SigningKey::random(&mut OsRng);
+        let jkt = dpop_thumbprint(&key);
+
+        let plaintext = seed_refresh_token(&state, &jkt).await;
+        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let dpop = make_dpop_proof(
+            &key,
+            "POST",
+            "https://test.example.com/oauth/token",
+            Some(&nonce),
+            now_secs(),
+        );
+
+        // Wrong client_id — does not match stored "https://app.example.com/client-metadata.json".
+        let body = format!(
+            "grant_type=refresh_token\
+             &refresh_token={plaintext}\
+             &client_id=https%3A%2F%2Fother.example.com%2Fclient-metadata.json"
+        );
+
+        let resp = app(state)
+            .oneshot(post_token_with_dpop(&body, &dpop))
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = json_body(resp).await;
+        assert_eq!(
+            json["error"], "invalid_grant",
+            "client_id mismatch must return invalid_grant (AC4.5)"
         );
     }
 }
