@@ -11,7 +11,7 @@ pub(crate) struct AccountRow {
     pub(crate) email: String,
     /// Argon2id PHC string. `None` for mobile accounts (password auth not allowed).
     pub(crate) password_hash: Option<String>,
-    /// One associated handle (if any). Empty string returned in the response when absent.
+    /// One associated handle (if any). `None` means no row exists in the `handles` table.
     pub(crate) handle: Option<String>,
 }
 
@@ -34,7 +34,7 @@ pub(crate) async fn resolve_identifier(
         .fetch_optional(db)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, "DB error resolving DID");
+            tracing::error!(identifier = %identifier, error = %e, "DB error resolving DID");
             ApiError::new(ErrorCode::InternalError, "failed to resolve identifier")
         })?;
 
@@ -56,7 +56,7 @@ pub(crate) async fn resolve_identifier(
         .fetch_optional(db)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, "DB error resolving handle");
+            tracing::error!(identifier = %identifier, error = %e, "DB error resolving handle");
             ApiError::new(ErrorCode::InternalError, "failed to resolve identifier")
         })?;
 

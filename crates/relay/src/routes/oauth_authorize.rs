@@ -15,38 +15,15 @@ use axum::{
 };
 use serde::Deserialize;
 
-use std::sync::OnceLock;
-
 use crate::app::AppState;
-use crate::db::oauth::{get_oauth_client, store_authorization_code};
-use crate::auth::password::verify_password;
+use crate::auth::password::{verify_password, VerifyResult, TIMING_DUMMY_HASH};
 use crate::auth::rate_limit::{clear_failures, is_rate_limited, record_failure};
 use crate::db::accounts::resolve_identifier;
+use crate::db::oauth::{get_oauth_client, store_authorization_code};
 use crate::routes::oauth_templates::{
     encode_param, error_page, error_redirect, render_consent_page,
 };
 use crate::routes::token::generate_token;
-
-/// Dummy argon2id hash for timing equalization when an identifier is not found.
-///
-/// Calling `verify_password` against this hash in the "account not found" arm keeps
-/// response time consistent with the "wrong password" arm, preventing timing-based
-/// account enumeration despite the identical "Invalid credentials." message.
-static DUMMY_HASH: OnceLock<String> = OnceLock::new();
-
-fn dummy_hash() -> &'static str {
-    DUMMY_HASH.get_or_init(|| {
-        use argon2::{
-            password_hash::{rand_core::OsRng, SaltString},
-            Argon2, PasswordHasher,
-        };
-        let salt = SaltString::generate(&mut OsRng);
-        Argon2::default()
-            .hash_password(b"__dummy_placeholder__", &salt)
-            .unwrap()
-            .to_string()
-    })
-}
 
 /// Query parameters for `GET /oauth/authorize`.
 #[derive(Deserialize)]
@@ -340,15 +317,24 @@ pub async fn post_authorization(
         Ok(None) => {
             // Run a dummy argon2 to equalize timing with the wrong-password path,
             // preventing timing-based account enumeration.
-            verify_password(dummy_hash(), &password);
+            let _ = verify_password(TIMING_DUMMY_HASH, &password);
             tracing::debug!(
                 identifier = %identifier,
                 "OAuth consent: identifier not found or account deactivated"
             );
-            let mut attempts = state
-                .failed_login_attempts
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut attempts = match state.failed_login_attempts.lock() {
+                Ok(g) => g,
+                Err(_) => {
+                    tracing::error!("failed_login_attempts mutex is poisoned");
+                    return error_redirect(
+                        &form.redirect_uri,
+                        "server_error",
+                        "Internal server error",
+                        &form.state,
+                    )
+                    .into_response();
+                }
+            };
             record_failure(&mut attempts, &identifier);
             return rerender(Some(&identifier), "Invalid credentials.");
         }
@@ -364,32 +350,66 @@ pub async fn post_authorization(
         }
     };
 
-    let auth_ok = account
-        .password_hash
-        .as_deref()
-        .map(|h: &str| !h.is_empty() && verify_password(h, &password))
-        .unwrap_or(false);
+    let verify_result = match account.password_hash.as_deref() {
+        // Mobile accounts (NULL or empty password_hash) cannot authenticate via OAuth consent.
+        None | Some("") => VerifyResult::WrongPassword,
+        Some(h) => verify_password(h, &password),
+    };
 
-    if !auth_ok {
-        tracing::warn!(
-            client_id = %form.client_id,
-            did = %account.did,
-            has_password_hash = account.password_hash.is_some(),
-            "OAuth consent: credential verification failed"
-        );
-        let mut attempts = state
-            .failed_login_attempts
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        record_failure(&mut attempts, &identifier);
-        return rerender(Some(&identifier), "Invalid credentials.");
+    match verify_result {
+        VerifyResult::Ok => {}
+        VerifyResult::WrongPassword => {
+            tracing::warn!(
+                client_id = %form.client_id,
+                did = %account.did,
+                "OAuth consent: credential verification failed"
+            );
+            let mut attempts = match state.failed_login_attempts.lock() {
+                Ok(g) => g,
+                Err(_) => {
+                    tracing::error!("failed_login_attempts mutex is poisoned");
+                    return error_redirect(
+                        &form.redirect_uri,
+                        "server_error",
+                        "Internal server error",
+                        &form.state,
+                    )
+                    .into_response();
+                }
+            };
+            record_failure(&mut attempts, &identifier);
+            return rerender(Some(&identifier), "Invalid credentials.");
+        }
+        VerifyResult::CorruptHash => {
+            tracing::error!(
+                identifier = %identifier,
+                did = %account.did,
+                "stored password_hash is not a valid PHC string; possible DB corruption"
+            );
+            return error_redirect(
+                &form.redirect_uri,
+                "server_error",
+                "Internal server error",
+                &form.state,
+            )
+            .into_response();
+        }
     }
 
     {
-        let mut attempts = state
-            .failed_login_attempts
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut attempts = match state.failed_login_attempts.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                tracing::error!("failed_login_attempts mutex is poisoned");
+                return error_redirect(
+                    &form.redirect_uri,
+                    "server_error",
+                    "Internal server error",
+                    &form.state,
+                )
+                .into_response();
+            }
+        };
         clear_failures(&mut attempts, &identifier);
     }
 

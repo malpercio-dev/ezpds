@@ -17,7 +17,7 @@ use uuid::Uuid;
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::password::verify_password;
+use crate::auth::password::{verify_password, VerifyResult};
 use crate::auth::rate_limit::{clear_failures, is_rate_limited, record_failure};
 use crate::db::accounts::resolve_identifier;
 
@@ -100,21 +100,31 @@ pub async fn create_session(
 
     let account = match account_opt {
         Some(row) => {
-            let auth_ok = row
-                .password_hash
-                .as_deref()
-                .map(|h| !h.is_empty() && verify_password(h, &payload.password))
-                .unwrap_or(false); // mobile accounts (NULL password_hash) cannot use createSession
-            if !auth_ok {
-                let mut attempts = state.failed_login_attempts.lock().map_err(|_| {
-                    tracing::error!("failed_login_attempts mutex is poisoned");
-                    ApiError::new(ErrorCode::InternalError, "internal error")
-                })?;
-                record_failure(&mut attempts, &payload.identifier);
-                return Err(ApiError::new(
-                    ErrorCode::AuthenticationRequired,
-                    "invalid identifier or password",
-                ));
+            let result = match row.password_hash.as_deref() {
+                // Mobile accounts (NULL or empty password_hash) cannot use createSession.
+                None | Some("") => VerifyResult::WrongPassword,
+                Some(h) => verify_password(h, &payload.password),
+            };
+            match result {
+                VerifyResult::Ok => {}
+                VerifyResult::WrongPassword => {
+                    let mut attempts = state.failed_login_attempts.lock().map_err(|_| {
+                        tracing::error!("failed_login_attempts mutex is poisoned");
+                        ApiError::new(ErrorCode::InternalError, "internal error")
+                    })?;
+                    record_failure(&mut attempts, &payload.identifier);
+                    return Err(ApiError::new(
+                        ErrorCode::AuthenticationRequired,
+                        "invalid identifier or password",
+                    ));
+                }
+                VerifyResult::CorruptHash => {
+                    tracing::error!(
+                        identifier = %payload.identifier,
+                        "stored password_hash is not a valid PHC string; possible DB corruption"
+                    );
+                    return Err(ApiError::new(ErrorCode::InternalError, "internal error"));
+                }
             }
             row
         }
