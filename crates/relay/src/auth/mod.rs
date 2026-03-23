@@ -365,6 +365,10 @@ fn build_encoding_key(
 /// Converted to `OAuthTokenError` by the handler in `routes/oauth_token.rs`.
 pub(crate) enum DpopTokenEndpointError {
     /// `DPoP:` header is absent.
+    ///
+    /// Never constructed in practice — the handler in `routes/oauth_token.rs` pre-checks for a
+    /// missing `DPoP:` header and returns an error directly, so this function is only called when
+    /// the header is present. Retained for API completeness so callers can match exhaustively.
     #[allow(dead_code)]
     MissingHeader,
     /// DPoP proof is syntactically or semantically invalid.
