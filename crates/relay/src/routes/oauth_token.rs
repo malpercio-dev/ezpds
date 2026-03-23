@@ -993,14 +993,8 @@ mod tests {
         let header_b64 = at.split('.').next().unwrap();
         let header_json = String::from_utf8(URL_SAFE_NO_PAD.decode(header_b64).unwrap()).unwrap();
         let header: serde_json::Value = serde_json::from_str(&header_json).unwrap();
-        assert_eq!(
-            header["typ"], "at+jwt",
-            "access token typ must be at+jwt"
-        );
-        assert_eq!(
-            header["alg"], "ES256",
-            "access token alg must be ES256"
-        );
+        assert_eq!(header["typ"], "at+jwt", "access token typ must be at+jwt");
+        assert_eq!(header["alg"], "ES256", "access token alg must be ES256");
 
         let payload_b64 = at.split('.').nth(1).unwrap();
         let payload_json = String::from_utf8(URL_SAFE_NO_PAD.decode(payload_b64).unwrap()).unwrap();
@@ -1011,8 +1005,14 @@ mod tests {
             cnf_jkt, expected_jkt,
             "cnf.jkt must match DPoP key thumbprint"
         );
-        assert_eq!(payload["iss"], "https://test.example.com", "iss must be public_url");
-        assert_eq!(payload["aud"], "https://test.example.com", "aud must be public_url");
+        assert_eq!(
+            payload["iss"], "https://test.example.com",
+            "iss must be public_url"
+        );
+        assert_eq!(
+            payload["aud"], "https://test.example.com",
+            "aud must be public_url"
+        );
     }
 
     #[tokio::test]
@@ -1327,8 +1327,14 @@ mod tests {
         let payload_b64 = at.split('.').nth(1).unwrap();
         let payload_json = String::from_utf8(URL_SAFE_NO_PAD.decode(payload_b64).unwrap()).unwrap();
         let payload: serde_json::Value = serde_json::from_str(&payload_json).unwrap();
-        assert_eq!(payload["iss"], "https://test.example.com", "iss must be public_url");
-        assert_eq!(payload["aud"], "https://test.example.com", "aud must be public_url");
+        assert_eq!(
+            payload["iss"], "https://test.example.com",
+            "iss must be public_url"
+        );
+        assert_eq!(
+            payload["aud"], "https://test.example.com",
+            "aud must be public_url"
+        );
     }
 
     #[tokio::test]

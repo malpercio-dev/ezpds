@@ -628,10 +628,7 @@ mod tests {
         let second = consume_authorization_code(&pool, "hash-abc123")
             .await
             .unwrap();
-        assert!(
-            second.is_none(),
-            "consumed code must not be found again"
-        );
+        assert!(second.is_none(), "consumed code must not be found again");
     }
 
     #[tokio::test]
@@ -674,10 +671,7 @@ mod tests {
         let result = consume_authorization_code(&pool, "expired-code-hash")
             .await
             .unwrap();
-        assert!(
-            result.is_none(),
-            "expired auth code must return None"
-        );
+        assert!(result.is_none(), "expired auth code must return None");
     }
 
     #[tokio::test]
@@ -757,10 +751,7 @@ mod tests {
         let second = consume_oauth_refresh_token(&pool, "consume-test-token-hash")
             .await
             .unwrap();
-        assert!(
-            second.is_none(),
-            "consumed token must not be found again"
-        );
+        assert!(second.is_none(), "consumed token must not be found again");
     }
 
     #[tokio::test]
@@ -791,10 +782,7 @@ mod tests {
         let result = consume_oauth_refresh_token(&pool, "expired-hash")
             .await
             .unwrap();
-        assert!(
-            result.is_none(),
-            "expired refresh token must return None"
-        );
+        assert!(result.is_none(), "expired refresh token must return None");
     }
 
     #[tokio::test]
