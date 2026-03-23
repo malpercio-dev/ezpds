@@ -1,0 +1,26 @@
+meta {
+  name: OAuth Token — Refresh Token Rotation
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{baseUrl}}/oauth/token
+  body: formUrlEncoded
+  auth: none
+}
+
+headers {
+  DPoP: {{dpopProof}}
+}
+
+body:form-urlencoded {
+  grant_type: refresh_token
+  refresh_token: {{refreshToken}}
+  client_id: https://app.example.com/client-metadata.json
+}
+
+vars:pre-request {
+  dpopProof: <replace-with-dpop-proof-jwt>
+  refreshToken: <replace-with-refresh-token>
+}

@@ -1,0 +1,29 @@
+meta {
+  name: OAuth Token — Authorization Code Exchange
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/oauth/token
+  body: formUrlEncoded
+  auth: none
+}
+
+headers {
+  DPoP: {{dpopProof}}
+}
+
+body:form-urlencoded {
+  grant_type: authorization_code
+  code: {{authCode}}
+  redirect_uri: https://app.example.com/callback
+  client_id: https://app.example.com/client-metadata.json
+  code_verifier: {{codeVerifier}}
+}
+
+vars:pre-request {
+  dpopProof: <replace-with-dpop-proof-jwt>
+  authCode: <replace-with-authorization-code>
+  codeVerifier: <replace-with-pkce-code-verifier>
+}
