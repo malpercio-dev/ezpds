@@ -96,7 +96,10 @@ pub async fn create_session(
         let mut attempts = state
             .failed_login_attempts
             .lock()
-            .map_err(|_| ApiError::new(ErrorCode::InternalError, "internal error"))?;
+            .map_err(|_| {
+                tracing::error!("failed_login_attempts mutex is poisoned");
+                ApiError::new(ErrorCode::InternalError, "internal error")
+            })?;
         if is_rate_limited(&mut attempts, &payload.identifier) {
             return Err(ApiError::new(
                 ErrorCode::RateLimited,
@@ -121,7 +124,10 @@ pub async fn create_session(
                 let mut attempts = state
                     .failed_login_attempts
                     .lock()
-                    .map_err(|_| ApiError::new(ErrorCode::InternalError, "internal error"))?;
+                    .map_err(|_| {
+                        tracing::error!("failed_login_attempts mutex is poisoned");
+                        ApiError::new(ErrorCode::InternalError, "internal error")
+                    })?;
                 record_failure(&mut attempts, &payload.identifier);
                 return Err(ApiError::new(
                     ErrorCode::AuthenticationRequired,
@@ -134,7 +140,10 @@ pub async fn create_session(
             let mut attempts = state
                 .failed_login_attempts
                 .lock()
-                .map_err(|_| ApiError::new(ErrorCode::InternalError, "internal error"))?;
+                .map_err(|_| {
+                    tracing::error!("failed_login_attempts mutex is poisoned");
+                    ApiError::new(ErrorCode::InternalError, "internal error")
+                })?;
             record_failure(&mut attempts, &payload.identifier);
             return Err(ApiError::new(
                 ErrorCode::AuthenticationRequired,
@@ -143,19 +152,13 @@ pub async fn create_session(
         }
     };
 
-    // --- Clear failure history on successful authentication ---
-    {
-        let mut attempts = state
-            .failed_login_attempts
-            .lock()
-            .map_err(|_| ApiError::new(ErrorCode::InternalError, "internal error"))?;
-        clear_failures(&mut attempts, &payload.identifier);
-    }
-
     // --- Issue legacy HS256 JWTs ---
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
+        .map_err(|e| {
+            tracing::error!(error = %e, "system clock is before Unix epoch");
+            ApiError::new(ErrorCode::InternalError, "failed to issue token")
+        })?
         .as_secs();
 
     // Prefer server_did as audience (what verify_hs256_access_token validates against
@@ -212,6 +215,20 @@ pub async fn create_session(
         ApiError::new(ErrorCode::InternalError, "failed to create session")
     })?;
 
+    // Clear failure history only after the session is fully committed.
+    // Doing this earlier would reset the counter even if JWT issuance or the
+    // DB transaction subsequently fails.
+    {
+        let mut attempts = state
+            .failed_login_attempts
+            .lock()
+            .map_err(|_| {
+                tracing::error!("failed_login_attempts mutex is poisoned");
+                ApiError::new(ErrorCode::InternalError, "internal error")
+            })?;
+        clear_failures(&mut attempts, &payload.identifier);
+    }
+
     Ok((
         StatusCode::OK,
         Json(CreateSessionResponse {
@@ -256,8 +273,8 @@ async fn resolve_identifier(
             handle,
         }))
     } else {
-        let row: Option<(String, String, Option<String>)> = sqlx::query_as(
-            "SELECT a.did, a.email, a.password_hash \
+        let row: Option<(String, String, Option<String>, String)> = sqlx::query_as(
+            "SELECT a.did, a.email, a.password_hash, h.handle \
              FROM handles h \
              JOIN accounts a ON a.did = h.did \
              WHERE h.handle = ? AND a.deactivated_at IS NULL \
@@ -271,11 +288,11 @@ async fn resolve_identifier(
             ApiError::new(ErrorCode::InternalError, "failed to resolve identifier")
         })?;
 
-        Ok(row.map(|(did, email, password_hash)| AccountRow {
+        Ok(row.map(|(did, email, password_hash, handle)| AccountRow {
             did,
             email,
             password_hash,
-            handle: Some(identifier.to_string()),
+            handle: Some(handle),
         }))
     }
 }
@@ -283,6 +300,7 @@ async fn resolve_identifier(
 /// Verify `password` against a stored argon2id PHC-format hash string.
 fn verify_password(stored_hash: &str, password: &str) -> bool {
     let Ok(hash) = PasswordHash::new(stored_hash) else {
+        tracing::error!("stored password_hash is not a valid PHC string; possible DB corruption");
         return false;
     };
     Argon2::default()
@@ -346,19 +364,7 @@ fn issue_refresh_jwt(
 /// attempts within the last `RATE_LIMIT_WINDOW_SECS` seconds (sliding window).
 ///
 /// Prunes expired entries from the front of the deque during the check, keeping
-/// memory bounded without a separate cleanup goroutine.
-///
-/// # Your turn
-///
-/// Implement this function. The approach:
-///   1. Look up the `VecDeque` for `identifier`; return `false` if absent (no prior failures).
-///   2. Drop entries from the **front** that are older than `RATE_LIMIT_WINDOW_SECS`.
-///   3. Return `true` if the remaining count ≥ `RATE_LIMIT_MAX_FAILURES`.
-///
-/// Trade-off to consider: a sliding window is accurate but allocates one `Instant` per
-/// failure. A fixed window (keyed by `now / window_secs`) uses O(1) memory but can allow
-/// 2× the limit at a window boundary. Either is valid for v0.1 — pick the approach that
-/// makes the rate-limit test below pass.
+/// memory bounded without a separate background task.
 fn is_rate_limited(
     attempts: &mut HashMap<String, VecDeque<Instant>>,
     identifier: &str,
@@ -682,10 +688,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
-    // ── Rate limiting (requires is_rate_limited implementation) ───────────────
-    //
-    // This test will fail until you implement `is_rate_limited` above.
-    // After 5 failures the 6th attempt should receive 429 Too Many Requests.
+    // ── Rate limiting ─────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn rate_limit_triggers_after_five_failures() {
@@ -711,5 +714,102 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn deactivated_account_returns_401() {
+        let state = test_state().await;
+        insert_account_with_password(
+            &state.db,
+            "did:plc:deactivated",
+            "deact.test.example.com",
+            "deact@example.com",
+            "password",
+        )
+        .await;
+
+        sqlx::query(
+            "UPDATE accounts SET deactivated_at = datetime('now') WHERE did = 'did:plc:deactivated'",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let response = app(state)
+            .oneshot(post_create_session("did:plc:deactivated", "password"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn wrong_password_and_unknown_identifier_return_identical_errors() {
+        let state = test_state().await;
+        insert_account_with_password(
+            &state.db,
+            "did:plc:enumtest",
+            "enumtest.test.example.com",
+            "enumtest@example.com",
+            "correctpassword",
+        )
+        .await;
+
+        let wrong_pw = app(state.clone())
+            .oneshot(post_create_session("did:plc:enumtest", "wrongpassword"))
+            .await
+            .unwrap();
+        let unknown = app(state)
+            .oneshot(post_create_session("did:plc:nobody", "anything"))
+            .await
+            .unwrap();
+
+        assert_eq!(wrong_pw.status(), unknown.status());
+        let wrong_pw_json = body_json(wrong_pw).await;
+        let unknown_json = body_json(unknown).await;
+        assert_eq!(wrong_pw_json["error"]["code"], unknown_json["error"]["code"]);
+        assert_eq!(
+            wrong_pw_json["error"]["message"],
+            unknown_json["error"]["message"]
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_login_clears_rate_limit_counter() {
+        let state = test_state().await;
+        insert_account_with_password(
+            &state.db,
+            "did:plc:cleartest",
+            "cleartest.test.example.com",
+            "cleartest@example.com",
+            "correctpassword",
+        )
+        .await;
+
+        // N-1 failed attempts (one below the threshold)
+        for _ in 0..(RATE_LIMIT_MAX_FAILURES - 1) {
+            app(state.clone())
+                .oneshot(post_create_session("did:plc:cleartest", "wrongpassword"))
+                .await
+                .unwrap();
+        }
+
+        // Successful login clears the counter
+        let ok = app(state.clone())
+            .oneshot(post_create_session("did:plc:cleartest", "correctpassword"))
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+
+        // One more failure should be 401, not 429 — counter was reset
+        let after = app(state)
+            .oneshot(post_create_session("did:plc:cleartest", "wrongpassword"))
+            .await
+            .unwrap();
+        assert_eq!(
+            after.status(),
+            StatusCode::UNAUTHORIZED,
+            "counter must have been cleared by the successful login"
+        );
     }
 }
