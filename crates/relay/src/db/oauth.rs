@@ -162,6 +162,92 @@ pub async fn store_oauth_signing_key(
     Ok(())
 }
 
+/// A row read from `oauth_authorization_codes` during code exchange.
+pub struct AuthCodeRow {
+    pub client_id: String,
+    pub did: String,
+    #[allow(dead_code)]
+    pub code_challenge: String,
+    #[allow(dead_code)]
+    pub code_challenge_method: String,
+    #[allow(dead_code)]
+    pub redirect_uri: String,
+    #[allow(dead_code)]
+    pub scope: String,
+}
+
+/// Atomically consume an authorization code: SELECT + DELETE in one transaction.
+///
+/// Returns `None` if the code does not exist or has already expired (`expires_at <= now`).
+/// Callers must treat `None` as `invalid_grant`.
+///
+/// The code column stores the SHA-256 hex hash of the raw code bytes. Callers must
+/// hash the presented code before calling this function (use `routes::token::sha256_hex`).
+pub async fn consume_authorization_code(
+    pool: &SqlitePool,
+    code_hash: &str,
+) -> Result<Option<AuthCodeRow>, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    let row: Option<(String, String, String, String, String, String)> = sqlx::query_as(
+        "SELECT client_id, did, code_challenge, code_challenge_method, redirect_uri, scope \
+         FROM oauth_authorization_codes \
+         WHERE code = ? AND expires_at > datetime('now')",
+    )
+    .bind(code_hash)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    if row.is_some() {
+        sqlx::query("DELETE FROM oauth_authorization_codes WHERE code = ?")
+            .bind(code_hash)
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    tx.commit().await?;
+
+    Ok(row.map(
+        |(client_id, did, code_challenge, code_challenge_method, redirect_uri, scope)| {
+            AuthCodeRow {
+                client_id,
+                did,
+                code_challenge,
+                code_challenge_method,
+                redirect_uri,
+                scope,
+            }
+        },
+    ))
+}
+
+/// Store a new refresh token in `oauth_tokens`.
+///
+/// `token_hash` is used as the row's `id` (PRIMARY KEY). This follows the same
+/// pattern as `oauth_authorization_codes` where `code` IS the hash.
+/// `scope` is always `'com.atproto.refresh'` for OAuth refresh tokens.
+/// `jkt` is the DPoP key thumbprint binding this token to the client's keypair.
+/// Expires 24 hours after insertion.
+pub async fn store_oauth_refresh_token(
+    pool: &SqlitePool,
+    token_hash: &str,
+    client_id: &str,
+    did: &str,
+    jkt: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO oauth_tokens (id, client_id, did, scope, jkt, expires_at, created_at) \
+         VALUES (?, ?, ?, 'com.atproto.refresh', ?, datetime('now', '+24 hours'), datetime('now'))",
+    )
+    .bind(token_hash)
+    .bind(client_id)
+    .bind(did)
+    .bind(jkt)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,5 +413,139 @@ mod tests {
         let pool = test_pool().await;
         let result = get_oauth_signing_key(&pool).await.unwrap();
         assert!(result.is_none());
+    }
+
+    /// Insert an account row needed to satisfy oauth_tokens FK.
+    async fn insert_test_account(pool: &SqlitePool) {
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES ('did:plc:testaccount000000000000', 'test@example.com', NULL, \
+             datetime('now'), datetime('now'))",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn consume_authorization_code_returns_row_and_deletes_it() {
+        let pool = test_pool().await;
+        register_oauth_client(
+            &pool,
+            "https://app.example.com/client-metadata.json",
+            r#"{"redirect_uris":["https://app.example.com/callback"]}"#,
+        )
+        .await
+        .unwrap();
+        insert_test_account(&pool).await;
+
+        store_authorization_code(
+            &pool,
+            "hash-abc123",
+            "https://app.example.com/client-metadata.json",
+            "did:plc:testaccount000000000000",
+            "s256challenge",
+            "S256",
+            "https://app.example.com/callback",
+            "atproto",
+        )
+        .await
+        .unwrap();
+
+        let row = consume_authorization_code(&pool, "hash-abc123")
+            .await
+            .unwrap()
+            .expect("code should be found");
+
+        assert_eq!(row.client_id, "https://app.example.com/client-metadata.json");
+        assert_eq!(row.did, "did:plc:testaccount000000000000");
+
+        // Second consume: must return None (already deleted).
+        let second = consume_authorization_code(&pool, "hash-abc123").await.unwrap();
+        assert!(second.is_none(), "consumed code must not be found again (AC1.6)");
+    }
+
+    #[tokio::test]
+    async fn consume_authorization_code_returns_none_for_unknown_code() {
+        let pool = test_pool().await;
+        let result = consume_authorization_code(&pool, "nonexistent-hash").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn consume_authorization_code_returns_none_for_expired_code() {
+        // AC1.5: expired auth codes (>60s) are rejected.
+        let pool = test_pool().await;
+        register_oauth_client(
+            &pool,
+            "https://app.example.com/client-metadata.json",
+            r#"{"redirect_uris":["https://app.example.com/callback"]}"#,
+        )
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES ('did:plc:testaccount000000000000', 'test@example.com', NULL, \
+             datetime('now'), datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Insert an already-expired auth code directly (bypassing store_authorization_code's +60s default).
+        sqlx::query(
+            "INSERT INTO oauth_authorization_codes \
+             (code, client_id, did, code_challenge, code_challenge_method, redirect_uri, scope, expires_at, created_at) \
+             VALUES (?, ?, ?, ?, 'S256', ?, 'atproto', datetime('now', '-1 seconds'), datetime('now'))",
+        )
+        .bind("expired-code-hash")
+        .bind("https://app.example.com/client-metadata.json")
+        .bind("did:plc:testaccount000000000000")
+        .bind("s256challenge")
+        .bind("https://app.example.com/callback")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let result = consume_authorization_code(&pool, "expired-code-hash")
+            .await
+            .unwrap();
+        assert!(result.is_none(), "expired auth code must return None (AC1.5)");
+    }
+
+    #[tokio::test]
+    async fn store_oauth_refresh_token_persists_row() {
+        let pool = test_pool().await;
+        register_oauth_client(
+            &pool,
+            "https://app.example.com/client-metadata.json",
+            r#"{"redirect_uris":["https://app.example.com/callback"]}"#,
+        )
+        .await
+        .unwrap();
+        insert_test_account(&pool).await;
+
+        store_oauth_refresh_token(
+            &pool,
+            "refresh-token-hash-01",
+            "https://app.example.com/client-metadata.json",
+            "did:plc:testaccount000000000000",
+            "jkt-thumbprint",
+        )
+        .await
+        .unwrap();
+
+        let row: Option<(String, String, Option<String>)> =
+            sqlx::query_as("SELECT id, scope, jkt FROM oauth_tokens WHERE id = ?")
+                .bind("refresh-token-hash-01")
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+
+        let (id, scope, jkt) = row.expect("refresh token row must exist");
+        assert_eq!(id, "refresh-token-hash-01");
+        assert_eq!(scope, "com.atproto.refresh", "scope must be com.atproto.refresh (AC1.3)");
+        assert_eq!(jkt.as_deref(), Some("jkt-thumbprint"));
     }
 }
