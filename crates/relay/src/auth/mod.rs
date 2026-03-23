@@ -445,7 +445,7 @@ pub(crate) async fn validate_dpop_for_token_endpoint(
         ));
     }
 
-    // Validate that the embedded JWK curve matches the declared algorithm (F10).
+    // Validate that the embedded JWK curve matches the declared algorithm.
     if dpop_header.alg == "ES256"
         && dpop_header.jwk.get("crv").and_then(|v| v.as_str()) != Some("P-256")
     {
@@ -694,7 +694,7 @@ fn validate_dpop(
         ));
     }
 
-    // Validate that the embedded JWK curve matches the declared algorithm (F10).
+    // Validate that the embedded JWK curve matches the declared algorithm.
     if dpop_header.alg == "ES256"
         && dpop_header.jwk.get("crv").and_then(|v| v.as_str()) != Some("P-256")
     {
@@ -847,7 +847,6 @@ fn validate_dpop(
 fn dpop_alg_from_str(alg: &str) -> Option<Algorithm> {
     match alg {
         "ES256" => Some(Algorithm::ES256),
-        "ES384" => Some(Algorithm::ES384),
         _ => None,
     }
 }
@@ -1802,5 +1801,96 @@ mod tests {
             .all(|c| c.is_alphanumeric() || c == '-' || c == '_'));
         // Stable regression guard.
         assert_eq!(thumb, "kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k");
+    }
+
+    // ── ES256 round-trip (F1) ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn es256_at_jwt_accepted_at_resource_endpoint() {
+        // Verifies the full dispatch path: peek_jwt_typ → verify_es256_access_token →
+        // AuthenticatedUser. A token issued by the OAuth token endpoint (ES256, typ=at+jwt)
+        // must be accepted at any endpoint that uses the AuthenticatedUser extractor.
+        let state = test_state().await;
+
+        // Issue an ES256 AT+JWT using the test state's signing key — no cnf.jkt so no
+        // DPoP header is required; we are testing ES256 signature verification only.
+        #[derive(Serialize)]
+        struct Es256Claims {
+            iss: String,
+            jti: String,
+            sub: String,
+            aud: String,
+            iat: u64,
+            exp: u64,
+            scope: String,
+        }
+        let now = now_secs() as u64;
+        let claims = Es256Claims {
+            iss: state.config.public_url.clone(),
+            jti: uuid::Uuid::new_v4().to_string(),
+            sub: "did:plc:alice".to_string(),
+            aud: state.config.public_url.clone(),
+            iat: now,
+            exp: now + 300,
+            scope: "com.atproto.access".to_string(),
+        };
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
+        header.typ = Some("at+jwt".to_string());
+        let token = encode(&header, &claims, &state.oauth_signing_keypair.encoding_key).unwrap();
+
+        let resp = get_protected(protected_app(state), Some(&token)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let text = String::from_utf8(
+            axum::body::to_bytes(resp.into_body(), 4096)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(text.contains("did=did:plc:alice"));
+    }
+
+    #[tokio::test]
+    async fn es256_at_jwt_with_wrong_key_returns_401() {
+        // A token signed by a different key (e.g. an attacker's P-256 key) must not
+        // pass ES256 verification even if the typ header claims "at+jwt".
+        let state = test_state().await;
+
+        let attacker_key = p256::ecdsa::SigningKey::random(&mut OsRng);
+        let attacker_pkcs8 = attacker_key.to_pkcs8_der().unwrap();
+
+        #[derive(Serialize)]
+        struct Es256Claims {
+            iss: String,
+            jti: String,
+            sub: String,
+            aud: String,
+            iat: u64,
+            exp: u64,
+            scope: String,
+        }
+        let now = now_secs() as u64;
+        let claims = Es256Claims {
+            iss: state.config.public_url.clone(),
+            jti: uuid::Uuid::new_v4().to_string(),
+            sub: "did:plc:attacker".to_string(),
+            aud: state.config.public_url.clone(),
+            iat: now,
+            exp: now + 300,
+            scope: "com.atproto.access".to_string(),
+        };
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
+        header.typ = Some("at+jwt".to_string());
+        let forged_token = encode(
+            &header,
+            &claims,
+            &EncodingKey::from_ec_der(attacker_pkcs8.as_bytes()),
+        )
+        .unwrap();
+
+        let resp = get_protected(protected_app(state), Some(&forged_token)).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let json = json_body(resp).await;
+        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
     }
 }

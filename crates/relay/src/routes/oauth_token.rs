@@ -95,7 +95,7 @@ impl IntoResponse for OAuthTokenError {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert(
             axum::http::header::CONTENT_TYPE,
-            "application/json".parse().unwrap(),
+            axum::http::HeaderValue::from_static("application/json"),
         );
         if let Some(nonce) = self.dpop_nonce {
             match axum::http::HeaderValue::from_str(&nonce) {
@@ -103,7 +103,23 @@ impl IntoResponse for OAuthTokenError {
                     headers.insert("DPoP-Nonce", hval);
                 }
                 Err(e) => {
-                    tracing::warn!(nonce = ?nonce, error = %e, "failed to insert DPoP-Nonce header, nonce format invalid");
+                    // This should never happen: nonces are base64url ASCII, always valid
+                    // header values. If it does happen, returning use_dpop_nonce without
+                    // the nonce header leaves the client with no retry path (RFC 9449 §7.1).
+                    // Return server_error instead.
+                    tracing::error!(nonce = ?nonce, error = %e, "nonce string cannot be encoded as HTTP header value; this is a server bug");
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        [(
+                            axum::http::header::CONTENT_TYPE,
+                            axum::http::HeaderValue::from_static("application/json"),
+                        )],
+                        Json(serde_json::json!({
+                            "error": "server_error",
+                            "error_description": "internal server error",
+                        })),
+                    )
+                        .into_response();
                 }
             }
         }
@@ -228,9 +244,8 @@ async fn handle_authorization_code(
     headers: &HeaderMap,
     form: TokenRequestForm,
 ) -> Response {
-    // Prune stale nonces on every request.
+    // Prune stale nonces and expired tokens on every request.
     cleanup_expired_nonces(&state.dpop_nonces).await;
-    // F6: Clean up expired auth codes and refresh tokens to prevent DB growth.
     cleanup_expired_auth_codes(&state.db)
         .await
         .unwrap_or_else(|e| {
@@ -365,9 +380,9 @@ async fn handle_authorization_code(
         return OAuthTokenError::new("invalid_grant", "redirect_uri mismatch").into_response();
     }
 
-    // Enforce S256 — reject plain (or any other method) in case it ever enters the DB (F2).
+    // Enforce S256: reject plain (or any other method) in case it ever enters the DB.
     if auth_code.code_challenge_method != "S256" {
-        return OAuthTokenError::new("invalid_grant", "unsupported code_challenge_method")
+        return OAuthTokenError::new("invalid_request", "unsupported code_challenge_method")
             .into_response();
     }
 
@@ -430,7 +445,7 @@ async fn handle_authorization_code(
                 .into_response();
         }
     }
-    // F5: Add Cache-Control headers to prevent caching of sensitive token response.
+    // Add Cache-Control headers to prevent caching of sensitive token responses (RFC 6749 §5.1).
     response_headers.insert(
         axum::http::header::CACHE_CONTROL,
         axum::http::HeaderValue::from_static("no-store"),
@@ -456,9 +471,8 @@ async fn handle_refresh_token(
     headers: &HeaderMap,
     form: TokenRequestForm,
 ) -> Response {
-    // Prune stale nonces on every request.
+    // Prune stale nonces and expired tokens on every request.
     cleanup_expired_nonces(&state.dpop_nonces).await;
-    // F6: Clean up expired auth codes and refresh tokens to prevent DB growth.
     cleanup_expired_auth_codes(&state.db)
         .await
         .unwrap_or_else(|e| {
@@ -558,8 +572,8 @@ async fn handle_refresh_token(
         return OAuthTokenError::new("invalid_grant", "client_id mismatch").into_response();
     }
 
-    // DPoP binding check before consuming: if the refresh token was bound to a specific key, the same key must be used.
-    // F3: NULL jkt on refresh token bypasses DPoP binding — treat None jkt as invalid_grant.
+    // DPoP binding check: tokens issued since V012 always carry jkt.
+    // A NULL jkt means the token predates DPoP binding enforcement — reject it.
     match stored.jkt.as_deref() {
         None => {
             // Refresh tokens issued after V012 always have a jkt. A NULL jkt means
@@ -626,7 +640,7 @@ async fn handle_refresh_token(
                 .into_response();
         }
     }
-    // F5: Add Cache-Control headers to prevent caching of sensitive token response.
+    // Add Cache-Control headers to prevent caching of sensitive token responses (RFC 6749 §5.1).
     response_headers.insert(
         axum::http::header::CACHE_CONTROL,
         axum::http::HeaderValue::from_static("no-store"),
@@ -843,7 +857,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 
-    // ── AC2 — DPoP proof validation ───────────────────────────────────────────
+    // ── DPoP proof validation ─────────────────────────────────────────────────
 
     #[tokio::test]
     async fn missing_dpop_header_returns_invalid_dpop_proof() {
@@ -936,7 +950,7 @@ mod tests {
         assert_eq!(json["error"], "invalid_dpop_proof");
     }
 
-    // ── AC3 — DPoP nonces ─────────────────────────────────────────────────────
+    // ── DPoP nonces ───────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn dpop_without_nonce_returns_use_dpop_nonce_with_header() {
@@ -991,7 +1005,7 @@ mod tests {
         assert_eq!(json["error"], "use_dpop_nonce");
     }
 
-    // ── AC1 — authorization_code grant ───────────────────────────────────────
+    // ── authorization_code grant ──────────────────────────────────────────────
 
     #[tokio::test]
     async fn authorization_code_happy_path_returns_200_with_tokens() {
@@ -1263,7 +1277,7 @@ mod tests {
         );
     }
 
-    // ── AC4 — refresh_token grant ─────────────────────────────────────────────
+    // ── refresh_token grant ───────────────────────────────────────────────────
 
     /// Seed the DB with a client + account + fresh refresh token bound to `jkt`.
     ///
@@ -1539,6 +1553,377 @@ mod tests {
         assert_eq!(
             json["error"], "invalid_grant",
             "DPoP key mismatch must return invalid_grant"
+        );
+    }
+
+    // ── C-1/C-2 ordering: token not consumed on validation failure ────────────
+
+    #[tokio::test]
+    async fn authorization_code_not_consumed_on_client_id_mismatch() {
+        // Verifies that the auth code is NOT deleted when client_id validation fails —
+        // i.e., the validate-before-consume ordering is in effect.
+        let state = test_state().await;
+        let key = SigningKey::random(&mut OsRng);
+        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"; // 43-char S256 verifier
+        let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+        let code = generate_token();
+        seed_auth_code(&state, &code.hash, &challenge).await;
+
+        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let dpop = make_dpop_proof(
+            &key,
+            "POST",
+            "https://test.example.com/oauth/token",
+            Some(&nonce),
+            now_secs(),
+        );
+
+        // Attempt 1: wrong client_id — must fail.
+        let bad_body = format!(
+            "grant_type=authorization_code\
+             &code={raw_code}\
+             &redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback\
+             &client_id=https%3A%2F%2Fwrong.example.com%2Fclient-metadata.json\
+             &code_verifier={verifier}",
+            raw_code = code.plaintext
+        );
+        let bad_resp = app(state.clone())
+            .oneshot(post_token_with_dpop(&bad_body, &dpop))
+            .await
+            .unwrap();
+        assert_eq!(bad_resp.status(), StatusCode::BAD_REQUEST);
+        let bad_json = json_body(bad_resp).await;
+        assert_eq!(bad_json["error"], "invalid_grant");
+
+        // Attempt 2: correct client_id — must succeed (code was not consumed above).
+        let nonce2 = issue_nonce(&state.dpop_nonces).await;
+        let dpop2 = make_dpop_proof(
+            &key,
+            "POST",
+            "https://test.example.com/oauth/token",
+            Some(&nonce2),
+            now_secs(),
+        );
+        let good_body = format!(
+            "grant_type=authorization_code\
+             &code={raw_code}\
+             &redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback\
+             &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json\
+             &code_verifier={verifier}",
+            raw_code = code.plaintext
+        );
+        let good_resp = app(state)
+            .oneshot(post_token_with_dpop(&good_body, &dpop2))
+            .await
+            .unwrap();
+        assert_eq!(
+            good_resp.status(),
+            StatusCode::OK,
+            "code must still be usable after a failed attempt with wrong client_id"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_token_not_consumed_on_client_id_mismatch() {
+        // Verifies that the refresh token is NOT deleted when client_id validation fails.
+        let state = test_state().await;
+        let key = SigningKey::random(&mut OsRng);
+        let jkt = dpop_thumbprint(&key);
+        let plaintext = seed_refresh_token(&state, &jkt).await;
+
+        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let dpop = make_dpop_proof(
+            &key,
+            "POST",
+            "https://test.example.com/oauth/token",
+            Some(&nonce),
+            now_secs(),
+        );
+
+        // Attempt 1: wrong client_id — must fail.
+        let bad_body = format!(
+            "grant_type=refresh_token\
+             &refresh_token={plaintext}\
+             &client_id=https%3A%2F%2Fwrong.example.com%2Fclient-metadata.json"
+        );
+        let bad_resp = app(state.clone())
+            .oneshot(post_token_with_dpop(&bad_body, &dpop))
+            .await
+            .unwrap();
+        assert_eq!(bad_resp.status(), StatusCode::BAD_REQUEST);
+        let bad_json = json_body(bad_resp).await;
+        assert_eq!(bad_json["error"], "invalid_grant");
+
+        // Attempt 2: correct client_id — must succeed (token was not consumed above).
+        let nonce2 = issue_nonce(&state.dpop_nonces).await;
+        let dpop2 = make_dpop_proof(
+            &key,
+            "POST",
+            "https://test.example.com/oauth/token",
+            Some(&nonce2),
+            now_secs(),
+        );
+        let good_body = format!(
+            "grant_type=refresh_token\
+             &refresh_token={plaintext}\
+             &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json"
+        );
+        let good_resp = app(state)
+            .oneshot(post_token_with_dpop(&good_body, &dpop2))
+            .await
+            .unwrap();
+        assert_eq!(
+            good_resp.status(),
+            StatusCode::OK,
+            "refresh token must still be usable after a failed attempt with wrong client_id"
+        );
+    }
+
+    // ── F3: NULL jkt rejected ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn refresh_token_with_null_jkt_returns_invalid_grant() {
+        // Tokens issued before DPoP binding enforcement may have jkt = NULL.
+        // These must be rejected rather than silently accepting any DPoP key.
+        let state = test_state().await;
+        let key = SigningKey::random(&mut OsRng);
+
+        // Seed client and account (FK constraints required by oauth_tokens).
+        register_oauth_client(
+            &state.db,
+            "https://app.example.com/client-metadata.json",
+            r#"{"redirect_uris":["https://app.example.com/callback"]}"#,
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES ('did:plc:testaccount000000000000', 'test@example.com', NULL, \
+             datetime('now'), datetime('now'))",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        // Insert a refresh token with jkt = NULL directly (bypasses store_oauth_refresh_token
+        // which always sets jkt, simulating a pre-V012 row).
+        let token = generate_token();
+        sqlx::query(
+            "INSERT INTO oauth_tokens (id, client_id, did, scope, jkt, expires_at, created_at) \
+             VALUES (?, ?, ?, 'com.atproto.refresh', NULL, datetime('now', '+24 hours'), datetime('now'))",
+        )
+        .bind(&token.hash)
+        .bind("https://app.example.com/client-metadata.json")
+        .bind("did:plc:testaccount000000000000")
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let dpop = make_dpop_proof(
+            &key,
+            "POST",
+            "https://test.example.com/oauth/token",
+            Some(&nonce),
+            now_secs(),
+        );
+        let body = format!(
+            "grant_type=refresh_token\
+             &refresh_token={}\
+             &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json",
+            token.plaintext
+        );
+
+        let resp = app(state)
+            .oneshot(post_token_with_dpop(&body, &dpop))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = json_body(resp).await;
+        assert_eq!(
+            json["error"], "invalid_grant",
+            "refresh token with NULL jkt must return invalid_grant"
+        );
+    }
+
+    // ── C-5: multiple DPoP headers at token endpoint ──────────────────────────
+
+    #[tokio::test]
+    async fn multiple_dpop_headers_at_token_endpoint_returns_invalid_dpop_proof() {
+        // The multiple-DPoP check fires after required field validation, so all required
+        // fields must be present for the check to be reached.
+        let state = test_state().await;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/oauth/token")
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .header("DPoP", "first.proof.value")
+            .header("DPoP", "second.proof.value")
+            .body(Body::from(
+                "grant_type=authorization_code\
+                 &code=somerawcode\
+                 &redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback\
+                 &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json\
+                 &code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+            ))
+            .unwrap();
+        let resp = app(state).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = json_body(resp).await;
+        assert_eq!(json["error"], "invalid_dpop_proof");
+    }
+
+    // ── F2: code_challenge_method = "plain" rejected ──────────────────────────
+
+    #[tokio::test]
+    async fn plain_code_challenge_method_returns_invalid_request() {
+        // An auth code with code_challenge_method = "plain" must be rejected at the
+        // token endpoint even if the PKCE check would otherwise pass.
+        let state = test_state().await;
+        let key = SigningKey::random(&mut OsRng);
+
+        register_oauth_client(
+            &state.db,
+            "https://app.example.com/client-metadata.json",
+            r#"{"redirect_uris":["https://app.example.com/callback"]}"#,
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES ('did:plc:testaccount000000000000', 'test@example.com', NULL, \
+             datetime('now'), datetime('now'))",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        // Seed an auth code with code_challenge_method = "plain" directly.
+        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        let code = generate_token();
+        crate::db::oauth::store_authorization_code(
+            &state.db,
+            &code.hash,
+            "https://app.example.com/client-metadata.json",
+            "did:plc:testaccount000000000000",
+            verifier, // for "plain", code_challenge == code_verifier
+            "plain",
+            "https://app.example.com/callback",
+            "com.atproto.access",
+        )
+        .await
+        .unwrap();
+
+        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let dpop = make_dpop_proof(
+            &key,
+            "POST",
+            "https://test.example.com/oauth/token",
+            Some(&nonce),
+            now_secs(),
+        );
+        let body = format!(
+            "grant_type=authorization_code\
+             &code={raw_code}\
+             &redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback\
+             &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json\
+             &code_verifier={verifier}",
+            raw_code = code.plaintext
+        );
+
+        let resp = app(state)
+            .oneshot(post_token_with_dpop(&body, &dpop))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = json_body(resp).await;
+        assert_eq!(
+            json["error"], "invalid_request",
+            "code_challenge_method=plain must return invalid_request (RFC 7636 §4.6)"
+        );
+    }
+
+    // ── F7: code_verifier length validation ───────────────────────────────────
+
+    #[tokio::test]
+    async fn short_code_verifier_returns_invalid_grant() {
+        // RFC 7636 §4.1 requires 43–128 characters. A verifier shorter than 43
+        // chars must be rejected before the PKCE hash comparison.
+        let state = test_state().await;
+        let key = SigningKey::random(&mut OsRng);
+        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+        let code = generate_token();
+        seed_auth_code(&state, &code.hash, &challenge).await;
+
+        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let dpop = make_dpop_proof(
+            &key,
+            "POST",
+            "https://test.example.com/oauth/token",
+            Some(&nonce),
+            now_secs(),
+        );
+        let body = format!(
+            "grant_type=authorization_code\
+             &code={raw_code}\
+             &redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback\
+             &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json\
+             &code_verifier=short", // < 43 chars
+            raw_code = code.plaintext
+        );
+
+        let resp = app(state)
+            .oneshot(post_token_with_dpop(&body, &dpop))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = json_body(resp).await;
+        assert_eq!(
+            json["error"], "invalid_grant",
+            "code_verifier shorter than 43 chars must return invalid_grant"
+        );
+    }
+
+    // ── F5: Cache-Control headers on token responses ──────────────────────────
+
+    #[tokio::test]
+    async fn authorization_code_success_response_has_cache_control_no_store() {
+        let state = test_state().await;
+        let key = SigningKey::random(&mut OsRng);
+        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+        let code = generate_token();
+        seed_auth_code(&state, &code.hash, &challenge).await;
+
+        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let dpop = make_dpop_proof(
+            &key,
+            "POST",
+            "https://test.example.com/oauth/token",
+            Some(&nonce),
+            now_secs(),
+        );
+        let body = format!(
+            "grant_type=authorization_code\
+             &code={raw_code}\
+             &redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback\
+             &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json\
+             &code_verifier={verifier}",
+            raw_code = code.plaintext
+        );
+
+        let resp = app(state)
+            .oneshot(post_token_with_dpop(&body, &dpop))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get("cache-control")
+                .and_then(|v| v.to_str().ok()),
+            Some("no-store"),
+            "token response must include Cache-Control: no-store (RFC 6749 §5.1)"
         );
     }
 

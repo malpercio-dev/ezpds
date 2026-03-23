@@ -768,7 +768,7 @@ mod tests {
         assert_eq!(row.jkt.as_deref(), Some("test-jkt-thumbprint"));
         assert_eq!(row.did, "did:plc:testaccount000000000000");
 
-        // Second consume must return None (already deleted) — AC4.2.
+        // Second consume must return None since the token was deleted above.
         let second = consume_oauth_refresh_token(&pool, "consume-test-token-hash")
             .await
             .unwrap();
