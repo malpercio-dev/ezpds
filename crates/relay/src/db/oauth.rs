@@ -634,7 +634,10 @@ mod tests {
             .unwrap()
             .expect("token must be found on first use");
 
-        assert_eq!(row.client_id, "https://app.example.com/client-metadata.json");
+        assert_eq!(
+            row.client_id,
+            "https://app.example.com/client-metadata.json"
+        );
         assert_eq!(row.scope, "com.atproto.refresh");
         assert_eq!(row.jkt.as_deref(), Some("test-jkt-thumbprint"));
 
@@ -642,7 +645,10 @@ mod tests {
         let second = consume_oauth_refresh_token(&pool, "consume-test-token-hash")
             .await
             .unwrap();
-        assert!(second.is_none(), "consumed token must not be found again (AC4.2)");
+        assert!(
+            second.is_none(),
+            "consumed token must not be found again (AC4.2)"
+        );
     }
 
     #[tokio::test]
@@ -674,13 +680,18 @@ mod tests {
         let result = consume_oauth_refresh_token(&pool, "expired-hash")
             .await
             .unwrap();
-        assert!(result.is_none(), "expired refresh token must return None (AC4.3)");
+        assert!(
+            result.is_none(),
+            "expired refresh token must return None (AC4.3)"
+        );
     }
 
     #[tokio::test]
     async fn consume_oauth_refresh_token_returns_none_for_unknown_token() {
         let pool = test_pool().await;
-        let result = consume_oauth_refresh_token(&pool, "nonexistent-hash").await.unwrap();
+        let result = consume_oauth_refresh_token(&pool, "nonexistent-hash")
+            .await
+            .unwrap();
         assert!(result.is_none());
     }
 }

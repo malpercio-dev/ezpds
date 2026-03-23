@@ -21,9 +21,7 @@ use crate::app::AppState;
 use crate::auth::{
     cleanup_expired_nonces, issue_nonce, validate_dpop_for_token_endpoint, DpopTokenEndpointError,
 };
-use crate::db::oauth::{
-    consume_oauth_refresh_token, store_oauth_refresh_token,
-};
+use crate::db::oauth::{consume_oauth_refresh_token, store_oauth_refresh_token};
 use crate::routes::token::generate_token;
 
 // ── Request / response types ──────────────────────────────────────────────────
@@ -183,9 +181,7 @@ pub async fn post_token(
 
     match grant_type {
         "authorization_code" => handle_authorization_code(&state, &headers, form).await,
-        "refresh_token" => {
-            handle_refresh_token(&state, &headers, form).await
-        }
+        "refresh_token" => handle_refresh_token(&state, &headers, form).await,
         _ => OAuthTokenError::new(
             "unsupported_grant_type",
             "grant_type must be authorization_code or refresh_token",
@@ -392,31 +388,27 @@ async fn handle_refresh_token(
         state.config.public_url.trim_end_matches('/')
     );
 
-    let jkt = match validate_dpop_for_token_endpoint(
-        &dpop_token,
-        "POST",
-        &token_url,
-        &state.dpop_nonces,
-    )
-    .await
-    {
-        Ok(jkt) => jkt,
-        Err(DpopTokenEndpointError::MissingHeader) => {
-            return OAuthTokenError::new("invalid_dpop_proof", "DPoP header required")
+    let jkt =
+        match validate_dpop_for_token_endpoint(&dpop_token, "POST", &token_url, &state.dpop_nonces)
+            .await
+        {
+            Ok(jkt) => jkt,
+            Err(DpopTokenEndpointError::MissingHeader) => {
+                return OAuthTokenError::new("invalid_dpop_proof", "DPoP header required")
+                    .into_response();
+            }
+            Err(DpopTokenEndpointError::InvalidProof(msg)) => {
+                return OAuthTokenError::new("invalid_dpop_proof", msg).into_response();
+            }
+            Err(DpopTokenEndpointError::UseNonce(fresh_nonce)) => {
+                return OAuthTokenError::with_nonce(
+                    "use_dpop_nonce",
+                    "DPoP nonce required",
+                    fresh_nonce,
+                )
                 .into_response();
-        }
-        Err(DpopTokenEndpointError::InvalidProof(msg)) => {
-            return OAuthTokenError::new("invalid_dpop_proof", msg).into_response();
-        }
-        Err(DpopTokenEndpointError::UseNonce(fresh_nonce)) => {
-            return OAuthTokenError::with_nonce(
-                "use_dpop_nonce",
-                "DPoP nonce required",
-                fresh_nonce,
-            )
-            .into_response();
-        }
-    };
+            }
+        };
 
     // Hash the presented refresh token for DB lookup.
     let token_hash = crate::routes::token::sha256_hex(
@@ -451,11 +443,15 @@ async fn handle_refresh_token(
     }
 
     // Issue new ES256 access token.
-    let access_token =
-        match issue_access_token(&state.oauth_signing_keypair, &stored.did, &stored.scope, &jkt) {
-            Ok(t) => t,
-            Err(e) => return e.into_response(),
-        };
+    let access_token = match issue_access_token(
+        &state.oauth_signing_keypair,
+        &stored.did,
+        &stored.scope,
+        &jkt,
+    ) {
+        Ok(t) => t,
+        Err(e) => return e.into_response(),
+    };
 
     // Generate and store new refresh token (rotation: old token already deleted above).
     let new_refresh = generate_token();
@@ -507,7 +503,9 @@ mod tests {
 
     use crate::app::{app, test_state, AppState};
     use crate::auth::issue_nonce;
-    use crate::db::oauth::{register_oauth_client, store_authorization_code, store_oauth_refresh_token};
+    use crate::db::oauth::{
+        register_oauth_client, store_authorization_code, store_oauth_refresh_token,
+    };
     use crate::routes::token::generate_token;
 
     // ── DPoP proof test helpers ───────────────────────────────────────────────
@@ -1218,22 +1216,33 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(resp.status(), StatusCode::OK, "valid rotation must return 200");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "valid rotation must return 200"
+        );
         assert!(
             resp.headers().contains_key("DPoP-Nonce"),
             "success response must include DPoP-Nonce header"
         );
 
         let json = json_body(resp).await;
-        assert!(json["access_token"].is_string(), "access_token must be present");
+        assert!(
+            json["access_token"].is_string(),
+            "access_token must be present"
+        );
         assert_eq!(json["token_type"], "DPoP");
         assert_eq!(json["expires_in"], 300);
-        assert!(json["refresh_token"].is_string(), "rotated refresh_token must be present");
+        assert!(
+            json["refresh_token"].is_string(),
+            "rotated refresh_token must be present"
+        );
 
         // Rotated token must differ from the original.
         let new_rt = json["refresh_token"].as_str().unwrap();
         assert_ne!(
-            new_rt, plaintext.as_str(),
+            new_rt,
+            plaintext.as_str(),
             "rotated refresh token must differ from original"
         );
     }
@@ -1265,7 +1274,11 @@ mod tests {
             .oneshot(post_token_with_dpop(&body, &dpop1))
             .await
             .unwrap();
-        assert_eq!(first_resp.status(), StatusCode::OK, "first use must succeed");
+        assert_eq!(
+            first_resp.status(),
+            StatusCode::OK,
+            "first use must succeed"
+        );
 
         // Second use of the same original token: must return invalid_grant.
         let nonce2 = issue_nonce(&state.dpop_nonces).await;
@@ -1281,7 +1294,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(resp2.status(), StatusCode::BAD_REQUEST, "second use must return 400");
+        assert_eq!(
+            resp2.status(),
+            StatusCode::BAD_REQUEST,
+            "second use must return 400"
+        );
         let json = json_body(resp2).await;
         assert_eq!(
             json["error"], "invalid_grant",
