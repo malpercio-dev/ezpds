@@ -1,0 +1,26 @@
+meta {
+  name: OAuth PAR — Push Authorization Request
+  type: http
+  seq: 19
+}
+
+post {
+  url: {{baseUrl}}/oauth/par
+  body: formUrlEncoded
+  auth: none
+}
+
+body:form-urlencoded {
+  client_id: https://app.example.com/client-metadata.json
+  redirect_uri: https://app.example.com/callback
+  code_challenge: {{codeChallenge}}
+  code_challenge_method: S256
+  state: {{state}}
+  response_type: code
+  scope: atproto
+}
+
+vars:pre-request {
+  codeChallenge: <replace-with-base64url-sha256-of-code-verifier>
+  state: <replace-with-random-state-value>
+}

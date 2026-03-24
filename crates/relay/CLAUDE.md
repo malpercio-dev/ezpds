@@ -59,6 +59,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | File | Endpoint |
 |---|---|
 | `oauth_authorize.rs` | `GET/POST /oauth/authorize` |
+| `oauth_par.rs` | `POST /oauth/par` |
 | `oauth_token.rs` | `POST /oauth/token` |
 | `oauth_server_metadata.rs` | `GET /.well-known/oauth-authorization-server` |
 | `oauth_jwks.rs` | `GET /oauth/jwks` |

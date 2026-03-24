@@ -353,6 +353,72 @@ pub async fn delete_oauth_refresh_token(
     Ok(())
 }
 
+/// A row from the `oauth_par_requests` table.
+pub struct PARRequestRow {
+    pub client_id: String,
+    /// Raw JSON string of the authorization request parameters (excluding client_id).
+    pub request_parameters: String,
+}
+
+/// Store a Pushed Authorization Request (PAR) entry.
+///
+/// `request_uri` is the full `urn:ietf:params:oauth:request_uri:<token>` value and
+/// serves as the primary key. `request_parameters` is a JSON string of the auth params
+/// (client_id is stored in the dedicated column; the JSON holds the remaining params).
+/// Expires 60 seconds after creation (per RFC 9126 §2.2).
+pub async fn store_par_request(
+    pool: &SqlitePool,
+    request_uri: &str,
+    client_id: &str,
+    request_parameters: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO oauth_par_requests \
+         (request_uri, client_id, request_parameters, expires_at, created_at) \
+         VALUES (?, ?, ?, datetime('now', '+60 seconds'), datetime('now'))",
+    )
+    .bind(request_uri)
+    .bind(client_id)
+    .bind(request_parameters)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Look up a PAR request by its `request_uri`. Returns `None` if not found or expired.
+///
+/// The entry is not consumed (deleted) on read — callers rely on the 60-second TTL
+/// for expiry. The `request_uri` must be the full URN, e.g.
+/// `urn:ietf:params:oauth:request_uri:<token>`.
+pub async fn get_par_request(
+    pool: &SqlitePool,
+    request_uri: &str,
+) -> Result<Option<PARRequestRow>, sqlx::Error> {
+    let row: Option<(String, String)> = sqlx::query_as(
+        "SELECT client_id, request_parameters FROM oauth_par_requests \
+         WHERE request_uri = ? AND expires_at > datetime('now')",
+    )
+    .bind(request_uri)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|(client_id, request_parameters)| PARRequestRow {
+        client_id,
+        request_parameters,
+    }))
+}
+
+/// Delete all expired PAR requests from the database.
+///
+/// Call on each POST /oauth/par request to prevent unbounded DB growth from
+/// abandoned authorization flows.
+pub async fn cleanup_expired_par_requests(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM oauth_par_requests WHERE expires_at <= datetime('now')")
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// Delete all expired authorization codes from the database.
 ///
 /// Call alongside `cleanup_expired_nonces` on every token request to prevent unbounded
@@ -427,6 +493,117 @@ mod tests {
         let pool = open_pool("sqlite::memory:").await.unwrap();
         run_migrations(&pool).await.unwrap();
         pool
+    }
+
+    #[tokio::test]
+    async fn store_and_retrieve_par_request() {
+        let pool = test_pool().await;
+        register_oauth_client(
+            &pool,
+            "https://app.example.com/client-metadata.json",
+            r#"{"redirect_uris":["https://app.example.com/callback"]}"#,
+        )
+        .await
+        .unwrap();
+
+        store_par_request(
+            &pool,
+            "urn:ietf:params:oauth:request_uri:test-token-abc123",
+            "https://app.example.com/client-metadata.json",
+            r#"{"redirect_uri":"https://app.example.com/callback","code_challenge":"abc","code_challenge_method":"S256","state":"xyz","response_type":"code","scope":"atproto"}"#,
+        )
+        .await
+        .unwrap();
+
+        let row = get_par_request(&pool, "urn:ietf:params:oauth:request_uri:test-token-abc123")
+            .await
+            .unwrap()
+            .expect("PAR request should be found");
+
+        assert_eq!(row.client_id, "https://app.example.com/client-metadata.json");
+        assert!(row.request_parameters.contains("redirect_uri"));
+    }
+
+    #[tokio::test]
+    async fn get_par_request_returns_none_for_unknown_uri() {
+        let pool = test_pool().await;
+        let result = get_par_request(&pool, "urn:ietf:params:oauth:request_uri:nonexistent")
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_par_request_returns_none_for_expired_entry() {
+        let pool = test_pool().await;
+        register_oauth_client(
+            &pool,
+            "https://app.example.com/client-metadata.json",
+            r#"{"redirect_uris":["https://app.example.com/callback"]}"#,
+        )
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO oauth_par_requests \
+             (request_uri, client_id, request_parameters, expires_at, created_at) \
+             VALUES (?, ?, ?, datetime('now', '-1 seconds'), datetime('now'))",
+        )
+        .bind("urn:ietf:params:oauth:request_uri:expired-token")
+        .bind("https://app.example.com/client-metadata.json")
+        .bind(r#"{"redirect_uri":"https://app.example.com/callback"}"#)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let result =
+            get_par_request(&pool, "urn:ietf:params:oauth:request_uri:expired-token")
+                .await
+                .unwrap();
+        assert!(result.is_none(), "expired PAR request must return None");
+    }
+
+    #[tokio::test]
+    async fn cleanup_expired_par_requests_removes_only_expired_rows() {
+        let pool = test_pool().await;
+        register_oauth_client(
+            &pool,
+            "https://app.example.com/client-metadata.json",
+            r#"{"redirect_uris":["https://app.example.com/callback"]}"#,
+        )
+        .await
+        .unwrap();
+
+        // Insert one expired and one valid PAR request.
+        sqlx::query(
+            "INSERT INTO oauth_par_requests \
+             (request_uri, client_id, request_parameters, expires_at, created_at) \
+             VALUES (?, ?, ?, datetime('now', '-1 seconds'), datetime('now'))",
+        )
+        .bind("urn:ietf:params:oauth:request_uri:expired-cleanup-test")
+        .bind("https://app.example.com/client-metadata.json")
+        .bind(r#"{}"#)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        store_par_request(
+            &pool,
+            "urn:ietf:params:oauth:request_uri:valid-cleanup-test",
+            "https://app.example.com/client-metadata.json",
+            r#"{}"#,
+        )
+        .await
+        .unwrap();
+
+        cleanup_expired_par_requests(&pool).await.unwrap();
+
+        let count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM oauth_par_requests")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(count.0, 1, "only the valid PAR request should remain");
     }
 
     #[tokio::test]
