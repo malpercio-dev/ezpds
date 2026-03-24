@@ -79,6 +79,10 @@ static MIGRATIONS: &[Migration] = &[
         version: 12,
         sql: include_str!("migrations/V012__oauth_token_endpoint.sql"),
     },
+    Migration {
+        version: 13,
+        sql: include_str!("migrations/V013__identity_wallet_oauth_client.sql"),
+    },
 ];
 
 /// Open a WAL-mode SQLite connection pool with a maximum of 1 connection.
@@ -1052,6 +1056,38 @@ mod tests {
             updated_pending_did,
             Some("did:plc:test123".to_string()),
             "pending_did should be updated"
+        );
+    }
+
+    #[tokio::test]
+    async fn v013_seeds_identity_wallet_oauth_client() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool)
+            .await
+            .expect("migrations must apply cleanly");
+
+        let row = oauth::get_oauth_client(&pool, "dev.malpercio.identitywallet")
+            .await
+            .expect("db query must not fail");
+
+        assert!(
+            row.is_some(),
+            "V013 migration must insert the identity-wallet client row"
+        );
+
+        let row = row.unwrap();
+        let metadata: serde_json::Value =
+            serde_json::from_str(&row.client_metadata).expect("client_metadata must be valid JSON");
+
+        assert_eq!(
+            metadata["redirect_uris"][0].as_str(),
+            Some("dev.malpercio.identitywallet:/oauth/callback"),
+            "redirect_uri must match the custom URL scheme"
+        );
+        assert_eq!(
+            metadata["dpop_bound_access_tokens"].as_bool(),
+            Some(true),
+            "DPoP must be required for this client"
         );
     }
 }
