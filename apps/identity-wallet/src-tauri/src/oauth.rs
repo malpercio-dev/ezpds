@@ -4,7 +4,7 @@
 // handle_deep_link: Imperative Shell (reads OS callback, routes to pending channel)
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use p256::ecdsa::{SigningKey, Signature, signature::Signer};
+use p256::ecdsa::{signature::Signer, Signature, SigningKey};
 #[allow(unused_imports)]
 use p256::elliptic_curve::sec1::ToEncodedPoint;
 use sha2::{Digest, Sha256};
@@ -89,8 +89,8 @@ impl DPoPKeypair {
     /// Load the DPoP keypair from Keychain, or generate and persist a new one.
     pub fn get_or_create() -> Result<Self, OAuthError> {
         if let Some(private_bytes) = crate::keychain::load_dpop_key() {
-            let signing_key = SigningKey::from_slice(&private_bytes)
-                .map_err(|_| OAuthError::DpopKeyInvalid)?;
+            let signing_key =
+                SigningKey::from_slice(&private_bytes).map_err(|_| OAuthError::DpopKeyInvalid)?;
             return Ok(Self { signing_key });
         }
 
@@ -99,11 +99,10 @@ impl DPoPKeypair {
         // `private_key_bytes` is `Zeroizing<[u8; 32]>`, which derefs directly to `[u8; 32]`.
         let private_bytes: [u8; 32] = *keypair.private_key_bytes;
 
-        crate::keychain::store_dpop_key(&private_bytes)
-            .map_err(|_| OAuthError::KeychainError)?;
+        crate::keychain::store_dpop_key(&private_bytes).map_err(|_| OAuthError::KeychainError)?;
 
-        let signing_key = SigningKey::from_slice(&private_bytes)
-            .map_err(|_| OAuthError::DpopKeyInvalid)?;
+        let signing_key =
+            SigningKey::from_slice(&private_bytes).map_err(|_| OAuthError::DpopKeyInvalid)?;
         Ok(Self { signing_key })
     }
 
@@ -169,9 +168,8 @@ impl DPoPKeypair {
             "alg": "ES256",
             "jwk": jwk,
         });
-        let header_b64 = URL_SAFE_NO_PAD.encode(
-            serde_json::to_vec(&header).map_err(|_| OAuthError::DpopProofFailed)?,
-        );
+        let header_b64 = URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&header).map_err(|_| OAuthError::DpopProofFailed)?);
 
         // Claims JSON.
         let iat = SystemTime::now()
@@ -193,9 +191,8 @@ impl DPoPKeypair {
             claims["ath"] = serde_json::Value::String(a.to_string());
         }
 
-        let claims_b64 = URL_SAFE_NO_PAD.encode(
-            serde_json::to_vec(&claims).map_err(|_| OAuthError::DpopProofFailed)?,
-        );
+        let claims_b64 = URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&claims).map_err(|_| OAuthError::DpopProofFailed)?);
 
         // Sign `header_b64.claims_b64` bytes with P-256/SHA-256.
         let signing_input = format!("{header_b64}.{claims_b64}");
@@ -293,9 +290,9 @@ mod tests {
 
     #[test]
     fn dpop_proof_header_has_required_fields() {
-        // MM-149.AC3.1
         let kp = DPoPKeypair::get_or_create().expect("keypair must generate");
-        let proof = kp.make_proof("POST", "https://example.com/oauth/token", None, None)
+        let proof = kp
+            .make_proof("POST", "https://example.com/oauth/token", None, None)
             .expect("proof must build");
         let (header_b64, _, _) = split_proof(&proof);
         let header = decode_jwt_part(header_b64);
@@ -304,20 +301,29 @@ mod tests {
         assert_eq!(header["alg"].as_str(), Some("ES256"));
         assert_eq!(header["jwk"]["kty"].as_str(), Some("EC"));
         assert_eq!(header["jwk"]["crv"].as_str(), Some("P-256"));
-        assert!(header["jwk"]["x"].as_str().map(|s| !s.is_empty()).unwrap_or(false));
-        assert!(header["jwk"]["y"].as_str().map(|s| !s.is_empty()).unwrap_or(false));
+        assert!(header["jwk"]["x"]
+            .as_str()
+            .map(|s| !s.is_empty())
+            .unwrap_or(false));
+        assert!(header["jwk"]["y"]
+            .as_str()
+            .map(|s| !s.is_empty())
+            .unwrap_or(false));
     }
 
     #[test]
     fn dpop_proof_claims_has_required_fields() {
-        // MM-149.AC3.2
         let kp = DPoPKeypair::get_or_create().expect("keypair must generate");
-        let proof = kp.make_proof("GET", "https://example.com/xrpc/foo", None, None)
+        let proof = kp
+            .make_proof("GET", "https://example.com/xrpc/foo", None, None)
             .expect("proof must build");
         let (_, claims_b64, _) = split_proof(&proof);
         let claims = decode_jwt_part(claims_b64);
 
-        assert!(claims["jti"].as_str().map(|s| !s.is_empty()).unwrap_or(false));
+        assert!(claims["jti"]
+            .as_str()
+            .map(|s| !s.is_empty())
+            .unwrap_or(false));
         assert_eq!(claims["htm"].as_str(), Some("GET"));
         assert_eq!(claims["htu"].as_str(), Some("https://example.com/xrpc/foo"));
         let now = std::time::SystemTime::now()
@@ -330,68 +336,97 @@ mod tests {
 
     #[test]
     fn dpop_proof_includes_ath_when_supplied() {
-        // MM-149.AC3.3
         let kp = DPoPKeypair::get_or_create().expect("keypair must generate");
-        let proof_with = kp.make_proof("GET", "https://example.com/resource", None, Some("abc123"))
+        let proof_with = kp
+            .make_proof("GET", "https://example.com/resource", None, Some("abc123"))
             .expect("proof with ath must build");
         let (_, claims_b64, _) = split_proof(&proof_with);
         let claims = decode_jwt_part(claims_b64);
-        assert_eq!(claims["ath"].as_str(), Some("abc123"), "ath must be present");
+        assert_eq!(
+            claims["ath"].as_str(),
+            Some("abc123"),
+            "ath must be present"
+        );
 
-        let proof_without = kp.make_proof("GET", "https://example.com/resource", None, None)
+        let proof_without = kp
+            .make_proof("GET", "https://example.com/resource", None, None)
             .expect("proof without ath must build");
         let (_, claims_b64, _) = split_proof(&proof_without);
         let claims = decode_jwt_part(claims_b64);
-        assert!(claims["ath"].is_null(), "ath must be absent when not supplied");
+        assert!(
+            claims["ath"].is_null(),
+            "ath must be absent when not supplied"
+        );
     }
 
     #[test]
     fn dpop_proof_includes_nonce_when_supplied() {
-        // MM-149.AC3.4
         let kp = DPoPKeypair::get_or_create().expect("keypair must generate");
-        let proof = kp.make_proof("POST", "https://example.com/oauth/token", Some("nonce123"), None)
+        let proof = kp
+            .make_proof(
+                "POST",
+                "https://example.com/oauth/token",
+                Some("nonce123"),
+                None,
+            )
             .expect("proof with nonce must build");
         let (_, claims_b64, _) = split_proof(&proof);
         let claims = decode_jwt_part(claims_b64);
-        assert_eq!(claims["nonce"].as_str(), Some("nonce123"), "nonce must be present");
+        assert_eq!(
+            claims["nonce"].as_str(),
+            Some("nonce123"),
+            "nonce must be present"
+        );
 
-        let proof_no = kp.make_proof("POST", "https://example.com/oauth/token", None, None)
+        let proof_no = kp
+            .make_proof("POST", "https://example.com/oauth/token", None, None)
             .expect("proof without nonce must build");
         let (_, claims_b64, _) = split_proof(&proof_no);
         let claims = decode_jwt_part(claims_b64);
-        assert!(claims["nonce"].is_null(), "nonce must be absent when not supplied");
+        assert!(
+            claims["nonce"].is_null(),
+            "nonce must be absent when not supplied"
+        );
     }
 
     #[test]
     fn dpop_proof_signature_verifies_against_embedded_jwk() {
-        // MM-149.AC3.5
         use p256::elliptic_curve::sec1::EncodedPoint;
 
         let kp = DPoPKeypair::get_or_create().expect("keypair must generate");
-        let proof = kp.make_proof("POST", "https://example.com/oauth/token", None, None)
+        let proof = kp
+            .make_proof("POST", "https://example.com/oauth/token", None, None)
             .expect("proof must build");
         let (header_b64, claims_b64, sig_b64) = split_proof(&proof);
 
         // Reconstruct verifying key from the embedded JWK.
         let header = decode_jwt_part(header_b64);
-        let x_bytes = URL_SAFE_NO_PAD.decode(header["jwk"]["x"].as_str().unwrap()).unwrap();
-        let y_bytes = URL_SAFE_NO_PAD.decode(header["jwk"]["y"].as_str().unwrap()).unwrap();
+        let x_bytes = URL_SAFE_NO_PAD
+            .decode(header["jwk"]["x"].as_str().unwrap())
+            .unwrap();
+        let y_bytes = URL_SAFE_NO_PAD
+            .decode(header["jwk"]["y"].as_str().unwrap())
+            .unwrap();
         // Build uncompressed point: 0x04 || x || y
         let mut point_bytes = vec![0x04u8];
         point_bytes.extend_from_slice(&x_bytes);
         point_bytes.extend_from_slice(&y_bytes);
-        let point = EncodedPoint::<p256::NistP256>::from_bytes(&point_bytes).expect("valid uncompressed point");
+        let point = EncodedPoint::<p256::NistP256>::from_bytes(&point_bytes)
+            .expect("valid uncompressed point");
         let verifying_key = p256::ecdsa::VerifyingKey::from_encoded_point(&point)
             .expect("valid verifying key from JWK");
 
         // Decode the signature.
-        let sig_bytes = URL_SAFE_NO_PAD.decode(sig_b64).expect("valid base64url sig");
+        let sig_bytes = URL_SAFE_NO_PAD
+            .decode(sig_b64)
+            .expect("valid base64url sig");
         let signature = p256::ecdsa::Signature::from_bytes(sig_bytes.as_slice().into())
             .expect("valid R||S signature bytes");
 
         // Verify the signature over the signing input.
         let signing_input = format!("{header_b64}.{claims_b64}");
-        verifying_key.verify(signing_input.as_bytes(), &signature)
+        verifying_key
+            .verify(signing_input.as_bytes(), &signature)
             .expect("signature must verify against embedded JWK");
     }
 

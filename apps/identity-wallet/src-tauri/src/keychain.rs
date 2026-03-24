@@ -81,6 +81,69 @@ pub fn is_not_found(err: &KeychainError) -> bool {
     }
 }
 
+// ── OAuth Keychain helpers ─────────────────────────────────────────────────────
+
+const DPOP_KEY_PRIV_ACCOUNT: &str = "oauth-dpop-key-priv";
+const OAUTH_ACCESS_TOKEN_ACCOUNT: &str = "oauth-access-token";
+const OAUTH_REFRESH_TOKEN_ACCOUNT: &str = "oauth-refresh-token";
+
+/// Store the DPoP private key scalar (32 bytes) in the Keychain.
+pub fn store_dpop_key(private_bytes: &[u8]) -> Result<(), KeychainError> {
+    store_item(DPOP_KEY_PRIV_ACCOUNT, private_bytes)
+}
+
+/// Load the DPoP private key scalar from the Keychain.
+///
+/// Returns `None` if no key has been stored yet (first run).
+pub fn load_dpop_key() -> Option<[u8; 32]> {
+    match get_item(DPOP_KEY_PRIV_ACCOUNT) {
+        Ok(bytes) if bytes.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            Some(arr)
+        }
+        Ok(_) => {
+            tracing::warn!("DPoP key in Keychain has unexpected length; treating as absent");
+            None
+        }
+        Err(e) if is_not_found(&e) => None,
+        Err(e) => {
+            tracing::error!(error = ?e, "Keychain error loading DPoP key");
+            None
+        }
+    }
+}
+
+/// Store the OAuth access token and refresh token in the Keychain.
+pub fn store_oauth_tokens(access_token: &str, refresh_token: &str) -> Result<(), KeychainError> {
+    store_item(OAUTH_ACCESS_TOKEN_ACCOUNT, access_token.as_bytes())?;
+    store_item(OAUTH_REFRESH_TOKEN_ACCOUNT, refresh_token.as_bytes())?;
+    Ok(())
+}
+
+/// Load the OAuth access token and refresh token from the Keychain.
+///
+/// Returns `None` if either token is missing (not yet authenticated).
+pub fn load_oauth_tokens() -> Option<(String, String)> {
+    let access = match get_item(OAUTH_ACCESS_TOKEN_ACCOUNT) {
+        Ok(b) => String::from_utf8(b).ok()?,
+        Err(e) if is_not_found(&e) => return None,
+        Err(e) => {
+            tracing::error!(error = ?e, "Keychain error loading access token");
+            return None;
+        }
+    };
+    let refresh = match get_item(OAUTH_REFRESH_TOKEN_ACCOUNT) {
+        Ok(b) => String::from_utf8(b).ok()?,
+        Err(e) if is_not_found(&e) => return None,
+        Err(e) => {
+            tracing::error!(error = ?e, "Keychain error loading refresh token");
+            return None;
+        }
+    };
+    Some((access, refresh))
+}
+
 /// In-memory Keychain substitute used exclusively in test builds.
 #[cfg(test)]
 mod test_store {
