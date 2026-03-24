@@ -30,6 +30,12 @@ impl AppState {
     }
 }
 
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ── Pending flow (stub — filled out in Phase 5) ───────────────────────────────
 
 /// State parked inside `AppState.pending_auth` while `start_oauth_flow` waits
@@ -76,6 +82,8 @@ pub fn handle_deep_link(urls: Vec<url::Url>, app_state: &AppState) {
 
             // Phase 5: extract code+state, validate CSRF, send on oneshot channel.
             // For now, just log that the callback arrived.
+            // Panic on poison: a panic while holding this lock is a programming error
+            // with no safe recovery path.
             let _pending = app_state.pending_auth.lock().unwrap();
             tracing::info!("pending_auth slot present: {}", _pending.is_some());
 
