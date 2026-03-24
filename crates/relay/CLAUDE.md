@@ -1,6 +1,6 @@
 # Relay Crate
 
-Last verified: 2026-03-23
+Last verified: 2026-03-24
 
 ## Purpose
 
@@ -64,6 +64,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `oauth_jwks.rs` | `GET /oauth/jwks` |
 | `oauth_templates.rs` | Pure HTML rendering helpers (Functional Core, no handler) |
 | `create_session.rs` | `POST /xrpc/com.atproto.server.createSession` |
+| `get_session.rs` | `GET /xrpc/com.atproto.server.getSession` |
 | `create_did.rs` | `POST /v1/dids` |
 | `create_account.rs` | `POST /v1/accounts` |
 | `create_handle.rs` | `POST /v1/handles` |

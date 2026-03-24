@@ -37,7 +37,7 @@ that can later serve per-user SQLite databases (Wave 3/4).
 
 ## Key Files
 - `mod.rs` - Pool creation, migration runner, DbError, `is_unique_violation` helper, tests
-- `accounts.rs` - `AccountRow` struct + `resolve_identifier` (handle/DID → account lookup)
+- `accounts.rs` - `AccountRow` + `resolve_identifier` (handle/DID → account lookup); `SessionAccountRow` + `get_session_account` (DID → account + handle + DID doc, used by `getSession`)
 - `oauth.rs` - OAuth client lookup, authorization code storage, token read/write
 - `migrations/V001__init.sql` - server_metadata table (WITHOUT ROWID)
 - `migrations/V002__auth_identity.sql` - 12 Wave 2 tables: accounts, handles, did_documents, signing_keys, devices, claim_codes, sessions, refresh_tokens, oauth_clients, oauth_authorization_codes, oauth_tokens, oauth_par_requests

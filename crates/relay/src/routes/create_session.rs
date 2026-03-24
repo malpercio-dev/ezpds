@@ -214,12 +214,15 @@ pub async fn create_session(
         clear_failures(&mut attempts, &payload.identifier);
     }
 
+    // ATProto spec: "handle.invalid" is the sentinel for accounts without a resolvable handle.
+    let handle = account.handle.unwrap_or_else(|| "handle.invalid".to_string());
+
     Ok((
         StatusCode::OK,
         Json(CreateSessionResponse {
             access_jwt,
             refresh_jwt,
-            handle: account.handle.unwrap_or_default(),
+            handle,
             did: account.did,
             email: account.email,
         }),

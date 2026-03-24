@@ -50,14 +50,20 @@ pub async fn get_session(
             ApiError::new(ErrorCode::InvalidToken, "account not found")
         })?;
 
-    let did_doc = account
-        .did_doc
-        .as_deref()
-        .and_then(|s| serde_json::from_str(s).ok());
+    let did_doc = account.did_doc.as_deref().and_then(|s| {
+        serde_json::from_str(s)
+            .inspect_err(|e| {
+                tracing::error!(did = %account.did, error = %e, "malformed DID doc JSON in did_documents table")
+            })
+            .ok()
+    });
+
+    // ATProto spec: "handle.invalid" is the sentinel for accounts without a resolvable handle.
+    let handle = account.handle.unwrap_or_else(|| "handle.invalid".to_string());
 
     Ok(Json(GetSessionResponse {
         did: account.did,
-        handle: account.handle.unwrap_or_default(),
+        handle,
         email: account.email,
         email_confirmed: account.email_confirmed,
         did_doc,
@@ -313,7 +319,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deactivated_account_returns_401() {
+    async fn deactivated_account_returns_401_with_invalid_token_code() {
         let state = test_state().await;
         insert_account(&state.db, "did:plc:deact", "deact.test.example.com", "deact@example.com")
             .await;
@@ -330,5 +336,118 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+    }
+
+    #[tokio::test]
+    async fn app_pass_token_returns_401() {
+        let state = test_state().await;
+        insert_account(
+            &state.db,
+            "did:plc:apppass",
+            "apppass.test.example.com",
+            "apppass@example.com",
+        )
+        .await;
+
+        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &serde_json::json!({
+                "scope": "com.atproto.appPass",
+                "sub": "did:plc:apppass",
+                "iat": now,
+                "exp": now + 7200_u64,
+            }),
+            &EncodingKey::from_secret(&state.jwt_secret),
+        )
+        .unwrap();
+
+        let response = app(state)
+            .oneshot(get_session_request(&token))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+    }
+
+    #[tokio::test]
+    async fn account_without_handle_returns_handle_invalid() {
+        let state = test_state().await;
+        // Insert account without a corresponding handles row.
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
+        )
+        .bind("did:plc:nohandle")
+        .bind("nohandle@example.com")
+        .execute(&state.db)
+        .await
+        .unwrap();
+        let token = access_jwt(&state.jwt_secret, "did:plc:nohandle");
+
+        let response = app(state)
+            .oneshot(get_session_request(&token))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json["handle"], "handle.invalid");
+    }
+
+    #[tokio::test]
+    async fn malformed_did_doc_json_returns_200_without_did_doc() {
+        let state = test_state().await;
+        insert_account(
+            &state.db,
+            "did:plc:baddoc",
+            "baddoc.test.example.com",
+            "baddoc@example.com",
+        )
+        .await;
+        sqlx::query(
+            "INSERT INTO did_documents (did, document, created_at, updated_at) \
+             VALUES (?, ?, datetime('now'), datetime('now'))",
+        )
+        .bind("did:plc:baddoc")
+        .bind("this is not valid json {{{")
+        .execute(&state.db)
+        .await
+        .unwrap();
+        let token = access_jwt(&state.jwt_secret, "did:plc:baddoc");
+
+        let response = app(state)
+            .oneshot(get_session_request(&token))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert!(json.get("didDoc").is_none(), "malformed didDoc must be omitted");
+    }
+
+    #[tokio::test]
+    async fn token_for_nonexistent_did_returns_401() {
+        let state = test_state().await;
+        // No account inserted — DID exists only in the JWT.
+        let token = access_jwt(&state.jwt_secret, "did:plc:ghost");
+
+        let response = app(state)
+            .oneshot(get_session_request(&token))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
     }
 }
