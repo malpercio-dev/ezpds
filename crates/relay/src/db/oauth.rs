@@ -3,6 +3,7 @@
 // Storage adapter for OAuth server-side state: client registry, authorization
 // codes, and helpers for the authorization endpoint.
 
+use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
 /// A registered OAuth client row from the `oauth_clients` table.
@@ -353,18 +354,35 @@ pub async fn delete_oauth_refresh_token(
     Ok(())
 }
 
+/// JSON schema for `oauth_par_requests.request_parameters`.
+///
+/// `client_id` is stored in the dedicated column; all other authorization request
+/// params live here as a JSON blob. Both the PAR endpoint (write) and the authorization
+/// endpoint (read) import this type from `db::oauth` to avoid a cross-route dependency.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StoredPARParams {
+    pub redirect_uri: String,
+    pub code_challenge: String,
+    pub code_challenge_method: String,
+    pub state: String,
+    pub response_type: String,
+    pub scope: String,
+    pub login_hint: Option<String>,
+}
+
 /// A row from the `oauth_par_requests` table.
 pub struct PARRequestRow {
     pub client_id: String,
     /// Raw JSON string of the authorization request parameters (excluding client_id).
+    /// Deserialize into `StoredPARParams` before use.
     pub request_parameters: String,
 }
 
 /// Store a Pushed Authorization Request (PAR) entry.
 ///
 /// `request_uri` is the full `urn:ietf:params:oauth:request_uri:<token>` value and
-/// serves as the primary key. `request_parameters` is a JSON string of the auth params
-/// (client_id is stored in the dedicated column; the JSON holds the remaining params).
+/// serves as the primary key. `request_parameters` is the JSON serialization of
+/// `StoredPARParams` (client_id is stored in the dedicated column).
 /// Expires 60 seconds after creation (per RFC 9126 §2.2).
 pub async fn store_par_request(
     pool: &SqlitePool,
@@ -385,18 +403,22 @@ pub async fn store_par_request(
     Ok(())
 }
 
-/// Look up a PAR request by its `request_uri`. Returns `None` if not found or expired.
+/// Atomically consume a PAR request (RFC 9126 §4 single-use enforcement).
 ///
-/// The entry is not consumed (deleted) on read — callers rely on the 60-second TTL
-/// for expiry. The `request_uri` must be the full URN, e.g.
-/// `urn:ietf:params:oauth:request_uri:<token>`.
-pub async fn get_par_request(
+/// Uses `DELETE … RETURNING` so the row is removed and returned in one statement.
+/// Returns `None` if the `request_uri` does not exist or has expired.
+///
+/// The single-statement approach satisfies RFC 9126 §4 even if the connection pool
+/// limit is ever raised above 1; `max_connections(1)` alone cannot guarantee
+/// single-use across two concurrent callers.
+pub async fn consume_par_request(
     pool: &SqlitePool,
     request_uri: &str,
 ) -> Result<Option<PARRequestRow>, sqlx::Error> {
     let row: Option<(String, String)> = sqlx::query_as(
-        "SELECT client_id, request_parameters FROM oauth_par_requests \
-         WHERE request_uri = ? AND expires_at > datetime('now')",
+        "DELETE FROM oauth_par_requests \
+         WHERE request_uri = ? AND expires_at > datetime('now') \
+         RETURNING client_id, request_parameters",
     )
     .bind(request_uri)
     .fetch_optional(pool)
@@ -496,7 +518,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn store_and_retrieve_par_request() {
+    async fn consume_par_request_returns_row_and_deletes_it() {
         let pool = test_pool().await;
         register_oauth_client(
             &pool,
@@ -510,31 +532,37 @@ mod tests {
             &pool,
             "urn:ietf:params:oauth:request_uri:test-token-abc123",
             "https://app.example.com/client-metadata.json",
-            r#"{"redirect_uri":"https://app.example.com/callback","code_challenge":"abc","code_challenge_method":"S256","state":"xyz","response_type":"code","scope":"atproto"}"#,
+            r#"{"redirect_uri":"https://app.example.com/callback","code_challenge":"abc","code_challenge_method":"S256","state":"xyz","response_type":"code","scope":"atproto","login_hint":null}"#,
         )
         .await
         .unwrap();
 
-        let row = get_par_request(&pool, "urn:ietf:params:oauth:request_uri:test-token-abc123")
+        let row = consume_par_request(&pool, "urn:ietf:params:oauth:request_uri:test-token-abc123")
             .await
             .unwrap()
-            .expect("PAR request should be found");
+            .expect("PAR request should be found on first consume");
 
         assert_eq!(row.client_id, "https://app.example.com/client-metadata.json");
         assert!(row.request_parameters.contains("redirect_uri"));
+
+        // Second consume must return None — single-use enforcement (RFC 9126 §4).
+        let second = consume_par_request(&pool, "urn:ietf:params:oauth:request_uri:test-token-abc123")
+            .await
+            .unwrap();
+        assert!(second.is_none(), "consumed PAR request must not be found again");
     }
 
     #[tokio::test]
-    async fn get_par_request_returns_none_for_unknown_uri() {
+    async fn consume_par_request_returns_none_for_unknown_uri() {
         let pool = test_pool().await;
-        let result = get_par_request(&pool, "urn:ietf:params:oauth:request_uri:nonexistent")
+        let result = consume_par_request(&pool, "urn:ietf:params:oauth:request_uri:nonexistent")
             .await
             .unwrap();
         assert!(result.is_none());
     }
 
     #[tokio::test]
-    async fn get_par_request_returns_none_for_expired_entry() {
+    async fn consume_par_request_returns_none_for_expired_entry() {
         let pool = test_pool().await;
         register_oauth_client(
             &pool,
@@ -551,13 +579,13 @@ mod tests {
         )
         .bind("urn:ietf:params:oauth:request_uri:expired-token")
         .bind("https://app.example.com/client-metadata.json")
-        .bind(r#"{"redirect_uri":"https://app.example.com/callback"}"#)
+        .bind(r#"{"redirect_uri":"https://app.example.com/callback","code_challenge":"abc","code_challenge_method":"S256","state":"xyz","response_type":"code","scope":"atproto","login_hint":null}"#)
         .execute(&pool)
         .await
         .unwrap();
 
         let result =
-            get_par_request(&pool, "urn:ietf:params:oauth:request_uri:expired-token")
+            consume_par_request(&pool, "urn:ietf:params:oauth:request_uri:expired-token")
                 .await
                 .unwrap();
         assert!(result.is_none(), "expired PAR request must return None");

@@ -15,7 +15,9 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::db::oauth::{cleanup_expired_par_requests, get_oauth_client, store_par_request};
+use crate::db::oauth::{
+    cleanup_expired_par_requests, get_oauth_client, store_par_request, StoredPARParams,
+};
 use crate::routes::token::generate_token;
 
 // ── Request / response types ──────────────────────────────────────────────────
@@ -45,8 +47,8 @@ pub struct PARResponse {
 
 /// OAuth 2.0 error response (RFC 6749 §5.2 / RFC 9126 §2.3).
 struct PARError {
-    pub error: &'static str,
-    pub error_description: &'static str,
+    error: &'static str,
+    error_description: &'static str,
 }
 
 impl PARError {
@@ -74,22 +76,6 @@ impl IntoResponse for PARError {
         )
             .into_response()
     }
-}
-
-// ── Stored parameter struct ───────────────────────────────────────────────────
-
-/// The subset of PAR form fields stored as JSON in `oauth_par_requests.request_parameters`.
-///
-/// `client_id` is stored in the dedicated column; all other params live here.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct StoredPARParams {
-    pub redirect_uri: String,
-    pub code_challenge: String,
-    pub code_challenge_method: String,
-    pub state: String,
-    pub response_type: String,
-    pub scope: String,
-    pub login_hint: Option<String>,
 }
 
 // ── Handler ───────────────────────────────────────────────────────────────────
@@ -219,7 +205,7 @@ pub async fn post_par(State(state): State<AppState>, Form(form): Form<PARForm>) 
     let params_json = match serde_json::to_string(&params) {
         Ok(j) => j,
         Err(e) => {
-            tracing::error!(error = %e, "failed to serialize PAR params to JSON");
+            tracing::error!(client_id = %client_id, error = %e, "failed to serialize PAR params to JSON");
             return PARError::new("server_error", "failed to serialize request parameters")
                 .into_response();
         }
@@ -267,6 +253,14 @@ mod tests {
     const CLIENT_METADATA: &str =
         r#"{"redirect_uris":["https://app.example.com/callback"],"client_name":"Test App"}"#;
 
+    /// Build a form-urlencoded body for POST /oauth/par.
+    ///
+    /// Pass `overrides` to replace specific field values. Pass `("field", "")` to
+    /// simulate a missing/empty required field.
+    ///
+    /// Note: values are NOT percent-encoded. Test data is chosen to contain only
+    /// characters safe in form values (no `&`, `=`, `+`, `?`). Do not add test
+    /// values that contain these characters without first encoding them.
     fn par_body(overrides: &[(&str, &str)]) -> String {
         let mut fields = vec![
             ("client_id", CLIENT_ID),
@@ -286,6 +280,7 @@ mod tests {
         }
         fields
             .iter()
+            .filter(|(_, v)| !v.is_empty()) // empty value = omit the field entirely
             .map(|(k, v)| format!("{}={}", k, v))
             .collect::<Vec<_>>()
             .join("&")
@@ -431,16 +426,13 @@ mod tests {
     async fn post_par_returns_400_when_client_id_missing() {
         let state = test_state().await;
 
-        let body_str = "redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback\
-            &code_challenge=abc&code_challenge_method=S256&state=s&response_type=code";
-
         let response = app(state)
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/oauth/par")
                     .header("content-type", "application/x-www-form-urlencoded")
-                    .body(Body::from(body_str))
+                    .body(Body::from(par_body(&[("client_id", "")])))
                     .unwrap(),
             )
             .await
@@ -452,5 +444,190 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"].as_str(), Some("invalid_request"));
+    }
+
+    #[tokio::test]
+    async fn post_par_returns_400_when_redirect_uri_missing() {
+        let state = test_state().await;
+        register_client(&state).await;
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/par")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(par_body(&[("redirect_uri", "")])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"].as_str(), Some("invalid_request"));
+    }
+
+    #[tokio::test]
+    async fn post_par_returns_400_when_code_challenge_missing() {
+        let state = test_state().await;
+        register_client(&state).await;
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/par")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(par_body(&[("code_challenge", "")])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"].as_str(), Some("invalid_request"));
+    }
+
+    #[tokio::test]
+    async fn post_par_returns_400_when_code_challenge_method_missing() {
+        let state = test_state().await;
+        register_client(&state).await;
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/par")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(par_body(&[("code_challenge_method", "")])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"].as_str(), Some("invalid_request"));
+    }
+
+    #[tokio::test]
+    async fn post_par_returns_400_when_state_missing() {
+        let state = test_state().await;
+        register_client(&state).await;
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/par")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(par_body(&[("state", "")])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"].as_str(), Some("invalid_request"));
+    }
+
+    #[tokio::test]
+    async fn post_par_returns_400_when_response_type_missing() {
+        let state = test_state().await;
+        register_client(&state).await;
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/par")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(par_body(&[("response_type", "")])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"].as_str(), Some("invalid_request"));
+    }
+
+    #[tokio::test]
+    async fn post_par_returns_distinct_request_uri_per_call() {
+        let state = test_state().await;
+        register_client(&state).await;
+
+        async fn call_par(state: crate::app::AppState, body: String) -> String {
+            let response = app(state)
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/oauth/par")
+                        .header("content-type", "application/x-www-form-urlencoded")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let bytes = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            json["request_uri"].as_str().unwrap().to_string()
+        }
+
+        let state1 = test_state().await;
+        register_oauth_client(&state1.db, CLIENT_ID, CLIENT_METADATA)
+            .await
+            .unwrap();
+        let state2 = state1.clone();
+
+        let uri1 = call_par(state1, par_body(&[])).await;
+        let uri2 = call_par(state2, par_body(&[])).await;
+
+        assert_ne!(uri1, uri2, "each PAR call must produce a unique request_uri");
+    }
+
+    #[tokio::test]
+    async fn post_par_accepts_optional_login_hint() {
+        let state = test_state().await;
+        register_client(&state).await;
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/par")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(par_body(&[("login_hint", "alice.example.com")])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "PAR with login_hint must succeed"
+        );
     }
 }

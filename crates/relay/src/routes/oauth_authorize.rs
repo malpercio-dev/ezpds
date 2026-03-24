@@ -19,8 +19,7 @@ use crate::app::AppState;
 use crate::auth::password::{verify_password, VerifyResult, TIMING_DUMMY_HASH};
 use crate::auth::rate_limit::{clear_failures, is_rate_limited, record_failure};
 use crate::db::accounts::resolve_identifier;
-use crate::db::oauth::{get_oauth_client, get_par_request, store_authorization_code};
-use crate::routes::oauth_par::StoredPARParams;
+use crate::db::oauth::{consume_par_request, get_oauth_client, store_authorization_code, StoredPARParams};
 use crate::routes::oauth_templates::{
     encode_param, error_page, error_redirect, render_consent_page,
 };
@@ -93,29 +92,57 @@ struct ClientMetadata {
     client_name: Option<String>,
 }
 
+/// Distinguishes client-caused failures from server-caused failures in PAR resolution.
+///
+/// Callers use this to pick the right error page title so the framing is accurate for
+/// both the user ("Invalid Request" for client errors) and operators ("Server Error" for
+/// infrastructure failures that should trigger alerts).
+enum ResolveError {
+    /// The client sent an invalid or expired `request_uri`, or a mismatched `client_id`.
+    Client(&'static str),
+    /// A database or deserialization failure prevented resolution.
+    Server(&'static str),
+}
+
 /// Resolve `GetAuthorizationQuery` into a fully-populated `AuthorizeQuery`.
 ///
-/// When `request_uri` is present (PAR flow), looks up the stored request from the DB,
-/// deserializes the params JSON, and validates the `client_id` matches. When absent
-/// (direct flow), validates all required fields are present.
+/// When `request_uri` is present (PAR flow), atomically consumes the stored request
+/// (single-use per RFC 9126 §4), deserializes the params JSON, and validates `client_id`
+/// matches. When absent (direct flow), constructs `AuthorizeQuery` from raw params.
 async fn resolve_authorize_params(
     state: &AppState,
     raw: GetAuthorizationQuery,
-) -> Result<AuthorizeQuery, &'static str> {
+) -> Result<AuthorizeQuery, ResolveError> {
     if let Some(uri) = raw.request_uri {
-        let row = match get_par_request(&state.db, &uri).await {
+        let row = match consume_par_request(&state.db, &uri).await {
             Ok(Some(r)) => r,
-            Ok(None) => return Err("request_uri is invalid or has expired"),
-            Err(_) => return Err("database error looking up pushed authorization request"),
+            Ok(None) => return Err(ResolveError::Client("request_uri is invalid or has expired")),
+            Err(e) => {
+                tracing::error!(error = %e, "db error consuming PAR request");
+                return Err(ResolveError::Server(
+                    "database error looking up pushed authorization request",
+                ));
+            }
         };
 
         if row.client_id != raw.client_id {
-            return Err("client_id does not match the pushed authorization request");
+            return Err(ResolveError::Client(
+                "client_id does not match the pushed authorization request",
+            ));
         }
 
         let stored: StoredPARParams = match serde_json::from_str(&row.request_parameters) {
             Ok(p) => p,
-            Err(_) => return Err("stored authorization request parameters are malformed"),
+            Err(e) => {
+                tracing::error!(
+                    client_id = %raw.client_id,
+                    error = %e,
+                    "failed to deserialize stored PAR request parameters; possible schema drift or DB corruption"
+                );
+                return Err(ResolveError::Server(
+                    "stored authorization request parameters are malformed",
+                ));
+            }
         };
 
         Ok(AuthorizeQuery {
@@ -157,7 +184,10 @@ pub async fn get_authorization(
 ) -> Response {
     let params = match resolve_authorize_params(&state, raw).await {
         Ok(p) => p,
-        Err(msg) => return error_page("Invalid Request", msg).into_response(),
+        Err(ResolveError::Client(msg)) => {
+            return error_page("Invalid Request", msg).into_response()
+        }
+        Err(ResolveError::Server(msg)) => return error_page("Server Error", msg).into_response(),
     };
 
     // Client and redirect_uri must be validated before any redirect is issued.
@@ -1211,6 +1241,21 @@ mod tests {
         .unwrap();
     }
 
+    async fn store_test_par_request_with_login_hint(
+        state: &crate::app::AppState,
+        request_uri: &str,
+        login_hint: &str,
+    ) {
+        use crate::db::oauth::store_par_request;
+        let params = format!(
+            r#"{{"redirect_uri":"https://app.example.com/callback","code_challenge":"testchallenge","code_challenge_method":"S256","state":"teststate","response_type":"code","scope":"atproto","login_hint":"{}"}}"#,
+            login_hint
+        );
+        store_par_request(&state.db, request_uri, CLIENT_ID, &params)
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn get_authorization_with_valid_request_uri_renders_consent_page() {
         let state = state_with_client().await;
@@ -1266,6 +1311,106 @@ mod tests {
         assert!(
             html.contains("Invalid Request"),
             "invalid request_uri should render an error page"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_authorization_with_expired_request_uri_returns_error_page() {
+        let state = state_with_client().await;
+
+        // Insert a PAR request that is already expired.
+        sqlx::query(
+            "INSERT INTO oauth_par_requests \
+             (request_uri, client_id, request_parameters, expires_at, created_at) \
+             VALUES (?, ?, ?, datetime('now', '-1 seconds'), datetime('now'))",
+        )
+        .bind("urn:ietf:params:oauth:request_uri:formerly-valid-expired")
+        .bind(CLIENT_ID)
+        .bind(r#"{"redirect_uri":"https://app.example.com/callback","code_challenge":"c","code_challenge_method":"S256","state":"s","response_type":"code","scope":"atproto","login_hint":null}"#)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/oauth/authorize?client_id={}&request_uri=urn:ietf:params:oauth:request_uri:formerly-valid-expired",
+                        CLIENT_ID
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), 8192)
+            .await
+            .unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+        assert!(
+            html.contains("Invalid Request"),
+            "expired request_uri should render an error page"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_authorization_with_par_forwards_login_hint_to_consent_page() {
+        let state = state_with_client().await;
+        let request_uri = "urn:ietf:params:oauth:request_uri:test-par-login-hint";
+        store_test_par_request_with_login_hint(&state, request_uri, "alice.example.com").await;
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/oauth/authorize?client_id={}&request_uri={}",
+                        CLIENT_ID, request_uri
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 16384)
+            .await
+            .unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+        assert!(
+            html.contains("alice.example.com"),
+            "login_hint from PAR should pre-populate the identifier field on the consent page"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_authorization_direct_flow_without_redirect_uri_returns_error_page() {
+        let state = state_with_client().await;
+
+        // No redirect_uri → resolves to "" → fails registered-URIs check
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/oauth/authorize?client_id={}&code_challenge=abc&code_challenge_method=S256&state=s&response_type=code",
+                        CLIENT_ID
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), 8192)
+            .await
+            .unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+        assert!(
+            html.contains("Invalid Redirect URI"),
+            "missing redirect_uri on direct flow should return an Invalid Redirect URI error page"
         );
     }
 
