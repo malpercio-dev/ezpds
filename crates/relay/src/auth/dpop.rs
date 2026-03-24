@@ -1,5 +1,6 @@
 // pattern: Mixed (unavoidable)
 
+use axum::http::Method;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use common::{ApiError, ErrorCode};
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
@@ -10,7 +11,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
-use axum::http::Method;
 
 use super::jwt::AccessTokenClaims;
 

@@ -151,10 +151,7 @@ pub fn app(state: AppState) -> Router {
             "/xrpc/com.atproto.server.createSession",
             post(create_session),
         )
-        .route(
-            "/xrpc/com.atproto.server.getSession",
-            get(get_session),
-        )
+        .route("/xrpc/com.atproto.server.getSession", get(get_session))
         .route(
             "/xrpc/com.atproto.identity.resolveHandle",
             get(resolve_handle_handler),

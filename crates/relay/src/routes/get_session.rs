@@ -59,7 +59,9 @@ pub async fn get_session(
     });
 
     // ATProto spec: "handle.invalid" is the sentinel for accounts without a resolvable handle.
-    let handle = account.handle.unwrap_or_else(|| "handle.invalid".to_string());
+    let handle = account
+        .handle
+        .unwrap_or_else(|| "handle.invalid".to_string());
 
     Ok(Json(GetSessionResponse {
         did: account.did,
@@ -197,8 +199,13 @@ mod tests {
     #[tokio::test]
     async fn valid_token_returns_session_info() {
         let state = test_state().await;
-        insert_account(&state.db, "did:plc:alice", "alice.test.example.com", "alice@example.com")
-            .await;
+        insert_account(
+            &state.db,
+            "did:plc:alice",
+            "alice.test.example.com",
+            "alice@example.com",
+        )
+        .await;
         let token = access_jwt(&state.jwt_secret, "did:plc:alice");
 
         let response = app(state)
@@ -212,14 +219,22 @@ mod tests {
         assert_eq!(json["handle"], "alice.test.example.com");
         assert_eq!(json["email"], "alice@example.com");
         assert_eq!(json["emailConfirmed"], false);
-        assert!(json.get("didDoc").is_none(), "didDoc absent when no document stored");
+        assert!(
+            json.get("didDoc").is_none(),
+            "didDoc absent when no document stored"
+        );
     }
 
     #[tokio::test]
     async fn confirmed_email_returns_true() {
         let state = test_state().await;
-        insert_account(&state.db, "did:plc:confirmed", "conf.test.example.com", "conf@example.com")
-            .await;
+        insert_account(
+            &state.db,
+            "did:plc:confirmed",
+            "conf.test.example.com",
+            "conf@example.com",
+        )
+        .await;
         sqlx::query("UPDATE accounts SET email_confirmed_at = datetime('now') WHERE did = ?")
             .bind("did:plc:confirmed")
             .execute(&state.db)
@@ -240,8 +255,13 @@ mod tests {
     #[tokio::test]
     async fn did_doc_included_when_present() {
         let state = test_state().await;
-        insert_account(&state.db, "did:plc:withdoc", "doc.test.example.com", "doc@example.com")
-            .await;
+        insert_account(
+            &state.db,
+            "did:plc:withdoc",
+            "doc.test.example.com",
+            "doc@example.com",
+        )
+        .await;
         let doc = serde_json::json!({"id": "did:plc:withdoc", "@context": ["https://www.w3.org/ns/did/v1"]});
         insert_did_doc(&state.db, "did:plc:withdoc", doc.clone()).await;
         let token = access_jwt(&state.jwt_secret, "did:plc:withdoc");
@@ -304,8 +324,13 @@ mod tests {
     #[tokio::test]
     async fn refresh_token_returns_401() {
         let state = test_state().await;
-        insert_account(&state.db, "did:plc:refresh", "refresh.test.example.com", "r@example.com")
-            .await;
+        insert_account(
+            &state.db,
+            "did:plc:refresh",
+            "refresh.test.example.com",
+            "r@example.com",
+        )
+        .await;
         let token = refresh_jwt(&state.jwt_secret, "did:plc:refresh");
 
         let response = app(state)
@@ -321,8 +346,13 @@ mod tests {
     #[tokio::test]
     async fn deactivated_account_returns_401_with_invalid_token_code() {
         let state = test_state().await;
-        insert_account(&state.db, "did:plc:deact", "deact.test.example.com", "deact@example.com")
-            .await;
+        insert_account(
+            &state.db,
+            "did:plc:deact",
+            "deact.test.example.com",
+            "deact@example.com",
+        )
+        .await;
         sqlx::query("UPDATE accounts SET deactivated_at = datetime('now') WHERE did = ?")
             .bind("did:plc:deact")
             .execute(&state.db)
@@ -432,7 +462,10 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         let json = body_json(response).await;
-        assert!(json.get("didDoc").is_none(), "malformed didDoc must be omitted");
+        assert!(
+            json.get("didDoc").is_none(),
+            "malformed didDoc must be omitted"
+        );
     }
 
     #[tokio::test]

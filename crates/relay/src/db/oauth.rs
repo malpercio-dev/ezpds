@@ -542,14 +542,21 @@ mod tests {
             .unwrap()
             .expect("PAR request should be found on first consume");
 
-        assert_eq!(row.client_id, "https://app.example.com/client-metadata.json");
+        assert_eq!(
+            row.client_id,
+            "https://app.example.com/client-metadata.json"
+        );
         assert!(row.request_parameters.contains("redirect_uri"));
 
         // Second consume must return None — single-use enforcement (RFC 9126 §4).
-        let second = consume_par_request(&pool, "urn:ietf:params:oauth:request_uri:test-token-abc123")
-            .await
-            .unwrap();
-        assert!(second.is_none(), "consumed PAR request must not be found again");
+        let second =
+            consume_par_request(&pool, "urn:ietf:params:oauth:request_uri:test-token-abc123")
+                .await
+                .unwrap();
+        assert!(
+            second.is_none(),
+            "consumed PAR request must not be found again"
+        );
     }
 
     #[tokio::test]
@@ -584,10 +591,9 @@ mod tests {
         .await
         .unwrap();
 
-        let result =
-            consume_par_request(&pool, "urn:ietf:params:oauth:request_uri:expired-token")
-                .await
-                .unwrap();
+        let result = consume_par_request(&pool, "urn:ietf:params:oauth:request_uri:expired-token")
+            .await
+            .unwrap();
         assert!(result.is_none(), "expired PAR request must return None");
     }
 
@@ -626,11 +632,10 @@ mod tests {
 
         cleanup_expired_par_requests(&pool).await.unwrap();
 
-        let count: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM oauth_par_requests")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM oauth_par_requests")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(count.0, 1, "only the valid PAR request should remain");
     }
 

@@ -63,7 +63,10 @@ pub fn verify_access_token(token: &str, state: &AppState) -> Result<AccessTokenC
 }
 
 /// Verify ES256 AT+JWT tokens issued by the OAuth token endpoint.
-pub fn verify_es256_access_token(token: &str, state: &AppState) -> Result<AccessTokenClaims, ApiError> {
+pub fn verify_es256_access_token(
+    token: &str,
+    state: &AppState,
+) -> Result<AccessTokenClaims, ApiError> {
     let invalid = || ApiError::new(ErrorCode::InvalidToken, "invalid token");
     let jwk: jsonwebtoken::jwk::Jwk = serde_json::from_value(
         state.oauth_signing_keypair.public_key_jwk.clone(),
@@ -95,7 +98,10 @@ pub fn verify_es256_access_token(token: &str, state: &AppState) -> Result<Access
 }
 
 /// Verify HS256 access/refresh JWT issued by this server (legacy tokens).
-pub fn verify_hs256_access_token(token: &str, state: &AppState) -> Result<AccessTokenClaims, ApiError> {
+pub fn verify_hs256_access_token(
+    token: &str,
+    state: &AppState,
+) -> Result<AccessTokenClaims, ApiError> {
     let decoding_key = DecodingKey::from_secret(&state.jwt_secret);
 
     let mut validation = Validation::new(Algorithm::HS256);

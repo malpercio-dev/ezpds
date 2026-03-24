@@ -215,7 +215,9 @@ pub async fn create_session(
     }
 
     // ATProto spec: "handle.invalid" is the sentinel for accounts without a resolvable handle.
-    let handle = account.handle.unwrap_or_else(|| "handle.invalid".to_string());
+    let handle = account
+        .handle
+        .unwrap_or_else(|| "handle.invalid".to_string());
 
     Ok((
         StatusCode::OK,
@@ -228,7 +230,6 @@ pub async fn create_session(
         }),
     ))
 }
-
 
 /// Sign an HS256 access JWT with a 2-hour lifetime.
 fn issue_access_jwt(secret: &[u8; 32], did: &str, aud: &str, now: u64) -> Result<String, ApiError> {

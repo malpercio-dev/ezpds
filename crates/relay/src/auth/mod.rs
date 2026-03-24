@@ -23,7 +23,9 @@ pub use signing_key::{load_or_create_oauth_signing_key, OAuthSigningKey};
 #[cfg(test)]
 pub(super) use bearer::extract_bearer_token;
 #[cfg(test)]
-pub(super) use dpop::{dpop_alg_from_str, jwk_thumbprint, validate_and_consume_nonce, validate_dpop};
+pub(super) use dpop::{
+    dpop_alg_from_str, jwk_thumbprint, validate_and_consume_nonce, validate_dpop,
+};
 #[cfg(test)]
 pub(super) use jwt::{parse_scope, peek_jwt_typ, verify_access_token};
 

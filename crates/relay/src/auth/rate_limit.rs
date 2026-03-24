@@ -34,10 +34,7 @@ pub(crate) fn is_rate_limited(
 }
 
 /// Record a new failed attempt timestamp for `identifier`.
-pub(crate) fn record_failure(
-    attempts: &mut HashMap<String, VecDeque<Instant>>,
-    identifier: &str,
-) {
+pub(crate) fn record_failure(attempts: &mut HashMap<String, VecDeque<Instant>>, identifier: &str) {
     attempts
         .entry(identifier.to_string())
         .or_default()
@@ -45,9 +42,6 @@ pub(crate) fn record_failure(
 }
 
 /// Clear the failure history for `identifier` on successful authentication.
-pub(crate) fn clear_failures(
-    attempts: &mut HashMap<String, VecDeque<Instant>>,
-    identifier: &str,
-) {
+pub(crate) fn clear_failures(attempts: &mut HashMap<String, VecDeque<Instant>>, identifier: &str) {
     attempts.remove(identifier);
 }

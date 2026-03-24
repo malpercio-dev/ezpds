@@ -52,13 +52,15 @@ pub(crate) async fn get_session_account(
         ApiError::new(ErrorCode::InternalError, "failed to load account")
     })?;
 
-    Ok(row.map(|(email, email_confirmed_at, handle, did_doc)| SessionAccountRow {
-        did: did.to_string(),
-        email,
-        email_confirmed: email_confirmed_at.is_some(),
-        handle,
-        did_doc,
-    }))
+    Ok(row.map(
+        |(email, email_confirmed_at, handle, did_doc)| SessionAccountRow {
+            did: did.to_string(),
+            email,
+            email_confirmed: email_confirmed_at.is_some(),
+            handle,
+            did_doc,
+        },
+    ))
 }
 
 /// Resolve a handle or DID to an active (non-deactivated) account.

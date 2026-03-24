@@ -89,9 +89,7 @@ impl IntoResponse for PARError {
 pub async fn post_par(State(state): State<AppState>, Form(form): Form<PARForm>) -> Response {
     let client_id = match form.client_id.as_deref().filter(|s| !s.is_empty()) {
         Some(id) => id.to_string(),
-        None => {
-            return PARError::new("invalid_request", "client_id is required").into_response()
-        }
+        None => return PARError::new("invalid_request", "client_id is required").into_response(),
     };
 
     let redirect_uri = match form.redirect_uri.as_deref().filter(|s| !s.is_empty()) {
@@ -108,7 +106,11 @@ pub async fn post_par(State(state): State<AppState>, Form(form): Form<PARForm>) 
         }
     };
 
-    let code_challenge_method = match form.code_challenge_method.as_deref().filter(|s| !s.is_empty()) {
+    let code_challenge_method = match form
+        .code_challenge_method
+        .as_deref()
+        .filter(|s| !s.is_empty())
+    {
         Some(m) => m.to_string(),
         None => {
             return PARError::new("invalid_request", "code_challenge_method is required")
@@ -185,11 +187,8 @@ pub async fn post_par(State(state): State<AppState>, Form(form): Form<PARForm>) 
     }
 
     if code_challenge_method != "S256" {
-        return PARError::new(
-            "invalid_request",
-            "code_challenge_method must be S256",
-        )
-        .into_response();
+        return PARError::new("invalid_request", "code_challenge_method must be S256")
+            .into_response();
     }
 
     let params = StoredPARParams {
@@ -315,7 +314,9 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-        let request_uri = json["request_uri"].as_str().expect("request_uri must be present");
+        let request_uri = json["request_uri"]
+            .as_str()
+            .expect("request_uri must be present");
         assert!(
             request_uri.starts_with("urn:ietf:params:oauth:request_uri:"),
             "request_uri must use the OAuth PAR URN scheme"
@@ -358,7 +359,10 @@ mod tests {
                     .method("POST")
                     .uri("/oauth/par")
                     .header("content-type", "application/x-www-form-urlencoded")
-                    .body(Body::from(par_body(&[("redirect_uri", "https://evil.example.com/cb")])))
+                    .body(Body::from(par_body(&[(
+                        "redirect_uri",
+                        "https://evil.example.com/cb",
+                    )])))
                     .unwrap(),
             )
             .await
@@ -604,7 +608,10 @@ mod tests {
         let uri1 = call_par(state1, par_body(&[])).await;
         let uri2 = call_par(state2, par_body(&[])).await;
 
-        assert_ne!(uri1, uri2, "each PAR call must produce a unique request_uri");
+        assert_ne!(
+            uri1, uri2,
+            "each PAR call must produce a unique request_uri"
+        );
     }
 
     #[tokio::test]

@@ -19,7 +19,9 @@ use crate::app::AppState;
 use crate::auth::password::{verify_password, VerifyResult, TIMING_DUMMY_HASH};
 use crate::auth::rate_limit::{clear_failures, is_rate_limited, record_failure};
 use crate::db::accounts::resolve_identifier;
-use crate::db::oauth::{consume_par_request, get_oauth_client, store_authorization_code, StoredPARParams};
+use crate::db::oauth::{
+    consume_par_request, get_oauth_client, store_authorization_code, StoredPARParams,
+};
 use crate::routes::oauth_templates::{
     encode_param, error_page, error_redirect, render_consent_page,
 };
@@ -116,7 +118,11 @@ async fn resolve_authorize_params(
     if let Some(uri) = raw.request_uri {
         let row = match consume_par_request(&state.db, &uri).await {
             Ok(Some(r)) => r,
-            Ok(None) => return Err(ResolveError::Client("request_uri is invalid or has expired")),
+            Ok(None) => {
+                return Err(ResolveError::Client(
+                    "request_uri is invalid or has expired",
+                ))
+            }
             Err(e) => {
                 tracing::error!(error = %e, "db error consuming PAR request");
                 return Err(ResolveError::Server(
@@ -566,7 +572,6 @@ pub async fn post_authorization(
     );
     Redirect::to(&redirect_url).into_response()
 }
-
 
 #[cfg(test)]
 mod tests {
