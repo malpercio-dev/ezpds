@@ -1,10 +1,13 @@
 pub mod device_key;
 pub mod http;
 pub mod keychain;
+pub mod oauth;
 
 use crypto::{build_did_plc_genesis_op_with_external_signer, CryptoError, DidKeyUri};
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
+use tauri::Manager;
+use tauri_plugin_deep_link::DeepLinkExt;
 
 // ── Request / response types ────────────────────────────────────────────────
 
@@ -398,6 +401,17 @@ async fn perform_did_ceremony(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(oauth::AppState::new())
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            let app_handle = app.app_handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                let state = app_handle.state::<oauth::AppState>();
+                oauth::handle_deep_link(event.urls(), &state);
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             create_account,
             get_or_create_device_key,

@@ -21,5 +21,14 @@
   },
   "bundle": {
     "active": true
+  },
+  "plugins": {
+    "deep-link": {
+      "mobile": [
+        {
+          "scheme": ["dev.malpercio.identitywallet"]
+        }
+      ]
+    }
   }
 }
