@@ -496,8 +496,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_invalid_grant_returns_token_refresh_failed() {
-        // Verifies: Relay returns invalid_grant → Err(TokenRefreshFailed), not silent swallow
+    async fn refresh_invalid_grant_returns_invalid_grant() {
+        // Verifies: Relay returns invalid_grant → Err(InvalidGrant), not TokenRefreshFailed
         let server = MockServer::start();
 
         server.mock(|when, then| {
@@ -514,9 +514,16 @@ mod tests {
 
         let result = client.refresh_token().await;
         assert!(
-            matches!(result, Err(OAuthError::TokenRefreshFailed)),
-            "invalid_grant must surface as TokenRefreshFailed, got: {:?}",
+            matches!(result, Err(OAuthError::InvalidGrant)),
+            "invalid_grant must surface as InvalidGrant, got: {:?}",
             result
         );
     }
+
+    // Note: Full test for refresh_token() nonce retry path would require:
+    // - Mock server that returns 400 with DPoP-Nonce header on first request
+    // - Mock server that returns 200 on second request
+    // - Verification that nonce was extracted and used in retry
+    // This is covered indirectly through oauth.rs::exchange_code_with_retry which
+    // uses the same nonce retry logic and is tested in the oauth module.
 }
