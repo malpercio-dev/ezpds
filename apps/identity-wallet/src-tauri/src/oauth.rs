@@ -480,7 +480,9 @@ mod tests {
         assert_eq!(verifier.len(), 43, "base64url of 32 bytes must be 43 chars");
         // RFC 7636 §4.1: ALPHA / DIGIT / "-" / "." / "_" / "~"
         assert!(
-            verifier.chars().all(|c| c.is_alphanumeric() || "-._~".contains(c)),
+            verifier
+                .chars()
+                .all(|c| c.is_alphanumeric() || "-._~".contains(c)),
             "verifier must consist only of unreserved chars: got {verifier}"
         );
     }
@@ -490,7 +492,10 @@ mod tests {
         use sha2::{Digest, Sha256};
         let (verifier, challenge) = pkce::generate();
         let expected = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-        assert_eq!(challenge, expected, "challenge must be base64url(sha256(verifier))");
+        assert_eq!(
+            challenge, expected,
+            "challenge must be base64url(sha256(verifier))"
+        );
     }
 
     #[test]
@@ -503,7 +508,10 @@ mod tests {
     fn pkce_verifiers_are_unique() {
         let (v1, _) = pkce::generate();
         let (v2, _) = pkce::generate();
-        assert_ne!(v1, v2, "each generate() call must produce a different verifier");
+        assert_ne!(
+            v1, v2,
+            "each generate() call must produce a different verifier"
+        );
     }
 
     /// Integration test: PAR call against a running relay.
@@ -533,7 +541,8 @@ mod tests {
             .expect("PAR must succeed");
 
         assert!(
-            resp.request_uri.starts_with("urn:ietf:params:oauth:request_uri:"),
+            resp.request_uri
+                .starts_with("urn:ietf:params:oauth:request_uri:"),
             "request_uri must use OAuth PAR URN scheme, got: {}",
             resp.request_uri
         );
@@ -542,8 +551,8 @@ mod tests {
 
     /// Integration test: PAR call missing code_challenge is rejected by relay.
     ///
-    /// Verifies MM-149.AC1.4: the relay returns a client error (400) when
-    /// code_challenge is absent from the PAR request.
+    /// The relay returns a client error (400) when code_challenge is absent
+    /// from the PAR request.
     ///
     /// Run with: cargo test -p identity-wallet par_missing_challenge -- --include-ignored --nocapture
     #[tokio::test]
@@ -563,7 +572,10 @@ mod tests {
             .header("DPoP", dpop_proof)
             .form(&[
                 ("client_id", "dev.malpercio.identitywallet"),
-                ("redirect_uri", "dev.malpercio.identitywallet:/oauth/callback"),
+                (
+                    "redirect_uri",
+                    "dev.malpercio.identitywallet:/oauth/callback",
+                ),
                 ("code_challenge_method", "S256"),
                 ("state", "somestate"),
                 ("response_type", "code"),
