@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { listen } from '@tauri-apps/api/event';
+  import { onMount } from 'svelte';
   import WelcomeScreen from '$lib/components/onboarding/WelcomeScreen.svelte';
   import ClaimCodeScreen from '$lib/components/onboarding/ClaimCodeScreen.svelte';
   import EmailScreen from '$lib/components/onboarding/EmailScreen.svelte';
@@ -8,7 +10,8 @@
   import DIDCeremonyScreen from '$lib/components/onboarding/DIDCeremonyScreen.svelte';
   import DIDSuccessScreen from '$lib/components/onboarding/DIDSuccessScreen.svelte';
   import ShamirBackupScreen from '$lib/components/onboarding/ShamirBackupScreen.svelte';
-  import { createAccount, type CreateAccountError } from '$lib/ipc';
+  import AuthenticatingScreen from '$lib/components/onboarding/AuthenticatingScreen.svelte';
+  import { createAccount, type CreateAccountError, type OAuthError } from '$lib/ipc';
 
   // ── Onboarding step type ─────────────────────────────────────────────────
   //
@@ -30,7 +33,10 @@
     | 'did_ceremony'
     | 'did_success'
     | 'shamir_backup'
-    | 'complete';
+    | 'complete'
+    | 'authenticating'
+    | 'authenticated'
+    | 'auth_failed';
 
   // ── State ────────────────────────────────────────────────────────────────
 
@@ -45,12 +51,27 @@
     {}
   );
 
+  let authError = $state<OAuthError | null>(null);
+
   // ── Navigation helpers ───────────────────────────────────────────────────
 
   function goTo(next: OnboardingStep) {
     errors = {};
     step = next;
   }
+
+  // ── OAuth event listener ──────────────────────────────────────────────────
+
+  onMount(() => {
+    listen('auth_ready', () => {
+      goTo('authenticated');
+    });
+    // Note: We intentionally don't await listen() or return a cleanup function here.
+    // Svelte 5's onMount does not await async cleanup return values (it would receive a
+    // Promise, not the unlisten function). Since +page.svelte is the root page and never
+    // unmounts during the app lifecycle, the listener persists for the app's lifetime,
+    // which is the correct behavior.
+  });
 
   // ── Account creation ─────────────────────────────────────────────────────
 
@@ -169,6 +190,54 @@
       <div class="complete-icon" aria-hidden="true">✓</div>
       <h2>You're All Set!</h2>
       <p>Your identity is ready. Your recovery key has been safely backed up.</p>
+      <button class="cta" onclick={() => goTo('authenticating')}>
+        Continue
+      </button>
+    </div>
+
+  {:else if step === 'authenticating'}
+    <AuthenticatingScreen
+      onresolved={() => goTo('authenticated')}
+      onfailed={(err) => {
+        authError = err;
+        goTo('auth_failed');
+      }}
+    />
+
+  {:else if step === 'authenticated'}
+    <div class="oauth-screen">
+      <div class="oauth-icon" aria-hidden="true">✓</div>
+      <h2 class="oauth-title">Authenticated</h2>
+      <p class="oauth-body">Your identity wallet is ready.</p>
+    </div>
+
+  {:else if step === 'auth_failed'}
+    <div class="oauth-screen">
+      <div class="oauth-icon" aria-hidden="true">✗</div>
+      <h2 class="oauth-title">Authentication Failed</h2>
+      {#if authError}
+        <p class="oauth-error-code">{authError.code}</p>
+      {/if}
+      <div class="oauth-actions">
+        <button
+          class="cta"
+          onclick={() => {
+            authError = null;
+            goTo('authenticating');
+          }}
+        >
+          Try again
+        </button>
+        <button
+          class="cta cta--secondary"
+          onclick={() => {
+            authError = null;
+            goTo('welcome');
+          }}
+        >
+          Start over
+        </button>
+      </div>
     </div>
   {/if}
 </div>
@@ -214,5 +283,52 @@
     font-size: 0.95rem;
     color: #6b7280;
     margin: 0;
+  }
+
+  .oauth-screen {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    gap: 24px;
+    padding: 32px;
+    text-align: center;
+  }
+
+  .oauth-icon {
+    font-size: 3rem;
+  }
+
+  .oauth-title {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #111827;
+    margin: 0;
+  }
+
+  .oauth-body {
+    color: #6b7280;
+    font-size: 1rem;
+    margin: 0;
+  }
+
+  .oauth-error-code {
+    font-family: monospace;
+    font-size: 0.875rem;
+    color: #6b7280;
+    margin: 0;
+  }
+
+  .oauth-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: 100%;
+  }
+
+  .cta--secondary {
+    background: #f3f4f6;
+    color: #374151;
   }
 </style>
