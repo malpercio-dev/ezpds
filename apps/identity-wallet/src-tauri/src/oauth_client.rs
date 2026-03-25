@@ -322,9 +322,13 @@ mod tests {
     #[tokio::test]
     async fn dpop_and_authorization_headers_present_on_get() {
         // Verifies: Every request carries Authorization: DPoP {token} and DPoP: {proof}
+        // If either header is missing or wrong, the mock won't match -> 404 -> assertion fails.
         let server = MockServer::start();
         server.mock(|when, then| {
-            when.method(GET).path("/resource");
+            when.method(GET)
+                .path("/resource")
+                .header("Authorization", "DPoP my_access_token")
+                .header_exists("DPoP");
             then.status(200).body("ok");
         });
 
@@ -338,30 +342,39 @@ mod tests {
 
     #[tokio::test]
     async fn nonce_retry_sends_exactly_two_requests() {
-        // Verifies: use_dpop_nonce 400 triggers one retry; second success returns response
+        // use_dpop_nonce 400 triggers exactly one retry; the retry carries the server nonce.
+        // The single mock always returns 400+nonce; the retry response is returned as-is.
         let server = MockServer::start();
 
-        // Create a mock that returns 400 on the first call with a nonce, then 200 on retry
-        // httpmock processes mocks in FIFO order, so the first mock blocks until it's hit
-        let _mock1 = server.mock(|when, then| {
+        let mock = server.mock(|when, then| {
             when.method(GET).path("/resource");
             then.status(400).header("DPoP-Nonce", "test-server-nonce");
         });
 
-        let _mock2 = server.mock(|when, then| {
-            when.method(GET).path("/resource");
-            then.status(200).body("ok");
-        });
-
         let keypair = DPoPKeypair::get_or_create().expect("keypair must exist");
         let session = make_session("my_access_token", "my_refresh_token", 300);
-        let client = OAuthClient::new_for_test(keypair, session, server.base_url());
+        let client = OAuthClient::new_for_test(keypair, session.clone(), server.base_url());
 
+        // The retry response (400) is returned — no panic, no infinite loop.
         let resp = client
             .get("/resource")
             .await
-            .expect("GET must succeed after retry");
-        assert_eq!(resp.status().as_u16(), 200);
+            .expect("must not error on retry path");
+        assert_eq!(resp.status().as_u16(), 400);
+
+        // Exactly 2 requests: original attempt + one retry.
+        assert_eq!(
+            mock.hits(),
+            2,
+            "must make exactly 2 requests: attempt + one retry"
+        );
+
+        // The server-provided nonce must be stored in session after receiving a nonce challenge.
+        assert_eq!(
+            session.lock().unwrap().dpop_nonce.as_deref(),
+            Some("test-server-nonce"),
+            "server nonce must be stored in session after 400+nonce response"
+        );
     }
 
     #[tokio::test]
