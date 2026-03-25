@@ -522,10 +522,38 @@ mod tests {
         );
     }
 
-    // Note: Full test for refresh_token() nonce retry path would require:
-    // - Mock server that returns 400 with DPoP-Nonce header on first request
-    // - Mock server that returns 200 on second request
-    // - Verification that nonce was extracted and used in retry
-    // This is covered indirectly through oauth.rs::exchange_code_with_retry which
-    // uses the same nonce retry logic and is tested in the oauth module.
+    #[tokio::test]
+    async fn refresh_token_nonce_retry_sends_exactly_two_requests() {
+        // Verifies: refresh_token() retries exactly once when the token endpoint returns
+        // 400 with a DPoP-Nonce header. The retry itself also gets 400 (no success mock
+        // available in a single-response httpmock setup), so the function returns
+        // TokenRefreshFailed — but the nonce retry path is proven by hits() == 2.
+        let server = MockServer::start();
+
+        let token_mock = server.mock(|when, then| {
+            when.method(POST).path("/oauth/token");
+            then.status(400).header("DPoP-Nonce", "server-nonce");
+        });
+
+        let keypair = DPoPKeypair::get_or_create().expect("keypair must exist");
+        // expires_in_secs = 0 → expires_at = now; satisfies the < now + 60 check,
+        // but we're calling refresh_token() directly to test it in isolation.
+        let session = make_session("access_token", "refresh_token_value", 0);
+        let client = OAuthClient::new_for_test(keypair, session, server.base_url());
+
+        // Both the initial request and the nonce retry get 400 → TokenRefreshFailed.
+        let result = client.refresh_token().await;
+        assert!(
+            matches!(result, Err(OAuthError::TokenRefreshFailed)),
+            "expected TokenRefreshFailed, got: {:?}",
+            result
+        );
+
+        // Exactly 2 requests: initial attempt + one nonce retry.
+        assert_eq!(
+            token_mock.hits(),
+            2,
+            "must make exactly 2 requests: initial + nonce retry"
+        );
+    }
 }
