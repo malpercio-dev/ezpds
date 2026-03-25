@@ -363,6 +363,38 @@ mod tests {
         })
     }
 
+    /// Decode a DPoP proof JWT from the request's DPoP header and return the payload.
+    /// Returns None if the header is absent or malformed.
+    fn decode_dpop_payload(req: &HttpMockRequest) -> Option<serde_json::Value> {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        let val = req
+            .headers
+            .as_ref()?
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("dpop"))
+            .map(|(_, v)| v.as_str())?;
+        let parts: Vec<&str> = val.split('.').collect();
+        let payload_bytes = URL_SAFE_NO_PAD.decode(parts.get(1)?).ok()?;
+        serde_json::from_slice(&payload_bytes).ok()
+    }
+
+    /// `when.matches()` predicate: DPoP proof must NOT contain an `ath` claim.
+    /// Used for refresh-grant requests where no access token is available yet.
+    fn dpop_has_no_ath(req: &HttpMockRequest) -> bool {
+        decode_dpop_payload(req)
+            .map(|p| p.get("ath").is_none())
+            .unwrap_or(false)
+    }
+
+    /// `when.matches()` predicate: DPoP proof must NOT contain a `nonce` claim.
+    /// Used to match the first (pre-challenge) request in a nonce-retry scenario.
+    fn dpop_has_no_nonce(req: &HttpMockRequest) -> bool {
+        decode_dpop_payload(req)
+            .map(|p| p.get("nonce").is_none())
+            .unwrap_or(false)
+    }
+
     #[tokio::test]
     async fn dpop_and_authorization_headers_present_on_get() {
         // Verifies: Every request carries Authorization: DPoP {token} and DPoP: {proof}
@@ -387,32 +419,50 @@ mod tests {
     #[tokio::test]
     async fn nonce_retry_sends_exactly_two_requests() {
         // use_dpop_nonce 400 triggers exactly one retry; the retry carries the server nonce.
-        // The single mock always returns 400+nonce; the retry response is returned as-is.
+        // Wire-level verification via two mocks (httpmock FIFO: first registered wins):
+        //   Mock1 (specific): first request has NO nonce in DPoP proof → 400+DPoP-Nonce
+        //   Mock2 (general):  retry has nonce in proof → Mock1 won't match → Mock2 serves
+        //
+        // If the retry proof omits the nonce, Mock1 matches again → Mock1.hits() would
+        // be 2 and Mock2.hits() would be 0, causing the assertion below to fail.
         let server = MockServer::start();
 
-        let mock = server.mock(|when, then| {
-            when.method(GET).path("/resource");
+        let mock_challenge = server.mock(|when, then| {
+            when.method(GET)
+                .path("/resource")
+                .matches(dpop_has_no_nonce);
             then.status(400)
                 .header("DPoP-Nonce", "test-server-nonce")
                 .json_body(serde_json::json!({"error": "use_dpop_nonce"}));
+        });
+        let mock_retry = server.mock(|when, then| {
+            when.method(GET).path("/resource");
+            then.status(200).body("ok");
         });
 
         let keypair = DPoPKeypair::get_or_create().expect("keypair must exist");
         let session = make_session("my_access_token", "my_refresh_token", 300);
         let client = OAuthClient::new_for_test(keypair, session.clone(), server.base_url());
 
-        // The retry response (400) is returned — no panic, no infinite loop.
         let resp = client
             .get("/resource")
             .await
             .expect("must not error on retry path");
-        assert_eq!(resp.status().as_u16(), 400);
-
-        // Exactly 2 requests: original attempt + one retry.
         assert_eq!(
-            mock.hits(),
-            2,
-            "must make exactly 2 requests: attempt + one retry"
+            resp.status().as_u16(),
+            200,
+            "retry must succeed with the nonce"
+        );
+
+        assert_eq!(
+            mock_challenge.hits(),
+            1,
+            "initial request must hit the nonce-challenge mock"
+        );
+        assert_eq!(
+            mock_retry.hits(),
+            1,
+            "retry must hit the success mock (nonce in proof)"
         );
 
         // The server-provided nonce must be stored in session after receiving a nonce challenge.
@@ -479,21 +529,22 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_dpop_proof_has_no_ath_claim() {
-        // Verifies: Refresh grant DPoP proof must not include ath (no access token in hand)
+        // Verifies: Refresh grant DPoP proof must not include ath (RFC 9449 §4.3).
+        // Wire-level check: mock only responds 200 if the DPoP header has NO ath claim.
+        // If refresh_token() sends a proof with ath, the mock won't match → test fails.
         let server = MockServer::start();
 
         server.mock(|when, then| {
-            when.method(POST).path("/oauth/token");
+            when.method(POST)
+                .path("/oauth/token")
+                .matches(dpop_has_no_ath);
             then.status(200).json_body(token_response_body());
         });
 
         let keypair = DPoPKeypair::get_or_create().expect("keypair must exist");
-        // Session near expiry to trigger refresh.
         let session = make_session("old_token", "my_refresh_token", 30);
         let client = OAuthClient::new_for_test(keypair, session, server.base_url());
 
-        // This test verifies refresh succeeds; the absence of ath is verified
-        // by the make_proof method which omits ath when ath_opt is None.
         client.refresh_token().await.expect("refresh must succeed");
     }
 
