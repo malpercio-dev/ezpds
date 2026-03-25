@@ -83,25 +83,48 @@ impl OAuthClient {
             .send_with_dpop(&method, url, body, nonce_opt.as_deref())
             .await?;
 
-        // On use_dpop_nonce, extract the server nonce, update session, retry once.
+        // On use_dpop_nonce, extract the server nonce from the DPoP-Nonce header,
+        // update session, and retry once.
         if resp.status().as_u16() == 400 {
-            // Peek at the error body to check for use_dpop_nonce.
+            // Extract nonce header BEFORE consuming the body.
             let maybe_nonce = resp
                 .headers()
                 .get("DPoP-Nonce")
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string);
 
-            if let Some(fresh_nonce) = maybe_nonce {
-                {
-                    let mut s = self.session.lock().unwrap();
-                    s.dpop_nonce = Some(fresh_nonce.clone());
+            // Now consume the body to check the error type.
+            let error_body = resp.text().await.unwrap_or_default();
+
+            // Parse the error response to check for use_dpop_nonce.
+            let is_use_dpop_nonce = {
+                serde_json::from_str::<serde_json::Value>(&error_body)
+                    .ok()
+                    .and_then(|v| v.get("error")?.as_str().map(|e| e == "use_dpop_nonce"))
+                    .unwrap_or(false)
+            };
+
+            if is_use_dpop_nonce {
+                if let Some(fresh_nonce) = maybe_nonce {
+                    {
+                        let mut s = self.session.lock().unwrap();
+                        s.dpop_nonce = Some(fresh_nonce.clone());
+                    }
+                    tracing::debug!(nonce = %fresh_nonce, "retrying request with server DPoP nonce");
+                    // Do NOT re-check expiry on the retry — avoid double-refresh.
+                    return self
+                        .send_with_dpop(&method, url, body, Some(&fresh_nonce))
+                        .await;
+                } else {
+                    // use_dpop_nonce but no nonce header — this is an error.
+                    tracing::error!("use_dpop_nonce response missing DPoP-Nonce header");
+                    return Err(OAuthError::NotAuthenticated);
                 }
-                tracing::debug!(nonce = %fresh_nonce, "retrying request with server DPoP nonce");
-                // Do NOT re-check expiry on the retry — avoid double-refresh.
-                return self
-                    .send_with_dpop(&method, url, body, Some(&fresh_nonce))
-                    .await;
+            } else {
+                // Not use_dpop_nonce — the body has been consumed, so we can't return it.
+                // Treat as auth failure since the request cannot proceed.
+                tracing::error!(body = %error_body, "400 response without use_dpop_nonce error");
+                return Err(OAuthError::NotAuthenticated);
             }
         }
 
@@ -154,7 +177,7 @@ impl OAuthClient {
             let s = self.session.lock().unwrap();
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
+                .map_err(|_| OAuthError::TokenRefreshFailed)?
                 .as_secs();
             s.expires_at < now + 60
         };
@@ -273,7 +296,7 @@ impl OAuthClient {
 
         let expires_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
+            .map_err(|_| OAuthError::TokenRefreshFailed)?
             .as_secs()
             + token_resp.expires_in;
 
