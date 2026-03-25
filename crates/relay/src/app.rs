@@ -16,6 +16,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::auth::{DpopNonceStore, OAuthSigningKey};
 use crate::dns::{DnsProvider, TxtResolver};
+use crate::routes::atproto_did::atproto_did_handler;
 use crate::routes::claim_codes::claim_codes;
 use crate::routes::create_account::create_account;
 use crate::routes::create_did::create_did_handler;
@@ -139,6 +140,7 @@ pub struct AppState {
 /// listener — callers can use `tower::ServiceExt::oneshot` to drive requests in tests.
 pub fn app(state: AppState) -> Router {
     Router::new()
+        .route("/.well-known/atproto-did", get(atproto_did_handler))
         .route(
             "/.well-known/oauth-authorization-server",
             get(oauth_server_metadata),

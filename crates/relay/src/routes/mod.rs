@@ -1,4 +1,5 @@
 pub(crate) mod auth;
+pub mod atproto_did;
 pub mod claim_codes;
 pub mod delete_session;
 pub mod create_account;
