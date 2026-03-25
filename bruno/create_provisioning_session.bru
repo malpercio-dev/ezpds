@@ -1,0 +1,18 @@
+meta {
+  name: Create Provisioning Session
+  type: http
+  seq: 20
+}
+
+post {
+  url: {{baseUrl}}/v1/accounts/sessions
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "email": "user@example.com",
+    "password": "yourpassword"
+  }
+}

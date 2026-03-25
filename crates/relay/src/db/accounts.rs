@@ -63,6 +63,37 @@ pub(crate) async fn get_session_account(
     ))
 }
 
+/// Resolve an email address to an active (non-deactivated) account.
+///
+/// Used by the provisioning session login endpoint (`POST /v1/accounts/sessions`).
+/// Returns `None` when not found or deactivated; `Err` only on DB errors.
+pub(crate) async fn resolve_by_email(
+    db: &sqlx::SqlitePool,
+    email: &str,
+) -> Result<Option<AccountRow>, ApiError> {
+    let row: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT a.did, a.password_hash, h.handle \
+         FROM accounts a \
+         LEFT JOIN handles h ON h.did = a.did \
+         WHERE a.email = ? AND a.deactivated_at IS NULL \
+         LIMIT 1",
+    )
+    .bind(email)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "DB error resolving email");
+        ApiError::new(ErrorCode::InternalError, "failed to resolve identifier")
+    })?;
+
+    Ok(row.map(|(did, password_hash, handle)| AccountRow {
+        did,
+        email: email.to_string(),
+        password_hash,
+        handle,
+    }))
+}
+
 /// Resolve a handle or DID to an active (non-deactivated) account.
 ///
 /// Returns `None` when not found; `Err` only on DB errors.

@@ -32,6 +32,7 @@ use crate::routes::oauth_jwks::oauth_jwks;
 use crate::routes::oauth_par::post_par;
 use crate::routes::oauth_server_metadata::oauth_server_metadata;
 use crate::routes::oauth_token::post_token;
+use crate::routes::provisioning_session::create_provisioning_session;
 use crate::routes::register_device::register_device;
 use crate::routes::resolve_handle::resolve_handle_handler;
 use crate::well_known::WellKnownResolver;
@@ -160,6 +161,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/accounts", post(create_account))
         .route("/v1/accounts/claim-codes", post(claim_codes))
         .route("/v1/accounts/mobile", post(create_mobile_account))
+        .route("/v1/accounts/sessions", post(create_provisioning_session))
         .route("/v1/devices", post(register_device))
         .route("/v1/dids", post(create_did_handler))
         .route("/v1/handles", post(create_handle_handler))
