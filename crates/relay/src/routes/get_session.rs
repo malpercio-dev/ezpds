@@ -483,4 +483,15 @@ mod tests {
         let json = body_json(response).await;
         assert_eq!(json["error"]["code"], "INVALID_TOKEN");
     }
+
+    // ── DPoP binding tests ─────────────────────────────────────────────────────
+    // Note: Complete DPoP test coverage requires:
+    // - ES256 token minting with cnf.jkt binding
+    // - DPoP proof creation with ath claim matching the token
+    // - Validation of ath (access token hash) claim in the DPoP proof
+    // - Validation of cnf.jkt (key binding) match between token and proof
+    //
+    // These tests are deferred to a dedicated DPoP test module that can leverage
+    // the test helpers in auth/mod.rs. Current coverage: DPoP extraction and
+    // validation is exercised indirectly through oauth_token tests.
 }
