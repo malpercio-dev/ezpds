@@ -327,6 +327,19 @@
     width: 100%;
   }
 
+  .cta {
+    width: 100%;
+    max-width: 320px;
+    padding: 1rem;
+    background: #007aff;
+    color: #fff;
+    border: none;
+    border-radius: 12px;
+    font-size: 1.1rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
   .cta--secondary {
     background: #f3f4f6;
     color: #374151;
