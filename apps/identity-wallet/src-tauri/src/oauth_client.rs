@@ -392,7 +392,9 @@ mod tests {
 
         let mock = server.mock(|when, then| {
             when.method(GET).path("/resource");
-            then.status(400).header("DPoP-Nonce", "test-server-nonce");
+            then.status(400)
+                .header("DPoP-Nonce", "test-server-nonce")
+                .json_body(serde_json::json!({"error": "use_dpop_nonce"}));
         });
 
         let keypair = DPoPKeypair::get_or_create().expect("keypair must exist");
