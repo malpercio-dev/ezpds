@@ -10,19 +10,16 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{extract::State, http::StatusCode, response::Json};
-use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
+use crate::auth::jwt::{issue_access_jwt, issue_refresh_jwt};
 use crate::auth::password::{verify_password, VerifyResult};
 use crate::auth::rate_limit::{clear_failures, is_rate_limited, record_failure};
 use crate::db::accounts::resolve_identifier;
-
-const ACCESS_TOKEN_TTL_SECS: u64 = 2 * 60 * 60; // 2 hours
-const REFRESH_TOKEN_TTL_SECS: u64 = 90 * 24 * 60 * 60; // 90 days
 
 // ── Request / Response types ─────────────────────────────────────────────────
 
@@ -41,31 +38,6 @@ pub struct CreateSessionResponse {
     handle: String,
     did: String,
     email: String,
-}
-
-// ── JWT claim structs ────────────────────────────────────────────────────────
-
-/// Claims for a legacy HS256 access token (scope: com.atproto.access).
-#[derive(Serialize)]
-struct LegacyAccessClaims {
-    scope: &'static str,
-    sub: String,
-    /// Audience — server_did when configured, public_url otherwise.
-    aud: String,
-    iat: u64,
-    exp: u64,
-}
-
-/// Claims for a legacy HS256 refresh token (scope: com.atproto.refresh).
-#[derive(Serialize)]
-struct LegacyRefreshClaims {
-    scope: &'static str,
-    sub: String,
-    aud: String,
-    /// Unique token ID stored in `refresh_tokens.jti` for refresh-token rotation.
-    jti: String,
-    iat: u64,
-    exp: u64,
 }
 
 // ── Handler ──────────────────────────────────────────────────────────────────
@@ -231,51 +203,6 @@ pub async fn create_session(
             email: account.email,
         }),
     ))
-}
-
-/// Sign an HS256 access JWT with a 2-hour lifetime.
-fn issue_access_jwt(secret: &[u8; 32], did: &str, aud: &str, now: u64) -> Result<String, ApiError> {
-    encode(
-        &Header::new(Algorithm::HS256),
-        &LegacyAccessClaims {
-            scope: "com.atproto.access",
-            sub: did.to_string(),
-            aud: aud.to_string(),
-            iat: now,
-            exp: now + ACCESS_TOKEN_TTL_SECS,
-        },
-        &EncodingKey::from_secret(secret),
-    )
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to sign access JWT");
-        ApiError::new(ErrorCode::InternalError, "failed to issue token")
-    })
-}
-
-/// Sign an HS256 refresh JWT with a 90-day lifetime.
-fn issue_refresh_jwt(
-    secret: &[u8; 32],
-    did: &str,
-    aud: &str,
-    jti: &str,
-    now: u64,
-) -> Result<String, ApiError> {
-    encode(
-        &Header::new(Algorithm::HS256),
-        &LegacyRefreshClaims {
-            scope: "com.atproto.refresh",
-            sub: did.to_string(),
-            aud: aud.to_string(),
-            jti: jti.to_string(),
-            iat: now,
-            exp: now + REFRESH_TOKEN_TTL_SECS,
-        },
-        &EncodingKey::from_secret(secret),
-    )
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to sign refresh JWT");
-        ApiError::new(ErrorCode::InternalError, "failed to issue token")
-    })
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

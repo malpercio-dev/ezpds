@@ -33,6 +33,7 @@ use crate::routes::oauth_par::post_par;
 use crate::routes::oauth_server_metadata::oauth_server_metadata;
 use crate::routes::oauth_token::post_token;
 use crate::routes::provisioning_session::create_provisioning_session;
+use crate::routes::refresh_session::refresh_session;
 use crate::routes::register_device::register_device;
 use crate::routes::resolve_handle::resolve_handle_handler;
 use crate::well_known::WellKnownResolver;
@@ -158,6 +159,10 @@ pub fn app(state: AppState) -> Router {
             post(create_session),
         )
         .route("/xrpc/com.atproto.server.getSession", get(get_session))
+        .route(
+            "/xrpc/com.atproto.server.refreshSession",
+            post(refresh_session),
+        )
         .route(
             "/xrpc/com.atproto.identity.resolveHandle",
             get(resolve_handle_handler),
@@ -352,7 +357,7 @@ mod tests {
         let response = app(test_state().await)
             .oneshot(
                 Request::builder()
-                    .uri("/xrpc/com.atproto.server.refreshSession")
+                    .uri("/xrpc/com.example.notImplemented")
                     .body(Body::empty())
                     .unwrap(),
             )

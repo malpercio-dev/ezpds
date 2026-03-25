@@ -1,8 +1,8 @@
 // pattern: Functional Core
 
 use common::{ApiError, ErrorCode};
-use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
-use serde::Deserialize;
+use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
 
@@ -148,4 +148,129 @@ pub fn parse_scope(scope: &str) -> Result<AuthScope, ApiError> {
             "unrecognised token scope",
         )),
     }
+}
+
+// ── Refresh token verification ────────────────────────────────────────────────
+
+/// Claims decoded from a refresh JWT (scope: com.atproto.refresh).
+///
+/// `sub` is intentionally omitted — the authoritative DID is read from the DB
+/// after confirming the token exists, rather than trusting the JWT claim directly.
+/// JWT library still enforces `sub` presence via `set_required_spec_claims`.
+#[derive(Debug, Deserialize)]
+pub(crate) struct RefreshTokenClaims {
+    pub scope: String,
+    /// Token ID embedded in the JWT and stored in `refresh_tokens.jti`.
+    /// `None` when an access token (no `jti`) is mistakenly presented here.
+    pub jti: Option<String>,
+}
+
+/// Verify an HS256 refresh JWT issued by this server.
+///
+/// Validates signature, expiry, and audience (when `server_did` is configured).
+/// Does NOT check that `scope == "com.atproto.refresh"` — callers are responsible
+/// for that check so that the error message can be precise.
+pub fn verify_refresh_token(
+    token: &str,
+    state: &crate::app::AppState,
+) -> Result<RefreshTokenClaims, ApiError> {
+    let decoding_key = DecodingKey::from_secret(&state.jwt_secret);
+    let mut validation = Validation::new(Algorithm::HS256);
+    match state.config.server_did.as_deref() {
+        Some(did) => validation.set_audience(&[did]),
+        None => {
+            validation.validate_aud = false;
+        }
+    }
+    validation.set_required_spec_claims(&["exp", "sub"]);
+    validation.leeway = 0;
+
+    decode::<RefreshTokenClaims>(token, &decoding_key, &validation)
+        .map(|data| data.claims)
+        .map_err(|e| {
+            use jsonwebtoken::errors::ErrorKind;
+            match e.kind() {
+                ErrorKind::ExpiredSignature => {
+                    ApiError::new(ErrorCode::TokenExpired, "token has expired")
+                }
+                _ => {
+                    tracing::debug!(error = %e, error_kind = ?e.kind(), "refresh token verification failed");
+                    ApiError::new(ErrorCode::InvalidToken, "invalid token")
+                }
+            }
+        })
+}
+
+// ── Legacy HS256 token issuance ───────────────────────────────────────────────
+
+const ACCESS_TOKEN_TTL_SECS: u64 = 2 * 60 * 60; // 2 hours
+const REFRESH_TOKEN_TTL_SECS: u64 = 90 * 24 * 60 * 60; // 90 days
+
+#[derive(Serialize)]
+struct LegacyAccessClaims {
+    scope: &'static str,
+    sub: String,
+    aud: String,
+    iat: u64,
+    exp: u64,
+}
+
+#[derive(Serialize)]
+struct LegacyRefreshClaims {
+    scope: &'static str,
+    sub: String,
+    aud: String,
+    jti: String,
+    iat: u64,
+    exp: u64,
+}
+
+/// Sign an HS256 access JWT (scope: com.atproto.access) with a 2-hour lifetime.
+pub(crate) fn issue_access_jwt(
+    secret: &[u8; 32],
+    did: &str,
+    aud: &str,
+    now: u64,
+) -> Result<String, ApiError> {
+    encode(
+        &Header::new(Algorithm::HS256),
+        &LegacyAccessClaims {
+            scope: "com.atproto.access",
+            sub: did.to_string(),
+            aud: aud.to_string(),
+            iat: now,
+            exp: now + ACCESS_TOKEN_TTL_SECS,
+        },
+        &EncodingKey::from_secret(secret),
+    )
+    .map_err(|e| {
+        tracing::error!(error = %e, "failed to sign access JWT");
+        ApiError::new(ErrorCode::InternalError, "failed to issue token")
+    })
+}
+
+/// Sign an HS256 refresh JWT (scope: com.atproto.refresh) with a 90-day lifetime.
+pub(crate) fn issue_refresh_jwt(
+    secret: &[u8; 32],
+    did: &str,
+    aud: &str,
+    jti: &str,
+    now: u64,
+) -> Result<String, ApiError> {
+    encode(
+        &Header::new(Algorithm::HS256),
+        &LegacyRefreshClaims {
+            scope: "com.atproto.refresh",
+            sub: did.to_string(),
+            aud: aud.to_string(),
+            jti: jti.to_string(),
+            iat: now,
+            exp: now + REFRESH_TOKEN_TTL_SECS,
+        },
+        &EncodingKey::from_secret(secret),
+    )
+    .map_err(|e| {
+        tracing::error!(error = %e, "failed to sign refresh JWT");
+        ApiError::new(ErrorCode::InternalError, "failed to issue token")
+    })
 }

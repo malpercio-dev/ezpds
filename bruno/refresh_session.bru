@@ -1,0 +1,19 @@
+meta {
+  name: Refresh Session (refreshSession)
+  type: http
+  seq: 21
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.server.refreshSession
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{refreshJwt}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}

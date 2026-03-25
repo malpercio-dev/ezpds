@@ -6,6 +6,7 @@ pub mod rate_limit;
 pub mod signing_key;
 
 mod bearer;
+pub(crate) use bearer::extract_bearer_token;
 
 // Re-export the public API so callers don't need to know the internal layout.
 pub use dpop::{
@@ -20,8 +21,6 @@ pub use jwt::{AuthScope, TokenType};
 pub use signing_key::{load_or_create_oauth_signing_key, OAuthSigningKey};
 
 // Test-only: make private helpers visible to the test module below (which uses `use super::*`).
-#[cfg(test)]
-pub(super) use bearer::extract_bearer_token;
 #[cfg(test)]
 pub(super) use dpop::{
     dpop_alg_from_str, jwk_thumbprint, validate_and_consume_nonce, validate_dpop,
