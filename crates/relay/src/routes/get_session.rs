@@ -84,6 +84,68 @@ mod tests {
 
     use crate::app::{app, test_state};
 
+    // ── DPoP test helpers ─────────────────────────────────────────────────────
+
+    /// Compute the base64url-encoded SHA-256 hash of an access token (ath claim value).
+    fn ath_of(token: &str) -> String {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        use sha2::{Digest, Sha256};
+        URL_SAFE_NO_PAD.encode(Sha256::digest(token.as_bytes()))
+    }
+
+    /// Compute the JWK thumbprint for a P-256 signing key.
+    fn thumbprint_of(key: &p256::ecdsa::SigningKey) -> String {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        use sha2::{Digest, Sha256};
+        let vk = key.verifying_key();
+        let pt = vk.to_encoded_point(false);
+        let x = URL_SAFE_NO_PAD.encode(pt.x().unwrap());
+        let y = URL_SAFE_NO_PAD.encode(pt.y().unwrap());
+        let jwk_canon = format!(r#"{{"crv":"P-256","kty":"EC","x":"{x}","y":"{y}"}}"#);
+        URL_SAFE_NO_PAD.encode(Sha256::digest(jwk_canon.as_bytes()))
+    }
+
+    /// Build a minimal DPoP proof JWT for the given key, method, URL, and access token.
+    fn make_dpop_proof(
+        key: &p256::ecdsa::SigningKey,
+        htm: &str,
+        htu: &str,
+        access_token: &str,
+    ) -> String {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        use p256::ecdsa::signature::Signer;
+
+        let vk = key.verifying_key();
+        let pt = vk.to_encoded_point(false);
+        let x = URL_SAFE_NO_PAD.encode(pt.x().unwrap());
+        let y = URL_SAFE_NO_PAD.encode(pt.y().unwrap());
+        let jwk = serde_json::json!({ "kty": "EC", "crv": "P-256", "x": x, "y": y });
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let header = serde_json::json!({ "typ": "dpop+jwt", "alg": "ES256", "jwk": jwk });
+        let payload = serde_json::json!({
+            "htm": htm,
+            "htu": htu,
+            "iat": now,
+            "jti": uuid::Uuid::new_v4().to_string(),
+            "ath": ath_of(access_token),
+        });
+
+        let hdr = URL_SAFE_NO_PAD.encode(serde_json::to_string(&header).unwrap().as_bytes());
+        let pay = URL_SAFE_NO_PAD.encode(serde_json::to_string(&payload).unwrap().as_bytes());
+        let signing_input = format!("{hdr}.{pay}");
+        let sig: p256::ecdsa::Signature = key.sign(signing_input.as_bytes());
+        let sig_b64 = URL_SAFE_NO_PAD.encode(sig.to_bytes().as_ref() as &[u8]);
+        format!("{hdr}.{pay}.{sig_b64}")
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     /// Issue a valid HS256 access JWT for a DID using the test state's fixed secret.
@@ -485,13 +547,102 @@ mod tests {
     }
 
     // ── DPoP binding tests ─────────────────────────────────────────────────────
-    // Note: Complete DPoP test coverage requires:
-    // - ES256 token minting with cnf.jkt binding
-    // - DPoP proof creation with ath claim matching the token
-    // - Validation of ath (access token hash) claim in the DPoP proof
-    // - Validation of cnf.jkt (key binding) match between token and proof
-    //
-    // These tests are deferred to a dedicated DPoP test module that can leverage
-    // the test helpers in auth/mod.rs. Current coverage: DPoP extraction and
-    // validation is exercised indirectly through oauth_token tests.
+
+    #[tokio::test]
+    async fn dpop_bound_token_with_valid_proof_returns_200() {
+        // A DPoP-bound access token (cnf.jkt present) WITH a valid DPoP proof returns 200.
+        // Exercises the full DPoP validation path: jkt binding + ath claim + signature.
+        let state = test_state().await;
+        insert_account(
+            &state.db,
+            "did:plc:dpop",
+            "dpop.test.example.com",
+            "dpop@example.com",
+        )
+        .await;
+
+        let dpop_key = p256::ecdsa::SigningKey::random(&mut rand_core::OsRng);
+        let jkt = thumbprint_of(&dpop_key);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = {
+            use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+            encode(
+                &Header::new(Algorithm::HS256),
+                &serde_json::json!({
+                    "scope": "com.atproto.access",
+                    "sub": "did:plc:dpop",
+                    "iat": now,
+                    "exp": now + 7200_u64,
+                    "cnf": { "jkt": jkt },
+                }),
+                &EncodingKey::from_secret(&state.jwt_secret),
+            )
+            .unwrap()
+        };
+
+        let public_url = &state.config.public_url;
+        let htu = format!("{public_url}/xrpc/com.atproto.server.getSession");
+        let proof = make_dpop_proof(&dpop_key, "GET", &htu, &token);
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/xrpc/com.atproto.server.getSession")
+                    .header("Authorization", format!("Bearer {token}"))
+                    .header("DPoP", proof)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json["did"], "did:plc:dpop");
+    }
+
+    #[tokio::test]
+    async fn dpop_bound_token_without_proof_returns_401() {
+        // A DPoP-bound access token (cnf.jkt present) WITHOUT a DPoP header must be
+        // rejected — RFC 9449 §7.1: cnf.jkt requires a DPoP proof to prevent downgrade.
+        let state = test_state().await;
+
+        let dpop_key = p256::ecdsa::SigningKey::random(&mut rand_core::OsRng);
+        let jkt = thumbprint_of(&dpop_key);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = {
+            use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+            encode(
+                &Header::new(Algorithm::HS256),
+                &serde_json::json!({
+                    "scope": "com.atproto.access",
+                    "sub": "did:plc:dpop",
+                    "iat": now,
+                    "exp": now + 7200_u64,
+                    "cnf": { "jkt": jkt },
+                }),
+                &EncodingKey::from_secret(&state.jwt_secret),
+            )
+            .unwrap()
+        };
+
+        // No DPoP header — should be rejected.
+        let response = app(state)
+            .oneshot(get_session_request(&token))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+    }
 }
