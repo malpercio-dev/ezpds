@@ -37,9 +37,14 @@ use crate::routes::register_device::register_device;
 use crate::routes::resolve_handle::resolve_handle_handler;
 use crate::well_known::WellKnownResolver;
 
-/// In-memory store for failed login attempts per identifier (for createSession rate limiting).
-/// Maps identifier (DID or handle) → timestamps of recent failures.
+/// In-memory store for failed login attempts per identifier, shared across all login endpoints.
+/// Maps identifier string → timestamps of recent failures.
 /// `std::sync::Mutex` is used because the critical section never awaits.
+///
+/// **Known limitation:** `createSession` keys by DID or handle; `POST /v1/accounts/sessions`
+/// keys by email. Both share this store, so an attacker gets `RATE_LIMIT_MAX_FAILURES` attempts
+/// per endpoint independently against the same account. Acceptable for v0.1; a future revision
+/// should normalise all identifiers to DID before keying.
 pub type FailedLoginStore = Arc<Mutex<HashMap<String, VecDeque<Instant>>>>;
 
 /// Wraps an `axum::http::HeaderMap` as an OTel text-map [`Extractor`] so that

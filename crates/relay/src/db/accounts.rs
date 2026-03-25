@@ -82,7 +82,9 @@ pub(crate) async fn resolve_by_email(
     .fetch_optional(db)
     .await
     .map_err(|e| {
-        tracing::error!(error = %e, "DB error resolving email");
+        // Logging the email domain aids ops triage without exposing the full address in logs.
+        let domain = email.split('@').nth(1).unwrap_or("<unknown>");
+        tracing::error!(error = %e, email_domain = %domain, "DB error resolving email");
         ApiError::new(ErrorCode::InternalError, "failed to resolve identifier")
     })?;
 

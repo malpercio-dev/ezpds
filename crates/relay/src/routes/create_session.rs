@@ -206,12 +206,14 @@ pub async fn create_session(
     // Clear failure history only after the session is fully committed.
     // Doing this earlier would reset the counter even if JWT issuance or the
     // DB transaction subsequently fails.
-    {
-        let mut attempts = state.failed_login_attempts.lock().map_err(|_| {
-            tracing::error!("failed_login_attempts mutex is poisoned");
-            ApiError::new(ErrorCode::InternalError, "internal error")
-        })?;
-        clear_failures(&mut attempts, &payload.identifier);
+    // Mutex poison here must not override a committed session — log and continue.
+    match state.failed_login_attempts.lock() {
+        Ok(mut attempts) => clear_failures(&mut attempts, &payload.identifier),
+        Err(_) => tracing::error!(
+            identifier = %payload.identifier,
+            phase = "clear_failures",
+            "mutex poisoned; rate-limit counter not cleared after successful login"
+        ),
     }
 
     // ATProto spec: "handle.invalid" is the sentinel for accounts without a resolvable handle.

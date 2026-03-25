@@ -51,7 +51,7 @@ pub async fn create_provisioning_session(
     // Check before any DB work to shed load on targeted accounts.
     {
         let mut attempts = state.failed_login_attempts.lock().map_err(|_| {
-            tracing::error!("failed_login_attempts mutex is poisoned");
+            tracing::error!(phase = "rate_limit_check", "failed_login_attempts mutex is poisoned");
             ApiError::new(ErrorCode::InternalError, "internal error")
         })?;
         if is_rate_limited(&mut attempts, &payload.email) {
@@ -63,14 +63,16 @@ pub async fn create_provisioning_session(
     }
 
     // --- Resolve email and verify password ---
-    // Both "account not found" and "wrong password" surface as the same error to prevent
-    // user enumeration via distinguishable error messages.
+    // "Account not found" and "wrong password" return the same error to prevent user
+    // enumeration. Note: CorruptHash is intentionally distinct — it returns InternalError
+    // because a corrupted hash indicates DB corruption, not an auth failure.
     let account_opt = resolve_by_email(&state.db, &payload.email).await?;
 
     let account = match account_opt {
         Some(row) => {
             let result = match row.password_hash.as_deref() {
-                // Accounts without a password_hash cannot use provisioning session login.
+                // argon2id never produces an empty string; this guards against rows
+                // created by a migration that stored "" instead of NULL.
                 None | Some("") => VerifyResult::WrongPassword,
                 Some(h) => verify_password(h, &payload.password),
             };
@@ -78,7 +80,10 @@ pub async fn create_provisioning_session(
                 VerifyResult::Ok => {}
                 VerifyResult::WrongPassword => {
                     let mut attempts = state.failed_login_attempts.lock().map_err(|_| {
-                        tracing::error!("failed_login_attempts mutex is poisoned");
+                        tracing::error!(
+                            phase = "record_failure_wrong_password",
+                            "failed_login_attempts mutex is poisoned"
+                        );
                         ApiError::new(ErrorCode::InternalError, "internal error")
                     })?;
                     record_failure(&mut attempts, &payload.email);
@@ -89,6 +94,7 @@ pub async fn create_provisioning_session(
                 }
                 VerifyResult::CorruptHash => {
                     tracing::error!(
+                        email = %payload.email,
                         "stored password_hash is not a valid PHC string; possible DB corruption"
                     );
                     return Err(ApiError::new(ErrorCode::InternalError, "internal error"));
@@ -98,7 +104,10 @@ pub async fn create_provisioning_session(
         }
         None => {
             let mut attempts = state.failed_login_attempts.lock().map_err(|_| {
-                tracing::error!("failed_login_attempts mutex is poisoned");
+                tracing::error!(
+                    phase = "record_failure_unknown_email",
+                    "failed_login_attempts mutex is poisoned"
+                );
                 ApiError::new(ErrorCode::InternalError, "internal error")
             })?;
             record_failure(&mut attempts, &payload.email);
@@ -128,12 +137,15 @@ pub async fn create_provisioning_session(
     })?;
 
     // Clear failure history only after the session is fully committed.
-    {
-        let mut attempts = state.failed_login_attempts.lock().map_err(|_| {
-            tracing::error!("failed_login_attempts mutex is poisoned");
-            ApiError::new(ErrorCode::InternalError, "internal error")
-        })?;
-        clear_failures(&mut attempts, &payload.email);
+    // Doing this earlier would reset the counter even if the DB insert subsequently fails.
+    // Mutex poison here must not override a committed session — log and continue.
+    match state.failed_login_attempts.lock() {
+        Ok(mut attempts) => clear_failures(&mut attempts, &payload.email),
+        Err(_) => tracing::error!(
+            email = %payload.email,
+            phase = "clear_failures",
+            "mutex poisoned; rate-limit counter not cleared after successful login"
+        ),
     }
 
     Ok((
@@ -149,10 +161,6 @@ pub async fn create_provisioning_session(
 
 #[cfg(test)]
 mod tests {
-    use argon2::{
-        password_hash::{rand_core::OsRng, SaltString},
-        Argon2, PasswordHasher,
-    };
     use axum::{
         body::Body,
         http::{Request, StatusCode},
@@ -161,6 +169,7 @@ mod tests {
 
     use crate::app::{app, test_state};
     use crate::auth::rate_limit::RATE_LIMIT_MAX_FAILURES;
+    use crate::routes::test_utils::{body_json, insert_account_with_password};
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -173,45 +182,6 @@ mod tests {
                 r#"{{"email":"{email}","password":"{password}"}}"#
             )))
             .unwrap()
-    }
-
-    async fn insert_account_with_password(
-        db: &sqlx::SqlitePool,
-        did: &str,
-        handle: &str,
-        email: &str,
-        password: &str,
-    ) {
-        let salt = SaltString::generate(&mut OsRng);
-        let hash = Argon2::default()
-            .hash_password(password.as_bytes(), &salt)
-            .unwrap()
-            .to_string();
-
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, ?, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(email)
-        .bind(&hash)
-        .execute(db)
-        .await
-        .unwrap();
-
-        sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
-            .bind(handle)
-            .bind(did)
-            .execute(db)
-            .await
-            .unwrap();
-    }
-
-    async fn body_json(response: axum::response::Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        serde_json::from_slice(&bytes).unwrap()
     }
 
     // ── Happy path ────────────────────────────────────────────────────────────
@@ -307,8 +277,11 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(did.as_deref(), Some("did:plc:authcheck"),
-            "require_session query must find the issued token");
+        assert_eq!(
+            did.as_deref(),
+            Some("did:plc:authcheck"),
+            "require_session query must find the issued token"
+        );
     }
 
     // ── Auth failures ─────────────────────────────────────────────────────────
@@ -370,6 +343,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn account_with_empty_string_password_hash_returns_401() {
+        // Guards the Some("") arm — a migration quirk storing "" instead of NULL
+        // must be treated identically to NULL (password auth not allowed).
+        let state = test_state().await;
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES ('did:plc:emptypass', 'emptypass@example.com', '', datetime('now'), datetime('now'))",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let response = app(state)
+            .oneshot(post_provisioning_session(
+                "emptypass@example.com",
+                "anypassword",
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn corrupt_password_hash_returns_500_and_does_not_increment_rate_limit() {
+        // CorruptHash returns InternalError (not AuthenticationRequired) because
+        // it indicates DB corruption, not an auth failure. The rate-limit counter
+        // must not be incremented — the user should not be locked out.
+        let state = test_state().await;
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES ('did:plc:corrupt', 'corrupt@example.com', 'not-a-valid-phc-string', \
+                     datetime('now'), datetime('now'))",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let response = app(state.clone())
+            .oneshot(post_provisioning_session("corrupt@example.com", "anypassword"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "INTERNAL_ERROR");
+
+        // Rate-limit counter must not have been incremented.
+        let attempts = state.failed_login_attempts.lock().unwrap();
+        let entry = attempts.get("corrupt@example.com");
+        assert!(
+            entry.map_or(true, |q| q.is_empty()),
+            "CorruptHash must not increment the rate-limit counter"
+        );
+    }
+
+    #[tokio::test]
     async fn deactivated_account_returns_401() {
         let state = test_state().await;
         insert_account_with_password(
@@ -409,7 +439,10 @@ mod tests {
         .await;
 
         let wrong_pw = app(state.clone())
-            .oneshot(post_provisioning_session("enumtest@example.com", "wrongpassword"))
+            .oneshot(post_provisioning_session(
+                "enumtest@example.com",
+                "wrongpassword",
+            ))
             .await
             .unwrap();
         let unknown = app(state)
@@ -439,7 +472,7 @@ mod tests {
         for i in 0..RATE_LIMIT_MAX_FAILURES {
             let response = app(state.clone())
                 .oneshot(post_provisioning_session(
-                    "did:plc:ratelimited@example.com",
+                    "ratelimited@example.com",
                     "wrongpassword",
                 ))
                 .await
@@ -453,12 +486,14 @@ mod tests {
 
         let response = app(state)
             .oneshot(post_provisioning_session(
-                "did:plc:ratelimited@example.com",
+                "ratelimited@example.com",
                 "wrongpassword",
             ))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "RATE_LIMITED");
     }
 
     #[tokio::test]
