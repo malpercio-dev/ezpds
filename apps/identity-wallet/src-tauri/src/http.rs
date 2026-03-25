@@ -7,10 +7,19 @@
 use reqwest::{Client, Response};
 use serde::Serialize;
 
+use crate::oauth::OAuthError;
+
 #[cfg(debug_assertions)]
 const RELAY_BASE_URL: &str = "http://localhost:8080";
 #[cfg(not(debug_assertions))]
 const RELAY_BASE_URL: &str = "https://relay.ezpds.com";
+
+/// Successful response from `POST /oauth/par` (RFC 9126 §2.2).
+#[derive(Debug, serde::Deserialize)]
+pub struct ParResponse {
+    pub request_uri: String,
+    pub expires_in: u32,
+}
 
 /// HTTP client for relay API requests.
 pub struct RelayClient {
@@ -62,6 +71,66 @@ impl RelayClient {
             .json(body)
             .send()
             .await
+    }
+
+    /// POST `/oauth/par` — push the authorization request parameters to the relay.
+    ///
+    /// Sends the required PKCE and OAuth parameters as `application/x-www-form-urlencoded`.
+    /// Includes a `DPoP` proof header per RFC 9449 §6.
+    ///
+    /// `dpop_jkt` is the JWK thumbprint of the DPoP key; included as a form field for
+    /// servers that support PAR-level DPoP key binding (the relay currently ignores it,
+    /// but it is spec-correct to send it).
+    pub async fn par(
+        &self,
+        code_challenge: &str,
+        state_param: &str,
+        dpop_proof: &str,
+        dpop_jkt: &str,
+        login_hint: Option<&str>,
+    ) -> Result<ParResponse, OAuthError> {
+        let url = format!("{}/oauth/par", self.base_url);
+
+        let hint_owned;
+        let mut fields = vec![
+            ("client_id", "dev.malpercio.identitywallet"),
+            ("redirect_uri", "dev.malpercio.identitywallet:/oauth/callback"),
+            ("code_challenge", code_challenge),
+            ("code_challenge_method", "S256"),
+            ("state", state_param),
+            ("response_type", "code"),
+            ("scope", "atproto"),
+            ("dpop_jkt", dpop_jkt),
+        ];
+
+        if let Some(hint) = login_hint {
+            hint_owned = hint.to_string();
+            fields.push(("login_hint", &hint_owned));
+        }
+
+        let resp = self
+            .client
+            .post(&url)
+            .header("DPoP", dpop_proof)
+            .form(&fields)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "PAR request network error");
+                OAuthError::ParFailed
+            })?;
+
+        let status = resp.status();
+        if status.as_u16() != 201 {
+            let body = resp.text().await.unwrap_or_default();
+            tracing::error!(status = %status, body = %body, "PAR request failed");
+            return Err(OAuthError::ParFailed);
+        }
+
+        resp.json::<ParResponse>().await.map_err(|e| {
+            tracing::error!(error = %e, "PAR response deserialization failed");
+            OAuthError::ParFailed
+        })
     }
 
     /// Returns the compile-time base URL for this relay client instance.

@@ -7,6 +7,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use p256::ecdsa::{signature::Signer, Signature, SigningKey};
 #[allow(unused_imports)]
 use p256::elliptic_curve::sec1::ToEncodedPoint;
+use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -211,6 +212,36 @@ impl DPoPKeypair {
         let hash = Sha256::digest(access_token.as_bytes());
         URL_SAFE_NO_PAD.encode(hash)
     }
+}
+
+// ── PKCE utilities ────────────────────────────────────────────────────────────
+
+pub mod pkce {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    use rand_core::{OsRng, RngCore};
+    use sha2::{Digest, Sha256};
+
+    /// Generate a PKCE code_verifier and code_challenge pair.
+    ///
+    /// - `verifier`: 32 OS-random bytes base64url-encoded (43 chars, all unreserved per RFC 7636 §4.1)
+    /// - `challenge`: `base64url(SHA-256(verifier))` (S256 method per RFC 7636 §4.2)
+    ///
+    /// Returns `(verifier, challenge)`.
+    pub fn generate() -> (String, String) {
+        let mut bytes = [0u8; 32];
+        OsRng.fill_bytes(&mut bytes);
+        let verifier = URL_SAFE_NO_PAD.encode(bytes);
+        let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+        (verifier, challenge)
+    }
+}
+
+/// Generate a CSRF state parameter: 16 OS-random bytes base64url-encoded (22 chars).
+pub fn generate_state_param() -> String {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    let mut bytes = [0u8; 16];
+    OsRng.fill_bytes(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes)
 }
 
 // ── Pending flow (stub — filled out in Phase 5) ───────────────────────────────
@@ -440,5 +471,113 @@ mod tests {
             URL_SAFE_NO_PAD.encode(hash)
         };
         assert_eq!(ath, expected);
+    }
+
+    // PKCE tests
+    #[test]
+    fn pkce_verifier_is_43_unreserved_chars() {
+        let (verifier, _) = pkce::generate();
+        assert_eq!(verifier.len(), 43, "base64url of 32 bytes must be 43 chars");
+        // RFC 7636 §4.1: ALPHA / DIGIT / "-" / "." / "_" / "~"
+        assert!(
+            verifier.chars().all(|c| c.is_alphanumeric() || "-._~".contains(c)),
+            "verifier must consist only of unreserved chars: got {verifier}"
+        );
+    }
+
+    #[test]
+    fn pkce_challenge_equals_sha256_base64url_of_verifier() {
+        use sha2::{Digest, Sha256};
+        let (verifier, challenge) = pkce::generate();
+        let expected = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+        assert_eq!(challenge, expected, "challenge must be base64url(sha256(verifier))");
+    }
+
+    #[test]
+    fn state_param_is_22_chars() {
+        let state = generate_state_param();
+        assert_eq!(state.len(), 22, "base64url of 16 bytes must be 22 chars");
+    }
+
+    #[test]
+    fn pkce_verifiers_are_unique() {
+        let (v1, _) = pkce::generate();
+        let (v2, _) = pkce::generate();
+        assert_ne!(v1, v2, "each generate() call must produce a different verifier");
+    }
+
+    /// Integration test: PAR call against a running relay.
+    ///
+    /// Requires the relay to be running at http://localhost:8080 with the V013
+    /// migration applied (identity-wallet client registered).
+    ///
+    /// Run with: cargo test -p identity-wallet par_integration -- --include-ignored --nocapture
+    #[tokio::test]
+    #[ignore = "requires running relay at localhost:8080"]
+    async fn par_integration_returns_201_with_request_uri() {
+        let relay = crate::http::RelayClient::new();
+        let keypair = DPoPKeypair::get_or_create().expect("keypair must generate");
+        // `htu` is embedded in the DPoP proof JWT claims (the `htu` claim per RFC 9449 §4.2),
+        // not used for the HTTP request itself — `relay.par()` constructs the URL internally.
+        let htu = format!("{}/oauth/par", crate::http::RelayClient::base_url());
+        let dpop_proof = keypair
+            .make_proof("POST", &htu, None, None)
+            .expect("DPoP proof must build");
+        let dpop_jkt = keypair.public_jwk_thumbprint();
+        let (_, challenge) = pkce::generate();
+        let state = generate_state_param();
+
+        let resp = relay
+            .par(&challenge, &state, &dpop_proof, &dpop_jkt, None)
+            .await
+            .expect("PAR must succeed");
+
+        assert!(
+            resp.request_uri.starts_with("urn:ietf:params:oauth:request_uri:"),
+            "request_uri must use OAuth PAR URN scheme, got: {}",
+            resp.request_uri
+        );
+        assert_eq!(resp.expires_in, 60);
+    }
+
+    /// Integration test: PAR call missing code_challenge is rejected by relay.
+    ///
+    /// Verifies MM-149.AC1.4: the relay returns a client error (400) when
+    /// code_challenge is absent from the PAR request.
+    ///
+    /// Run with: cargo test -p identity-wallet par_missing_challenge -- --include-ignored --nocapture
+    #[tokio::test]
+    #[ignore = "requires running relay at localhost:8080"]
+    async fn par_missing_code_challenge_returns_client_error() {
+        // Build a minimal PAR form body with no code_challenge field.
+        let base_url = crate::http::RelayClient::base_url();
+        let url = format!("{base_url}/oauth/par");
+        let keypair = DPoPKeypair::get_or_create().expect("keypair must generate");
+        let dpop_proof = keypair
+            .make_proof("POST", &url, None, None)
+            .expect("DPoP proof must build");
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(&url)
+            .header("DPoP", dpop_proof)
+            .form(&[
+                ("client_id", "dev.malpercio.identitywallet"),
+                ("redirect_uri", "dev.malpercio.identitywallet:/oauth/callback"),
+                ("code_challenge_method", "S256"),
+                ("state", "somestate"),
+                ("response_type", "code"),
+                ("scope", "atproto"),
+                // code_challenge intentionally omitted
+            ])
+            .send()
+            .await
+            .expect("request must reach relay");
+
+        assert!(
+            resp.status().is_client_error(),
+            "relay must reject PAR without code_challenge with 4xx, got: {}",
+            resp.status()
+        );
     }
 }
