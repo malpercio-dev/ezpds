@@ -5,8 +5,6 @@
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use p256::ecdsa::{signature::Signer, Signature, SigningKey};
-#[allow(unused_imports)]
-use p256::elliptic_curve::sec1::ToEncodedPoint;
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
 use std::sync::Mutex;
