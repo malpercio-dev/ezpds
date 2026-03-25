@@ -1,0 +1,15 @@
+meta {
+  name: Get DID Document
+  type: http
+  seq: 24
+}
+
+get {
+  url: {{baseUrl}}/v1/dids/:did
+  body: none
+  auth: none
+}
+
+params:path {
+  did: did:plc:exampleabcdefghijklmnopqrst
+}

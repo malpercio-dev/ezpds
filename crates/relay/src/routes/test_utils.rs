@@ -88,6 +88,22 @@ pub async fn seed_handle(db: &sqlx::SqlitePool, handle: &str, did: &str) {
         .expect("insert handle");
 }
 
+/// Insert a DID document row directly into `did_documents`.
+///
+/// `did_documents` has no FK to `accounts`, so this can be used without a corresponding
+/// account row. Used in tests that exercise DID document retrieval endpoints.
+pub async fn seed_did_document(db: &sqlx::SqlitePool, did: &str, document: serde_json::Value) {
+    sqlx::query(
+        "INSERT INTO did_documents (did, document, created_at, updated_at) \
+         VALUES (?, ?, datetime('now'), datetime('now'))",
+    )
+    .bind(did)
+    .bind(document.to_string())
+    .execute(db)
+    .await
+    .expect("insert did_document");
+}
+
 /// Deserialise a response body as `serde_json::Value`, consuming the response.
 pub async fn body_json(response: axum::response::Response) -> serde_json::Value {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)

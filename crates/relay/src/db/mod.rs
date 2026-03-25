@@ -1,4 +1,5 @@
 pub mod accounts;
+pub mod dids;
 pub mod oauth;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};

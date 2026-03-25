@@ -69,6 +69,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `get_session.rs` | `GET /xrpc/com.atproto.server.getSession` |
 | `refresh_session.rs` | `POST /xrpc/com.atproto.server.refreshSession` |
 | `create_did.rs` | `POST /v1/dids` |
+| `get_did.rs` | `GET /v1/dids/:did` |
 | `create_account.rs` | `POST /v1/accounts` |
 | `create_handle.rs` | `POST /v1/handles` |
 | `create_mobile_account.rs` | `POST /v1/accounts/mobile` |

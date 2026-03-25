@@ -26,6 +26,7 @@ use crate::routes::create_session::create_session;
 use crate::routes::delete_session::delete_session;
 use crate::routes::create_signing_key::create_signing_key;
 use crate::routes::describe_server::describe_server;
+use crate::routes::get_did::get_did_handler;
 use crate::routes::get_relay_signing_key::get_relay_signing_key;
 use crate::routes::get_session::get_session;
 use crate::routes::health::health;
@@ -181,6 +182,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/accounts/sessions", post(create_provisioning_session))
         .route("/v1/devices", post(register_device))
         .route("/v1/dids", post(create_did_handler))
+        .route("/v1/dids/:did", get(get_did_handler))
         .route("/v1/handles", post(create_handle_handler))
         .route(
             "/v1/relay/keys",
