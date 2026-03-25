@@ -247,11 +247,32 @@ impl OAuthClient {
                 if resp2.status().as_u16() == 200 {
                     return self.apply_token_response(resp2).await;
                 }
-                let body = resp2.text().await.unwrap_or_default();
-                tracing::error!(body = %body, "token refresh failed after nonce retry");
+
+                // Check for invalid_grant after nonce retry.
+                if resp2.status().as_u16() == 400 {
+                    let body = resp2.text().await.unwrap_or_default();
+                    if let Ok(err) = serde_json::from_str::<serde_json::Value>(&body) {
+                        if err.get("error").and_then(|e| e.as_str()) == Some("invalid_grant") {
+                            tracing::error!("refresh token invalid after nonce retry");
+                            return Err(OAuthError::InvalidGrant);
+                        }
+                    }
+                    tracing::error!(body = %body, "token refresh failed after nonce retry");
+                    return Err(OAuthError::TokenRefreshFailed);
+                }
+
+                tracing::error!("token refresh failed after nonce retry");
                 return Err(OAuthError::TokenRefreshFailed);
             }
+
+            // No nonce header, check the error body for invalid_grant.
             let body = resp.text().await.unwrap_or_default();
+            if let Ok(err) = serde_json::from_str::<serde_json::Value>(&body) {
+                if err.get("error").and_then(|e| e.as_str()) == Some("invalid_grant") {
+                    tracing::error!("refresh token invalid");
+                    return Err(OAuthError::InvalidGrant);
+                }
+            }
             tracing::error!(body = %body, "token refresh 400 without nonce header");
             return Err(OAuthError::TokenRefreshFailed);
         }

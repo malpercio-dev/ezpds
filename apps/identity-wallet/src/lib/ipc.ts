@@ -172,6 +172,7 @@ export type OAuthError =
   | { code: 'PAR_FAILED' }
   | { code: 'TOKEN_EXCHANGE_FAILED' }
   | { code: 'TOKEN_REFRESH_FAILED' }
+  | { code: 'INVALID_GRANT' }
   | { code: 'NOT_AUTHENTICATED' };
 
 export const startOAuthFlow = (): Promise<void> => invoke('start_oauth_flow');

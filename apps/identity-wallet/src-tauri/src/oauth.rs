@@ -69,6 +69,8 @@ pub enum OAuthError {
     TokenExchangeFailed,
     #[error("Token refresh failed")]
     TokenRefreshFailed,
+    #[error("Refresh token has been revoked or is invalid")]
+    InvalidGrant,
     #[error("Not authenticated")]
     NotAuthenticated,
 }
