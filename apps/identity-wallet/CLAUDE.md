@@ -1,6 +1,6 @@
 # Identity Wallet Mobile App
 
-Last verified: 2026-03-23
+Last verified: 2026-03-25
 
 ## Purpose
 
@@ -11,9 +11,9 @@ Tauri v2 iOS application — SvelteKit 2 + Svelte 5 frontend running in a native
 ### Frontend (SvelteKit 2 + Svelte 5)
 
 **Exposes:**
-- `src/lib/ipc.ts` — typed wrappers for all Tauri IPC commands; import these instead of calling `invoke()` directly. Exports: `createAccount()`, `getOrCreateDeviceKey()`, `signWithDeviceKey()`, `performDIDCeremony()`, and their associated types (`DevicePublicKey`, `DeviceKeyError`, `CreateAccountResult`, `CreateAccountError`, `DIDCeremonyResult`, `DIDCeremonyError`)
-- `src/lib/components/onboarding/` — nine onboarding screen components (WelcomeScreen, ClaimCodeScreen, EmailScreen, HandleScreen, PasswordScreen, LoadingScreen, DIDCeremonyScreen, DIDSuccessScreen, ShamirBackupScreen)
-- `src/routes/+page.svelte` — root page: ten-step onboarding state machine (welcome -> claim_code -> email -> handle -> password -> loading -> did_ceremony -> did_success -> shamir_backup -> complete)
+- `src/lib/ipc.ts` — typed wrappers for all Tauri IPC commands; import these instead of calling `invoke()` directly. Exports: `createAccount()`, `getOrCreateDeviceKey()`, `signWithDeviceKey()`, `performDIDCeremony()`, `startOAuthFlow()`, and their associated types (`DevicePublicKey`, `DeviceKeyError`, `CreateAccountResult`, `CreateAccountError`, `DIDCeremonyResult`, `DIDCeremonyError`, `OAuthError`)
+- `src/lib/components/onboarding/` — ten onboarding screen components (WelcomeScreen, ClaimCodeScreen, EmailScreen, HandleScreen, PasswordScreen, LoadingScreen, DIDCeremonyScreen, DIDSuccessScreen, ShamirBackupScreen, AuthenticatingScreen)
+- `src/routes/+page.svelte` — root page: thirteen-step onboarding state machine (welcome -> claim_code -> email -> handle -> password -> loading -> did_ceremony -> did_success -> shamir_backup -> complete -> authenticating -> authenticated / auth_failed)
 
 **Guarantees:**
 - SSR is disabled globally (`ssr = false` in `src/routes/+layout.ts`); the frontend is a fully static SPA loaded from disk by WKWebView
@@ -32,9 +32,11 @@ Tauri v2 iOS application — SvelteKit 2 + Svelte 5 frontend running in a native
 - `src/lib.rs::get_or_create_device_key() -> Result<DevicePublicKey, DeviceKeyError>` — Tauri IPC command: delegates to `device_key::get_or_create()`
 - `src/lib.rs::sign_with_device_key(data: Vec<u8>) -> Result<Vec<u8>, DeviceKeyError>` — Tauri IPC command: delegates to `device_key::sign()`
 - `src/lib.rs::perform_did_ceremony(handle: String, password: String) -> Result<DIDCeremonyResult, DIDCeremonyError>` — Tauri IPC command: fetches relay signing key (GET /v1/relay/keys), builds signed did:plc genesis op via `crypto::build_did_plc_genesis_op_with_external_signer` using device key as signer, POSTs genesis op + password to relay (POST /v1/dids with Bearer token), persists DID + upgraded session token + Share 1 in Keychain, returns `{ did, share3 }` to frontend
+- `src/oauth.rs` — OAuth PKCE client module: `AppState` (pending_auth + oauth_session mutexes), `OAuthSession` (access/refresh/expiry/nonce), `DPoPKeypair` (P-256, persisted in Keychain), `OAuthError` enum, PKCE utilities (verifier + S256 challenge), `start_oauth_flow` (Tauri IPC command: DPoP keygen, PKCE, PAR, Safari redirect, deep-link callback, token exchange), `handle_deep_link` (routes deep-link URLs to pending flow)
+- `src/oauth_client.rs` — `OAuthClient`: authenticated HTTP client wrapping every request with `Authorization: DPoP {access_token}` + `DPoP` proof headers; transparent lazy refresh when token has <60s remaining; automatic retry on `use_dpop_nonce` 400 responses; methods: `get(path)`, `post(path, body)`
 - `src/device_key.rs` — P-256 device key management with `#[cfg]`-based dispatch: macOS/simulator uses software keys via `crypto` crate + Keychain storage; real iOS device uses Secure Enclave via `security-framework`. Public API: `get_or_create() -> Result<DevicePublicKey, DeviceKeyError>` (idempotent), `sign(data) -> Result<Vec<u8>, DeviceKeyError>`
-- `src/keychain.rs` — iOS Keychain abstraction (`store_item`, `get_item`, `delete_item`) under service `"ezpds-identity-wallet"`
-- `src/http.rs` — `RelayClient` with compile-time base URL (localhost:8080 debug, relay.ezpds.com release); methods: `post()`, `get()`, `post_with_bearer()`; static `base_url()` accessor
+- `src/keychain.rs` — iOS Keychain abstraction (`store_item`, `get_item`, `delete_item`) under service `"ezpds-identity-wallet"`; OAuth helpers: `store_dpop_key`/`load_dpop_key` (P-256 DPoP private key scalar), `store_oauth_tokens`/`load_oauth_tokens` (access + refresh token pair)
+- `src/http.rs` — `RelayClient` with compile-time base URL (localhost:8080 debug, relay.ezpds.com release); methods: `post()`, `get()`, `post_with_bearer()`, `par()` (POST /oauth/par with DPoP proof), `token_exchange()` (POST /oauth/token with PKCE verifier); static `base_url()` accessor; response types: `ParResponse`, `TokenResponse`, `TokenErrorResponse`
 
 **Guarantees:**
 - `crate-type = ["staticlib", "cdylib", "rlib"]` supports iOS (staticlib), Android (cdylib), and normal cargo builds (rlib)
@@ -42,6 +44,11 @@ Tauri v2 iOS application — SvelteKit 2 + Svelte 5 frontend running in a native
 - `tauri.conf.json` configures the bundle identifier, dev URL (`http://localhost:5173`), and frontend dist path (`../dist`)
 - `create_account` maps relay HTTP error codes to typed `CreateAccountError` variants (EXPIRED_CODE, REDEEMED_CODE, EMAIL_TAKEN, HANDLE_TAKEN, NETWORK_ERROR, UNKNOWN) serialized as `{ code: "SCREAMING_SNAKE" }` for the frontend
 - `perform_did_ceremony` maps failures to typed `DIDCeremonyError` variants (KEY_NOT_FOUND, RELAY_KEY_FETCH_FAILED, NO_RELAY_SIGNING_KEY, SIGNING_FAILED, DID_CREATION_FAILED, KEYCHAIN_ERROR, NETWORK_ERROR) serialized as `{ code: "SCREAMING_SNAKE_CASE" }` for the frontend
+- `start_oauth_flow` maps failures to typed `OAuthError` variants (DPOP_KEY_GEN_FAILED, DPOP_KEY_INVALID, DPOP_PROOF_FAILED, KEYCHAIN_ERROR, STATE_MISMATCH, CALLBACK_ABANDONED, PAR_FAILED, TOKEN_EXCHANGE_FAILED, TOKEN_REFRESH_FAILED, NOT_AUTHENTICATED) serialized as `{ code: "SCREAMING_SNAKE_CASE" }` for the frontend
+- `tauri.conf.json` registers `deep-link` plugin with mobile scheme `dev.malpercio.identitywallet`; deep-link URLs matching `dev.malpercio.identitywallet:/oauth/callback?code=...&state=...` are routed to `handle_deep_link`
+- On app startup, if OAuth tokens exist in Keychain, the session is restored into `AppState.oauth_session` and an `auth_ready` Tauri event is emitted after a 300ms delay (allows SvelteKit to boot and register its listener)
+- `OAuthClient` transparently refreshes access tokens with <60s remaining before each request; retries once on `use_dpop_nonce` 400 responses from the server
+- `DPoPKeypair` is idempotent: `get_or_create()` generates and persists to Keychain on first call, loads from Keychain on subsequent calls; the same key is used across all DPoP proofs and app sessions
 - `device_key::get_or_create()` is idempotent -- returns the same key on every call for a given device
 - `device_key::sign()` returns raw 64-byte r||s ECDSA signatures; low-S normalized on both paths (ATProto/PLC directory requires low-S); deterministic (RFC 6979) on simulator
 - `DeviceKeyError` variants serialize as `{ code: "SCREAMING_SNAKE_CASE" }` matching the `CreateAccountError` pattern
@@ -63,6 +70,11 @@ Tauri v2 iOS application — SvelteKit 2 + Svelte 5 frontend running in a native
 - Rust backend -> relay `/v1/accounts/mobile` endpoint (via `reqwest` HTTP at runtime)
 - Rust backend -> relay `GET /v1/relay/keys` endpoint (public, no auth; fetches active signing key for DID ceremony)
 - Rust backend -> relay `POST /v1/dids` endpoint (Bearer token auth; submits signed genesis op for DID promotion)
+- Rust backend -> relay `POST /oauth/par` endpoint (PAR: push authorization request with PKCE challenge + DPoP proof)
+- Rust backend -> relay `GET /oauth/authorize` endpoint (opened in Safari; user authenticates via browser)
+- Rust backend -> relay `POST /oauth/token` endpoint (exchanges authorization code + PKCE verifier for DPoP-bound tokens)
+- Rust backend -> `tauri-plugin-deep-link` (registers `dev.malpercio.identitywallet:` URL scheme for OAuth callback)
+- Rust backend -> `tauri-plugin-opener` (opens Safari for OAuth authorization)
 - Rust backend -> iOS Keychain (via `security-framework` crate with `OSX_10_12` feature for SE access control APIs)
 - Rust backend -> Secure Enclave hardware (real iOS device only; via `security-framework` `SecKey`/`GenerateKeyOptions`/`Token::SecureEnclave`)
 - `src-tauri/gen/` -> NOT tracked in git; generated per-developer by `cargo tauri ios init` (gitignored)
@@ -175,6 +187,12 @@ cargo build
 - **P-256 multicodec prefix duplicated**: `device_key.rs` duplicates the `[0x80, 0x24]` P-256 multicodec varint prefix from `crates/crypto/src/keys.rs` because the constant is `pub(crate)` there. This is intentional -- the identity-wallet crate should not depend on internal crypto crate layout.
 - **Low-S normalization on both paths**: ATProto/PLC directory requires low-S ECDSA signatures (enforced by `@noble/curves` in strict mode). Both the SE path and the simulator path apply `normalize_s()` after signing. RFC 6979 only provides deterministic nonces — it does NOT guarantee low-S; that requires an explicit normalization step.
 - **reqwest with rustls-tls**: Uses `default-features = false` + `rustls-tls` to avoid linking OpenSSL. On iOS, rustls handles TLS natively without additional system deps.
+- **OAuth PKCE flow with DPoP**: The identity-wallet authenticates with the relay using OAuth 2.0 Authorization Code + PKCE (RFC 7636) with DPoP-bound tokens (RFC 9449). The flow is: generate DPoP keypair + PKCE verifier -> PAR (push parameters to relay) -> open Safari to `/oauth/authorize` -> deep-link callback with authorization code -> token exchange with PKCE verifier + DPoP proof -> store tokens in Keychain.
+- **DPoP keypair persisted in Keychain**: The same P-256 DPoP key is reused across all OAuth flows and app sessions. This allows the relay to bind tokens to the key (via `jkt` thumbprint) and enables token refresh without re-authenticating.
+- **Deep-link for OAuth callback**: Uses `tauri-plugin-deep-link` with custom URL scheme `dev.malpercio.identitywallet:` to receive the OAuth authorization code from Safari. The callback URL is `dev.malpercio.identitywallet:/oauth/callback?code=...&state=...`.
+- **AppState with Mutex<Option>**: `pending_auth` is set before opening Safari and cleared by the deep-link handler; `oauth_session` holds the active tokens. Both use `Mutex<Option<T>>` so the state is cleanly empty before/after flows.
+- **OAuthClient with lazy refresh**: `OAuthClient` checks token expiry before each request and refreshes if <60s remaining. Retries once on `use_dpop_nonce` 400 responses (server requires a nonce the client didn't have yet).
+- **Startup token restore**: On app launch, `lib.rs::run()` checks Keychain for persisted OAuth tokens. If found, restores them into `AppState.oauth_session` with `expires_at = 0` (forces immediate refresh on first use) and emits `auth_ready` after 300ms delay so SvelteKit has time to boot.
 
 ## Invariants
 
@@ -191,20 +209,28 @@ cargo build
 - Keychain account `"session-token"` stores the pending (pre-DID) or full (post-DID) session token; `perform_did_ceremony` reads the pending token and overwrites it with the upgraded token on success
 - Keychain account `"did"` stores the user's did:plc after successful DID ceremony; persisted for use in subsequent app sessions
 - Keychain account `"recovery-share-1"` stores Share 1 of the Shamir recovery split (base32, 52 chars); written by `perform_did_ceremony` immediately after DID promotion; never displayed to the user (iCloud Keychain automatic backup)
+- Keychain account `"oauth-dpop-key-priv"` stores the P-256 DPoP private key scalar (32 bytes); generated once by `DPoPKeypair::get_or_create()`, reused across all app sessions; changing it invalidates all DPoP-bound tokens
+- Keychain account `"oauth-access-token"` stores the OAuth access token; written by `start_oauth_flow` on success and by `OAuthClient` on refresh
+- Keychain account `"oauth-refresh-token"` stores the OAuth refresh token; written alongside the access token
+- `OAuthError` variant names serialize as SCREAMING_SNAKE_CASE to the frontend -- the TypeScript `OAuthError.code` union must match exactly
+- OAuth client_id is always `"dev.malpercio.identitywallet"` -- must match the seeded row in relay migration V013 and the `tauri.conf.json` bundle identifier
+- OAuth redirect_uri is always `"dev.malpercio.identitywallet:/oauth/callback"` -- must match the deep-link scheme in `tauri.conf.json` and the seeded client_metadata redirect_uris in V013
 - `DevicePublicKey` serializes with `#[serde(rename_all = "camelCase")]` -- TypeScript receives `{ multibase, keyId }` (not `key_id`)
 
 ## Key Files
 
 - `src-tauri/tauri.conf.json` -- Tauri config: bundle ID, devUrl, frontendDist, window settings
-- `src-tauri/src/lib.rs` -- Tauri IPC commands (`create_account`, `get_or_create_device_key`, `sign_with_device_key`, `perform_did_ceremony`) and `run()` (mobile entry point)
+- `src-tauri/src/lib.rs` -- Tauri IPC commands (`create_account`, `get_or_create_device_key`, `sign_with_device_key`, `perform_did_ceremony`, `start_oauth_flow`), `run()` (mobile entry point), deep-link plugin setup, startup token restore
 - `src-tauri/src/device_key.rs` -- P-256 device key module: `#[cfg]`-dispatched `get_or_create()` and `sign()` (simulator software path vs. Secure Enclave)
 - `src-tauri/src/main.rs` -- Desktop entry point (calls `lib::run()`)
-- `src-tauri/src/keychain.rs` -- iOS Keychain abstraction (store_item, get_item, delete_item)
-- `src-tauri/src/http.rs` -- RelayClient with compile-time base URL
+- `src-tauri/src/oauth.rs` -- OAuth PKCE module: AppState, DPoPKeypair, OAuthSession, PKCE utilities, start_oauth_flow command, handle_deep_link
+- `src-tauri/src/oauth_client.rs` -- OAuthClient: authenticated HTTP client with DPoP proofs and lazy token refresh
+- `src-tauri/src/keychain.rs` -- iOS Keychain abstraction (store_item, get_item, delete_item); OAuth helpers (store_dpop_key, load_dpop_key, store_oauth_tokens, load_oauth_tokens)
+- `src-tauri/src/http.rs` -- RelayClient with compile-time base URL; OAuth methods (par, token_exchange)
 - `src-tauri/.cargo/config.toml` -- Cargo toolchain overrides for iOS cross-compilation (CC, AR, linker per target)
-- `src/lib/ipc.ts` -- Typed TypeScript wrappers for all Tauri IPC commands (createAccount, getOrCreateDeviceKey, signWithDeviceKey, performDIDCeremony)
-- `src/lib/components/onboarding/` -- Nine onboarding screen components (WelcomeScreen, ClaimCodeScreen, EmailScreen, HandleScreen, PasswordScreen, LoadingScreen, DIDCeremonyScreen, DIDSuccessScreen, ShamirBackupScreen)
-- `src/routes/+page.svelte` -- Onboarding state machine (welcome -> claim_code -> email -> handle -> password -> loading -> did_ceremony -> did_success -> shamir_backup -> complete)
+- `src/lib/ipc.ts` -- Typed TypeScript wrappers for all Tauri IPC commands (createAccount, getOrCreateDeviceKey, signWithDeviceKey, performDIDCeremony, startOAuthFlow)
+- `src/lib/components/onboarding/` -- Ten onboarding screen components (WelcomeScreen, ClaimCodeScreen, EmailScreen, HandleScreen, PasswordScreen, LoadingScreen, DIDCeremonyScreen, DIDSuccessScreen, ShamirBackupScreen, AuthenticatingScreen)
+- `src/routes/+page.svelte` -- Onboarding state machine (welcome -> claim_code -> email -> handle -> password -> loading -> did_ceremony -> did_success -> shamir_backup -> complete -> authenticating -> authenticated / auth_failed)
 - `src/routes/+layout.ts` -- `ssr = false; prerender = false` (global SPA config)
 - `svelte.config.js` -- adapter-static with `pages: 'dist'` (SPA mode, matches tauri.conf.json)
 - `vite.config.ts` -- Tauri-compatible Vite server (clearScreen, HMR via TAURI_DEV_HOST, envPrefix)

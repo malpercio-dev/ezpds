@@ -1,8 +1,9 @@
 # Database Module
 
-Last verified: 2026-03-22
+Last verified: 2026-03-25
 
 ## Latest Updates
+- **V013**: Seeds the identity-wallet as a registered OAuth client (`dev.malpercio.identitywallet`) with native application type, DPoP-bound tokens, and custom URL scheme redirect URI (`dev.malpercio.identitywallet:/oauth/callback`); uses INSERT OR IGNORE for idempotency
 - **V012**: Adds nullable `jkt` TEXT column to `oauth_tokens` (DPoP key thumbprint for DPoP-bound refresh tokens); creates `oauth_signing_key` table (WITHOUT ROWID, single-row, stores the server's persistent ES256 keypair with AES-256-GCM-encrypted private key)
 - **V011**: Adds nullable `pending_share_{1,2,3}` TEXT columns to `pending_accounts` — stores pre-generated Shamir shares alongside `pending_did` so retried DID ceremony requests return the same shares (prevents Share 2 orphaning in accounts.recovery_share)
 - **V010**: Adds nullable `recovery_share` column to `accounts` — stores Share 2 of the Shamir 2-of-3 split for relay-side custody; base32-encoded (52 chars); NULL for pre-Shamir accounts
@@ -51,3 +52,4 @@ that can later serve per-user SQLite databases (Wave 3/4).
 - `migrations/V010__recovery_shares.sql` - Adds nullable recovery_share TEXT to accounts: stores Share 2 of the Shamir 2-of-3 recovery split (base32, 52 chars); written atomically inside promote_account transaction
 - `migrations/V011__pending_shares.sql` - Adds nullable pending_share_{1,2,3} TEXT columns to pending_accounts: idempotent share storage alongside pending_did; all three deleted when pending_accounts row is deleted at promotion
 - `migrations/V012__oauth_token_endpoint.sql` - Adds `jkt` TEXT column to oauth_tokens (DPoP thumbprint); creates `oauth_signing_key` table (WITHOUT ROWID, keyed by UUID id) for persistent ES256 keypair storage (public JWK + AES-256-GCM encrypted private key)
+- `migrations/V013__identity_wallet_oauth_client.sql` - Seeds identity-wallet OAuth client row (INSERT OR IGNORE): client_id `dev.malpercio.identitywallet`, native app type, DPoP required, custom scheme redirect URI
