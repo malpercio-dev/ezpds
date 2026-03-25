@@ -21,6 +21,23 @@ pub struct ParResponse {
     pub expires_in: u32,
 }
 
+/// Successful response from `POST /oauth/token` (RFC 6749 §5.1).
+#[derive(Debug, serde::Deserialize)]
+pub struct TokenResponse {
+    pub access_token: String,
+    pub token_type: String,
+    pub expires_in: u64,
+    pub refresh_token: String,
+    pub scope: String,
+}
+
+/// Error response from `POST /oauth/token` (RFC 6749 §5.2).
+#[derive(Debug, serde::Deserialize)]
+pub struct TokenErrorResponse {
+    pub error: String,
+    pub error_description: Option<String>,
+}
+
 /// HTTP client for relay API requests.
 pub struct RelayClient {
     client: Client,
@@ -94,7 +111,10 @@ impl RelayClient {
         let hint_owned;
         let mut fields = vec![
             ("client_id", "dev.malpercio.identitywallet"),
-            ("redirect_uri", "dev.malpercio.identitywallet:/oauth/callback"),
+            (
+                "redirect_uri",
+                "dev.malpercio.identitywallet:/oauth/callback",
+            ),
             ("code_challenge", code_challenge),
             ("code_challenge_method", "S256"),
             ("state", state_param),
@@ -131,6 +151,42 @@ impl RelayClient {
             tracing::error!(error = %e, "PAR response deserialization failed");
             OAuthError::ParFailed
         })
+    }
+
+    /// POST `/oauth/token` — exchange an authorization code for tokens.
+    ///
+    /// Sends the authorization code, PKCE verifier, and DPoP proof.
+    /// Returns the token response body on 200, or an error.
+    /// The caller is responsible for reading the `DPoP-Nonce` response header
+    /// if the server returns one (the full `reqwest::Response` is returned for this).
+    pub async fn token_exchange(
+        &self,
+        code: &str,
+        pkce_verifier: &str,
+        dpop_proof: &str,
+    ) -> Result<reqwest::Response, OAuthError> {
+        let url = format!("{}/oauth/token", self.base_url);
+        let resp = self
+            .client
+            .post(&url)
+            .header("DPoP", dpop_proof)
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", code),
+                (
+                    "redirect_uri",
+                    "dev.malpercio.identitywallet:/oauth/callback",
+                ),
+                ("client_id", "dev.malpercio.identitywallet"),
+                ("code_verifier", pkce_verifier),
+            ])
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "token exchange network error");
+                OAuthError::TokenExchangeFailed
+            })?;
+        Ok(resp)
     }
 
     /// Returns the compile-time base URL for this relay client instance.

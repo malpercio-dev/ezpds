@@ -417,6 +417,7 @@ pub fn run() {
             get_or_create_device_key,
             sign_with_device_key,
             perform_did_ceremony,
+            oauth::start_oauth_flow,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
