@@ -61,6 +61,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `oauth_authorize.rs` | `GET/POST /oauth/authorize` |
 | `oauth_par.rs` | `POST /oauth/par` |
 | `oauth_token.rs` | `POST /oauth/token` |
+| `atproto_did.rs` | `GET /.well-known/atproto-did` |
 | `oauth_server_metadata.rs` | `GET /.well-known/oauth-authorization-server` |
 | `oauth_jwks.rs` | `GET /oauth/jwks` |
 | `oauth_templates.rs` | Pure HTML rendering helpers (Functional Core, no handler) |

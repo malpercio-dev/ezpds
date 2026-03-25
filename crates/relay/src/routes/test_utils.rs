@@ -67,6 +67,27 @@ pub async fn insert_account_with_password(
         .unwrap();
 }
 
+/// Insert an account with NULL password_hash and a handle. Used for mobile/handle-only accounts
+/// in tests that don't exercise password authentication.
+pub async fn seed_handle(db: &sqlx::SqlitePool, handle: &str, did: &str) {
+    sqlx::query(
+        "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+         VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
+    )
+    .bind(did)
+    .bind(format!("{did}@test.example.com"))
+    .execute(db)
+    .await
+    .expect("insert account");
+
+    sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
+        .bind(handle)
+        .bind(did)
+        .execute(db)
+        .await
+        .expect("insert handle");
+}
+
 /// Deserialise a response body as `serde_json::Value`, consuming the response.
 pub async fn body_json(response: axum::response::Response) -> serde_json::Value {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)

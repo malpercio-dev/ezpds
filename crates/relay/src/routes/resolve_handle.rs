@@ -92,6 +92,7 @@ mod tests {
 
     use crate::app::{app, test_state, AppState};
     use crate::dns::{DnsError, TxtResolver};
+    use crate::routes::test_utils::seed_handle;
     use crate::well_known::{WellKnownError, WellKnownResolver};
 
     // ── Test doubles ──────────────────────────────────────────────────────────
@@ -180,25 +181,6 @@ mod tests {
             ))
             .body(Body::empty())
             .unwrap()
-    }
-
-    async fn seed_handle(db: &sqlx::SqlitePool, handle: &str, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(format!("{did}@test.example.com"))
-        .execute(db)
-        .await
-        .expect("insert account");
-
-        sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
-            .bind(handle)
-            .bind(did)
-            .execute(db)
-            .await
-            .expect("insert handle");
     }
 
     // ── Local DB lookup ───────────────────────────────────────────────────────

@@ -9,6 +9,7 @@ use axum::{
     http::{header, StatusCode},
     response::{IntoResponse, Response},
 };
+use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 
@@ -28,7 +29,8 @@ pub async fn atproto_did_handler(
             Ok(row) => row,
             Err(e) => {
                 tracing::error!(error = %e, handle = %handle, "DB error in well-known atproto-did");
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                return ApiError::new(ErrorCode::InternalError, "handle lookup failed")
+                    .into_response();
             }
         };
 
@@ -52,27 +54,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
-
-    async fn seed_handle(db: &sqlx::SqlitePool, handle: &str, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(format!("{did}@test.example.com"))
-        .execute(db)
-        .await
-        .expect("insert account");
-
-        sqlx::query(
-            "INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))",
-        )
-        .bind(handle)
-        .bind(did)
-        .execute(db)
-        .await
-        .expect("insert handle");
-    }
+    use crate::routes::test_utils::seed_handle;
 
     fn well_known_request(host: &str) -> Request<Body> {
         Request::builder()
@@ -145,5 +127,34 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(std::str::from_utf8(&body).unwrap(), did);
+    }
+
+    #[tokio::test]
+    async fn closed_db_pool_returns_500() {
+        let state = test_state().await;
+        state.db.close().await;
+
+        let response = app(state)
+            .oneshot(well_known_request("alice.example.com"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn post_returns_405() {
+        let response = app(test_state().await)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/.well-known/atproto-did")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 }
