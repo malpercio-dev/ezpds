@@ -35,10 +35,10 @@ struct DPopClaims {
     /// Issued-at (Unix timestamp). Used for freshness; replaces `exp`.
     iat: i64,
     /// Unique token ID — must be present and non-empty for replay protection.
-    /// Full deduplication is enforced by the server-issued nonce validated
-    /// in `validate_dpop_for_token_endpoint` (RFC 9449 §11.1).
+    /// The server-issued nonce bounds the window for jti-based deduplication per RFC 9449 §11.1.
+    /// Nonce validation enforces rate limiting at the token endpoint only.
     jti: String,
-    /// Server-issued DPoP nonce (RFC 9449 §8). Required when the server has issued one.
+    /// Server-issued DPoP nonce (RFC 9449 §8). Required at the token endpoint.
     #[serde(default)]
     nonce: Option<String>,
     /// Access token hash (RFC 9449 §4.3). Required at resource endpoints.
@@ -349,8 +349,9 @@ pub fn validate_dpop(
         }
     }
 
-    // Require `jti` for replay protection. Full deduplication per RFC 9449 §11.1
-    // is enforced by the server-issued nonce mechanism in the token endpoint.
+    // Require `jti` for replay protection. The server-issued nonce mechanism bounds
+    // the window for jti-based deduplication; nonce validation occurs only at the token endpoint,
+    // not at resource endpoints like this one.
     if dpop_claims.jti.is_empty() {
         return Err(ApiError::new(
             ErrorCode::InvalidToken,

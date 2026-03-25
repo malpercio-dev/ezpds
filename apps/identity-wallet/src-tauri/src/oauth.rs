@@ -323,6 +323,8 @@ pub fn handle_deep_link(urls: Vec<url::Url>, app_state: &AppState) {
 
             let (Some(code), Some(callback_state)) = (code_opt, state_opt) else {
                 tracing::error!("OAuth callback URL missing code or state parameters");
+                // Send an explicit error instead of silently dropping the sender.
+                let _ = flow.tx.send(Err(OAuthError::CallbackAbandoned));
                 return;
             };
 
