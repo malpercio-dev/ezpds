@@ -1,6 +1,6 @@
 # Relay Crate
 
-Last verified: 2026-03-24
+Last verified: 2026-03-25
 
 ## Purpose
 
@@ -27,7 +27,7 @@ Pure authentication logic and middleware. Submodules:
 |---|---|---|
 | `dpop.rs` | Mixed (unavoidable) | DPoP proof validation, nonce store |
 | `extractors.rs` | Imperative Shell | `AuthenticatedUser` axum extractor |
-| `jwt.rs` | Functional Core | JWT parsing, scope validation, access token verification |
+| `jwt.rs` | Functional Core | JWT parsing, scope validation, access/refresh token verification, HS256 token issuance |
 | `password.rs` | Functional Core | `hash_password`, `verify_password` (argon2id) |
 | `rate_limit.rs` | Functional Core | Sliding-window login-failure rate limiter |
 | `signing_key.rs` | Imperative Shell | ES256 signing key load-or-create |
@@ -66,6 +66,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `oauth_templates.rs` | Pure HTML rendering helpers (Functional Core, no handler) |
 | `create_session.rs` | `POST /xrpc/com.atproto.server.createSession` |
 | `get_session.rs` | `GET /xrpc/com.atproto.server.getSession` |
+| `refresh_session.rs` | `POST /xrpc/com.atproto.server.refreshSession` |
 | `create_did.rs` | `POST /v1/dids` |
 | `create_account.rs` | `POST /v1/accounts` |
 | `create_handle.rs` | `POST /v1/handles` |

@@ -209,10 +209,6 @@ pub async fn create_session(
 
 #[cfg(test)]
 mod tests {
-    use argon2::{
-        password_hash::{rand_core::OsRng, SaltString},
-        Argon2, PasswordHasher,
-    };
     use axum::{
         body::Body,
         http::{Request, StatusCode},
@@ -221,6 +217,7 @@ mod tests {
 
     use crate::app::{app, test_state};
     use crate::auth::rate_limit::RATE_LIMIT_MAX_FAILURES;
+    use crate::routes::test_utils::{body_json, insert_account_with_password};
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -233,45 +230,6 @@ mod tests {
                 r#"{{"identifier":"{identifier}","password":"{password}"}}"#
             )))
             .unwrap()
-    }
-
-    async fn insert_account_with_password(
-        db: &sqlx::SqlitePool,
-        did: &str,
-        handle: &str,
-        email: &str,
-        password: &str,
-    ) {
-        let salt = SaltString::generate(&mut OsRng);
-        let hash = Argon2::default()
-            .hash_password(password.as_bytes(), &salt)
-            .unwrap()
-            .to_string();
-
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, ?, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(email)
-        .bind(&hash)
-        .execute(db)
-        .await
-        .unwrap();
-
-        sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
-            .bind(handle)
-            .bind(did)
-            .execute(db)
-            .await
-            .unwrap();
-    }
-
-    async fn body_json(response: axum::response::Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        serde_json::from_slice(&bytes).unwrap()
     }
 
     // ── Happy path ────────────────────────────────────────────────────────────

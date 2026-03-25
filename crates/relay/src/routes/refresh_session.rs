@@ -35,9 +35,9 @@ pub struct RefreshSessionResponse {
 /// POST /xrpc/com.atproto.server.refreshSession
 ///
 /// Exchanges a refresh JWT for a new access + refresh token pair.
-/// Implements token rotation: the old refresh token is invalidated on first use
-/// and a new one is issued. Replay detection: if an already-rotated refresh token
-/// is presented, the entire session is revoked as a security measure.
+/// Token rotation: the old refresh token is marked as used (via next_jti) on
+/// first use and a new one is issued. Replay detection: if an already-rotated
+/// refresh token is presented, the entire session is revoked as a security measure.
 pub async fn refresh_session(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -110,6 +110,7 @@ pub async fn refresh_session(
         tracing::warn!(
             did = %did,
             session_id = %session_id,
+            jti = %jti,
             "refresh token replay detected; session revoked"
         );
         return Err(ApiError::new(
@@ -140,7 +141,7 @@ pub async fn refresh_session(
 
     // --- Atomically rotate: insert new token, mark old as used ---
     let mut tx = state.db.begin().await.map_err(|e| {
-        tracing::error!(error = %e, "failed to begin token rotation transaction");
+        tracing::error!(error = %e, did = %did, session_id = %session_id, jti = %jti, "failed to begin token rotation transaction");
         ApiError::new(ErrorCode::InternalError, "failed to refresh session")
     })?;
 
@@ -154,36 +155,52 @@ pub async fn refresh_session(
     .execute(&mut *tx)
     .await
     .map_err(|e| {
-        tracing::error!(error = %e, "failed to insert new refresh token");
+        tracing::error!(error = %e, did = %did, session_id = %session_id, jti = %jti, "failed to insert new refresh token");
         ApiError::new(ErrorCode::InternalError, "failed to refresh session")
     })?;
 
-    sqlx::query("UPDATE refresh_tokens SET next_jti = ? WHERE jti = ?")
+    let updated = sqlx::query("UPDATE refresh_tokens SET next_jti = ? WHERE jti = ?")
         .bind(&new_refresh_jti)
         .bind(&jti)
         .execute(&mut *tx)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, "failed to mark old refresh token as used");
+            tracing::error!(error = %e, did = %did, session_id = %session_id, jti = %jti, "failed to mark old refresh token as used");
             ApiError::new(ErrorCode::InternalError, "failed to refresh session")
         })?;
 
+    if updated.rows_affected() != 1 {
+        tracing::error!(
+            did = %did,
+            session_id = %session_id,
+            jti = %jti,
+            rows = updated.rows_affected(),
+            "rotation UPDATE affected unexpected row count; token may have been deleted concurrently"
+        );
+        return Err(ApiError::new(
+            ErrorCode::InternalError,
+            "failed to refresh session",
+        ));
+    }
+
     tx.commit().await.map_err(|e| {
-        tracing::error!(error = %e, "failed to commit token rotation transaction");
+        tracing::error!(error = %e, did = %did, session_id = %session_id, jti = %jti, "failed to commit token rotation transaction");
         ApiError::new(ErrorCode::InternalError, "failed to refresh session")
     })?;
 
     // --- Look up handle for the response ---
-    let handle: Option<String> = sqlx::query_scalar(
+    // Non-fatal: token rotation already committed. A handle lookup failure must not
+    // force the client to retry with the old token (which would trigger replay detection).
+    let handle = sqlx::query_scalar::<_, String>(
         "SELECT h.handle FROM handles h WHERE h.did = ? LIMIT 1",
     )
     .bind(&did)
     .fetch_optional(&state.db)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, did = %did, "DB error fetching handle for refreshSession");
-        ApiError::new(ErrorCode::InternalError, "internal error")
-    })?;
+    .unwrap_or_else(|e| {
+        tracing::warn!(error = %e, did = %did, "handle lookup failed after token rotation; using handle.invalid");
+        None
+    });
 
     // ATProto spec: "handle.invalid" is the sentinel for accounts without a resolvable handle.
     let handle = handle.unwrap_or_else(|| "handle.invalid".to_string());
@@ -417,7 +434,71 @@ mod tests {
         assert!(new_exists.is_some(), "new refresh token must be persisted in DB");
     }
 
-    // ── Replay detection (AC2 + AC3) ──────────────────────────────────────────
+    #[tokio::test]
+    async fn second_rotation_succeeds_with_new_token() {
+        let state = test_state().await;
+        insert_account_with_password(
+            &state.db,
+            "did:plc:chain",
+            "chain.test.example.com",
+            "chain@example.com",
+            "hunter2",
+        )
+        .await;
+
+        // First rotation.
+        let tokens1 = create_session_tokens(&state, "did:plc:chain", "hunter2").await;
+        let refresh_jwt1 = tokens1["refreshJwt"].as_str().unwrap().to_string();
+        let resp1 = app(state.clone())
+            .oneshot(post_refresh_session(&refresh_jwt1))
+            .await
+            .unwrap();
+        assert_eq!(resp1.status(), StatusCode::OK);
+        let json1 = body_json(resp1).await;
+        let refresh_jwt2 = json1["refreshJwt"].as_str().unwrap().to_string();
+
+        // Second rotation using the token issued by the first rotation.
+        let resp2 = app(state)
+            .oneshot(post_refresh_session(&refresh_jwt2))
+            .await
+            .unwrap();
+        assert_eq!(resp2.status(), StatusCode::OK);
+        let json2 = body_json(resp2).await;
+        assert!(json2["accessJwt"].as_str().is_some(), "second rotation must issue new accessJwt");
+        assert!(json2["refreshJwt"].as_str().is_some(), "second rotation must issue new refreshJwt");
+    }
+
+    #[tokio::test]
+    async fn account_without_handle_returns_handle_invalid() {
+        let state = test_state().await;
+        // Insert account with a handle, then delete the handle to simulate no-handle account.
+        insert_account_with_password(
+            &state.db,
+            "did:plc:nohandle",
+            "nohandle.test.example.com",
+            "nohandle@example.com",
+            "hunter2",
+        )
+        .await;
+        sqlx::query("DELETE FROM handles WHERE did = 'did:plc:nohandle'")
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        let tokens = create_session_tokens(&state, "did:plc:nohandle", "hunter2").await;
+        let refresh_jwt = tokens["refreshJwt"].as_str().unwrap().to_string();
+
+        let response = app(state)
+            .oneshot(post_refresh_session(&refresh_jwt))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json["handle"], "handle.invalid");
+    }
+
+    // ── Replay detection ──────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn old_refresh_token_rejected_after_rotation() {
@@ -446,7 +527,9 @@ mod tests {
             .oneshot(post_refresh_session(&refresh_jwt))
             .await
             .unwrap();
-        assert_ne!(replay.status(), StatusCode::OK, "replay must be rejected");
+        assert_eq!(replay.status(), StatusCode::UNAUTHORIZED, "replay must be rejected");
+        let json = body_json(replay).await;
+        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
     }
 
     #[tokio::test]
@@ -479,10 +562,14 @@ mod tests {
             .unwrap();
 
         // Replay triggers full session revocation.
-        app(state)
+        let replay = app(state)
             .oneshot(post_refresh_session(&refresh_jwt))
             .await
             .unwrap();
+
+        assert_eq!(replay.status(), StatusCode::UNAUTHORIZED, "replay must return 401");
+        let json = body_json(replay).await;
+        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
 
         let session_count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE id = ?")
@@ -504,7 +591,7 @@ mod tests {
     // ── Error cases ───────────────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn expired_refresh_token_returns_error() {
+    async fn expired_refresh_token_returns_401() {
         let state = test_state().await;
         insert_account_with_password(
             &state.db,
@@ -521,21 +608,52 @@ mod tests {
             .await
             .unwrap();
 
-        assert_ne!(
-            response.status(),
-            StatusCode::OK,
-            "expired token must be rejected"
-        );
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "TOKEN_EXPIRED");
     }
 
     #[tokio::test]
-    async fn invalid_token_signature_returns_error() {
+    async fn token_deleted_from_db_returns_401() {
+        let state = test_state().await;
+        insert_account_with_password(
+            &state.db,
+            "did:plc:deleted",
+            "deleted.test.example.com",
+            "deleted@example.com",
+            "hunter2",
+        )
+        .await;
+
+        let tokens = create_session_tokens(&state, "did:plc:deleted", "hunter2").await;
+        let refresh_jwt = tokens["refreshJwt"].as_str().unwrap().to_string();
+
+        // Simulate out-of-band revocation by deleting the DB row directly.
+        sqlx::query("DELETE FROM refresh_tokens WHERE did = 'did:plc:deleted'")
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        let response = app(state)
+            .oneshot(post_refresh_session(&refresh_jwt))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+    }
+
+    #[tokio::test]
+    async fn invalid_token_signature_returns_401() {
         let response = app(test_state().await)
             .oneshot(post_refresh_session("not.a.valid.jwt"))
             .await
             .unwrap();
 
-        assert_ne!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
     }
 
     #[tokio::test]
@@ -558,15 +676,17 @@ mod tests {
             .await
             .unwrap();
 
-        assert_ne!(
+        assert_eq!(
             response.status(),
-            StatusCode::OK,
+            StatusCode::UNAUTHORIZED,
             "access token must be rejected at the refresh endpoint"
         );
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
     }
 
     #[tokio::test]
-    async fn missing_authorization_header_returns_error() {
+    async fn missing_authorization_header_returns_401() {
         let request = Request::builder()
             .method("POST")
             .uri("/xrpc/com.atproto.server.refreshSession")
@@ -575,6 +695,8 @@ mod tests {
 
         let response = app(test_state().await).oneshot(request).await.unwrap();
 
-        assert_ne!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "AUTHENTICATION_REQUIRED");
     }
 }

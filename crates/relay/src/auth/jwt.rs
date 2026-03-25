@@ -154,14 +154,15 @@ pub fn parse_scope(scope: &str) -> Result<AuthScope, ApiError> {
 
 /// Claims decoded from a refresh JWT (scope: com.atproto.refresh).
 ///
-/// `sub` is intentionally omitted — the authoritative DID is read from the DB
-/// after confirming the token exists, rather than trusting the JWT claim directly.
-/// JWT library still enforces `sub` presence via `set_required_spec_claims`.
+/// `sub` is present in the JWT payload but intentionally not decoded here:
+/// the library enforces its presence via `set_required_spec_claims`, and the
+/// authoritative DID is read from the DB row after the token is confirmed to
+/// exist — never trusted directly from the JWT claim.
 #[derive(Debug, Deserialize)]
 pub(crate) struct RefreshTokenClaims {
     pub scope: String,
     /// Token ID embedded in the JWT and stored in `refresh_tokens.jti`.
-    /// `None` when an access token (no `jti`) is mistakenly presented here.
+    /// `None` when an access token (which has no `jti`) is mistakenly presented.
     pub jti: Option<String>,
 }
 
@@ -172,7 +173,7 @@ pub(crate) struct RefreshTokenClaims {
 /// for that check so that the error message can be precise.
 pub fn verify_refresh_token(
     token: &str,
-    state: &crate::app::AppState,
+    state: &AppState,
 ) -> Result<RefreshTokenClaims, ApiError> {
     let decoding_key = DecodingKey::from_secret(&state.jwt_secret);
     let mut validation = Validation::new(Algorithm::HS256);
@@ -180,6 +181,10 @@ pub fn verify_refresh_token(
         Some(did) => validation.set_audience(&[did]),
         None => {
             validation.validate_aud = false;
+            tracing::warn!(
+                "server_did not configured; JWT audience validation is disabled — \
+                 set server_did in config for production deployments"
+            );
         }
     }
     validation.set_required_spec_claims(&["exp", "sub"]);
@@ -194,7 +199,7 @@ pub fn verify_refresh_token(
                     ApiError::new(ErrorCode::TokenExpired, "token has expired")
                 }
                 _ => {
-                    tracing::debug!(error = %e, error_kind = ?e.kind(), "refresh token verification failed");
+                    tracing::warn!(error = %e, error_kind = ?e.kind(), "refresh token verification failed");
                     ApiError::new(ErrorCode::InvalidToken, "invalid token")
                 }
             }
