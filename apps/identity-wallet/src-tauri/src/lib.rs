@@ -7,7 +7,7 @@ pub mod oauth_client;
 use crypto::{build_did_plc_genesis_op_with_external_signer, CryptoError, DidKeyUri};
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 
 // ── Request / response types ────────────────────────────────────────────────
@@ -411,6 +411,28 @@ pub fn run() {
                 let state = app_handle.state::<oauth::AppState>();
                 oauth::handle_deep_link(event.urls(), &state);
             });
+
+            // On relaunch: restore persisted session from Keychain and notify frontend.
+            // The 300 ms delay lets the SvelteKit app boot and register its event listener
+            // before the event fires — emitting synchronously here would be dropped.
+            if let Some((access, refresh)) = keychain::load_oauth_tokens() {
+                {
+                    let state = app.state::<oauth::AppState>();
+                    *state.oauth_session.lock().unwrap() = Some(oauth::OAuthSession {
+                        access_token: access,
+                        refresh_token: refresh,
+                        // expires_at = 0 ensures OAuthClient refreshes immediately on first use.
+                        expires_at: 0,
+                        dpop_nonce: None,
+                    });
+                }
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    handle.emit("auth_ready", ()).ok();
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

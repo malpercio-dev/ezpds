@@ -155,3 +155,23 @@ export const performDIDCeremony = (
   password: string,
 ): Promise<DIDCeremonyResult> =>
   invoke('perform_did_ceremony', { handle, password });
+
+// ── OAuth ───────────────────────────────────────────────────────────────────
+//
+// These variants must exactly match the Rust `OAuthError` enum in oauth.rs.
+// Rust serializes them as `{ "code": "SCREAMING_SNAKE_CASE" }` via:
+//   #[serde(rename_all = "SCREAMING_SNAKE_CASE", tag = "code")]
+
+export type OAuthError =
+  | { code: 'DPOP_KEY_GEN_FAILED' }
+  | { code: 'DPOP_KEY_INVALID' }
+  | { code: 'DPOP_PROOF_FAILED' }
+  | { code: 'KEYCHAIN_ERROR' }
+  | { code: 'STATE_MISMATCH' }
+  | { code: 'CALLBACK_ABANDONED' }
+  | { code: 'PAR_FAILED' }
+  | { code: 'TOKEN_EXCHANGE_FAILED' }
+  | { code: 'TOKEN_REFRESH_FAILED' }
+  | { code: 'NOT_AUTHENTICATED' };
+
+export const startOAuthFlow = (): Promise<void> => invoke('start_oauth_flow');
