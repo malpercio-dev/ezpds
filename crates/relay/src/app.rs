@@ -22,6 +22,7 @@ use crate::routes::create_did::create_did_handler;
 use crate::routes::create_handle::create_handle_handler;
 use crate::routes::create_mobile_account::create_mobile_account;
 use crate::routes::create_session::create_session;
+use crate::routes::delete_session::delete_session;
 use crate::routes::create_signing_key::create_signing_key;
 use crate::routes::describe_server::describe_server;
 use crate::routes::get_relay_signing_key::get_relay_signing_key;
@@ -162,6 +163,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/xrpc/com.atproto.server.refreshSession",
             post(refresh_session),
+        )
+        .route(
+            "/xrpc/com.atproto.server.deleteSession",
+            post(delete_session),
         )
         .route(
             "/xrpc/com.atproto.identity.resolveHandle",

@@ -206,6 +206,45 @@ pub fn verify_refresh_token(
         })
 }
 
+/// Verify an HS256 refresh JWT issued by this server, accepting expired tokens.
+///
+/// Validates HS256 signature and audience (when `server_did` is configured), but
+/// intentionally skips the expiry check. Used by `deleteSession` so that users
+/// can always revoke their session even after the refresh token has expired —
+/// matching the ATProto spec's `allowExpired: true` behavior.
+///
+/// Security: HS256 signature is still fully verified. An expired-but-forged
+/// token is rejected. Only tokens we signed (but whose exp has passed) are accepted.
+///
+/// Does NOT check `scope` — callers must verify `scope == "com.atproto.refresh"`.
+pub fn verify_refresh_token_allow_expired(
+    token: &str,
+    state: &AppState,
+) -> Result<RefreshTokenClaims, ApiError> {
+    let decoding_key = DecodingKey::from_secret(&state.jwt_secret);
+    let mut validation = Validation::new(Algorithm::HS256);
+    match state.config.server_did.as_deref() {
+        Some(did) => validation.set_audience(&[did]),
+        None => {
+            validation.validate_aud = false;
+            tracing::warn!(
+                "server_did not configured; JWT audience validation is disabled — \
+                 set server_did in config for production deployments"
+            );
+        }
+    }
+    validation.validate_exp = false;
+    validation.set_required_spec_claims(&["sub"]);
+    validation.leeway = 0;
+
+    decode::<RefreshTokenClaims>(token, &decoding_key, &validation)
+        .map(|data| data.claims)
+        .map_err(|e| {
+            tracing::warn!(error = %e, error_kind = ?e.kind(), "refresh token verification failed");
+            ApiError::new(ErrorCode::InvalidToken, "invalid token")
+        })
+}
+
 // ── Legacy HS256 token issuance ───────────────────────────────────────────────
 
 const ACCESS_TOKEN_TTL_SECS: u64 = 2 * 60 * 60; // 2 hours
