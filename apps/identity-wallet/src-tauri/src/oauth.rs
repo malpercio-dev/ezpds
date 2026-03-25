@@ -90,8 +90,10 @@ impl DPoPKeypair {
     /// Load the DPoP keypair from Keychain, or generate and persist a new one.
     pub fn get_or_create() -> Result<Self, OAuthError> {
         if let Some(private_bytes) = crate::keychain::load_dpop_key() {
+            // private_bytes is Zeroizing<[u8; 32]>, which derefs to [u8; 32].
+            // Dereference to get &[u8; 32], which coerces to &[u8] for from_slice.
             let signing_key =
-                SigningKey::from_slice(&private_bytes).map_err(|_| OAuthError::DpopKeyInvalid)?;
+                SigningKey::from_slice(&*private_bytes).map_err(|_| OAuthError::DpopKeyInvalid)?;
             return Ok(Self { signing_key });
         }
 

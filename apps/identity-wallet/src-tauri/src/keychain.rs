@@ -95,12 +95,13 @@ pub fn store_dpop_key(private_bytes: &[u8]) -> Result<(), KeychainError> {
 /// Load the DPoP private key scalar from the Keychain.
 ///
 /// Returns `None` if no key has been stored yet (first run).
-pub fn load_dpop_key() -> Option<[u8; 32]> {
+/// The returned bytes are wrapped in `Zeroizing` to ensure they are cleared on drop.
+pub fn load_dpop_key() -> Option<zeroize::Zeroizing<[u8; 32]>> {
     match get_item(DPOP_KEY_PRIV_ACCOUNT) {
         Ok(bytes) if bytes.len() == 32 => {
             let mut arr = [0u8; 32];
             arr.copy_from_slice(&bytes);
-            Some(arr)
+            Some(zeroize::Zeroizing::new(arr))
         }
         Ok(_) => {
             tracing::warn!("DPoP key in Keychain has unexpected length; treating as absent");
@@ -126,7 +127,13 @@ pub fn store_oauth_tokens(access_token: &str, refresh_token: &str) -> Result<(),
 /// Returns `None` if either token is missing (not yet authenticated).
 pub fn load_oauth_tokens() -> Option<(String, String)> {
     let access = match get_item(OAUTH_ACCESS_TOKEN_ACCOUNT) {
-        Ok(b) => String::from_utf8(b).ok()?,
+        Ok(b) => match String::from_utf8(b) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = ?e, "UTF-8 error decoding access token from Keychain");
+                return None;
+            }
+        },
         Err(e) if is_not_found(&e) => return None,
         Err(e) => {
             tracing::error!(error = ?e, "Keychain error loading access token");
@@ -134,7 +141,13 @@ pub fn load_oauth_tokens() -> Option<(String, String)> {
         }
     };
     let refresh = match get_item(OAUTH_REFRESH_TOKEN_ACCOUNT) {
-        Ok(b) => String::from_utf8(b).ok()?,
+        Ok(b) => match String::from_utf8(b) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = ?e, "UTF-8 error decoding refresh token from Keychain");
+                return None;
+            }
+        },
         Err(e) if is_not_found(&e) => return None,
         Err(e) => {
             tracing::error!(error = ?e, "Keychain error loading refresh token");
