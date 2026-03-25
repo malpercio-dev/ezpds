@@ -57,6 +57,7 @@ pub async fn delete_session(
 
     // Idempotent: token not found means already revoked — logout already done.
     let Some(session_id) = session_id else {
+        tracing::debug!(jti = %jti, "deleteSession called with unknown jti; treating as already revoked");
         return Ok(StatusCode::OK);
     };
 
@@ -75,7 +76,7 @@ pub async fn delete_session(
             ApiError::new(ErrorCode::InternalError, "internal error")
         })?;
 
-    sqlx::query("DELETE FROM sessions WHERE id = ?")
+    let deleted = sqlx::query("DELETE FROM sessions WHERE id = ?")
         .bind(&session_id)
         .execute(&mut *tx)
         .await
@@ -83,6 +84,15 @@ pub async fn delete_session(
             tracing::error!(error = %e, session_id = %session_id, "failed to delete session");
             ApiError::new(ErrorCode::InternalError, "internal error")
         })?;
+
+    if deleted.rows_affected() != 1 {
+        tracing::warn!(
+            session_id = %session_id,
+            jti = %jti,
+            rows = deleted.rows_affected(),
+            "session DELETE affected unexpected row count; session may have been removed concurrently"
+        );
+    }
 
     tx.commit().await.map_err(|e| {
         tracing::error!(error = %e, session_id = %session_id, "failed to commit revocation transaction");
@@ -132,6 +142,7 @@ mod tests {
             )))
             .unwrap();
         let response = app(state.clone()).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "createSession must succeed");
         body_json(response).await
     }
 
@@ -454,6 +465,124 @@ mod tests {
             response.status(),
             StatusCode::OK,
             "expired token not in DB must be idempotent 200"
+        );
+    }
+
+    // ── Rotated token revocation ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn rotated_token_revokes_entire_session() {
+        // After refreshSession, the old refresh token has next_jti set but is still
+        // in the DB with a valid session_id. deleteSession with the old token must
+        // still revoke the session and all its refresh tokens.
+        let state = test_state().await;
+        insert_account_with_password(
+            &state.db,
+            "did:plc:del8",
+            "del8.test.example.com",
+            "del8@example.com",
+            "hunter2",
+        )
+        .await;
+
+        let db = state.db.clone();
+        let tokens = create_session_tokens(&state, "did:plc:del8", "hunter2").await;
+        let original_refresh_jwt = tokens["refreshJwt"].as_str().unwrap().to_string();
+
+        // Rotate the token via refreshSession — old token now has next_jti set.
+        let rotated = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.server.refreshSession")
+                    .header("Authorization", format!("Bearer {original_refresh_jwt}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rotated.status(), StatusCode::OK, "refreshSession must succeed");
+
+        let session_id: String =
+            sqlx::query_scalar("SELECT id FROM sessions WHERE did = 'did:plc:del8'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+
+        // Call deleteSession with the old (now-rotated) token.
+        let del = app(state)
+            .oneshot(post_delete_session(&original_refresh_jwt))
+            .await
+            .unwrap();
+        assert_eq!(
+            del.status(),
+            StatusCode::OK,
+            "deleteSession with rotated token must return 200"
+        );
+
+        let session_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE id = ?")
+                .bind(&session_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(session_count, 0, "session must be deleted");
+
+        let token_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE session_id = ?")
+                .bind(&session_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(token_count, 0, "all refresh tokens (including rotated) must be deleted");
+    }
+
+    // ── Access token boundary ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn access_token_from_deleted_session_is_still_valid_until_expiry() {
+        // Access JWTs are stateless — deleteSession cannot invalidate them before
+        // their natural expiry. This test documents that as an intentional contract:
+        // getSession must still succeed with the access JWT after the session is deleted.
+        // If a future change adds session-row validation to the access path, this test
+        // will fail loudly.
+        let state = test_state().await;
+        insert_account_with_password(
+            &state.db,
+            "did:plc:del9",
+            "del9.test.example.com",
+            "del9@example.com",
+            "hunter2",
+        )
+        .await;
+
+        let tokens = create_session_tokens(&state, "did:plc:del9", "hunter2").await;
+        let access_jwt = tokens["accessJwt"].as_str().unwrap().to_string();
+        let refresh_jwt = tokens["refreshJwt"].as_str().unwrap();
+
+        // Delete the session.
+        let del = app(state.clone())
+            .oneshot(post_delete_session(refresh_jwt))
+            .await
+            .unwrap();
+        assert_eq!(del.status(), StatusCode::OK);
+
+        // Access JWT is still valid — getSession must return 200.
+        let get = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/xrpc/com.atproto.server.getSession")
+                    .header("Authorization", format!("Bearer {access_jwt}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            get.status(),
+            StatusCode::OK,
+            "access JWT must remain valid until expiry after session deletion (stateless)"
         );
     }
 }

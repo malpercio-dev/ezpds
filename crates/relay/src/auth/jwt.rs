@@ -237,6 +237,8 @@ pub fn verify_refresh_token_allow_expired(
     validation.set_required_spec_claims(&["sub"]);
     validation.leeway = 0;
 
+    // Note: no ExpiredSignature arm — `validate_exp = false` means jsonwebtoken
+    // never emits that error kind here. All failures are signature/structural.
     decode::<RefreshTokenClaims>(token, &decoding_key, &validation)
         .map(|data| data.claims)
         .map_err(|e| {
