@@ -1,6 +1,6 @@
 # Relay Crate
 
-Last verified: 2026-03-25
+Last verified: 2026-03-26
 
 ## Purpose
 
@@ -75,12 +75,13 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `create_mobile_account.rs` | `POST /v1/accounts/mobile` |
 | `create_signing_key.rs` | `POST /v1/signing-keys` |
 | `register_device.rs` | `POST /v1/devices` |
+| `get_device_relay.rs` | `GET /v1/devices/:id/relay` |
 | `describe_server.rs` | `GET /xrpc/com.atproto.server.describeServer` |
 | `resolve_handle.rs` | `GET /xrpc/com.atproto.identity.resolveHandle` |
 | `claim_codes.rs` | Claim code management |
 | `get_relay_signing_key.rs` | `GET /v1/signing-keys` |
 | `health.rs` | `GET /health` |
-| `auth.rs` | Route-level auth middleware (`require_session`, `require_pending_session`) |
+| `auth.rs` | Route-level auth middleware (`require_admin_token`, `require_pending_session`, `require_session`, `require_device_token`) |
 | `token.rs` | Bearer token generation helpers |
 
 ## Hard Rules

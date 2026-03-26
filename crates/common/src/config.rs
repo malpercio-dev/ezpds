@@ -238,6 +238,9 @@ pub(crate) fn apply_env_overrides(
     if let Some(v) = env.get("OTEL_SERVICE_NAME") {
         raw.telemetry.service_name = Some(v.clone());
     }
+    if let Some(v) = env.get("EZPDS_IROH_ENDPOINT") {
+        raw.iroh.endpoint = Some(v.clone());
+    }
     if let Some(v) = env.get("EZPDS_ADMIN_TOKEN") {
         raw.admin_token = Some(v.clone());
     }
@@ -332,6 +335,12 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
             .service_name
             .unwrap_or(telemetry_defaults.service_name),
     };
+
+    if raw.iroh.endpoint.as_deref() == Some("") {
+        return Err(ConfigError::Invalid(
+            "iroh.endpoint must not be empty".to_string(),
+        ));
+    }
 
     Ok(Config {
         bind_address,
@@ -868,6 +877,26 @@ mod tests {
     fn iroh_endpoint_defaults_to_none() {
         let config = validate_and_build(minimal_raw()).unwrap();
         assert_eq!(config.iroh.endpoint, None);
+    }
+
+    #[test]
+    fn env_override_iroh_endpoint() {
+        let env = HashMap::from([("EZPDS_IROH_ENDPOINT".to_string(), "nodeabc123".to_string())]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.iroh.endpoint, Some("nodeabc123".to_string()));
+    }
+
+    #[test]
+    fn iroh_endpoint_empty_string_returns_error() {
+        let mut raw = minimal_raw();
+        raw.iroh.endpoint = Some(String::new());
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(
+            err.to_string().contains("iroh.endpoint"),
+            "error message must mention iroh.endpoint"
+        );
     }
 
     #[test]

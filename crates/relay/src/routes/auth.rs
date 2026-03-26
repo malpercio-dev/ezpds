@@ -154,6 +154,7 @@ pub async fn require_device_token(
             v.to_str()
                 .inspect_err(|_| {
                     tracing::warn!(
+                        device_id = %device_id,
                         "Authorization header contains non-UTF-8 bytes; treating as absent"
                     );
                 })
@@ -179,6 +180,10 @@ pub async fn require_device_token(
                 tracing::error!(error = %e, "failed to query device token");
                 ApiError::new(ErrorCode::InternalError, "device lookup failed")
             })?;
+
+    if found.is_none() {
+        tracing::debug!(device_id = %device_id, "no device matched id+token_hash");
+    }
 
     found
         .map(|_| ())
@@ -633,51 +638,7 @@ mod tests {
 
     // ── require_device_token tests ────────────────────────────────────────────
 
-    /// Seed a device row and return (device_id, plaintext_token).
-    async fn seed_device(db: &sqlx::SqlitePool) -> (String, String) {
-        use crate::routes::token::generate_token;
-        use uuid::Uuid;
-
-        let claim_code = format!("TEST-{}", Uuid::new_v4());
-        sqlx::query(
-            "INSERT INTO claim_codes (code, expires_at, created_at) \
-             VALUES (?, datetime('now', '+1 hour'), datetime('now'))",
-        )
-        .bind(&claim_code)
-        .execute(db)
-        .await
-        .unwrap();
-
-        let account_id = Uuid::new_v4().to_string();
-        sqlx::query(
-            "INSERT INTO pending_accounts \
-             (id, email, handle, tier, claim_code, created_at) \
-             VALUES (?, ?, ?, 'free', ?, datetime('now'))",
-        )
-        .bind(&account_id)
-        .bind(format!("test{}@example.com", &account_id[..8]))
-        .bind(format!("test{}.example.com", &account_id[..8]))
-        .bind(&claim_code)
-        .execute(db)
-        .await
-        .unwrap();
-
-        let device_id = Uuid::new_v4().to_string();
-        let token = generate_token();
-        sqlx::query(
-            "INSERT INTO devices \
-             (id, account_id, platform, public_key, device_token_hash, created_at, last_seen_at) \
-             VALUES (?, ?, 'ios', 'test_pubkey', ?, datetime('now'), datetime('now'))",
-        )
-        .bind(&device_id)
-        .bind(&account_id)
-        .bind(&token.hash)
-        .execute(db)
-        .await
-        .unwrap();
-
-        (device_id, token.plaintext)
-    }
+    use crate::routes::test_utils::seed_device;
 
     fn bearer(token: &str) -> HeaderMap {
         let mut h = HeaderMap::new();
@@ -727,5 +688,16 @@ mod tests {
         require_device_token(&bearer(&token), &device_id, &state.db)
             .await
             .expect("valid device token must succeed");
+    }
+
+    #[tokio::test]
+    async fn device_token_malformed_base64_returns_401() {
+        // "!!!" is not valid base64url — hash_bearer_token must reject it before any DB query.
+        let state = test_state().await;
+        let (device_id, _) = seed_device(&state.db).await;
+        let err = require_device_token(&bearer("!!!not-base64url!!!"), &device_id, &state.db)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code(), 401);
     }
 }

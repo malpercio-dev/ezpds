@@ -33,6 +33,12 @@ pub async fn get_device_relay(
     require_device_token(&headers, &device_id, &state.db).await?;
 
     let relay_url = state.config.public_url.clone();
+    // validate_and_build enforces public_url.starts_with("https://"), so this substitution
+    // always produces a wss:// URL. The assert catches any future relaxation of that invariant.
+    debug_assert!(
+        relay_url.starts_with("https://"),
+        "public_url must start with https://, got: {relay_url:?}"
+    );
     let websocket_url = relay_url.replacen("https://", "wss://", 1);
     let iroh_endpoint = state.config.iroh.endpoint.clone();
 
@@ -134,9 +140,8 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let json = body_json(response).await;
         assert!(
-            json["irohEndpoint"].is_null(),
-            "irohEndpoint must be absent when not configured; got: {:?}",
-            json["irohEndpoint"]
+            !json.as_object().unwrap().contains_key("irohEndpoint"),
+            "irohEndpoint key must be absent from JSON when not configured; got: {json}"
         );
     }
 
@@ -158,6 +163,28 @@ mod tests {
 
         let json = body_json(response).await;
         assert_eq!(json["irohEndpoint"], "abc123nodeid");
+    }
+
+    #[tokio::test]
+    async fn websocket_url_is_derived_from_relay_url_by_replacing_https_scheme() {
+        // Documents the invariant: websocketUrl is always relay_url with https:// → wss://.
+        // validate_and_build requires public_url to start with https://, so this is safe.
+        let state = test_state().await;
+        let (device_id, token) = seed_device(&state.db).await;
+
+        let response = app(state.clone())
+            .oneshot(get_device_relay(&device_id, &token))
+            .await
+            .unwrap();
+
+        let json = body_json(response).await;
+        let relay_url = json["relayUrl"].as_str().unwrap();
+        let websocket_url = json["websocketUrl"].as_str().unwrap();
+        assert!(
+            relay_url.starts_with("https://"),
+            "relayUrl must start with https://"
+        );
+        assert_eq!(websocket_url, relay_url.replacen("https://", "wss://", 1));
     }
 
     // ── Auth failures ─────────────────────────────────────────────────────────
