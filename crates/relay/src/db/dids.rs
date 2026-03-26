@@ -1,7 +1,7 @@
 // pattern: Imperative Shell
 //
-// DID document lookup. Returns a parsed JSON document from the did_documents table.
-// No business logic — callers decide what to do with the result.
+// DID document lookup queries against the did_documents table.
+// Returns plain data structs; no business logic — callers decide what to do with the result.
 
 use common::{ApiError, ErrorCode};
 
@@ -26,7 +26,8 @@ pub(crate) async fn get_did_document(
         None => Ok(None),
         Some((doc_str,)) => {
             let doc = serde_json::from_str(&doc_str).map_err(|e| {
-                tracing::error!(did = %did, error = %e, "malformed DID document in DB");
+                let preview = &doc_str[..doc_str.len().min(500)];
+                tracing::error!(did = %did, error = %e, raw = %preview, "malformed DID document in DB");
                 ApiError::new(ErrorCode::InternalError, "malformed DID document")
             })?;
             Ok(Some(doc))
