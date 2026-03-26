@@ -43,7 +43,7 @@ and async query functions; no business logic lives here.
 | File | Contents |
 |---|---|
 | `mod.rs` | `open_pool`, `run_migrations`, `DbError`, `is_unique_violation` |
-| `accounts.rs` | `AccountRow`, `resolve_identifier` |
+| `accounts.rs` | `AccountRow` + `resolve_identifier` (handle/DID→account); `SessionAccountRow` + `get_session_account` (DID→account+handle+DID doc); `resolve_by_email` (email→account) |
 | `oauth.rs` | OAuth client lookup, auth code storage, token management |
 | `password_reset.rs` | `insert_reset_token`, `get_reset_token`, `mark_reset_token_used`, `update_password_hash` |
 

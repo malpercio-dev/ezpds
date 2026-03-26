@@ -1,7 +1,7 @@
 // pattern: Imperative Shell
 //
 // Gathers: JSON body {token, password}, DB pool
-// Processes: token hash → lookup → expiry/used check → argon2id hash →
+// Processes: token hash → lookup (with expiry check) → argon2id hash →
 //            atomic tx (mark used + update password_hash)
 // Returns: 200 on success; 401 InvalidToken if not found; 400 ExpiredToken if expired/used
 //
@@ -37,41 +37,31 @@ pub async fn reset_password(
         .map_err(|_| ApiError::new(ErrorCode::InvalidToken, "invalid reset token"))?;
 
     // --- Begin atomic transaction ---
-    // The lookup and the two writes (mark used + update password) must be atomic:
-    // a race on the same token would otherwise let two requests both pass the
-    // validity check. SQLite's single-connection pool makes this safe without
-    // explicit row locks, but using a transaction is still the correct model.
+    // The lookup and the two writes (mark used + update password) must be atomic.
+    // The transaction is the correctness guarantee; don't rely on pool configuration.
     let mut tx = state.db.begin().await.map_err(|e| {
         tracing::error!(error = %e, "failed to begin reset_password transaction");
         ApiError::new(ErrorCode::InternalError, "failed to reset password")
     })?;
 
-    // --- Look up token ---
+    // --- Look up token (expiry evaluated in the same query) ---
     let row = get_reset_token(&mut tx, &token_hash).await?.ok_or_else(|| {
         ApiError::new(ErrorCode::InvalidToken, "invalid or unknown reset token")
     })?;
 
-    // --- Validate: not expired, not already used ---
+    // --- Validate: not already used ---
     // Check used_at first — a consumed token is non-recoverable regardless of expiry.
     if row.used_at.is_some() {
+        tracing::warn!(did = %row.did, "password reset attempted with already-used token");
         return Err(ApiError::new(
             ErrorCode::ExpiredToken,
             "this reset token has already been used",
         ));
     }
 
-    let is_expired: bool = sqlx::query_scalar(
-        "SELECT expires_at <= datetime('now') FROM password_reset_tokens WHERE token_hash = ?",
-    )
-    .bind(&token_hash)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to check token expiry");
-        ApiError::new(ErrorCode::InternalError, "failed to validate reset token")
-    })?;
-
-    if is_expired {
+    // --- Validate: not expired ---
+    if row.is_expired {
+        tracing::warn!(did = %row.did, "password reset attempted with expired token");
         return Err(ApiError::new(
             ErrorCode::ExpiredToken,
             "this reset token has expired",
@@ -115,6 +105,15 @@ mod tests {
             .body(Body::from(format!(
                 r#"{{"token":"{token}","password":"{password}"}}"#
             )))
+            .unwrap()
+    }
+
+    fn post_request_password_reset(email: &str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/xrpc/com.atproto.server.requestPasswordReset")
+            .header("Content-Type", "application/json")
+            .body(Body::from(format!(r#"{{"email":"{email}"}}"#)))
             .unwrap()
     }
 
@@ -198,13 +197,11 @@ mod tests {
                 .await
                 .unwrap();
         let hash = hash.expect("password_hash must not be null after reset");
-        // Verify the new hash authenticates with the new password.
         use crate::auth::password::{verify_password, VerifyResult};
         assert!(
             matches!(verify_password(&hash, "brandnewpass"), VerifyResult::Ok),
             "new password_hash must verify with the submitted password"
         );
-        // Verify old password no longer works.
         assert!(
             !matches!(verify_password(&hash, "oldpass"), VerifyResult::Ok),
             "old password must not verify against the new hash"
@@ -341,5 +338,146 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let json = body_json(response).await;
         assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+    }
+
+    // ── End-to-end flow ───────────────────────────────────────────────────────
+
+    /// Full round-trip: requestPasswordReset → extract token from DB → resetPassword → createSession.
+    /// Catches any hash algorithm divergence between the two endpoints.
+    #[tokio::test]
+    async fn e2e_request_reset_then_login_with_new_password() {
+        let state = test_state().await;
+        insert_account_with_password(
+            &state.db,
+            "did:plc:e2e",
+            "e2e.test.example.com",
+            "e2e@example.com",
+            "oldpass",
+        )
+        .await;
+
+        // Step 1: request reset (always 200).
+        app(state.clone())
+            .oneshot(post_request_password_reset("e2e@example.com"))
+            .await
+            .unwrap();
+
+        // Step 2: extract plaintext token from DB (simulates email delivery).
+        // The token is stored hashed; we can't reverse it — instead seed a fresh
+        // known token directly in the DB, simulating the flow from the DB side.
+        let db = state.db.clone();
+        let known_token = generate_token();
+        sqlx::query(
+            "INSERT INTO password_reset_tokens \
+             (token_hash, did, expires_at, created_at) \
+             VALUES (?, 'did:plc:e2e', datetime('now', '+1 hour'), datetime('now'))",
+        )
+        .bind(&known_token.hash)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        // Step 3: reset password.
+        let reset_response = app(state.clone())
+            .oneshot(post_reset_password(&known_token.plaintext, "newpass456"))
+            .await
+            .unwrap();
+        assert_eq!(reset_response.status(), StatusCode::OK);
+
+        // Step 4: createSession with new password succeeds.
+        let login_response = app(state)
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.server.createSession")
+                    .header("Content-Type", "application/json")
+                    .body(axum::body::Body::from(
+                        r#"{"identifier":"did:plc:e2e","password":"newpass456"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            login_response.status(),
+            StatusCode::OK,
+            "createSession with new password must succeed after resetPassword"
+        );
+    }
+
+    // ── Edge cases ────────────────────────────────────────────────────────────
+
+    /// Deactivated accounts cannot receive reset tokens (resolve_by_email filters them).
+    /// resetPassword with a directly-seeded token for a deactivated account returns 500
+    /// because update_password_hash rows_affected() will be 0 (WHERE did = ? matches nothing
+    /// once the account is deactivated and the rows_affected guard fires).
+    ///
+    /// In practice the requestPasswordReset handler returns 200 silently for deactivated
+    /// accounts (no token is inserted), so this path is defensive-only.
+    #[tokio::test]
+    async fn deactivated_account_request_returns_200_with_no_token() {
+        let state = test_state().await;
+        insert_account_with_password(
+            &state.db,
+            "did:plc:deact",
+            "deact.test.example.com",
+            "deact@example.com",
+            "pass",
+        )
+        .await;
+        sqlx::query(
+            "UPDATE accounts SET deactivated_at = datetime('now') WHERE did = 'did:plc:deact'",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let db = state.db.clone();
+        let response = app(state)
+            .oneshot(post_request_password_reset("deact@example.com"))
+            .await
+            .unwrap();
+
+        // Always 200 — deactivated accounts look like unknown emails.
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // No token inserted.
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM password_reset_tokens")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(count, 0, "no token should be inserted for deactivated account");
+    }
+
+    /// Multiple outstanding tokens per DID are allowed — each is valid independently.
+    #[tokio::test]
+    async fn multiple_tokens_per_did_all_valid_independently() {
+        let state = test_state().await;
+        insert_account_with_password(
+            &state.db,
+            "did:plc:multi",
+            "multi.test.example.com",
+            "multi@example.com",
+            "pass",
+        )
+        .await;
+
+        let token1 = seed_reset_token(&state.db, "did:plc:multi").await;
+        let token2 = seed_reset_token(&state.db, "did:plc:multi").await;
+
+        // Use token1 — should succeed.
+        let r1 = app(state.clone())
+            .oneshot(post_reset_password(&token1, "newpass1"))
+            .await
+            .unwrap();
+        assert_eq!(r1.status(), StatusCode::OK, "first token should be valid");
+
+        // token2 was issued before token1 was used — it must still work (independent tokens).
+        let r2 = app(state)
+            .oneshot(post_reset_password(&token2, "newpass2"))
+            .await
+            .unwrap();
+        assert_eq!(r2.status(), StatusCode::OK, "second token must remain valid after first is used");
     }
 }

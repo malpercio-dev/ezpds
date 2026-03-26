@@ -30,11 +30,23 @@ pub async fn request_password_reset(
     axum::Json(payload): axum::Json<RequestPasswordResetRequest>,
 ) -> StatusCode {
     // --- Look up account by email ---
-    // Silently return 200 on any failure to prevent enumeration.
+    // Generate and discard a token on all non-found paths to equalize work with the
+    // happy path and make timing-based email enumeration impractical.
     let account = match resolve_by_email(&state.db, &payload.email).await {
         Ok(Some(account)) => account,
-        Ok(None) => return StatusCode::OK,
-        Err(_) => return StatusCode::OK,
+        Ok(None) => {
+            let _ = generate_token();
+            return StatusCode::OK;
+        }
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                endpoint = "requestPasswordReset",
+                "DB error looking up account by email; returning 200 to prevent enumeration"
+            );
+            let _ = generate_token();
+            return StatusCode::OK;
+        }
     };
 
     // --- Generate reset token ---
@@ -42,7 +54,11 @@ pub async fn request_password_reset(
 
     // --- Persist token in DB ---
     if let Err(e) = insert_reset_token(&state.db, &account.did, &token.hash).await {
-        tracing::error!(error = %e, "failed to store password reset token; returning 200 to prevent enumeration");
+        tracing::error!(
+            did = %account.did,
+            error = %e,
+            "failed to store password reset token; returning 200 to prevent enumeration"
+        );
         return StatusCode::OK;
     }
 
