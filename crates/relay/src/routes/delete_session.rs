@@ -40,9 +40,9 @@ pub async fn delete_session(
         ));
     }
 
-    let jti = claims.jti.ok_or_else(|| {
-        ApiError::new(ErrorCode::InvalidToken, "invalid refresh token")
-    })?;
+    let jti = claims
+        .jti
+        .ok_or_else(|| ApiError::new(ErrorCode::InvalidToken, "invalid refresh token"))?;
 
     // --- Look up the token — no expiry filter, revocation must always work ---
     let session_id: Option<String> =
@@ -142,7 +142,11 @@ mod tests {
             )))
             .unwrap();
         let response = app(state.clone()).oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK, "createSession must succeed");
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "createSession must succeed"
+        );
         body_json(response).await
     }
 
@@ -217,12 +221,11 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
-        let session_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE id = ?")
-                .bind(&session_id)
-                .fetch_one(&db)
-                .await
-                .unwrap();
+        let session_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE id = ?")
+            .bind(&session_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
         assert_eq!(session_count, 0, "session must be deleted");
 
         let token_count: i64 =
@@ -231,7 +234,10 @@ mod tests {
                 .fetch_one(&db)
                 .await
                 .unwrap();
-        assert_eq!(token_count, 0, "all refresh tokens for the session must be deleted");
+        assert_eq!(
+            token_count, 0,
+            "all refresh tokens for the session must be deleted"
+        );
     }
 
     #[tokio::test]
@@ -341,13 +347,15 @@ mod tests {
             "expired refresh token must still revoke the session"
         );
 
-        let session_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE id = ?")
-                .bind(&session_id)
-                .fetch_one(&db)
-                .await
-                .unwrap();
-        assert_eq!(session_count, 0, "session must be deleted even with expired token");
+        let session_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE id = ?")
+            .bind(&session_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(
+            session_count, 0,
+            "session must be deleted even with expired token"
+        );
     }
 
     // ── Idempotency ───────────────────────────────────────────────────────────
@@ -501,7 +509,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(rotated.status(), StatusCode::OK, "refreshSession must succeed");
+        assert_eq!(
+            rotated.status(),
+            StatusCode::OK,
+            "refreshSession must succeed"
+        );
 
         let session_id: String =
             sqlx::query_scalar("SELECT id FROM sessions WHERE did = 'did:plc:del8'")
@@ -520,12 +532,11 @@ mod tests {
             "deleteSession with rotated token must return 200"
         );
 
-        let session_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE id = ?")
-                .bind(&session_id)
-                .fetch_one(&db)
-                .await
-                .unwrap();
+        let session_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE id = ?")
+            .bind(&session_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
         assert_eq!(session_count, 0, "session must be deleted");
 
         let token_count: i64 =
@@ -534,7 +545,10 @@ mod tests {
                 .fetch_one(&db)
                 .await
                 .unwrap();
-        assert_eq!(token_count, 0, "all refresh tokens (including rotated) must be deleted");
+        assert_eq!(
+            token_count, 0,
+            "all refresh tokens (including rotated) must be deleted"
+        );
     }
 
     // ── Access token boundary ─────────────────────────────────────────────────

@@ -63,9 +63,12 @@ pub struct BlobsConfig {}
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct OAuthConfig {}
 
-/// Stub for future Iroh networking configuration.
+/// Iroh networking configuration.
 #[derive(Debug, Clone, Deserialize, Default)]
-pub struct IrohConfig {}
+pub struct IrohConfig {
+    /// Iroh node endpoint for NAT traversal. `None` when not configured.
+    pub endpoint: Option<String>,
+}
 
 /// OpenTelemetry telemetry configuration.
 #[derive(Debug, Clone)]
@@ -844,6 +847,27 @@ mod tests {
         let err = apply_env_overrides(minimal_raw(), &env).unwrap_err();
         assert!(matches!(err, ConfigError::Invalid(_)));
         assert!(err.to_string().contains("EZPDS_SIGNING_KEY_MASTER_KEY"));
+    }
+
+    #[test]
+    fn iroh_endpoint_parses_from_toml() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [iroh]
+            endpoint = "abc123nodeid"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.iroh.endpoint, Some("abc123nodeid".to_string()));
+    }
+
+    #[test]
+    fn iroh_endpoint_defaults_to_none() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert_eq!(config.iroh.endpoint, None);
     }
 
     #[test]

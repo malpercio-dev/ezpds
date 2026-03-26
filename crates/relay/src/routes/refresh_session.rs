@@ -17,7 +17,9 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::extract_bearer_token;
-use crate::auth::jwt::{issue_access_jwt, issue_refresh_jwt, parse_scope, verify_refresh_token, AuthScope};
+use crate::auth::jwt::{
+    issue_access_jwt, issue_refresh_jwt, parse_scope, verify_refresh_token, AuthScope,
+};
 
 // ── Response type ────────────────────────────────────────────────────────────
 
@@ -53,9 +55,9 @@ pub async fn refresh_session(
         ));
     }
 
-    let jti = claims.jti.ok_or_else(|| {
-        ApiError::new(ErrorCode::InvalidToken, "invalid refresh token")
-    })?;
+    let jti = claims
+        .jti
+        .ok_or_else(|| ApiError::new(ErrorCode::InvalidToken, "invalid refresh token"))?;
 
     // --- Look up the refresh token in the DB ---
     // `next_jti IS NULL` is not checked here — we need the row regardless to detect replays.
@@ -73,7 +75,10 @@ pub async fn refresh_session(
     })?;
 
     let (did, session_id, next_jti) = row.ok_or_else(|| {
-        ApiError::new(ErrorCode::InvalidToken, "refresh token not found or expired")
+        ApiError::new(
+            ErrorCode::InvalidToken,
+            "refresh token not found or expired",
+        )
     })?;
 
     // --- Replay detection: next_jti being set means this token was already rotated ---
@@ -422,7 +427,10 @@ mod tests {
         .fetch_one(&db)
         .await
         .unwrap();
-        assert_eq!(next_jti_matches, 1, "old token's next_jti must point to the new jti");
+        assert_eq!(
+            next_jti_matches, 1,
+            "old token's next_jti must point to the new jti"
+        );
 
         // New token must exist in the DB.
         let new_exists: Option<String> =
@@ -431,7 +439,10 @@ mod tests {
                 .fetch_optional(&db)
                 .await
                 .unwrap();
-        assert!(new_exists.is_some(), "new refresh token must be persisted in DB");
+        assert!(
+            new_exists.is_some(),
+            "new refresh token must be persisted in DB"
+        );
     }
 
     #[tokio::test]
@@ -464,8 +475,14 @@ mod tests {
             .unwrap();
         assert_eq!(resp2.status(), StatusCode::OK);
         let json2 = body_json(resp2).await;
-        assert!(json2["accessJwt"].as_str().is_some(), "second rotation must issue new accessJwt");
-        assert!(json2["refreshJwt"].as_str().is_some(), "second rotation must issue new refreshJwt");
+        assert!(
+            json2["accessJwt"].as_str().is_some(),
+            "second rotation must issue new accessJwt"
+        );
+        assert!(
+            json2["refreshJwt"].as_str().is_some(),
+            "second rotation must issue new refreshJwt"
+        );
     }
 
     #[tokio::test]
@@ -527,7 +544,11 @@ mod tests {
             .oneshot(post_refresh_session(&refresh_jwt))
             .await
             .unwrap();
-        assert_eq!(replay.status(), StatusCode::UNAUTHORIZED, "replay must be rejected");
+        assert_eq!(
+            replay.status(),
+            StatusCode::UNAUTHORIZED,
+            "replay must be rejected"
+        );
         let json = body_json(replay).await;
         assert_eq!(json["error"]["code"], "INVALID_TOKEN");
     }
@@ -567,16 +588,19 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(replay.status(), StatusCode::UNAUTHORIZED, "replay must return 401");
+        assert_eq!(
+            replay.status(),
+            StatusCode::UNAUTHORIZED,
+            "replay must return 401"
+        );
         let json = body_json(replay).await;
         assert_eq!(json["error"]["code"], "INVALID_TOKEN");
 
-        let session_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE id = ?")
-                .bind(&session_id)
-                .fetch_one(&db)
-                .await
-                .unwrap();
+        let session_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE id = ?")
+            .bind(&session_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
         assert_eq!(session_count, 0, "session must be deleted on replay");
 
         let token_count: i64 =
@@ -585,7 +609,10 @@ mod tests {
                 .fetch_one(&db)
                 .await
                 .unwrap();
-        assert_eq!(token_count, 0, "all refresh tokens for the session must be deleted on replay");
+        assert_eq!(
+            token_count, 0,
+            "all refresh tokens for the session must be deleted on replay"
+        );
     }
 
     // ── Error cases ───────────────────────────────────────────────────────────

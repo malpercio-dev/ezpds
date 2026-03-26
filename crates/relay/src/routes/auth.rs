@@ -130,6 +130,61 @@ pub async fn require_pending_session(
     })
 }
 
+/// Authenticate a device Bearer token for a specific device ID.
+///
+/// Extracts the Bearer token from the Authorization header, SHA-256 hashes it, and
+/// queries `devices WHERE id = ? AND device_token_hash = ?`. The `device_id` scope
+/// ensures that a token belonging to device A cannot authenticate requests for device B.
+///
+/// # Errors
+/// Returns `ApiError::Unauthorized` if:
+/// - The Authorization header is missing or malformed
+/// - The token is not valid base64url
+/// - No device matches both the `device_id` and the token hash
+pub async fn require_device_token(
+    headers: &HeaderMap,
+    device_id: &str,
+    db: &sqlx::SqlitePool,
+) -> Result<(), ApiError> {
+    use crate::routes::token::hash_bearer_token;
+
+    let token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| {
+            v.to_str()
+                .inspect_err(|_| {
+                    tracing::warn!(
+                        "Authorization header contains non-UTF-8 bytes; treating as absent"
+                    );
+                })
+                .ok()
+        })
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::Unauthorized,
+                "missing or invalid Authorization header",
+            )
+        })?;
+
+    let token_hash = hash_bearer_token(token)?;
+
+    let found: Option<(String,)> =
+        sqlx::query_as("SELECT id FROM devices WHERE id = ? AND device_token_hash = ?")
+            .bind(device_id)
+            .bind(&token_hash)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "failed to query device token");
+                ApiError::new(ErrorCode::InternalError, "device lookup failed")
+            })?;
+
+    found
+        .map(|_| ())
+        .ok_or_else(|| ApiError::new(ErrorCode::Unauthorized, "invalid device token"))
+}
+
 /// Authenticate a promoted-account Bearer token.
 ///
 /// Extracts the Bearer token from the Authorization header, SHA-256 hashes the raw
@@ -574,5 +629,103 @@ mod tests {
 
         let err = require_session(&headers, &state.db).await.unwrap_err();
         assert_eq!(err.status_code(), 401);
+    }
+
+    // ── require_device_token tests ────────────────────────────────────────────
+
+    /// Seed a device row and return (device_id, plaintext_token).
+    async fn seed_device(db: &sqlx::SqlitePool) -> (String, String) {
+        use crate::routes::token::generate_token;
+        use uuid::Uuid;
+
+        let claim_code = format!("TEST-{}", Uuid::new_v4());
+        sqlx::query(
+            "INSERT INTO claim_codes (code, expires_at, created_at) \
+             VALUES (?, datetime('now', '+1 hour'), datetime('now'))",
+        )
+        .bind(&claim_code)
+        .execute(db)
+        .await
+        .unwrap();
+
+        let account_id = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO pending_accounts \
+             (id, email, handle, tier, claim_code, created_at) \
+             VALUES (?, ?, ?, 'free', ?, datetime('now'))",
+        )
+        .bind(&account_id)
+        .bind(format!("test{}@example.com", &account_id[..8]))
+        .bind(format!("test{}.example.com", &account_id[..8]))
+        .bind(&claim_code)
+        .execute(db)
+        .await
+        .unwrap();
+
+        let device_id = Uuid::new_v4().to_string();
+        let token = generate_token();
+        sqlx::query(
+            "INSERT INTO devices \
+             (id, account_id, platform, public_key, device_token_hash, created_at, last_seen_at) \
+             VALUES (?, ?, 'ios', 'test_pubkey', ?, datetime('now'), datetime('now'))",
+        )
+        .bind(&device_id)
+        .bind(&account_id)
+        .bind(&token.hash)
+        .execute(db)
+        .await
+        .unwrap();
+
+        (device_id, token.plaintext)
+    }
+
+    fn bearer(token: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {token}").parse().unwrap(),
+        );
+        h
+    }
+
+    #[tokio::test]
+    async fn device_token_missing_authorization_header_returns_401() {
+        let state = test_state().await;
+        let (device_id, _) = seed_device(&state.db).await;
+        let err = require_device_token(&HeaderMap::new(), &device_id, &state.db)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code(), 401);
+    }
+
+    #[tokio::test]
+    async fn device_token_wrong_token_returns_401() {
+        let state = test_state().await;
+        let (device_id, _) = seed_device(&state.db).await;
+        // Generate a fresh token that was never stored in DB
+        let wrong_token = crate::routes::token::generate_token().plaintext;
+        let err = require_device_token(&bearer(&wrong_token), &device_id, &state.db)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code(), 401);
+    }
+
+    #[tokio::test]
+    async fn device_token_valid_token_wrong_device_id_returns_401() {
+        let state = test_state().await;
+        let (_, token) = seed_device(&state.db).await;
+        let err = require_device_token(&bearer(&token), "non-existent-device-id", &state.db)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code(), 401);
+    }
+
+    #[tokio::test]
+    async fn device_token_valid_token_and_device_id_returns_ok() {
+        let state = test_state().await;
+        let (device_id, token) = seed_device(&state.db).await;
+        require_device_token(&bearer(&token), &device_id, &state.db)
+            .await
+            .expect("valid device token must succeed");
     }
 }

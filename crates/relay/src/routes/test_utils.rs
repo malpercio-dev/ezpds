@@ -104,6 +104,55 @@ pub async fn seed_did_document(db: &sqlx::SqlitePool, did: &str, document: serde
     .expect("insert did_document");
 }
 
+/// Seed a device row with a fresh device token. Returns `(device_id, plaintext_token)`.
+///
+/// Creates a claim code + pending account + device row in one shot. Each call
+/// generates unique IDs so the helper is safe to call multiple times on the same pool.
+pub async fn seed_device(db: &sqlx::SqlitePool) -> (String, String) {
+    use crate::routes::token::generate_token;
+    use uuid::Uuid;
+
+    let claim_code = format!("TEST-{}", Uuid::new_v4());
+    sqlx::query(
+        "INSERT INTO claim_codes (code, expires_at, created_at) \
+         VALUES (?, datetime('now', '+1 hour'), datetime('now'))",
+    )
+    .bind(&claim_code)
+    .execute(db)
+    .await
+    .unwrap();
+
+    let account_id = Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO pending_accounts \
+         (id, email, handle, tier, claim_code, created_at) \
+         VALUES (?, ?, ?, 'free', ?, datetime('now'))",
+    )
+    .bind(&account_id)
+    .bind(format!("dev{}@example.com", &account_id[..8]))
+    .bind(format!("dev{}.example.com", &account_id[..8]))
+    .bind(&claim_code)
+    .execute(db)
+    .await
+    .unwrap();
+
+    let device_id = Uuid::new_v4().to_string();
+    let token = generate_token();
+    sqlx::query(
+        "INSERT INTO devices \
+         (id, account_id, platform, public_key, device_token_hash, created_at, last_seen_at) \
+         VALUES (?, ?, 'ios', 'test_pubkey', ?, datetime('now'), datetime('now'))",
+    )
+    .bind(&device_id)
+    .bind(&account_id)
+    .bind(&token.hash)
+    .execute(db)
+    .await
+    .unwrap();
+
+    (device_id, token.plaintext)
+}
+
 /// Deserialise a response body as `serde_json::Value`, consuming the response.
 pub async fn body_json(response: axum::response::Response) -> serde_json::Value {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)

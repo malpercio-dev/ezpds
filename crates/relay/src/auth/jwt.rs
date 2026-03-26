@@ -171,10 +171,7 @@ pub(crate) struct RefreshTokenClaims {
 /// Validates signature, expiry, and audience (when `server_did` is configured).
 /// Does NOT check that `scope == "com.atproto.refresh"` — callers are responsible
 /// for that check so that the error message can be precise.
-pub fn verify_refresh_token(
-    token: &str,
-    state: &AppState,
-) -> Result<RefreshTokenClaims, ApiError> {
+pub fn verify_refresh_token(token: &str, state: &AppState) -> Result<RefreshTokenClaims, ApiError> {
     let decoding_key = DecodingKey::from_secret(&state.jwt_secret);
     let mut validation = Validation::new(Algorithm::HS256);
     match state.config.server_did.as_deref() {

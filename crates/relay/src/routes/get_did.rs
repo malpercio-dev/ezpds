@@ -67,7 +67,10 @@ pub async fn get_did_handler(
 
     let doc: Value = response.json().await.map_err(|e| {
         tracing::error!(did = %did, error = %e, "failed to parse plc.directory response");
-        ApiError::new(ErrorCode::PlcDirectoryError, "invalid response from plc.directory")
+        ApiError::new(
+            ErrorCode::PlcDirectoryError,
+            "invalid response from plc.directory",
+        )
     })?;
 
     Ok(Json(doc))
@@ -125,10 +128,7 @@ mod tests {
         });
         seed_did_document(&state.db, did, doc.clone()).await;
 
-        let response = app(state)
-            .oneshot(get_did_request(did))
-            .await
-            .unwrap();
+        let response = app(state).oneshot(get_did_request(did)).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_json(response).await;
@@ -151,10 +151,7 @@ mod tests {
         .await
         .unwrap();
 
-        let response = app(state)
-            .oneshot(get_did_request(did))
-            .await
-            .unwrap();
+        let response = app(state).oneshot(get_did_request(did)).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let body = body_json(response).await;
@@ -185,10 +182,7 @@ mod tests {
 
         let state = test_state_with_plc_url(mock_server.uri()).await;
 
-        let response = app(state)
-            .oneshot(get_did_request(did))
-            .await
-            .unwrap();
+        let response = app(state).oneshot(get_did_request(did)).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_json(response).await;
@@ -210,10 +204,7 @@ mod tests {
 
         let state = test_state_with_plc_url(mock_server.uri()).await;
 
-        let response = app(state)
-            .oneshot(get_did_request(did))
-            .await
-            .unwrap();
+        let response = app(state).oneshot(get_did_request(did)).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let body = body_json(response).await;
@@ -235,10 +226,7 @@ mod tests {
 
         let state = test_state_with_plc_url(mock_server.uri()).await;
 
-        let response = app(state)
-            .oneshot(get_did_request(did))
-            .await
-            .unwrap();
+        let response = app(state).oneshot(get_did_request(did)).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
         let body = body_json(response).await;
@@ -260,10 +248,7 @@ mod tests {
 
         let state = test_state_with_plc_url(mock_server.uri()).await;
 
-        let response = app(state)
-            .oneshot(get_did_request(did))
-            .await
-            .unwrap();
+        let response = app(state).oneshot(get_did_request(did)).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
         let body = body_json(response).await;
@@ -289,10 +274,7 @@ mod tests {
 
         let state = test_state_with_plc_url(mock_server.uri()).await;
 
-        let response = app(state)
-            .oneshot(get_did_request(did))
-            .await
-            .unwrap();
+        let response = app(state).oneshot(get_did_request(did)).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
         let body = body_json(response).await;
@@ -341,10 +323,7 @@ mod tests {
         let state = test_state_with_plc_url(mock_server.uri()).await;
         seed_did_document(&state.db, did, local_doc).await;
 
-        let response = app(state)
-            .oneshot(get_did_request(did))
-            .await
-            .unwrap();
+        let response = app(state).oneshot(get_did_request(did)).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_json(response).await;
@@ -371,10 +350,7 @@ mod tests {
         let plc_url_with_slash = format!("{}/", mock_server.uri());
         let state = test_state_with_plc_url(plc_url_with_slash).await;
 
-        let response = app(state)
-            .oneshot(get_did_request(did))
-            .await
-            .unwrap();
+        let response = app(state).oneshot(get_did_request(did)).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
     }

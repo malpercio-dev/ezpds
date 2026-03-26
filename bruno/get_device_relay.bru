@@ -1,0 +1,15 @@
+meta {
+  name: Get Device Relay
+  type: http
+  seq: 25
+}
+
+get {
+  url: {{baseUrl}}/v1/devices/{{deviceId}}/relay
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{deviceToken}}
+}

@@ -23,9 +23,10 @@ use crate::routes::create_did::create_did_handler;
 use crate::routes::create_handle::create_handle_handler;
 use crate::routes::create_mobile_account::create_mobile_account;
 use crate::routes::create_session::create_session;
-use crate::routes::delete_session::delete_session;
 use crate::routes::create_signing_key::create_signing_key;
+use crate::routes::delete_session::delete_session;
 use crate::routes::describe_server::describe_server;
+use crate::routes::get_device_relay::get_device_relay;
 use crate::routes::get_did::get_did_handler;
 use crate::routes::get_relay_signing_key::get_relay_signing_key;
 use crate::routes::get_session::get_session;
@@ -181,6 +182,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/accounts/mobile", post(create_mobile_account))
         .route("/v1/accounts/sessions", post(create_provisioning_session))
         .route("/v1/devices", post(register_device))
+        .route("/v1/devices/:id/relay", get(get_device_relay))
         .route("/v1/dids", post(create_did_handler))
         .route("/v1/dids/:did", get(get_did_handler))
         .route("/v1/handles", post(create_handle_handler))

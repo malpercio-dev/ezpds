@@ -51,7 +51,10 @@ pub async fn create_provisioning_session(
     // Check before any DB work to shed load on targeted accounts.
     {
         let mut attempts = state.failed_login_attempts.lock().map_err(|_| {
-            tracing::error!(phase = "rate_limit_check", "failed_login_attempts mutex is poisoned");
+            tracing::error!(
+                phase = "rate_limit_check",
+                "failed_login_attempts mutex is poisoned"
+            );
             ApiError::new(ErrorCode::InternalError, "internal error")
         })?;
         if is_rate_limited(&mut attempts, &payload.email) {
@@ -335,7 +338,10 @@ mod tests {
         .unwrap();
 
         let response = app(state)
-            .oneshot(post_provisioning_session("nopass@example.com", "anypassword"))
+            .oneshot(post_provisioning_session(
+                "nopass@example.com",
+                "anypassword",
+            ))
             .await
             .unwrap();
 
@@ -382,7 +388,10 @@ mod tests {
         .unwrap();
 
         let response = app(state.clone())
-            .oneshot(post_provisioning_session("corrupt@example.com", "anypassword"))
+            .oneshot(post_provisioning_session(
+                "corrupt@example.com",
+                "anypassword",
+            ))
             .await
             .unwrap();
 

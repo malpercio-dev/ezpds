@@ -1,14 +1,15 @@
-pub(crate) mod auth;
 pub mod atproto_did;
+pub(crate) mod auth;
 pub mod claim_codes;
-pub mod delete_session;
 pub mod create_account;
 pub mod create_did;
 pub mod create_handle;
 pub mod create_mobile_account;
 pub mod create_session;
 pub mod create_signing_key;
+pub mod delete_session;
 pub mod describe_server;
+pub mod get_device_relay;
 pub mod get_did;
 pub mod get_relay_signing_key;
 pub mod get_session;
