@@ -23,6 +23,8 @@ pub mod oauth_token;
 pub mod provisioning_session;
 pub mod refresh_session;
 pub mod register_device;
+pub mod request_password_reset;
+pub mod reset_password;
 pub mod resolve_handle;
 
 mod code_gen;

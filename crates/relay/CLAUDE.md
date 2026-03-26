@@ -45,6 +45,7 @@ and async query functions; no business logic lives here.
 | `mod.rs` | `open_pool`, `run_migrations`, `DbError`, `is_unique_violation` |
 | `accounts.rs` | `AccountRow`, `resolve_identifier` |
 | `oauth.rs` | OAuth client lookup, auth code storage, token management |
+| `password_reset.rs` | `insert_reset_token`, `get_reset_token`, `mark_reset_token_used`, `update_password_hash` |
 
 See [`src/db/CLAUDE.md`](src/db/CLAUDE.md) for migration history and invariants.
 
@@ -68,6 +69,8 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `create_session.rs` | `POST /xrpc/com.atproto.server.createSession` |
 | `get_session.rs` | `GET /xrpc/com.atproto.server.getSession` |
 | `refresh_session.rs` | `POST /xrpc/com.atproto.server.refreshSession` |
+| `request_password_reset.rs` | `POST /xrpc/com.atproto.server.requestPasswordReset` |
+| `reset_password.rs` | `POST /xrpc/com.atproto.server.resetPassword` |
 | `create_did.rs` | `POST /v1/dids` |
 | `get_did.rs` | `GET /v1/dids/:did` |
 | `create_account.rs` | `POST /v1/accounts` |

@@ -1,6 +1,7 @@
 pub mod accounts;
 pub mod dids;
 pub mod oauth;
+pub mod password_reset;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::SqlitePool;
@@ -83,6 +84,10 @@ static MIGRATIONS: &[Migration] = &[
     Migration {
         version: 13,
         sql: include_str!("migrations/V013__identity_wallet_oauth_client.sql"),
+    },
+    Migration {
+        version: 14,
+        sql: include_str!("migrations/V014__password_reset_tokens.sql"),
     },
 ];
 

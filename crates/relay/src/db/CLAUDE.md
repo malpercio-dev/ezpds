@@ -3,6 +3,7 @@
 Last verified: 2026-03-25
 
 ## Latest Updates
+- **V014**: Adds `password_reset_tokens` table: `token_hash` TEXT PK (SHA-256 hex digest — plaintext never stored), `did` TEXT (FK→accounts), `expires_at` TEXT (1-hour TTL, SQLite datetime), `used_at` TEXT nullable (set on consumption), `created_at` TEXT; index on `did`
 - **V013**: Seeds the identity-wallet as a registered OAuth client (`dev.malpercio.identitywallet`) with native application type, DPoP-bound tokens, and custom URL scheme redirect URI (`dev.malpercio.identitywallet:/oauth/callback`); uses INSERT OR IGNORE for idempotency
 - **V012**: Adds nullable `jkt` TEXT column to `oauth_tokens` (DPoP key thumbprint for DPoP-bound refresh tokens); creates `oauth_signing_key` table (WITHOUT ROWID, single-row, stores the server's persistent ES256 keypair with AES-256-GCM-encrypted private key)
 - **V011**: Adds nullable `pending_share_{1,2,3}` TEXT columns to `pending_accounts` — stores pre-generated Shamir shares alongside `pending_did` so retried DID ceremony requests return the same shares (prevents Share 2 orphaning in accounts.recovery_share)
@@ -53,3 +54,4 @@ that can later serve per-user SQLite databases (Wave 3/4).
 - `migrations/V011__pending_shares.sql` - Adds nullable pending_share_{1,2,3} TEXT columns to pending_accounts: idempotent share storage alongside pending_did; all three deleted when pending_accounts row is deleted at promotion
 - `migrations/V012__oauth_token_endpoint.sql` - Adds `jkt` TEXT column to oauth_tokens (DPoP thumbprint); creates `oauth_signing_key` table (WITHOUT ROWID, keyed by UUID id) for persistent ES256 keypair storage (public JWK + AES-256-GCM encrypted private key)
 - `migrations/V013__identity_wallet_oauth_client.sql` - Seeds identity-wallet OAuth client row (INSERT OR IGNORE): client_id `dev.malpercio.identitywallet`, native app type, DPoP required, custom scheme redirect URI
+- `migrations/V014__password_reset_tokens.sql` - Adds `password_reset_tokens` table for `requestPasswordReset`/`resetPassword` flows; token stored as SHA-256 hex hash; 1-hour TTL; `used_at` nullable (status derived: valid = used_at IS NULL AND expires_at > now)

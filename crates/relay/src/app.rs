@@ -39,6 +39,8 @@ use crate::routes::oauth_token::post_token;
 use crate::routes::provisioning_session::create_provisioning_session;
 use crate::routes::refresh_session::refresh_session;
 use crate::routes::register_device::register_device;
+use crate::routes::request_password_reset::request_password_reset;
+use crate::routes::reset_password::reset_password;
 use crate::routes::resolve_handle::resolve_handle_handler;
 use crate::well_known::WellKnownResolver;
 
@@ -171,6 +173,14 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/xrpc/com.atproto.server.deleteSession",
             post(delete_session),
+        )
+        .route(
+            "/xrpc/com.atproto.server.requestPasswordReset",
+            post(request_password_reset),
+        )
+        .route(
+            "/xrpc/com.atproto.server.resetPassword",
+            post(reset_password),
         )
         .route(
             "/xrpc/com.atproto.identity.resolveHandle",

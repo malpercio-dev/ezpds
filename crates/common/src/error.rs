@@ -50,6 +50,12 @@ pub enum ErrorCode {
     AuthenticationRequired,
     /// Token is structurally invalid, has wrong signature, wrong audience, or DPoP mismatch.
     InvalidToken,
+    /// A password-reset token has expired or has already been used.
+    ///
+    /// Serialized as `"ExpiredToken"` (PascalCase) to match the AT Protocol XRPC error format
+    /// for `com.atproto.server.resetPassword`.
+    #[serde(rename = "ExpiredToken")]
+    ExpiredToken,
     // TODO: add remaining codes from Appendix A as endpoints are implemented:
     // 400: INVALID_DOCUMENT, INVALID_PROOF, INVALID_ENDPOINT, INVALID_CONFIRMATION
     // 401: INVALID_CREDENTIALS
@@ -87,6 +93,7 @@ impl ErrorCode {
             ErrorCode::HandleNotFound => 404,
             ErrorCode::AuthenticationRequired => 401,
             ErrorCode::InvalidToken => 401,
+            ErrorCode::ExpiredToken => 400,
         }
     }
 }
@@ -214,6 +221,13 @@ mod tests {
     }
 
     #[test]
+    fn expired_token_serializes_as_pascal_case() {
+        let err = ApiError::new(ErrorCode::ExpiredToken, "token has expired");
+        let actual = serde_json::to_value(ApiErrorEnvelope { error: err }).unwrap();
+        assert_eq!(actual["error"]["code"], "ExpiredToken");
+    }
+
+    #[test]
     fn omits_details_when_absent() {
         let err = ApiError::new(ErrorCode::Forbidden, "access denied");
         let actual = serde_json::to_value(ApiErrorEnvelope { error: err }).unwrap();
@@ -244,6 +258,7 @@ mod tests {
             (ErrorCode::HandleNotFound, 404),
             (ErrorCode::AuthenticationRequired, 401),
             (ErrorCode::InvalidToken, 401),
+            (ErrorCode::ExpiredToken, 400),
         ];
         for (code, expected) in cases {
             assert_eq!(code.status_code(), expected, "wrong status for {code:?}");
