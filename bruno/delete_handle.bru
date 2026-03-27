@@ -1,0 +1,15 @@
+meta {
+  name: Delete Handle
+  type: http
+  seq: 28
+}
+
+delete {
+  url: {{baseUrl}}/v1/handles/{{handle}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sessionToken}}
+}

@@ -5,6 +5,7 @@ pub mod create_account;
 pub mod create_did;
 pub mod create_handle;
 pub mod create_mobile_account;
+pub mod delete_handle;
 pub mod create_session;
 pub mod create_signing_key;
 pub mod delete_session;

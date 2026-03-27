@@ -99,4 +99,13 @@ pub trait DnsProvider: Send + Sync {
         name: &'a str,
         target: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<(), DnsError>> + Send + 'a>>;
+
+    /// Delete the DNS record for `name` (a subdomain label, e.g. `"alice"`).
+    ///
+    /// Called when a handle is deleted. The provider is responsible for locating
+    /// the record by name within its configured zone.
+    fn delete_record<'a>(
+        &'a self,
+        name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), DnsError>> + Send + 'a>>;
 }

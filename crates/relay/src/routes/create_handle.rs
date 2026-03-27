@@ -259,6 +259,13 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = Result<(), crate::dns::DnsError>> + Send + 'a>> {
             Box::pin(async { Ok(()) })
         }
+
+        fn delete_record<'a>(
+            &'a self,
+            _name: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), crate::dns::DnsError>> + Send + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
     }
 
     impl crate::dns::DnsProvider for AlwaysErrDns {
@@ -266,6 +273,13 @@ mod tests {
             &'a self,
             _name: &'a str,
             _target: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), crate::dns::DnsError>> + Send + 'a>> {
+            Box::pin(async { Err(crate::dns::DnsError("simulated provider error".to_string())) })
+        }
+
+        fn delete_record<'a>(
+            &'a self,
+            _name: &'a str,
         ) -> Pin<Box<dyn Future<Output = Result<(), crate::dns::DnsError>> + Send + 'a>> {
             Box::pin(async { Err(crate::dns::DnsError("simulated provider error".to_string())) })
         }

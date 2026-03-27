@@ -5,7 +5,7 @@ use std::time::Instant;
 use axum::{
     extract::Path,
     http::Request,
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use common::{ApiError, Config, ErrorCode};
@@ -22,6 +22,7 @@ use crate::routes::create_account::create_account;
 use crate::routes::create_did::create_did_handler;
 use crate::routes::create_handle::create_handle_handler;
 use crate::routes::create_mobile_account::create_mobile_account;
+use crate::routes::delete_handle::delete_handle_handler;
 use crate::routes::create_session::create_session;
 use crate::routes::create_signing_key::create_signing_key;
 use crate::routes::delete_session::delete_session;
@@ -196,6 +197,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/dids", post(create_did_handler))
         .route("/v1/dids/:did", get(get_did_handler))
         .route("/v1/handles", post(create_handle_handler))
+        .route("/v1/handles/:handle", delete(delete_handle_handler))
         .route(
             "/v1/relay/keys",
             get(get_relay_signing_key).post(create_signing_key),
