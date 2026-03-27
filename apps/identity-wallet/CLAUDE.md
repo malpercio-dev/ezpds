@@ -13,7 +13,8 @@ Tauri v2 iOS application — SvelteKit 2 + Svelte 5 frontend running in a native
 **Exposes:**
 - `src/lib/ipc.ts` — typed wrappers for all Tauri IPC commands; import these instead of calling `invoke()` directly. Exports: `createAccount()`, `getOrCreateDeviceKey()`, `signWithDeviceKey()`, `performDIDCeremony()`, `startOAuthFlow()`, and their associated types (`DevicePublicKey`, `DeviceKeyError`, `CreateAccountResult`, `CreateAccountError`, `DIDCeremonyResult`, `DIDCeremonyError`, `OAuthError`)
 - `src/lib/components/onboarding/` — ten onboarding screen components (WelcomeScreen, ClaimCodeScreen, EmailScreen, HandleScreen, PasswordScreen, LoadingScreen, DIDCeremonyScreen, DIDSuccessScreen, ShamirBackupScreen, AuthenticatingScreen)
-- `src/routes/+page.svelte` — root page: thirteen-step onboarding state machine (welcome -> claim_code -> email -> handle -> password -> loading -> did_ceremony -> did_success -> shamir_backup -> complete -> authenticating -> authenticated / auth_failed)
+- `src/lib/components/home/` — three home screen components (HomeScreen, DIDDocumentScreen, RecoveryInfoScreen)
+- `src/routes/+page.svelte` — root page: sixteen-step state machine (welcome -> claim_code -> email -> handle -> password -> loading -> did_ceremony -> did_success -> shamir_backup -> complete -> authenticating -> home -> did_document / recovery_info / auth_failed)
 
 **Guarantees:**
 - SSR is disabled globally (`ssr = false` in `src/routes/+layout.ts`); the frontend is a fully static SPA loaded from disk by WKWebView
@@ -230,7 +231,8 @@ cargo build
 - `src-tauri/.cargo/config.toml` -- Cargo toolchain overrides for iOS cross-compilation (CC, AR, linker per target)
 - `src/lib/ipc.ts` -- Typed TypeScript wrappers for all Tauri IPC commands (createAccount, getOrCreateDeviceKey, signWithDeviceKey, performDIDCeremony, startOAuthFlow)
 - `src/lib/components/onboarding/` -- Ten onboarding screen components (WelcomeScreen, ClaimCodeScreen, EmailScreen, HandleScreen, PasswordScreen, LoadingScreen, DIDCeremonyScreen, DIDSuccessScreen, ShamirBackupScreen, AuthenticatingScreen)
-- `src/routes/+page.svelte` -- Onboarding state machine (welcome -> claim_code -> email -> handle -> password -> loading -> did_ceremony -> did_success -> shamir_backup -> complete -> authenticating -> authenticated / auth_failed)
+- `src/lib/components/home/` -- Three home screen components (HomeScreen, DIDDocumentScreen, RecoveryInfoScreen)
+- `src/routes/+page.svelte` -- State machine (welcome -> claim_code -> email -> handle -> password -> loading -> did_ceremony -> did_success -> shamir_backup -> complete -> authenticating -> home -> did_document / recovery_info / auth_failed)
 - `src/routes/+layout.ts` -- `ssr = false; prerender = false` (global SPA config)
 - `svelte.config.js` -- adapter-static with `pages: 'dist'` (SPA mode, matches tauri.conf.json)
 - `vite.config.ts` -- Tauri-compatible Vite server (clearScreen, HMR via TAURI_DEV_HOST, envPrefix)
