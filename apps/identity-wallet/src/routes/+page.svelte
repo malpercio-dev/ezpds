@@ -11,7 +11,10 @@
   import DIDSuccessScreen from '$lib/components/onboarding/DIDSuccessScreen.svelte';
   import ShamirBackupScreen from '$lib/components/onboarding/ShamirBackupScreen.svelte';
   import AuthenticatingScreen from '$lib/components/onboarding/AuthenticatingScreen.svelte';
-  import { createAccount, type CreateAccountError, type OAuthError } from '$lib/ipc';
+  import HomeScreen from '$lib/components/home/HomeScreen.svelte';
+  import DIDDocumentScreen from '$lib/components/home/DIDDocumentScreen.svelte';
+  import RecoveryInfoScreen from '$lib/components/home/RecoveryInfoScreen.svelte';
+  import { createAccount, type CreateAccountError, type OAuthError, type HomeData } from '$lib/ipc';
 
   // ── Onboarding step type ─────────────────────────────────────────────────
   //
@@ -35,7 +38,9 @@
     | 'shamir_backup'
     | 'complete'
     | 'authenticating'
-    | 'authenticated'
+    | 'home'
+    | 'did_document'
+    | 'recovery_info'
     | 'auth_failed';
 
   // ── State ────────────────────────────────────────────────────────────────
@@ -53,6 +58,8 @@
 
   let authError = $state<OAuthError | null>(null);
 
+  let homeData = $state<HomeData | null>(null);
+
   // ── Navigation helpers ───────────────────────────────────────────────────
 
   function goTo(next: OnboardingStep) {
@@ -64,7 +71,7 @@
 
   onMount(() => {
     listen('auth_ready', () => {
-      goTo('authenticated');
+      goTo('home');
     });
     // Note: We intentionally don't await listen() or return a cleanup function here.
     // Svelte 5's onMount does not await async cleanup return values (it would receive a
@@ -197,19 +204,31 @@
 
   {:else if step === 'authenticating'}
     <AuthenticatingScreen
-      onresolved={() => goTo('authenticated')}
+      onresolved={() => goTo('home')}
       onfailed={(err) => {
         authError = err;
         goTo('auth_failed');
       }}
     />
 
-  {:else if step === 'authenticated'}
-    <div class="oauth-screen">
-      <div class="oauth-icon" aria-hidden="true">✓</div>
-      <h2 class="oauth-title">Authenticated</h2>
-      <p class="oauth-body">Your identity wallet is ready.</p>
-    </div>
+  {:else if step === 'home'}
+    <HomeScreen
+      onnavdiddoc={(data) => { homeData = data; goTo('did_document'); }}
+      onnavrecovery={(data) => { homeData = data; goTo('recovery_info'); }}
+      onlogout={() => goTo('welcome')}
+    />
+
+  {:else if step === 'did_document'}
+    <DIDDocumentScreen
+      didDoc={homeData?.session?.didDoc ?? {}}
+      onback={() => goTo('home')}
+    />
+
+  {:else if step === 'recovery_info'}
+    <RecoveryInfoScreen
+      share1InKeychain={homeData?.share1InKeychain ?? false}
+      onback={() => goTo('home')}
+    />
 
   {:else if step === 'auth_failed'}
     <div class="oauth-screen">
@@ -304,12 +323,6 @@
     font-size: 1.5rem;
     font-weight: 700;
     color: #111827;
-    margin: 0;
-  }
-
-  .oauth-body {
-    color: #6b7280;
-    font-size: 1rem;
     margin: 0;
   }
 
