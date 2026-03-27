@@ -35,6 +35,8 @@
 
   let pollTimer: ReturnType<typeof setInterval> | undefined;
   let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+  // Guard against the rare race where a poll tick resolves after the timeout fires.
+  let settled = false;
 
   function stopPolling() {
     if (pollTimer !== undefined) {
@@ -49,18 +51,28 @@
 
   function startPolling(handle: string) {
     phase = { kind: 'polling', handle };
+    settled = false;
 
-    pollTimer = setInterval(async () => {
-      const resolved = await checkHandleResolution(handle, did);
-      if (resolved) {
-        stopPolling();
-        onsuccess(handle);
-      }
+    pollTimer = setInterval(() => {
+      checkHandleResolution(handle, did)
+        .then((resolved) => {
+          if (resolved && !settled) {
+            settled = true;
+            stopPolling();
+            onsuccess(handle);
+          }
+        })
+        .catch((err) => {
+          console.error('[HandleRegistrationScreen] poll tick failed:', err);
+        });
     }, POLL_INTERVAL_MS);
 
     timeoutTimer = setTimeout(() => {
-      stopPolling();
-      ontimeout(handle);
+      if (!settled) {
+        settled = true;
+        stopPolling();
+        ontimeout(handle);
+      }
     }, POLL_TIMEOUT_MS);
   }
 
@@ -72,6 +84,7 @@
       const result = await registerHandle(handleLabel);
       startPolling(result.handle);
     } catch (raw: unknown) {
+      console.error('[HandleRegistrationScreen] registerHandle failed:', raw);
       if (
         typeof raw === 'object' &&
         raw !== null &&
@@ -95,6 +108,8 @@
         return 'Handle registered, but DNS setup failed. Please contact support.';
       case 'NO_DOMAINS':
         return 'The relay has no handle domains configured. Please contact support.';
+      case 'SESSION_EXPIRED':
+        return 'Your session has expired. Please sign in again to continue.';
       case 'KEYCHAIN_ERROR':
         return "Couldn't read your credentials. Please restart the app and try again.";
       case 'NETWORK_ERROR':
@@ -104,7 +119,12 @@
   }
 
   function canRetry(err: RegisterHandleError): boolean {
-    return err.code !== 'INVALID_HANDLE' && err.code !== 'DNS_ERROR' && err.code !== 'NO_DOMAINS';
+    return (
+      err.code !== 'INVALID_HANDLE' &&
+      err.code !== 'DNS_ERROR' &&
+      err.code !== 'NO_DOMAINS' &&
+      err.code !== 'SESSION_EXPIRED'
+    );
   }
 
   onMount(() => run());

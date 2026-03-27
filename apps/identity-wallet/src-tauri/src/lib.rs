@@ -177,6 +177,12 @@ struct CreateHandleRequest {
     handle: String,
 }
 
+/// Success response from `POST /v1/handles`.
+#[derive(Deserialize)]
+struct CreateHandleRelayResponse {
+    dns_status: String,
+}
+
 /// Successful result returned to the Svelte frontend after handle registration.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -200,6 +206,10 @@ pub enum RegisterHandleError {
     DnsError,
     #[error("keychain operation failed")]
     KeychainError,
+    /// The relay rejected the session token (401). The token is expired or revoked — the user
+    /// must re-authenticate via OAuth rather than restart the app.
+    #[error("session token expired or revoked")]
+    SessionExpired,
     #[error("relay has no user domains configured")]
     NoDomains,
     #[error("network error: {message}")]
@@ -493,12 +503,13 @@ async fn register_handle(
     let full_handle = format!("{handle_label}.{domain}");
 
     // Step 2: Read DID and session token from Keychain.
+    // Missing DID here is a post-ceremony invariant violation — error! is appropriate.
     let did_bytes = keychain::get_item("did").map_err(|e| {
-        tracing::warn!(error = %e, "failed to read DID from Keychain during handle registration");
+        tracing::error!(error = %e, "DID not found in Keychain during handle registration — ceremony invariant violated");
         RegisterHandleError::KeychainError
     })?;
     let did = String::from_utf8(did_bytes).map_err(|e| {
-        tracing::warn!(error = %e, "DID bytes are not valid UTF-8");
+        tracing::error!(error = %e, "DID bytes are not valid UTF-8");
         RegisterHandleError::KeychainError
     })?;
 
@@ -527,21 +538,15 @@ async fn register_handle(
     let status = resp.status();
 
     if status.is_success() {
-        // Relay returns { "handle": "...", "dns_status": "...", "did": "..." }.
-        // We only need handle and dns_status for the result.
-        let body: serde_json::Value =
+        let body: CreateHandleRelayResponse =
             resp.json()
                 .await
                 .map_err(|e| RegisterHandleError::Unknown {
                     message: format!("failed to parse /v1/handles response: {e}"),
                 })?;
-        let dns_status = body["dns_status"]
-            .as_str()
-            .unwrap_or("not_configured")
-            .to_string();
         Ok(RegisterHandleResult {
             handle: full_handle,
-            dns_status,
+            dns_status: body.dns_status,
         })
     } else {
         match status.as_u16() {
@@ -558,7 +563,9 @@ async fn register_handle(
                     })
                 }
             }
-            401 => Err(RegisterHandleError::KeychainError),
+            // 401 means the relay rejected the session token — it's expired or revoked.
+            // The Keychain read already succeeded; this is an auth problem, not a Keychain problem.
+            401 => Err(RegisterHandleError::SessionExpired),
             409 => Err(RegisterHandleError::HandleTaken),
             502 => Err(RegisterHandleError::DnsError),
             other => Err(RegisterHandleError::NetworkError {
@@ -588,6 +595,7 @@ async fn check_handle_resolution(handle: String, expected_did: String) -> bool {
     };
 
     if !resp.status().is_success() {
+        tracing::debug!(status = resp.status().as_u16(), "check_handle_resolution: non-success response, returning false");
         return false;
     }
 
@@ -832,6 +840,12 @@ mod tests {
     fn register_handle_error_keychain_error_serializes_correctly() {
         let json = serde_json::to_value(&RegisterHandleError::KeychainError).unwrap();
         assert_eq!(json["code"], "KEYCHAIN_ERROR");
+    }
+
+    #[test]
+    fn register_handle_error_session_expired_serializes_correctly() {
+        let json = serde_json::to_value(&RegisterHandleError::SessionExpired).unwrap();
+        assert_eq!(json["code"], "SESSION_EXPIRED");
     }
 
     #[test]

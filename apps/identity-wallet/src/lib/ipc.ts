@@ -172,18 +172,17 @@ export type RegisterHandleResult = {
 /**
  * Error returned by the `register_handle` Rust command.
  * Serialized as `{ code: "HANDLE_TAKEN" }` etc. by the Rust backend.
+ * Variants that carry a message have it as a required field on their branch.
  */
-export type RegisterHandleError = {
-  code:
-    | 'HANDLE_TAKEN'
-    | 'INVALID_HANDLE'
-    | 'DNS_ERROR'
-    | 'KEYCHAIN_ERROR'
-    | 'NO_DOMAINS'
-    | 'NETWORK_ERROR'
-    | 'UNKNOWN';
-  message?: string;
-};
+export type RegisterHandleError =
+  | { code: 'HANDLE_TAKEN' }
+  | { code: 'INVALID_HANDLE' }
+  | { code: 'DNS_ERROR' }
+  | { code: 'KEYCHAIN_ERROR' }
+  | { code: 'SESSION_EXPIRED' }
+  | { code: 'NO_DOMAINS' }
+  | { code: 'NETWORK_ERROR'; message: string }
+  | { code: 'UNKNOWN'; message: string };
 
 /**
  * Register the user's handle with the relay.
