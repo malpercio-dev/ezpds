@@ -10,6 +10,7 @@
   import DIDCeremonyScreen from '$lib/components/onboarding/DIDCeremonyScreen.svelte';
   import DIDSuccessScreen from '$lib/components/onboarding/DIDSuccessScreen.svelte';
   import ShamirBackupScreen from '$lib/components/onboarding/ShamirBackupScreen.svelte';
+  import HandleRegistrationScreen from '$lib/components/onboarding/HandleRegistrationScreen.svelte';
   import AuthenticatingScreen from '$lib/components/onboarding/AuthenticatingScreen.svelte';
   import HomeScreen from '$lib/components/home/HomeScreen.svelte';
   import DIDDocumentScreen from '$lib/components/home/DIDDocumentScreen.svelte';
@@ -36,6 +37,7 @@
     | 'did_ceremony'
     | 'did_success'
     | 'shamir_backup'
+    | 'handle_registration'
     | 'complete'
     | 'authenticating'
     | 'home'
@@ -46,7 +48,7 @@
   // ── State ────────────────────────────────────────────────────────────────
 
   let step = $state<OnboardingStep>('welcome');
-  let form = $state({ claimCode: '', email: '', handle: '', password: '', did: '', share3: '' });
+  let form = $state({ claimCode: '', email: '', handle: '', password: '', did: '', share3: '', registeredHandle: '' });
 
   /**
    * Per-field error messages displayed by each screen.
@@ -190,8 +192,16 @@
   {:else if step === 'shamir_backup'}
     <ShamirBackupScreen
       share3={form.share3}
-      oncomplete={() => { step = 'complete'; }}
+      oncomplete={() => { step = 'handle_registration'; }}
     />
+  {:else if step === 'handle_registration'}
+    <HandleRegistrationScreen
+      handleLabel={form.handle}
+      did={form.did}
+      onsuccess={(handle) => { form.registeredHandle = handle; step = 'complete'; }}
+      ontimeout={(handle) => { form.registeredHandle = handle; step = 'complete'; }}
+    />
+
   {:else if step === 'complete'}
     <div class="complete">
       <div class="complete-icon" aria-hidden="true">✓</div>

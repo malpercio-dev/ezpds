@@ -156,6 +156,57 @@ export const performDIDCeremony = (
 ): Promise<DIDCeremonyResult> =>
   invoke('perform_did_ceremony', { handle, password });
 
+// ── register_handle ──────────────────────────────────────────────────────────
+
+/**
+ * Successful result from the `register_handle` Rust command.
+ * `handle` is the full `alice.your-domain.com` form.
+ * `dnsStatus` is `"propagating"` when a DNS record was created, or `"not_configured"` when
+ * the relay has no DNS provider (handle still resolves via HTTP well-known).
+ */
+export type RegisterHandleResult = {
+  handle: string;
+  dnsStatus: 'propagating' | 'not_configured';
+};
+
+/**
+ * Error returned by the `register_handle` Rust command.
+ * Serialized as `{ code: "HANDLE_TAKEN" }` etc. by the Rust backend.
+ */
+export type RegisterHandleError = {
+  code:
+    | 'HANDLE_TAKEN'
+    | 'INVALID_HANDLE'
+    | 'DNS_ERROR'
+    | 'KEYCHAIN_ERROR'
+    | 'NO_DOMAINS'
+    | 'NETWORK_ERROR'
+    | 'UNKNOWN';
+  message?: string;
+};
+
+/**
+ * Register the user's handle with the relay.
+ *
+ * `handleLabel` is the label portion only (e.g. `"alice"`).
+ * The Rust backend fetches the relay's primary domain from `describeServer`,
+ * reads the DID and session token from Keychain, and POSTs to `/v1/handles`.
+ *
+ * On failure, the Promise rejects with a `RegisterHandleError`.
+ */
+export const registerHandle = (handleLabel: string): Promise<RegisterHandleResult> =>
+  invoke('register_handle', { handleLabel });
+
+/**
+ * Check whether `handle` resolves to `expectedDid` via the relay's `resolveHandle` endpoint.
+ *
+ * Returns `true` when the relay resolves the handle to the expected DID.
+ * Returns `false` for any other outcome (not yet propagated, relay unreachable, DID mismatch).
+ * Never rejects — safe to call on a polling interval.
+ */
+export const checkHandleResolution = (handle: string, expectedDid: string): Promise<boolean> =>
+  invoke('check_handle_resolution', { handle, expectedDid });
+
 // ── OAuth ───────────────────────────────────────────────────────────────────
 //
 // These variants must exactly match the Rust `OAuthError` enum in oauth.rs.

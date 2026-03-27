@@ -162,6 +162,58 @@ pub enum DIDCeremonyError {
     NetworkError { message: String },
 }
 
+/// Subset of `GET /xrpc/com.atproto.server.describeServer` used internally.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DescribeServerResponse {
+    available_user_domains: Vec<String>,
+}
+
+/// Request body for `POST /v1/handles`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateHandleRequest {
+    account_id: String,
+    handle: String,
+}
+
+/// Successful result returned to the Svelte frontend after handle registration.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterHandleResult {
+    /// Full handle including domain, e.g. `alice.ezpds.com`.
+    pub handle: String,
+    /// `"propagating"` when DNS creation was requested; `"not_configured"` when no DNS provider
+    /// is configured on the relay (handle still resolves via HTTP well-known).
+    pub dns_status: String,
+}
+
+/// Typed error returned to the Svelte frontend as a rejected Promise.
+#[derive(Debug, Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RegisterHandleError {
+    #[error("handle is already taken")]
+    HandleTaken,
+    #[error("handle format is invalid")]
+    InvalidHandle,
+    #[error("DNS record creation failed")]
+    DnsError,
+    #[error("keychain operation failed")]
+    KeychainError,
+    #[error("relay has no user domains configured")]
+    NoDomains,
+    #[error("network error: {message}")]
+    NetworkError { message: String },
+    #[error("unknown error: {message}")]
+    Unknown { message: String },
+}
+
+/// Response shape from `GET /xrpc/com.atproto.identity.resolveHandle`.
+#[derive(Deserialize)]
+struct ResolveHandleResponse {
+    did: String,
+}
+
 // ── Static relay client ─────────────────────────────────────────────────────
 
 static RELAY_CLIENT: LazyLock<http::RelayClient> = LazyLock::new(http::RelayClient::new);
@@ -400,6 +452,154 @@ async fn perform_did_ceremony(
     })
 }
 
+/// Register the user's handle with the relay and set up HTTP resolution.
+///
+/// Fetches the relay's primary user domain via `GET /xrpc/com.atproto.server.describeServer`,
+/// constructs the full handle (`{handle_label}.{domain}`), reads the DID and session token
+/// from Keychain, then POSTs to `POST /v1/handles`.
+///
+/// Returns the full handle and DNS propagation status on success.
+#[tauri::command]
+async fn register_handle(
+    handle_label: String,
+) -> Result<RegisterHandleResult, RegisterHandleError> {
+    // Step 1: Fetch the relay's primary user domain.
+    let resp = RELAY_CLIENT
+        .get("/xrpc/com.atproto.server.describeServer")
+        .await
+        .map_err(|e| RegisterHandleError::NetworkError {
+            message: e.to_string(),
+        })?;
+
+    if !resp.status().is_success() {
+        return Err(RegisterHandleError::NetworkError {
+            message: format!("describeServer returned HTTP {}", resp.status().as_u16()),
+        });
+    }
+
+    let server_info: DescribeServerResponse =
+        resp.json()
+            .await
+            .map_err(|e| RegisterHandleError::Unknown {
+                message: format!("failed to parse describeServer response: {e}"),
+            })?;
+
+    let domain = server_info
+        .available_user_domains
+        .into_iter()
+        .next()
+        .ok_or(RegisterHandleError::NoDomains)?;
+
+    let full_handle = format!("{handle_label}.{domain}");
+
+    // Step 2: Read DID and session token from Keychain.
+    let did_bytes = keychain::get_item("did").map_err(|e| {
+        tracing::warn!(error = %e, "failed to read DID from Keychain during handle registration");
+        RegisterHandleError::KeychainError
+    })?;
+    let did = String::from_utf8(did_bytes).map_err(|e| {
+        tracing::warn!(error = %e, "DID bytes are not valid UTF-8");
+        RegisterHandleError::KeychainError
+    })?;
+
+    let token_bytes = keychain::get_item("session-token").map_err(|e| {
+        tracing::warn!(error = %e, "failed to read session-token from Keychain during handle registration");
+        RegisterHandleError::KeychainError
+    })?;
+    let session_token = String::from_utf8(token_bytes).map_err(|e| {
+        tracing::warn!(error = %e, "session-token bytes are not valid UTF-8");
+        RegisterHandleError::KeychainError
+    })?;
+
+    // Step 3: POST to /v1/handles.
+    let req = CreateHandleRequest {
+        account_id: did,
+        handle: full_handle.clone(),
+    };
+
+    let resp = RELAY_CLIENT
+        .post_with_bearer("/v1/handles", &req, &session_token)
+        .await
+        .map_err(|e| RegisterHandleError::NetworkError {
+            message: e.to_string(),
+        })?;
+
+    let status = resp.status();
+
+    if status.is_success() {
+        // Relay returns { "handle": "...", "dns_status": "...", "did": "..." }.
+        // We only need handle and dns_status for the result.
+        let body: serde_json::Value =
+            resp.json()
+                .await
+                .map_err(|e| RegisterHandleError::Unknown {
+                    message: format!("failed to parse /v1/handles response: {e}"),
+                })?;
+        let dns_status = body["dns_status"]
+            .as_str()
+            .unwrap_or("not_configured")
+            .to_string();
+        Ok(RegisterHandleResult {
+            handle: full_handle,
+            dns_status,
+        })
+    } else {
+        match status.as_u16() {
+            400 => {
+                let envelope: RelayErrorEnvelope =
+                    resp.json().await.map_err(|e| RegisterHandleError::Unknown {
+                        message: e.to_string(),
+                    })?;
+                if envelope.error.code == "INVALID_HANDLE" {
+                    Err(RegisterHandleError::InvalidHandle)
+                } else {
+                    Err(RegisterHandleError::Unknown {
+                        message: format!("400: {}", envelope.error.code),
+                    })
+                }
+            }
+            401 => Err(RegisterHandleError::KeychainError),
+            409 => Err(RegisterHandleError::HandleTaken),
+            502 => Err(RegisterHandleError::DnsError),
+            other => Err(RegisterHandleError::NetworkError {
+                message: format!("HTTP {other}"),
+            }),
+        }
+    }
+}
+
+/// Check whether the relay can resolve `handle` to `expected_did` via the ATProto
+/// `resolveHandle` endpoint.
+///
+/// Returns `true` when the relay resolves the handle to the expected DID (HTTP 200 + matching
+/// `did` field). Returns `false` for any other response (handle not yet propagated, relay
+/// unreachable, DID mismatch). Never rejects — callers can safely poll on an interval.
+#[tauri::command]
+async fn check_handle_resolution(handle: String, expected_did: String) -> bool {
+    // ATProto handles are alphanumeric + hyphens + dots — all URL-safe; no percent-encoding needed.
+    let path = format!("/xrpc/com.atproto.identity.resolveHandle?handle={handle}");
+
+    let resp = match RELAY_CLIENT.get(&path).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!(error = %e, "check_handle_resolution: network error, returning false");
+            return false;
+        }
+    };
+
+    if !resp.status().is_success() {
+        return false;
+    }
+
+    match resp.json::<ResolveHandleResponse>().await {
+        Ok(body) => body.did == expected_did,
+        Err(e) => {
+            tracing::debug!(error = %e, "check_handle_resolution: failed to parse response, returning false");
+            false
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -441,6 +641,8 @@ pub fn run() {
             get_or_create_device_key,
             sign_with_device_key,
             perform_did_ceremony,
+            register_handle,
+            check_handle_resolution,
             home::load_home_data,
             home::log_out,
             oauth::start_oauth_flow,
@@ -591,6 +793,71 @@ mod tests {
         let json = serde_json::to_value(map_409_subcode("UNKNOWN_SUBCODE")).unwrap();
         assert_eq!(json["code"], "UNKNOWN");
         assert!(json["message"].as_str().unwrap().contains("409:"));
+    }
+
+    // -- RegisterHandleResult serialization --
+
+    #[test]
+    fn register_handle_result_serializes_camel_case() {
+        let result = RegisterHandleResult {
+            handle: "alice.ezpds.com".into(),
+            dns_status: "propagating".into(),
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["handle"], "alice.ezpds.com");
+        assert_eq!(json["dnsStatus"], "propagating");
+    }
+
+    // -- RegisterHandleError serialization (one test per variant) --
+
+    #[test]
+    fn register_handle_error_handle_taken_serializes_correctly() {
+        let json = serde_json::to_value(&RegisterHandleError::HandleTaken).unwrap();
+        assert_eq!(json["code"], "HANDLE_TAKEN");
+    }
+
+    #[test]
+    fn register_handle_error_invalid_handle_serializes_correctly() {
+        let json = serde_json::to_value(&RegisterHandleError::InvalidHandle).unwrap();
+        assert_eq!(json["code"], "INVALID_HANDLE");
+    }
+
+    #[test]
+    fn register_handle_error_dns_error_serializes_correctly() {
+        let json = serde_json::to_value(&RegisterHandleError::DnsError).unwrap();
+        assert_eq!(json["code"], "DNS_ERROR");
+    }
+
+    #[test]
+    fn register_handle_error_keychain_error_serializes_correctly() {
+        let json = serde_json::to_value(&RegisterHandleError::KeychainError).unwrap();
+        assert_eq!(json["code"], "KEYCHAIN_ERROR");
+    }
+
+    #[test]
+    fn register_handle_error_no_domains_serializes_correctly() {
+        let json = serde_json::to_value(&RegisterHandleError::NoDomains).unwrap();
+        assert_eq!(json["code"], "NO_DOMAINS");
+    }
+
+    #[test]
+    fn register_handle_error_network_error_serializes_correctly() {
+        let err = RegisterHandleError::NetworkError {
+            message: "Connection refused".into(),
+        };
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["code"], "NETWORK_ERROR");
+        assert_eq!(json["message"], "Connection refused");
+    }
+
+    #[test]
+    fn register_handle_error_unknown_serializes_correctly() {
+        let err = RegisterHandleError::Unknown {
+            message: "unexpected response".into(),
+        };
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["code"], "UNKNOWN");
+        assert_eq!(json["message"], "unexpected response");
     }
 
     // Tests the device_key contract that create_account depends on: the returned key
