@@ -41,7 +41,7 @@ pub struct TokenErrorResponse {
 /// HTTP client for relay API requests.
 pub struct RelayClient {
     client: Client,
-    base_url: &'static str,
+    base_url: String,
 }
 
 impl RelayClient {
@@ -49,7 +49,18 @@ impl RelayClient {
     pub fn new() -> Self {
         Self {
             client: Client::new(),
-            base_url: RELAY_BASE_URL,
+            base_url: RELAY_BASE_URL.to_string(),
+        }
+    }
+
+    /// Create a new `RelayClient` with a runtime-provided base URL.
+    ///
+    /// The URL must not have a trailing slash. Used when the relay URL is
+    /// configured at runtime rather than baked in at compile time.
+    pub fn new_with_url(url: String) -> Self {
+        Self {
+            client: Client::new(),
+            base_url: url,
         }
     }
 
@@ -194,6 +205,11 @@ impl RelayClient {
     /// Used as the `service_endpoint` parameter in DID ceremony genesis op construction.
     pub const fn base_url() -> &'static str {
         RELAY_BASE_URL
+    }
+
+    /// Returns the base URL for this relay client instance.
+    pub fn base_url_str(&self) -> &str {
+        &self.base_url
     }
 }
 
