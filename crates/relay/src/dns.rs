@@ -1,6 +1,8 @@
 // DNS abstractions for handle management.
 //
-// DnsProvider — creates DNS records when handles are registered (POST /v1/handles).
+// DnsProvider — manages DNS records for handles:
+//   - create_record: called when handles are registered (POST /v1/handles).
+//   - delete_record: called when handles are removed (DELETE /v1/handles/:handle).
 //   For v0.1, AppState carries `dns_provider: None`; operators manage DNS manually.
 //   Real provider implementations (Cloudflare, Route53) are wired in when configured.
 //
@@ -103,7 +105,10 @@ pub trait DnsProvider: Send + Sync {
     /// Delete the DNS record for `name` (a subdomain label, e.g. `"alice"`).
     ///
     /// Called when a handle is deleted. The provider is responsible for locating
-    /// the record by name within its configured zone.
+    /// and removing the record within its configured zone.
+    ///
+    /// Callers are responsible for extracting the label portion from the full handle
+    /// before invoking this method (e.g. pass `"alice"`, not `"alice.example.com"`).
     fn delete_record<'a>(
         &'a self,
         name: &'a str,

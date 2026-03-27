@@ -14,7 +14,8 @@
 //      (DNS deletion precedes DB deletion: a DB row without a DNS record is operator-fixable;
 //       a DNS record without a DB row is an invisible orphan that can corrupt future
 //       registrations for the same subdomain)
-//   5. DELETE FROM handles WHERE handle = ?
+//      If state.dns_provider is None: emit tracing::warn! (no DNS cleanup performed)
+//   5. DELETE FROM handles WHERE handle = ?; check rows_affected() → 404 HANDLE_NOT_FOUND if zero
 //   6. Return 204 No Content
 //
 // Outputs (success):  204 No Content
@@ -63,28 +64,44 @@ pub async fn delete_handle_handler(
     // DNS deletion precedes DB deletion: a DB row without a DNS record is operator-fixable
     // (admin can retry), whereas a DNS record without a DB row is an invisible orphan that
     // could corrupt a future handle registration for the same subdomain.
+    let name = handle.split_once('.').map(|(n, _)| n).unwrap_or(&handle);
     if let Some(provider) = &state.dns_provider {
-        let name = handle.split_once('.').map(|(n, _)| n).unwrap_or(&handle);
         provider.delete_record(name).await.map_err(|e| {
             tracing::error!(
                 error = %e,
                 handle = %handle,
+                dns_record_name = %name,
                 did = %session.did,
                 "DNS record deletion failed"
             );
             ApiError::new(ErrorCode::DnsError, "failed to delete DNS record")
         })?;
+    } else {
+        tracing::warn!(
+            handle = %handle,
+            did = %session.did,
+            "no DNS provider configured; DNS record for handle was not cleaned up"
+        );
     }
 
-    // Step 5: Delete the handle row.
-    sqlx::query("DELETE FROM handles WHERE handle = ?")
+    // Step 5: Delete the handle row; 404 if the row was concurrently removed.
+    let result = sqlx::query("DELETE FROM handles WHERE handle = ?")
         .bind(&handle)
         .execute(&state.db)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, handle = %handle, "failed to delete handle row");
+            tracing::error!(
+                error = %e,
+                handle = %handle,
+                did = %session.did,
+                "failed to delete handle row after DNS deletion; manual DB cleanup required"
+            );
             ApiError::new(ErrorCode::InternalError, "failed to delete handle")
         })?;
+
+    if result.rows_affected() == 0 {
+        return Err(ApiError::new(ErrorCode::HandleNotFound, "handle not found"));
+    }
 
     // Step 6: Return 204 No Content.
     Ok(StatusCode::NO_CONTENT)
@@ -95,72 +112,14 @@ pub async fn delete_handle_handler(
 #[cfg(test)]
 mod tests {
     use crate::app::test_state;
-    use crate::routes::test_utils::seed_handle;
+    use crate::routes::test_utils::{seed_handle, state_with_err_dns, state_with_ok_dns};
     use crate::routes::token::generate_token;
     use axum::{
         body::Body,
         http::{Request, StatusCode},
     };
-    use std::future::Future;
-    use std::pin::Pin;
-    use std::sync::Arc;
     use tower::ServiceExt;
     use uuid::Uuid;
-
-    // ── DNS provider test doubles ──────────────────────────────────────────────
-
-    struct AlwaysOkDns;
-    struct AlwaysErrDns;
-
-    impl crate::dns::DnsProvider for AlwaysOkDns {
-        fn create_record<'a>(
-            &'a self,
-            _name: &'a str,
-            _target: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<(), crate::dns::DnsError>> + Send + 'a>> {
-            Box::pin(async { Ok(()) })
-        }
-
-        fn delete_record<'a>(
-            &'a self,
-            _name: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<(), crate::dns::DnsError>> + Send + 'a>> {
-            Box::pin(async { Ok(()) })
-        }
-    }
-
-    impl crate::dns::DnsProvider for AlwaysErrDns {
-        fn create_record<'a>(
-            &'a self,
-            _name: &'a str,
-            _target: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<(), crate::dns::DnsError>> + Send + 'a>> {
-            Box::pin(async { Err(crate::dns::DnsError("simulated provider error".to_string())) })
-        }
-
-        fn delete_record<'a>(
-            &'a self,
-            _name: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<(), crate::dns::DnsError>> + Send + 'a>> {
-            Box::pin(async { Err(crate::dns::DnsError("simulated provider error".to_string())) })
-        }
-    }
-
-    async fn state_with_ok_dns() -> crate::app::AppState {
-        let base = test_state().await;
-        crate::app::AppState {
-            dns_provider: Some(Arc::new(AlwaysOkDns)),
-            ..base
-        }
-    }
-
-    async fn state_with_err_dns() -> crate::app::AppState {
-        let base = test_state().await;
-        crate::app::AppState {
-            dns_provider: Some(Arc::new(AlwaysErrDns)),
-            ..base
-        }
-    }
 
     // ── Test session helpers ───────────────────────────────────────────────────
 

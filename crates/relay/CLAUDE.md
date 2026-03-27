@@ -75,6 +75,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `get_did.rs` | `GET /v1/dids/:did` |
 | `create_account.rs` | `POST /v1/accounts` |
 | `create_handle.rs` | `POST /v1/handles` |
+| `delete_handle.rs` | `DELETE /v1/handles/:handle` |
 | `create_mobile_account.rs` | `POST /v1/accounts/mobile` |
 | `create_signing_key.rs` | `POST /v1/signing-keys` |
 | `register_device.rs` | `POST /v1/devices` |

@@ -1,3 +1,5 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use argon2::{
@@ -6,6 +8,68 @@ use argon2::{
 };
 
 use crate::app::{test_state, AppState};
+
+// ── DNS provider test doubles ──────────────────────────────────────────────
+
+/// DNS provider that succeeds on every `create_record` and `delete_record` call.
+pub struct AlwaysOkDns;
+
+/// DNS provider that fails on every `create_record` and `delete_record` call.
+pub struct AlwaysErrDns;
+
+impl crate::dns::DnsProvider for AlwaysOkDns {
+    fn create_record<'a>(
+        &'a self,
+        _name: &'a str,
+        _target: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), crate::dns::DnsError>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn delete_record<'a>(
+        &'a self,
+        _name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), crate::dns::DnsError>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+impl crate::dns::DnsProvider for AlwaysErrDns {
+    fn create_record<'a>(
+        &'a self,
+        _name: &'a str,
+        _target: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), crate::dns::DnsError>> + Send + 'a>> {
+        Box::pin(async { Err(crate::dns::DnsError("simulated provider error".to_string())) })
+    }
+
+    fn delete_record<'a>(
+        &'a self,
+        _name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), crate::dns::DnsError>> + Send + 'a>> {
+        Box::pin(async { Err(crate::dns::DnsError("simulated provider error".to_string())) })
+    }
+}
+
+/// `test_state()` with an `AlwaysOkDns` provider wired in.
+pub async fn state_with_ok_dns() -> AppState {
+    let base = test_state().await;
+    AppState {
+        dns_provider: Some(Arc::new(AlwaysOkDns)),
+        ..base
+    }
+}
+
+/// `test_state()` with an `AlwaysErrDns` provider wired in.
+pub async fn state_with_err_dns() -> AppState {
+    let base = test_state().await;
+    AppState {
+        dns_provider: Some(Arc::new(AlwaysErrDns)),
+        ..base
+    }
+}
+
+// ── Admin state helper ────────────────────────────────────────────────────────
 
 /// Minimal test state with admin_token set to `"test-admin-token"`.
 ///

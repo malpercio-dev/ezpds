@@ -163,14 +163,12 @@ fn validate_handle<'a>(
 mod tests {
     use super::*;
     use crate::app::test_state;
+    use crate::routes::test_utils::{state_with_err_dns, state_with_ok_dns};
     use crate::routes::token::generate_token;
     use axum::{
         body::Body,
         http::{Request, StatusCode},
     };
-    use std::future::Future;
-    use std::pin::Pin;
-    use std::sync::Arc;
     use tower::ServiceExt;
     use uuid::Uuid;
 
@@ -244,61 +242,6 @@ mod tests {
         let domains = vec!["example.com".to_string()];
         let name = "a".repeat(63);
         assert!(validate_handle(&format!("{name}.example.com"), &domains).is_ok());
-    }
-
-    // ── DNS provider test doubles ──────────────────────────────────────────────
-
-    struct AlwaysOkDns;
-    struct AlwaysErrDns;
-
-    impl crate::dns::DnsProvider for AlwaysOkDns {
-        fn create_record<'a>(
-            &'a self,
-            _name: &'a str,
-            _target: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<(), crate::dns::DnsError>> + Send + 'a>> {
-            Box::pin(async { Ok(()) })
-        }
-
-        fn delete_record<'a>(
-            &'a self,
-            _name: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<(), crate::dns::DnsError>> + Send + 'a>> {
-            Box::pin(async { Ok(()) })
-        }
-    }
-
-    impl crate::dns::DnsProvider for AlwaysErrDns {
-        fn create_record<'a>(
-            &'a self,
-            _name: &'a str,
-            _target: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<(), crate::dns::DnsError>> + Send + 'a>> {
-            Box::pin(async { Err(crate::dns::DnsError("simulated provider error".to_string())) })
-        }
-
-        fn delete_record<'a>(
-            &'a self,
-            _name: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<(), crate::dns::DnsError>> + Send + 'a>> {
-            Box::pin(async { Err(crate::dns::DnsError("simulated provider error".to_string())) })
-        }
-    }
-
-    async fn state_with_ok_dns() -> crate::app::AppState {
-        let base = test_state().await;
-        crate::app::AppState {
-            dns_provider: Some(Arc::new(AlwaysOkDns)),
-            ..base
-        }
-    }
-
-    async fn state_with_err_dns() -> crate::app::AppState {
-        let base = test_state().await;
-        crate::app::AppState {
-            dns_provider: Some(Arc::new(AlwaysErrDns)),
-            ..base
-        }
     }
 
     // ── Integration test helpers ───────────────────────────────────────────────
