@@ -400,7 +400,7 @@ pub async fn start_oauth_flow(
     // OpenerExt adds the `.opener()` method to AppHandle.
     use tauri_plugin_opener::OpenerExt;
 
-    let relay = crate::http::RelayClient::new();
+    let relay = state.relay_client();
 
     // 1. Generate PKCE and CSRF state.
     let (pkce_verifier, pkce_challenge) = pkce::generate();
@@ -410,7 +410,7 @@ pub async fn start_oauth_flow(
     let dpop = DPoPKeypair::get_or_create()?;
     let dpop_jkt = dpop.public_jwk_thumbprint();
 
-    let par_htu = format!("{}/oauth/par", crate::http::RelayClient::base_url());
+    let par_htu = format!("{}/oauth/par", state.relay_client().base_url_str());
     let par_proof = dpop.make_proof("POST", &par_htu, None, None)?;
 
     // 3. PAR call.
@@ -437,7 +437,7 @@ pub async fn start_oauth_flow(
 
     // 5. Open Safari to the authorization endpoint.
     let auth_url = {
-        let base = crate::http::RelayClient::base_url();
+        let base = state.relay_client().base_url_str();
         let request_uri_encoded =
             url::form_urlencoded::byte_serialize(par_resp.request_uri.as_bytes())
                 .collect::<String>();
@@ -465,7 +465,7 @@ pub async fn start_oauth_flow(
     let callback = rx.await.map_err(|_| OAuthError::CallbackAbandoned)??;
 
     // 7. Token exchange.
-    let token_htu = format!("{}/oauth/token", crate::http::RelayClient::base_url());
+    let token_htu = format!("{}/oauth/token", state.relay_client().base_url_str());
     let (token_resp, initial_nonce) =
         exchange_code_with_retry(&relay, &dpop, &callback.code, &pkce_verifier, &token_htu).await?;
 
@@ -802,7 +802,7 @@ mod tests {
         let keypair = DPoPKeypair::get_or_create().expect("keypair must generate");
         // `htu` is embedded in the DPoP proof JWT claims (the `htu` claim per RFC 9449 §4.2),
         // not used for the HTTP request itself — `relay.par()` constructs the URL internally.
-        let htu = format!("{}/oauth/par", crate::http::RelayClient::base_url());
+        let htu = format!("{}/oauth/par", crate::http::default_relay_url());
         let dpop_proof = keypair
             .make_proof("POST", &htu, None, None)
             .expect("DPoP proof must build");
@@ -834,7 +834,7 @@ mod tests {
     #[ignore = "requires running relay at localhost:8080"]
     async fn par_missing_code_challenge_returns_client_error() {
         // Build a minimal PAR form body with no code_challenge field.
-        let base_url = crate::http::RelayClient::base_url();
+        let base_url = crate::http::default_relay_url();
         let url = format!("{base_url}/oauth/par");
         let keypair = DPoPKeypair::get_or_create().expect("keypair must generate");
         let dpop_proof = keypair

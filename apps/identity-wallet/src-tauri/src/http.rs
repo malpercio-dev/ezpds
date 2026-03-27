@@ -1,8 +1,9 @@
 //! Relay HTTP client for identity-wallet.
 //!
-//! All relay API calls go through `RelayClient`. The base URL is
-//! compile-time configured: `http://localhost:8080` in debug builds,
-//! `https://relay.ezpds.com` in release builds.
+//! All relay API calls go through `RelayClient`. The base URL starts
+//! as compile-time configured (`http://localhost:8080` in debug builds,
+//! `https://relay.ezpds.com` in release builds) and can be overridden
+//! at runtime via AppState.
 
 use reqwest::{Client, Response};
 use serde::Serialize;
@@ -207,13 +208,6 @@ impl RelayClient {
                 OAuthError::TokenExchangeFailed
             })?;
         Ok(resp)
-    }
-
-    /// Returns the compile-time base URL for this relay client instance.
-    ///
-    /// Used as the `service_endpoint` parameter in DID ceremony genesis op construction.
-    pub const fn base_url() -> &'static str {
-        RELAY_BASE_URL
     }
 
     /// Returns the base URL for this relay client instance.
