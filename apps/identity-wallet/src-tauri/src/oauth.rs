@@ -265,6 +265,7 @@ pub struct PendingOAuthFlow {
 // ── OAuth session ─────────────────────────────────────────────────────────────
 
 /// Active OAuth session stored in AppState after successful token exchange.
+#[derive(Clone)]
 pub struct OAuthSession {
     pub access_token: String,
     pub refresh_token: String,

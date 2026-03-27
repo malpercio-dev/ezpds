@@ -176,3 +176,53 @@ export type OAuthError =
   | { code: 'NOT_AUTHENTICATED' };
 
 export const startOAuthFlow = (): Promise<void> => invoke('start_oauth_flow');
+
+// ── Home screen ──────────────────────────────────────────────────────────
+//
+// These types must exactly match the Rust structs in home.rs.
+// Rust serializes them with #[serde(rename_all = "camelCase")].
+
+/**
+ * Session info returned by com.atproto.server.getSession.
+ * null fields (email, emailConfirmed) default to empty string / false
+ * when the relay omits them.
+ */
+export type SessionInfo = {
+  did: string;
+  handle: string;
+  email: string;
+  emailConfirmed: boolean;
+  /** Full DID document object, or null when the relay has none for this DID. */
+  didDoc: Record<string, unknown> | null;
+};
+
+/**
+ * Home screen data payload from the `load_home_data` Rust command.
+ *
+ * Always resolves (never rejects) — partial failures are encoded as fields
+ * so the UI can render whatever is available.
+ */
+export type HomeData = {
+  relayHealthy: boolean;
+  /** null when getSession failed or no session exists */
+  session: SessionInfo | null;
+  /** SCREAMING_SNAKE_CASE error code when session is null */
+  sessionError: string | null;
+  share1InKeychain: boolean;
+};
+
+/**
+ * Load relay health, session info, and Keychain share status concurrently.
+ *
+ * Always resolves — never rejects. Partial failures encoded in HomeData fields.
+ */
+export const loadHomeData = (): Promise<HomeData> =>
+  invoke<HomeData>('load_home_data').then((data) => data);
+
+/**
+ * Clear OAuth access token, refresh token, and DID from Keychain and wipe
+ * the in-memory session.
+ *
+ * Always resolves. Frontend should unconditionally navigate to the welcome screen.
+ */
+export const logOut = (): Promise<void> => invoke('log_out').then(() => undefined);

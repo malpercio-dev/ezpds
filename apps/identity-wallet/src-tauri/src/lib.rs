@@ -1,4 +1,5 @@
 pub mod device_key;
+pub mod home;
 pub mod http;
 pub mod keychain;
 pub mod oauth;
@@ -440,6 +441,8 @@ pub fn run() {
             get_or_create_device_key,
             sign_with_device_key,
             perform_did_ceremony,
+            home::load_home_data,
+            home::log_out,
             oauth::start_oauth_flow,
         ])
         .run(tauri::generate_context!())
