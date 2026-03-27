@@ -217,7 +217,9 @@ export type HomeData = {
  * Always resolves — never rejects. Partial failures encoded in HomeData fields.
  */
 export const loadHomeData = (): Promise<HomeData> =>
-  invoke<HomeData>('load_home_data');
+  invoke<HomeData>('load_home_data').catch(
+    (): HomeData => ({ relayHealthy: false, session: null, sessionError: 'UNKNOWN', share1InKeychain: false })
+  );
 
 /**
  * Clear OAuth access token, refresh token, and DID from Keychain and wipe

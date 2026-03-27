@@ -16,11 +16,17 @@
   let homeData = $state<HomeData | null>(null);
   let loading = $state(true);
   let didCopied = $state(false);
+  let didCopyFailed = $state(false);
 
   async function loadData() {
     loading = true;
-    homeData = await loadHomeData();
-    loading = false;
+    try {
+      homeData = await loadHomeData();
+    } catch {
+      homeData = null;
+    } finally {
+      loading = false;
+    }
   }
 
   onMount(() => {
@@ -45,13 +51,18 @@
       await navigator.clipboard.writeText(did);
       didCopied = true;
       setTimeout(() => { didCopied = false; }, 2000);
-    } catch (e) {
-      console.error('clipboard write failed:', e);
+    } catch {
+      didCopyFailed = true;
+      setTimeout(() => { didCopyFailed = false; }, 2000);
     }
   }
 
   async function handleLogOut() {
-    await logOut();
+    try {
+      await logOut();
+    } catch {
+      // logOut always succeeds on the Rust side; navigate away even if IPC fails
+    }
     onlogout();
   }
 </script>
@@ -76,7 +87,7 @@
           <p class="handle">@{homeData.session.handle}</p>
           <button class="did-btn" onclick={copyDid} title="Tap to copy full DID">
             <span class="did-text">{displayDid}</span>
-            <span class="copy-hint">{didCopied ? 'Copied!' : 'Copy'}</span>
+            <span class="copy-hint">{didCopied ? 'Copied!' : didCopyFailed ? 'Failed' : 'Copy'}</span>
           </button>
           <p class="email">{homeData.session.email}</p>
         </div>

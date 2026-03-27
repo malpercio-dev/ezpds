@@ -9,6 +9,7 @@
 
   let showRaw = $state(false);
   let copiedKeyId = $state<string | null>(null);
+  let failedKeyId = $state<string | null>(null);
 
   // Extract typed arrays from the loosely-typed didDoc.
   let verificationMethods = $derived(
@@ -36,8 +37,9 @@
       await navigator.clipboard.writeText(value);
       copiedKeyId = keyId;
       setTimeout(() => { copiedKeyId = null; }, 2000);
-    } catch (e) {
-      console.error('clipboard write failed:', e);
+    } catch {
+      failedKeyId = keyId;
+      setTimeout(() => { failedKeyId = null; }, 2000);
     }
   }
 </script>
@@ -79,7 +81,7 @@
                 class="copy-btn"
                 onclick={() => copyKey(String(method.id), String(method.publicKeyMultibase))}
               >
-                {copiedKeyId === String(method.id) ? 'Copied!' : 'Copy'}
+                {copiedKeyId === String(method.id) ? 'Copied!' : failedKeyId === String(method.id) ? 'Failed' : 'Copy'}
               </button>
             </div>
           {/if}

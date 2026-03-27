@@ -83,6 +83,7 @@ pub async fn load_home_data(state: tauri::State<'_, AppState>) -> Result<HomeDat
     let oauth_client = match crate::oauth_client::OAuthClient::new(session_arc.clone()) {
         Ok(c) => c,
         Err(e) => {
+            tracing::error!(error = %e, "OAuthClient construction failed");
             return Ok(HomeData {
                 relay_healthy: check_relay_health().await,
                 session: None,
@@ -125,7 +126,10 @@ pub async fn load_home_data(state: tauri::State<'_, AppState>) -> Result<HomeDat
             tracing::warn!(status = %resp.status(), "getSession returned non-success");
             (None, Some("NOT_AUTHENTICATED".to_string()))
         }
-        Err(e) => (None, Some(oauth_error_code(&e))),
+        Err(e) => {
+            tracing::error!(error = %e, "getSession request failed");
+            (None, Some(oauth_error_code(&e)))
+        }
     };
 
     Ok(HomeData {
@@ -142,9 +146,13 @@ pub async fn load_home_data(state: tauri::State<'_, AppState>) -> Result<HomeDat
 /// unconditionally navigates to the welcome screen.
 #[tauri::command]
 pub async fn log_out(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    let _ = crate::keychain::delete_item("oauth-access-token");
-    let _ = crate::keychain::delete_item("oauth-refresh-token");
-    let _ = crate::keychain::delete_item("did");
+    for key in &["oauth-access-token", "oauth-refresh-token", "did"] {
+        if let Err(e) = crate::keychain::delete_item(key) {
+            if !crate::keychain::is_not_found(&e) {
+                tracing::warn!(error = %e, key = key, "Keychain delete failed during logout");
+            }
+        }
+    }
     *state.oauth_session.lock().unwrap() = None;
     Ok(())
 }
@@ -166,7 +174,10 @@ fn oauth_error_code(e: &OAuthError) -> String {
     serde_json::to_value(e)
         .ok()
         .and_then(|v| v["code"].as_str().map(String::from))
-        .unwrap_or_else(|| "UNKNOWN".to_string())
+        .unwrap_or_else(|| {
+            tracing::warn!("OAuthError could not be serialized to a code string");
+            "UNKNOWN".to_string()
+        })
 }
 
 // ── Test helper: injectable base URLs ─────────────────────────────────────
@@ -335,7 +346,7 @@ mod tests {
 
     #[tokio::test]
     async fn log_out_succeeds_when_keychain_items_absent() {
-        // Items may not exist — log_out must not panic. AC4.7.
+        // Items may not exist — log_out must not panic.
         let state = AppState::new();
         simulate_log_out(&state);
     }
@@ -352,7 +363,7 @@ mod tests {
 
         // OAuth items gone.
         assert!(crate::keychain::get_item("oauth-access-token").is_err());
-        // Device and DPoP keys must NOT have been deleted (AC3.3).
+        // Device and DPoP keys must NOT have been deleted.
         assert!(
             crate::keychain::get_item("oauth-dpop-key-priv").is_ok(),
             "DPoP key must remain after logout"
@@ -386,7 +397,7 @@ mod tests {
         assert_eq!(data.session_error.as_deref(), Some("NOT_AUTHENTICATED"));
     }
 
-    // ── load_home_data: relay health (AC4.1, AC4.3, AC2.1, AC2.2) ─────────
+    // ── load_home_data: relay health ──────────────────────────────────────
 
     #[tokio::test]
     async fn load_home_data_relay_healthy_true_when_health_returns_200() {
@@ -452,14 +463,14 @@ mod tests {
             !data.relay_healthy,
             "relay_healthy must be false when _health returns 503"
         );
-        // Session can still be populated (AC2.5: statuses are independent)
+        // Session can still be populated when relay fails; statuses are independent.
         assert!(
             data.session.is_some(),
             "session should still be populated when relay fails"
         );
     }
 
-    // ── load_home_data: session (AC4.2, AC4.4, AC2.3, AC2.4) ──────────────
+    // ── load_home_data: session ────────────────────────────────────────────
 
     #[tokio::test]
     async fn load_home_data_session_populated_when_get_session_succeeds() {
@@ -522,7 +533,7 @@ mod tests {
             data.session_error.is_some(),
             "sessionError must be set when getSession fails"
         );
-        // relay is still healthy (AC2.5: independent statuses)
+        // relay is still healthy; statuses are independent
         assert!(data.relay_healthy);
     }
 }
