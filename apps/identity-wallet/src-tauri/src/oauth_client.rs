@@ -34,13 +34,13 @@ impl OAuthClient {
     /// `Client::new()` inherits the TLS backend configured at the crate level via Cargo features
     /// (`default-features = false, features = ["rustls-tls"]` in Cargo.toml). No builder
     /// configuration is needed — the feature flags apply crate-wide, not per-client-instance.
-    pub fn new(session: Arc<Mutex<OAuthSession>>) -> Result<Self, OAuthError> {
+    pub fn new(session: Arc<Mutex<OAuthSession>>, base_url: String) -> Result<Self, OAuthError> {
         let dpop = DPoPKeypair::get_or_create()?;
         Ok(Self {
             inner: Client::new(),
             dpop,
             session,
-            base_url: crate::http::RelayClient::base_url().to_string(),
+            base_url,
         })
     }
 

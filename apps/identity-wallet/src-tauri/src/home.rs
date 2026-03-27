@@ -69,7 +69,7 @@ pub async fn load_home_data(state: tauri::State<'_, AppState>) -> Result<HomeDat
     };
 
     let Some(session) = session_opt else {
-        let relay_healthy = check_relay_health().await;
+        let relay_healthy = ping_relay_health(state.relay_client()).await;
         return Ok(HomeData {
             relay_healthy,
             session: None,
@@ -80,12 +80,15 @@ pub async fn load_home_data(state: tauri::State<'_, AppState>) -> Result<HomeDat
 
     let session_arc = Arc::new(Mutex::new(session));
 
-    let oauth_client = match crate::oauth_client::OAuthClient::new(session_arc.clone()) {
+    let oauth_client = match crate::oauth_client::OAuthClient::new(
+        session_arc.clone(),
+        state.relay_client().base_url_str().to_owned(),
+    ) {
         Ok(c) => c,
         Err(e) => {
             tracing::error!(error = %e, "OAuthClient construction failed");
             return Ok(HomeData {
-                relay_healthy: check_relay_health().await,
+                relay_healthy: ping_relay_health(state.relay_client()).await,
                 session: None,
                 session_error: Some(oauth_error_code(&e)),
                 share1_in_keychain,
@@ -94,7 +97,7 @@ pub async fn load_home_data(state: tauri::State<'_, AppState>) -> Result<HomeDat
     };
 
     let (relay_healthy, session_result) = tokio::join!(
-        check_relay_health(),
+        ping_relay_health(state.relay_client()),
         oauth_client.get("/xrpc/com.atproto.server.getSession"),
     );
 
@@ -159,11 +162,10 @@ pub async fn log_out(state: tauri::State<'_, AppState>) -> Result<(), String> {
 
 // ── Private helpers ───────────────────────────────────────────────────────
 
-/// Creates a new RelayClient on each call. Acceptable because load_home_data
-/// is invoked at most once per user-initiated home screen refresh; the cost is
-/// not significant at this call frequency.
-async fn check_relay_health() -> bool {
-    crate::http::RelayClient::new()
+/// Ping the relay health endpoint. Named to avoid ambiguity with any future
+/// public IPC commands.
+async fn ping_relay_health(relay_client: &crate::http::RelayClient) -> bool {
+    relay_client
         .get("/xrpc/_health")
         .await
         .map(|r| r.status().is_success())
