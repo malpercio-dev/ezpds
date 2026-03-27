@@ -7,7 +7,6 @@ pub mod oauth_client;
 
 use crypto::{build_did_plc_genesis_op_with_external_signer, CryptoError, DidKeyUri};
 use serde::{Deserialize, Serialize};
-use std::sync::LazyLock;
 use tauri::{Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 
@@ -224,10 +223,6 @@ struct ResolveHandleResponse {
     did: String,
 }
 
-// ── Static relay client ─────────────────────────────────────────────────────
-
-static RELAY_CLIENT: LazyLock<http::RelayClient> = LazyLock::new(http::RelayClient::new);
-
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /// Map a relay 409 error subcode string to a typed `CreateAccountError` variant.
@@ -249,6 +244,7 @@ async fn create_account(
     claim_code: String,
     email: String,
     handle: String,
+    state: tauri::State<'_, oauth::AppState>,
 ) -> Result<CreateAccountResult, CreateAccountError> {
     // 1. Get or create the device's SE-backed (or simulator-fallback) P-256 key.
     let device_key = device_key::get_or_create().map_err(|e| {
@@ -265,7 +261,8 @@ async fn create_account(
         claim_code,
     };
 
-    let resp = RELAY_CLIENT
+    let resp = state
+        .relay_client()
         .post("/v1/accounts/mobile", &req)
         .await
         .map_err(|e| CreateAccountError::NetworkError {
@@ -333,6 +330,7 @@ async fn sign_with_device_key(data: Vec<u8>) -> Result<Vec<u8>, device_key::Devi
 async fn perform_did_ceremony(
     handle: String,
     password: String,
+    state: tauri::State<'_, oauth::AppState>,
 ) -> Result<DIDCeremonyResult, DIDCeremonyError> {
     // Step 1: Get or create the device's P-256 key (serves as rotation key).
     let device_key = device_key::get_or_create().map_err(|e| {
@@ -342,7 +340,8 @@ async fn perform_did_ceremony(
 
     // Step 2: Fetch the relay's active signing key (public, no auth required).
     let resp =
-        RELAY_CLIENT
+        state
+            .relay_client()
             .get("/v1/relay/keys")
             .await
             .map_err(|e| DIDCeremonyError::NetworkError {
@@ -376,7 +375,7 @@ async fn perform_did_ceremony(
         &rotation_key,
         &signing_key,
         &handle,
-        http::RelayClient::base_url(),
+        state.relay_client().base_url_str(),
         |data| {
             device_key::sign(data)
                 .map_err(|e| CryptoError::PlcOperation(format!("device signing failed: {e}")))
@@ -407,7 +406,8 @@ async fn perform_did_ceremony(
         password,
     };
 
-    let resp = RELAY_CLIENT
+    let resp = state
+        .relay_client()
         .post_with_bearer("/v1/dids", &create_did_req, &pending_token)
         .await
         .map_err(|e| DIDCeremonyError::NetworkError {
@@ -472,9 +472,11 @@ async fn perform_did_ceremony(
 #[tauri::command]
 async fn register_handle(
     handle_label: String,
+    state: tauri::State<'_, oauth::AppState>,
 ) -> Result<RegisterHandleResult, RegisterHandleError> {
     // Step 1: Fetch the relay's primary user domain.
-    let resp = RELAY_CLIENT
+    let resp = state
+        .relay_client()
         .get("/xrpc/com.atproto.server.describeServer")
         .await
         .map_err(|e| RegisterHandleError::NetworkError {
@@ -528,7 +530,8 @@ async fn register_handle(
         handle: full_handle.clone(),
     };
 
-    let resp = RELAY_CLIENT
+    let resp = state
+        .relay_client()
         .post_with_bearer("/v1/handles", &req, &session_token)
         .await
         .map_err(|e| RegisterHandleError::NetworkError {
@@ -582,28 +585,32 @@ async fn register_handle(
 /// `did` field). Returns `false` for any other response (handle not yet propagated, relay
 /// unreachable, DID mismatch). Never rejects — callers can safely poll on an interval.
 #[tauri::command]
-async fn check_handle_resolution(handle: String, expected_did: String) -> bool {
+async fn check_handle_resolution(
+    handle: String,
+    expected_did: String,
+    state: tauri::State<'_, oauth::AppState>,
+) -> Result<bool, String> {
     // ATProto handles are alphanumeric + hyphens + dots — all URL-safe; no percent-encoding needed.
     let path = format!("/xrpc/com.atproto.identity.resolveHandle?handle={handle}");
 
-    let resp = match RELAY_CLIENT.get(&path).await {
+    let resp = match state.relay_client().get(&path).await {
         Ok(r) => r,
         Err(e) => {
             tracing::debug!(error = %e, "check_handle_resolution: network error, returning false");
-            return false;
+            return Ok(false);
         }
     };
 
     if !resp.status().is_success() {
         tracing::debug!(status = resp.status().as_u16(), "check_handle_resolution: non-success response, returning false");
-        return false;
+        return Ok(false);
     }
 
     match resp.json::<ResolveHandleResponse>().await {
-        Ok(body) => body.did == expected_did,
+        Ok(body) => Ok(body.did == expected_did),
         Err(e) => {
             tracing::debug!(error = %e, "check_handle_resolution: failed to parse response, returning false");
-            false
+            Ok(false)
         }
     }
 }

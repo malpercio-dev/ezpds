@@ -7,7 +7,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use p256::ecdsa::{signature::Signer, Signature, SigningKey};
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing;
 use uuid::Uuid;
@@ -25,6 +25,9 @@ pub struct AppState {
     /// The active authenticated session after a successful token exchange.
     /// Set by `start_oauth_flow` on success; read by `OAuthClient` for every request.
     pub oauth_session: Mutex<Option<OAuthSession>>,
+    /// Runtime relay client. Populated from Keychain on startup (Phase 3) or by
+    /// `save_relay_url` on first launch. Falls back to the compile-time default if unset.
+    relay_client: OnceLock<crate::http::RelayClient>,
 }
 
 impl AppState {
@@ -32,7 +35,23 @@ impl AppState {
         Self {
             pending_auth: Mutex::new(None),
             oauth_session: Mutex::new(None),
+            relay_client: OnceLock::new(),
         }
+    }
+
+    /// Returns the configured relay client, or initializes with the compile-time
+    /// default URL if none has been set yet.
+    pub fn relay_client(&self) -> &crate::http::RelayClient {
+        self.relay_client
+            .get_or_init(crate::http::RelayClient::new)
+    }
+
+    /// Set the relay client from a runtime URL. Silently ignored if already set
+    /// (OnceLock::set semantics — this is only called once on first launch).
+    pub fn set_relay_client(&self, url: String) {
+        self.relay_client
+            .set(crate::http::RelayClient::new_with_url(url))
+            .ok();
     }
 }
 
@@ -867,6 +886,7 @@ mod tests {
                 csrf_state: "correct-state".to_string(),
             })),
             oauth_session: std::sync::Mutex::new(None),
+            relay_client: OnceLock::new(),
         };
 
         let url = make_test_url("code123", "WRONG-STATE");
@@ -894,6 +914,7 @@ mod tests {
                 csrf_state: "good-state".to_string(),
             })),
             oauth_session: std::sync::Mutex::new(None),
+            relay_client: OnceLock::new(),
         };
 
         // First callback succeeds.
@@ -923,6 +944,7 @@ mod tests {
                 csrf_state: "expected-state".to_string(),
             })),
             oauth_session: std::sync::Mutex::new(None),
+            relay_client: OnceLock::new(),
         };
 
         let url = make_test_url("mycode", "expected-state");

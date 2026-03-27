@@ -14,6 +14,15 @@ const RELAY_BASE_URL: &str = "http://localhost:8080";
 #[cfg(not(debug_assertions))]
 const RELAY_BASE_URL: &str = "https://relay.ezpds.com";
 
+/// Returns the compile-time default relay base URL.
+///
+/// Used by integration tests and as the pre-filled default in the relay
+/// configuration UI. The runtime URL (from Keychain or user input) takes
+/// precedence during normal app operation.
+pub fn default_relay_url() -> &'static str {
+    RELAY_BASE_URL
+}
+
 /// Successful response from `POST /oauth/par` (RFC 9126 §2.2).
 #[derive(Debug, serde::Deserialize)]
 pub struct ParResponse {
