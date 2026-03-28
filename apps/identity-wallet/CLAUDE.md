@@ -39,6 +39,7 @@ Tauri v2 iOS application — SvelteKit 2 + Svelte 5 frontend running in a native
 - `src/device_key.rs` — P-256 device key management with `#[cfg]`-based dispatch: macOS/simulator uses software keys via `crypto` crate + Keychain storage; real iOS device uses Secure Enclave via `security-framework`. Public API: `get_or_create() -> Result<DevicePublicKey, DeviceKeyError>` (idempotent), `sign(data) -> Result<Vec<u8>, DeviceKeyError>`
 - `src/keychain.rs` — iOS Keychain abstraction (`store_item`, `get_item`, `delete_item`) under service `"ezpds-identity-wallet"`; Relay URL helpers: `store_relay_url`/`load_relay_url` (relay base URL); OAuth helpers: `store_dpop_key`/`load_dpop_key` (P-256 DPoP private key scalar), `store_oauth_tokens`/`load_oauth_tokens` (access + refresh token pair)
 - `src/http.rs` — `RelayClient` with runtime-configurable base URL (initialized via `AppState::set_relay_client(url)` on first launch; localhost:8080 debug fallback); methods: `post()`, `get()`, `post_with_bearer()`, `par()` (POST /oauth/par with DPoP proof), `token_exchange()` (POST /oauth/token with PKCE verifier); response types: `ParResponse`, `TokenResponse`, `TokenErrorResponse`
+- `src/identity_store.rs` — `IdentityStore` unit struct for multi-identity Keychain management with per-DID namespacing. Public API: `add_identity(did)` (registers DID in managed-dids index), `remove_identity(did)` (deletes DID and all per-DID entries), `list_identities()` (returns managed DIDs), `get_or_create_device_key(did)` (lazy per-DID P-256 key generation), `store_did_doc(did, json)` / `get_did_doc(did)` (DID document persistence), `store_plc_log(did, json)` / `get_plc_log(did)` (PLC audit log persistence). All methods require DID to be registered first (returns `IdentityNotFound` otherwise). `IdentityStoreError` enum: IDENTITY_NOT_FOUND, IDENTITY_ALREADY_EXISTS, KEYCHAIN_ERROR, KEY_GENERATION_FAILED, SERIALIZATION_ERROR (serialized as `{ code: "SCREAMING_SNAKE_CASE" }`)
 - `src/lib.rs::get_relay_url() -> Option<String>` — Tauri IPC command: loads relay base URL from Keychain, returns Some(url) if configured or None for first-launch
 - `src/lib.rs::save_relay_url(url: String) -> Result<(), RelayConfigError>` — Tauri IPC command: validates URL format, pings `/xrpc/_health` on the relay, saves to Keychain, initializes `AppState.relay_client` (runtime configuration)
 
@@ -60,6 +61,12 @@ Tauri v2 iOS application — SvelteKit 2 + Svelte 5 frontend running in a native
 - `device_key::sign()` returns raw 64-byte r||s ECDSA signatures; low-S normalized on both paths (ATProto/PLC directory requires low-S); deterministic (RFC 6979) on simulator
 - `DeviceKeyError` variants serialize as `{ code: "SCREAMING_SNAKE_CASE" }` matching the `CreateAccountError` pattern
 - Device key dispatch: `#[cfg(any(target_os = "macos", all(target_os = "ios", target_env = "sim")))]` for software path, `#[cfg(all(target_os = "ios", not(target_env = "sim")))]` for Secure Enclave path
+- `IdentityStore` is stateless (unit struct); all state lives in the Keychain. Methods take `&self` to allow future integration into `AppState`
+- `IdentityStore::add_identity` does NOT eagerly generate a device key -- keys are lazily created on first `get_or_create_device_key` call
+- `IdentityStore::remove_identity` performs best-effort cleanup of all six per-DID Keychain entries (device-key, device-key-pub, device-key-app-label, did-doc, plc-log, oauth-tokens); Keychain not-found errors during cleanup are ignored
+- `IdentityStore::get_or_create_device_key` uses the same `#[cfg]` dispatch pattern as `device_key.rs` (software P-256 on macOS/simulator, Secure Enclave on real iOS) but with per-DID Keychain account namespacing (`"{did}:device-key"` instead of `"device-rotation-key-priv"`)
+- `IdentityStoreError` variants serialize as `{ code: "SCREAMING_SNAKE_CASE" }` matching the `CreateAccountError` pattern
+- Per-DID Keychain accounts use `"{did}:suffix"` format (e.g. `"did:plc:abc123:device-key"`) -- the colon separator is part of the naming convention
 
 **Expects:**
 - `tauri.conf.json` exists in `src-tauri/` before `cargo build` runs — the config is read at compile time by `generate_context!()`
@@ -206,6 +213,7 @@ cargo build
 - **DIDAvatar deterministic hue**: `DIDAvatar.svelte` derives a stable hue (0-359) from the DID string using a polynomial hash (`h = (h * 31 + charCode) & 0xffffff; hue = h % 360`). The same DID always produces the same color across renders and sessions.
 - **Home screen data flow**: HomeScreen calls `loadHomeData()` on mount, stores the result in local state, and passes the full HomeData to child screens (DIDDocumentScreen, RecoveryInfoScreen) via the page-level state machine in `+page.svelte` rather than having children re-fetch.
 - **Startup token restore**: On app launch, `lib.rs::run()` checks Keychain for persisted OAuth tokens. If found, restores them into `AppState.oauth_session` with `expires_at = 0` (forces immediate refresh on first use) and emits `auth_ready` after 300ms delay so SvelteKit has time to boot.
+- **Per-DID Keychain namespacing (`identity_store.rs`)**: Multi-identity support uses DID-prefixed Keychain accounts (`"{did}:device-key"`, etc.) instead of the single-identity global accounts in `device_key.rs`. A top-level `"managed-dids"` JSON array index tracks all registered DIDs. Device keys are lazily generated on first `get_or_create_device_key` rather than at identity registration time. The module uses the same `#[cfg]` dispatch pattern as `device_key.rs` for software vs. SE key generation but with per-DID scoping.
 
 ## Invariants
 
@@ -234,6 +242,9 @@ cargo build
 - `HomeData` serializes with `#[serde(rename_all = "camelCase")]` -- TypeScript receives `{ relayHealthy, session, sessionError, share1InKeychain }`; the TypeScript `HomeData` type in `ipc.ts` must match exactly
 - `SessionInfo` serializes with `#[serde(rename_all = "camelCase")]` -- TypeScript receives `{ did, handle, email, emailConfirmed, didDoc }`; the TypeScript `SessionInfo` type in `ipc.ts` must match exactly
 - `log_out` deletes exactly three Keychain accounts: `"oauth-access-token"`, `"oauth-refresh-token"`, `"did"` -- adding or removing items from this list changes what data survives a logout
+- Keychain account `"managed-dids"` stores a JSON array of all managed DID strings (e.g. `["did:plc:abc","did:plc:def"]`); the single source of truth for which identities are registered in `IdentityStore`
+- Per-DID Keychain accounts follow the `"{did}:suffix"` pattern with six suffixes: `device-key` (P-256 private key scalar or SE metadata), `device-key-pub` (compressed public key, SE path only), `device-key-app-label` (SE application_label, SE path only), `did-doc` (opaque DID document JSON), `plc-log` (opaque PLC audit log JSON), `oauth-tokens` (reserved for per-DID OAuth tokens)
+- `IdentityStore` P-256 multicodec prefix `[0x80, 0x24]` is duplicated from `crates/crypto/src/keys.rs` (same rationale as `device_key.rs` -- `pub(crate)` constant cannot be imported cross-crate)
 
 ## Key Files
 
@@ -241,6 +252,7 @@ cargo build
 - `src-tauri/src/lib.rs` -- Tauri IPC commands (`get_relay_url`, `save_relay_url`, `create_account`, `get_or_create_device_key`, `sign_with_device_key`, `perform_did_ceremony`, `start_oauth_flow`, `home::load_home_data`, `home::log_out`), `run()` (mobile entry point), deep-link plugin setup, startup token restore
 - `src-tauri/src/home.rs` -- Home screen Tauri commands: `load_home_data` (concurrent relay health + getSession), `log_out` (Keychain wipe + session clear); output types: HomeData, SessionInfo
 - `src-tauri/src/device_key.rs` -- P-256 device key module: `#[cfg]`-dispatched `get_or_create()` and `sign()` (simulator software path vs. Secure Enclave)
+- `src-tauri/src/identity_store.rs` -- Multi-identity Keychain management: IdentityStore (add/remove/list identities, per-DID device key generation, DID doc + PLC log persistence)
 - `src-tauri/src/main.rs` -- Desktop entry point (calls `lib::run()`)
 - `src-tauri/src/oauth.rs` -- OAuth PKCE module: AppState, DPoPKeypair, OAuthSession, PKCE utilities, start_oauth_flow command, handle_deep_link
 - `src-tauri/src/oauth_client.rs` -- OAuthClient: authenticated HTTP client with DPoP proofs and lazy token refresh
