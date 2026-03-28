@@ -9,7 +9,6 @@
 
 use crate::device_key::DevicePublicKey;
 use serde::Serialize;
-use serde_json;
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -346,85 +345,110 @@ fn get_or_create_per_did_device_key(did: &str) -> Result<DevicePublicKey, Identi
 fn get_or_create_per_did_device_key(did: &str) -> Result<DevicePublicKey, IdentityStoreError> {
     use security_framework::{
         access_control::{ProtectionMode, SecAccessControl},
-        item::ItemClass,
-        key::{Algorithm, GenerateKeyOptions, KeyType, SecKey, Token},
+        key::{GenerateKeyOptions, KeyType, Location, SecKey, Token},
     };
 
     let pub_account = device_key_pub_account(did);
     let label_account = device_key_app_label_account(did);
 
     // Fast path: check both metadata accounts — if both present, return cached public key.
+    // This avoids SE hardware interaction on every call after first generation.
     match (
         crate::keychain::get_item(&pub_account),
         crate::keychain::get_item(&label_account),
     ) {
-        (Ok(pub_bytes), Ok(label_bytes)) => {
-            let multibase = String::from_utf8(pub_bytes).map_err(|e| {
-                IdentityStoreError::SerializationError {
-                    message: format!("UTF-8 error decoding cached public key: {e}"),
-                }
-            })?;
-            let key_id = String::from_utf8(label_bytes).map_err(|e| {
-                IdentityStoreError::SerializationError {
-                    message: format!("UTF-8 error decoding cached key_id: {e}"),
-                }
-            })?;
+        (Ok(compressed), Ok(_)) => {
+            // Both present — fast path. Return the cached public key.
+            let multibase = multibase::encode(multibase::Base::Base58Btc, &compressed);
+            // did:key requires the P-256 multicodec varint prefix [0x80, 0x24] (0x1200 as LEB128).
+            const P256_MULTICODEC: &[u8] = &[0x80, 0x24];
+            let mut multikey = Vec::with_capacity(2 + compressed.len());
+            multikey.extend_from_slice(P256_MULTICODEC);
+            multikey.extend_from_slice(&compressed);
+            let key_id = format!(
+                "did:key:{}",
+                multibase::encode(multibase::Base::Base58Btc, &multikey)
+            );
             return Ok(DevicePublicKey { multibase, key_id });
         }
-        // Fall through if either is missing
-        _ => {}
+        (Err(e), _) | (_, Err(e)) if !crate::keychain::is_not_found(&e) => {
+            // Transient OS error — do not fall through to generation.
+            return Err(IdentityStoreError::KeychainError {
+                message: e.to_string(),
+            });
+        }
+        _ => {
+            // One or both missing — fall through to generate.
+        }
     }
 
-    // Slow path: generate SE key, store metadata.
-    let se_label = format!("ezpds-device-key-{did}");
+    // Generate a new SE-backed P-256 key.
+    // set_location(DataProtectionKeychain) is required — without it, security_framework sets
+    // kSecAttrIsPermanent = false, meaning the key is not persisted to the Keychain and will
+    // not survive app restart.
+    // set_access_control with PRIVATE_KEY_USAGE is required for SE keys — the SE enforces
+    // that only explicitly-authorized operations can use the private key for signing.
+    // The PRIVATE_KEY_USAGE flag is kSecAccessControlPrivateKeyUsage = 1 << 30.
+    let access_control = SecAccessControl::create_with_protection(
+        Some(ProtectionMode::AccessibleWhenUnlockedThisDeviceOnly),
+        1 << 30, // kSecAccessControlPrivateKeyUsage
+    )
+    .map_err(|_| IdentityStoreError::KeyGenerationFailed)?;
 
-    // Create SecAccessControl for Secure Enclave with biometric/passcode.
-    let access = SecAccessControl::create(ItemClass::PrivateKey)
-        .map_err(|e| IdentityStoreError::KeychainError {
-            message: format!("failed to create SecAccessControl: {e}"),
-        })?
-        .with_protection(ProtectionMode::WhenPasscodeSetThisDeviceOnly)
-        .with_biometry_any()
-        .map_err(|e| IdentityStoreError::KeychainError {
-            message: format!("failed to configure SecAccessControl: {e}"),
-        })?;
-
-    // Generate P-256 key in Secure Enclave.
-    let options = GenerateKeyOptions::new(KeyType::EC, Algorithm::ES256)
+    let mut opts = GenerateKeyOptions::default();
+    opts.set_key_type(KeyType::ec())
+        .set_size_in_bits(256)
         .set_token(Token::SecureEnclave)
-        .set_access_control(&access)
-        .set_label(&se_label);
+        .set_label(&format!("ezpds-device-key-{did}"))
+        .set_location(Location::DataProtectionKeychain)
+        .set_access_control(access_control); // takes ownership (by value)
 
-    let private_key = SecKey::new(&options).map_err(|e| IdentityStoreError::KeyGenerationFailed)?;
+    let priv_key = SecKey::new(&opts).map_err(|_| IdentityStoreError::KeyGenerationFailed)?;
 
-    // Extract the public key.
-    let public_key =
-        private_key
-            .to_public_key()
-            .map_err(|e| IdentityStoreError::KeychainError {
-                message: format!("failed to extract public key from SE key: {e}"),
-            })?;
+    // Retrieve the public key and its external representation.
+    // SecKeyCopyExternalRepresentation on the *public* key returns the uncompressed
+    // 65-byte X9.62 point (0x04 || x[32] || y[32]).
+    let pub_key = priv_key
+        .public_key()
+        .ok_or(IdentityStoreError::KeyGenerationFailed)?;
+    let pub_repr = pub_key
+        .external_representation()
+        .ok_or(IdentityStoreError::KeyGenerationFailed)?;
+    let uncompressed: Vec<u8> = pub_repr.to_vec(); // 65 bytes
 
-    // Get the external representation (DER-encoded X.509 SubjectPublicKeyInfo).
-    // Parse it to extract the 33-byte compressed P-256 point.
-    let der =
-        public_key
-            .external_representation()
-            .map_err(|e| IdentityStoreError::KeychainError {
-                message: format!("failed to get DER public key: {e}"),
-            })?;
+    // Compress: prefix byte = 0x02 (even y) or 0x03 (odd y); keep x[32].
+    // The last byte of the y coordinate determines parity.
+    let mut compressed = [0u8; 33];
+    compressed[0] = if uncompressed[64] & 1 == 0 {
+        0x02
+    } else {
+        0x03
+    };
+    compressed[1..].copy_from_slice(&uncompressed[1..33]);
 
-    // Parse X.509 SubjectPublicKeyInfo to extract the 33-byte compressed point.
-    // For P-256, the structure is:
-    //   SEQUENCE { algorithmIdentifier, BIT STRING { 0x04, compressed_point } }
-    // The compressed point is at offset ~26-27 bytes in the standard encoding.
-    // We extract it and reconstruct the multibase + did:key URI.
-    let compressed =
-        extract_p256_point_from_der(&der).map_err(|e| IdentityStoreError::KeychainError {
-            message: format!("failed to parse P-256 point from DER: {e}"),
-        })?;
+    // Store the compressed public key for the fast path on future calls.
+    crate::keychain::store_item(&pub_account, &compressed).map_err(|e| {
+        IdentityStoreError::KeychainError {
+            message: e.to_string(),
+        }
+    })?;
+
+    // Get and store application_label. Roll back pub_account if this fails.
+    let app_label = priv_key.application_label().ok_or_else(|| {
+        let _ = crate::keychain::delete_item(&pub_account);
+        IdentityStoreError::KeychainError {
+            message: "SE key created but application_label returned None; do not retry".into(),
+        }
+    })?;
+    crate::keychain::store_item(&label_account, &app_label).map_err(|e| {
+        let _ = crate::keychain::delete_item(&pub_account);
+        IdentityStoreError::KeychainError {
+            message: e.to_string(),
+        }
+    })?;
 
     let multibase = multibase::encode(multibase::Base::Base58Btc, &compressed);
+    // did:key requires the P-256 multicodec varint prefix [0x80, 0x24] (0x1200 as LEB128).
     const P256_MULTICODEC: &[u8] = &[0x80, 0x24];
     let mut multikey = Vec::with_capacity(2 + compressed.len());
     multikey.extend_from_slice(P256_MULTICODEC);
@@ -433,49 +457,7 @@ fn get_or_create_per_did_device_key(did: &str) -> Result<DevicePublicKey, Identi
         "did:key:{}",
         multibase::encode(multibase::Base::Base58Btc, &multikey)
     );
-
-    // Store multibase and key_id for fast lookup on next call.
-    crate::keychain::store_item(&pub_account, multibase.as_bytes()).map_err(|e| {
-        IdentityStoreError::KeychainError {
-            message: e.to_string(),
-        }
-    })?;
-    crate::keychain::store_item(&label_account, key_id.as_bytes()).map_err(|e| {
-        IdentityStoreError::KeychainError {
-            message: e.to_string(),
-        }
-    })?;
-
     Ok(DevicePublicKey { multibase, key_id })
-}
-
-/// Parse a P-256 compressed public key (33 bytes) from an X.509 SubjectPublicKeyInfo DER blob.
-///
-/// This is a simplified parser for testing/simulator use. Real SE keys are extracted by
-/// the SE path above; this helper is only called in test/sim where SE is not available.
-#[cfg(all(target_os = "ios", not(target_env = "sim")))]
-fn extract_p256_point_from_der(der: &[u8]) -> Result<[u8; 33], String> {
-    // For P-256, the standard DER encoding of SEQUENCE { algId, BIT STRING pubkey }
-    // places the 33-byte compressed point at a predictable offset.
-    // Expected structure:
-    //   SEQUENCE (2 bytes: tag + length) [~2-4 bytes total]
-    //     SEQUENCE (algId) [~20 bytes]
-    //     BIT STRING [~35 bytes total: tag + length + unused bits byte + 33 byte point]
-    //
-    // The 33-byte compressed point typically starts around offset 26-27.
-    // We search for the BIT STRING tag (0x03) and extract the point after the length and unused bits byte.
-
-    for (i, window) in der.windows(35).enumerate() {
-        if window[0] == 0x03 && window[1] == 33 && window[2] == 0x00 {
-            // Found BIT STRING tag, length 33, 0 unused bits.
-            // The point starts at offset 3.
-            let mut point = [0u8; 33];
-            point.copy_from_slice(&window[3..36]);
-            return Ok(point);
-        }
-    }
-
-    Err("failed to find P-256 point in DER".to_string())
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
