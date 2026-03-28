@@ -67,6 +67,7 @@ ciborium = "0.2"
 data-encoding = "2"
 sha2 = "0.10"
 zeroize = "1"
+urlencoding = "2"
 subtle = "2"
 uuid = { version = "1", features = ["v4"] }
 

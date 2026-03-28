@@ -1,3 +1,5 @@
+// pattern: Imperative Shell
+
 //! Per-DID identity storage layer with Keychain-based persistence.
 //!
 //! `IdentityStore` manages multi-identity lifecycle in the iOS Keychain:
@@ -456,7 +458,10 @@ fn get_or_create_per_did_device_key(did: &str) -> Result<DevicePublicKey, Identi
 
     // Get and store application_label. Roll back pub_account if this fails.
     let app_label = priv_key.application_label().ok_or_else(|| {
-        tracing::error!(did = did, "SE key created but application_label returned None");
+        tracing::error!(
+            did = did,
+            "SE key created but application_label returned None"
+        );
         let _ = crate::keychain::delete_item(&pub_account);
         IdentityStoreError::KeychainError {
             message: "SE key created but application_label returned None; do not retry".into(),
@@ -613,7 +618,11 @@ mod tests {
 
         // Validate multibase decoding to 33 bytes
         let (_, decoded) = multibase::decode(&key.multibase).expect("multibase decode failed");
-        assert_eq!(decoded.len(), 33, "compressed P-256 point should be 33 bytes");
+        assert_eq!(
+            decoded.len(),
+            33,
+            "compressed P-256 point should be 33 bytes"
+        );
     }
 
     #[test]
