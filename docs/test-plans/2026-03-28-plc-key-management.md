@@ -81,3 +81,46 @@
 | AC2.7 -- PLC log round-trip | `plc_log_round_trip` | N/A |
 | AC2.8 -- get_did_doc/get_plc_log return None when unset | `get_did_doc_returns_none_if_not_stored`, `get_plc_log_returns_none_if_not_stored` | N/A |
 | AC2.9 -- error cases for nonexistent/duplicate DIDs | 7 tests + `error_serialization` (see automated coverage) | N/A |
+
+---
+
+# Phase 3: PDS Discovery & OAuth to Arbitrary PDS
+
+**Automated tests:** `cargo test -p identity-wallet pds_client` (33 tests, 1 ignored)
+
+## Phase 5: DNS TXT Handle Resolution (AC3.1)
+
+| Step | Action | Expected |
+|------|--------|----------|
+| 1 | From the workspace root in the Nix dev shell, run: `cargo test -p identity-wallet test_resolve_handle_dns_txt_integration -- --ignored --nocapture` | Test passes. Output shows a resolved DID starting with `did:plc:` for the handle `jay.bsky.team`. |
+
+## Phase 6: Full OAuth Safari/Deep-Link Flow (AC3.6)
+
+| Step | Action | Expected |
+|------|--------|----------|
+| 1 | Build the app for the iOS Simulator: `cd apps/identity-wallet && cargo tauri ios dev` | App launches in the Simulator. |
+| 2 | Navigate to the claim/auth flow. Enter a valid AT Protocol handle (e.g., your own handle on bsky.social). | The app resolves the handle to a DID (no error displayed). |
+| 3 | Observe that the app discovers the PDS endpoint and fetches OAuth authorization server metadata. | The app opens Safari to the PDS authorization page (not an error screen). |
+| 4 | Authenticate in Safari using the account credentials for that handle. | Safari redirects back to the app via deep-link (`dev.malpercio.identitywallet:/oauth/callback?code=...&state=...`). |
+| 5 | Confirm the app completes the OAuth token exchange and proceeds to the next step (e.g., home screen or PLC operation). | No error displayed. The app has a valid authenticated session against the arbitrary PDS. |
+
+## Human Verification Required (Phase 3)
+
+| Criterion | Why Manual | Steps |
+|-----------|------------|-------|
+| AC3.1 (DNS TXT resolution) | Requires real DNS infrastructure; `#[ignore]` in CI | Phase 5 step 1 |
+| AC3.6 (Full OAuth flow) | Safari redirect + deep-link callback cannot be automated | Phase 6 steps 1-5 |
+
+## Traceability (Phase 3)
+
+| Acceptance Criterion | Automated Test(s) | Manual Step(s) |
+|----------------------|-------------------|----------------|
+| AC3.1 -- resolve_handle via DNS TXT | `test_resolve_handle_dns_txt_integration` (#[ignore]) | Phase 5 |
+| AC3.2 -- HTTP fallback for resolve_handle | `test_try_resolve_http_success`, `test_try_resolve_http_with_whitespace`, `test_try_resolve_http_not_found`, `test_try_resolve_http_server_error` | N/A |
+| AC3.3 -- HANDLE_NOT_FOUND when both fail | `test_resolve_handle_orchestration_nonexistent`, `test_pds_client_error_handle_not_found`, `test_pds_client_error_handle_not_found_serialization` | N/A |
+| AC3.4 -- discover_pds extracts PDS endpoint | `test_discover_pds_extracts_endpoint`, `test_discover_pds_missing_service` | N/A |
+| AC3.5 -- discover_auth_server fetches metadata | `test_discover_auth_server_success`, `test_discover_auth_server_missing_s256`, `test_discover_auth_server_missing_code_response_type` | N/A |
+| AC3.6 -- OAuth PKCE+DPoP flow | 8 PAR/token/URL tests (see automated coverage) | Phase 6 (Safari flow) |
+| AC3.7 -- DID_NOT_FOUND on 404 | `test_discover_pds_did_not_found`, `test_pds_client_error_did_not_found_serialization` | N/A |
+| AC3.8 -- PDS_UNREACHABLE when down | `test_discover_pds_pds_unreachable`, `test_pds_client_error_pds_unreachable_serialization` | N/A |
+| XRPC identity methods | 5 tests (request, sign, get_recommended + errors) | N/A |
