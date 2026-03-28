@@ -217,6 +217,20 @@ pub enum RegisterHandleError {
     Unknown { message: String },
 }
 
+/// Error returned by relay URL configuration commands.
+///
+/// Serializes as `{ "code": "INVALID_URL" | "UNREACHABLE" | "KEYCHAIN_ERROR" }` for the frontend.
+#[derive(Debug, Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RelayConfigError {
+    #[error("invalid relay URL: must be http or https with a non-empty host")]
+    InvalidUrl,
+    #[error("relay is unreachable or did not return a success response")]
+    Unreachable,
+    #[error("failed to save relay URL to device storage")]
+    KeychainError,
+}
+
 /// Response shape from `GET /xrpc/com.atproto.identity.resolveHandle`.
 #[derive(Deserialize)]
 struct ResolveHandleResponse {
@@ -235,6 +249,20 @@ fn map_409_subcode(code: &str) -> CreateAccountError {
             message: format!("409: {other}"),
         },
     }
+}
+
+/// Validate a relay URL: must parse as http or https with a non-empty host.
+/// Strips any trailing slash and returns the normalized URL string.
+fn normalize_relay_url(url: &str) -> Result<String, RelayConfigError> {
+    let parsed = url::Url::parse(url).map_err(|_| RelayConfigError::InvalidUrl)?;
+    match parsed.scheme() {
+        "http" | "https" => {}
+        _ => return Err(RelayConfigError::InvalidUrl),
+    }
+    if parsed.host().is_none() {
+        return Err(RelayConfigError::InvalidUrl);
+    }
+    Ok(url.trim_end_matches('/').to_string())
 }
 
 // ── IPC command ─────────────────────────────────────────────────────────────
@@ -579,6 +607,47 @@ async fn register_handle(
     }
 }
 
+/// Return the saved relay base URL, or `None` if not yet configured.
+///
+/// The frontend calls this on mount to decide whether to show the relay
+/// configuration screen.
+#[tauri::command]
+fn get_relay_url() -> Option<String> {
+    keychain::load_relay_url()
+}
+
+/// Validate `url`, confirm the relay is reachable, save to Keychain, and
+/// initialize the runtime relay client.
+///
+/// After this call succeeds, all subsequent IPC commands that use the relay
+/// will use the saved URL for the remainder of the app session and on all
+/// future launches.
+#[tauri::command]
+async fn save_relay_url(
+    url: String,
+    state: tauri::State<'_, oauth::AppState>,
+) -> Result<(), RelayConfigError> {
+    let normalized = normalize_relay_url(&url)?;
+    let resp = http::RelayClient::new_with_url(normalized.clone())
+        .get("/xrpc/_health")
+        .await
+        .map_err(|_| RelayConfigError::Unreachable)?;
+    if !resp.status().is_success() {
+        tracing::warn!(
+            status = %resp.status(),
+            url = %normalized,
+            "relay health check returned non-success status"
+        );
+        return Err(RelayConfigError::Unreachable);
+    }
+    keychain::store_relay_url(&normalized).map_err(|e| {
+        tracing::error!(error = %e, "failed to save relay URL to Keychain");
+        RelayConfigError::KeychainError
+    })?;
+    state.set_relay_client(normalized);
+    Ok(())
+}
+
 /// Check whether the relay can resolve `handle` to `expected_did` via the ATProto
 /// `resolveHandle` endpoint.
 ///
@@ -627,6 +696,11 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            // Restore relay URL from Keychain if previously configured.
+            if let Some(url) = keychain::load_relay_url() {
+                app.state::<oauth::AppState>().set_relay_client(url);
+            }
+
             let app_handle = app.app_handle().clone();
             app.deep_link().on_open_url(move |event| {
                 let state = app_handle.state::<oauth::AppState>();
@@ -663,6 +737,8 @@ pub fn run() {
             perform_did_ceremony,
             register_handle,
             check_handle_resolution,
+            get_relay_url,
+            save_relay_url,
             home::load_home_data,
             home::log_out,
             oauth::start_oauth_flow,
@@ -983,5 +1059,64 @@ mod tests {
     fn did_ceremony_error_share_storage_failed_serializes_correctly() {
         let json = serde_json::to_value(&DIDCeremonyError::ShareStorageFailed).unwrap();
         assert_eq!(json["code"], "SHARE_STORAGE_FAILED");
+    }
+
+    // -- normalize_relay_url --
+
+    #[test]
+    fn normalize_relay_url_strips_trailing_slash() {
+        assert_eq!(
+            normalize_relay_url("https://relay.example.com/").unwrap(),
+            "https://relay.example.com"
+        );
+    }
+
+    #[test]
+    fn normalize_relay_url_accepts_http_and_https() {
+        assert!(normalize_relay_url("https://relay.example.com").is_ok());
+        assert!(normalize_relay_url("http://localhost:8080").is_ok());
+    }
+
+    #[test]
+    fn normalize_relay_url_rejects_non_http_schemes() {
+        assert!(matches!(
+            normalize_relay_url("ftp://relay.example.com").unwrap_err(),
+            RelayConfigError::InvalidUrl
+        ));
+        assert!(matches!(
+            normalize_relay_url("ws://relay.example.com").unwrap_err(),
+            RelayConfigError::InvalidUrl
+        ));
+    }
+
+    #[test]
+    fn normalize_relay_url_rejects_malformed_input() {
+        assert!(matches!(
+            normalize_relay_url("not-a-url").unwrap_err(),
+            RelayConfigError::InvalidUrl
+        ));
+        assert!(matches!(
+            normalize_relay_url("").unwrap_err(),
+            RelayConfigError::InvalidUrl
+        ));
+    }
+
+    // -- get_relay_url / load_relay_url round-trip --
+
+    #[test]
+    fn get_relay_url_returns_none_before_save() {
+        // The Keychain test mock starts empty in a fresh process; tests that
+        // write to the store must clean up via delete_relay_url_test_only().
+        assert!(get_relay_url().is_none());
+    }
+
+    #[test]
+    fn relay_url_round_trips_through_keychain() {
+        let url = "https://relay.example.com";
+        keychain::store_relay_url(url).unwrap();
+        let loaded = keychain::load_relay_url().unwrap();
+        assert_eq!(loaded, url);
+        // Clean up so this test doesn't affect others sharing the mock store.
+        keychain::delete_relay_url_test_only();
     }
 }
