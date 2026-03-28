@@ -374,7 +374,9 @@ mod tests {
         let client = PdsClient::new();
 
         // Use a handle that will fail both DNS and HTTP (valid domain structure but non-existent)
-        let result = client.resolve_handle("test-nonexistent-12345.example.com").await;
+        let result = client
+            .resolve_handle("test-nonexistent-12345.example.com")
+            .await;
 
         // Should return HandleNotFound since both DNS and HTTP will fail
         match result {
