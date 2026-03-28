@@ -105,7 +105,7 @@ Tauri v2 iOS application — SvelteKit 2 + Svelte 5 frontend running in a native
 - Rust backend -> plc.directory (via `reqwest` HTTP at runtime; used by `PdsClient::discover_pds` to fetch DID documents)
 - Rust backend -> arbitrary PDS endpoints (via `reqwest` HTTP at runtime; used by `PdsClient` for OAuth discovery, PAR, token exchange, and XRPC identity methods)
 - Rust backend -> `hickory-resolver` (workspace dep: DNS TXT resolution for ATProto handle verification in `pds_client::try_resolve_dns`)
-- Rust backend -> `urlencoding` (local dep: URL-encoding for OAuth authorize URL construction in `PdsClient::build_pds_authorize_url`)
+- Rust backend -> `urlencoding` (workspace dep: URL-encoding for OAuth authorize URL construction in `PdsClient::build_pds_authorize_url`)
 - Rust backend -> iOS Keychain (via `security-framework` crate with `OSX_10_12` feature for SE access control APIs)
 - Rust backend -> Secure Enclave hardware (real iOS device only; via `security-framework` `SecKey`/`GenerateKeyOptions`/`Token::SecureEnclave`)
 - `src-tauri/gen/` -> NOT tracked in git; generated per-developer by `cargo tauri ios init` (gitignored)

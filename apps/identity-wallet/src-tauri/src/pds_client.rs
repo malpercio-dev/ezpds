@@ -10,6 +10,12 @@ use std::time::Duration;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
+/// OAuth client ID for the identity wallet application
+const CLIENT_ID: &str = "dev.malpercio.identitywallet";
+
+/// OAuth redirect URI for the identity wallet application
+const REDIRECT_URI: &str = "dev.malpercio.identitywallet:/oauth/callback";
+
 /// Error type for PDS client operations.
 ///
 /// Serializes to frontend with `#[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]`,
@@ -44,7 +50,7 @@ pub enum PdsClientError {
 
     /// PAR or token exchange failed.
     #[error("oauth failed: {message}")]
-    OAuthFailed { message: String },
+    OauthFailed { message: String },
 }
 
 /// PLC directory DID document response.
@@ -146,7 +152,10 @@ impl PdsClient {
     /// Construct a new PdsClient with the default plc.directory URL.
     pub fn new() -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()
+                .unwrap_or_else(|_| Client::new()),
             plc_directory_url: "https://plc.directory".to_string(),
         }
     }
@@ -157,46 +166,49 @@ impl PdsClient {
     #[cfg(test)]
     pub fn new_for_test(plc_directory_url: String) -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()
+                .unwrap_or_else(|_| Client::new()),
             plc_directory_url,
         }
     }
 
     /// Resolve a handle to a DID via DNS TXT lookup with HTTP fallback.
     ///
-    /// Verifies:
-    /// - AC3.1: DNS TXT lookup for `_atproto.{handle}` returns a DID
-    /// - AC3.2: HTTP fallback to `/.well-known/atproto-did` works
-    /// - AC3.3: Returns `HANDLE_NOT_FOUND` when neither method succeeds
+    /// Attempts DNS TXT lookup for `_atproto.{handle}` first, then falls back to HTTP
+    /// `/.well-known/atproto-did` if DNS fails or returns no records.
+    /// Returns `HANDLE_NOT_FOUND` only when both methods fail.
     pub async fn resolve_handle(&self, handle: &str) -> Result<String, PdsClientError> {
         // Try DNS TXT lookup first
-        match try_resolve_dns(handle).await {
+        let dns_error = match try_resolve_dns(handle).await {
             Ok(Some(did)) => return Ok(did),
-            Ok(None) => {} // Fall through to HTTP
-            Err(_e) => {
-                // DNS transport error, but we'll try HTTP as fallback
-                // Return this error only if HTTP also fails
-            }
-        }
+            Ok(None) => None,
+            Err(e) => Some(e),
+        };
 
         // Try HTTP well-known lookup
         let http_url = format!("https://{}/.well-known/atproto-did", handle);
         match try_resolve_http(&self.client, &http_url).await {
             Ok(Some(did)) => return Ok(did),
-            Ok(None) => {} // Both failed
+            Ok(None) => {
+                // Both DNS and HTTP failed; if DNS had a transport error, surface it
+                if let Some(dns_err) = dns_error {
+                    return Err(dns_err);
+                }
+            }
             Err(e) => return Err(e),
         }
 
-        // Neither DNS nor HTTP succeeded
+        // Neither DNS nor HTTP succeeded (both returned "not found", no transport errors)
         Err(PdsClientError::HandleNotFound)
     }
 
     /// Fetch the DID document from plc.directory and extract the PDS endpoint.
     ///
-    /// Verifies:
-    /// - AC3.4: PDS endpoint extracted from DID document
-    /// - AC3.7: Returns `DID_NOT_FOUND` on 404
-    /// - AC3.8: Returns `PDS_UNREACHABLE` when PDS endpoint is down
+    /// Fetches the DID document from plc.directory, extracts the atproto_pds service
+    /// endpoint, and verifies it is reachable via a HEAD request.
+    /// Returns `DID_NOT_FOUND` on 404, `PDS_UNREACHABLE` if the endpoint is down.
     pub async fn discover_pds(
         &self,
         did: &str,
@@ -243,15 +255,9 @@ impl PdsClient {
         let pds_endpoint = &pds_service.endpoint;
 
         // Verify PDS reachability with a HEAD request (5-second timeout)
-        let timeout_client = Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .map_err(|e| PdsClientError::PdsUnreachable {
-                reason: format!("failed to create HTTP client: {}", e),
-            })?;
-
-        timeout_client
+        self.client
             .head(pds_endpoint)
+            .timeout(Duration::from_secs(5))
             .send()
             .await
             .map_err(|e| PdsClientError::PdsUnreachable {
@@ -263,10 +269,9 @@ impl PdsClient {
 
     /// Fetch OAuth authorization server metadata from the PDS.
     ///
-    /// Verifies:
-    /// - AC3.5: Auth server metadata is fetched and parsed correctly
-    /// - Validates that `response_types_supported` includes "code"
-    /// - Validates that `code_challenge_methods_supported` includes "S256"
+    /// Fetches `/.well-known/oauth-authorization-server` and validates that
+    /// `response_types_supported` includes "code" and `code_challenge_methods_supported`
+    /// includes "S256".
     pub async fn discover_auth_server(
         &self,
         pds_url: &str,
@@ -278,13 +283,13 @@ impl PdsClient {
                 .get(&url)
                 .send()
                 .await
-                .map_err(|e| PdsClientError::PdsUnreachable {
-                    reason: format!("failed to fetch OAuth metadata: {}", e),
+                .map_err(|e| PdsClientError::NetworkError {
+                    message: format!("failed to fetch OAuth metadata: {}", e),
                 })?;
 
         if !response.status().is_success() {
-            return Err(PdsClientError::PdsUnreachable {
-                reason: format!(
+            return Err(PdsClientError::InvalidResponse {
+                message: format!(
                     "OAuth metadata fetch returned {} from {}",
                     response.status(),
                     pds_url
@@ -325,7 +330,7 @@ impl PdsClient {
 
     /// Perform a Pushed Authorization Request to an arbitrary PDS.
     ///
-    /// Verifies: AC3.6 (PAR sends correct request with PKCE, DPoP, and optional login_hint)
+    /// Sends a PAR request with PKCE challenge, DPoP proof, and optional login_hint.
     pub async fn pds_par(
         &self,
         metadata: &AuthServerMetadata,
@@ -345,11 +350,8 @@ impl PdsClient {
             ("code_challenge_method", "S256".to_string()),
             ("code_challenge", pkce_challenge.to_string()),
             ("state", state_param.to_string()),
-            ("client_id", "dev.malpercio.identitywallet".to_string()),
-            (
-                "redirect_uri",
-                "dev.malpercio.identitywallet:/oauth/callback".to_string(),
-            ),
+            ("client_id", CLIENT_ID.to_string()),
+            ("redirect_uri", REDIRECT_URI.to_string()),
             ("scope", "atproto transition:generic".to_string()),
             ("dpop_jkt", dpop_jkt.to_string()),
         ];
@@ -365,14 +367,14 @@ impl PdsClient {
             .form(&form_data)
             .send()
             .await
-            .map_err(|e| PdsClientError::OAuthFailed {
+            .map_err(|e| PdsClientError::OauthFailed {
                 message: format!("PAR request failed: {}", e),
             })?;
 
         let status = response.status();
         if !status.is_success() {
             let error_body = response.text().await.unwrap_or_default();
-            return Err(PdsClientError::OAuthFailed {
+            return Err(PdsClientError::OauthFailed {
                 message: format!("PAR returned {}: {}", status, error_body),
             });
         }
@@ -381,7 +383,7 @@ impl PdsClient {
             response
                 .json::<PdsParResponse>()
                 .await
-                .map_err(|e| PdsClientError::OAuthFailed {
+                .map_err(|e| PdsClientError::OauthFailed {
                     message: format!("failed to parse PAR response: {}", e),
                 })?;
 
@@ -389,8 +391,6 @@ impl PdsClient {
     }
 
     /// Exchange authorization code for tokens at an arbitrary PDS.
-    ///
-    /// Verifies: AC3.6 (token exchange sends correct request with code, verifier, and DPoP)
     ///
     /// Returns the raw response so the caller can handle nonce retry logic.
     /// Only transport-level failures are mapped to PdsClientError; HTTP error statuses
@@ -407,12 +407,9 @@ impl PdsClient {
         let form_data = vec![
             ("grant_type", "authorization_code"),
             ("code", code),
-            (
-                "redirect_uri",
-                "dev.malpercio.identitywallet:/oauth/callback",
-            ),
+            ("redirect_uri", REDIRECT_URI),
             ("code_verifier", pkce_verifier),
-            ("client_id", "dev.malpercio.identitywallet"),
+            ("client_id", CLIENT_ID),
         ];
 
         self.client
@@ -421,7 +418,7 @@ impl PdsClient {
             .form(&form_data)
             .send()
             .await
-            .map_err(|e| PdsClientError::OAuthFailed {
+            .map_err(|e| PdsClientError::OauthFailed {
                 message: format!("token exchange request failed: {}", e),
             })
     }
@@ -435,8 +432,9 @@ impl PdsClient {
         login_hint: Option<&str>,
     ) -> String {
         let mut url = format!(
-            "{}?client_id=dev.malpercio.identitywallet&request_uri={}",
+            "{}?client_id={}&request_uri={}",
             metadata.authorization_endpoint,
+            CLIENT_ID,
             urlencoding::encode(request_uri)
         );
 
@@ -505,7 +503,8 @@ async fn try_resolve_dns(handle: &str) -> Result<Option<String>, PdsClientError>
 }
 
 /// HTTP well-known fetch. `GET {url}` and return trimmed body on 2xx,
-/// `Ok(None)` on non-2xx. The caller constructs the full URL.
+/// `Ok(None)` on 4xx (handle not found), `Err(NetworkError)` on transport or 5xx.
+/// The caller constructs the full URL.
 async fn try_resolve_http(
     client: &reqwest::Client,
     url: &str,
@@ -519,9 +518,14 @@ async fn try_resolve_http(
                         message: format!("failed to read response body: {}", e),
                     }),
                 }
-            } else {
-                // Non-2xx status, return None to allow fallback
+            } else if response.status().is_client_error() {
+                // 4xx = handle not found at this endpoint
                 Ok(None)
+            } else {
+                // 5xx = temporary server error
+                Err(PdsClientError::NetworkError {
+                    message: format!("server error from {}: {}", url, response.status()),
+                })
             }
         }
         Err(e) => {
@@ -556,8 +560,10 @@ pub async fn request_plc_operation_signature(
     if resp.status().is_success() {
         Ok(())
     } else {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
         Err(PdsClientError::NetworkError {
-            message: format!("request_plc_operation_signature returned {}", resp.status()),
+            message: format!("request_plc_operation_signature returned {}: {}", status, body),
         })
     }
 }
@@ -575,8 +581,10 @@ pub async fn sign_plc_operation(
         })?;
 
     if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
         return Err(PdsClientError::NetworkError {
-            message: format!("sign_plc_operation returned {}", resp.status()),
+            message: format!("sign_plc_operation returned {}: {}", status, body),
         });
     }
 
@@ -599,8 +607,10 @@ pub async fn get_recommended_did_credentials(
         })?;
 
     if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
         return Err(PdsClientError::NetworkError {
-            message: format!("get_recommended_did_credentials returned {}", resp.status()),
+            message: format!("get_recommended_did_credentials returned {}: {}", status, body),
         });
     }
 
@@ -643,10 +653,10 @@ mod tests {
     }
 
     // ============================================================================
-    // TASK 4 & 5: discover_pds and discover_auth_server tests
+    // discover_pds and discover_auth_server tests
     // ============================================================================
 
-    /// AC3.4: PDS endpoint extracted from DID doc
+    /// PDS endpoint is extracted from DID document
     #[tokio::test]
     async fn test_discover_pds_extracts_endpoint() {
         let mock_server = MockServer::start();
@@ -690,7 +700,7 @@ mod tests {
         assert_eq!(doc.rotation_keys.len(), 2);
     }
 
-    /// AC3.7: DID_NOT_FOUND when plc.directory returns 404
+    /// DID_NOT_FOUND error when plc.directory returns 404
     #[tokio::test]
     async fn test_discover_pds_did_not_found() {
         let mock_server = MockServer::start();
@@ -712,7 +722,7 @@ mod tests {
         }
     }
 
-    /// AC3.8: PDS_UNREACHABLE when PDS endpoint is down
+    /// PDS_UNREACHABLE error when PDS endpoint is down
     #[tokio::test]
     async fn test_discover_pds_pds_unreachable() {
         let mock_server = MockServer::start();
@@ -749,7 +759,7 @@ mod tests {
         }
     }
 
-    /// AC3.8: InvalidResponse when atproto_pds service is missing
+    /// InvalidResponse error when atproto_pds service is missing
     #[tokio::test]
     async fn test_discover_pds_missing_service() {
         let mock_server = MockServer::start();
@@ -781,7 +791,7 @@ mod tests {
         }
     }
 
-    /// AC3.5: Auth server metadata is fetched and validated
+    /// Auth server metadata is fetched and validated
     #[tokio::test]
     async fn test_discover_auth_server_success() {
         let mock_server = MockServer::start();
@@ -902,7 +912,7 @@ mod tests {
         }
     }
 
-    /// discover_auth_server returns PdsUnreachable on HTTP error
+    /// discover_auth_server returns InvalidResponse on HTTP error
     #[tokio::test]
     async fn test_discover_auth_server_pds_unreachable() {
         let mock_server = MockServer::start();
@@ -918,25 +928,25 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            PdsClientError::PdsUnreachable { .. } => {
-                // Expected
+            PdsClientError::InvalidResponse { .. } => {
+                // Expected: HTTP errors are InvalidResponse, not PdsUnreachable
             }
-            e => panic!("Expected PdsUnreachable, got: {:?}", e),
+            e => panic!("Expected InvalidResponse, got: {:?}", e),
         }
     }
 
     // ============================================================================
-    // TASK 2 & 3: resolve_handle tests
+    // resolve_handle tests
     // ============================================================================
 
-    /// AC3.3: HANDLE_NOT_FOUND is returned correctly (error type test)
+    /// HANDLE_NOT_FOUND error is returned correctly
     #[test]
     fn test_pds_client_error_handle_not_found() {
         let error = PdsClientError::HandleNotFound;
         assert_eq!(format!("{}", error), "handle not found");
     }
 
-    /// AC3.1: DNS TXT resolution (integration test, ignored for CI)
+    /// DNS TXT resolution (integration test, ignored for CI)
     ///
     /// This requires real DNS access and tests against a known public handle.
     /// Run manually with `cargo test -- --ignored --nocapture` if DNS is available.
@@ -960,10 +970,10 @@ mod tests {
     }
 
     // ============================================================================
-    // TASK 2 & 3: resolve_handle tests with httpmock
+    // HTTP fallback resolution tests
     // ============================================================================
 
-    /// AC3.2: HTTP fallback resolves handle to DID
+    /// HTTP fallback resolves handle to DID
     #[tokio::test]
     async fn test_try_resolve_http_success() {
         let mock_server = MockServer::start();
@@ -983,7 +993,7 @@ mod tests {
         assert_eq!(result.unwrap(), Some("did:plc:test123".to_string()));
     }
 
-    /// AC3.2: HTTP fallback with whitespace trimming
+    /// HTTP fallback handles response body with whitespace
     #[tokio::test]
     async fn test_try_resolve_http_with_whitespace() {
         let mock_server = MockServer::start();
@@ -1003,7 +1013,7 @@ mod tests {
         assert_eq!(result.unwrap(), Some("did:plc:test123".to_string()));
     }
 
-    /// AC3.3: HTTP fallback returns Ok(None) on 404
+    /// HTTP fallback returns Ok(None) on 404 client error
     #[tokio::test]
     async fn test_try_resolve_http_not_found() {
         let mock_server = MockServer::start();
@@ -1023,7 +1033,7 @@ mod tests {
         assert_eq!(result.unwrap(), None);
     }
 
-    /// AC3.3: HTTP fallback returns Ok(None) on 500
+    /// HTTP fallback returns NetworkError on 500 server error
     #[tokio::test]
     async fn test_try_resolve_http_server_error() {
         let mock_server = MockServer::start();
@@ -1039,15 +1049,20 @@ mod tests {
         let url = format!("{}/.well-known/atproto-did", mock_server.base_url());
         let result = try_resolve_http(&client, &url).await;
 
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), None);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PdsClientError::NetworkError { .. } => {
+                // Expected: 5xx is a server error, not a missing handle
+            }
+            e => panic!("Expected NetworkError on 5xx, got: {:?}", e),
+        }
     }
 
     // ============================================================================
-    // TASK 6 & 7: PAR and token exchange tests
+    // PAR and token exchange tests
     // ============================================================================
 
-    /// AC3.6: PAR sends correct request with PKCE, DPoP, and optional login_hint
+    /// PAR sends correct request with PKCE, DPoP, and optional login_hint
     #[tokio::test]
     async fn test_pds_par_sends_correct_request() {
         let mock_server = MockServer::start();
@@ -1099,7 +1114,7 @@ mod tests {
         assert_eq!(mock_par.hits(), 1);
     }
 
-    /// AC3.6: PAR without login_hint
+    /// PAR without login_hint
     #[tokio::test]
     async fn test_pds_par_without_login_hint() {
         let mock_server = MockServer::start();
@@ -1135,7 +1150,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    /// AC3.6: PAR failure returns OAuthFailed
+    /// PAR failure returns OauthFailed
     #[tokio::test]
     async fn test_pds_par_failure() {
         let mock_server = MockServer::start();
@@ -1170,14 +1185,14 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            PdsClientError::OAuthFailed { .. } => {
+            PdsClientError::OauthFailed { .. } => {
                 // Expected
             }
-            e => panic!("Expected OAuthFailed, got: {:?}", e),
+            e => panic!("Expected OauthFailed, got: {:?}", e),
         }
     }
 
-    /// AC3.6: Token exchange sends correct request
+    /// Token exchange sends correct request
     #[tokio::test]
     async fn test_pds_token_exchange_sends_correct_request() {
         let mock_server = MockServer::start();
@@ -1217,7 +1232,7 @@ mod tests {
         assert_eq!(response.status().as_u16(), 200);
     }
 
-    /// AC3.6: Token exchange returns raw response on non-2xx
+    /// Token exchange returns raw response on non-2xx
     #[tokio::test]
     async fn test_pds_token_exchange_returns_raw_response_on_error() {
         let mock_server = MockServer::start();
@@ -1253,7 +1268,7 @@ mod tests {
         assert_eq!(response.status().as_u16(), 400);
     }
 
-    /// AC3.6: Token exchange to unreachable endpoint returns OAuthFailed
+    /// Token exchange to unreachable endpoint returns OauthFailed
     #[tokio::test]
     async fn test_pds_token_exchange_unreachable_endpoint() {
         let metadata = AuthServerMetadata {
@@ -1275,10 +1290,10 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            PdsClientError::OAuthFailed { .. } => {
+            PdsClientError::OauthFailed { .. } => {
                 // Expected
             }
-            e => panic!("Expected OAuthFailed, got: {:?}", e),
+            e => panic!("Expected OauthFailed, got: {:?}", e),
         }
     }
 
@@ -1564,7 +1579,7 @@ mod tests {
         assert!(creds.also_known_as.is_some());
     }
 
-    /// AC3.3 resolve_handle orchestration: handle fails both DNS and HTTP
+    /// resolve_handle returns HandleNotFound when both DNS and HTTP fail
     /// This test uses a nonexistent .test TLD which DNS will reject, then attempts HTTP
     /// which will fail due to inability to connect. Both failures result in HandleNotFound.
     #[tokio::test]
@@ -1589,7 +1604,7 @@ mod tests {
         }
     }
 
-    /// AC3.3 error serialization: HandleNotFound serializes with code "HANDLE_NOT_FOUND"
+    /// HandleNotFound error serializes with code "HANDLE_NOT_FOUND"
     #[test]
     fn test_pds_client_error_handle_not_found_serialization() {
         let error = PdsClientError::HandleNotFound;
@@ -1597,7 +1612,7 @@ mod tests {
         assert!(json.contains("\"code\":\"HANDLE_NOT_FOUND\""));
     }
 
-    /// AC3.7 error serialization: DidNotFound serializes with code "DID_NOT_FOUND"
+    /// DidNotFound error serializes with code "DID_NOT_FOUND"
     #[test]
     fn test_pds_client_error_did_not_found_serialization() {
         let error = PdsClientError::DidNotFound;
@@ -1605,7 +1620,7 @@ mod tests {
         assert!(json.contains("\"code\":\"DID_NOT_FOUND\""));
     }
 
-    /// AC3.8 error serialization: PdsUnreachable serializes with code "PDS_UNREACHABLE"
+    /// PdsUnreachable error serializes with code "PDS_UNREACHABLE"
     /// and does NOT include "reason" (because it's #[serde(skip)])
     #[test]
     fn test_pds_client_error_pds_unreachable_serialization() {
@@ -1653,6 +1668,87 @@ mod tests {
         );
 
         let result = get_recommended_did_credentials(&oauth_client).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PdsClientError::NetworkError { .. } => {
+                // Expected
+            }
+            e => panic!("Expected NetworkError, got: {:?}", e),
+        }
+    }
+
+    /// NetworkError error serializes with code "NETWORK_ERROR"
+    #[test]
+    fn test_pds_client_error_network_error_serialization() {
+        let error = PdsClientError::NetworkError {
+            message: "connection refused".to_string(),
+        };
+        let json = serde_json::to_string(&error).expect("serialization failed");
+        assert!(json.contains("\"code\":\"NETWORK_ERROR\""));
+    }
+
+    /// InvalidResponse error serializes with code "INVALID_RESPONSE"
+    #[test]
+    fn test_pds_client_error_invalid_response_serialization() {
+        let error = PdsClientError::InvalidResponse {
+            message: "missing required field".to_string(),
+        };
+        let json = serde_json::to_string(&error).expect("serialization failed");
+        assert!(json.contains("\"code\":\"INVALID_RESPONSE\""));
+    }
+
+    /// OauthFailed error serializes with code "OAUTH_FAILED"
+    #[test]
+    fn test_pds_client_error_oauth_failed_serialization() {
+        let error = PdsClientError::OauthFailed {
+            message: "invalid_grant".to_string(),
+        };
+        let json = serde_json::to_string(&error).expect("serialization failed");
+        assert!(json.contains("\"code\":\"OAUTH_FAILED\""));
+    }
+
+    /// sign_plc_operation returns NetworkError on HTTP error
+    #[tokio::test]
+    async fn test_sign_plc_operation_error() {
+        use std::sync::{Arc, Mutex};
+
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.identity.signPlcOperation");
+            then.status(400).json_body(serde_json::json!({
+                "error": "invalid_token"
+            }));
+        });
+
+        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
+            access_token: "test_access_token".to_string(),
+            refresh_token: "test_refresh_token".to_string(),
+            expires_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 3600,
+            dpop_nonce: None,
+        }));
+
+        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
+        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
+            keypair,
+            session,
+            mock_server.base_url(),
+        );
+
+        let request = SignPlcOperationRequest {
+            token: "test_email_token".to_string(),
+            rotation_keys: None,
+            also_known_as: None,
+            verification_methods: None,
+            services: None,
+        };
+
+        let result = sign_plc_operation(&oauth_client, &request).await;
         assert!(result.is_err());
         match result.unwrap_err() {
             PdsClientError::NetworkError { .. } => {
