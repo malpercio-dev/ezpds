@@ -330,6 +330,132 @@ impl PdsClient {
 
         Ok(metadata)
     }
+
+    /// Perform a Pushed Authorization Request to an arbitrary PDS.
+    ///
+    /// Verifies: AC3.6 (PAR sends correct request with PKCE, DPoP, and optional login_hint)
+    pub async fn pds_par(
+        &self,
+        metadata: &AuthServerMetadata,
+        pkce_challenge: &str,
+        state_param: &str,
+        dpop_proof: &str,
+        dpop_jkt: &str,
+        login_hint: Option<&str>,
+    ) -> Result<PdsParResponse, PdsClientError> {
+        let par_url = metadata
+            .pushed_authorization_request_endpoint
+            .clone()
+            .unwrap_or_else(|| format!("{}/oauth/par", metadata.issuer));
+
+        let mut form_data = vec![
+            ("response_type", "code".to_string()),
+            ("code_challenge_method", "S256".to_string()),
+            ("code_challenge", pkce_challenge.to_string()),
+            ("state", state_param.to_string()),
+            ("client_id", "dev.malpercio.identitywallet".to_string()),
+            (
+                "redirect_uri",
+                "dev.malpercio.identitywallet:/oauth/callback".to_string(),
+            ),
+            ("scope", "atproto transition:generic".to_string()),
+            ("dpop_jkt", dpop_jkt.to_string()),
+        ];
+
+        if let Some(hint) = login_hint {
+            form_data.push(("login_hint", hint.to_string()));
+        }
+
+        let response = self
+            .client
+            .post(&par_url)
+            .header("DPoP", dpop_proof)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .form(&form_data)
+            .send()
+            .await
+            .map_err(|e| PdsClientError::OAuthFailed {
+                message: format!("PAR request failed: {}", e),
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_body = response.text().await.unwrap_or_default();
+            return Err(PdsClientError::OAuthFailed {
+                message: format!("PAR returned {}: {}", status, error_body),
+            });
+        }
+
+        let json_resp =
+            response
+                .json::<PdsParResponse>()
+                .await
+                .map_err(|e| PdsClientError::OAuthFailed {
+                    message: format!("failed to parse PAR response: {}", e),
+                })?;
+
+        Ok(json_resp)
+    }
+
+    /// Exchange authorization code for tokens at an arbitrary PDS.
+    ///
+    /// Verifies: AC3.6 (token exchange sends correct request with code, verifier, and DPoP)
+    ///
+    /// Returns the raw response so the caller can handle nonce retry logic.
+    /// Only transport-level failures are mapped to PdsClientError; HTTP error statuses
+    /// are returned as-is for the caller to inspect.
+    pub async fn pds_token_exchange(
+        &self,
+        metadata: &AuthServerMetadata,
+        code: &str,
+        pkce_verifier: &str,
+        dpop_proof: &str,
+    ) -> Result<reqwest::Response, PdsClientError> {
+        let token_url = &metadata.token_endpoint;
+
+        let form_data = vec![
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            (
+                "redirect_uri",
+                "dev.malpercio.identitywallet:/oauth/callback",
+            ),
+            ("code_verifier", pkce_verifier),
+            ("client_id", "dev.malpercio.identitywallet"),
+        ];
+
+        self.client
+            .post(token_url)
+            .header("DPoP", dpop_proof)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .form(&form_data)
+            .send()
+            .await
+            .map_err(|e| PdsClientError::OAuthFailed {
+                message: format!("token exchange request failed: {}", e),
+            })
+    }
+
+    /// Build the browser redirect URL for OAuth authorization.
+    ///
+    /// Constructs `{authorization_endpoint}?client_id=...&request_uri=...` with optional login_hint.
+    pub fn build_pds_authorize_url(
+        metadata: &AuthServerMetadata,
+        request_uri: &str,
+        login_hint: Option<&str>,
+    ) -> String {
+        let mut url = format!(
+            "{}?client_id=dev.malpercio.identitywallet&request_uri={}",
+            metadata.authorization_endpoint,
+            urlencoding::encode(request_uri)
+        );
+
+        if let Some(hint) = login_hint {
+            url.push_str(&format!("&login_hint={}", urlencoding::encode(hint)));
+        }
+
+        url
+    }
 }
 
 impl Default for PdsClient {
@@ -415,6 +541,87 @@ async fn try_resolve_http(
             })
         }
     }
+}
+
+// ============================================================================
+// XRPC Identity methods (require DPoP-authenticated OAuthClient)
+// ============================================================================
+
+/// Request a PLC operation signature from the PDS.
+///
+/// Triggers email verification on the PDS.
+pub async fn request_plc_operation_signature(
+    client: &crate::oauth_client::OAuthClient,
+) -> Result<(), PdsClientError> {
+    let resp = client
+        .post(
+            "/xrpc/com.atproto.identity.requestPlcOperationSignature",
+            &serde_json::json!({}),
+        )
+        .await
+        .map_err(|_| PdsClientError::NetworkError {
+            message: "request_plc_operation_signature failed".to_string(),
+        })?;
+
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(PdsClientError::NetworkError {
+            message: format!("request_plc_operation_signature returned {}", resp.status()),
+        })
+    }
+}
+
+/// Sign a PLC operation with credentials from the PDS.
+pub async fn sign_plc_operation(
+    client: &crate::oauth_client::OAuthClient,
+    request: &SignPlcOperationRequest,
+) -> Result<SignPlcOperationResponse, PdsClientError> {
+    let resp = client
+        .post("/xrpc/com.atproto.identity.signPlcOperation", request)
+        .await
+        .map_err(|_| PdsClientError::NetworkError {
+            message: "sign_plc_operation failed".to_string(),
+        })?;
+
+    if !resp.status().is_success() {
+        return Err(PdsClientError::NetworkError {
+            message: format!("sign_plc_operation returned {}", resp.status()),
+        });
+    }
+
+    resp.json::<SignPlcOperationResponse>()
+        .await
+        .map_err(|e| PdsClientError::NetworkError {
+            message: format!("failed to parse sign_plc_operation response: {}", e),
+        })
+}
+
+/// Fetch recommended credentials for the DID from the PDS.
+pub async fn get_recommended_did_credentials(
+    client: &crate::oauth_client::OAuthClient,
+) -> Result<RecommendedCredentials, PdsClientError> {
+    let resp = client
+        .get("/xrpc/com.atproto.identity.getRecommendedDidCredentials")
+        .await
+        .map_err(|_| PdsClientError::NetworkError {
+            message: "get_recommended_did_credentials failed".to_string(),
+        })?;
+
+    if !resp.status().is_success() {
+        return Err(PdsClientError::NetworkError {
+            message: format!("get_recommended_did_credentials returned {}", resp.status()),
+        });
+    }
+
+    resp.json::<RecommendedCredentials>()
+        .await
+        .map_err(|e| PdsClientError::NetworkError {
+            message: format!(
+                "failed to parse get_recommended_did_credentials response: {}",
+                e
+            ),
+        })
 }
 
 #[cfg(test)]
@@ -809,5 +1016,528 @@ mod tests {
                 eprintln!("Got different error (may be expected in sandbox): {}", e);
             }
         }
+    }
+
+    // ============================================================================
+    // TASK 6 & 7: PAR and token exchange tests
+    // ============================================================================
+
+    /// AC3.6: PAR sends correct request with PKCE, DPoP, and optional login_hint
+    #[tokio::test]
+    async fn test_pds_par_sends_correct_request() {
+        let mock_server = MockServer::start();
+
+        let mock_par = mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/oauth/par")
+                .header_exists("DPoP")
+                .header_exists("Content-Type");
+            then.status(200).json_body(serde_json::json!({
+                "request_uri": "urn:ietf:params:oauth:request_uri:test",
+                "expires_in": 60
+            }));
+        });
+
+        let metadata = AuthServerMetadata {
+            issuer: mock_server.base_url(),
+            authorization_endpoint: format!("{}/oauth/authorize", mock_server.base_url()),
+            token_endpoint: format!("{}/oauth/token", mock_server.base_url()),
+            pushed_authorization_request_endpoint: Some(format!(
+                "{}/oauth/par",
+                mock_server.base_url()
+            )),
+            response_types_supported: vec!["code".to_string()],
+            grant_types_supported: vec!["authorization_code".to_string()],
+            code_challenge_methods_supported: vec!["S256".to_string()],
+            dpop_signing_alg_values_supported: Some(vec!["ES256".to_string()]),
+            scopes_supported: Some(vec!["atproto".to_string()]),
+        };
+
+        let client = PdsClient::new();
+        let result = client
+            .pds_par(
+                &metadata,
+                "test_pkce_challenge",
+                "test_state",
+                "test_dpop_proof",
+                "test_dpop_jkt",
+                Some("user@example.com"),
+            )
+            .await;
+
+        assert!(result.is_ok());
+        let par_response = result.unwrap();
+        assert_eq!(
+            par_response.request_uri,
+            "urn:ietf:params:oauth:request_uri:test"
+        );
+        assert_eq!(par_response.expires_in, 60);
+        assert_eq!(mock_par.hits(), 1);
+    }
+
+    /// AC3.6: PAR without login_hint
+    #[tokio::test]
+    async fn test_pds_par_without_login_hint() {
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST).path("/oauth/par");
+            then.status(200).json_body(serde_json::json!({
+                "request_uri": "urn:ietf:params:oauth:request_uri:test2",
+                "expires_in": 120
+            }));
+        });
+
+        let metadata = AuthServerMetadata {
+            issuer: mock_server.base_url(),
+            authorization_endpoint: format!("{}/oauth/authorize", mock_server.base_url()),
+            token_endpoint: format!("{}/oauth/token", mock_server.base_url()),
+            pushed_authorization_request_endpoint: Some(format!(
+                "{}/oauth/par",
+                mock_server.base_url()
+            )),
+            response_types_supported: vec!["code".to_string()],
+            grant_types_supported: vec!["authorization_code".to_string()],
+            code_challenge_methods_supported: vec!["S256".to_string()],
+            dpop_signing_alg_values_supported: None,
+            scopes_supported: None,
+        };
+
+        let client = PdsClient::new();
+        let result = client
+            .pds_par(&metadata, "challenge", "state", "proof", "jkt", None)
+            .await;
+
+        assert!(result.is_ok());
+    }
+
+    /// AC3.6: PAR failure returns OAuthFailed
+    #[tokio::test]
+    async fn test_pds_par_failure() {
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST).path("/oauth/par");
+            then.status(400).json_body(serde_json::json!({
+                "error": "invalid_request",
+                "error_description": "missing code_challenge"
+            }));
+        });
+
+        let metadata = AuthServerMetadata {
+            issuer: mock_server.base_url(),
+            authorization_endpoint: format!("{}/oauth/authorize", mock_server.base_url()),
+            token_endpoint: format!("{}/oauth/token", mock_server.base_url()),
+            pushed_authorization_request_endpoint: Some(format!(
+                "{}/oauth/par",
+                mock_server.base_url()
+            )),
+            response_types_supported: vec!["code".to_string()],
+            grant_types_supported: vec!["authorization_code".to_string()],
+            code_challenge_methods_supported: vec!["S256".to_string()],
+            dpop_signing_alg_values_supported: None,
+            scopes_supported: None,
+        };
+
+        let client = PdsClient::new();
+        let result = client
+            .pds_par(&metadata, "challenge", "state", "proof", "jkt", None)
+            .await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PdsClientError::OAuthFailed { .. } => {
+                // Expected
+            }
+            e => panic!("Expected OAuthFailed, got: {:?}", e),
+        }
+    }
+
+    /// AC3.6: Token exchange sends correct request
+    #[tokio::test]
+    async fn test_pds_token_exchange_sends_correct_request() {
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/oauth/token")
+                .header_exists("DPoP")
+                .header_exists("Content-Type");
+            then.status(200).json_body(serde_json::json!({
+                "access_token": "test_access_token",
+                "token_type": "DPoP",
+                "expires_in": 300,
+                "refresh_token": "test_refresh_token",
+                "scope": "atproto transition:generic"
+            }));
+        });
+
+        let metadata = AuthServerMetadata {
+            issuer: mock_server.base_url(),
+            authorization_endpoint: format!("{}/oauth/authorize", mock_server.base_url()),
+            token_endpoint: format!("{}/oauth/token", mock_server.base_url()),
+            pushed_authorization_request_endpoint: None,
+            response_types_supported: vec!["code".to_string()],
+            grant_types_supported: vec!["authorization_code".to_string()],
+            code_challenge_methods_supported: vec!["S256".to_string()],
+            dpop_signing_alg_values_supported: None,
+            scopes_supported: None,
+        };
+
+        let client = PdsClient::new();
+        let result = client
+            .pds_token_exchange(&metadata, "test_code", "test_verifier", "test_dpop_proof")
+            .await;
+
+        assert!(result.is_ok());
+        let response = result.unwrap();
+        assert_eq!(response.status().as_u16(), 200);
+    }
+
+    /// AC3.6: Token exchange returns raw response on non-2xx
+    #[tokio::test]
+    async fn test_pds_token_exchange_returns_raw_response_on_error() {
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST).path("/oauth/token");
+            then.status(400).json_body(serde_json::json!({
+                "error": "use_dpop_nonce",
+                "error_description": "nonce required"
+            }));
+        });
+
+        let metadata = AuthServerMetadata {
+            issuer: mock_server.base_url(),
+            authorization_endpoint: format!("{}/oauth/authorize", mock_server.base_url()),
+            token_endpoint: format!("{}/oauth/token", mock_server.base_url()),
+            pushed_authorization_request_endpoint: None,
+            response_types_supported: vec!["code".to_string()],
+            grant_types_supported: vec!["authorization_code".to_string()],
+            code_challenge_methods_supported: vec!["S256".to_string()],
+            dpop_signing_alg_values_supported: None,
+            scopes_supported: None,
+        };
+
+        let client = PdsClient::new();
+        let result = client
+            .pds_token_exchange(&metadata, "test_code", "test_verifier", "test_dpop_proof")
+            .await;
+
+        // Should return Ok(Response) with 400 status — caller handles error interpretation.
+        assert!(result.is_ok());
+        let response = result.unwrap();
+        assert_eq!(response.status().as_u16(), 400);
+    }
+
+    /// AC3.6: Token exchange to unreachable endpoint returns OAuthFailed
+    #[tokio::test]
+    async fn test_pds_token_exchange_unreachable_endpoint() {
+        let metadata = AuthServerMetadata {
+            issuer: "http://127.0.0.1:1".to_string(),
+            authorization_endpoint: "http://127.0.0.1:1/oauth/authorize".to_string(),
+            token_endpoint: "http://127.0.0.1:1/oauth/token".to_string(),
+            pushed_authorization_request_endpoint: None,
+            response_types_supported: vec!["code".to_string()],
+            grant_types_supported: vec!["authorization_code".to_string()],
+            code_challenge_methods_supported: vec!["S256".to_string()],
+            dpop_signing_alg_values_supported: None,
+            scopes_supported: None,
+        };
+
+        let client = PdsClient::new();
+        let result = client
+            .pds_token_exchange(&metadata, "test_code", "test_verifier", "test_dpop_proof")
+            .await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PdsClientError::OAuthFailed { .. } => {
+                // Expected
+            }
+            e => panic!("Expected OAuthFailed, got: {:?}", e),
+        }
+    }
+
+    /// build_pds_authorize_url constructs correct URL
+    #[test]
+    fn test_build_pds_authorize_url_with_login_hint() {
+        let metadata = AuthServerMetadata {
+            issuer: "https://pds.example.com".to_string(),
+            authorization_endpoint: "https://pds.example.com/oauth/authorize".to_string(),
+            token_endpoint: "https://pds.example.com/oauth/token".to_string(),
+            pushed_authorization_request_endpoint: None,
+            response_types_supported: vec!["code".to_string()],
+            grant_types_supported: vec!["authorization_code".to_string()],
+            code_challenge_methods_supported: vec!["S256".to_string()],
+            dpop_signing_alg_values_supported: None,
+            scopes_supported: None,
+        };
+
+        let url = PdsClient::build_pds_authorize_url(
+            &metadata,
+            "urn:ietf:params:oauth:request_uri:test",
+            Some("user@example.com"),
+        );
+
+        assert!(url.contains("client_id=dev.malpercio.identitywallet"));
+        assert!(url.contains("request_uri="));
+        assert!(url.contains("login_hint="));
+        assert!(url.starts_with("https://pds.example.com/oauth/authorize?"));
+    }
+
+    /// build_pds_authorize_url without login_hint
+    #[test]
+    fn test_build_pds_authorize_url_without_login_hint() {
+        let metadata = AuthServerMetadata {
+            issuer: "https://pds.example.com".to_string(),
+            authorization_endpoint: "https://pds.example.com/oauth/authorize".to_string(),
+            token_endpoint: "https://pds.example.com/oauth/token".to_string(),
+            pushed_authorization_request_endpoint: None,
+            response_types_supported: vec!["code".to_string()],
+            grant_types_supported: vec!["authorization_code".to_string()],
+            code_challenge_methods_supported: vec!["S256".to_string()],
+            dpop_signing_alg_values_supported: None,
+            scopes_supported: None,
+        };
+
+        let url = PdsClient::build_pds_authorize_url(
+            &metadata,
+            "urn:ietf:params:oauth:request_uri:test2",
+            None,
+        );
+
+        assert!(url.contains("client_id=dev.malpercio.identitywallet"));
+        assert!(url.contains("request_uri="));
+        assert!(!url.contains("login_hint="));
+        assert!(url.starts_with("https://pds.example.com/oauth/authorize?"));
+    }
+
+    // ============================================================================
+    // XRPC identity method tests
+    // ============================================================================
+
+    /// request_plc_operation_signature sends correct request
+    #[tokio::test]
+    async fn test_request_plc_operation_signature_success() {
+        use std::sync::{Arc, Mutex};
+
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.identity.requestPlcOperationSignature")
+                .header_exists("Authorization")
+                .header_exists("DPoP");
+            then.status(200).json_body(serde_json::json!({}));
+        });
+
+        // Create a test session and OAuthClient
+        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
+            access_token: "test_access_token".to_string(),
+            refresh_token: "test_refresh_token".to_string(),
+            expires_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 3600,
+            dpop_nonce: None,
+        }));
+
+        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
+        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
+            keypair,
+            session,
+            mock_server.base_url(),
+        );
+
+        let result = request_plc_operation_signature(&oauth_client).await;
+        assert!(result.is_ok());
+    }
+
+    /// request_plc_operation_signature handles error
+    #[tokio::test]
+    async fn test_request_plc_operation_signature_error() {
+        use std::sync::{Arc, Mutex};
+
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.identity.requestPlcOperationSignature");
+            then.status(401).json_body(serde_json::json!({
+                "error": "Unauthorized"
+            }));
+        });
+
+        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
+            access_token: "test_access_token".to_string(),
+            refresh_token: "test_refresh_token".to_string(),
+            expires_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 3600,
+            dpop_nonce: None,
+        }));
+
+        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
+        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
+            keypair,
+            session,
+            mock_server.base_url(),
+        );
+
+        let result = request_plc_operation_signature(&oauth_client).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PdsClientError::NetworkError { .. } => {
+                // Expected
+            }
+            e => panic!("Expected NetworkError, got: {:?}", e),
+        }
+    }
+
+    /// sign_plc_operation sends token and rotation keys
+    #[tokio::test]
+    async fn test_sign_plc_operation_success() {
+        use std::sync::{Arc, Mutex};
+
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.identity.signPlcOperation")
+                .header_exists("Authorization")
+                .header_exists("DPoP");
+            then.status(200).json_body(serde_json::json!({
+                "operation": {
+                    "type": "plc_operation",
+                    "prev": "bafytest123"
+                }
+            }));
+        });
+
+        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
+            access_token: "test_access_token".to_string(),
+            refresh_token: "test_refresh_token".to_string(),
+            expires_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 3600,
+            dpop_nonce: None,
+        }));
+
+        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
+        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
+            keypair,
+            session,
+            mock_server.base_url(),
+        );
+
+        let request = SignPlcOperationRequest {
+            token: "test_email_token".to_string(),
+            rotation_keys: Some(vec!["did:key:zQ3test1".to_string()]),
+            also_known_as: None,
+            verification_methods: None,
+            services: None,
+        };
+
+        let result = sign_plc_operation(&oauth_client, &request).await;
+        assert!(result.is_ok());
+        let response = result.unwrap();
+        assert!(response.operation.get("type").is_some());
+    }
+
+    /// sign_plc_operation omits optional null fields
+    #[tokio::test]
+    async fn test_sign_plc_operation_omits_none_fields() {
+        use std::sync::{Arc, Mutex};
+
+        let mock_server = MockServer::start();
+
+        let mock = mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.identity.signPlcOperation");
+            then.status(200).json_body(serde_json::json!({
+                "operation": {}
+            }));
+        });
+
+        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
+            access_token: "test_access_token".to_string(),
+            refresh_token: "test_refresh_token".to_string(),
+            expires_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 3600,
+            dpop_nonce: None,
+        }));
+
+        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
+        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
+            keypair,
+            session,
+            mock_server.base_url(),
+        );
+
+        let request = SignPlcOperationRequest {
+            token: "test_token".to_string(),
+            rotation_keys: None,
+            also_known_as: None,
+            verification_methods: None,
+            services: None,
+        };
+
+        let result = sign_plc_operation(&oauth_client, &request).await;
+        assert!(result.is_ok());
+
+        // Verify the mock was hit (request was made)
+        assert_eq!(mock.hits(), 1);
+    }
+
+    /// get_recommended_did_credentials returns credentials
+    #[tokio::test]
+    async fn test_get_recommended_did_credentials_success() {
+        use std::sync::{Arc, Mutex};
+
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.identity.getRecommendedDidCredentials")
+                .header_exists("Authorization")
+                .header_exists("DPoP");
+            then.status(200).json_body(serde_json::json!({
+                "rotationKeys": ["did:key:zQ3test1"],
+                "alsoKnownAs": ["at://alice.test"]
+            }));
+        });
+
+        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
+            access_token: "test_access_token".to_string(),
+            refresh_token: "test_refresh_token".to_string(),
+            expires_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 3600,
+            dpop_nonce: None,
+        }));
+
+        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
+        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
+            keypair,
+            session,
+            mock_server.base_url(),
+        );
+
+        let result = get_recommended_did_credentials(&oauth_client).await;
+        assert!(result.is_ok());
+        let creds = result.unwrap();
+        assert!(creds.rotation_keys.is_some());
+        assert!(creds.also_known_as.is_some());
     }
 }
