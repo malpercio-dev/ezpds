@@ -1563,4 +1563,102 @@ mod tests {
         assert!(creds.rotation_keys.is_some());
         assert!(creds.also_known_as.is_some());
     }
+
+    /// AC3.3 resolve_handle orchestration: handle fails both DNS and HTTP
+    /// This test uses a nonexistent .test TLD which DNS will reject, then attempts HTTP
+    /// which will fail due to inability to connect. Both failures result in HandleNotFound.
+    #[tokio::test]
+    async fn test_resolve_handle_orchestration_nonexistent() {
+        let client = PdsClient::new();
+        // Use a nonexistent handle on .test TLD (reserved, non-routable domain)
+        // DNS will fail (no records found) and HTTP to https://.../.well-known/atproto-did
+        // will fail (unable to resolve/connect). Both failures return HandleNotFound.
+        let result = client
+            .resolve_handle("this-handle-definitely-does-not-exist-12345.test")
+            .await;
+
+        assert!(result.is_err());
+        // The error could be HandleNotFound if DNS+HTTP both fail, or NetworkError
+        // if the HTTP request itself fails before we can determine there's no record.
+        // We accept both as evidence that the handle cannot be resolved.
+        match result.unwrap_err() {
+            PdsClientError::HandleNotFound | PdsClientError::NetworkError { .. } => {
+                // Expected: either no handle found or network failure during resolution
+            }
+            e => panic!("Expected HandleNotFound or NetworkError, got: {:?}", e),
+        }
+    }
+
+    /// AC3.3 error serialization: HandleNotFound serializes with code "HANDLE_NOT_FOUND"
+    #[test]
+    fn test_pds_client_error_handle_not_found_serialization() {
+        let error = PdsClientError::HandleNotFound;
+        let json = serde_json::to_string(&error).expect("serialization failed");
+        assert!(json.contains("\"code\":\"HANDLE_NOT_FOUND\""));
+    }
+
+    /// AC3.7 error serialization: DidNotFound serializes with code "DID_NOT_FOUND"
+    #[test]
+    fn test_pds_client_error_did_not_found_serialization() {
+        let error = PdsClientError::DidNotFound;
+        let json = serde_json::to_string(&error).expect("serialization failed");
+        assert!(json.contains("\"code\":\"DID_NOT_FOUND\""));
+    }
+
+    /// AC3.8 error serialization: PdsUnreachable serializes with code "PDS_UNREACHABLE"
+    /// and does NOT include "reason" (because it's #[serde(skip)])
+    #[test]
+    fn test_pds_client_error_pds_unreachable_serialization() {
+        let error = PdsClientError::PdsUnreachable {
+            reason: "test".into(),
+        };
+        let json = serde_json::to_string(&error).expect("serialization failed");
+        assert!(json.contains("\"code\":\"PDS_UNREACHABLE\""));
+        // Verify "reason" field is NOT serialized (it's #[serde(skip)])
+        assert!(!json.contains("\"reason\""));
+        assert!(!json.contains("test"));
+    }
+
+    /// XRPC get_recommended_did_credentials error: returns NetworkError on 403
+    #[tokio::test]
+    async fn test_get_recommended_did_credentials_error() {
+        use std::sync::{Arc, Mutex};
+
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.identity.getRecommendedDidCredentials");
+            then.status(403).json_body(serde_json::json!({
+                "error": "Forbidden"
+            }));
+        });
+
+        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
+            access_token: "test_access_token".to_string(),
+            refresh_token: "test_refresh_token".to_string(),
+            expires_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 3600,
+            dpop_nonce: None,
+        }));
+
+        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
+        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
+            keypair,
+            session,
+            mock_server.base_url(),
+        );
+
+        let result = get_recommended_did_credentials(&oauth_client).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PdsClientError::NetworkError { .. } => {
+                // Expected
+            }
+            e => panic!("Expected NetworkError, got: {:?}", e),
+        }
+    }
 }
