@@ -63,13 +63,14 @@ pub struct PlcGenesisOp {
 //   "rotationKeys"         → 12 bytes
 //   "verificationMethods"  → 19 bytes
 
-#[derive(Serialize, Deserialize, Clone)]
-struct PlcService {
-    // "type" → 4 bytes
+/// A service entry in a PLC operation's `services` map.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PlcService {
+    /// Service type, e.g. `"AtprotoPersonalDataServer"`.
     #[serde(rename = "type")]
-    service_type: String,
-    // "endpoint" → 8 bytes
-    endpoint: String,
+    pub service_type: String,
+    /// Service endpoint URL, e.g. `"https://relay.example.com"`.
+    pub endpoint: String,
 }
 
 #[derive(Serialize)]
@@ -111,7 +112,44 @@ struct SignedPlcOp {
     verification_methods: BTreeMap<String, String>,
 }
 
+// ── CID computation ─────────────────────────────────────────────────────────
+
+/// CIDv1 prefix for dag-cbor + sha-256: version(1) + codec(0x71) + hash(0x12) + length(0x20).
+const CIDV1_DAG_CBOR_SHA256_PREFIX: [u8; 4] = [0x01, 0x71, 0x12, 0x20];
+
+/// Compute a CIDv1 (dag-cbor, sha-256) from signed operation CBOR bytes.
+///
+/// Returns a multibase base32lower-encoded CID string (prefix `b`), matching
+/// the format used in did:plc `prev` fields.
+///
+/// # Parameters
+/// - `signed_op_cbor`: DAG-CBOR encoded bytes of a signed PLC operation.
+pub fn compute_cid(signed_op_cbor: &[u8]) -> Result<String, CryptoError> {
+    let hash = Sha256::digest(signed_op_cbor);
+    let mut cid_bytes = Vec::with_capacity(36);
+    cid_bytes.extend_from_slice(&CIDV1_DAG_CBOR_SHA256_PREFIX);
+    cid_bytes.extend_from_slice(&hash);
+
+    let encoded = base32_lowercase()?.encode(&cid_bytes);
+    // Strip padding — multibase base32lower is unpadded
+    let encoded = encoded.trim_end_matches('=');
+    Ok(format!("b{encoded}"))
+}
+
 // ── Public API ───────────────────────────────────────────────────────────────
+
+/// The result of building a signed PLC operation (genesis or rotation).
+///
+/// Contains the signed operation JSON (ready to POST to plc.directory) and
+/// the operation's CID (for use as `prev` in subsequent operations).
+#[non_exhaustive]
+#[derive(Debug)]
+pub struct SignedPlcOperation {
+    /// The CID of this operation, for use as `prev` in the next operation.
+    pub cid: String,
+    /// The signed operation as a JSON string, ready to POST to plc.directory.
+    pub signed_op_json: String,
+}
 
 /// The result of verifying a client-submitted did:plc genesis operation.
 ///
@@ -292,6 +330,281 @@ pub fn build_did_plc_genesis_op(
             Ok(sig.to_bytes().to_vec())
         },
     )
+}
+
+/// Build and sign a did:plc rotation operation with an external signing callback.
+///
+/// Unlike genesis ops, rotation ops have a non-null `prev` field and accept
+/// arbitrary rotation keys, verification methods, also-known-as, and services
+/// (the caller determines the new state, not this function).
+///
+/// # Parameters
+/// - `prev_cid`: The CID of the previous operation in the chain (from [`compute_cid`]).
+/// - `rotation_keys`: The new set of rotation key `did:key:` URIs.
+/// - `verification_methods`: Map of method name → `did:key:` URI (e.g. `{"atproto": "did:key:z..."}`).
+/// - `also_known_as`: The new set of `alsoKnownAs` URIs (e.g. `["at://alice.example.com"]`).
+/// - `services`: Map of service name → [`PlcService`].
+/// - `sign`: Callback receiving CBOR-encoded unsigned op bytes; must return raw 64-byte
+///   r‖s P-256 ECDSA signature bytes (big-endian, low-S canonical).
+///
+/// # Errors
+/// Returns `CryptoError::PlcOperation` if `sign` returns `Err` or serialization fails.
+pub fn build_did_plc_rotation_op<F>(
+    prev_cid: &str,
+    rotation_keys: Vec<String>,
+    verification_methods: BTreeMap<String, String>,
+    also_known_as: Vec<String>,
+    services: BTreeMap<String, PlcService>,
+    sign: F,
+) -> Result<SignedPlcOperation, CryptoError>
+where
+    F: FnOnce(&[u8]) -> Result<Vec<u8>, CryptoError>,
+{
+    let unsigned_op = UnsignedPlcOp {
+        prev: Some(prev_cid.to_string()),
+        op_type: "plc_operation".to_string(),
+        services: services.clone(),
+        also_known_as: also_known_as.clone(),
+        rotation_keys: rotation_keys.clone(),
+        verification_methods: verification_methods.clone(),
+    };
+
+    // CBOR-encode the unsigned operation.
+    let mut unsigned_cbor = Vec::new();
+    into_writer(&unsigned_op, &mut unsigned_cbor)
+        .map_err(|e| CryptoError::PlcOperation(format!("cbor encode unsigned op: {e}")))?;
+
+    // Sign the CBOR bytes.
+    let sig_bytes = sign(&unsigned_cbor)?;
+    if sig_bytes.len() != 64 {
+        return Err(CryptoError::PlcOperation(format!(
+            "signing callback returned {} bytes, expected 64",
+            sig_bytes.len()
+        )));
+    }
+    let sig_str = URL_SAFE_NO_PAD.encode(&sig_bytes);
+
+    // Build the signed operation.
+    let signed_op = SignedPlcOp {
+        sig: sig_str,
+        prev: Some(prev_cid.to_string()),
+        op_type: "plc_operation".to_string(),
+        services,
+        also_known_as,
+        rotation_keys,
+        verification_methods,
+    };
+
+    // CBOR-encode the signed operation to compute CID.
+    let mut signed_cbor = Vec::new();
+    into_writer(&signed_op, &mut signed_cbor)
+        .map_err(|e| CryptoError::PlcOperation(format!("cbor encode signed op: {e}")))?;
+
+    let cid = compute_cid(&signed_cbor)?;
+
+    // JSON-serialize the signed operation.
+    let signed_op_json = serde_json::to_string(&signed_op)
+        .map_err(|e| CryptoError::PlcOperation(format!("json serialize signed op: {e}")))?;
+
+    Ok(SignedPlcOperation {
+        cid,
+        signed_op_json,
+    })
+}
+
+/// The result of verifying a signed PLC operation (genesis or rotation).
+///
+/// Returned by [`verify_plc_operation`]. Fields are extracted from the verified
+/// signed op; the caller uses them for semantic validation and DID document
+/// construction.
+#[non_exhaustive]
+pub struct VerifiedPlcOp {
+    /// The derived DID. `Some` for genesis ops (derived from signed CBOR),
+    /// `None` for rotation ops (caller provides the DID from context).
+    pub did: Option<String>,
+    /// The CID of this operation.
+    pub cid: String,
+    /// The `prev` field: `None` for genesis, `Some(cid)` for rotation.
+    pub prev: Option<String>,
+    /// Full `rotationKeys` array from the op.
+    pub rotation_keys: Vec<String>,
+    /// Full `alsoKnownAs` array from the op.
+    pub also_known_as: Vec<String>,
+    /// Full `verificationMethods` map from the op.
+    pub verification_methods: BTreeMap<String, String>,
+    /// Full `services` map from the op.
+    pub services: BTreeMap<String, PlcService>,
+}
+
+/// Verify a signed PLC operation (genesis or rotation).
+///
+/// Parses `signed_op_json`, reconstructs the unsigned operation with DAG-CBOR
+/// canonical field ordering, and verifies the ECDSA-SHA256 signature against
+/// each key in `authorized_rotation_keys` until one succeeds.
+///
+/// # Parameters
+/// - `signed_op_json`: JSON-encoded signed PLC operation.
+/// - `authorized_rotation_keys`: The set of `did:key:` URIs authorized to sign
+///   this operation. For genesis ops, these come from the op itself; for rotation
+///   ops, they come from the previous operation's state.
+///
+/// # Errors
+/// Returns `CryptoError::PlcOperation` if no authorized key verifies the
+/// signature, or for any parse/format/cryptographic failure.
+pub fn verify_plc_operation(
+    signed_op_json: &str,
+    authorized_rotation_keys: &[DidKeyUri],
+) -> Result<VerifiedPlcOp, CryptoError> {
+    if authorized_rotation_keys.is_empty() {
+        return Err(CryptoError::PlcOperation(
+            "authorized_rotation_keys must not be empty".to_string(),
+        ));
+    }
+
+    // Parse the signed op, rejecting unknown fields.
+    let signed_op: SignedPlcOp = serde_json::from_str(signed_op_json)
+        .map_err(|e| CryptoError::PlcOperation(format!("invalid signed op JSON: {e}")))?;
+
+    if signed_op.op_type != "plc_operation" {
+        return Err(CryptoError::PlcOperation(format!(
+            "expected type 'plc_operation', got '{}'",
+            signed_op.op_type
+        )));
+    }
+
+    // Base64url-decode the signature.
+    let sig_bytes = URL_SAFE_NO_PAD
+        .decode(&signed_op.sig)
+        .map_err(|e| CryptoError::PlcOperation(format!("invalid sig base64url: {e}")))?;
+    let signature = Signature::try_from(sig_bytes.as_slice())
+        .map_err(|e| CryptoError::PlcOperation(format!("invalid ECDSA signature bytes: {e}")))?;
+
+    // Reconstruct the unsigned operation.
+    let unsigned_op = UnsignedPlcOp {
+        prev: signed_op.prev.clone(),
+        op_type: signed_op.op_type.clone(),
+        services: signed_op.services.clone(),
+        also_known_as: signed_op.also_known_as.clone(),
+        rotation_keys: signed_op.rotation_keys.clone(),
+        verification_methods: signed_op.verification_methods.clone(),
+    };
+
+    let mut unsigned_cbor = Vec::new();
+    into_writer(&unsigned_op, &mut unsigned_cbor)
+        .map_err(|e| CryptoError::PlcOperation(format!("cbor encode unsigned op: {e}")))?;
+
+    // Try each authorized rotation key until one verifies the signature.
+    let mut last_error = String::new();
+    for key in authorized_rotation_keys {
+        match verify_signature_with_key(key, &unsigned_cbor, &signature) {
+            Ok(()) => {
+                // Signature verified — compute DID and CID.
+                let mut signed_cbor = Vec::new();
+                into_writer(&signed_op, &mut signed_cbor).map_err(|e| {
+                    CryptoError::PlcOperation(format!("cbor encode signed op: {e}"))
+                })?;
+
+                let cid = compute_cid(&signed_cbor)?;
+
+                // DID is only derivable from genesis ops (prev == None).
+                let did = if signed_op.prev.is_none() {
+                    let hash = Sha256::digest(&signed_cbor);
+                    let encoded = base32_lowercase()?.encode(hash.as_ref());
+                    Some(format!("did:plc:{}", &encoded[..24]))
+                } else {
+                    None
+                };
+
+                return Ok(VerifiedPlcOp {
+                    did,
+                    cid,
+                    prev: signed_op.prev,
+                    rotation_keys: signed_op.rotation_keys,
+                    also_known_as: signed_op.also_known_as,
+                    verification_methods: signed_op.verification_methods,
+                    services: signed_op.services,
+                });
+            }
+            Err(e) => {
+                last_error = e;
+            }
+        }
+    }
+
+    Err(CryptoError::PlcOperation(format!(
+        "no authorized rotation key verified the signature: {last_error}"
+    )))
+}
+
+/// Parse a did:key URI into a P-256 VerifyingKey and verify a signature.
+/// Returns Ok(()) on success, Err(message) on failure.
+fn verify_signature_with_key(
+    key: &DidKeyUri,
+    message: &[u8],
+    signature: &Signature,
+) -> Result<(), String> {
+    let key_str = key
+        .0
+        .strip_prefix("did:key:")
+        .ok_or_else(|| "rotation key missing did:key: prefix".to_string())?;
+    let (_, multikey_bytes) =
+        multibase::decode(key_str).map_err(|e| format!("decode rotation key multibase: {e}"))?;
+    if multikey_bytes.get(..2) != Some(P256_MULTICODEC_PREFIX) {
+        return Err("rotation key is not a P-256 key (wrong multicodec prefix)".to_string());
+    }
+    let verifying_key = VerifyingKey::from_sec1_bytes(&multikey_bytes[2..])
+        .map_err(|e| format!("invalid P-256 public key: {e}"))?;
+    verifying_key
+        .verify(message, signature)
+        .map_err(|e| format!("signature verification failed: {e}"))
+}
+
+// ── Audit log types ─────────────────────────────────────────────────────────
+
+/// A single entry from a plc.directory audit log.
+///
+/// Returned by [`parse_audit_log`]. The `operation` field contains the raw
+/// signed PLC operation as a JSON value; use [`verify_plc_operation`] to
+/// validate it cryptographically.
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditEntry {
+    /// The DID this operation belongs to.
+    pub did: String,
+    /// The CID of this operation.
+    pub cid: String,
+    /// ISO 8601 timestamp when plc.directory received this operation.
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    /// Whether plc.directory considers this operation invalidated.
+    pub nullified: bool,
+    /// The raw signed PLC operation.
+    pub operation: serde_json::Value,
+}
+
+/// Parse a plc.directory audit log JSON response into a list of entries.
+///
+/// # Parameters
+/// - `json`: The JSON response body from `GET https://plc.directory/{did}/log/audit`.
+///
+/// # Errors
+/// Returns `CryptoError::PlcOperation` if the JSON cannot be parsed.
+pub fn parse_audit_log(json: &str) -> Result<Vec<AuditEntry>, CryptoError> {
+    serde_json::from_str(json)
+        .map_err(|e| CryptoError::PlcOperation(format!("parse audit log: {e}")))
+}
+
+/// Find operations in `current` that are not present in `cached`, by CID.
+///
+/// Returns the new entries in the order they appear in `current`.
+pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<AuditEntry> {
+    let cached_cids: std::collections::HashSet<&str> =
+        cached.iter().map(|e| e.cid.as_str()).collect();
+    current
+        .iter()
+        .filter(|e| !cached_cids.contains(e.cid.as_str()))
+        .cloned()
+        .collect()
 }
 
 /// Verify a client-submitted did:plc signed genesis operation.
@@ -823,6 +1136,383 @@ mod tests {
         assert_eq!(
             verified.did, result.did,
             "verified DID must match the DID returned by the builder"
+        );
+    }
+
+    // ── compute_cid tests ─────────────────────────────────────────────────
+
+    /// CID starts with multibase prefix 'b' (base32lower) and contains only [a-z2-7]
+    #[test]
+    fn compute_cid_returns_valid_multibase_format() {
+        let (_, _, _, op) = make_genesis_op();
+        // CBOR-encode the signed op to get the bytes compute_cid expects
+        let signed_op: serde_json::Value =
+            serde_json::from_str(&op.signed_op_json).expect("valid JSON");
+        let mut cbor_bytes = Vec::new();
+        into_writer(&signed_op, &mut cbor_bytes).expect("cbor encode");
+
+        let cid = compute_cid(&cbor_bytes).expect("compute_cid should succeed");
+
+        assert!(
+            cid.starts_with('b'),
+            "CID must start with multibase prefix 'b', got: {cid}"
+        );
+        // After the 'b' prefix, all chars should be base32lower [a-z2-7]
+        assert!(
+            cid[1..]
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || ('2'..='7').contains(&c)),
+            "CID body should only contain [a-z2-7], got: {cid}"
+        );
+    }
+
+    /// CID is deterministic: same bytes → same CID
+    #[test]
+    fn compute_cid_is_deterministic() {
+        let data = b"test data for CID computation";
+        let cid1 = compute_cid(data).expect("first call");
+        let cid2 = compute_cid(data).expect("second call");
+        assert_eq!(cid1, cid2, "same input must produce same CID");
+    }
+
+    /// Different inputs produce different CIDs
+    #[test]
+    fn compute_cid_different_inputs_produce_different_cids() {
+        let cid1 = compute_cid(b"input one").expect("cid1");
+        let cid2 = compute_cid(b"input two").expect("cid2");
+        assert_ne!(cid1, cid2, "different inputs must produce different CIDs");
+    }
+
+    /// CID encodes a valid CIDv1 structure: version(1) + codec(0x71) + multihash(0x12, 0x20, 32 bytes)
+    #[test]
+    fn compute_cid_encodes_valid_cidv1_structure() {
+        let cid = compute_cid(b"test").expect("compute_cid");
+
+        // Decode: strip multibase prefix 'b', base32-decode the rest
+        let body = &cid[1..]; // strip 'b'
+        let cid_bytes = base32_lowercase()
+            .expect("base32 encoding")
+            .decode(body.as_bytes())
+            .expect("base32 decode");
+
+        assert_eq!(cid_bytes[0], 0x01, "CID version must be 1");
+        assert_eq!(cid_bytes[1], 0x71, "codec must be dag-cbor (0x71)");
+        assert_eq!(cid_bytes[2], 0x12, "hash function must be sha-256 (0x12)");
+        assert_eq!(cid_bytes[3], 0x20, "hash length must be 32 (0x20)");
+        assert_eq!(cid_bytes.len(), 36, "CIDv1 with sha-256 should be 36 bytes");
+    }
+
+    // ── verify_plc_operation tests ─────────────────────────────────────────
+
+    #[test]
+    fn verify_plc_operation_genesis_op() {
+        let (signing_key, op) = make_op_for_verify();
+        let result = verify_plc_operation(&op.signed_op_json, &[signing_key]);
+
+        assert!(result.is_ok(), "verify genesis op should succeed");
+        let verified = result.unwrap();
+        assert_eq!(verified.did, Some(op.did), "DID must match genesis DID");
+        assert!(verified.prev.is_none(), "genesis op prev must be None");
+        assert!(verified.cid.starts_with('b'), "CID must start with 'b'");
+    }
+
+    #[test]
+    fn verify_plc_operation_rotation_op() {
+        let (signing_key, private_key_bytes, _genesis, prev_cid) = make_genesis_for_rotation();
+
+        let field_bytes: FieldBytes = private_key_bytes.into();
+        let sk = SigningKey::from_bytes(&field_bytes).expect("valid key");
+
+        let mut verification_methods = BTreeMap::new();
+        verification_methods.insert("atproto".to_string(), signing_key.0.clone());
+        let mut services = BTreeMap::new();
+        services.insert(
+            "atproto_pds".to_string(),
+            PlcService {
+                service_type: "AtprotoPersonalDataServer".to_string(),
+                endpoint: "https://relay.example.com".to_string(),
+            },
+        );
+
+        let rotation = build_did_plc_rotation_op(
+            &prev_cid,
+            vec![signing_key.0.clone()],
+            verification_methods,
+            vec!["at://alice.example.com".to_string()],
+            services,
+            |data| {
+                let sig: Signature = Signer::sign(&sk, data);
+                Ok(sig.to_bytes().to_vec())
+            },
+        )
+        .expect("rotation op");
+
+        // Verify the rotation op with the signing key as authorized
+        let verified = verify_plc_operation(&rotation.signed_op_json, &[signing_key.clone()])
+            .expect("verify rotation op");
+
+        assert!(verified.did.is_none(), "rotation op DID must be None");
+        assert_eq!(
+            verified.prev.as_deref(),
+            Some(prev_cid.as_str()),
+            "prev must be the genesis CID"
+        );
+        assert_eq!(verified.cid, rotation.cid, "CID must match builder CID");
+    }
+
+    #[test]
+    fn verify_plc_operation_rejects_wrong_key() {
+        let (_, op) = make_op_for_verify();
+        let wrong_kp = generate_p256_keypair().expect("wrong keypair");
+
+        let result = verify_plc_operation(&op.signed_op_json, &[wrong_kp.key_id]);
+        assert!(
+            matches!(result, Err(CryptoError::PlcOperation(_))),
+            "wrong key must fail"
+        );
+    }
+
+    #[test]
+    fn verify_plc_operation_tries_multiple_keys() {
+        let (signing_key, op) = make_op_for_verify();
+        let wrong_kp = generate_p256_keypair().expect("wrong keypair");
+
+        // Correct key is second in the list — should still succeed
+        let result = verify_plc_operation(&op.signed_op_json, &[wrong_kp.key_id, signing_key]);
+        assert!(result.is_ok(), "should succeed when correct key is in list");
+    }
+
+    #[test]
+    fn verify_plc_operation_rejects_empty_key_list() {
+        let (_, op) = make_op_for_verify();
+        let result = verify_plc_operation(&op.signed_op_json, &[]);
+        assert!(
+            matches!(result, Err(CryptoError::PlcOperation(ref msg)) if msg.contains("must not be empty")),
+            "empty key list must fail"
+        );
+    }
+
+    // ── audit log tests ───────────────────────────────────────────────────
+
+    fn sample_audit_log_json() -> String {
+        serde_json::to_string(&serde_json::json!([
+            {
+                "did": "did:plc:abc123",
+                "cid": "bafyreiabc",
+                "createdAt": "2026-01-01T00:00:00.000Z",
+                "nullified": false,
+                "operation": {
+                    "type": "plc_operation",
+                    "prev": null,
+                    "sig": "dGVzdA",
+                    "rotationKeys": [],
+                    "verificationMethods": {},
+                    "alsoKnownAs": [],
+                    "services": {}
+                }
+            },
+            {
+                "did": "did:plc:abc123",
+                "cid": "bafyreibcd",
+                "createdAt": "2026-01-02T00:00:00.000Z",
+                "nullified": false,
+                "operation": {
+                    "type": "plc_operation",
+                    "prev": "bafyreiabc",
+                    "sig": "dGVzdDI",
+                    "rotationKeys": [],
+                    "verificationMethods": {},
+                    "alsoKnownAs": [],
+                    "services": {}
+                }
+            }
+        ]))
+        .unwrap()
+    }
+
+    #[test]
+    fn parse_audit_log_returns_correct_entries() {
+        let json = sample_audit_log_json();
+        let entries = parse_audit_log(&json).expect("parse should succeed");
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].did, "did:plc:abc123");
+        assert_eq!(entries[0].cid, "bafyreiabc");
+        assert!(!entries[0].nullified);
+        assert_eq!(entries[1].cid, "bafyreibcd");
+        assert_eq!(entries[1].created_at, "2026-01-02T00:00:00.000Z");
+    }
+
+    #[test]
+    fn parse_audit_log_rejects_invalid_json() {
+        let result = parse_audit_log("not json");
+        assert!(matches!(result, Err(CryptoError::PlcOperation(_))));
+    }
+
+    #[test]
+    fn parse_audit_log_handles_empty_array() {
+        let entries = parse_audit_log("[]").expect("empty array");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn diff_audit_logs_finds_new_entries() {
+        let json = sample_audit_log_json();
+        let all = parse_audit_log(&json).expect("parse");
+
+        // Cached has only the first entry; current has both
+        let cached = &all[..1];
+        let new = diff_audit_logs(cached, &all);
+
+        assert_eq!(new.len(), 1);
+        assert_eq!(new[0].cid, "bafyreibcd");
+    }
+
+    #[test]
+    fn diff_audit_logs_returns_empty_when_no_new_entries() {
+        let json = sample_audit_log_json();
+        let all = parse_audit_log(&json).expect("parse");
+
+        let new = diff_audit_logs(&all, &all);
+        assert!(new.is_empty());
+    }
+
+    #[test]
+    fn diff_audit_logs_returns_all_when_cache_empty() {
+        let json = sample_audit_log_json();
+        let all = parse_audit_log(&json).expect("parse");
+
+        let new = diff_audit_logs(&[], &all);
+        assert_eq!(new.len(), 2);
+    }
+
+    // ── build_did_plc_rotation_op tests ─────────────────────────────────────
+
+    /// Helper: build a genesis op and return everything needed to chain a rotation op.
+    fn make_genesis_for_rotation() -> (DidKeyUri, [u8; 32], PlcGenesisOp, String) {
+        let rotation_kp = generate_p256_keypair().expect("rotation keypair");
+        let signing_kp = generate_p256_keypair().expect("signing keypair");
+        let private_key_bytes = *signing_kp.private_key_bytes;
+        let genesis = build_did_plc_genesis_op(
+            &rotation_kp.key_id,
+            &signing_kp.key_id,
+            &private_key_bytes,
+            "alice.example.com",
+            "https://relay.example.com",
+        )
+        .expect("genesis op");
+
+        // Compute the CID of the genesis op for use as prev
+        let signed_op: SignedPlcOp =
+            serde_json::from_str(&genesis.signed_op_json).expect("parse genesis");
+        let mut cbor = Vec::new();
+        into_writer(&signed_op, &mut cbor).expect("cbor encode");
+        let prev_cid = compute_cid(&cbor).expect("compute cid");
+
+        (signing_kp.key_id, private_key_bytes, genesis, prev_cid)
+    }
+
+    #[test]
+    fn rotation_op_has_non_null_prev() {
+        let (signing_key, private_key_bytes, _, prev_cid) = make_genesis_for_rotation();
+
+        let field_bytes: FieldBytes = private_key_bytes.into();
+        let sk = SigningKey::from_bytes(&field_bytes).expect("valid key");
+
+        let mut verification_methods = BTreeMap::new();
+        verification_methods.insert("atproto".to_string(), signing_key.0.clone());
+        let mut services = BTreeMap::new();
+        services.insert(
+            "atproto_pds".to_string(),
+            PlcService {
+                service_type: "AtprotoPersonalDataServer".to_string(),
+                endpoint: "https://relay.example.com".to_string(),
+            },
+        );
+
+        let result = build_did_plc_rotation_op(
+            &prev_cid,
+            vec![signing_key.0.clone()],
+            verification_methods,
+            vec!["at://alice.example.com".to_string()],
+            services,
+            |data| {
+                let sig: Signature = Signer::sign(&sk, data);
+                Ok(sig.to_bytes().to_vec())
+            },
+        )
+        .expect("rotation op");
+
+        let v: serde_json::Value =
+            serde_json::from_str(&result.signed_op_json).expect("valid JSON");
+        assert_eq!(
+            v["prev"].as_str().unwrap(),
+            prev_cid,
+            "prev must match the provided CID"
+        );
+        assert_eq!(v["type"], "plc_operation");
+    }
+
+    #[test]
+    fn rotation_op_cid_is_valid_multibase() {
+        let (signing_key, private_key_bytes, _, prev_cid) = make_genesis_for_rotation();
+
+        let field_bytes: FieldBytes = private_key_bytes.into();
+        let sk = SigningKey::from_bytes(&field_bytes).expect("valid key");
+
+        let mut verification_methods = BTreeMap::new();
+        verification_methods.insert("atproto".to_string(), signing_key.0.clone());
+        let mut services = BTreeMap::new();
+        services.insert(
+            "atproto_pds".to_string(),
+            PlcService {
+                service_type: "AtprotoPersonalDataServer".to_string(),
+                endpoint: "https://relay.example.com".to_string(),
+            },
+        );
+
+        let result = build_did_plc_rotation_op(
+            &prev_cid,
+            vec![signing_key.0.clone()],
+            verification_methods,
+            vec!["at://alice.example.com".to_string()],
+            services,
+            |data| {
+                let sig: Signature = Signer::sign(&sk, data);
+                Ok(sig.to_bytes().to_vec())
+            },
+        )
+        .expect("rotation op");
+
+        assert!(
+            result.cid.starts_with('b'),
+            "CID must start with multibase prefix 'b'"
+        );
+        assert_ne!(
+            result.cid, prev_cid,
+            "rotation CID must differ from genesis CID"
+        );
+    }
+
+    #[test]
+    fn rotation_op_signing_error_propagates() {
+        let (signing_key, _, _, prev_cid) = make_genesis_for_rotation();
+
+        let mut verification_methods = BTreeMap::new();
+        verification_methods.insert("atproto".to_string(), signing_key.0.clone());
+
+        let result = build_did_plc_rotation_op(
+            &prev_cid,
+            vec![signing_key.0.clone()],
+            verification_methods,
+            vec![],
+            BTreeMap::new(),
+            |_| Err(CryptoError::PlcOperation("SE unavailable".to_string())),
+        );
+
+        assert!(
+            matches!(result, Err(CryptoError::PlcOperation(msg)) if msg.contains("SE unavailable")),
+            "signing error must propagate"
         );
     }
 
