@@ -285,7 +285,10 @@ export const logOut = (): Promise<void> => invoke('log_out').then(() => undefine
  * Error from relay URL configuration commands.
  * Serialized as `{ code: "INVALID_URL" }` etc. by the Rust backend.
  */
-export type RelayConfigError = { code: 'INVALID_URL' | 'UNREACHABLE' | 'KEYCHAIN_ERROR' };
+export type RelayConfigError =
+  | { code: 'INVALID_URL' }
+  | { code: 'UNREACHABLE' }
+  | { code: 'KEYCHAIN_ERROR' };
 
 /**
  * Returns the saved relay base URL, or null if not yet configured.

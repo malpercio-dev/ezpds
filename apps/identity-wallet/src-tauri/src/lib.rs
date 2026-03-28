@@ -262,6 +262,10 @@ fn normalize_relay_url(url: &str) -> Result<String, RelayConfigError> {
     if parsed.host().is_none() {
         return Err(RelayConfigError::InvalidUrl);
     }
+    let path = parsed.path();
+    if !path.is_empty() && path != "/" {
+        return Err(RelayConfigError::InvalidUrl);
+    }
     Ok(url.trim_end_matches('/').to_string())
 }
 
@@ -631,13 +635,18 @@ async fn save_relay_url(
     let resp = http::RelayClient::new_with_url(normalized.clone())
         .get("/xrpc/_health")
         .await
-        .map_err(|_| RelayConfigError::Unreachable)?;
+        .map_err(|e| {
+            tracing::warn!(error = %e, url = %normalized, "relay health check failed");
+            RelayConfigError::Unreachable
+        })?;
     if !resp.status().is_success() {
         tracing::warn!(
             status = %resp.status(),
             url = %normalized,
             "relay health check returned non-success status"
         );
+        // Both transport failures (DNS, TLS, timeout) and non-2xx HTTP responses
+        // map to Unreachable — the frontend only needs to know "can't use this URL".
         return Err(RelayConfigError::Unreachable);
     }
     keychain::store_relay_url(&normalized).map_err(|e| {
@@ -1061,6 +1070,25 @@ mod tests {
         assert_eq!(json["code"], "SHARE_STORAGE_FAILED");
     }
 
+    // -- RelayConfigError serialization (one test per variant) --
+    #[test]
+    fn relay_config_error_invalid_url_serializes_correctly() {
+        let json = serde_json::to_value(RelayConfigError::InvalidUrl).unwrap();
+        assert_eq!(json["code"], "INVALID_URL");
+    }
+
+    #[test]
+    fn relay_config_error_unreachable_serializes_correctly() {
+        let json = serde_json::to_value(RelayConfigError::Unreachable).unwrap();
+        assert_eq!(json["code"], "UNREACHABLE");
+    }
+
+    #[test]
+    fn relay_config_error_keychain_error_serializes_correctly() {
+        let json = serde_json::to_value(RelayConfigError::KeychainError).unwrap();
+        assert_eq!(json["code"], "KEYCHAIN_ERROR");
+    }
+
     // -- normalize_relay_url --
 
     #[test]
@@ -1101,12 +1129,21 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn normalize_relay_url_rejects_urls_with_paths() {
+        assert!(matches!(
+            normalize_relay_url("https://relay.example.com/api/v1").unwrap_err(),
+            RelayConfigError::InvalidUrl
+        ));
+    }
+
     // -- get_relay_url / load_relay_url round-trip --
 
     #[test]
     fn get_relay_url_returns_none_before_save() {
-        // The Keychain test mock starts empty in a fresh process; tests that
-        // write to the store must clean up via delete_relay_url_test_only().
+        // Relies on the keychain mock starting empty for this key. The sibling test
+        // relay_url_round_trips_through_keychain cleans up via delete_relay_url_test_only(),
+        // so ordering is not a concern as long as both tests run in the same process.
         assert!(get_relay_url().is_none());
     }
 

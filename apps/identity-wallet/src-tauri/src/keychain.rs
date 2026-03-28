@@ -172,7 +172,7 @@ pub fn load_relay_url() -> Option<String> {
     match get_item(RELAY_URL_ACCOUNT) {
         Ok(bytes) => String::from_utf8(bytes)
             .map_err(|e| {
-                tracing::warn!(error = %e, "relay URL in Keychain is not valid UTF-8; treating as absent");
+                tracing::error!(error = ?e, "relay URL in Keychain is not valid UTF-8; treating as absent");
             })
             .ok(),
         Err(e) if is_not_found(&e) => None,

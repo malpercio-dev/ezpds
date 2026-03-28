@@ -48,9 +48,13 @@ impl AppState {
     /// Set the relay client from a runtime URL. Silently ignored if already set
     /// (OnceLock::set semantics — this is only called once on first launch).
     pub fn set_relay_client(&self, url: String) {
-        self.relay_client
-            .set(crate::http::RelayClient::new_with_url(url))
-            .ok();
+        if self
+            .relay_client
+            .set(crate::http::RelayClient::new_with_url(url.clone()))
+            .is_err()
+        {
+            tracing::warn!(url = %url, "set_relay_client: relay_client already initialized; ignoring");
+        }
     }
 }
 

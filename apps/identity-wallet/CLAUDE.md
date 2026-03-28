@@ -12,9 +12,9 @@ Tauri v2 iOS application — SvelteKit 2 + Svelte 5 frontend running in a native
 
 **Exposes:**
 - `src/lib/ipc.ts` — typed wrappers for all Tauri IPC commands; import these instead of calling `invoke()` directly. Exports: `createAccount()`, `getOrCreateDeviceKey()`, `signWithDeviceKey()`, `performDIDCeremony()`, `startOAuthFlow()`, `loadHomeData()`, `logOut()`, `getRelayUrl()`, `saveRelayUrl()`, and their associated types (`DevicePublicKey`, `DeviceKeyError`, `CreateAccountResult`, `CreateAccountError`, `DIDCeremonyResult`, `DIDCeremonyError`, `OAuthError`, `SessionInfo`, `HomeData`, `RelayConfigError`)
-- `src/lib/components/onboarding/` — eleven onboarding screen components (RelayConfigScreen, WelcomeScreen, ClaimCodeScreen, EmailScreen, HandleScreen, PasswordScreen, LoadingScreen, DIDCeremonyScreen, DIDSuccessScreen, ShamirBackupScreen, AuthenticatingScreen)
+- `src/lib/components/onboarding/` — twelve onboarding screen components (RelayConfigScreen, WelcomeScreen, ClaimCodeScreen, EmailScreen, HandleScreen, PasswordScreen, LoadingScreen, DIDCeremonyScreen, DIDSuccessScreen, ShamirBackupScreen, HandleRegistrationScreen, AuthenticatingScreen)
 - `src/lib/components/home/` — three home screen components (HomeScreen, DIDDocumentScreen, RecoveryInfoScreen) plus DIDAvatar utility component (deterministic DID-derived hue circle)
-- `src/routes/+page.svelte` — root page: sixteen-step state machine (relay_config -> welcome -> claim_code -> email -> handle -> password -> loading -> did_ceremony -> did_success -> shamir_backup -> handle_registration -> complete -> authenticating -> home -> did_document / recovery_info / auth_failed)
+- `src/routes/+page.svelte` — root page: seventeen-step state machine (relay_config -> welcome -> claim_code -> email -> handle -> password -> loading -> did_ceremony -> did_success -> shamir_backup -> handle_registration -> complete -> authenticating -> home -> did_document / recovery_info / auth_failed)
 
 **Guarantees:**
 - SSR is disabled globally (`ssr = false` in `src/routes/+layout.ts`); the frontend is a fully static SPA loaded from disk by WKWebView

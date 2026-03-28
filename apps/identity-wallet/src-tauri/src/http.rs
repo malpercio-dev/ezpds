@@ -17,9 +17,9 @@ const RELAY_BASE_URL: &str = "https://relay.ezpds.com";
 
 /// Returns the compile-time default relay base URL.
 ///
-/// Used by integration tests and as the pre-filled default in the relay
-/// configuration UI. The runtime URL (from Keychain or user input) takes
-/// precedence during normal app operation.
+/// Used by integration tests that need the default URL to construct expected
+/// endpoint strings. The relay configuration UI hardcodes the same constant
+/// independently so the UI does not take a Rust→TS IPC round-trip on mount.
 pub fn default_relay_url() -> &'static str {
     RELAY_BASE_URL
 }
