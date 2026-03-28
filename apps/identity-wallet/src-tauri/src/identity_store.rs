@@ -345,7 +345,8 @@ fn get_or_create_per_did_device_key(did: &str) -> Result<DevicePublicKey, Identi
 fn get_or_create_per_did_device_key(did: &str) -> Result<DevicePublicKey, IdentityStoreError> {
     use security_framework::{
         access_control::{ProtectionMode, SecAccessControl},
-        key::{GenerateKeyOptions, KeyType, Location, SecKey, Token},
+        item::Location,
+        key::{GenerateKeyOptions, KeyType, SecKey, Token},
     };
 
     let pub_account = device_key_pub_account(did);
