@@ -161,6 +161,7 @@ pub struct SignedPlcOperation {
 /// attribute ensures that direct construction is not possible outside this
 /// module.
 #[non_exhaustive]
+#[derive(Debug)]
 pub struct VerifiedGenesisOp {
     /// The derived DID, e.g. `"did:plc:abcdefghijklmnopqrstuvwx"`.
     pub did: String,
@@ -418,6 +419,7 @@ where
 /// signed op; the caller uses them for semantic validation and DID document
 /// construction.
 #[non_exhaustive]
+#[derive(Debug)]
 pub struct VerifiedPlcOp {
     /// The derived DID. `Some` for genesis ops (derived from signed CBOR),
     /// `None` for rotation ops (caller provides the DID from context).
@@ -442,11 +444,18 @@ pub struct VerifiedPlcOp {
 /// canonical field ordering, and verifies the ECDSA-SHA256 signature against
 /// each key in `authorized_rotation_keys` until one succeeds.
 ///
+/// # Caller obligation
+/// The caller is responsible for providing the correct set of authorized
+/// rotation keys. For genesis ops, these come from the op itself; for rotation
+/// ops, they come from the **previous** operation's `rotationKeys` array.
+/// This function only checks that the signature was made by one of the
+/// provided keys — it does not verify that those keys are the right ones
+/// for this DID's current state.
+///
 /// # Parameters
 /// - `signed_op_json`: JSON-encoded signed PLC operation.
 /// - `authorized_rotation_keys`: The set of `did:key:` URIs authorized to sign
-///   this operation. For genesis ops, these come from the op itself; for rotation
-///   ops, they come from the previous operation's state.
+///   this operation.
 ///
 /// # Errors
 /// Returns `CryptoError::PlcOperation` if no authorized key verifies the
@@ -460,6 +469,9 @@ pub fn verify_plc_operation(
             "authorized_rotation_keys must not be empty".to_string(),
         ));
     }
+
+    // Fail fast on encoding setup before doing any crypto work.
+    let b32 = base32_lowercase()?;
 
     // Parse the signed op, rejecting unknown fields.
     let signed_op: SignedPlcOp = serde_json::from_str(signed_op_json)
@@ -494,8 +506,9 @@ pub fn verify_plc_operation(
         .map_err(|e| CryptoError::PlcOperation(format!("cbor encode unsigned op: {e}")))?;
 
     // Try each authorized rotation key until one verifies the signature.
-    let mut last_error = String::new();
-    for key in authorized_rotation_keys {
+    // Accumulate all per-key errors so the caller can diagnose multi-key failures.
+    let mut key_errors: Vec<String> = Vec::new();
+    for (i, key) in authorized_rotation_keys.iter().enumerate() {
         match verify_signature_with_key(key, &unsigned_cbor, &signature) {
             Ok(()) => {
                 // Signature verified — compute DID and CID.
@@ -509,7 +522,7 @@ pub fn verify_plc_operation(
                 // DID is only derivable from genesis ops (prev == None).
                 let did = if signed_op.prev.is_none() {
                     let hash = Sha256::digest(&signed_cbor);
-                    let encoded = base32_lowercase()?.encode(hash.as_ref());
+                    let encoded = b32.encode(hash.as_ref());
                     Some(format!("did:plc:{}", &encoded[..24]))
                 } else {
                     None
@@ -526,13 +539,14 @@ pub fn verify_plc_operation(
                 });
             }
             Err(e) => {
-                last_error = e;
+                key_errors.push(format!("key[{i}]: {e}"));
             }
         }
     }
 
     Err(CryptoError::PlcOperation(format!(
-        "no authorized rotation key verified the signature: {last_error}"
+        "no authorized rotation key verified the signature: {}",
+        key_errors.join("; ")
     )))
 }
 
@@ -1289,6 +1303,65 @@ mod tests {
         assert!(
             matches!(result, Err(CryptoError::PlcOperation(ref msg)) if msg.contains("must not be empty")),
             "empty key list must fail"
+        );
+    }
+
+    /// Tampered rotationKeys in signed JSON must be rejected (signature covers the unsigned op).
+    #[test]
+    fn verify_plc_operation_rejects_tampered_rotation_keys() {
+        let (signing_key, op) = make_op_for_verify();
+
+        // Parse JSON, swap rotationKeys[0] for a different key, re-serialize
+        let mut v: serde_json::Value =
+            serde_json::from_str(&op.signed_op_json).expect("valid JSON");
+        let wrong_kp = generate_p256_keypair().expect("wrong keypair");
+        v["rotationKeys"][0] = serde_json::json!(wrong_kp.key_id.0);
+        let tampered_json = serde_json::to_string(&v).expect("re-serialize");
+
+        let result = verify_plc_operation(&tampered_json, &[signing_key]);
+        assert!(
+            matches!(result, Err(CryptoError::PlcOperation(_))),
+            "tampered rotationKeys must fail verification"
+        );
+    }
+
+    /// Non-plc_operation type is rejected by verify_plc_operation.
+    #[test]
+    fn verify_plc_operation_rejects_non_plc_operation_type() {
+        let (signing_key, op) = make_op_for_verify();
+
+        let mut v: serde_json::Value =
+            serde_json::from_str(&op.signed_op_json).expect("valid JSON");
+        v["type"] = serde_json::json!("plc_tombstone");
+        let modified_json = serde_json::to_string(&v).expect("re-serialize");
+
+        let result = verify_plc_operation(&modified_json, &[signing_key]);
+        assert!(
+            matches!(result, Err(CryptoError::PlcOperation(ref msg)) if msg.contains("plc_tombstone")),
+            "non-plc_operation type must be rejected"
+        );
+    }
+
+    /// Wrong-length signature from rotation op callback hits the length guard.
+    #[test]
+    fn rotation_op_wrong_length_signature_returns_error() {
+        let (signing_key, _, _, prev_cid) = make_genesis_for_rotation();
+
+        let mut verification_methods = BTreeMap::new();
+        verification_methods.insert("atproto".to_string(), signing_key.0.clone());
+
+        let result = build_did_plc_rotation_op(
+            &prev_cid,
+            vec![signing_key.0.clone()],
+            verification_methods,
+            vec![],
+            BTreeMap::new(),
+            |_| Ok(vec![0u8; 32]), // 32 bytes instead of expected 64
+        );
+
+        assert!(
+            matches!(result, Err(CryptoError::PlcOperation(ref msg)) if msg.contains("expected 64")),
+            "wrong-length signature must be rejected, got: {result:?}"
         );
     }
 
