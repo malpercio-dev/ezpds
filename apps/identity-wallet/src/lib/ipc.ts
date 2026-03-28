@@ -278,3 +278,26 @@ export const loadHomeData = (): Promise<HomeData> =>
  * Always resolves. Frontend should unconditionally navigate to the welcome screen.
  */
 export const logOut = (): Promise<void> => invoke('log_out').then(() => undefined);
+
+// ── Relay URL Configuration ──────────────────────────────────────────────
+
+/**
+ * Error from relay URL configuration commands.
+ * Serialized as `{ code: "INVALID_URL" }` etc. by the Rust backend.
+ */
+export type RelayConfigError = { code: 'INVALID_URL' | 'UNREACHABLE' | 'KEYCHAIN_ERROR' };
+
+/**
+ * Returns the saved relay base URL, or null if not yet configured.
+ * Call this on app mount to decide whether to show the relay config screen.
+ */
+export const getRelayUrl = (): Promise<string | null> =>
+  invoke('get_relay_url');
+
+/**
+ * Validates url, pings /xrpc/_health, saves to Keychain, and initializes the
+ * runtime relay client. After this resolves, all relay IPC commands use url.
+ * Throws RelayConfigError on failure.
+ */
+export const saveRelayUrl = (url: string): Promise<void> =>
+  invoke('save_relay_url', { url });

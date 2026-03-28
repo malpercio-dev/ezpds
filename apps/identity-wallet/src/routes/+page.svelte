@@ -1,6 +1,7 @@
 <script lang="ts">
   import { listen } from '@tauri-apps/api/event';
   import { onMount } from 'svelte';
+  import RelayConfigScreen from '$lib/components/onboarding/RelayConfigScreen.svelte';
   import WelcomeScreen from '$lib/components/onboarding/WelcomeScreen.svelte';
   import ClaimCodeScreen from '$lib/components/onboarding/ClaimCodeScreen.svelte';
   import EmailScreen from '$lib/components/onboarding/EmailScreen.svelte';
@@ -15,7 +16,7 @@
   import HomeScreen from '$lib/components/home/HomeScreen.svelte';
   import DIDDocumentScreen from '$lib/components/home/DIDDocumentScreen.svelte';
   import RecoveryInfoScreen from '$lib/components/home/RecoveryInfoScreen.svelte';
-  import { createAccount, type CreateAccountError, type OAuthError, type HomeData } from '$lib/ipc';
+  import { createAccount, getRelayUrl, type CreateAccountError, type OAuthError, type HomeData } from '$lib/ipc';
 
   // ── Onboarding step type ─────────────────────────────────────────────────
   //
@@ -28,6 +29,7 @@
   // instead of navigating through an extra modal. No 'error' step is needed.
 
   type OnboardingStep =
+    | 'relay_config'
     | 'welcome'
     | 'claim_code'
     | 'email'
@@ -47,7 +49,7 @@
 
   // ── State ────────────────────────────────────────────────────────────────
 
-  let step = $state<OnboardingStep>('welcome');
+  let step = $state<OnboardingStep>('relay_config');
   let form = $state({ claimCode: '', email: '', handle: '', password: '', did: '', share3: '', registeredHandle: '' });
 
   /**
@@ -69,9 +71,16 @@
     step = next;
   }
 
-  // ── OAuth event listener ──────────────────────────────────────────────────
+  // ── Relay configuration and OAuth event listener ──────────────────────
 
-  onMount(() => {
+  onMount(async () => {
+    // If the user has already configured a relay URL, skip the config screen.
+    const savedUrl = await getRelayUrl();
+    if (savedUrl) {
+      step = 'welcome';
+    }
+
+    // Existing: listen for auth_ready deep-link callback from the OAuth flow.
     listen('auth_ready', () => {
       goTo('home');
     });
@@ -150,7 +159,9 @@
 </script>
 
 <div class="app">
-  {#if step === 'welcome'}
+  {#if step === 'relay_config'}
+    <RelayConfigScreen onnext={() => goTo('welcome')} />
+  {:else if step === 'welcome'}
     <WelcomeScreen onstart={() => goTo('claim_code')} />
   {:else if step === 'claim_code'}
     <ClaimCodeScreen
