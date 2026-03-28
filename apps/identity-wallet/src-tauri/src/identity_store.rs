@@ -85,6 +85,7 @@ impl IdentityStore {
     fn load_managed_dids(&self) -> Result<Vec<String>, IdentityStoreError> {
         match crate::keychain::get_item(MANAGED_DIDS_ACCOUNT) {
             Ok(bytes) => serde_json::from_slice::<Vec<String>>(&bytes).map_err(|e| {
+                tracing::error!(error = %e, "managed-dids Keychain entry contains invalid JSON");
                 IdentityStoreError::SerializationError {
                     message: format!("failed to deserialize managed-dids: {e}"),
                 }
@@ -140,8 +141,10 @@ impl IdentityStore {
 
     /// Remove a managed identity and all associated Keychain entries.
     ///
-    /// Deletes the DID from the managed-dids index and performs best-effort
-    /// deletion of all per-DID prefixed entries (ignores not-found errors).
+    /// Updates the managed-dids index first, then performs best-effort deletion
+    /// of all per-DID prefixed entries. Index-first ordering ensures that on
+    /// partial failure the DID is unregistered (orphaned entries are benign)
+    /// rather than registered-but-empty (confusing for callers).
     ///
     /// Returns `Err(IdentityNotFound)` if the DID is not in the managed list.
     pub fn remove_identity(&self, did: &str) -> Result<(), IdentityStoreError> {
@@ -151,8 +154,14 @@ impl IdentityStore {
             return Err(IdentityStoreError::IdentityNotFound);
         }
 
-        // Delete all per-DID Keychain entries (best-effort; ignore not-found errors).
-        let entries = vec![
+        // Remove DID from index first — this is the authoritative state change.
+        dids.retain(|d| d != did);
+        self.save_managed_dids(&dids)?;
+
+        // Best-effort cleanup of per-DID Keychain entries. Not-found errors are
+        // expected (entry may never have been created). Transient OS errors are
+        // logged but do not fail the operation — the DID is already unregistered.
+        let entries = [
             device_key_account(did),
             device_key_pub_account(did),
             device_key_app_label_account(did),
@@ -162,12 +171,12 @@ impl IdentityStore {
         ];
 
         for entry in entries {
-            let _ = crate::keychain::delete_item(&entry);
+            if let Err(e) = crate::keychain::delete_item(&entry) {
+                if !crate::keychain::is_not_found(&e) {
+                    tracing::warn!(did = did, entry = entry, error = %e, "transient Keychain error during identity cleanup");
+                }
+            }
         }
-
-        // Remove DID from index and save.
-        dids.retain(|d| d != did);
-        self.save_managed_dids(&dids)?;
 
         Ok(())
     }
@@ -298,8 +307,10 @@ fn get_or_create_per_did_device_key(did: &str) -> Result<DevicePublicKey, Identi
         Ok(bytes) => bytes,
         Err(e) if crate::keychain::is_not_found(&e) => {
             // No key yet — generate a new P-256 keypair via the crypto crate.
-            let keypair = crypto::generate_p256_keypair()
-                .map_err(|_| IdentityStoreError::KeyGenerationFailed)?;
+            let keypair = crypto::generate_p256_keypair().map_err(|e| {
+                tracing::error!(did = did, error = %e, "P-256 key generation failed");
+                IdentityStoreError::KeyGenerationFailed
+            })?;
             // to_vec(): Deref gives &[u8; 32], coerces to &[u8], allocates into Vec<u8>.
             let bytes = keypair.private_key_bytes.to_vec();
             crate::keychain::store_item(&account, &bytes).map_err(|e| {
@@ -318,8 +329,11 @@ fn get_or_create_per_did_device_key(did: &str) -> Result<DevicePublicKey, Identi
 
     // Reconstruct the public key from stored private bytes.
     let signing_key =
-        SigningKey::from_slice(&private_bytes).map_err(|_| IdentityStoreError::KeychainError {
-            message: "invalid stored key bytes".into(),
+        SigningKey::from_slice(&private_bytes).map_err(|e| {
+            tracing::error!(did = did, error = %e, "stored device key bytes are not a valid P-256 scalar");
+            IdentityStoreError::SerializationError {
+                message: "invalid stored key bytes".into(),
+            }
         })?;
     let encoded = signing_key.verifying_key().to_encoded_point(true); // compressed (33 bytes)
     let compressed = encoded.as_bytes();
@@ -394,7 +408,10 @@ fn get_or_create_per_did_device_key(did: &str) -> Result<DevicePublicKey, Identi
         Some(ProtectionMode::AccessibleWhenUnlockedThisDeviceOnly),
         1 << 30, // kSecAccessControlPrivateKeyUsage
     )
-    .map_err(|_| IdentityStoreError::KeyGenerationFailed)?;
+    .map_err(|e| {
+        tracing::error!(did = did, error = %e, "SecAccessControl creation failed");
+        IdentityStoreError::KeyGenerationFailed
+    })?;
 
     let mut opts = GenerateKeyOptions::default();
     opts.set_key_type(KeyType::ec())
@@ -404,7 +421,10 @@ fn get_or_create_per_did_device_key(did: &str) -> Result<DevicePublicKey, Identi
         .set_location(Location::DataProtectionKeychain)
         .set_access_control(access_control); // takes ownership (by value)
 
-    let priv_key = SecKey::new(&opts).map_err(|_| IdentityStoreError::KeyGenerationFailed)?;
+    let priv_key = SecKey::new(&opts).map_err(|e| {
+        tracing::error!(did = did, error = %e, "Secure Enclave key generation failed");
+        IdentityStoreError::KeyGenerationFailed
+    })?;
 
     // Retrieve the public key and its external representation.
     // SecKeyCopyExternalRepresentation on the *public* key returns the uncompressed
@@ -436,6 +456,7 @@ fn get_or_create_per_did_device_key(did: &str) -> Result<DevicePublicKey, Identi
 
     // Get and store application_label. Roll back pub_account if this fails.
     let app_label = priv_key.application_label().ok_or_else(|| {
+        tracing::error!(did = did, "SE key created but application_label returned None");
         let _ = crate::keychain::delete_item(&pub_account);
         IdentityStoreError::KeychainError {
             message: "SE key created but application_label returned None; do not retry".into(),
@@ -480,7 +501,7 @@ mod tests {
         let _ = crate::keychain::delete_item(&oauth_tokens_account(did));
     }
 
-    // ── Task 1: add_identity, remove_identity, list_identities ────────────────
+    // ── Identity lifecycle (add / remove / list) ──────────────────────────────
 
     #[test]
     fn add_identity_and_list() {
@@ -573,7 +594,7 @@ mod tests {
         assert!(json5.contains(r#""code":"SERIALIZATION_ERROR""#));
     }
 
-    // ── Task 2: get_or_create_device_key ───────────────────────────────────────
+    // ── Per-DID device key ─────────────────────────────────────────────────────
 
     #[test]
     fn get_or_create_device_key_success() {
@@ -591,13 +612,8 @@ mod tests {
         assert!(key.key_id.starts_with("did:key:z"));
 
         // Validate multibase decoding to 33 bytes
-        if let Ok(decoded) = multibase::decode(&key.multibase) {
-            assert_eq!(
-                decoded.1.len(),
-                33,
-                "compressed P-256 point should be 33 bytes"
-            );
-        }
+        let (_, decoded) = multibase::decode(&key.multibase).expect("multibase decode failed");
+        assert_eq!(decoded.len(), 33, "compressed P-256 point should be 33 bytes");
     }
 
     #[test]
@@ -649,7 +665,7 @@ mod tests {
         assert!(matches!(result, Err(IdentityStoreError::IdentityNotFound)));
     }
 
-    // ── Task 3: DID document and PLC log persistence ────────────────────────────
+    // ── Document and log persistence ───────────────────────────────────────────
 
     #[test]
     fn did_doc_round_trip() {
@@ -760,15 +776,16 @@ mod tests {
         assert!(store.add_identity(did).is_ok());
         clear_per_did_entries(did);
 
-        // Store some data.
+        // Store some data and generate a device key.
         let doc = r#"{"id":"did:plc:test1"}"#;
         let log = r#"[]"#;
         assert!(store.store_did_doc(did, doc).is_ok());
         assert!(store.store_plc_log(did, log).is_ok());
 
-        // Also trigger device key generation to populate private key storage.
-        // (On simulator, this stores in the per-did:device-key account.)
-        let _ = store.get_or_create_device_key(did);
+        // Record the device key before removal so we can verify cleanup.
+        let key_before = store
+            .get_or_create_device_key(did)
+            .expect("device key generation failed");
 
         // Remove the identity.
         assert!(store.remove_identity(did).is_ok());
@@ -777,5 +794,15 @@ mod tests {
         assert!(store.add_identity(did).is_ok());
         assert!(store.get_did_doc(did).unwrap().is_none());
         assert!(store.get_plc_log(did).unwrap().is_none());
+
+        // A new device key should be generated (different from the old one),
+        // proving the old key material was cleaned up.
+        let key_after = store
+            .get_or_create_device_key(did)
+            .expect("device key generation after re-add failed");
+        assert_ne!(
+            key_before.multibase, key_after.multibase,
+            "device key should differ after remove + re-add"
+        );
     }
 }

@@ -243,7 +243,7 @@ cargo build
 - `SessionInfo` serializes with `#[serde(rename_all = "camelCase")]` -- TypeScript receives `{ did, handle, email, emailConfirmed, didDoc }`; the TypeScript `SessionInfo` type in `ipc.ts` must match exactly
 - `log_out` deletes exactly three Keychain accounts: `"oauth-access-token"`, `"oauth-refresh-token"`, `"did"` -- adding or removing items from this list changes what data survives a logout
 - Keychain account `"managed-dids"` stores a JSON array of all managed DID strings (e.g. `["did:plc:abc","did:plc:def"]`); the single source of truth for which identities are registered in `IdentityStore`
-- Per-DID Keychain accounts follow the `"{did}:suffix"` pattern with six suffixes: `device-key` (P-256 private key scalar or SE metadata), `device-key-pub` (compressed public key, SE path only), `device-key-app-label` (SE application_label, SE path only), `did-doc` (opaque DID document JSON), `plc-log` (opaque PLC audit log JSON), `oauth-tokens` (reserved for per-DID OAuth tokens)
+- Per-DID Keychain accounts follow the `"{did}:suffix"` pattern with six suffixes: `device-key` (P-256 private key scalar, software path only; not written on SE path), `device-key-pub` (compressed public key, SE path only), `device-key-app-label` (SE application_label, SE path only), `did-doc` (opaque DID document JSON), `plc-log` (opaque PLC audit log JSON), `oauth-tokens` (reserved for per-DID OAuth tokens)
 - `IdentityStore` P-256 multicodec prefix `[0x80, 0x24]` is duplicated from `crates/crypto/src/keys.rs` (same rationale as `device_key.rs` -- `pub(crate)` constant cannot be imported cross-crate)
 
 ## Key Files
