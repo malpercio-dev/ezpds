@@ -228,8 +228,8 @@ async fn try_resolve_dns(handle: &str) -> Result<Option<String>, PdsClientError>
                 for part in record.txt_data() {
                     match std::str::from_utf8(part) {
                         Ok(s) => {
-                            if s.starts_with("did=") {
-                                let did = s[4..].trim().to_string();
+                            if let Some(did_value) = s.strip_prefix("did=") {
+                                let did = did_value.trim().to_string();
                                 return Ok(Some(did));
                             }
                         }
