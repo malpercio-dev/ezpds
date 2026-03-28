@@ -5,6 +5,7 @@
 // Returns: PDS endpoints, authorization server metadata, or error codes
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -197,6 +198,138 @@ impl PdsClient {
         // Neither DNS nor HTTP succeeded
         Err(PdsClientError::HandleNotFound)
     }
+
+    /// Fetch the DID document from plc.directory and extract the PDS endpoint.
+    ///
+    /// Verifies:
+    /// - AC3.4: PDS endpoint extracted from DID document
+    /// - AC3.7: Returns `DID_NOT_FOUND` on 404
+    /// - AC3.8: Returns `PDS_UNREACHABLE` when PDS endpoint is down
+    pub async fn discover_pds(
+        &self,
+        did: &str,
+    ) -> Result<(String, PlcDidDocument), PdsClientError> {
+        let url = format!("{}/{}", self.plc_directory_url, did);
+
+        // Fetch the DID document from plc.directory
+        let response =
+            self.client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| PdsClientError::NetworkError {
+                    message: format!("failed to fetch DID document: {}", e),
+                })?;
+
+        match response.status() {
+            s if s == 404 => return Err(PdsClientError::DidNotFound),
+            s if !s.is_success() => {
+                return Err(PdsClientError::NetworkError {
+                    message: format!("plc.directory returned {}", s),
+                });
+            }
+            _ => {}
+        }
+
+        // Parse response as PlcDidDocument
+        let doc: PlcDidDocument =
+            response
+                .json()
+                .await
+                .map_err(|e| PdsClientError::InvalidResponse {
+                    message: format!("failed to parse DID document: {}", e),
+                })?;
+
+        // Extract the atproto_pds service
+        let pds_service =
+            doc.services
+                .get("atproto_pds")
+                .ok_or_else(|| PdsClientError::InvalidResponse {
+                    message: "missing atproto_pds service".to_string(),
+                })?;
+
+        let pds_endpoint = &pds_service.endpoint;
+
+        // Verify PDS reachability with a HEAD request (5-second timeout)
+        let timeout_client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .map_err(|e| PdsClientError::PdsUnreachable {
+                source: format!("failed to create HTTP client: {}", e),
+            })?;
+
+        timeout_client
+            .head(pds_endpoint)
+            .send()
+            .await
+            .map_err(|e| PdsClientError::PdsUnreachable {
+                source: format!("failed to reach PDS endpoint: {}", e),
+            })?;
+
+        Ok((pds_endpoint.to_string(), doc))
+    }
+
+    /// Fetch OAuth authorization server metadata from the PDS.
+    ///
+    /// Verifies:
+    /// - AC3.5: Auth server metadata is fetched and parsed correctly
+    /// - Validates that `response_types_supported` includes "code"
+    /// - Validates that `code_challenge_methods_supported` includes "S256"
+    pub async fn discover_auth_server(
+        &self,
+        pds_url: &str,
+    ) -> Result<AuthServerMetadata, PdsClientError> {
+        let url = format!("{}/.well-known/oauth-authorization-server", pds_url);
+
+        let response =
+            self.client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| PdsClientError::PdsUnreachable {
+                    source: format!("failed to fetch OAuth metadata: {}", e),
+                })?;
+
+        if !response.status().is_success() {
+            return Err(PdsClientError::PdsUnreachable {
+                source: format!(
+                    "OAuth metadata fetch returned {} from {}",
+                    response.status(),
+                    pds_url
+                ),
+            });
+        }
+
+        let metadata: AuthServerMetadata =
+            response
+                .json()
+                .await
+                .map_err(|e| PdsClientError::InvalidResponse {
+                    message: format!("failed to parse OAuth metadata: {}", e),
+                })?;
+
+        // Validate required capabilities
+        if !metadata
+            .response_types_supported
+            .contains(&"code".to_string())
+        {
+            return Err(PdsClientError::InvalidResponse {
+                message: "OAuth metadata missing 'code' in response_types_supported".to_string(),
+            });
+        }
+
+        if !metadata
+            .code_challenge_methods_supported
+            .contains(&"S256".to_string())
+        {
+            return Err(PdsClientError::InvalidResponse {
+                message: "OAuth metadata missing 'S256' in code_challenge_methods_supported"
+                    .to_string(),
+            });
+        }
+
+        Ok(metadata)
+    }
 }
 
 impl Default for PdsClient {
@@ -287,6 +420,7 @@ async fn try_resolve_http(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use httpmock::prelude::*;
 
     #[test]
     fn test_pds_client_default() {
@@ -309,6 +443,289 @@ mod tests {
         assert!(!json.contains("rotationKeys"));
         assert!(!json.contains("alsoKnownAs"));
         assert!(json.contains("token"));
+    }
+
+    // ============================================================================
+    // TASK 4 & 5: discover_pds and discover_auth_server tests
+    // ============================================================================
+
+    /// AC3.4: PDS endpoint extracted from DID doc
+    #[tokio::test]
+    async fn test_discover_pds_extracts_endpoint() {
+        let mock_server = MockServer::start();
+        let pds_endpoint = format!("{}/pds", mock_server.base_url());
+
+        let did_doc_json = serde_json::json!({
+            "did": "did:plc:test123",
+            "alsoKnownAs": ["at://alice.example.com"],
+            "rotationKeys": ["did:key:zQ3test1", "did:key:zQ3test2"],
+            "verificationMethods": {"atproto": "did:key:zQ3test1"},
+            "services": {
+                "atproto_pds": {
+                    "type": "AtprotoPersonalDataServer",
+                    "endpoint": pds_endpoint
+                }
+            }
+        });
+
+        // Mock the plc.directory GET request
+        mock_server.mock(|when, then| {
+            when.method(GET).path("/did:plc:test123");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(did_doc_json);
+        });
+
+        // Mock the PDS reachability check
+        mock_server.mock(|when, then| {
+            when.method(GET).path("/pds");
+            then.status(200);
+        });
+
+        let client = PdsClient::new_for_test(mock_server.base_url());
+        let result = client.discover_pds("did:plc:test123").await;
+
+        assert!(result.is_ok());
+        let (pds_url, doc) = result.unwrap();
+        assert!(pds_url.contains("/pds"));
+        assert_eq!(doc.did, "did:plc:test123");
+        assert_eq!(doc.also_known_as, vec!["at://alice.example.com"]);
+        assert_eq!(doc.rotation_keys.len(), 2);
+    }
+
+    /// AC3.7: DID_NOT_FOUND when plc.directory returns 404
+    #[tokio::test]
+    async fn test_discover_pds_did_not_found() {
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(GET).path("/did:plc:nonexistent");
+            then.status(404);
+        });
+
+        let client = PdsClient::new_for_test(mock_server.base_url());
+        let result = client.discover_pds("did:plc:nonexistent").await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PdsClientError::DidNotFound => {
+                // Expected
+            }
+            e => panic!("Expected DidNotFound, got: {:?}", e),
+        }
+    }
+
+    /// AC3.8: PDS_UNREACHABLE when PDS endpoint is down
+    #[tokio::test]
+    async fn test_discover_pds_pds_unreachable() {
+        let mock_server = MockServer::start();
+
+        let did_doc_json = serde_json::json!({
+            "did": "did:plc:test123",
+            "alsoKnownAs": [],
+            "rotationKeys": [],
+            "verificationMethods": {},
+            "services": {
+                "atproto_pds": {
+                    "type": "AtprotoPersonalDataServer",
+                    "endpoint": "http://127.0.0.1:1"
+                }
+            }
+        });
+
+        mock_server.mock(|when, then| {
+            when.method(GET).path("/did:plc:test123");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(did_doc_json);
+        });
+
+        let client = PdsClient::new_for_test(mock_server.base_url());
+        let result = client.discover_pds("did:plc:test123").await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PdsClientError::PdsUnreachable { .. } => {
+                // Expected
+            }
+            e => panic!("Expected PdsUnreachable, got: {:?}", e),
+        }
+    }
+
+    /// AC3.8: InvalidResponse when atproto_pds service is missing
+    #[tokio::test]
+    async fn test_discover_pds_missing_service() {
+        let mock_server = MockServer::start();
+
+        let did_doc_json = serde_json::json!({
+            "did": "did:plc:test123",
+            "alsoKnownAs": [],
+            "rotationKeys": [],
+            "verificationMethods": {},
+            "services": {}
+        });
+
+        mock_server.mock(|when, then| {
+            when.method(GET).path("/did:plc:test123");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(did_doc_json);
+        });
+
+        let client = PdsClient::new_for_test(mock_server.base_url());
+        let result = client.discover_pds("did:plc:test123").await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PdsClientError::InvalidResponse { .. } => {
+                // Expected
+            }
+            e => panic!("Expected InvalidResponse, got: {:?}", e),
+        }
+    }
+
+    /// AC3.5: Auth server metadata is fetched and validated
+    #[tokio::test]
+    async fn test_discover_auth_server_success() {
+        let mock_server = MockServer::start();
+
+        let metadata_json = serde_json::json!({
+            "issuer": "https://pds.example.com",
+            "authorization_endpoint": "https://pds.example.com/oauth/authorize",
+            "token_endpoint": "https://pds.example.com/oauth/token",
+            "pushed_authorization_request_endpoint": "https://pds.example.com/oauth/par",
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code", "refresh_token"],
+            "code_challenge_methods_supported": ["S256"],
+            "dpop_signing_alg_values_supported": ["ES256"],
+            "scopes_supported": ["atproto", "transition:generic"]
+        });
+
+        mock_server.mock(|when, then| {
+            when.method(GET)
+                .path("/.well-known/oauth-authorization-server");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(metadata_json);
+        });
+
+        let client = PdsClient::new();
+        let result = client.discover_auth_server(&mock_server.base_url()).await;
+
+        assert!(result.is_ok());
+        let metadata = result.unwrap();
+        assert_eq!(metadata.issuer, "https://pds.example.com");
+        assert_eq!(
+            metadata.authorization_endpoint,
+            "https://pds.example.com/oauth/authorize"
+        );
+        assert_eq!(
+            metadata.token_endpoint,
+            "https://pds.example.com/oauth/token"
+        );
+        assert!(metadata
+            .response_types_supported
+            .contains(&"code".to_string()));
+        assert!(metadata
+            .code_challenge_methods_supported
+            .contains(&"S256".to_string()));
+    }
+
+    /// discover_auth_server rejects missing S256
+    #[tokio::test]
+    async fn test_discover_auth_server_missing_s256() {
+        let mock_server = MockServer::start();
+
+        let metadata_json = serde_json::json!({
+            "issuer": "https://pds.example.com",
+            "authorization_endpoint": "https://pds.example.com/oauth/authorize",
+            "token_endpoint": "https://pds.example.com/oauth/token",
+            "pushed_authorization_request_endpoint": "https://pds.example.com/oauth/par",
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code"],
+            "code_challenge_methods_supported": ["plain"],
+            "dpop_signing_alg_values_supported": ["ES256"],
+            "scopes_supported": ["atproto"]
+        });
+
+        mock_server.mock(|when, then| {
+            when.method(GET)
+                .path("/.well-known/oauth-authorization-server");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(metadata_json);
+        });
+
+        let client = PdsClient::new();
+        let result = client.discover_auth_server(&mock_server.base_url()).await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PdsClientError::InvalidResponse { message } => {
+                assert!(message.contains("S256"));
+            }
+            e => panic!("Expected InvalidResponse, got: {:?}", e),
+        }
+    }
+
+    /// discover_auth_server rejects missing "code" response type
+    #[tokio::test]
+    async fn test_discover_auth_server_missing_code_response_type() {
+        let mock_server = MockServer::start();
+
+        let metadata_json = serde_json::json!({
+            "issuer": "https://pds.example.com",
+            "authorization_endpoint": "https://pds.example.com/oauth/authorize",
+            "token_endpoint": "https://pds.example.com/oauth/token",
+            "pushed_authorization_request_endpoint": "https://pds.example.com/oauth/par",
+            "response_types_supported": ["id_token"],
+            "grant_types_supported": ["authorization_code"],
+            "code_challenge_methods_supported": ["S256"],
+            "dpop_signing_alg_values_supported": ["ES256"],
+            "scopes_supported": ["atproto"]
+        });
+
+        mock_server.mock(|when, then| {
+            when.method(GET)
+                .path("/.well-known/oauth-authorization-server");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(metadata_json);
+        });
+
+        let client = PdsClient::new();
+        let result = client.discover_auth_server(&mock_server.base_url()).await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PdsClientError::InvalidResponse { message } => {
+                assert!(message.contains("code"));
+            }
+            e => panic!("Expected InvalidResponse, got: {:?}", e),
+        }
+    }
+
+    /// discover_auth_server returns PdsUnreachable on HTTP error
+    #[tokio::test]
+    async fn test_discover_auth_server_pds_unreachable() {
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(GET)
+                .path("/.well-known/oauth-authorization-server");
+            then.status(500);
+        });
+
+        let client = PdsClient::new();
+        let result = client.discover_auth_server(&mock_server.base_url()).await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PdsClientError::PdsUnreachable { .. } => {
+                // Expected
+            }
+            e => panic!("Expected PdsUnreachable, got: {:?}", e),
+        }
     }
 
     // ============================================================================
