@@ -14,47 +14,38 @@ use serde::{Deserialize, Serialize};
 ///
 /// Serializes to frontend with `#[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]`,
 /// matching the `OAuthError` / `IdentityStoreError` pattern.
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Debug, thiserror::Error, Serialize)]
 #[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum PdsClientError {
     /// Neither DNS nor HTTP resolution succeeded for the handle.
+    #[error("handle not found")]
     HandleNotFound,
 
     /// plc.directory returned 404 for the DID.
+    #[error("did not found")]
     DidNotFound,
 
     /// PDS endpoint is down or unreachable.
+    #[error("pds unreachable: {reason}")]
     PdsUnreachable {
         /// Reason for unreachability (transport error, connection refused, etc.).
         /// Not serialized to frontend (serde skip).
         #[serde(skip)]
-        source: String,
+        reason: String,
     },
 
     /// Transport-level failure (DNS timeout, connection refused, etc.).
+    #[error("network error: {message}")]
     NetworkError { message: String },
 
     /// Response body couldn't be parsed or was missing expected fields.
+    #[error("invalid response: {message}")]
     InvalidResponse { message: String },
 
     /// PAR or token exchange failed.
+    #[error("oauth failed: {message}")]
     OAuthFailed { message: String },
 }
-
-impl std::fmt::Display for PdsClientError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::HandleNotFound => write!(f, "handle not found"),
-            Self::DidNotFound => write!(f, "did not found"),
-            Self::PdsUnreachable { source } => write!(f, "pds unreachable: {}", source),
-            Self::NetworkError { message } => write!(f, "network error: {}", message),
-            Self::InvalidResponse { message } => write!(f, "invalid response: {}", message),
-            Self::OAuthFailed { message } => write!(f, "oauth failed: {}", message),
-        }
-    }
-}
-
-impl std::error::Error for PdsClientError {}
 
 /// PLC directory DID document response.
 ///
@@ -145,6 +136,7 @@ pub struct RecommendedCredentials {
 ///
 /// Stateless except for the HTTP client which pools connections.
 #[allow(dead_code)]
+// TODO(Phase 4): Remove #[allow(dead_code)] once Tauri commands call PdsClient methods
 pub struct PdsClient {
     client: Client,
     plc_directory_url: String,
@@ -255,7 +247,7 @@ impl PdsClient {
             .timeout(Duration::from_secs(5))
             .build()
             .map_err(|e| PdsClientError::PdsUnreachable {
-                source: format!("failed to create HTTP client: {}", e),
+                reason: format!("failed to create HTTP client: {}", e),
             })?;
 
         timeout_client
@@ -263,7 +255,7 @@ impl PdsClient {
             .send()
             .await
             .map_err(|e| PdsClientError::PdsUnreachable {
-                source: format!("failed to reach PDS endpoint: {}", e),
+                reason: format!("failed to reach PDS endpoint: {}", e),
             })?;
 
         Ok((pds_endpoint.to_string(), doc))
@@ -287,12 +279,12 @@ impl PdsClient {
                 .send()
                 .await
                 .map_err(|e| PdsClientError::PdsUnreachable {
-                    source: format!("failed to fetch OAuth metadata: {}", e),
+                    reason: format!("failed to fetch OAuth metadata: {}", e),
                 })?;
 
         if !response.status().is_success() {
             return Err(PdsClientError::PdsUnreachable {
-                source: format!(
+                reason: format!(
                     "OAuth metadata fetch returned {} from {}",
                     response.status(),
                     pds_url
@@ -370,7 +362,6 @@ impl PdsClient {
             .client
             .post(&par_url)
             .header("DPoP", dpop_proof)
-            .header("Content-Type", "application/x-www-form-urlencoded")
             .form(&form_data)
             .send()
             .await
@@ -427,7 +418,6 @@ impl PdsClient {
         self.client
             .post(token_url)
             .header("DPoP", dpop_proof)
-            .header("Content-Type", "application/x-www-form-urlencoded")
             .form(&form_data)
             .send()
             .await
@@ -559,8 +549,8 @@ pub async fn request_plc_operation_signature(
             &serde_json::json!({}),
         )
         .await
-        .map_err(|_| PdsClientError::NetworkError {
-            message: "request_plc_operation_signature failed".to_string(),
+        .map_err(|e| PdsClientError::NetworkError {
+            message: format!("request_plc_operation_signature failed: {}", e),
         })?;
 
     if resp.status().is_success() {
@@ -580,8 +570,8 @@ pub async fn sign_plc_operation(
     let resp = client
         .post("/xrpc/com.atproto.identity.signPlcOperation", request)
         .await
-        .map_err(|_| PdsClientError::NetworkError {
-            message: "sign_plc_operation failed".to_string(),
+        .map_err(|e| PdsClientError::NetworkError {
+            message: format!("sign_plc_operation failed: {}", e),
         })?;
 
     if !resp.status().is_success() {
@@ -604,8 +594,8 @@ pub async fn get_recommended_did_credentials(
     let resp = client
         .get("/xrpc/com.atproto.identity.getRecommendedDidCredentials")
         .await
-        .map_err(|_| PdsClientError::NetworkError {
-            message: "get_recommended_did_credentials failed".to_string(),
+        .map_err(|e| PdsClientError::NetworkError {
+            message: format!("get_recommended_did_credentials failed: {}", e),
         })?;
 
     if !resp.status().is_success() {
@@ -683,9 +673,9 @@ mod tests {
                 .json_body(did_doc_json);
         });
 
-        // Mock the PDS reachability check
+        // Mock the PDS reachability check (HEAD request for the service endpoint)
         mock_server.mock(|when, then| {
-            when.method(GET).path("/pds");
+            when.method(httpmock::Method::HEAD).path("/pds");
             then.status(200);
         });
 
@@ -969,53 +959,88 @@ mod tests {
         }
     }
 
-    /// AC3.2: HTTP response trimming logic verification
-    ///
-    /// Verifies that HTTP responses with leading/trailing whitespace
-    /// are correctly trimmed to just the DID value.
-    #[test]
-    fn test_http_response_parsing_with_whitespace() {
-        // This test verifies the trim logic works correctly
-        let test_cases = vec![
-            ("did:plc:test123", "did:plc:test123"),
-            ("  did:plc:test123  ", "did:plc:test123"),
-            ("\ndid:plc:test123\n", "did:plc:test123"),
-            ("\t did:plc:test123 \t", "did:plc:test123"),
-        ];
+    // ============================================================================
+    // TASK 2 & 3: resolve_handle tests with httpmock
+    // ============================================================================
 
-        for (input, expected) in test_cases {
-            let trimmed = input.trim().to_string();
-            assert_eq!(trimmed, expected);
-        }
+    /// AC3.2: HTTP fallback resolves handle to DID
+    #[tokio::test]
+    async fn test_try_resolve_http_success() {
+        let mock_server = MockServer::start();
+
+        // Mock server returns a valid DID on the well-known endpoint
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/.well-known/atproto-did");
+            then.status(200).body("did:plc:test123");
+        });
+
+        let client = reqwest::Client::new();
+        let url = format!("{}/.well-known/atproto-did", mock_server.base_url());
+        let result = try_resolve_http(&client, &url).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some("did:plc:test123".to_string()));
     }
 
-    /// AC3.2 & AC3.3: Test resolve_handle with fake handles
-    ///
-    /// These tests verify the orchestration logic without actual network access.
-    /// They test that resolve_handle returns HANDLE_NOT_FOUND when both DNS and HTTP fail.
+    /// AC3.2: HTTP fallback with whitespace trimming
     #[tokio::test]
-    async fn test_resolve_handle_orchestration_with_nonexistent_handle() {
-        let client = PdsClient::new();
+    async fn test_try_resolve_http_with_whitespace() {
+        let mock_server = MockServer::start();
 
-        // Use a handle that will fail both DNS and HTTP (valid domain structure but non-existent)
-        let result = client
-            .resolve_handle("test-nonexistent-12345.example.com")
-            .await;
+        // Mock server returns DID with surrounding whitespace
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/.well-known/atproto-did");
+            then.status(200).body("  did:plc:test123\n  ");
+        });
 
-        // Should return HandleNotFound since both DNS and HTTP will fail
-        match result {
-            Err(PdsClientError::HandleNotFound) => {
-                // Correct: both methods returned None
-            }
-            Ok(did) => {
-                panic!("Unexpected success: got {}", did);
-            }
-            Err(e) => {
-                // Could be network error if network is completely unavailable
-                // but the pattern should eventually return HandleNotFound
-                eprintln!("Got different error (may be expected in sandbox): {}", e);
-            }
-        }
+        let client = reqwest::Client::new();
+        let url = format!("{}/.well-known/atproto-did", mock_server.base_url());
+        let result = try_resolve_http(&client, &url).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some("did:plc:test123".to_string()));
+    }
+
+    /// AC3.3: HTTP fallback returns Ok(None) on 404
+    #[tokio::test]
+    async fn test_try_resolve_http_not_found() {
+        let mock_server = MockServer::start();
+
+        // Mock server returns 404
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/.well-known/atproto-did");
+            then.status(404);
+        });
+
+        let client = reqwest::Client::new();
+        let url = format!("{}/.well-known/atproto-did", mock_server.base_url());
+        let result = try_resolve_http(&client, &url).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), None);
+    }
+
+    /// AC3.3: HTTP fallback returns Ok(None) on 500
+    #[tokio::test]
+    async fn test_try_resolve_http_server_error() {
+        let mock_server = MockServer::start();
+
+        // Mock server returns 500
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/.well-known/atproto-did");
+            then.status(500);
+        });
+
+        let client = reqwest::Client::new();
+        let url = format!("{}/.well-known/atproto-did", mock_server.base_url());
+        let result = try_resolve_http(&client, &url).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), None);
     }
 
     // ============================================================================
@@ -1030,8 +1055,7 @@ mod tests {
         let mock_par = mock_server.mock(|when, then| {
             when.method(httpmock::Method::POST)
                 .path("/oauth/par")
-                .header_exists("DPoP")
-                .header_exists("Content-Type");
+                .header_exists("DPoP");
             then.status(200).json_body(serde_json::json!({
                 "request_uri": "urn:ietf:params:oauth:request_uri:test",
                 "expires_in": 60
@@ -1161,8 +1185,7 @@ mod tests {
         mock_server.mock(|when, then| {
             when.method(httpmock::Method::POST)
                 .path("/oauth/token")
-                .header_exists("DPoP")
-                .header_exists("Content-Type");
+                .header_exists("DPoP");
             then.status(200).json_body(serde_json::json!({
                 "access_token": "test_access_token",
                 "token_type": "DPoP",
