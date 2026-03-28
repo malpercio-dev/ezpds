@@ -339,14 +339,13 @@ async fn perform_did_ceremony(
     })?;
 
     // Step 2: Fetch the relay's active signing key (public, no auth required).
-    let resp =
-        state
-            .relay_client()
-            .get("/v1/relay/keys")
-            .await
-            .map_err(|e| DIDCeremonyError::NetworkError {
-                message: e.to_string(),
-            })?;
+    let resp = state
+        .relay_client()
+        .get("/v1/relay/keys")
+        .await
+        .map_err(|e| DIDCeremonyError::NetworkError {
+            message: e.to_string(),
+        })?;
 
     let status = resp.status();
     if status.as_u16() == 503 {
@@ -555,9 +554,11 @@ async fn register_handle(
         match status.as_u16() {
             400 => {
                 let envelope: RelayErrorEnvelope =
-                    resp.json().await.map_err(|e| RegisterHandleError::Unknown {
-                        message: e.to_string(),
-                    })?;
+                    resp.json()
+                        .await
+                        .map_err(|e| RegisterHandleError::Unknown {
+                            message: e.to_string(),
+                        })?;
                 if envelope.error.code == "INVALID_HANDLE" {
                     Err(RegisterHandleError::InvalidHandle)
                 } else {
@@ -583,7 +584,8 @@ async fn register_handle(
 ///
 /// Returns `true` when the relay resolves the handle to the expected DID (HTTP 200 + matching
 /// `did` field). Returns `false` for any other response (handle not yet propagated, relay
-/// unreachable, DID mismatch). Never rejects — callers can safely poll on an interval.
+/// unreachable, DID mismatch). Returns `Result<bool, String>` for Tauri IPC compatibility, but
+/// never returns `Err` — callers can safely poll on an interval.
 #[tauri::command]
 async fn check_handle_resolution(
     handle: String,
@@ -602,7 +604,10 @@ async fn check_handle_resolution(
     };
 
     if !resp.status().is_success() {
-        tracing::debug!(status = resp.status().as_u16(), "check_handle_resolution: non-success response, returning false");
+        tracing::debug!(
+            status = resp.status().as_u16(),
+            "check_handle_resolution: non-success response, returning false"
+        );
         return Ok(false);
     }
 

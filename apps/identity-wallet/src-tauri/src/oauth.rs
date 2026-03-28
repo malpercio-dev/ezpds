@@ -42,8 +42,7 @@ impl AppState {
     /// Returns the configured relay client, or initializes with the compile-time
     /// default URL if none has been set yet.
     pub fn relay_client(&self) -> &crate::http::RelayClient {
-        self.relay_client
-            .get_or_init(crate::http::RelayClient::new)
+        self.relay_client.get_or_init(crate::http::RelayClient::new)
     }
 
     /// Set the relay client from a runtime URL. Silently ignored if already set
@@ -467,7 +466,7 @@ pub async fn start_oauth_flow(
     // 7. Token exchange.
     let token_htu = format!("{}/oauth/token", state.relay_client().base_url_str());
     let (token_resp, initial_nonce) =
-        exchange_code_with_retry(&relay, &dpop, &callback.code, &pkce_verifier, &token_htu).await?;
+        exchange_code_with_retry(relay, &dpop, &callback.code, &pkce_verifier, &token_htu).await?;
 
     // 8. Store tokens in Keychain.
     crate::keychain::store_oauth_tokens(&token_resp.access_token, &token_resp.refresh_token)
