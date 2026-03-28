@@ -28,6 +28,9 @@ pub struct AppState {
     /// Runtime relay client. Populated from Keychain on startup or by
     /// `save_relay_url` on first launch. Falls back to the compile-time default if unset.
     relay_client: OnceLock<crate::http::RelayClient>,
+    /// PDS client for discovery and XRPC operations against arbitrary PDS endpoints.
+    /// Stateless and cheap to construct; available to Phase 4 Tauri commands.
+    pds_client: crate::pds_client::PdsClient,
 }
 
 impl AppState {
@@ -36,6 +39,7 @@ impl AppState {
             pending_auth: Mutex::new(None),
             oauth_session: Mutex::new(None),
             relay_client: OnceLock::new(),
+            pds_client: crate::pds_client::PdsClient::new(),
         }
     }
 
@@ -55,6 +59,11 @@ impl AppState {
         {
             tracing::warn!(url = %url, "set_relay_client: relay_client already initialized; ignoring");
         }
+    }
+
+    /// Returns the PDS client for discovery and XRPC operations.
+    pub fn pds_client(&self) -> &crate::pds_client::PdsClient {
+        &self.pds_client
     }
 }
 
@@ -890,6 +899,7 @@ mod tests {
             })),
             oauth_session: std::sync::Mutex::new(None),
             relay_client: OnceLock::new(),
+            pds_client: crate::pds_client::PdsClient::new(),
         };
 
         let url = make_test_url("code123", "WRONG-STATE");
@@ -918,6 +928,7 @@ mod tests {
             })),
             oauth_session: std::sync::Mutex::new(None),
             relay_client: OnceLock::new(),
+            pds_client: crate::pds_client::PdsClient::new(),
         };
 
         // First callback succeeds.
@@ -948,6 +959,7 @@ mod tests {
             })),
             oauth_session: std::sync::Mutex::new(None),
             relay_client: OnceLock::new(),
+            pds_client: crate::pds_client::PdsClient::new(),
         };
 
         let url = make_test_url("mycode", "expected-state");
