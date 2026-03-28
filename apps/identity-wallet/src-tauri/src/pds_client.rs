@@ -557,10 +557,10 @@ pub async fn request_plc_operation_signature(
             message: format!("request_plc_operation_signature failed: {}", e),
         })?;
 
-    if resp.status().is_success() {
+    let status = resp.status();
+    if status.is_success() {
         Ok(())
     } else {
-        let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         Err(PdsClientError::NetworkError {
             message: format!("request_plc_operation_signature returned {}: {}", status, body),
@@ -580,8 +580,8 @@ pub async fn sign_plc_operation(
             message: format!("sign_plc_operation failed: {}", e),
         })?;
 
-    if !resp.status().is_success() {
-        let status = resp.status();
+    let status = resp.status();
+    if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
         return Err(PdsClientError::NetworkError {
             message: format!("sign_plc_operation returned {}: {}", status, body),
@@ -606,8 +606,8 @@ pub async fn get_recommended_did_credentials(
             message: format!("get_recommended_did_credentials failed: {}", e),
         })?;
 
-    if !resp.status().is_success() {
-        let status = resp.status();
+    let status = resp.status();
+    if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
         return Err(PdsClientError::NetworkError {
             message: format!("get_recommended_did_credentials returned {}: {}", status, body),
