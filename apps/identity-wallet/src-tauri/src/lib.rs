@@ -1,6 +1,7 @@
 pub mod device_key;
 pub mod home;
 pub mod http;
+pub mod identity_store;
 pub mod keychain;
 pub mod oauth;
 pub mod oauth_client;
