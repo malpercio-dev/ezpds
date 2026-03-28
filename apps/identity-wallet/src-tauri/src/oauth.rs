@@ -25,7 +25,7 @@ pub struct AppState {
     /// The active authenticated session after a successful token exchange.
     /// Set by `start_oauth_flow` on success; read by `OAuthClient` for every request.
     pub oauth_session: Mutex<Option<OAuthSession>>,
-    /// Runtime relay client. Populated from Keychain on startup (Phase 3) or by
+    /// Runtime relay client. Populated from Keychain on startup or by
     /// `save_relay_url` on first launch. Falls back to the compile-time default if unset.
     relay_client: OnceLock<crate::http::RelayClient>,
 }
