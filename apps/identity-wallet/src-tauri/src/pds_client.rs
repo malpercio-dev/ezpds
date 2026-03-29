@@ -444,6 +444,29 @@ impl PdsClient {
 
         url
     }
+
+    /// Fetch the PLC operation audit log for a DID.
+    ///
+    /// Calls `GET {plc_directory_url}/{did}/log/audit` and returns the raw JSON string.
+    pub async fn fetch_audit_log(&self, did: &str) -> Result<String, PdsClientError> {
+        let url = format!("{}/{}/log/audit", self.plc_directory_url, did);
+        let resp =
+            self.client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| PdsClientError::NetworkError {
+                    message: format!("failed to fetch audit log: {}", e),
+                })?;
+
+        if !resp.status().is_success() {
+            return Err(PdsClientError::DidNotFound);
+        }
+
+        resp.text().await.map_err(|e| PdsClientError::NetworkError {
+            message: format!("failed to read audit log response: {}", e),
+        })
+    }
 }
 
 impl Default for PdsClient {
@@ -1761,6 +1784,69 @@ mod tests {
                 // Expected
             }
             e => panic!("Expected NetworkError, got: {:?}", e),
+        }
+    }
+
+    /// fetch_audit_log returns the raw JSON audit log array on success
+    #[tokio::test]
+    async fn test_fetch_audit_log_success() {
+        let mock_server = MockServer::start();
+
+        let audit_log_json = serde_json::json!([
+            {
+                "did": "did:plc:test123",
+                "cid": "bafy123456789",
+                "createdAt": "2024-01-01T00:00:00Z",
+                "nullified": false,
+                "operation": {
+                    "sig": "test_sig",
+                    "prev": serde_json::json!(null),
+                    "type": "plc_operation",
+                    "rotationKeys": ["did:key:z123"],
+                    "verificationMethods": {},
+                    "alsoKnownAs": [],
+                    "services": {}
+                }
+            }
+        ]);
+
+        mock_server.mock(|when, then| {
+            when.method(GET).path("/did:plc:test123/log/audit");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(audit_log_json.clone());
+        });
+
+        let client = PdsClient::new_for_test(mock_server.base_url());
+        let result = client.fetch_audit_log("did:plc:test123").await;
+
+        assert!(result.is_ok());
+        let json_str = result.unwrap();
+        // Verify it parses as valid JSON array
+        let parsed: Result<Vec<serde_json::Value>, _> = serde_json::from_str(&json_str);
+        assert!(parsed.is_ok());
+        assert_eq!(parsed.unwrap().len(), 1);
+    }
+
+    /// fetch_audit_log returns DidNotFound on 404
+    #[tokio::test]
+    async fn test_fetch_audit_log_not_found() {
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(GET).path("/did:plc:notfound/log/audit");
+            then.status(404);
+        });
+
+        let client = PdsClient::new_for_test(mock_server.base_url());
+        let result = client.fetch_audit_log("did:plc:notfound").await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PdsClientError::DidNotFound => {
+                // Expected
+            }
+            e => panic!("Expected DidNotFound, got: {:?}", e),
         }
     }
 }

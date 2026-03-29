@@ -15,6 +15,7 @@ use tauri::Emitter;
 use crate::identity_store::IdentityStore;
 use crate::oauth_client::OAuthClient;
 use crate::pds_client::{PdsClientError, PlcDidDocument};
+use crypto::DidKeyUri;
 
 // ── Output types ───────────────────────────────────────────────────────────
 
@@ -584,6 +585,287 @@ pub(crate) async fn request_claim_verification_impl(
         })
 }
 
+/// Sign and verify a PLC operation.
+///
+/// This command coordinates three systems:
+/// 1. Old PDS via XRPC for the signed operation (`signPlcOperation`)
+/// 2. plc.directory for the current audit log
+/// 3. The crypto crate for local verification
+///
+/// The signed operation and diff are stored in `ClaimState.verified_signed_op` for submission.
+///
+/// **Prerequisites:** `start_pds_auth` must have completed successfully and populated
+/// `ClaimState.pds_oauth_client`.
+#[tauri::command]
+pub async fn sign_and_verify_claim(
+    state: tauri::State<'_, crate::oauth::AppState>,
+    _did: String,
+    device_key_id: String,
+    token: String,
+) -> Result<VerifiedClaimOp, ClaimError> {
+    // Acquire lock, extract required data, and release lock before making network calls
+    let (pds_client_ref, oauth_client_ref, claim_did, claim_pds_url, claim_did_doc) = {
+        let claim_state = state.claim_state.lock().await;
+        let Some(claim) = claim_state.as_ref() else {
+            return Err(ClaimError::Unauthorized);
+        };
+
+        let Some(ref oauth_client) = claim.pds_oauth_client else {
+            return Err(ClaimError::Unauthorized);
+        };
+
+        (
+            state.pds_client(),
+            oauth_client.clone(),
+            claim.did.clone(),
+            claim.pds_url.clone(),
+            claim.did_doc.clone(),
+        )
+    }; // claim_state lock released here
+
+    let (verified_op, signed_op_json) = sign_and_verify_claim_impl(
+        pds_client_ref,
+        &oauth_client_ref,
+        &claim_did,
+        &claim_pds_url,
+        &claim_did_doc,
+        &device_key_id,
+        &token,
+    )
+    .await?;
+
+    // Store verified signed op in ClaimState for submit_claim
+    {
+        let mut claim_state = state.claim_state.lock().await;
+        if let Some(ref mut claim) = claim_state.as_mut() {
+            claim.verified_signed_op = Some(signed_op_json);
+        }
+    }
+
+    Ok(verified_op)
+}
+
+/// Testable core logic for `sign_and_verify_claim`.
+///
+/// This helper can be called with resolved dependencies without needing Tauri's State.
+/// The returned tuple contains (VerifiedClaimOp, signed_op_json_string).
+pub(crate) async fn sign_and_verify_claim_impl(
+    pds_client: &crate::pds_client::PdsClient,
+    pds_oauth_client: &std::sync::Arc<OAuthClient>,
+    did: &str,
+    _pds_url: &str,
+    did_doc: &PlcDidDocument,
+    device_key_id: &str,
+    token: &str,
+) -> Result<(VerifiedClaimOp, String), ClaimError> {
+    use crate::pds_client::{
+        get_recommended_did_credentials, sign_plc_operation, SignPlcOperationRequest,
+    };
+
+    // Step 1: Get recommended credentials from old PDS
+    let recommended = get_recommended_did_credentials(pds_oauth_client)
+        .await
+        .map_err(|e| ClaimError::NetworkError {
+            message: format!("get_recommended_did_credentials failed: {}", e),
+        })?;
+
+    // Step 2: Build the sign request with device key at position [0]
+    let mut rotation_keys = vec![device_key_id.to_string()];
+    if let Some(mut rec_keys) = recommended.rotation_keys {
+        rotation_keys.append(&mut rec_keys);
+    }
+
+    let request = SignPlcOperationRequest {
+        token: token.to_string(),
+        rotation_keys: Some(rotation_keys),
+        also_known_as: recommended.also_known_as.clone(),
+        verification_methods: recommended.verification_methods.clone(),
+        services: recommended.services.clone(),
+    };
+
+    // Step 3: Call signPlcOperation on old PDS
+    let response = sign_plc_operation(pds_oauth_client, &request)
+        .await
+        .map_err(|e| {
+            // Check if this is an invalid token error
+            if let crate::pds_client::PdsClientError::NetworkError { message } = &e {
+                if message.contains("InvalidToken") || message.contains("ExpiredToken") {
+                    return ClaimError::InvalidToken;
+                }
+            }
+            ClaimError::NetworkError {
+                message: format!("sign_plc_operation failed: {}", e),
+            }
+        })?;
+
+    // Step 4: Serialize operation for verification
+    let op_json_str =
+        serde_json::to_string(&response.operation).map_err(|e| ClaimError::NetworkError {
+            message: format!("failed to serialize operation: {}", e),
+        })?;
+
+    // Step 5: Fetch current audit log and get expected prev CID
+    let log_json = pds_client
+        .fetch_audit_log(did)
+        .await
+        .map_err(|e| ClaimError::NetworkError {
+            message: format!("fetch_audit_log failed: {}", e),
+        })?;
+
+    let audit_log = crypto::parse_audit_log(&log_json).map_err(|e| ClaimError::NetworkError {
+        message: format!("parse_audit_log failed: {}", e),
+    })?;
+
+    let expected_prev = audit_log.last().map(|entry| entry.cid.clone());
+
+    // Step 6: Verify operation signature
+    let authorized_keys: Vec<DidKeyUri> = did_doc
+        .rotation_keys
+        .iter()
+        .map(|k| DidKeyUri(k.clone()))
+        .collect();
+
+    let verified_op =
+        crypto::verify_plc_operation(&op_json_str, &authorized_keys).map_err(|e| {
+            ClaimError::VerificationFailed {
+                message: format!("signature verification failed: {}", e),
+            }
+        })?;
+
+    // Step 7: Local verification checks
+
+    // Check 1: rotationKeys[0] is our device key
+    if verified_op.rotation_keys.first() != Some(&device_key_id.to_string()) {
+        return Err(ClaimError::VerificationFailed {
+            message: format!(
+                "expected device key at rotationKeys[0], found: {:?}",
+                verified_op.rotation_keys.first()
+            ),
+        });
+    }
+
+    // Check 2: prev chains correctly
+    match (&verified_op.prev, expected_prev.as_deref()) {
+        (Some(op_prev), Some(expected)) if op_prev == expected => { /* OK */ }
+        (prev, expected) => {
+            return Err(ClaimError::VerificationFailed {
+                message: format!(
+                    "prev mismatch: operation has {:?}, expected {:?}",
+                    prev, expected
+                ),
+            });
+        }
+    }
+
+    // Check 3: No unexpected key mutations
+    let original_keys: std::collections::HashSet<_> =
+        did_doc.rotation_keys.iter().cloned().collect();
+    for key in verified_op.rotation_keys.iter().skip(1) {
+        // Skip our device key at position [0]
+        if !original_keys.contains(key) && key != device_key_id {
+            return Err(ClaimError::VerificationFailed {
+                message: format!("unexpected new rotation key: {}", key),
+            });
+        }
+    }
+
+    // Check for removed keys (excluding the device key which may have been added)
+    for original_key in &original_keys {
+        let key_in_operation = verified_op.rotation_keys.contains(original_key);
+        if !key_in_operation {
+            return Err(ClaimError::VerificationFailed {
+                message: format!("rotation key removed: {}", original_key),
+            });
+        }
+    }
+
+    // Check 4: No unexpected service mutations
+    // Note: pds_client::PlcService and crypto::PlcService are different types with identical fields
+    let original_services = &did_doc.services;
+    for (service_id, service) in &verified_op.services {
+        if let Some(original_service) = original_services.get(service_id) {
+            // Service exists in original; check if it was modified
+            // Compare by field values since the types are different
+            if original_service.service_type != service.service_type
+                || original_service.endpoint != service.endpoint
+            {
+                return Err(ClaimError::VerificationFailed {
+                    message: format!(
+                        "service '{}' was modified: {} endpoint changed",
+                        service_id, original_service.service_type
+                    ),
+                });
+            }
+        }
+        // If service doesn't exist in original but does in operation, it was added (warning, not error)
+    }
+
+    // Check for removed services
+    for original_service_id in original_services.keys() {
+        if !verified_op.services.contains_key(original_service_id) {
+            return Err(ClaimError::VerificationFailed {
+                message: format!("service '{}' was removed", original_service_id),
+            });
+        }
+    }
+
+    // Step 8: Compute diff and warnings
+    let added_keys: Vec<String> = verified_op
+        .rotation_keys
+        .iter()
+        .filter(|k| !original_keys.contains(*k))
+        .cloned()
+        .collect();
+
+    let removed_keys: Vec<String> = original_keys
+        .iter()
+        .filter(|k| !verified_op.rotation_keys.contains(k))
+        .cloned()
+        .collect();
+
+    let mut changed_services = Vec::new();
+    for (service_id, service) in &verified_op.services {
+        if !original_services.contains_key(service_id) {
+            changed_services.push(ServiceChange {
+                id: service_id.clone(),
+                change_type: "added".to_string(),
+                old_endpoint: None,
+                new_endpoint: Some(service.endpoint.clone()),
+            });
+        }
+    }
+
+    let mut warnings = Vec::new();
+
+    // Warning: PDS added extra services
+    for service_id in verified_op.services.keys() {
+        if !original_services.contains_key(service_id) {
+            warnings.push(format!("Old PDS added service: {}", service_id));
+        }
+    }
+
+    // Warning: PDS added extra also_known_as
+    if verified_op.also_known_as.len() > did_doc.also_known_as.len() {
+        warnings.push("Old PDS added extra also_known_as entries".to_string());
+    }
+
+    let diff = OpDiff {
+        added_keys,
+        removed_keys,
+        changed_services,
+        prev_cid: verified_op.prev.clone().unwrap_or_default(),
+    };
+
+    Ok((
+        VerifiedClaimOp {
+            diff,
+            signed_op: op_json_str.clone(),
+            warnings,
+        },
+        op_json_str,
+    ))
+}
+
 /// Extract handle from also_known_as entries.
 ///
 /// Searches for entries of the form "at://handle" and returns the first match.
@@ -1080,6 +1362,38 @@ mod tests {
         assert!(
             matches!(result, Err(ClaimError::NetworkError { .. })),
             "should return NetworkError when PDS returns 500"
+        );
+    }
+
+    // ── sign_and_verify_claim tests ──────────────────────────────────────────────
+
+    /// Test that extract_handle_from_also_known_as works correctly
+    #[test]
+    fn test_extract_handle_from_also_known_as_success() {
+        let also_known_as = vec!["at://alice.example.com".to_string()];
+        assert_eq!(
+            extract_handle_from_also_known_as(&also_known_as),
+            Some("alice.example.com".to_string())
+        );
+    }
+
+    /// Test that extract_handle_from_also_known_as returns None when no match
+    #[test]
+    fn test_extract_handle_from_also_known_as_no_match() {
+        let no_handle = vec!["https://example.com".to_string()];
+        assert_eq!(extract_handle_from_also_known_as(&no_handle), None);
+    }
+
+    /// Test that extract_handle_from_also_known_as returns first match
+    #[test]
+    fn test_extract_handle_from_also_known_as_multiple() {
+        let also_known_as = vec![
+            "at://alice.example.com".to_string(),
+            "at://bob.example.com".to_string(),
+        ];
+        assert_eq!(
+            extract_handle_from_also_known_as(&also_known_as),
+            Some("alice.example.com".to_string())
         );
     }
 }
