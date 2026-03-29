@@ -1,5 +1,6 @@
 <script lang="ts">
   import { type ClaimResult } from '$lib/ipc';
+  import { extractPdsFromPlcDoc } from '$lib/did-doc-utils';
 
   let {
     claimResult,
@@ -23,21 +24,11 @@
   );
 
   let pdsEndpoint = $derived.by(() => {
-    const services = claimResult.updatedDidDoc?.service;
-    if (!Array.isArray(services)) return '—';
+    const doc = claimResult.updatedDidDoc;
+    if (typeof doc !== 'object' || doc === null) return '—';
 
-    const pdsService = services.find(
-      (svc) =>
-        typeof svc === 'object' &&
-        svc !== null &&
-        (svc as Record<string, unknown>)?.type === 'AtprotoPersonalDataServer'
-    );
-
-    if (pdsService && typeof (pdsService as Record<string, unknown>)?.serviceEndpoint === 'string') {
-      return (pdsService as Record<string, unknown>).serviceEndpoint as string;
-    }
-
-    return '—';
+    const endpoint = extractPdsFromPlcDoc(doc as Record<string, unknown>);
+    return endpoint ?? '—';
   });
 </script>
 

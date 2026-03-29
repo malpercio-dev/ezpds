@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { listIdentities, getStoredDidDoc, getDeviceKeyId } from '$lib/ipc';
+  import { extractPdsFromPlcDoc } from '$lib/did-doc-utils';
   import DIDAvatar from './DIDAvatar.svelte';
 
   let {
@@ -42,12 +43,7 @@
   }
 
   function extractPds(didDoc: Record<string, unknown>): string | null {
-    const services = didDoc.services;
-    if (typeof services !== 'object' || services === null) return null;
-    const pds = (services as Record<string, unknown>).atproto_pds;
-    if (typeof pds !== 'object' || pds === null) return null;
-    const endpoint = (pds as Record<string, unknown>).endpoint;
-    return typeof endpoint === 'string' ? endpoint : null;
+    return extractPdsFromPlcDoc(didDoc);
   }
 
   function isDeviceKeyRoot(
@@ -150,17 +146,15 @@
               </div>
             </div>
             <div class="card-badge">
-              {#if card.deviceKeyIsRoot !== null}
-                <span
-                  class="badge"
-                  class:badge--root={card.deviceKeyIsRoot === true}
-                  class:badge--not-root={card.deviceKeyIsRoot === false}
-                  class:badge--unknown={card.deviceKeyIsRoot === null}
-                >
-                  <span class="badge-dot"></span>
-                  {getBadgeLabel(card.deviceKeyIsRoot)}
-                </span>
-              {/if}
+              <span
+                class="badge"
+                class:badge--root={card.deviceKeyIsRoot === true}
+                class:badge--not-root={card.deviceKeyIsRoot === false}
+                class:badge--unknown={card.deviceKeyIsRoot === null}
+              >
+                <span class="badge-dot"></span>
+                {getBadgeLabel(card.deviceKeyIsRoot)}
+              </span>
             </div>
           </button>
         {/each}

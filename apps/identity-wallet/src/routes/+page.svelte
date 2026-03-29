@@ -92,6 +92,61 @@
     step = next;
   }
 
+  /**
+   * Normalizes a PLC directory format DID document to W3C format.
+   * Converts the PLC map-based format (services, verificationMethods as objects)
+   * to the W3C array-based format (service, verificationMethod as arrays).
+   */
+  function normalizePlcDocToW3c(plcDoc: Record<string, unknown>): Record<string, unknown> {
+    const normalized: Record<string, unknown> = {
+      id: plcDoc.id,
+      alsoKnownAs: plcDoc.alsoKnownAs,
+    };
+
+    // Convert services map to service array
+    if (typeof plcDoc.services === 'object' && plcDoc.services !== null) {
+      const servicesMap = plcDoc.services as Record<string, unknown>;
+      const serviceArray: Array<Record<string, unknown>> = [];
+
+      for (const [key, value] of Object.entries(servicesMap)) {
+        if (typeof value === 'object' && value !== null) {
+          const serviceObj = value as Record<string, unknown>;
+          serviceArray.push({
+            id: `#${key}`,
+            type: serviceObj.type,
+            serviceEndpoint: serviceObj.endpoint,
+          });
+        }
+      }
+
+      if (serviceArray.length > 0) {
+        normalized.service = serviceArray;
+      }
+    }
+
+    // Convert rotationKeys array to verificationMethod array
+    if (Array.isArray(plcDoc.rotationKeys)) {
+      const verificationMethods: Array<Record<string, unknown>> = [];
+
+      for (let i = 0; i < plcDoc.rotationKeys.length; i++) {
+        const key = plcDoc.rotationKeys[i];
+        if (typeof key === 'string') {
+          verificationMethods.push({
+            id: `#rotation-${i}`,
+            type: 'Multikey',
+            publicKeyMultibase: key,
+          });
+        }
+      }
+
+      if (verificationMethods.length > 0) {
+        normalized.verificationMethod = verificationMethods;
+      }
+    }
+
+    return normalized;
+  }
+
   // ── Relay configuration and OAuth event listener ──────────────────────
 
   onMount(async () => {
@@ -318,7 +373,7 @@
 
   {:else if step === 'identity_detail'}
     <DIDDocumentScreen
-      didDoc={selectedDidDoc ?? {}}
+      didDoc={selectedDidDoc ? normalizePlcDocToW3c(selectedDidDoc) : {}}
       onback={() => goTo('home')}
     />
 
