@@ -141,8 +141,6 @@ pub struct RecommendedCredentials {
 /// PDS client for discovery and OAuth operations against arbitrary PDS endpoints.
 ///
 /// Stateless except for the HTTP client which pools connections.
-#[allow(dead_code)]
-// TODO(Phase 4): Remove #[allow(dead_code)] once Tauri commands call PdsClient methods
 pub struct PdsClient {
     client: Client,
     plc_directory_url: String,

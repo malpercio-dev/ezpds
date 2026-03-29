@@ -552,30 +552,21 @@ pub async fn request_claim_verification(
     state: tauri::State<'_, crate::oauth::AppState>,
     _did: String,
 ) -> Result<(), ClaimError> {
-    // Acquire lock, extract Arc<OAuthClient>, and release lock before making network call
-    let oauth_client = {
+    // Acquire lock, extract claim state, and release lock before making network call
+    let claim_state_copy = {
         let claim_state = state.claim_state.lock().await;
         let Some(claim) = claim_state.as_ref() else {
             return Err(ClaimError::Unauthorized);
         };
-        claim.pds_oauth_client.clone()
+        claim.clone()
     }; // claim_state lock released here
 
-    let Some(oauth_client) = oauth_client else {
-        return Err(ClaimError::Unauthorized);
-    };
-
-    crate::pds_client::request_plc_operation_signature(&oauth_client)
-        .await
-        .map_err(|e| ClaimError::NetworkError {
-            message: format!("request_plc_operation_signature failed: {}", e),
-        })
+    request_claim_verification_impl(&claim_state_copy).await
 }
 
 /// Testable core logic for `request_claim_verification`.
 ///
-/// Extracted to a separate function to avoid requiring Tauri's `State` in tests.
-#[cfg(test)]
+/// Extracted to a separate function to allow testing without Tauri's State.
 pub(crate) async fn request_claim_verification_impl(
     claim_state: &ClaimState,
 ) -> Result<(), ClaimError> {
@@ -604,7 +595,7 @@ pub(crate) async fn request_claim_verification_impl(
 #[tauri::command]
 pub async fn sign_and_verify_claim(
     state: tauri::State<'_, crate::oauth::AppState>,
-    device_key_id: String,
+    did: String,
     token: String,
 ) -> Result<VerifiedClaimOp, ClaimError> {
     // Acquire lock, extract required data, and release lock before making network calls
@@ -626,12 +617,19 @@ pub async fn sign_and_verify_claim(
         )
     }; // claim_state lock released here
 
+    // Step 2: Look up the device key ID using IdentityStore
+    let device_key = crate::identity_store::IdentityStore
+        .get_or_create_device_key(&did)
+        .map_err(|e| ClaimError::NetworkError {
+            message: format!("failed to get device key: {}", e),
+        })?;
+
     let (verified_op, signed_op_json) = sign_and_verify_claim_impl(
         pds_client_ref,
         &oauth_client_ref,
         &claim_did,
         &claim_did_doc,
-        &device_key_id,
+        &device_key.key_id,
         &token,
     )
     .await?;
@@ -980,6 +978,7 @@ pub(crate) async fn submit_claim_impl(
             message: format!("failed to store PLC log: {}", e),
         })?;
 
+    // Step 4: Clear ClaimState (handled by the Tauri command caller after this function succeeds)
     // Step 5: Return the updated DID document
     Ok(ClaimResult {
         updated_did_doc: did_doc_value,
@@ -1580,7 +1579,7 @@ mod tests {
             },
         );
 
-        let (rotation_json, _signing_key) = build_test_rotation_op(
+        let (rotation_json, signing_key) = build_test_rotation_op(
             &device_key,
             vec![device_key.clone()],
             services.clone(),
@@ -1654,7 +1653,7 @@ mod tests {
         let did_doc = PlcDidDocument {
             did: "did:plc:test".to_string(),
             also_known_as: vec!["at://alice.example.com".to_string()],
-            rotation_keys: vec![],
+            rotation_keys: vec![signing_key.clone()],
             verification_methods: serde_json::json!({}),
             services: HashMap::new(),
         };
@@ -1671,12 +1670,14 @@ mod tests {
 
         assert!(
             result.is_ok(),
-            "should return Ok for valid operation with device key at rotationKeys[0]"
+            "expected Ok, got: {:?}",
+            result.err()
         );
         let (verified_op, _signed_op_json) = result.unwrap();
         assert!(
             verified_op.diff.added_keys.contains(&device_key),
-            "should have device key in added_keys"
+            "should have device key in added_keys, got: {:?}",
+            verified_op.diff.added_keys
         );
     }
 
@@ -1702,7 +1703,7 @@ mod tests {
             },
         );
 
-        let (rotation_json, _signing_key) =
+        let (rotation_json, signing_key) =
             build_test_rotation_op(&wrong_key, vec![wrong_key.clone()], services, &prev_cid);
 
         // Mock endpoints
@@ -1763,7 +1764,7 @@ mod tests {
         let did_doc = PlcDidDocument {
             did: "did:plc:test".to_string(),
             also_known_as: vec!["at://alice.example.com".to_string()],
-            rotation_keys: vec![],
+            rotation_keys: vec![signing_key.clone()],
             verification_methods: serde_json::json!({}),
             services: HashMap::new(),
         };
@@ -1780,7 +1781,8 @@ mod tests {
 
         assert!(
             matches!(result, Err(ClaimError::VerificationFailed { .. })),
-            "should return VerificationFailed when device key is not at rotationKeys[0]"
+            "should return VerificationFailed when device key is not at rotationKeys[0], got: {:?}",
+            result
         );
     }
 
@@ -1806,7 +1808,7 @@ mod tests {
         );
 
         // Build with wrong_prev
-        let (rotation_json, _signing_key) =
+        let (rotation_json, signing_key) =
             build_test_rotation_op(&device_key, vec![device_key.clone()], services, &wrong_prev);
 
         mock_server.mock(|when, then| {
@@ -1867,7 +1869,7 @@ mod tests {
         let did_doc = PlcDidDocument {
             did: "did:plc:test".to_string(),
             also_known_as: vec!["at://alice.example.com".to_string()],
-            rotation_keys: vec![],
+            rotation_keys: vec![signing_key.clone()],
             verification_methods: serde_json::json!({}),
             services: HashMap::new(),
         };
@@ -1884,7 +1886,8 @@ mod tests {
 
         assert!(
             matches!(result, Err(ClaimError::VerificationFailed { .. })),
-            "should return VerificationFailed when prev doesn't match audit log"
+            "should return VerificationFailed when prev doesn't match audit log, got: {:?}",
+            result
         );
     }
 
@@ -1910,7 +1913,7 @@ mod tests {
         );
 
         // Build operation with only device key (missing original_key)
-        let (rotation_json, _signing_key) =
+        let (rotation_json, signing_key) =
             build_test_rotation_op(&device_key, vec![device_key.clone()], services, &prev_cid);
 
         mock_server.mock(|when, then| {
@@ -1970,7 +1973,7 @@ mod tests {
         let did_doc = PlcDidDocument {
             did: "did:plc:test".to_string(),
             also_known_as: vec!["at://alice.example.com".to_string()],
-            rotation_keys: vec![original_key.clone()],
+            rotation_keys: vec![signing_key.clone(), original_key.clone()],
             verification_methods: serde_json::json!({}),
             services: HashMap::new(),
         };
@@ -1987,7 +1990,8 @@ mod tests {
 
         assert!(
             matches!(result, Err(ClaimError::VerificationFailed { .. })),
-            "should return VerificationFailed when a rotation key is removed"
+            "should return VerificationFailed when a rotation key is removed, got: {:?}",
+            result
         );
     }
 
@@ -2011,7 +2015,7 @@ mod tests {
             },
         );
 
-        let (rotation_json, _signing_key) =
+        let (rotation_json, signing_key) =
             build_test_rotation_op(&device_key, vec![device_key.clone()], services, &prev_cid);
 
         mock_server.mock(|when, then| {
@@ -2080,7 +2084,7 @@ mod tests {
         let did_doc = PlcDidDocument {
             did: "did:plc:test".to_string(),
             also_known_as: vec!["at://alice.example.com".to_string()],
-            rotation_keys: vec![],
+            rotation_keys: vec![signing_key.clone()],
             verification_methods: serde_json::json!({}),
             services: original_services,
         };
@@ -2097,7 +2101,8 @@ mod tests {
 
         assert!(
             matches!(result, Err(ClaimError::VerificationFailed { .. })),
-            "should return VerificationFailed when service endpoint is changed"
+            "should return VerificationFailed when service endpoint is changed, got: {:?}",
+            result
         );
     }
 
@@ -2129,7 +2134,7 @@ mod tests {
             },
         );
 
-        let (rotation_json, _signing_key) =
+        let (rotation_json, signing_key) =
             build_test_rotation_op(&device_key, vec![device_key.clone()], services, &prev_cid);
 
         mock_server.mock(|when, then| {
@@ -2198,7 +2203,7 @@ mod tests {
         let did_doc = PlcDidDocument {
             did: "did:plc:test".to_string(),
             also_known_as: vec!["at://alice.example.com".to_string()],
-            rotation_keys: vec![],
+            rotation_keys: vec![signing_key.clone()],
             verification_methods: serde_json::json!({}),
             services: original_services,
         };
@@ -2215,12 +2220,14 @@ mod tests {
 
         assert!(
             result.is_ok(),
-            "should succeed even with added service (benign warning)"
+            "should succeed even with added service (benign warning), got: {:?}",
+            result.err()
         );
         let (verified_op, _signed_op_json) = result.unwrap();
         assert!(
             !verified_op.warnings.is_empty(),
-            "should have warnings about added service"
+            "should have warnings about added service, got: {:?}",
+            verified_op.warnings
         );
     }
 
@@ -2277,7 +2284,7 @@ mod tests {
         let did_doc = PlcDidDocument {
             did: "did:plc:test".to_string(),
             also_known_as: vec!["at://alice.example.com".to_string()],
-            rotation_keys: vec![],
+            rotation_keys: vec!["did:key:zQ3signing".to_string()],
             verification_methods: serde_json::json!({}),
             services: HashMap::new(),
         };
@@ -2294,7 +2301,8 @@ mod tests {
 
         assert!(
             matches!(result, Err(ClaimError::InvalidToken)),
-            "should return InvalidToken when PDS returns InvalidToken error"
+            "should return InvalidToken when PDS returns InvalidToken error, got: {:?}",
+            result
         );
     }
 
