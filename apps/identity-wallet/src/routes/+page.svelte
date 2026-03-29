@@ -17,7 +17,7 @@
   import HomeScreen from '$lib/components/home/HomeScreen.svelte';
   import DIDDocumentScreen from '$lib/components/home/DIDDocumentScreen.svelte';
   import RecoveryInfoScreen from '$lib/components/home/RecoveryInfoScreen.svelte';
-  import { createAccount, getRelayUrl, listIdentities, type CreateAccountError, type OAuthError, type HomeData } from '$lib/ipc';
+  import { createAccount, listIdentities, type CreateAccountError, type OAuthError, type HomeData } from '$lib/ipc';
 
   // ── Onboarding step type ─────────────────────────────────────────────────
   //
@@ -92,16 +92,9 @@
       // listIdentities failed (e.g. empty Keychain on first launch) — continue to mode_select
     }
 
-    // Legacy user fallback: if a relay URL is already configured (from the old
-    // single-identity flow before multi-identity), the user has used the app before
-    // but has no managed-dids entry. Skip relay_config but still show mode_select
-    // so they can choose create vs. import. Without this, legacy users would see
-    // mode_select and then relay_config (asking them to configure a relay they
-    // already configured).
-    // Note: mode_select is already the default step, so this is a no-op for
-    // mode_select itself, but it prevents the "Create new identity" path from
-    // redundantly showing relay_config when the relay is already configured.
-    // The relay_config screen itself already checks getRelayUrl() internally.
+    // Legacy users (relay URL configured but no managed-dids) stay at mode_select.
+    // RelayConfigScreen internally checks for saved relay URL, so the "Create new
+    // identity" path handles them correctly without additional logic here.
 
     // Listen for auth_ready from relay OAuth (existing onboarding flow).
     listen('auth_ready', () => {
