@@ -15,6 +15,7 @@
   import HandleRegistrationScreen from '$lib/components/onboarding/HandleRegistrationScreen.svelte';
   import AuthenticatingScreen from '$lib/components/onboarding/AuthenticatingScreen.svelte';
   import IdentityInputScreen from '$lib/components/onboarding/IdentityInputScreen.svelte';
+  import PdsAuthScreen from '$lib/components/onboarding/PdsAuthScreen.svelte';
   import HomeScreen from '$lib/components/home/HomeScreen.svelte';
   import DIDDocumentScreen from '$lib/components/home/DIDDocumentScreen.svelte';
   import RecoveryInfoScreen from '$lib/components/home/RecoveryInfoScreen.svelte';
@@ -194,6 +195,12 @@
         goTo('pds_auth');
       }}
       onback={() => goTo('mode_select')}
+    />
+  {:else if step === 'pds_auth'}
+    <PdsAuthScreen
+      pdsUrl={identityInfo!.pdsUrl}
+      onnext={() => goTo('email_verification')}
+      onback={() => goTo('identity_input')}
     />
   {:else if step === 'relay_config'}
     <RelayConfigScreen onnext={() => goTo('welcome')} />
