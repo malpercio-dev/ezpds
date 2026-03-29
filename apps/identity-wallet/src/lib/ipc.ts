@@ -304,3 +304,69 @@ export const getRelayUrl = (): Promise<string | null> =>
  */
 export const saveRelayUrl = (url: string): Promise<void> =>
   invoke('save_relay_url', { url });
+
+// ── Claim flow types ──────────────────────────────────────────────────────
+
+export interface IdentityInfo {
+  did: string;
+  handle: string;
+  pdsUrl: string;
+  currentRotationKeys: string[];
+  deviceKeyIsRoot: boolean;
+}
+
+export interface VerifiedClaimOp {
+  diff: OpDiff;
+  signedOp: string;
+  warnings: string[];
+}
+
+export interface OpDiff {
+  addedKeys: string[];
+  removedKeys: string[];
+  changedServices: ServiceChange[];
+  prevCid: string;
+}
+
+export interface ServiceChange {
+  id: string;
+  changeType: string;
+  oldEndpoint: string | null;
+  newEndpoint: string | null;
+}
+
+export interface ClaimResult {
+  updatedDidDoc: Record<string, unknown>;
+}
+
+// ── Claim flow error types ────────────────────────────────────────────────
+
+export type ResolveError =
+  | { code: 'HANDLE_NOT_FOUND' }
+  | { code: 'DID_NOT_FOUND' }
+  | { code: 'PDS_UNREACHABLE' }
+  | { code: 'NETWORK_ERROR'; message: string };
+
+export type ClaimError =
+  | { code: 'INVALID_TOKEN' }
+  | { code: 'VERIFICATION_FAILED'; message: string }
+  | { code: 'PLC_DIRECTORY_ERROR'; message: string }
+  | { code: 'UNAUTHORIZED' }
+  | { code: 'NETWORK_ERROR'; message: string };
+
+// ── Claim flow IPC wrappers ────────────────────────────────────────────────
+
+export const resolveIdentity = (handleOrDid: string): Promise<IdentityInfo> =>
+  invoke('resolve_identity', { handleOrDid });
+
+export const startPdsAuth = (pdsUrl: string): Promise<void> =>
+  invoke('start_pds_auth', { pdsUrl });
+
+export const requestClaimVerification = (did: string): Promise<void> =>
+  invoke('request_claim_verification', { did });
+
+export const signAndVerifyClaim = (did: string, token: string): Promise<VerifiedClaimOp> =>
+  invoke('sign_and_verify_claim', { did, token });
+
+export const submitClaim = (did: string): Promise<ClaimResult> =>
+  invoke('submit_claim', { did });
