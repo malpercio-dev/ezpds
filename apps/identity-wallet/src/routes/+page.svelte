@@ -23,6 +23,7 @@
   import DIDDocumentScreen from '$lib/components/home/DIDDocumentScreen.svelte';
   import RecoveryInfoScreen from '$lib/components/home/RecoveryInfoScreen.svelte';
   import { createAccount, listIdentities, type CreateAccountError, type OAuthError, type HomeData, type IdentityInfo, type VerifiedClaimOp, type ClaimResult } from '$lib/ipc';
+  import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
 
   // ── Onboarding step type ─────────────────────────────────────────────────
   //
@@ -50,6 +51,7 @@
     | 'complete'
     | 'authenticating'
     | 'home'
+    | 'identity_detail'
     | 'did_document'
     | 'recovery_info'
     | 'auth_failed'
@@ -80,6 +82,9 @@
   let authError = $state<OAuthError | null>(null);
 
   let homeData = $state<HomeData | null>(null);
+
+  let selectedDid = $state<string | null>(null);
+  let selectedDidDoc = $state<Record<string, unknown> | null>(null);
 
   // ── Navigation helpers ───────────────────────────────────────────────────
 
@@ -303,10 +308,19 @@
     />
 
   {:else if step === 'home'}
-    <HomeScreen
-      onnavdiddoc={(data) => { homeData = data; goTo('did_document'); }}
-      onnavrecovery={(data) => { homeData = data; goTo('recovery_info'); }}
-      onlogout={() => goTo('welcome')}
+    <IdentityListHome
+      onadd={() => goTo('mode_select')}
+      onselect={(did, didDoc) => {
+        selectedDid = did;
+        selectedDidDoc = didDoc;
+        goTo('identity_detail');
+      }}
+    />
+
+  {:else if step === 'identity_detail'}
+    <DIDDocumentScreen
+      didDoc={selectedDidDoc ?? {}}
+      onback={() => goTo('home')}
     />
 
   {:else if step === 'did_document'}
