@@ -695,7 +695,10 @@ pub(crate) async fn sign_and_verify_claim_impl(
             // OAuthError::NotAuthenticated, which becomes NetworkError("sign_plc_operation failed: Not authenticated")
             if let crate::pds_client::PdsClientError::NetworkError { message } = &e {
                 let lower_msg = message.to_lowercase();
-                if lower_msg.contains("invalidtoken") || lower_msg.contains("expiredtoken") || lower_msg.contains("not authenticated") {
+                if lower_msg.contains("invalidtoken")
+                    || lower_msg.contains("expiredtoken")
+                    || lower_msg.contains("not authenticated")
+                {
                     return ClaimError::InvalidToken;
                 }
             }
@@ -1586,7 +1589,7 @@ mod tests {
             },
         );
 
-        let (rotation_json, signing_key) = build_test_rotation_op(
+        let (rotation_json, _signing_key) = build_test_rotation_op(
             &device_key,
             vec![device_key.clone()],
             services.clone(),
@@ -1657,10 +1660,12 @@ mod tests {
             mock_server.base_url(),
         );
 
+        // rotation_keys is empty: this DID has no prior rotation keys,
+        // so adding device_key at [0] is purely an addition (no removals to flag).
         let did_doc = PlcDidDocument {
             did: "did:plc:test".to_string(),
             also_known_as: vec!["at://alice.example.com".to_string()],
-            rotation_keys: vec![signing_key.clone()],
+            rotation_keys: vec![],
             verification_methods: serde_json::json!({}),
             services: HashMap::new(),
         };
@@ -1675,11 +1680,7 @@ mod tests {
         )
         .await;
 
-        assert!(
-            result.is_ok(),
-            "expected Ok, got: {:?}",
-            result.err()
-        );
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result.err());
         let (verified_op, _signed_op_json) = result.unwrap();
         assert!(
             verified_op.diff.added_keys.contains(&device_key),
@@ -2145,7 +2146,7 @@ mod tests {
             },
         );
 
-        let (rotation_json, signing_key) =
+        let (rotation_json, _signing_key) =
             build_test_rotation_op(&device_key, vec![device_key.clone()], services, &prev_cid);
 
         mock_server.mock(|when, then| {
@@ -2212,10 +2213,12 @@ mod tests {
             },
         );
 
+        // rotation_keys is empty: no prior rotation keys,
+        // so adding device_key at [0] is purely an addition (no removals to flag).
         let did_doc = PlcDidDocument {
             did: "did:plc:test".to_string(),
             also_known_as: vec!["at://alice.example.com".to_string()],
-            rotation_keys: vec![signing_key.clone()],
+            rotation_keys: vec![],
             verification_methods: serde_json::json!({}),
             services: original_services,
         };
