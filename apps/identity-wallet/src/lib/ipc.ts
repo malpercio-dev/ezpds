@@ -468,3 +468,15 @@ export const signAndVerifyClaim = (did: string, token: string): Promise<Verified
  */
 export const submitClaim = (did: string): Promise<ClaimResult> =>
   invoke('submit_claim', { did });
+
+// ── Identity Store ──────────────────────────────────────────────────────────
+
+export type IdentityStoreError =
+  | { code: 'IDENTITY_NOT_FOUND' }
+  | { code: 'IDENTITY_ALREADY_EXISTS' }
+  | { code: 'KEYCHAIN_ERROR' }
+  | { code: 'KEY_GENERATION_FAILED' }
+  | { code: 'SERIALIZATION_ERROR' };
+
+export const listIdentities = (): Promise<string[]> =>
+  invoke('list_identities');

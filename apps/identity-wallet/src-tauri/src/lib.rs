@@ -660,6 +660,18 @@ async fn save_relay_url(
     Ok(())
 }
 
+/// Return the list of managed DIDs currently stored in the Keychain.
+///
+/// Returns an empty list if no identities have been claimed. Returns an error only if
+/// the Keychain entry exists but contains invalid data (data corruption).
+///
+/// The frontend calls this on mount to check for existing identities and decide whether
+/// to skip the mode selector.
+#[tauri::command]
+fn list_identities() -> Result<Vec<String>, identity_store::IdentityStoreError> {
+    identity_store::IdentityStore.list_identities()
+}
+
 /// Check whether the relay can resolve `handle` to `expected_did` via the ATProto
 /// `resolveHandle` endpoint.
 ///
@@ -749,6 +761,7 @@ pub fn run() {
             perform_did_ceremony,
             register_handle,
             check_handle_resolution,
+            list_identities,
             get_relay_url,
             save_relay_url,
             home::load_home_data,
