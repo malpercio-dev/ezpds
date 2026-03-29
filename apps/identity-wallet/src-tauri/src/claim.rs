@@ -990,7 +990,7 @@ pub(crate) async fn submit_claim_impl(
 #[tauri::command]
 pub async fn submit_claim(
     state: tauri::State<'_, crate::oauth::AppState>,
-    did: String,
+    _did: String,
 ) -> Result<ClaimResult, ClaimError> {
     let pds_client = state.pds_client();
 
@@ -1000,7 +1000,7 @@ pub async fn submit_claim(
         claim_state.as_ref().cloned()
     };
 
-    let Some(mut claim_state) = claim_state_copy else {
+    let Some(claim_state) = claim_state_copy else {
         return Err(ClaimError::Unauthorized);
     };
 
