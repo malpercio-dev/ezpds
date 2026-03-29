@@ -42,43 +42,20 @@
   }
 
   function extractPds(didDoc: Record<string, unknown>): string | null {
-    const service = didDoc.service;
-    if (!Array.isArray(service)) return null;
-    for (const svc of service) {
-      if (typeof svc === 'object' && svc !== null) {
-        const id = svc.id;
-        const type = svc.type;
-        const endpoint = svc.serviceEndpoint;
-        if ((id === '#atproto_pds' || type === 'AtprotoPersonalDataServer') && typeof endpoint === 'string') {
-          return endpoint;
-        }
-      }
-    }
-    return null;
+    const services = didDoc.services;
+    if (typeof services !== 'object' || services === null) return null;
+    const pds = (services as Record<string, unknown>).atproto_pds;
+    if (typeof pds !== 'object' || pds === null) return null;
+    const endpoint = (pds as Record<string, unknown>).endpoint;
+    return typeof endpoint === 'string' ? endpoint : null;
   }
 
   function isDeviceKeyRoot(
     didDoc: Record<string, unknown>,
     deviceKeyId: string
   ): boolean | null {
-    const verificationMethod = didDoc.verificationMethod;
-    if (!Array.isArray(verificationMethod)) return null;
-
-    let rotationKeys: string[] = [];
-    for (const vm of verificationMethod) {
-      if (typeof vm === 'object' && vm !== null) {
-        const id = vm.id;
-        const type = vm.type;
-        if (id === '#rotation' && type === 'Multikey') {
-          const publicKeyMultibase = vm.publicKeyMultibase;
-          if (typeof publicKeyMultibase === 'string') {
-            rotationKeys.push(publicKeyMultibase);
-          }
-        }
-      }
-    }
-
-    if (rotationKeys.length === 0) return null;
+    const rotationKeys = didDoc.rotationKeys;
+    if (!Array.isArray(rotationKeys) || rotationKeys.length === 0) return null;
     return rotationKeys[0] === deviceKeyId;
   }
 
@@ -96,19 +73,21 @@
             getDeviceKeyId(did),
           ]);
 
+          // Show identity even if DID doc is missing (with fallback display)
+          const handle = docResult ? extractHandle(docResult) : null;
+          const pdsUrl = docResult ? extractPds(docResult) : null;
+          const deviceKeyIsRoot = docResult ? isDeviceKeyRoot(docResult, keyIdResult) : null;
+
           if (docResult) {
             didDocs.set(did, docResult);
-            const handle = extractHandle(docResult);
-            const pdsUrl = extractPds(docResult);
-            const deviceKeyIsRoot = isDeviceKeyRoot(docResult, keyIdResult);
-
-            identities.push({
-              did,
-              handle,
-              pdsUrl,
-              deviceKeyIsRoot,
-            });
           }
+
+          identities.push({
+            did,
+            handle,
+            pdsUrl,
+            deviceKeyIsRoot,
+          });
         } catch (e) {
           console.error(`Failed to load identity ${did}:`, e);
         }
@@ -126,13 +105,13 @@
     loadData();
   });
 
-  function getBadgeInfo(deviceKeyIsRoot: boolean | null): { label: string; className: string } {
+  function getBadgeLabel(deviceKeyIsRoot: boolean | null): string {
     if (deviceKeyIsRoot === true) {
-      return { label: 'Root Key', className: 'badge--root' };
+      return 'Root Key';
     } else if (deviceKeyIsRoot === false) {
-      return { label: 'Not Root', className: 'badge--not-root' };
+      return 'Not Root';
     }
-    return { label: 'Unknown', className: 'badge--unknown' };
+    return 'Unknown';
   }
 </script>
 
@@ -158,7 +137,7 @@
         {#each identities as card (card.did)}
           <button
             class="identity-card"
-            onclick={() => onselect(card.did, didDocs.get(card.did)!)}
+            onclick={() => onselect(card.did, didDocs.get(card.did) ?? {})}
           >
             <div class="card-content">
               <DIDAvatar did={card.did} handle={card.handle ?? 'Unknown'} />
@@ -179,7 +158,7 @@
                   class:badge--unknown={card.deviceKeyIsRoot === null}
                 >
                   <span class="badge-dot"></span>
-                  {getBadgeInfo(card.deviceKeyIsRoot).label}
+                  {getBadgeLabel(card.deviceKeyIsRoot)}
                 </span>
               {/if}
             </div>
@@ -266,7 +245,6 @@
     justify-content: space-between;
     gap: 1rem;
     cursor: pointer;
-    border: none;
     width: 100%;
     text-align: left;
     transition: background 0.2s, border-color 0.2s;
