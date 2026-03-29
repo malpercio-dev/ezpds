@@ -1,6 +1,7 @@
 <script lang="ts">
   import { listen } from '@tauri-apps/api/event';
   import { onMount } from 'svelte';
+  import ModeSelectScreen from '$lib/components/onboarding/ModeSelectScreen.svelte';
   import RelayConfigScreen from '$lib/components/onboarding/RelayConfigScreen.svelte';
   import WelcomeScreen from '$lib/components/onboarding/WelcomeScreen.svelte';
   import ClaimCodeScreen from '$lib/components/onboarding/ClaimCodeScreen.svelte';
@@ -16,7 +17,7 @@
   import HomeScreen from '$lib/components/home/HomeScreen.svelte';
   import DIDDocumentScreen from '$lib/components/home/DIDDocumentScreen.svelte';
   import RecoveryInfoScreen from '$lib/components/home/RecoveryInfoScreen.svelte';
-  import { createAccount, getRelayUrl, type CreateAccountError, type OAuthError, type HomeData } from '$lib/ipc';
+  import { createAccount, getRelayUrl, listIdentities, type CreateAccountError, type OAuthError, type HomeData } from '$lib/ipc';
 
   // ── Onboarding step type ─────────────────────────────────────────────────
   //
@@ -29,6 +30,7 @@
   // instead of navigating through an extra modal. No 'error' step is needed.
 
   type OnboardingStep =
+    | 'mode_select'
     | 'relay_config'
     | 'welcome'
     | 'claim_code'
@@ -45,11 +47,16 @@
     | 'home'
     | 'did_document'
     | 'recovery_info'
-    | 'auth_failed';
+    | 'auth_failed'
+    | 'identity_input'
+    | 'pds_auth'
+    | 'email_verification'
+    | 'review_operation'
+    | 'claim_success';
 
   // ── State ────────────────────────────────────────────────────────────────
 
-  let step = $state<OnboardingStep>('relay_config');
+  let step = $state<OnboardingStep>('mode_select');
   let form = $state({ claimCode: '', email: '', handle: '', password: '', did: '', share3: '', registeredHandle: '' });
 
   /**
@@ -74,13 +81,29 @@
   // ── Relay configuration and OAuth event listener ──────────────────────
 
   onMount(async () => {
-    // If the user has already configured a relay URL, skip the config screen.
-    const savedUrl = await getRelayUrl();
-    if (savedUrl) {
-      step = 'welcome';
+    // If the user has claimed identities, skip to home.
+    try {
+      const identities = await listIdentities();
+      if (identities.length > 0) {
+        step = 'home';
+        return;
+      }
+    } catch {
+      // listIdentities failed (e.g. empty Keychain on first launch) — continue to mode_select
     }
 
-    // Existing: listen for auth_ready deep-link callback from the OAuth flow.
+    // Legacy user fallback: if a relay URL is already configured (from the old
+    // single-identity flow before multi-identity), the user has used the app before
+    // but has no managed-dids entry. Skip relay_config but still show mode_select
+    // so they can choose create vs. import. Without this, legacy users would see
+    // mode_select and then relay_config (asking them to configure a relay they
+    // already configured).
+    // Note: mode_select is already the default step, so this is a no-op for
+    // mode_select itself, but it prevents the "Create new identity" path from
+    // redundantly showing relay_config when the relay is already configured.
+    // The relay_config screen itself already checks getRelayUrl() internally.
+
+    // Listen for auth_ready from relay OAuth (existing onboarding flow).
     listen('auth_ready', () => {
       goTo('home');
     });
@@ -159,7 +182,12 @@
 </script>
 
 <div class="app">
-  {#if step === 'relay_config'}
+  {#if step === 'mode_select'}
+    <ModeSelectScreen
+      oncreate={() => goTo('relay_config')}
+      onimport={() => goTo('identity_input')}
+    />
+  {:else if step === 'relay_config'}
     <RelayConfigScreen onnext={() => goTo('welcome')} />
   {:else if step === 'welcome'}
     <WelcomeScreen onstart={() => goTo('claim_code')} />
