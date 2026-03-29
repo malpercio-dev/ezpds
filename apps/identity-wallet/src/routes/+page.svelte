@@ -14,10 +14,11 @@
   import ShamirBackupScreen from '$lib/components/onboarding/ShamirBackupScreen.svelte';
   import HandleRegistrationScreen from '$lib/components/onboarding/HandleRegistrationScreen.svelte';
   import AuthenticatingScreen from '$lib/components/onboarding/AuthenticatingScreen.svelte';
+  import IdentityInputScreen from '$lib/components/onboarding/IdentityInputScreen.svelte';
   import HomeScreen from '$lib/components/home/HomeScreen.svelte';
   import DIDDocumentScreen from '$lib/components/home/DIDDocumentScreen.svelte';
   import RecoveryInfoScreen from '$lib/components/home/RecoveryInfoScreen.svelte';
-  import { createAccount, listIdentities, type CreateAccountError, type OAuthError, type HomeData } from '$lib/ipc';
+  import { createAccount, listIdentities, type CreateAccountError, type OAuthError, type HomeData, type IdentityInfo, type VerifiedClaimOp, type ClaimResult } from '$lib/ipc';
 
   // ── Onboarding step type ─────────────────────────────────────────────────
   //
@@ -57,7 +58,12 @@
   // ── State ────────────────────────────────────────────────────────────────
 
   let step = $state<OnboardingStep>('mode_select');
-  let form = $state({ claimCode: '', email: '', handle: '', password: '', did: '', share3: '', registeredHandle: '' });
+  let form = $state({ claimCode: '', email: '', handle: '', password: '', did: '', share3: '', registeredHandle: '', handleOrDid: '' });
+
+  // ── Import flow state ────────────────────────────────────────────────────────
+  let identityInfo = $state<IdentityInfo | null>(null);
+  let verifiedClaim = $state<VerifiedClaimOp | null>(null);
+  let claimResult = $state<ClaimResult | null>(null);
 
   /**
    * Per-field error messages displayed by each screen.
@@ -179,6 +185,15 @@
     <ModeSelectScreen
       oncreate={() => goTo('relay_config')}
       onimport={() => goTo('identity_input')}
+    />
+  {:else if step === 'identity_input'}
+    <IdentityInputScreen
+      bind:value={form.handleOrDid}
+      onnext={(info) => {
+        identityInfo = info;
+        goTo('pds_auth');
+      }}
+      onback={() => goTo('mode_select')}
     />
   {:else if step === 'relay_config'}
     <RelayConfigScreen onnext={() => goTo('welcome')} />
