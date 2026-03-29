@@ -371,7 +371,10 @@ impl PdsClient {
 
         let status = response.status();
         if !status.is_success() {
-            let error_body = response.text().await.unwrap_or_default();
+            let error_body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "(response body unreadable)".to_string());
             return Err(PdsClientError::OauthFailed {
                 message: format!("PAR returned {}: {}", status, error_body),
             });
@@ -494,7 +497,10 @@ impl PdsClient {
         if resp.status().is_success() {
             Ok(())
         } else {
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "(response body unreadable)".to_string());
             Err(PdsClientError::InvalidResponse {
                 message: format!("plc.directory rejected operation: {}", body),
             })
@@ -617,7 +623,10 @@ pub async fn request_plc_operation_signature(
     if status.is_success() {
         Ok(())
     } else {
-        let body = resp.text().await.unwrap_or_default();
+        let body = resp
+            .text()
+            .await
+            .unwrap_or_else(|_| "(response body unreadable)".to_string());
         Err(PdsClientError::NetworkError {
             message: format!(
                 "request_plc_operation_signature returned {}: {}",
@@ -641,7 +650,10 @@ pub async fn sign_plc_operation(
 
     let status = resp.status();
     if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
+        let body = resp
+            .text()
+            .await
+            .unwrap_or_else(|_| "(response body unreadable)".to_string());
         return Err(PdsClientError::NetworkError {
             message: format!("sign_plc_operation returned {}: {}", status, body),
         });
@@ -667,7 +679,10 @@ pub async fn get_recommended_did_credentials(
 
     let status = resp.status();
     if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
+        let body = resp
+            .text()
+            .await
+            .unwrap_or_else(|_| "(response body unreadable)".to_string());
         return Err(PdsClientError::NetworkError {
             message: format!(
                 "get_recommended_did_credentials returned {}: {}",

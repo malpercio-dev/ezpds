@@ -43,14 +43,14 @@ pub struct IdentityInfo {
 
 /// Verified claim operation ready for submission.
 ///
-/// Returned by `verify_claim` command.
+/// Returned by `sign_and_verify_claim` command.
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct VerifiedClaimOp {
     /// Diff of keys and services between current DID doc and proposed operation
     pub diff: OpDiff,
-    /// Signed operation (ready for PLC submission)
-    pub signed_op: String,
+    /// Signed operation (ready for PLC submission) as JSON value
+    pub signed_op: serde_json::Value,
     /// Warnings from verification (e.g., "This operation will break X")
     pub warnings: Vec<String>,
 }
@@ -65,8 +65,20 @@ pub struct OpDiff {
     pub removed_keys: Vec<String>,
     /// Service endpoint changes (added/removed/modified)
     pub changed_services: Vec<ServiceChange>,
-    /// Previous CID (content identifier) of the DID document
-    pub prev_cid: String,
+    /// Previous CID (content identifier) of the DID document (None if no prior operation)
+    pub prev_cid: Option<String>,
+}
+
+/// Type of change to a service endpoint.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub enum ChangeType {
+    /// Service endpoint was added
+    Added,
+    /// Service endpoint was removed
+    Removed,
+    /// Service endpoint was modified
+    Modified,
 }
 
 /// Change to a service endpoint in the DID document.
@@ -75,8 +87,8 @@ pub struct OpDiff {
 pub struct ServiceChange {
     /// Service ID (e.g., "atproto_pds")
     pub id: String,
-    /// Type of change: "added", "removed", or "modified"
-    pub change_type: String,
+    /// Type of change: added, removed, or modified
+    pub change_type: ChangeType,
     /// Old endpoint URL (None if added)
     pub old_endpoint: Option<String>,
     /// New endpoint URL (None if removed)
@@ -110,8 +122,8 @@ pub struct ClaimState {
     /// Wrapped in Arc to allow cloning out of the Mutex without holding the lock
     /// across the network call in `request_claim_verification`.
     pub pds_oauth_client: Option<std::sync::Arc<OAuthClient>>,
-    /// Verified signed operation (set after `sign_and_verify_claim` succeeds)
-    pub verified_signed_op: Option<String>,
+    /// Verified signed operation (set after `sign_and_verify_claim` succeeds) as JSON value
+    pub verified_signed_op: Option<serde_json::Value>,
 }
 
 // ── Error types ────────────────────────────────────────────────────────────
@@ -179,6 +191,7 @@ pub async fn resolve_identity(
     state: tauri::State<'_, crate::oauth::AppState>,
     handle_or_did: String,
 ) -> Result<IdentityInfo, ResolveError> {
+    tracing::info!("resolve_identity command: resolving {}", handle_or_did);
     let pds_client = state.pds_client();
 
     // Determine if input is a DID or handle
@@ -229,13 +242,19 @@ pub async fn resolve_identity(
                                 .map(|first_key| device_key.multibase == *first_key)
                                 .unwrap_or(false)
                         }
-                        Err(_) => false, // Key generation failed, assume not root
+                        Err(e) => {
+                            tracing::error!(error = %e, did = %did, "failed to get or create device key");
+                            false
+                        }
                     }
                 } else {
                     false // DID not registered
                 }
             }
-            Err(_) => false, // Store lookup failed, assume not root
+            Err(e) => {
+                tracing::error!(error = %e, "failed to list identities");
+                false
+            }
         }
     };
 
@@ -303,17 +322,31 @@ pub async fn start_pds_auth(
     state: tauri::State<'_, crate::oauth::AppState>,
     pds_url: String,
 ) -> Result<(), ClaimError> {
+    tracing::info!("start_pds_auth command: authenticating with {}", pds_url);
     use tauri_plugin_opener::OpenerExt;
 
-    // 1. Validate ClaimState is populated
-    let claim_state = state.claim_state.lock().await;
-    let Some(claim) = claim_state.as_ref() else {
-        drop(claim_state);
-        return Err(ClaimError::Unauthorized);
-    };
+    // 1. Validate ClaimState is populated and pds_url matches
+    let did = {
+        let claim_state = state.claim_state.lock().await;
+        let Some(claim) = claim_state.as_ref() else {
+            tracing::warn!("start_pds_auth: ClaimState not found");
+            return Err(ClaimError::Unauthorized);
+        };
 
-    let did = claim.did.clone();
-    drop(claim_state);
+        // Validate that pds_url matches ClaimState.pds_url (defense-in-depth)
+        if claim.pds_url != pds_url {
+            let expected = claim.pds_url.clone();
+            drop(claim_state);
+            tracing::warn!(
+                expected = %expected,
+                received = %pds_url,
+                "start_pds_auth: pds_url mismatch"
+            );
+            return Err(ClaimError::Unauthorized);
+        }
+
+        claim.did.clone()
+    }; // claim_state lock released here
 
     let pds_client = state.pds_client();
 
@@ -417,13 +450,16 @@ pub async fn start_pds_auth(
     }));
 
     let oauth_client =
-        OAuthClient::new(session, pds_url).map_err(|_| ClaimError::NetworkError {
+        OAuthClient::new(session, pds_url.clone()).map_err(|_| ClaimError::NetworkError {
             message: "failed to create OAuth client".to_string(),
         })?;
 
     let mut claim_state = state.claim_state.lock().await;
     if let Some(ref mut claim) = claim_state.as_mut() {
         claim.pds_oauth_client = Some(std::sync::Arc::new(oauth_client));
+    } else {
+        drop(claim_state);
+        return Err(ClaimError::Unauthorized);
     }
     drop(claim_state);
 
@@ -487,6 +523,9 @@ async fn pds_exchange_code_with_retry(
 
     let error_body = resp.text().await.unwrap_or_else(|_| "{}".to_string());
 
+    // Detect nonce retry by checking error JSON for "use_dpop_nonce" error code.
+    // This is fragile string matching based on PDS/OAuth server error responses.
+    // If the server's error format changes, this detection will fail silently.
     if let Ok(error_json) = serde_json::from_str::<serde_json::Value>(&error_body) {
         if error_json.get("error").and_then(|v| v.as_str()) == Some("use_dpop_nonce") {
             if let Some(nonce_val) = nonce {
@@ -533,7 +572,10 @@ async fn pds_exchange_code_with_retry(
     }
 
     Err(ClaimError::NetworkError {
-        message: "token exchange failed".to_string(),
+        message: format!(
+            "token exchange returned non-success response: {}",
+            error_body
+        ),
     })
 }
 
@@ -552,6 +594,10 @@ pub async fn request_claim_verification(
     state: tauri::State<'_, crate::oauth::AppState>,
     did: String,
 ) -> Result<(), ClaimError> {
+    tracing::info!(
+        "request_claim_verification command: requesting signature for {}",
+        did
+    );
     // Acquire lock, extract claim state, and release lock before making network call
     let claim_state_copy = {
         let claim_state = state.claim_state.lock().await;
@@ -602,12 +648,21 @@ pub async fn sign_and_verify_claim(
     did: String,
     token: String,
 ) -> Result<VerifiedClaimOp, ClaimError> {
+    tracing::info!(
+        "sign_and_verify_claim command: signing and verifying operation for {}",
+        did
+    );
     // Acquire lock, extract required data, and release lock before making network calls
     let (pds_client_ref, oauth_client_ref, claim_did, claim_did_doc) = {
         let claim_state = state.claim_state.lock().await;
         let Some(claim) = claim_state.as_ref() else {
             return Err(ClaimError::Unauthorized);
         };
+
+        // Defense-in-depth: validate caller's DID matches ClaimState
+        if claim.did != did {
+            return Err(ClaimError::Unauthorized);
+        }
 
         let Some(ref oauth_client) = claim.pds_oauth_client else {
             return Err(ClaimError::Unauthorized);
@@ -643,6 +698,8 @@ pub async fn sign_and_verify_claim(
         let mut claim_state = state.claim_state.lock().await;
         if let Some(ref mut claim) = claim_state.as_mut() {
             claim.verified_signed_op = Some(signed_op_json);
+        } else {
+            return Err(ClaimError::Unauthorized);
         }
     }
 
@@ -652,7 +709,7 @@ pub async fn sign_and_verify_claim(
 /// Testable core logic for `sign_and_verify_claim`.
 ///
 /// This helper can be called with resolved dependencies without needing Tauri's State.
-/// The returned tuple contains (VerifiedClaimOp, signed_op_json_string).
+/// The returned tuple contains (VerifiedClaimOp, signed_op_json_value).
 pub(crate) async fn sign_and_verify_claim_impl(
     pds_client: &crate::pds_client::PdsClient,
     pds_oauth_client: &std::sync::Arc<OAuthClient>,
@@ -660,7 +717,7 @@ pub(crate) async fn sign_and_verify_claim_impl(
     did_doc: &PlcDidDocument,
     device_key_id: &str,
     token: &str,
-) -> Result<(VerifiedClaimOp, String), ClaimError> {
+) -> Result<(VerifiedClaimOp, serde_json::Value), ClaimError> {
     use crate::pds_client::{
         get_recommended_did_credentials, sign_plc_operation, SignPlcOperationRequest,
     };
@@ -707,11 +764,8 @@ pub(crate) async fn sign_and_verify_claim_impl(
             }
         })?;
 
-    // Step 4: Serialize operation for verification
-    let op_json_str =
-        serde_json::to_string(&response.operation).map_err(|e| ClaimError::NetworkError {
-            message: format!("failed to serialize operation: {}", e),
-        })?;
+    // Step 4: Keep operation as JSON value (no need to serialize/deserialize)
+    let op_value = response.operation.clone();
 
     // Step 5: Fetch current audit log and get expected prev CID
     let log_json = pds_client
@@ -728,6 +782,10 @@ pub(crate) async fn sign_and_verify_claim_impl(
     let expected_prev = audit_log.last().map(|entry| entry.cid.clone());
 
     // Step 6: Verify operation signature
+    let op_json_str = serde_json::to_string(&op_value).map_err(|e| ClaimError::NetworkError {
+        message: format!("failed to serialize operation: {}", e),
+    })?;
+
     let authorized_keys: Vec<DidKeyUri> = did_doc
         .rotation_keys
         .iter()
@@ -837,7 +895,7 @@ pub(crate) async fn sign_and_verify_claim_impl(
         if !original_services.contains_key(service_id) {
             changed_services.push(ServiceChange {
                 id: service_id.clone(),
-                change_type: "added".to_string(),
+                change_type: ChangeType::Added,
                 old_endpoint: None,
                 new_endpoint: Some(service.endpoint.clone()),
             });
@@ -862,16 +920,16 @@ pub(crate) async fn sign_and_verify_claim_impl(
         added_keys,
         removed_keys,
         changed_services,
-        prev_cid: verified_op.prev.clone().unwrap_or_default(),
+        prev_cid: verified_op.prev.clone(),
     };
 
     Ok((
         VerifiedClaimOp {
             diff,
-            signed_op: op_json_str.clone(),
+            signed_op: op_value.clone(),
             warnings,
         },
-        op_json_str,
+        op_value,
     ))
 }
 
@@ -885,26 +943,20 @@ pub(crate) async fn sign_and_verify_claim_impl(
 ///    - `get_or_create_device_key(did)` — ensures device key exists
 ///    - Re-fetches the DID document from plc.directory and stores it
 ///    - Fetches the PLC audit log and stores it
-/// 4. Clears `ClaimState` (set `AppState.claim_state` to `None`)
-/// 5. Returns `ClaimResult` with the updated DID document
+/// 4. Returns `ClaimResult` with the updated DID document
+///    (Caller is responsible for clearing `ClaimState` on success)
 pub(crate) async fn submit_claim_impl(
     pds_client: &crate::pds_client::PdsClient,
     claim_state: &ClaimState,
 ) -> Result<ClaimResult, ClaimError> {
     // Step 1: Read verified_signed_op from ClaimState
-    let Some(ref verified_signed_op_str) = claim_state.verified_signed_op else {
+    let Some(ref operation) = claim_state.verified_signed_op else {
         return Err(ClaimError::Unauthorized);
     };
 
-    // Parse the stored JSON string back to Value
-    let operation: serde_json::Value =
-        serde_json::from_str(verified_signed_op_str).map_err(|e| ClaimError::NetworkError {
-            message: format!("failed to parse verified signed operation: {}", e),
-        })?;
-
     // Step 2: POST the signed operation to plc.directory
     pds_client
-        .post_plc_operation(&claim_state.did, &operation)
+        .post_plc_operation(&claim_state.did, operation)
         .await
         .map_err(|e| match e {
             crate::pds_client::PdsClientError::InvalidResponse { message } => {
@@ -1003,6 +1055,7 @@ pub async fn submit_claim(
     state: tauri::State<'_, crate::oauth::AppState>,
     did: String,
 ) -> Result<ClaimResult, ClaimError> {
+    tracing::info!("submit_claim command: submitting claim for {}", did);
     let pds_client = state.pds_client();
 
     // Acquire lock, extract claim state, then release lock before network calls
@@ -1155,7 +1208,7 @@ mod tests {
         assert_eq!(result, None);
     }
 
-    // ── resolve_identity integration tests (AC4.1) ──────────────────────────────
+    // ── resolve_identity integration tests ─────────────────────────────────────
 
     /// Test 1: Handle input → correct IdentityInfo verification
     /// Verifies that the extract_handle_from_also_known_as and error mapping
@@ -1169,7 +1222,7 @@ mod tests {
         let handle = extract_handle_from_also_known_as(&also_known_as)
             .expect("Should extract handle from at:// entry");
 
-        // Assertions matching AC4.1 requirements
+        // Verify handle extraction from also_known_as format (at://handle)
         assert_eq!(handle, "alice.example.com");
 
         // Simulate constructing IdentityInfo response
@@ -1389,10 +1442,10 @@ mod tests {
         assert_eq!(json["message"], "DNS resolution failed");
     }
 
-    // ── request_claim_verification tests (AC4.2) ──────────────────────────────
+    // ── request_claim_verification tests ──────────────────────────────────────
 
     /// Test 1: Success — calls XRPC endpoint with 200 response
-    /// Verifies AC4.2: request_claim_verification calls requestPlcOperationSignature on the old PDS
+    /// request_claim_verification calls requestPlcOperationSignature on the old PDS
     #[tokio::test]
     async fn test_request_claim_verification_success() {
         use httpmock::MockServer;
@@ -1449,7 +1502,7 @@ mod tests {
     }
 
     /// Test 3 (renamed): Unauthorized — no OAuth client
-    /// Verifies AC4.2: request_claim_verification returns Unauthorized when pds_oauth_client is None
+    /// request_claim_verification returns Unauthorized when pds_oauth_client is None
     #[tokio::test]
     async fn test_request_claim_verification_unauthorized_no_oauth_client() {
         let claim_state = ClaimState {
@@ -1474,7 +1527,7 @@ mod tests {
     }
 
     /// Test 4: Network error — PDS returns 500
-    /// Verifies AC4.2: request_claim_verification returns NetworkError on PDS failure
+    /// request_claim_verification returns NetworkError on PDS failure
     #[tokio::test]
     async fn test_request_claim_verification_pds_returns_500() {
         use httpmock::MockServer;
@@ -1568,7 +1621,7 @@ mod tests {
         (rotation.signed_op_json, signing_kp.key_id.0)
     }
 
-    /// Test 1: AC4.3 — Success path with device key at rotationKeys[0]
+    /// Test 1: Success path with device key at rotationKeys[0]
     #[tokio::test]
     async fn test_sign_and_verify_claim_success() {
         use httpmock::MockServer;
@@ -1689,7 +1742,7 @@ mod tests {
         );
     }
 
-    /// Test 2: AC4.4 — Wrong key at rotationKeys[0]
+    /// Test 2: Wrong key at rotationKeys[0]
     #[tokio::test]
     async fn test_sign_and_verify_claim_wrong_key_at_rotation_keys_0() {
         use httpmock::MockServer;
@@ -1795,7 +1848,7 @@ mod tests {
         );
     }
 
-    /// Test 3: AC4.5 — prev chain mismatch
+    /// Test 3: prev chain mismatch
     #[tokio::test]
     async fn test_sign_and_verify_claim_prev_mismatch() {
         use httpmock::MockServer;
@@ -1901,7 +1954,7 @@ mod tests {
         );
     }
 
-    /// Test 4: AC4.6 — unexpected key removal
+    /// Test 4: unexpected key removal
     #[tokio::test]
     async fn test_sign_and_verify_claim_unexpected_key_removal() {
         use httpmock::MockServer;
@@ -2006,7 +2059,7 @@ mod tests {
         );
     }
 
-    /// Test 5: AC4.6 — unexpected service change
+    /// Test 5: unexpected service change
     #[tokio::test]
     async fn test_sign_and_verify_claim_unexpected_service_change() {
         use httpmock::MockServer;
@@ -2118,7 +2171,7 @@ mod tests {
         );
     }
 
-    /// Test 6: AC4.7 — warnings for benign additions
+    /// Test 6: warnings for benign additions
     #[tokio::test]
     async fn test_sign_and_verify_claim_warnings_for_added_service() {
         use httpmock::MockServer;
@@ -2246,7 +2299,7 @@ mod tests {
         );
     }
 
-    /// Test 7: AC4.10 — Invalid token error from PDS
+    /// Test 7: Invalid token error from PDS
     #[tokio::test]
     async fn test_sign_and_verify_claim_invalid_token() {
         use httpmock::MockServer;
@@ -2321,9 +2374,9 @@ mod tests {
         );
     }
 
-    // ── submit_claim tests (AC4.8, AC4.9) ──────────────────────────────────
+    // ── submit_claim tests ────────────────────────────────────────────────────
 
-    /// Test AC4.8 — Success: submit_claim POSTs signed operation and persists identity
+    /// Test Success: submit_claim POSTs signed operation and persists identity
     #[tokio::test]
     async fn test_submit_claim_success() {
         use httpmock::MockServer;
@@ -2413,7 +2466,7 @@ mod tests {
         assert_eq!(claim_result.updated_did_doc["did"], "did:plc:test");
     }
 
-    /// Test AC4.9 — Failure: submit_claim returns PlcDirectoryError when POST fails
+    /// Test Failure: submit_claim returns PlcDirectoryError when POST fails
     #[tokio::test]
     async fn test_submit_claim_plc_directory_error() {
         use httpmock::MockServer;
