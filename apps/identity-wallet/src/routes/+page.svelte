@@ -17,6 +17,8 @@
   import IdentityInputScreen from '$lib/components/onboarding/IdentityInputScreen.svelte';
   import PdsAuthScreen from '$lib/components/onboarding/PdsAuthScreen.svelte';
   import EmailVerificationScreen from '$lib/components/onboarding/EmailVerificationScreen.svelte';
+  import ReviewOperationScreen from '$lib/components/onboarding/ReviewOperationScreen.svelte';
+  import ClaimSuccessScreen from '$lib/components/onboarding/ClaimSuccessScreen.svelte';
   import HomeScreen from '$lib/components/home/HomeScreen.svelte';
   import DIDDocumentScreen from '$lib/components/home/DIDDocumentScreen.svelte';
   import RecoveryInfoScreen from '$lib/components/home/RecoveryInfoScreen.svelte';
@@ -211,6 +213,21 @@
         goTo('review_operation');
       }}
       onback={() => goTo('pds_auth')}
+    />
+  {:else if step === 'review_operation'}
+    <ReviewOperationScreen
+      did={identityInfo!.did}
+      verifiedClaim={verifiedClaim!}
+      onnext={(result) => {
+        claimResult = result;
+        goTo('claim_success');
+      }}
+      oncancel={() => goTo('identity_input')}
+    />
+  {:else if step === 'claim_success'}
+    <ClaimSuccessScreen
+      claimResult={claimResult!}
+      ondone={() => goTo('home')}
     />
   {:else if step === 'relay_config'}
     <RelayConfigScreen onnext={() => goTo('welcome')} />
