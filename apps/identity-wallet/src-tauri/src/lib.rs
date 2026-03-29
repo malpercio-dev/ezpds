@@ -672,6 +672,41 @@ fn list_identities() -> Result<Vec<String>, identity_store::IdentityStoreError> 
     identity_store::IdentityStore.list_identities()
 }
 
+/// Retrieve the stored DID document for a claimed identity.
+///
+/// Returns the DID document as parsed JSON, or None if the DID is not registered or
+/// the document has not been stored yet.
+///
+/// The frontend uses this to extract identity information (handle, PDS URL) for
+/// multi-identity card display in IdentityListHome.
+#[tauri::command]
+fn get_stored_did_doc(did: String) -> Result<Option<serde_json::Value>, identity_store::IdentityStoreError> {
+    let store = identity_store::IdentityStore;
+    match store.get_did_doc(&did)? {
+        Some(json_str) => {
+            let value: serde_json::Value = serde_json::from_str(&json_str)
+                .map_err(|e| identity_store::IdentityStoreError::SerializationError {
+                    message: e.to_string(),
+                })?;
+            Ok(Some(value))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Retrieve the device key ID (did:key URI) for a claimed identity.
+///
+/// Returns the device key's did:key URI, which can be compared against rotation keys
+/// in the DID document to determine if the device key is the primary rotation key.
+///
+/// The frontend uses this in IdentityListHome to show rotation key status badges.
+#[tauri::command]
+fn get_device_key_id(did: String) -> Result<String, identity_store::IdentityStoreError> {
+    let store = identity_store::IdentityStore;
+    let device_key = store.get_or_create_device_key(&did)?;
+    Ok(device_key.key_id)
+}
+
 /// Check whether the relay can resolve `handle` to `expected_did` via the ATProto
 /// `resolveHandle` endpoint.
 ///
@@ -762,6 +797,8 @@ pub fn run() {
             register_handle,
             check_handle_resolution,
             list_identities,
+            get_stored_did_doc,
+            get_device_key_id,
             get_relay_url,
             save_relay_url,
             home::load_home_data,

@@ -480,3 +480,9 @@ export type IdentityStoreError =
 
 export const listIdentities = (): Promise<string[]> =>
   invoke('list_identities');
+
+export const getStoredDidDoc = (did: string): Promise<Record<string, unknown> | null> =>
+  invoke('get_stored_did_doc', { did });
+
+export const getDeviceKeyId = (did: string): Promise<string> =>
+  invoke('get_device_key_id', { did });
