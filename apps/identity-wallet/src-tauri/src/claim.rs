@@ -6,6 +6,7 @@
 //                   plc.directory, checks IdentityStore, stores state, returns IdentityInfo)
 
 use serde::Serialize;
+use tauri::Emitter;
 
 use crate::identity_store::IdentityStore;
 use crate::oauth_client::OAuthClient;
@@ -258,6 +259,301 @@ fn map_pds_error_to_resolve(err: PdsClientError) -> ResolveError {
         PdsClientError::InvalidResponse { message } => ResolveError::NetworkError { message },
         PdsClientError::OauthFailed { message } => ResolveError::NetworkError { message },
     }
+}
+
+/// Authenticate with the old PDS via OAuth 2.0 PKCE + DPoP.
+///
+/// This command performs OAuth authentication against an arbitrary PDS discovered
+/// via `PdsClient`. It reuses the existing deep-link callback mechanism and stores
+/// the resulting `OAuthClient` in `ClaimState.pds_oauth_client` for use by
+/// subsequent commands like `request_claim_verification`.
+///
+/// **Prerequisites:** `resolve_identity` must have been called first to populate
+/// `ClaimState.did` and `ClaimState.pds_url`.
+///
+/// **Flow:**
+/// 1. Read `ClaimState` — validate it contains `did` and `pds_url`
+/// 2. Discover auth server metadata via `PdsClient::discover_auth_server()`
+/// 3. Generate PKCE verifier/challenge and CSRF state
+/// 4. Get-or-create DPoP keypair and compute JWK thumbprint
+/// 5. Build DPoP proof for PAR
+/// 6. Call PDS PAR with the DID as login_hint
+/// 7. Park a oneshot channel in `AppState.pending_auth`
+/// 8. Build authorize URL and open Safari
+/// 9. Await the deep-link callback (which delivers the authorization code)
+/// 10. Exchange code for tokens (with nonce retry if needed)
+/// 11. Create `OAuthClient` pointing to the PDS
+/// 12. Store client in `ClaimState.pds_oauth_client`
+/// 13. Emit `"pds_auth_ready"` event to the frontend
+#[tauri::command]
+pub async fn start_pds_auth(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::oauth::AppState>,
+    pds_url: String,
+) -> Result<(), ClaimError> {
+    use tauri_plugin_opener::OpenerExt;
+
+    // 1. Validate ClaimState is populated
+    let claim_state = state.claim_state.lock().await;
+    let Some(claim) = claim_state.as_ref() else {
+        drop(claim_state);
+        return Err(ClaimError::Unauthorized);
+    };
+
+    let did = claim.did.clone();
+    drop(claim_state);
+
+    let pds_client = state.pds_client();
+
+    // 2. Discover auth server metadata from the PDS
+    let metadata = pds_client
+        .discover_auth_server(&pds_url)
+        .await
+        .map_err(|e| ClaimError::NetworkError {
+            message: format!("failed to discover auth server: {}", e),
+        })?;
+
+    // 3. Generate PKCE and CSRF state
+    let (pkce_verifier, pkce_challenge) = crate::oauth::pkce::generate();
+    let csrf_state = crate::oauth::generate_state_param();
+
+    // 4. Get DPoP keypair and compute thumbprint
+    let dpop =
+        crate::oauth::DPoPKeypair::get_or_create().map_err(|_| ClaimError::NetworkError {
+            message: "failed to create DPoP keypair".to_string(),
+        })?;
+    let dpop_jkt = dpop.public_jwk_thumbprint();
+
+    // 5. Build DPoP proof for PAR
+    let par_htu = metadata
+        .pushed_authorization_request_endpoint
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| format!("{}/oauth/par", metadata.issuer));
+
+    let par_proof =
+        dpop.make_proof("POST", &par_htu, None, None)
+            .map_err(|_| ClaimError::NetworkError {
+                message: "failed to create DPoP proof for PAR".to_string(),
+            })?;
+
+    // 6. Call PDS PAR with the DID as login_hint
+    let par_resp = pds_client
+        .pds_par(
+            &metadata,
+            &pkce_challenge,
+            &csrf_state,
+            &par_proof,
+            &dpop_jkt,
+            Some(&did),
+        )
+        .await
+        .map_err(|e| ClaimError::NetworkError {
+            message: format!("PAR failed: {}", e),
+        })?;
+
+    // 7. Set up oneshot channel and park pending_auth
+    let (tx, rx) = tokio::sync::oneshot::channel::<
+        Result<crate::oauth::CallbackParams, crate::oauth::OAuthError>,
+    >();
+    {
+        let mut pending = state.pending_auth.lock().unwrap();
+        *pending = Some(crate::oauth::PendingOAuthFlow {
+            tx,
+            pkce_verifier: pkce_verifier.clone(),
+            csrf_state: csrf_state.clone(),
+        });
+    }
+
+    // 8. Build authorize URL and open Safari
+    let auth_url = crate::pds_client::PdsClient::build_pds_authorize_url(
+        &metadata,
+        &par_resp.request_uri,
+        Some(&did),
+    );
+
+    app.opener()
+        .open_url(&auth_url, None::<&str>)
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to open system browser");
+            ClaimError::Unauthorized
+        })?;
+
+    // 9. Await the deep-link callback
+    let callback = rx
+        .await
+        .map_err(|_| ClaimError::Unauthorized)?
+        .map_err(|_| ClaimError::Unauthorized)?;
+
+    // 10. Token exchange with nonce retry
+    let (token_resp, initial_nonce) =
+        pds_exchange_code_with_retry(pds_client, &dpop, &callback.code, &pkce_verifier, &metadata)
+            .await?;
+
+    // 11. Create OAuthClient and store in ClaimState
+    let session = std::sync::Arc::new(std::sync::Mutex::new(crate::oauth::OAuthSession {
+        access_token: token_resp.access_token,
+        refresh_token: token_resp.refresh_token,
+        expires_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| ClaimError::NetworkError {
+                message: "system time error".to_string(),
+            })?
+            .as_secs()
+            + token_resp.expires_in,
+        dpop_nonce: initial_nonce,
+    }));
+
+    let oauth_client =
+        OAuthClient::new(session, pds_url).map_err(|_| ClaimError::NetworkError {
+            message: "failed to create OAuth client".to_string(),
+        })?;
+
+    let mut claim_state = state.claim_state.lock().await;
+    if let Some(ref mut claim) = claim_state.as_mut() {
+        claim.pds_oauth_client = Some(oauth_client);
+    }
+    drop(claim_state);
+
+    // 12. Emit event to frontend
+    app.emit("pds_auth_ready", ()).map_err(|e| {
+        tracing::error!(error = %e, "failed to emit pds_auth_ready event");
+        ClaimError::NetworkError {
+            message: "event emission failed".to_string(),
+        }
+    })?;
+
+    Ok(())
+}
+
+/// Helper function for token exchange with nonce retry (PDS version).
+///
+/// Follows the same pattern as `exchange_code_with_retry` in oauth.rs.
+/// Uses the raw `pds_token_exchange` method which returns `reqwest::Response`.
+async fn pds_exchange_code_with_retry(
+    pds_client: &crate::pds_client::PdsClient,
+    dpop: &crate::oauth::DPoPKeypair,
+    code: &str,
+    pkce_verifier: &str,
+    metadata: &crate::pds_client::AuthServerMetadata,
+) -> Result<(crate::http::TokenResponse, Option<String>), ClaimError> {
+    let token_htu = &metadata.token_endpoint;
+    let proof = dpop
+        .make_proof("POST", token_htu, None, None)
+        .map_err(|_| ClaimError::NetworkError {
+            message: "failed to create DPoP proof for token exchange".to_string(),
+        })?;
+
+    let resp = pds_client
+        .pds_token_exchange(metadata, code, pkce_verifier, &proof)
+        .await
+        .map_err(|e| ClaimError::NetworkError {
+            message: format!("token exchange failed: {}", e),
+        })?;
+
+    if resp.status().as_u16() == 200 {
+        let nonce = resp
+            .headers()
+            .get("DPoP-Nonce")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let token = resp
+            .json::<crate::http::TokenResponse>()
+            .await
+            .map_err(|e| ClaimError::NetworkError {
+                message: format!("token response parsing failed: {}", e),
+            })?;
+        return Ok((token, nonce));
+    }
+
+    // Check for nonce retry
+    let nonce = resp
+        .headers()
+        .get("DPoP-Nonce")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    let error_body = resp.text().await.unwrap_or_else(|_| "{}".to_string());
+
+    if let Ok(error_json) = serde_json::from_str::<serde_json::Value>(&error_body) {
+        if error_json.get("error").and_then(|v| v.as_str()) == Some("use_dpop_nonce") {
+            if let Some(nonce_val) = nonce {
+                tracing::debug!(nonce = %nonce_val, "retrying token exchange with server nonce");
+                let proof_with_nonce = dpop
+                    .make_proof("POST", token_htu, Some(&nonce_val), None)
+                    .map_err(|_| ClaimError::NetworkError {
+                    message: "failed to create DPoP proof with nonce".to_string(),
+                })?;
+
+                let retry_resp = pds_client
+                    .pds_token_exchange(metadata, code, pkce_verifier, &proof_with_nonce)
+                    .await
+                    .map_err(|e| ClaimError::NetworkError {
+                        message: format!("token exchange retry failed: {}", e),
+                    })?;
+
+                if retry_resp.status().as_u16() == 200 {
+                    let retry_nonce = retry_resp
+                        .headers()
+                        .get("DPoP-Nonce")
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_string);
+                    let token = retry_resp
+                        .json::<crate::http::TokenResponse>()
+                        .await
+                        .map_err(|e| ClaimError::NetworkError {
+                            message: format!("retry token response parsing failed: {}", e),
+                        })?;
+                    return Ok((token, retry_nonce));
+                }
+            }
+        }
+    }
+
+    Err(ClaimError::NetworkError {
+        message: "token exchange failed".to_string(),
+    })
+}
+
+/// Request email verification for the PLC operation.
+///
+/// Calls the `requestPlcOperationSignature` XRPC endpoint on the old PDS to trigger
+/// an email verification flow. This must be called after `start_pds_auth` succeeds.
+///
+/// **Prerequisites:** `start_pds_auth` must have completed successfully and populated
+/// `ClaimState.pds_oauth_client`.
+///
+/// The core logic is extracted into `request_claim_verification_impl` to make it testable
+/// without Tauri's `State` wrapper.
+#[tauri::command]
+pub async fn request_claim_verification(
+    state: tauri::State<'_, crate::oauth::AppState>,
+    _did: String,
+) -> Result<(), ClaimError> {
+    let claim_state = state.claim_state.lock().await;
+    let Some(claim) = claim_state.as_ref() else {
+        drop(claim_state);
+        return Err(ClaimError::Unauthorized);
+    };
+
+    request_claim_verification_impl(claim).await
+}
+
+/// Testable core logic for `request_claim_verification`.
+///
+/// Extracted to a separate function to avoid requiring Tauri's `State` in tests.
+pub(crate) async fn request_claim_verification_impl(
+    claim_state: &ClaimState,
+) -> Result<(), ClaimError> {
+    let Some(ref oauth_client) = claim_state.pds_oauth_client else {
+        return Err(ClaimError::Unauthorized);
+    };
+
+    crate::pds_client::request_plc_operation_signature(oauth_client)
+        .await
+        .map_err(|e| ClaimError::NetworkError {
+            message: format!("request_plc_operation_signature failed: {}", e),
+        })
 }
 
 /// Extract handle from also_known_as entries.
@@ -616,5 +912,32 @@ mod tests {
         let json = serde_json::to_value(&err).unwrap();
         assert_eq!(json["code"], "NETWORK_ERROR");
         assert_eq!(json["message"], "DNS resolution failed");
+    }
+
+    // ── request_claim_verification tests (AC4.2) ──────────────────────────────
+
+    /// Test: request_claim_verification_impl returns Unauthorized when pds_oauth_client is None
+    /// Verifies AC4.2: request_claim_verification validates OAuth client is present
+    #[tokio::test]
+    async fn test_request_claim_verification_unauthorized_no_oauth_client() {
+        let claim_state = ClaimState {
+            did: "did:plc:test".to_string(),
+            pds_url: "https://pds.example.com".to_string(),
+            did_doc: PlcDidDocument {
+                did: "did:plc:test".to_string(),
+                also_known_as: vec!["at://test.example.com".to_string()],
+                rotation_keys: vec!["did:key:zQ3test".to_string()],
+                verification_methods: serde_json::json!({}),
+                services: std::collections::HashMap::new(),
+            },
+            pds_oauth_client: None,
+            verified_signed_op: None,
+        };
+
+        let result = request_claim_verification_impl(&claim_state).await;
+        assert!(
+            matches!(result, Err(ClaimError::Unauthorized)),
+            "should return Unauthorized when pds_oauth_client is None"
+        );
     }
 }
