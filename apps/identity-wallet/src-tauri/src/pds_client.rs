@@ -57,7 +57,7 @@ pub enum PdsClientError {
 ///
 /// Returned from `GET {plc_directory_url}/{did}`.
 /// Field names use camelCase per the API.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlcDidDocument {
     pub did: String,
@@ -68,7 +68,7 @@ pub struct PlcDidDocument {
 }
 
 /// PLC service entry (one service in `PlcDidDocument.services`).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct PlcService {
     #[serde(rename = "type")]
     pub service_type: String,

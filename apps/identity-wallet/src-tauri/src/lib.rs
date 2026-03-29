@@ -1,3 +1,4 @@
+pub mod claim;
 pub mod device_key;
 pub mod home;
 pub mod http;
