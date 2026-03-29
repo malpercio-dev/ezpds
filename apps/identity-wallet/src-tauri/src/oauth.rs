@@ -31,6 +31,11 @@ pub struct AppState {
     /// PDS client for discovery and XRPC operations against arbitrary PDS endpoints.
     /// Stateless and cheap to construct; available to Phase 4 Tauri commands.
     pds_client: crate::pds_client::PdsClient,
+    /// Claim flow state persisted across multi-step claim commands.
+    /// Set by `resolve_identity`; used by subsequent `start_pds_auth`,
+    /// `request_claim_verification`, `sign_and_verify_claim`, `submit_claim`.
+    /// Uses tokio::sync::Mutex because claim commands hold the lock across .await points.
+    pub claim_state: tokio::sync::Mutex<Option<crate::claim::ClaimState>>,
 }
 
 impl AppState {
@@ -40,6 +45,7 @@ impl AppState {
             oauth_session: Mutex::new(None),
             relay_client: OnceLock::new(),
             pds_client: crate::pds_client::PdsClient::new(),
+            claim_state: tokio::sync::Mutex::new(None),
         }
     }
 
