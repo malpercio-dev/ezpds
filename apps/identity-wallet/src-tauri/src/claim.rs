@@ -569,6 +569,7 @@ pub async fn request_claim_verification(
 /// Testable core logic for `request_claim_verification`.
 ///
 /// Extracted to a separate function to avoid requiring Tauri's `State` in tests.
+#[cfg(test)]
 pub(crate) async fn request_claim_verification_impl(
     claim_state: &ClaimState,
 ) -> Result<(), ClaimError> {
