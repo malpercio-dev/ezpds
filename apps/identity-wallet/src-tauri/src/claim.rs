@@ -96,6 +96,7 @@ pub struct ClaimResult {
 /// This state is set by `resolve_identity` and used by subsequent
 /// `start_pds_auth`, `request_claim_verification`, `sign_and_verify_claim`,
 /// and `submit_claim` commands within the same claim flow session.
+#[derive(Clone)]
 pub struct ClaimState {
     /// The DID being claimed (resolved by `resolve_identity`)
     pub did: String,
@@ -862,6 +863,156 @@ pub(crate) async fn sign_and_verify_claim_impl(
         },
         op_json_str,
     ))
+}
+
+/// Submit a verified signed claim operation to plc.directory.
+///
+/// This is the final step in the claim flow. It:
+/// 1. Reads `verified_signed_op` from `ClaimState`. Returns `Unauthorized` if `None`.
+/// 2. POSTs the signed operation to plc.directory via `pds_client.post_plc_operation()`
+/// 3. Persists the claimed identity to `IdentityStore`:
+///    - `add_identity(did)` — registers DID in managed-dids index
+///    - `get_or_create_device_key(did)` — ensures device key exists
+///    - Re-fetches the DID document from plc.directory and stores it
+///    - Fetches the PLC audit log and stores it
+/// 4. Clears `ClaimState` (set `AppState.claim_state` to `None`)
+/// 5. Returns `ClaimResult` with the updated DID document
+pub(crate) async fn submit_claim_impl(
+    pds_client: &crate::pds_client::PdsClient,
+    claim_state: &ClaimState,
+) -> Result<ClaimResult, ClaimError> {
+    // Step 1: Read verified_signed_op from ClaimState
+    let Some(ref verified_signed_op_str) = claim_state.verified_signed_op else {
+        return Err(ClaimError::Unauthorized);
+    };
+
+    // Parse the stored JSON string back to Value
+    let operation: serde_json::Value = serde_json::from_str(verified_signed_op_str)
+        .map_err(|e| ClaimError::NetworkError {
+            message: format!("failed to parse verified signed operation: {}", e),
+        })?;
+
+    // Step 2: POST the signed operation to plc.directory
+    pds_client
+        .post_plc_operation(&claim_state.did, &operation)
+        .await
+        .map_err(|e| match e {
+            crate::pds_client::PdsClientError::InvalidResponse { message } => {
+                ClaimError::PlcDirectoryError { message }
+            }
+            other => ClaimError::NetworkError {
+                message: format!("post_plc_operation failed: {}", other),
+            },
+        })?;
+
+    // Step 3: Persist the claimed identity to IdentityStore
+    let store = IdentityStore;
+
+    // 3a: Register DID in managed-dids index (may already exist from prior attempts)
+    if let Err(e) = store.add_identity(&claim_state.did) {
+        // IdentityAlreadyExists is fine — user may have a partially completed prior claim
+        if !matches!(e, crate::identity_store::IdentityStoreError::IdentityAlreadyExists) {
+            return Err(ClaimError::NetworkError {
+                message: format!("failed to add identity: {}", e),
+            });
+        }
+    }
+
+    // 3b: Ensure device key exists for the DID
+    store.get_or_create_device_key(&claim_state.did).map_err(|e| {
+        ClaimError::NetworkError {
+            message: format!("failed to get or create device key: {}", e),
+        }
+    })?;
+
+    // 3c: Re-fetch the DID document from plc.directory
+    let (_, updated_did_doc) = pds_client
+        .discover_pds(&claim_state.did)
+        .await
+        .map_err(|e| {
+            ClaimError::NetworkError {
+                message: format!("failed to re-fetch DID document: {}", e),
+            }
+        })?;
+
+    // Store the updated DID document as JSON string
+    let did_doc_value = serde_json::json!({
+        "did": updated_did_doc.did,
+        "alsoKnownAs": updated_did_doc.also_known_as,
+        "rotationKeys": updated_did_doc.rotation_keys,
+        "verificationMethods": updated_did_doc.verification_methods,
+        "services": updated_did_doc.services
+            .iter()
+            .map(|(id, svc)| {
+                (id.clone(), serde_json::json!({
+                    "type": svc.service_type,
+                    "endpoint": svc.endpoint,
+                }))
+            })
+            .collect::<serde_json::Map<String, serde_json::Value>>()
+    });
+
+    let did_doc_json = serde_json::to_string(&did_doc_value).map_err(|e| {
+        ClaimError::NetworkError {
+            message: format!("failed to serialize DID document: {}", e),
+        }
+    })?;
+
+    store
+        .store_did_doc(&claim_state.did, &did_doc_json)
+        .map_err(|e| ClaimError::NetworkError {
+            message: format!("failed to store DID document: {}", e),
+        })?;
+
+    // 3d: Fetch and store the PLC audit log
+    let log_json = pds_client
+        .fetch_audit_log(&claim_state.did)
+        .await
+        .map_err(|e| ClaimError::NetworkError {
+            message: format!("failed to fetch audit log: {}", e),
+        })?;
+
+    store
+        .store_plc_log(&claim_state.did, &log_json)
+        .map_err(|e| ClaimError::NetworkError {
+            message: format!("failed to store PLC log: {}", e),
+        })?;
+
+    // Step 5: Return the updated DID document
+    Ok(ClaimResult {
+        updated_did_doc: did_doc_value,
+    })
+}
+
+/// Tauri command wrapper for submit_claim.
+///
+/// Delegates to `submit_claim_impl` to allow testing without AppState.
+#[tauri::command]
+pub async fn submit_claim(
+    state: tauri::State<'_, crate::oauth::AppState>,
+    did: String,
+) -> Result<ClaimResult, ClaimError> {
+    let pds_client = state.pds_client();
+
+    // Acquire lock, extract claim state, then release lock before network calls
+    let claim_state_copy = {
+        let claim_state = state.claim_state.lock().await;
+        claim_state.as_ref().cloned()
+    };
+
+    let Some(mut claim_state) = claim_state_copy else {
+        return Err(ClaimError::Unauthorized);
+    };
+
+    let result = submit_claim_impl(pds_client, &claim_state).await;
+
+    // On success, clear claim state
+    if result.is_ok() {
+        let mut claim_state_lock = state.claim_state.lock().await;
+        *claim_state_lock = None;
+    }
+
+    result
 }
 
 /// Extract handle from also_known_as entries.
@@ -2137,6 +2288,167 @@ mod tests {
         assert!(
             matches!(result, Err(ClaimError::InvalidToken)),
             "should return InvalidToken when PDS returns InvalidToken error"
+        );
+    }
+
+    // ── submit_claim tests (AC4.8, AC4.9) ──────────────────────────────────
+
+    /// Test AC4.8 — Success: submit_claim POSTs signed operation and persists identity
+    #[tokio::test]
+    async fn test_submit_claim_success() {
+        use httpmock::MockServer;
+        use std::sync::{Arc, Mutex};
+
+        let mock_server = MockServer::start();
+
+        // Mock POST to plc.directory (signed operation submission)
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST).path("/did:plc:test");
+            then.status(200).json_body(serde_json::json!({}));
+        });
+
+        // Mock GET to plc.directory (re-fetch DID doc)
+        let updated_doc = serde_json::json!({
+            "did": "did:plc:test",
+            "alsoKnownAs": ["at://alice.example.com"],
+            "rotationKeys": ["did:key:zQ3test"],
+            "verificationMethods": {},
+            "services": {
+                "atproto_pds": {
+                    "type": "AtprotoPersonalDataServer",
+                    "endpoint": "https://pds.example.com"
+                }
+            }
+        });
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/did:plc:test")
+                .header_exists("host");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(updated_doc.clone());
+        });
+
+        // Mock HEAD to plc.directory (reachability check)
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::HEAD)
+                .path_contains("pds.example.com");
+            then.status(200);
+        });
+
+        // Mock audit log fetch
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/did:plc:test/log/audit");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(serde_json::json!([
+                    {
+                        "cid": "bafy123",
+                        "operation": {
+                            "type": "plc_operation"
+                        }
+                    }
+                ]));
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new_for_test(mock_server.base_url());
+
+        let claim_state = ClaimState {
+            did: "did:plc:test".to_string(),
+            pds_url: mock_server.base_url(),
+            did_doc: PlcDidDocument {
+                did: "did:plc:test".to_string(),
+                also_known_as: vec!["at://alice.example.com".to_string()],
+                rotation_keys: vec!["did:key:zQ3test".to_string()],
+                verification_methods: serde_json::json!({}),
+                services: std::collections::HashMap::new(),
+            },
+            pds_oauth_client: None,
+            verified_signed_op: Some(
+                r#"{"type":"plc_operation","prev":"bafy123","rotationKeys":["did:key:zQ3test"]}"#
+                    .to_string(),
+            ),
+        };
+
+        let result = submit_claim_impl(&pds_client, &claim_state).await;
+
+        assert!(
+            result.is_ok(),
+            "should successfully submit claim and persist identity"
+        );
+        let claim_result = result.unwrap();
+        assert_eq!(claim_result.updated_did_doc["did"], "did:plc:test");
+    }
+
+    /// Test AC4.9 — Failure: submit_claim returns PlcDirectoryError when POST fails
+    #[tokio::test]
+    async fn test_submit_claim_plc_directory_error() {
+        use httpmock::MockServer;
+
+        let mock_server = MockServer::start();
+
+        // Mock POST returning 409 Conflict
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST).path("/did:plc:test");
+            then.status(409)
+                .json_body(serde_json::json!({"error": "Conflicting operation"}));
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new_for_test(mock_server.base_url());
+
+        let claim_state = ClaimState {
+            did: "did:plc:test".to_string(),
+            pds_url: mock_server.base_url(),
+            did_doc: PlcDidDocument {
+                did: "did:plc:test".to_string(),
+                also_known_as: vec!["at://alice.example.com".to_string()],
+                rotation_keys: vec!["did:key:zQ3test".to_string()],
+                verification_methods: serde_json::json!({}),
+                services: std::collections::HashMap::new(),
+            },
+            pds_oauth_client: None,
+            verified_signed_op: Some(
+                r#"{"type":"plc_operation","prev":"bafy123"}"#.to_string(),
+            ),
+        };
+
+        let result = submit_claim_impl(&pds_client, &claim_state).await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ClaimError::PlcDirectoryError { message } => {
+                assert!(message.contains("Conflicting operation"));
+            }
+            e => panic!("Expected PlcDirectoryError, got: {:?}", e),
+        }
+    }
+
+    /// Test: Unauthorized — no verified signed operation
+    #[tokio::test]
+    async fn test_submit_claim_no_verified_op() {
+        let pds_client = crate::pds_client::PdsClient::new();
+
+        let claim_state = ClaimState {
+            did: "did:plc:test".to_string(),
+            pds_url: "https://plc.directory".to_string(),
+            did_doc: PlcDidDocument {
+                did: "did:plc:test".to_string(),
+                also_known_as: vec![],
+                rotation_keys: vec![],
+                verification_methods: serde_json::json!({}),
+                services: std::collections::HashMap::new(),
+            },
+            pds_oauth_client: None,
+            verified_signed_op: None, // No verified operation
+        };
+
+        let result = submit_claim_impl(&pds_client, &claim_state).await;
+
+        assert!(
+            matches!(result, Err(ClaimError::Unauthorized)),
+            "should return Unauthorized when verified_signed_op is None"
         );
     }
 }
