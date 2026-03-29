@@ -87,7 +87,7 @@
     autocapitalize="none"
     spellcheck={false}
     bind:value
-    onchange={handleInputChange}
+    oninput={handleInputChange}
   />
 
   {#if error}
