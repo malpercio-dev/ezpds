@@ -459,8 +459,14 @@ impl PdsClient {
                     message: format!("failed to fetch audit log: {}", e),
                 })?;
 
-        if !resp.status().is_success() {
-            return Err(PdsClientError::DidNotFound);
+        match resp.status() {
+            s if s == 404 => return Err(PdsClientError::DidNotFound),
+            s if !s.is_success() => {
+                return Err(PdsClientError::NetworkError {
+                    message: format!("audit log fetch returned {}", s),
+                });
+            }
+            _ => {}
         }
 
         resp.text().await.map_err(|e| PdsClientError::NetworkError {

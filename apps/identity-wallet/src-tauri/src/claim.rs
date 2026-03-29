@@ -8,6 +8,8 @@
 //                   stores OAuthClient in claim_state)
 //                   request_claim_verification (command: calls requestPlcOperationSignature XRPC
 //                   endpoint on old PDS to trigger email verification)
+//                   sign_and_verify_claim (command: calls getRecommendedDidCredentials and
+//                   signPlcOperation on old PDS, verifies signature and local constraints)
 
 use serde::Serialize;
 use tauri::Emitter;
@@ -599,12 +601,11 @@ pub(crate) async fn request_claim_verification_impl(
 #[tauri::command]
 pub async fn sign_and_verify_claim(
     state: tauri::State<'_, crate::oauth::AppState>,
-    _did: String,
     device_key_id: String,
     token: String,
 ) -> Result<VerifiedClaimOp, ClaimError> {
     // Acquire lock, extract required data, and release lock before making network calls
-    let (pds_client_ref, oauth_client_ref, claim_did, claim_pds_url, claim_did_doc) = {
+    let (pds_client_ref, oauth_client_ref, claim_did, claim_did_doc) = {
         let claim_state = state.claim_state.lock().await;
         let Some(claim) = claim_state.as_ref() else {
             return Err(ClaimError::Unauthorized);
@@ -618,7 +619,6 @@ pub async fn sign_and_verify_claim(
             state.pds_client(),
             oauth_client.clone(),
             claim.did.clone(),
-            claim.pds_url.clone(),
             claim.did_doc.clone(),
         )
     }; // claim_state lock released here
@@ -627,7 +627,6 @@ pub async fn sign_and_verify_claim(
         pds_client_ref,
         &oauth_client_ref,
         &claim_did,
-        &claim_pds_url,
         &claim_did_doc,
         &device_key_id,
         &token,
@@ -653,7 +652,6 @@ pub(crate) async fn sign_and_verify_claim_impl(
     pds_client: &crate::pds_client::PdsClient,
     pds_oauth_client: &std::sync::Arc<OAuthClient>,
     did: &str,
-    _pds_url: &str,
     did_doc: &PlcDidDocument,
     device_key_id: &str,
     token: &str,
@@ -1367,33 +1365,778 @@ mod tests {
 
     // ── sign_and_verify_claim tests ──────────────────────────────────────────────
 
-    /// Test that extract_handle_from_also_known_as works correctly
-    #[test]
-    fn test_extract_handle_from_also_known_as_success() {
-        let also_known_as = vec!["at://alice.example.com".to_string()];
-        assert_eq!(
-            extract_handle_from_also_known_as(&also_known_as),
-            Some("alice.example.com".to_string())
+    /// Helper: Build a test rotation operation with custom rotation keys.
+    fn build_test_rotation_op(
+        _device_key_id: &str,
+        rotation_keys: Vec<String>,
+        services: std::collections::BTreeMap<String, crypto::PlcService>,
+        prev_cid: &str,
+    ) -> (String, String) {
+        use p256::ecdsa::{signature::Signer, SigningKey};
+        use p256::FieldBytes;
+        use std::collections::BTreeMap;
+
+        // Generate a signing key for the operation
+        let signing_kp = crypto::generate_p256_keypair().expect("signing keypair");
+        let private_key_bytes = *signing_kp.private_key_bytes;
+        let field_bytes: FieldBytes = private_key_bytes.into();
+        let sk = SigningKey::from_bytes(&field_bytes).expect("valid key");
+
+        let mut verification_methods = BTreeMap::new();
+        verification_methods.insert("atproto".to_string(), signing_kp.key_id.0.clone());
+
+        let rotation = crypto::build_did_plc_rotation_op(
+            prev_cid,
+            rotation_keys,
+            verification_methods,
+            vec!["at://alice.example.com".to_string()],
+            services,
+            |data| {
+                let sig: p256::ecdsa::Signature = Signer::sign(&sk, data);
+                Ok(sig.to_bytes().to_vec())
+            },
+        )
+        .expect("build rotation op");
+
+        (rotation.signed_op_json, signing_kp.key_id.0)
+    }
+
+    /// Test 1: AC4.3 — Success path with device key at rotationKeys[0]
+    #[tokio::test]
+    async fn test_sign_and_verify_claim_success() {
+        use httpmock::MockServer;
+        use std::collections::{BTreeMap, HashMap};
+        use std::sync::{Arc, Mutex};
+
+        let mock_server = MockServer::start();
+        let device_key = "did:key:zQ3test_device".to_string();
+        let prev_cid = "bagtest123".to_string();
+
+        // Build the test rotation operation
+        let mut services = BTreeMap::new();
+        services.insert(
+            "atproto_pds".to_string(),
+            crypto::PlcService {
+                service_type: "AtprotoPersonalDataServer".to_string(),
+                endpoint: "https://pds.example.com".to_string(),
+            },
+        );
+
+        let (rotation_json, _signing_key) = build_test_rotation_op(
+            &device_key,
+            vec![device_key.clone()],
+            services.clone(),
+            &prev_cid,
+        );
+
+        // Mock getRecommendedDidCredentials
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.identity.getRecommendedDidCredentials")
+                .header_exists("Authorization")
+                .header_exists("DPoP");
+            then.status(200).json_body(serde_json::json!({
+                "rotationKeys": [],
+                "alsoKnownAs": ["at://alice.example.com"],
+                "verificationMethods": {},
+                "services": {}
+            }));
+        });
+
+        // Mock signPlcOperation
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.identity.signPlcOperation")
+                .header_exists("Authorization")
+                .header_exists("DPoP");
+            then.status(200).json_body(serde_json::json!({
+                "operation": serde_json::from_str::<serde_json::Value>(&rotation_json).unwrap()
+            }));
+        });
+
+        // Create mock PDS client with mock server URL
+        let _pds_client = crate::pds_client::PdsClient::new_for_test(mock_server.base_url());
+
+        // Create mock audit log
+        let audit_log_json = serde_json::to_string(&vec![serde_json::json!({
+            "cid": prev_cid,
+            "operation": serde_json::from_str::<serde_json::Value>(&rotation_json).unwrap()
+        })])
+        .unwrap();
+
+        // Mock plc.directory audit log endpoint
+        let plc_mock = MockServer::start();
+        plc_mock.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/did:plc:test/log/audit");
+            then.status(200).body(&audit_log_json);
+        });
+
+        let pds_client_with_plc = crate::pds_client::PdsClient::new_for_test(plc_mock.base_url());
+
+        // Create test session and OAuthClient
+        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
+            access_token: "test_access_token".to_string(),
+            refresh_token: "test_refresh_token".to_string(),
+            expires_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 3600,
+            dpop_nonce: None,
+        }));
+
+        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
+        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
+            keypair,
+            session,
+            mock_server.base_url(),
+        );
+
+        let did_doc = PlcDidDocument {
+            did: "did:plc:test".to_string(),
+            also_known_as: vec!["at://alice.example.com".to_string()],
+            rotation_keys: vec![],
+            verification_methods: serde_json::json!({}),
+            services: HashMap::new(),
+        };
+
+        let result = sign_and_verify_claim_impl(
+            &pds_client_with_plc,
+            &Arc::new(oauth_client),
+            "did:plc:test",
+            &did_doc,
+            &device_key,
+            "test_token",
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "should return Ok for valid operation with device key at rotationKeys[0]"
+        );
+        let (verified_op, _signed_op_json) = result.unwrap();
+        assert!(
+            verified_op.diff.added_keys.contains(&device_key),
+            "should have device key in added_keys"
         );
     }
 
-    /// Test that extract_handle_from_also_known_as returns None when no match
-    #[test]
-    fn test_extract_handle_from_also_known_as_no_match() {
-        let no_handle = vec!["https://example.com".to_string()];
-        assert_eq!(extract_handle_from_also_known_as(&no_handle), None);
+    /// Test 2: AC4.4 — Wrong key at rotationKeys[0]
+    #[tokio::test]
+    async fn test_sign_and_verify_claim_wrong_key_at_rotation_keys_0() {
+        use httpmock::MockServer;
+        use std::collections::{BTreeMap, HashMap};
+        use std::sync::{Arc, Mutex};
+
+        let mock_server = MockServer::start();
+        let device_key = "did:key:zQ3test_device".to_string();
+        let wrong_key = "did:key:zQ3wrong_key".to_string();
+        let prev_cid = "bagtest123".to_string();
+
+        // Build rotation with wrong key at [0]
+        let mut services = BTreeMap::new();
+        services.insert(
+            "atproto_pds".to_string(),
+            crypto::PlcService {
+                service_type: "AtprotoPersonalDataServer".to_string(),
+                endpoint: "https://pds.example.com".to_string(),
+            },
+        );
+
+        let (rotation_json, _signing_key) =
+            build_test_rotation_op(&wrong_key, vec![wrong_key.clone()], services, &prev_cid);
+
+        // Mock endpoints
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.identity.getRecommendedDidCredentials");
+            then.status(200).json_body(serde_json::json!({
+                "rotationKeys": [],
+                "alsoKnownAs": ["at://alice.example.com"],
+                "verificationMethods": {},
+                "services": {}
+            }));
+        });
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.identity.signPlcOperation");
+            then.status(200).json_body(serde_json::json!({
+                "operation": serde_json::from_str::<serde_json::Value>(&rotation_json).unwrap()
+            }));
+        });
+
+        let _pds_client = crate::pds_client::PdsClient::new_for_test(mock_server.base_url());
+
+        let audit_log_json = serde_json::to_string(&vec![serde_json::json!({
+            "cid": prev_cid,
+            "operation": serde_json::from_str::<serde_json::Value>(&rotation_json).unwrap()
+        })])
+        .unwrap();
+
+        let plc_mock = MockServer::start();
+        plc_mock.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/did:plc:test/log/audit");
+            then.status(200).body(&audit_log_json);
+        });
+
+        let pds_client_with_plc = crate::pds_client::PdsClient::new_for_test(plc_mock.base_url());
+
+        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
+            access_token: "test_token".to_string(),
+            refresh_token: "refresh".to_string(),
+            expires_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 3600,
+            dpop_nonce: None,
+        }));
+
+        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
+        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
+            keypair,
+            session,
+            mock_server.base_url(),
+        );
+
+        let did_doc = PlcDidDocument {
+            did: "did:plc:test".to_string(),
+            also_known_as: vec!["at://alice.example.com".to_string()],
+            rotation_keys: vec![],
+            verification_methods: serde_json::json!({}),
+            services: HashMap::new(),
+        };
+
+        let result = sign_and_verify_claim_impl(
+            &pds_client_with_plc,
+            &Arc::new(oauth_client),
+            "did:plc:test",
+            &did_doc,
+            &device_key,
+            "test_token",
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(ClaimError::VerificationFailed { .. })),
+            "should return VerificationFailed when device key is not at rotationKeys[0]"
+        );
     }
 
-    /// Test that extract_handle_from_also_known_as returns first match
-    #[test]
-    fn test_extract_handle_from_also_known_as_multiple() {
-        let also_known_as = vec![
-            "at://alice.example.com".to_string(),
-            "at://bob.example.com".to_string(),
-        ];
-        assert_eq!(
-            extract_handle_from_also_known_as(&also_known_as),
-            Some("alice.example.com".to_string())
+    /// Test 3: AC4.5 — prev chain mismatch
+    #[tokio::test]
+    async fn test_sign_and_verify_claim_prev_mismatch() {
+        use httpmock::MockServer;
+        use std::collections::{BTreeMap, HashMap};
+        use std::sync::{Arc, Mutex};
+
+        let mock_server = MockServer::start();
+        let device_key = "did:key:zQ3test_device".to_string();
+        let wrong_prev = "bagwrong".to_string();
+        let correct_prev = "bagcorrect".to_string();
+
+        let mut services = BTreeMap::new();
+        services.insert(
+            "atproto_pds".to_string(),
+            crypto::PlcService {
+                service_type: "AtprotoPersonalDataServer".to_string(),
+                endpoint: "https://pds.example.com".to_string(),
+            },
+        );
+
+        // Build with wrong_prev
+        let (rotation_json, _signing_key) =
+            build_test_rotation_op(&device_key, vec![device_key.clone()], services, &wrong_prev);
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.identity.getRecommendedDidCredentials");
+            then.status(200).json_body(serde_json::json!({
+                "rotationKeys": [],
+                "alsoKnownAs": ["at://alice.example.com"],
+                "verificationMethods": {},
+                "services": {}
+            }));
+        });
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.identity.signPlcOperation");
+            then.status(200).json_body(serde_json::json!({
+                "operation": serde_json::from_str::<serde_json::Value>(&rotation_json).unwrap()
+            }));
+        });
+
+        let _pds_client = crate::pds_client::PdsClient::new_for_test(mock_server.base_url());
+
+        // Audit log has correct_prev, but operation has wrong_prev
+        let audit_log_json = serde_json::to_string(&vec![serde_json::json!({
+            "cid": correct_prev,
+            "operation": {}
+        })])
+        .unwrap();
+
+        let plc_mock = MockServer::start();
+        plc_mock.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/did:plc:test/log/audit");
+            then.status(200).body(&audit_log_json);
+        });
+
+        let pds_client_with_plc = crate::pds_client::PdsClient::new_for_test(plc_mock.base_url());
+
+        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
+            access_token: "test_token".to_string(),
+            refresh_token: "refresh".to_string(),
+            expires_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 3600,
+            dpop_nonce: None,
+        }));
+
+        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
+        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
+            keypair,
+            session,
+            mock_server.base_url(),
+        );
+
+        let did_doc = PlcDidDocument {
+            did: "did:plc:test".to_string(),
+            also_known_as: vec!["at://alice.example.com".to_string()],
+            rotation_keys: vec![],
+            verification_methods: serde_json::json!({}),
+            services: HashMap::new(),
+        };
+
+        let result = sign_and_verify_claim_impl(
+            &pds_client_with_plc,
+            &Arc::new(oauth_client),
+            "did:plc:test",
+            &did_doc,
+            &device_key,
+            "test_token",
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(ClaimError::VerificationFailed { .. })),
+            "should return VerificationFailed when prev doesn't match audit log"
+        );
+    }
+
+    /// Test 4: AC4.6 — unexpected key removal
+    #[tokio::test]
+    async fn test_sign_and_verify_claim_unexpected_key_removal() {
+        use httpmock::MockServer;
+        use std::collections::{BTreeMap, HashMap};
+        use std::sync::{Arc, Mutex};
+
+        let mock_server = MockServer::start();
+        let device_key = "did:key:zQ3test_device".to_string();
+        let original_key = "did:key:zQ3original".to_string();
+        let prev_cid = "bagtest123".to_string();
+
+        let mut services = BTreeMap::new();
+        services.insert(
+            "atproto_pds".to_string(),
+            crypto::PlcService {
+                service_type: "AtprotoPersonalDataServer".to_string(),
+                endpoint: "https://pds.example.com".to_string(),
+            },
+        );
+
+        // Build operation with only device key (missing original_key)
+        let (rotation_json, _signing_key) =
+            build_test_rotation_op(&device_key, vec![device_key.clone()], services, &prev_cid);
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.identity.getRecommendedDidCredentials");
+            then.status(200).json_body(serde_json::json!({
+                "rotationKeys": [],
+                "alsoKnownAs": ["at://alice.example.com"],
+                "verificationMethods": {},
+                "services": {}
+            }));
+        });
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.identity.signPlcOperation");
+            then.status(200).json_body(serde_json::json!({
+                "operation": serde_json::from_str::<serde_json::Value>(&rotation_json).unwrap()
+            }));
+        });
+
+        let _pds_client = crate::pds_client::PdsClient::new_for_test(mock_server.base_url());
+
+        let audit_log_json = serde_json::to_string(&vec![serde_json::json!({
+            "cid": prev_cid,
+            "operation": serde_json::from_str::<serde_json::Value>(&rotation_json).unwrap()
+        })])
+        .unwrap();
+
+        let plc_mock = MockServer::start();
+        plc_mock.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/did:plc:test/log/audit");
+            then.status(200).body(&audit_log_json);
+        });
+
+        let pds_client_with_plc = crate::pds_client::PdsClient::new_for_test(plc_mock.base_url());
+
+        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
+            access_token: "test_token".to_string(),
+            refresh_token: "refresh".to_string(),
+            expires_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 3600,
+            dpop_nonce: None,
+        }));
+
+        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
+        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
+            keypair,
+            session,
+            mock_server.base_url(),
+        );
+
+        let did_doc = PlcDidDocument {
+            did: "did:plc:test".to_string(),
+            also_known_as: vec!["at://alice.example.com".to_string()],
+            rotation_keys: vec![original_key.clone()],
+            verification_methods: serde_json::json!({}),
+            services: HashMap::new(),
+        };
+
+        let result = sign_and_verify_claim_impl(
+            &pds_client_with_plc,
+            &Arc::new(oauth_client),
+            "did:plc:test",
+            &did_doc,
+            &device_key,
+            "test_token",
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(ClaimError::VerificationFailed { .. })),
+            "should return VerificationFailed when a rotation key is removed"
+        );
+    }
+
+    /// Test 5: AC4.6 — unexpected service change
+    #[tokio::test]
+    async fn test_sign_and_verify_claim_unexpected_service_change() {
+        use httpmock::MockServer;
+        use std::collections::{BTreeMap, HashMap};
+        use std::sync::{Arc, Mutex};
+
+        let mock_server = MockServer::start();
+        let device_key = "did:key:zQ3test_device".to_string();
+        let prev_cid = "bagtest123".to_string();
+
+        let mut services = BTreeMap::new();
+        services.insert(
+            "atproto_pds".to_string(),
+            crypto::PlcService {
+                service_type: "AtprotoPersonalDataServer".to_string(),
+                endpoint: "https://new-pds.example.com".to_string(), // Changed endpoint
+            },
+        );
+
+        let (rotation_json, _signing_key) =
+            build_test_rotation_op(&device_key, vec![device_key.clone()], services, &prev_cid);
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.identity.getRecommendedDidCredentials");
+            then.status(200).json_body(serde_json::json!({
+                "rotationKeys": [],
+                "alsoKnownAs": ["at://alice.example.com"],
+                "verificationMethods": {},
+                "services": {}
+            }));
+        });
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.identity.signPlcOperation");
+            then.status(200).json_body(serde_json::json!({
+                "operation": serde_json::from_str::<serde_json::Value>(&rotation_json).unwrap()
+            }));
+        });
+
+        let _pds_client = crate::pds_client::PdsClient::new_for_test(mock_server.base_url());
+
+        let audit_log_json = serde_json::to_string(&vec![serde_json::json!({
+            "cid": prev_cid,
+            "operation": serde_json::from_str::<serde_json::Value>(&rotation_json).unwrap()
+        })])
+        .unwrap();
+
+        let plc_mock = MockServer::start();
+        plc_mock.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/did:plc:test/log/audit");
+            then.status(200).body(&audit_log_json);
+        });
+
+        let pds_client_with_plc = crate::pds_client::PdsClient::new_for_test(plc_mock.base_url());
+
+        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
+            access_token: "test_token".to_string(),
+            refresh_token: "refresh".to_string(),
+            expires_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 3600,
+            dpop_nonce: None,
+        }));
+
+        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
+        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
+            keypair,
+            session,
+            mock_server.base_url(),
+        );
+
+        let mut original_services = HashMap::new();
+        original_services.insert(
+            "atproto_pds".to_string(),
+            crate::pds_client::PlcService {
+                service_type: "AtprotoPersonalDataServer".to_string(),
+                endpoint: "https://pds.example.com".to_string(), // Original endpoint
+            },
+        );
+
+        let did_doc = PlcDidDocument {
+            did: "did:plc:test".to_string(),
+            also_known_as: vec!["at://alice.example.com".to_string()],
+            rotation_keys: vec![],
+            verification_methods: serde_json::json!({}),
+            services: original_services,
+        };
+
+        let result = sign_and_verify_claim_impl(
+            &pds_client_with_plc,
+            &Arc::new(oauth_client),
+            "did:plc:test",
+            &did_doc,
+            &device_key,
+            "test_token",
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(ClaimError::VerificationFailed { .. })),
+            "should return VerificationFailed when service endpoint is changed"
+        );
+    }
+
+    /// Test 6: AC4.7 — warnings for benign additions
+    #[tokio::test]
+    async fn test_sign_and_verify_claim_warnings_for_added_service() {
+        use httpmock::MockServer;
+        use std::collections::{BTreeMap, HashMap};
+        use std::sync::{Arc, Mutex};
+
+        let mock_server = MockServer::start();
+        let device_key = "did:key:zQ3test_device".to_string();
+        let prev_cid = "bagtest123".to_string();
+
+        let mut services = BTreeMap::new();
+        services.insert(
+            "atproto_pds".to_string(),
+            crypto::PlcService {
+                service_type: "AtprotoPersonalDataServer".to_string(),
+                endpoint: "https://pds.example.com".to_string(),
+            },
+        );
+        // Add an extra service not in the original DID doc
+        services.insert(
+            "extra_service".to_string(),
+            crypto::PlcService {
+                service_type: "ExtraService".to_string(),
+                endpoint: "https://extra.example.com".to_string(),
+            },
+        );
+
+        let (rotation_json, _signing_key) =
+            build_test_rotation_op(&device_key, vec![device_key.clone()], services, &prev_cid);
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.identity.getRecommendedDidCredentials");
+            then.status(200).json_body(serde_json::json!({
+                "rotationKeys": [],
+                "alsoKnownAs": ["at://alice.example.com"],
+                "verificationMethods": {},
+                "services": {}
+            }));
+        });
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.identity.signPlcOperation");
+            then.status(200).json_body(serde_json::json!({
+                "operation": serde_json::from_str::<serde_json::Value>(&rotation_json).unwrap()
+            }));
+        });
+
+        let _pds_client = crate::pds_client::PdsClient::new_for_test(mock_server.base_url());
+
+        let audit_log_json = serde_json::to_string(&vec![serde_json::json!({
+            "cid": prev_cid,
+            "operation": serde_json::from_str::<serde_json::Value>(&rotation_json).unwrap()
+        })])
+        .unwrap();
+
+        let plc_mock = MockServer::start();
+        plc_mock.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/did:plc:test/log/audit");
+            then.status(200).body(&audit_log_json);
+        });
+
+        let pds_client_with_plc = crate::pds_client::PdsClient::new_for_test(plc_mock.base_url());
+
+        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
+            access_token: "test_token".to_string(),
+            refresh_token: "refresh".to_string(),
+            expires_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 3600,
+            dpop_nonce: None,
+        }));
+
+        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
+        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
+            keypair,
+            session,
+            mock_server.base_url(),
+        );
+
+        let mut original_services = HashMap::new();
+        original_services.insert(
+            "atproto_pds".to_string(),
+            crate::pds_client::PlcService {
+                service_type: "AtprotoPersonalDataServer".to_string(),
+                endpoint: "https://pds.example.com".to_string(),
+            },
+        );
+
+        let did_doc = PlcDidDocument {
+            did: "did:plc:test".to_string(),
+            also_known_as: vec!["at://alice.example.com".to_string()],
+            rotation_keys: vec![],
+            verification_methods: serde_json::json!({}),
+            services: original_services,
+        };
+
+        let result = sign_and_verify_claim_impl(
+            &pds_client_with_plc,
+            &Arc::new(oauth_client),
+            "did:plc:test",
+            &did_doc,
+            &device_key,
+            "test_token",
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "should succeed even with added service (benign warning)"
+        );
+        let (verified_op, _signed_op_json) = result.unwrap();
+        assert!(
+            !verified_op.warnings.is_empty(),
+            "should have warnings about added service"
+        );
+    }
+
+    /// Test 7: AC4.10 — Invalid token error from PDS
+    #[tokio::test]
+    async fn test_sign_and_verify_claim_invalid_token() {
+        use httpmock::MockServer;
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+
+        let mock_server = MockServer::start();
+        let device_key = "did:key:zQ3test_device".to_string();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.identity.getRecommendedDidCredentials");
+            then.status(200).json_body(serde_json::json!({
+                "rotationKeys": [],
+                "alsoKnownAs": ["at://alice.example.com"],
+                "verificationMethods": {},
+                "services": {}
+            }));
+        });
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.identity.signPlcOperation");
+            then.status(400).json_body(serde_json::json!({
+                "error": "InvalidToken",
+                "message": "Token is invalid"
+            }));
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new_for_test(mock_server.base_url());
+
+        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
+            access_token: "test_token".to_string(),
+            refresh_token: "refresh".to_string(),
+            expires_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 3600,
+            dpop_nonce: None,
+        }));
+
+        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
+        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
+            keypair,
+            session,
+            mock_server.base_url(),
+        );
+
+        let did_doc = PlcDidDocument {
+            did: "did:plc:test".to_string(),
+            also_known_as: vec!["at://alice.example.com".to_string()],
+            rotation_keys: vec![],
+            verification_methods: serde_json::json!({}),
+            services: HashMap::new(),
+        };
+
+        let result = sign_and_verify_claim_impl(
+            &pds_client,
+            &Arc::new(oauth_client),
+            "did:plc:test",
+            &did_doc,
+            &device_key,
+            "invalid_token",
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(ClaimError::InvalidToken)),
+            "should return InvalidToken when PDS returns InvalidToken error"
         );
     }
 }
