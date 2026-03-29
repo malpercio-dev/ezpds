@@ -1309,14 +1309,14 @@ mod tests {
                 added_keys: vec!["did:key:zQ3new".to_string()],
                 removed_keys: vec![],
                 changed_services: vec![],
-                prev_cid: "bagXXX".to_string(),
+                prev_cid: Some("bagXXX".to_string()),
             },
-            signed_op: "eyJzaWciOiAi...".to_string(),
+            signed_op: serde_json::json!({"sig": "..."}),
             warnings: vec!["This will change ownership".to_string()],
         };
 
         let json = serde_json::to_value(&op).unwrap();
-        assert_eq!(json["signedOp"], "eyJzaWciOiAi...");
+        assert!(json["signedOp"].is_object());
         assert!(json["diff"].is_object());
         assert_eq!(json["warnings"][0], "This will change ownership");
     }
@@ -1327,7 +1327,7 @@ mod tests {
             added_keys: vec!["did:key:zQ3new".to_string()],
             removed_keys: vec!["did:key:zQ3old".to_string()],
             changed_services: vec![],
-            prev_cid: "bagXXX".to_string(),
+            prev_cid: Some("bagXXX".to_string()),
         };
 
         let json = serde_json::to_value(&diff).unwrap();
@@ -1341,7 +1341,7 @@ mod tests {
     fn test_service_change_serializes_camel_case() {
         let change = ServiceChange {
             id: "atproto_pds".to_string(),
-            change_type: "modified".to_string(),
+            change_type: ChangeType::Modified,
             old_endpoint: Some("https://pds-old.example.com".to_string()),
             new_endpoint: Some("https://pds-new.example.com".to_string()),
         };
@@ -2450,10 +2450,11 @@ mod tests {
                 services: std::collections::HashMap::new(),
             },
             pds_oauth_client: None,
-            verified_signed_op: Some(
-                r#"{"type":"plc_operation","prev":"bafy123","rotationKeys":["did:key:zQ3test"]}"#
-                    .to_string(),
-            ),
+            verified_signed_op: Some(serde_json::json!({
+                "type": "plc_operation",
+                "prev": "bafy123",
+                "rotationKeys": ["did:key:zQ3test"]
+            })),
         };
 
         let result = submit_claim_impl(&pds_client, &claim_state).await;
@@ -2493,7 +2494,10 @@ mod tests {
                 services: std::collections::HashMap::new(),
             },
             pds_oauth_client: None,
-            verified_signed_op: Some(r#"{"type":"plc_operation","prev":"bafy123"}"#.to_string()),
+            verified_signed_op: Some(serde_json::json!({
+                "type": "plc_operation",
+                "prev": "bafy123"
+            })),
         };
 
         let result = submit_claim_impl(&pds_client, &claim_state).await;
