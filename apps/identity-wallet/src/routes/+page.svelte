@@ -16,6 +16,7 @@
   import AuthenticatingScreen from '$lib/components/onboarding/AuthenticatingScreen.svelte';
   import IdentityInputScreen from '$lib/components/onboarding/IdentityInputScreen.svelte';
   import PdsAuthScreen from '$lib/components/onboarding/PdsAuthScreen.svelte';
+  import EmailVerificationScreen from '$lib/components/onboarding/EmailVerificationScreen.svelte';
   import HomeScreen from '$lib/components/home/HomeScreen.svelte';
   import DIDDocumentScreen from '$lib/components/home/DIDDocumentScreen.svelte';
   import RecoveryInfoScreen from '$lib/components/home/RecoveryInfoScreen.svelte';
@@ -201,6 +202,15 @@
       pdsUrl={identityInfo!.pdsUrl}
       onnext={() => goTo('email_verification')}
       onback={() => goTo('identity_input')}
+    />
+  {:else if step === 'email_verification'}
+    <EmailVerificationScreen
+      did={identityInfo!.did}
+      onnext={(result) => {
+        verifiedClaim = result;
+        goTo('review_operation');
+      }}
+      onback={() => goTo('pds_auth')}
     />
   {:else if step === 'relay_config'}
     <RelayConfigScreen onnext={() => goTo('welcome')} />
