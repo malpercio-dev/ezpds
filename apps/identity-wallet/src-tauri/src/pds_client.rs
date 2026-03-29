@@ -563,7 +563,10 @@ pub async fn request_plc_operation_signature(
     } else {
         let body = resp.text().await.unwrap_or_default();
         Err(PdsClientError::NetworkError {
-            message: format!("request_plc_operation_signature returned {}: {}", status, body),
+            message: format!(
+                "request_plc_operation_signature returned {}: {}",
+                status, body
+            ),
         })
     }
 }
@@ -610,7 +613,10 @@ pub async fn get_recommended_did_credentials(
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
         return Err(PdsClientError::NetworkError {
-            message: format!("get_recommended_did_credentials returned {}: {}", status, body),
+            message: format!(
+                "get_recommended_did_credentials returned {}: {}",
+                status, body
+            ),
         });
     }
 
