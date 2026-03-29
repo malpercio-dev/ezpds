@@ -550,7 +550,7 @@ async fn pds_exchange_code_with_retry(
 #[tauri::command]
 pub async fn request_claim_verification(
     state: tauri::State<'_, crate::oauth::AppState>,
-    _did: String,
+    did: String,
 ) -> Result<(), ClaimError> {
     // Acquire lock, extract claim state, and release lock before making network call
     let claim_state_copy = {
@@ -558,6 +558,10 @@ pub async fn request_claim_verification(
         let Some(claim) = claim_state.as_ref() else {
             return Err(ClaimError::Unauthorized);
         };
+        // Validate that the caller's DID matches the claim state's DID
+        if claim.did != did {
+            return Err(ClaimError::Unauthorized);
+        }
         claim.clone()
     }; // claim_state lock released here
 
@@ -687,8 +691,11 @@ pub(crate) async fn sign_and_verify_claim_impl(
         .await
         .map_err(|e| {
             // Check if this is an invalid token error
+            // OAuthClient intercepts 400 responses with {"error": "InvalidToken"} and returns
+            // OAuthError::NotAuthenticated, which becomes NetworkError("sign_plc_operation failed: Not authenticated")
             if let crate::pds_client::PdsClientError::NetworkError { message } = &e {
-                if message.contains("InvalidToken") || message.contains("ExpiredToken") {
+                let lower_msg = message.to_lowercase();
+                if lower_msg.contains("invalidtoken") || lower_msg.contains("expiredtoken") || lower_msg.contains("not authenticated") {
                     return ClaimError::InvalidToken;
                 }
             }
@@ -1611,12 +1618,12 @@ mod tests {
             }));
         });
 
-        // Create mock PDS client with mock server URL
-        let _pds_client = crate::pds_client::PdsClient::new_for_test(mock_server.base_url());
-
         // Create mock audit log
         let audit_log_json = serde_json::to_string(&vec![serde_json::json!({
+            "did": "did:plc:test",
             "cid": prev_cid,
+            "createdAt": "2026-01-01T00:00:00Z",
+            "nullified": false,
             "operation": serde_json::from_str::<serde_json::Value>(&rotation_json).unwrap()
         })])
         .unwrap();
@@ -1726,10 +1733,11 @@ mod tests {
             }));
         });
 
-        let _pds_client = crate::pds_client::PdsClient::new_for_test(mock_server.base_url());
-
         let audit_log_json = serde_json::to_string(&vec![serde_json::json!({
+            "did": "did:plc:test",
             "cid": prev_cid,
+            "createdAt": "2026-01-01T00:00:00Z",
+            "nullified": false,
             "operation": serde_json::from_str::<serde_json::Value>(&rotation_json).unwrap()
         })])
         .unwrap();
@@ -1830,11 +1838,12 @@ mod tests {
             }));
         });
 
-        let _pds_client = crate::pds_client::PdsClient::new_for_test(mock_server.base_url());
-
         // Audit log has correct_prev, but operation has wrong_prev
         let audit_log_json = serde_json::to_string(&vec![serde_json::json!({
+            "did": "did:plc:test",
             "cid": correct_prev,
+            "createdAt": "2026-01-01T00:00:00Z",
+            "nullified": false,
             "operation": {}
         })])
         .unwrap();
@@ -1935,10 +1944,11 @@ mod tests {
             }));
         });
 
-        let _pds_client = crate::pds_client::PdsClient::new_for_test(mock_server.base_url());
-
         let audit_log_json = serde_json::to_string(&vec![serde_json::json!({
+            "did": "did:plc:test",
             "cid": prev_cid,
+            "createdAt": "2026-01-01T00:00:00Z",
+            "nullified": false,
             "operation": serde_json::from_str::<serde_json::Value>(&rotation_json).unwrap()
         })])
         .unwrap();
@@ -2037,10 +2047,11 @@ mod tests {
             }));
         });
 
-        let _pds_client = crate::pds_client::PdsClient::new_for_test(mock_server.base_url());
-
         let audit_log_json = serde_json::to_string(&vec![serde_json::json!({
+            "did": "did:plc:test",
             "cid": prev_cid,
+            "createdAt": "2026-01-01T00:00:00Z",
+            "nullified": false,
             "operation": serde_json::from_str::<serde_json::Value>(&rotation_json).unwrap()
         })])
         .unwrap();
@@ -2156,10 +2167,11 @@ mod tests {
             }));
         });
 
-        let _pds_client = crate::pds_client::PdsClient::new_for_test(mock_server.base_url());
-
         let audit_log_json = serde_json::to_string(&vec![serde_json::json!({
+            "did": "did:plc:test",
             "cid": prev_cid,
+            "createdAt": "2026-01-01T00:00:00Z",
+            "nullified": false,
             "operation": serde_json::from_str::<serde_json::Value>(&rotation_json).unwrap()
         })])
         .unwrap();
