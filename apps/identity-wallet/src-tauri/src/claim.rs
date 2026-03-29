@@ -1,9 +1,13 @@
-// pattern: Mixed (Functional Core types + Imperative Shell command)
+// pattern: Mixed (Functional Core types + Imperative Shell commands)
 //
 // Functional Core: IdentityInfo, VerifiedClaimOp, OpDiff, ServiceChange, ClaimResult,
 //                  ClaimState, ResolveError, ClaimError (types and errors)
 // Imperative Shell: resolve_identity (command: resolves handle/DID, fetches DID doc from
 //                   plc.directory, checks IdentityStore, stores state, returns IdentityInfo)
+//                   start_pds_auth (command: performs OAuth PKCE+DPoP flow against PDS,
+//                   stores OAuthClient in claim_state)
+//                   request_claim_verification (command: calls requestPlcOperationSignature XRPC
+//                   endpoint on old PDS to trigger email verification)
 
 use serde::Serialize;
 use tauri::Emitter;
@@ -97,7 +101,9 @@ pub struct ClaimState {
     /// The DID document fetched from plc.directory (discovered by `resolve_identity`)
     pub did_doc: PlcDidDocument,
     /// OAuth client for the PDS (set after `start_pds_auth` succeeds)
-    pub pds_oauth_client: Option<OAuthClient>,
+    /// Wrapped in Arc to allow cloning out of the Mutex without holding the lock
+    /// across the network call in `request_claim_verification`.
+    pub pds_oauth_client: Option<std::sync::Arc<OAuthClient>>,
     /// Verified signed operation (set after `sign_and_verify_claim` succeeds)
     pub verified_signed_op: Option<String>,
 }
@@ -411,7 +417,7 @@ pub async fn start_pds_auth(
 
     let mut claim_state = state.claim_state.lock().await;
     if let Some(ref mut claim) = claim_state.as_mut() {
-        claim.pds_oauth_client = Some(oauth_client);
+        claim.pds_oauth_client = Some(std::sync::Arc::new(oauth_client));
     }
     drop(claim_state);
 
@@ -505,6 +511,16 @@ async fn pds_exchange_code_with_retry(
                             message: format!("retry token response parsing failed: {}", e),
                         })?;
                     return Ok((token, retry_nonce));
+                } else {
+                    // Retry response was non-200, extract status and body for error message
+                    let status = retry_resp.status();
+                    let body = retry_resp
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "(unable to read response body)".to_string());
+                    return Err(ClaimError::NetworkError {
+                        message: format!("token exchange retry returned {}: {}", status, body),
+                    });
                 }
             }
         }
@@ -530,13 +546,24 @@ pub async fn request_claim_verification(
     state: tauri::State<'_, crate::oauth::AppState>,
     _did: String,
 ) -> Result<(), ClaimError> {
-    let claim_state = state.claim_state.lock().await;
-    let Some(claim) = claim_state.as_ref() else {
-        drop(claim_state);
+    // Acquire lock, extract Arc<OAuthClient>, and release lock before making network call
+    let oauth_client = {
+        let claim_state = state.claim_state.lock().await;
+        let Some(claim) = claim_state.as_ref() else {
+            return Err(ClaimError::Unauthorized);
+        };
+        claim.pds_oauth_client.clone()
+    }; // claim_state lock released here
+
+    let Some(oauth_client) = oauth_client else {
         return Err(ClaimError::Unauthorized);
     };
 
-    request_claim_verification_impl(claim).await
+    crate::pds_client::request_plc_operation_signature(&oauth_client)
+        .await
+        .map_err(|e| ClaimError::NetworkError {
+            message: format!("request_plc_operation_signature failed: {}", e),
+        })
 }
 
 /// Testable core logic for `request_claim_verification`.
@@ -916,8 +943,65 @@ mod tests {
 
     // ── request_claim_verification tests (AC4.2) ──────────────────────────────
 
-    /// Test: request_claim_verification_impl returns Unauthorized when pds_oauth_client is None
-    /// Verifies AC4.2: request_claim_verification validates OAuth client is present
+    /// Test 1: Success — calls XRPC endpoint with 200 response
+    /// Verifies AC4.2: request_claim_verification calls requestPlcOperationSignature on the old PDS
+    #[tokio::test]
+    async fn test_request_claim_verification_success() {
+        use httpmock::MockServer;
+        use std::sync::{Arc, Mutex};
+
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.identity.requestPlcOperationSignature")
+                .header_exists("Authorization")
+                .header_exists("DPoP");
+            then.status(200).json_body(serde_json::json!({}));
+        });
+
+        // Create a test session and OAuthClient
+        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
+            access_token: "test_access_token".to_string(),
+            refresh_token: "test_refresh_token".to_string(),
+            expires_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 3600,
+            dpop_nonce: None,
+        }));
+
+        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
+        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
+            keypair,
+            session,
+            mock_server.base_url(),
+        );
+
+        let claim_state = ClaimState {
+            did: "did:plc:test".to_string(),
+            pds_url: mock_server.base_url(),
+            did_doc: PlcDidDocument {
+                did: "did:plc:test".to_string(),
+                also_known_as: vec!["at://test.example.com".to_string()],
+                rotation_keys: vec!["did:key:zQ3test".to_string()],
+                verification_methods: serde_json::json!({}),
+                services: std::collections::HashMap::new(),
+            },
+            pds_oauth_client: Some(std::sync::Arc::new(oauth_client)),
+            verified_signed_op: None,
+        };
+
+        let result = request_claim_verification_impl(&claim_state).await;
+        assert!(
+            result.is_ok(),
+            "should successfully call requestPlcOperationSignature when PDS returns 200"
+        );
+    }
+
+    /// Test 3 (renamed): Unauthorized — no OAuth client
+    /// Verifies AC4.2: request_claim_verification returns Unauthorized when pds_oauth_client is None
     #[tokio::test]
     async fn test_request_claim_verification_unauthorized_no_oauth_client() {
         let claim_state = ClaimState {
@@ -938,6 +1022,63 @@ mod tests {
         assert!(
             matches!(result, Err(ClaimError::Unauthorized)),
             "should return Unauthorized when pds_oauth_client is None"
+        );
+    }
+
+    /// Test 4: Network error — PDS returns 500
+    /// Verifies AC4.2: request_claim_verification returns NetworkError on PDS failure
+    #[tokio::test]
+    async fn test_request_claim_verification_pds_returns_500() {
+        use httpmock::MockServer;
+        use std::sync::{Arc, Mutex};
+
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.identity.requestPlcOperationSignature");
+            then.status(500).json_body(serde_json::json!({
+                "error": "Internal Server Error"
+            }));
+        });
+
+        // Create a test session and OAuthClient
+        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
+            access_token: "test_access_token".to_string(),
+            refresh_token: "test_refresh_token".to_string(),
+            expires_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 3600,
+            dpop_nonce: None,
+        }));
+
+        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
+        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
+            keypair,
+            session,
+            mock_server.base_url(),
+        );
+
+        let claim_state = ClaimState {
+            did: "did:plc:test".to_string(),
+            pds_url: mock_server.base_url(),
+            did_doc: PlcDidDocument {
+                did: "did:plc:test".to_string(),
+                also_known_as: vec!["at://test.example.com".to_string()],
+                rotation_keys: vec!["did:key:zQ3test".to_string()],
+                verification_methods: serde_json::json!({}),
+                services: std::collections::HashMap::new(),
+            },
+            pds_oauth_client: Some(std::sync::Arc::new(oauth_client)),
+            verified_signed_op: None,
+        };
+
+        let result = request_claim_verification_impl(&claim_state).await;
+        assert!(
+            matches!(result, Err(ClaimError::NetworkError { .. })),
+            "should return NetworkError when PDS returns 500"
         );
     }
 }
