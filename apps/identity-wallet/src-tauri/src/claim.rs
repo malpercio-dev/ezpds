@@ -10,6 +10,8 @@
 //                   endpoint on old PDS to trigger email verification)
 //                   sign_and_verify_claim (command: calls getRecommendedDidCredentials and
 //                   signPlcOperation on old PDS, verifies signature and local constraints)
+//                   submit_claim (command: POSTs signed PLC operation to plc.directory,
+//                   persists identity to IdentityStore, clears claim state)
 
 use serde::Serialize;
 use tauri::Emitter;
@@ -887,8 +889,8 @@ pub(crate) async fn submit_claim_impl(
     };
 
     // Parse the stored JSON string back to Value
-    let operation: serde_json::Value = serde_json::from_str(verified_signed_op_str)
-        .map_err(|e| ClaimError::NetworkError {
+    let operation: serde_json::Value =
+        serde_json::from_str(verified_signed_op_str).map_err(|e| ClaimError::NetworkError {
             message: format!("failed to parse verified signed operation: {}", e),
         })?;
 
@@ -911,7 +913,10 @@ pub(crate) async fn submit_claim_impl(
     // 3a: Register DID in managed-dids index (may already exist from prior attempts)
     if let Err(e) = store.add_identity(&claim_state.did) {
         // IdentityAlreadyExists is fine — user may have a partially completed prior claim
-        if !matches!(e, crate::identity_store::IdentityStoreError::IdentityAlreadyExists) {
+        if !matches!(
+            e,
+            crate::identity_store::IdentityStoreError::IdentityAlreadyExists
+        ) {
             return Err(ClaimError::NetworkError {
                 message: format!("failed to add identity: {}", e),
             });
@@ -919,20 +924,18 @@ pub(crate) async fn submit_claim_impl(
     }
 
     // 3b: Ensure device key exists for the DID
-    store.get_or_create_device_key(&claim_state.did).map_err(|e| {
-        ClaimError::NetworkError {
+    store
+        .get_or_create_device_key(&claim_state.did)
+        .map_err(|e| ClaimError::NetworkError {
             message: format!("failed to get or create device key: {}", e),
-        }
-    })?;
+        })?;
 
     // 3c: Re-fetch the DID document from plc.directory
     let (_, updated_did_doc) = pds_client
         .discover_pds(&claim_state.did)
         .await
-        .map_err(|e| {
-            ClaimError::NetworkError {
-                message: format!("failed to re-fetch DID document: {}", e),
-            }
+        .map_err(|e| ClaimError::NetworkError {
+            message: format!("failed to re-fetch DID document: {}", e),
         })?;
 
     // Store the updated DID document as JSON string
@@ -952,11 +955,10 @@ pub(crate) async fn submit_claim_impl(
             .collect::<serde_json::Map<String, serde_json::Value>>()
     });
 
-    let did_doc_json = serde_json::to_string(&did_doc_value).map_err(|e| {
-        ClaimError::NetworkError {
+    let did_doc_json =
+        serde_json::to_string(&did_doc_value).map_err(|e| ClaimError::NetworkError {
             message: format!("failed to serialize DID document: {}", e),
-        }
-    })?;
+        })?;
 
     store
         .store_did_doc(&claim_state.did, &did_doc_json)
@@ -990,7 +992,7 @@ pub(crate) async fn submit_claim_impl(
 #[tauri::command]
 pub async fn submit_claim(
     state: tauri::State<'_, crate::oauth::AppState>,
-    _did: String,
+    did: String,
 ) -> Result<ClaimResult, ClaimError> {
     let pds_client = state.pds_client();
 
@@ -1003,6 +1005,11 @@ pub async fn submit_claim(
     let Some(claim_state) = claim_state_copy else {
         return Err(ClaimError::Unauthorized);
     };
+
+    // Defense-in-depth: validate caller's DID matches ClaimState
+    if claim_state.did != did {
+        return Err(ClaimError::Unauthorized);
+    }
 
     let result = submit_claim_impl(pds_client, &claim_state).await;
 
@@ -2297,7 +2304,6 @@ mod tests {
     #[tokio::test]
     async fn test_submit_claim_success() {
         use httpmock::MockServer;
-        use std::sync::{Arc, Mutex};
 
         let mock_server = MockServer::start();
 
@@ -2409,9 +2415,7 @@ mod tests {
                 services: std::collections::HashMap::new(),
             },
             pds_oauth_client: None,
-            verified_signed_op: Some(
-                r#"{"type":"plc_operation","prev":"bafy123"}"#.to_string(),
-            ),
+            verified_signed_op: Some(r#"{"type":"plc_operation","prev":"bafy123"}"#.to_string()),
         };
 
         let result = submit_claim_impl(&pds_client, &claim_state).await;

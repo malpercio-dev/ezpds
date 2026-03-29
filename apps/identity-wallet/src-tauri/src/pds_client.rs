@@ -1906,7 +1906,9 @@ mod tests {
             "rotationKeys": ["did:key:z123"]
         });
 
-        let result = client.post_plc_operation("did:plc:test123", &operation).await;
+        let result = client
+            .post_plc_operation("did:plc:test123", &operation)
+            .await;
 
         assert!(result.is_ok());
     }
@@ -1926,7 +1928,9 @@ mod tests {
             "type": "plc_operation"
         });
 
-        let result = client.post_plc_operation("did:plc:test123", &operation).await;
+        let result = client
+            .post_plc_operation("did:plc:test123", &operation)
+            .await;
 
         assert!(result.is_err());
         match result.unwrap_err() {
