@@ -2314,6 +2314,9 @@ mod tests {
         });
 
         // Mock GET to plc.directory (re-fetch DID doc)
+        // Use mock_server.base_url() as PDS endpoint so HEAD reachability check
+        // routes through the mock server instead of hitting the real internet.
+        let pds_endpoint = mock_server.base_url();
         let updated_doc = serde_json::json!({
             "did": "did:plc:test",
             "alsoKnownAs": ["at://alice.example.com"],
@@ -2322,7 +2325,7 @@ mod tests {
             "services": {
                 "atproto_pds": {
                     "type": "AtprotoPersonalDataServer",
-                    "endpoint": "https://pds.example.com"
+                    "endpoint": pds_endpoint
                 }
             }
         });
@@ -2336,10 +2339,9 @@ mod tests {
                 .json_body(updated_doc.clone());
         });
 
-        // Mock HEAD to plc.directory (reachability check)
+        // Mock HEAD request for PDS reachability check
         mock_server.mock(|when, then| {
-            when.method(httpmock::Method::HEAD)
-                .path_contains("pds.example.com");
+            when.method(httpmock::Method::HEAD);
             then.status(200);
         });
 
