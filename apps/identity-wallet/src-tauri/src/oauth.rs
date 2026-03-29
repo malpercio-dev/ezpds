@@ -906,6 +906,7 @@ mod tests {
             oauth_session: std::sync::Mutex::new(None),
             relay_client: OnceLock::new(),
             pds_client: crate::pds_client::PdsClient::new(),
+            claim_state: tokio::sync::Mutex::new(None),
         };
 
         let url = make_test_url("code123", "WRONG-STATE");
@@ -935,6 +936,7 @@ mod tests {
             oauth_session: std::sync::Mutex::new(None),
             relay_client: OnceLock::new(),
             pds_client: crate::pds_client::PdsClient::new(),
+            claim_state: tokio::sync::Mutex::new(None),
         };
 
         // First callback succeeds.
@@ -966,6 +968,7 @@ mod tests {
             oauth_session: std::sync::Mutex::new(None),
             relay_client: OnceLock::new(),
             pds_client: crate::pds_client::PdsClient::new(),
+            claim_state: tokio::sync::Mutex::new(None),
         };
 
         let url = make_test_url("mycode", "expected-state");
