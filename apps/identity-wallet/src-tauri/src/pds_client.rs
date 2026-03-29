@@ -473,6 +473,35 @@ impl PdsClient {
             message: format!("failed to read audit log response: {}", e),
         })
     }
+
+    /// Submit a signed PLC operation to plc.directory.
+    ///
+    /// Calls `POST {plc_directory_url}/{did}` with the signed operation as JSON body.
+    pub async fn post_plc_operation(
+        &self,
+        did: &str,
+        operation: &serde_json::Value,
+    ) -> Result<(), PdsClientError> {
+        let url = format!("{}/{}", self.plc_directory_url, did);
+        let resp = self
+            .client
+            .post(&url)
+            .json(operation)
+            .send()
+            .await
+            .map_err(|e| PdsClientError::NetworkError {
+                message: format!("failed to post plc operation: {}", e),
+            })?;
+
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            let body = resp.text().await.unwrap_or_default();
+            Err(PdsClientError::InvalidResponse {
+                message: format!("plc.directory rejected operation: {}", body),
+            })
+        }
+    }
 }
 
 impl Default for PdsClient {
@@ -1853,6 +1882,58 @@ mod tests {
                 // Expected
             }
             e => panic!("Expected DidNotFound, got: {:?}", e),
+        }
+    }
+
+    // ============================================================================
+    // post_plc_operation tests
+    // ============================================================================
+
+    /// post_plc_operation succeeds with 200 response
+    #[tokio::test]
+    async fn test_post_plc_operation_success() {
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST).path("/did:plc:test123");
+            then.status(200);
+        });
+
+        let client = PdsClient::new_for_test(mock_server.base_url());
+        let operation = serde_json::json!({
+            "type": "plc_operation",
+            "prev": "bafy123",
+            "rotationKeys": ["did:key:z123"]
+        });
+
+        let result = client.post_plc_operation("did:plc:test123", &operation).await;
+
+        assert!(result.is_ok());
+    }
+
+    /// post_plc_operation returns InvalidResponse with error body on non-2xx
+    #[tokio::test]
+    async fn test_post_plc_operation_conflict() {
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST).path("/did:plc:test123");
+            then.status(409).body("Conflicting operation");
+        });
+
+        let client = PdsClient::new_for_test(mock_server.base_url());
+        let operation = serde_json::json!({
+            "type": "plc_operation"
+        });
+
+        let result = client.post_plc_operation("did:plc:test123", &operation).await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PdsClientError::InvalidResponse { message } => {
+                assert!(message.contains("Conflicting operation"));
+            }
+            e => panic!("Expected InvalidResponse, got: {:?}", e),
         }
     }
 }
