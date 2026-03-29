@@ -161,11 +161,10 @@ mod tests {
             .await
             .unwrap();
 
-        let count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM password_reset_tokens")
-                .fetch_one(&db)
-                .await
-                .unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM password_reset_tokens")
+            .fetch_one(&db)
+            .await
+            .unwrap();
         assert_eq!(count, 0, "no token should be inserted for unknown email");
     }
 
@@ -208,6 +207,9 @@ mod tests {
         .fetch_one(&db)
         .await
         .unwrap();
-        assert!(diff < 5, "expiry should be ~1 hour from now, got {diff}s drift");
+        assert!(
+            diff < 5,
+            "expiry should be ~1 hour from now, got {diff}s drift"
+        );
     }
 }

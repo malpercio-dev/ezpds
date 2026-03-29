@@ -45,9 +45,9 @@ pub async fn reset_password(
     })?;
 
     // --- Look up token (expiry evaluated in the same query) ---
-    let row = get_reset_token(&mut tx, &token_hash).await?.ok_or_else(|| {
-        ApiError::new(ErrorCode::InvalidToken, "invalid or unknown reset token")
-    })?;
+    let row = get_reset_token(&mut tx, &token_hash)
+        .await?
+        .ok_or_else(|| ApiError::new(ErrorCode::InvalidToken, "invalid or unknown reset token"))?;
 
     // --- Validate: not already used ---
     // Check used_at first — a consumed token is non-recoverable regardless of expiry.
@@ -233,7 +233,10 @@ mod tests {
         .fetch_one(&db)
         .await
         .unwrap();
-        assert!(used_at.is_some(), "used_at must be set after successful reset");
+        assert!(
+            used_at.is_some(),
+            "used_at must be set after successful reset"
+        );
     }
 
     #[tokio::test]
@@ -442,12 +445,14 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
 
         // No token inserted.
-        let count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM password_reset_tokens")
-                .fetch_one(&db)
-                .await
-                .unwrap();
-        assert_eq!(count, 0, "no token should be inserted for deactivated account");
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM password_reset_tokens")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "no token should be inserted for deactivated account"
+        );
     }
 
     /// Multiple outstanding tokens per DID are allowed — each is valid independently.
@@ -478,6 +483,10 @@ mod tests {
             .oneshot(post_reset_password(&token2, "newpass2"))
             .await
             .unwrap();
-        assert_eq!(r2.status(), StatusCode::OK, "second token must remain valid after first is used");
+        assert_eq!(
+            r2.status(),
+            StatusCode::OK,
+            "second token must remain valid after first is used"
+        );
     }
 }

@@ -680,14 +680,17 @@ fn list_identities() -> Result<Vec<String>, identity_store::IdentityStoreError> 
 /// The frontend uses this to extract identity information (handle, PDS URL) for
 /// multi-identity card display in IdentityListHome.
 #[tauri::command]
-fn get_stored_did_doc(did: String) -> Result<Option<serde_json::Value>, identity_store::IdentityStoreError> {
+fn get_stored_did_doc(
+    did: String,
+) -> Result<Option<serde_json::Value>, identity_store::IdentityStoreError> {
     let store = identity_store::IdentityStore;
     match store.get_did_doc(&did)? {
         Some(json_str) => {
-            let value: serde_json::Value = serde_json::from_str(&json_str)
-                .map_err(|e| identity_store::IdentityStoreError::SerializationError {
+            let value: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
+                identity_store::IdentityStoreError::SerializationError {
                     message: e.to_string(),
-                })?;
+                }
+            })?;
             Ok(Some(value))
         }
         None => Ok(None),

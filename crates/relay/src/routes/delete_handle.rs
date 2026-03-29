@@ -50,7 +50,8 @@ pub async fn delete_handle_handler(
             ApiError::new(ErrorCode::InternalError, "failed to look up handle")
         })?;
 
-    let (owner_did,) = row.ok_or_else(|| ApiError::new(ErrorCode::HandleNotFound, "handle not found"))?;
+    let (owner_did,) =
+        row.ok_or_else(|| ApiError::new(ErrorCode::HandleNotFound, "handle not found"))?;
 
     // Step 3: Verify ownership — session DID must match the handle owner.
     if session.did != owner_did {
@@ -155,7 +156,10 @@ mod tests {
     async fn happy_path_deletes_handle_no_dns_provider() {
         let state = test_state().await;
         let db = state.db.clone();
-        let did = format!("did:plc:{}", &Uuid::new_v4().to_string().replace('-', "")[..24]);
+        let did = format!(
+            "did:plc:{}",
+            &Uuid::new_v4().to_string().replace('-', "")[..24]
+        );
         let handle = format!("alice.{}", state.config.available_user_domains[0]);
 
         seed_handle(&db, &handle, &did).await;
@@ -183,7 +187,10 @@ mod tests {
     async fn dns_provider_success_deletes_handle_and_dns() {
         let state = state_with_ok_dns().await;
         let db = state.db.clone();
-        let did = format!("did:plc:{}", &Uuid::new_v4().to_string().replace('-', "")[..24]);
+        let did = format!(
+            "did:plc:{}",
+            &Uuid::new_v4().to_string().replace('-', "")[..24]
+        );
         let handle = format!("alice.{}", state.config.available_user_domains[0]);
 
         seed_handle(&db, &handle, &did).await;
@@ -202,7 +209,10 @@ mod tests {
             .fetch_optional(&db)
             .await
             .unwrap();
-        assert!(row.is_none(), "handle row must be removed when DNS succeeds");
+        assert!(
+            row.is_none(),
+            "handle row must be removed when DNS succeeds"
+        );
     }
 
     /// DNS provider fails: returns 502 DNS_ERROR and the DB row is NOT deleted.
@@ -210,7 +220,10 @@ mod tests {
     async fn dns_provider_failure_returns_502_and_row_survives() {
         let state = state_with_err_dns().await;
         let db = state.db.clone();
-        let did = format!("did:plc:{}", &Uuid::new_v4().to_string().replace('-', "")[..24]);
+        let did = format!(
+            "did:plc:{}",
+            &Uuid::new_v4().to_string().replace('-', "")[..24]
+        );
         let handle = format!("alice.{}", state.config.available_user_domains[0]);
 
         seed_handle(&db, &handle, &did).await;
@@ -250,7 +263,10 @@ mod tests {
     async fn missing_auth_returns_401() {
         let state = test_state().await;
         let db = state.db.clone();
-        let did = format!("did:plc:{}", &Uuid::new_v4().to_string().replace('-', "")[..24]);
+        let did = format!(
+            "did:plc:{}",
+            &Uuid::new_v4().to_string().replace('-', "")[..24]
+        );
         let handle = format!("alice.{}", state.config.available_user_domains[0]);
         seed_handle(&db, &handle, &did).await;
 
@@ -274,14 +290,18 @@ mod tests {
         let db = state.db.clone();
 
         // Owner account + handle.
-        let owner_did =
-            format!("did:plc:{}", &Uuid::new_v4().to_string().replace('-', "")[..24]);
+        let owner_did = format!(
+            "did:plc:{}",
+            &Uuid::new_v4().to_string().replace('-', "")[..24]
+        );
         let handle = format!("alice.{}", state.config.available_user_domains[0]);
         seed_handle(&db, &handle, &owner_did).await;
 
         // Different account that tries to delete the handle.
-        let other_did =
-            format!("did:plc:{}", &Uuid::new_v4().to_string().replace('-', "")[..24]);
+        let other_did = format!(
+            "did:plc:{}",
+            &Uuid::new_v4().to_string().replace('-', "")[..24]
+        );
         sqlx::query(
             "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
              VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
@@ -316,7 +336,10 @@ mod tests {
     async fn nonexistent_handle_returns_404() {
         let state = test_state().await;
         let db = state.db.clone();
-        let did = format!("did:plc:{}", &Uuid::new_v4().to_string().replace('-', "")[..24]);
+        let did = format!(
+            "did:plc:{}",
+            &Uuid::new_v4().to_string().replace('-', "")[..24]
+        );
 
         sqlx::query(
             "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
