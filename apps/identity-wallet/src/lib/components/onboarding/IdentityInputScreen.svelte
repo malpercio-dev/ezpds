@@ -1,5 +1,6 @@
 <script lang="ts">
   import { resolveIdentity, type IdentityInfo, type ResolveError } from '$lib/ipc';
+  import { truncateDid, isCodedError } from '$lib/did-doc-utils';
 
   let {
     value = $bindable(''),
@@ -27,10 +28,10 @@
       resolved = info;
       error = null;
     } catch (raw: unknown) {
-      // Map ResolveError codes to user-friendly messages.
-      if (typeof raw === 'object' && raw !== null && 'code' in raw) {
-        const err = raw as ResolveError;
-        switch (err.code) {
+      console.error('Identity resolution failed:', raw);
+
+      if (isCodedError(raw)) {
+        switch (raw.code) {
           case 'HANDLE_NOT_FOUND':
             error = 'Handle not found. Check the spelling and try again.';
             break;
@@ -44,7 +45,7 @@
             error = 'Network error. Check your connection and try again.';
             break;
           default:
-            error = 'An unexpected error occurred. Please try again.';
+            error = `An unexpected error occurred (${raw.code}). Please try again.`;
         }
       } else {
         error = 'An unexpected error occurred. Please try again.';
@@ -62,16 +63,7 @@
     }
   }
 
-  // Truncate the DID for display on narrow mobile screens.
-  // "did:plc:abcdefghijklmnopqrstuvwx" → "did:plc:abcdefgh…uvwxyz"
-  let displayDid = $derived.by(() => {
-    const did = resolved?.did ?? '';
-    const prefix = 'did:plc:';
-    if (!did.startsWith(prefix)) return did;
-    const specific = did.slice(prefix.length);
-    if (specific.length < 14) return did;
-    return `${prefix}${specific.slice(0, 8)}…${specific.slice(-6)}`;
-  });
+  let displayDid = $derived(truncateDid(resolved?.did ?? ''));
 </script>
 
 <div class="screen">

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { type ClaimResult } from '$lib/ipc';
-  import { extractPdsFromPlcDoc } from '$lib/did-doc-utils';
+  import { extractPdsFromPlcDoc, extractHandle } from '$lib/did-doc-utils';
 
   let {
     claimResult,
@@ -10,18 +10,18 @@
     ondone: () => void;
   } = $props();
 
-  // Extract typed fields from the loosely-typed updatedDidDoc
-  let didId = $derived(
-    typeof claimResult.updatedDidDoc?.id === 'string'
-      ? claimResult.updatedDidDoc.id
-      : '—'
-  );
+  let didId = $derived.by(() => {
+    const doc = claimResult.updatedDidDoc;
+    if (typeof doc !== 'object' || doc === null) return '—';
+    const d = doc as Record<string, unknown>;
+    return typeof d.did === 'string' ? d.did : typeof d.id === 'string' ? d.id : '—';
+  });
 
-  let alsoKnownAs = $derived(
-    Array.isArray(claimResult.updatedDidDoc?.alsoKnownAs)
-      ? (claimResult.updatedDidDoc.alsoKnownAs as string[])
-      : []
-  );
+  let handle = $derived.by(() => {
+    const doc = claimResult.updatedDidDoc;
+    if (typeof doc !== 'object' || doc === null) return null;
+    return extractHandle(doc as Record<string, unknown>);
+  });
 
   let pdsEndpoint = $derived.by(() => {
     const doc = claimResult.updatedDidDoc;
@@ -47,10 +47,10 @@
       <code class="summary-value">{didId}</code>
     </div>
 
-    {#if alsoKnownAs.length > 0}
+    {#if handle}
       <div class="summary-item">
         <p class="summary-label">Handle</p>
-        <p class="summary-value">{alsoKnownAs[0]}</p>
+        <p class="summary-value">@{handle}</p>
       </div>
     {/if}
 

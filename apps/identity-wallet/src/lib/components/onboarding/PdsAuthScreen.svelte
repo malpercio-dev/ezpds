@@ -1,5 +1,6 @@
 <script lang="ts">
   import { startPdsAuth, type ClaimError } from '$lib/ipc';
+  import { isCodedError } from '$lib/did-doc-utils';
 
   let {
     pdsUrl,
@@ -23,14 +24,9 @@
       onnext();
     } catch (raw: unknown) {
       authenticating = false;
+      console.error('PDS authentication failed:', raw);
 
-      // Guard against non-ClaimError shapes
-      if (
-        typeof raw === 'object' &&
-        raw !== null &&
-        'code' in raw &&
-        typeof (raw as ClaimError).code === 'string'
-      ) {
+      if (isCodedError(raw)) {
         const err = raw as ClaimError;
         switch (err.code) {
           case 'UNAUTHORIZED':
@@ -40,7 +36,7 @@
             error = 'Network error. Check your connection and try again.';
             break;
           default:
-            error = 'Authentication failed. Please try again.';
+            error = `Authentication failed (${err.code}). Please try again.`;
         }
       } else {
         error = 'Authentication failed. Please try again.';

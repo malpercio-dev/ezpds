@@ -6,6 +6,7 @@
     type VerifiedClaimOp,
     type ClaimError,
   } from '$lib/ipc';
+  import { isCodedError } from '$lib/did-doc-utils';
 
   let {
     did,
@@ -31,9 +32,14 @@
     try {
       await requestClaimVerification(did);
       sending = false;
-    } catch {
+    } catch (e) {
       sending = false;
-      sendError = 'Failed to send verification email. Please try again.';
+      console.error('Failed to send verification email:', e);
+      if (isCodedError(e) && e.code === 'UNAUTHORIZED') {
+        sendError = 'Authorization expired. Please go back and re-authenticate with your PDS.';
+      } else {
+        sendError = 'Failed to send verification email. Please try again.';
+      }
     }
   }
 
@@ -47,14 +53,9 @@
       onnext(result);
     } catch (raw: unknown) {
       verifying = false;
+      console.error('Claim verification failed:', raw);
 
-      // Guard against non-ClaimError shapes
-      if (
-        typeof raw === 'object' &&
-        raw !== null &&
-        'code' in raw &&
-        typeof (raw as ClaimError).code === 'string'
-      ) {
+      if (isCodedError(raw)) {
         const err = raw as ClaimError;
         switch (err.code) {
           case 'INVALID_TOKEN':
@@ -67,7 +68,7 @@
             verifyError = 'Network error. Check your connection and try again.';
             break;
           default:
-            verifyError = 'An error occurred. Please try again.';
+            verifyError = `An error occurred (${err.code}). Please try again.`;
         }
       } else {
         verifyError = 'An error occurred. Please try again.';

@@ -436,7 +436,7 @@ export const resolveIdentity = (handleOrDid: string): Promise<IdentityInfo> =>
  *
  * Opens Safari for user authentication and handles the OAuth callback via deep-link.
  * On success, stores the OAuth client in claim state for use by subsequent commands.
- * Emits `pds_auth_ready` event when complete.
+ * Resolves the returned Promise when complete.
  */
 export const startPdsAuth = (pdsUrl: string): Promise<void> =>
   invoke('start_pds_auth', { pdsUrl });
@@ -474,9 +474,9 @@ export const submitClaim = (did: string): Promise<ClaimResult> =>
 export type IdentityStoreError =
   | { code: 'IDENTITY_NOT_FOUND' }
   | { code: 'IDENTITY_ALREADY_EXISTS' }
-  | { code: 'KEYCHAIN_ERROR' }
-  | { code: 'KEY_GENERATION_FAILED' }
-  | { code: 'SERIALIZATION_ERROR' };
+  | { code: 'KEYCHAIN_ERROR'; message: string }
+  | { code: 'KEY_GENERATION_FAILED'; message: string }
+  | { code: 'SERIALIZATION_ERROR'; message: string };
 
 export const listIdentities = (): Promise<string[]> =>
   invoke('list_identities');

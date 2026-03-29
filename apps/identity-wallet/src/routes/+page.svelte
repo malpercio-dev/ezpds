@@ -22,6 +22,7 @@
   import DIDDocumentScreen from '$lib/components/home/DIDDocumentScreen.svelte';
   import RecoveryInfoScreen from '$lib/components/home/RecoveryInfoScreen.svelte';
   import { createAccount, listIdentities, type CreateAccountError, type OAuthError, type HomeData, type IdentityInfo, type VerifiedClaimOp, type ClaimResult } from '$lib/ipc';
+  import { normalizePlcDocToW3c } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
 
   // ── Onboarding step type ─────────────────────────────────────────────────
@@ -82,7 +83,6 @@
 
   let homeData = $state<HomeData | null>(null);
 
-  let selectedDid = $state<string | null>(null);
   let selectedDidDoc = $state<Record<string, unknown> | null>(null);
 
   // ── Navigation helpers ───────────────────────────────────────────────────
@@ -90,61 +90,6 @@
   function goTo(next: OnboardingStep) {
     errors = {};
     step = next;
-  }
-
-  /**
-   * Normalizes a PLC directory format DID document to W3C format.
-   * Converts the PLC map-based format (services, verificationMethods as objects)
-   * to the W3C array-based format (service, verificationMethod as arrays).
-   */
-  function normalizePlcDocToW3c(plcDoc: Record<string, unknown>): Record<string, unknown> {
-    const normalized: Record<string, unknown> = {
-      id: plcDoc.id,
-      alsoKnownAs: plcDoc.alsoKnownAs,
-    };
-
-    // Convert services map to service array
-    if (typeof plcDoc.services === 'object' && plcDoc.services !== null) {
-      const servicesMap = plcDoc.services as Record<string, unknown>;
-      const serviceArray: Array<Record<string, unknown>> = [];
-
-      for (const [key, value] of Object.entries(servicesMap)) {
-        if (typeof value === 'object' && value !== null) {
-          const serviceObj = value as Record<string, unknown>;
-          serviceArray.push({
-            id: `#${key}`,
-            type: serviceObj.type,
-            serviceEndpoint: serviceObj.endpoint,
-          });
-        }
-      }
-
-      if (serviceArray.length > 0) {
-        normalized.service = serviceArray;
-      }
-    }
-
-    // Convert rotationKeys array to verificationMethod array
-    if (Array.isArray(plcDoc.rotationKeys)) {
-      const verificationMethods: Array<Record<string, unknown>> = [];
-
-      for (let i = 0; i < plcDoc.rotationKeys.length; i++) {
-        const key = plcDoc.rotationKeys[i];
-        if (typeof key === 'string') {
-          verificationMethods.push({
-            id: `#rotation-${i}`,
-            type: 'Multikey',
-            publicKeyMultibase: key,
-          });
-        }
-      }
-
-      if (verificationMethods.length > 0) {
-        normalized.verificationMethod = verificationMethods;
-      }
-    }
-
-    return normalized;
   }
 
   // ── Relay configuration and OAuth event listener ──────────────────────
@@ -157,8 +102,9 @@
         step = 'home';
         return;
       }
-    } catch {
-      // listIdentities failed (e.g. empty Keychain on first launch) — continue to mode_select
+    } catch (e) {
+      console.error('listIdentities failed on mount:', e);
+      // First launch (empty Keychain) or Keychain error — continue to mode_select
     }
 
     // Legacy users (relay URL configured but no managed-dids) stay at mode_select.
@@ -364,8 +310,7 @@
   {:else if step === 'home'}
     <IdentityListHome
       onadd={() => goTo('mode_select')}
-      onselect={(did, didDoc) => {
-        selectedDid = did;
+      onselect={(_did, didDoc) => {
         selectedDidDoc = didDoc;
         goTo('identity_detail');
       }}

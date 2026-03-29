@@ -1,5 +1,6 @@
 <script lang="ts">
   import { submitClaim, type VerifiedClaimOp, type ClaimResult, type ClaimError } from '$lib/ipc';
+  import { isCodedError } from '$lib/did-doc-utils';
 
   let {
     did,
@@ -25,12 +26,9 @@
       const result = await submitClaim(did);
       onnext(result);
     } catch (raw: unknown) {
-      if (
-        typeof raw === 'object' &&
-        raw !== null &&
-        'code' in raw &&
-        typeof (raw as ClaimError).code === 'string'
-      ) {
+      console.error('Claim submission failed:', raw);
+
+      if (isCodedError(raw)) {
         const err = raw as ClaimError;
         switch (err.code) {
           case 'PLC_DIRECTORY_ERROR':
@@ -43,7 +41,7 @@
             error = 'Authorization expired. Please restart the import flow.';
             break;
           default:
-            error = 'Submission failed. Please try again.';
+            error = `Submission failed (${err.code}). Please try again.`;
         }
       } else {
         error = 'Submission failed. Please try again.';

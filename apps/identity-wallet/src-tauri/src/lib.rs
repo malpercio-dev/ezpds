@@ -307,13 +307,13 @@ async fn create_account(
     let status = resp.status();
 
     if status.is_success() {
-        // 4. Deserialize success body.
+        // 3. Deserialize success body.
         let body: CreateMobileAccountResponse =
             resp.json().await.map_err(|e| CreateAccountError::Unknown {
                 message: e.to_string(),
             })?;
 
-        // 5. Store tokens in Keychain.
+        // 4. Store tokens in Keychain.
         // If session-token write fails, best-effort remove the already-written device-token.
         // The device key is persistent by design and is NOT cleaned up on failure.
         keychain::store_item("device-token", body.device_token.as_bytes()).map_err(|_| {
@@ -331,7 +331,7 @@ async fn create_account(
             next_step: body.next_step,
         })
     } else {
-        // 6. Map relay error codes to typed variants.
+        // 5. Map relay error codes to typed variants.
         match status.as_u16() {
             // 404: Relay returns this for both invalid (never-existed) and expired claim codes.
             // The frontend cannot distinguish them, so we map both to ExpiredCode.

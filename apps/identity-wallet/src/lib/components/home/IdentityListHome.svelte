@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { listIdentities, getStoredDidDoc, getDeviceKeyId } from '$lib/ipc';
-  import { extractPdsFromPlcDoc } from '$lib/did-doc-utils';
+  import { extractPdsFromPlcDoc, extractHandle, truncateDid } from '$lib/did-doc-utils';
   import DIDAvatar from './DIDAvatar.svelte';
 
   let {
@@ -22,29 +22,7 @@
   let identities = $state<IdentityCard[]>([]);
   let didDocs = $state<Map<string, Record<string, unknown>>>(new Map());
   let loading = $state(true);
-
-  function truncateDid(did: string): string {
-    const prefix = 'did:plc:';
-    if (!did.startsWith(prefix)) return did;
-    const specific = did.slice(prefix.length);
-    if (specific.length < 14) return did;
-    return `${prefix}${specific.slice(0, 8)}…${specific.slice(-6)}`;
-  }
-
-  function extractHandle(didDoc: Record<string, unknown>): string | null {
-    const alsoKnownAs = didDoc.alsoKnownAs;
-    if (!Array.isArray(alsoKnownAs)) return null;
-    for (const aka of alsoKnownAs) {
-      if (typeof aka === 'string' && aka.startsWith('at://')) {
-        return aka.slice(5); // Extract after "at://"
-      }
-    }
-    return null;
-  }
-
-  function extractPds(didDoc: Record<string, unknown>): string | null {
-    return extractPdsFromPlcDoc(didDoc);
-  }
+  let loadError = $state<string | null>(null);
 
   function isDeviceKeyRoot(
     didDoc: Record<string, unknown>,
@@ -57,6 +35,7 @@
 
   async function loadData() {
     loading = true;
+    loadError = null;
     try {
       const dids = await listIdentities();
       identities = [];
@@ -69,9 +48,8 @@
             getDeviceKeyId(did),
           ]);
 
-          // Show identity even if DID doc is missing (with fallback display)
           const handle = docResult ? extractHandle(docResult) : null;
-          const pdsUrl = docResult ? extractPds(docResult) : null;
+          const pdsUrl = docResult ? extractPdsFromPlcDoc(docResult) : null;
           const deviceKeyIsRoot = docResult ? isDeviceKeyRoot(docResult, keyIdResult) : null;
 
           if (docResult) {
@@ -86,12 +64,20 @@
           });
         } catch (e) {
           console.error(`Failed to load identity ${did}:`, e);
+          // Show degraded card instead of silently dropping the identity
+          identities.push({
+            did,
+            handle: null,
+            pdsUrl: null,
+            deviceKeyIsRoot: null,
+          });
         }
       }
     } catch (e) {
       console.error('Failed to load identities:', e);
       identities = [];
       didDocs.clear();
+      loadError = 'Failed to load identities. Tap refresh to try again.';
     } finally {
       loading = false;
     }
@@ -123,7 +109,12 @@
       <button class="refresh-btn" onclick={loadData} aria-label="Refresh">↻</button>
     </div>
 
-    {#if identities.length === 0}
+    {#if loadError}
+      <div class="empty-state">
+        <p class="error-text">{loadError}</p>
+        <button class="add-btn" onclick={loadData}>Refresh</button>
+      </div>
+    {:else if identities.length === 0}
       <div class="empty-state">
         <p class="empty-text">No identities yet</p>
         <button class="add-btn" onclick={onadd}>+ Add Identity</button>
@@ -355,6 +346,13 @@
     font-size: 1rem;
     color: #6b7280;
     margin: 0;
+  }
+
+  .error-text {
+    font-size: 1rem;
+    color: #ef4444;
+    margin: 0;
+    text-align: center;
   }
 
   .add-btn {
