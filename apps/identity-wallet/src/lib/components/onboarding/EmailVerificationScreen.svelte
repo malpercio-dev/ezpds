@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import {
     requestClaimVerification,
     signAndVerifyClaim,
@@ -30,21 +31,9 @@
     try {
       await requestClaimVerification(did);
       sending = false;
-    } catch (raw: unknown) {
+    } catch {
       sending = false;
-
-      // Guard against non-ClaimError shapes
-      if (
-        typeof raw === 'object' &&
-        raw !== null &&
-        'code' in raw &&
-        typeof (raw as ClaimError).code === 'string'
-      ) {
-        const err = raw as ClaimError;
-        sendError = 'Failed to send verification email. Please try again.';
-      } else {
-        sendError = 'Failed to send verification email. Please try again.';
-      }
+      sendError = 'Failed to send verification email. Please try again.';
     }
   }
 
@@ -88,9 +77,7 @@
 
   // ── Initialization ───────────────────────────────────────────────────────
   // Send verification email on component mount
-  $effect.pre(() => {
-    // This runs synchronously before rendering, allowing us to start the
-    // async operation immediately and show the spinner
+  onMount(() => {
     sendVerificationEmail();
   });
 </script>
@@ -243,7 +230,6 @@
     font-size: 1rem;
     font-weight: 600;
     cursor: pointer;
-    transition: background-color 0.2s;
   }
 
   .primary {

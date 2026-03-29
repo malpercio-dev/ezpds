@@ -171,7 +171,6 @@
     font-size: 1rem;
     font-weight: 600;
     cursor: pointer;
-    transition: background-color 0.2s;
   }
 
   .primary {
@@ -179,7 +178,7 @@
     color: #fff;
   }
 
-  .primary:active {
+  .primary:active:not(:disabled) {
     background: #0051d5;
   }
 
@@ -188,7 +187,7 @@
     color: #374151;
   }
 
-  .secondary:active {
+  .secondary:active:not(:disabled) {
     background: #e5e7eb;
   }
 
