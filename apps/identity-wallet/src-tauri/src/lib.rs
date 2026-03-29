@@ -754,6 +754,11 @@ pub fn run() {
             home::load_home_data,
             home::log_out,
             oauth::start_oauth_flow,
+            claim::resolve_identity,
+            claim::start_pds_auth,
+            claim::request_claim_verification,
+            claim::sign_and_verify_claim,
+            claim::submit_claim,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
