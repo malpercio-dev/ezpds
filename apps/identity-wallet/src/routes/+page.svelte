@@ -21,7 +21,8 @@
   import ClaimSuccessScreen from '$lib/components/onboarding/ClaimSuccessScreen.svelte';
   import DIDDocumentScreen from '$lib/components/home/DIDDocumentScreen.svelte';
   import RecoveryInfoScreen from '$lib/components/home/RecoveryInfoScreen.svelte';
-  import { createAccount, listIdentities, checkIdentityStatus, type CreateAccountError, type OAuthError, type HomeData, type IdentityInfo, type VerifiedClaimOp, type ClaimResult } from '$lib/ipc';
+  import AlertDetailScreen from '$lib/components/home/AlertDetailScreen.svelte';
+  import { createAccount, listIdentities, checkIdentityStatus, type CreateAccountError, type OAuthError, type HomeData, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type UnauthorizedChange } from '$lib/ipc';
   import { normalizePlcDocToW3c } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
 
@@ -54,6 +55,7 @@
     | 'identity_detail'
     | 'did_document'
     | 'recovery_info'
+    | 'alert_detail'
     | 'auth_failed'
     | 'identity_input'
     | 'pds_auth'
@@ -84,6 +86,9 @@
   let homeData = $state<HomeData | null>(null);
 
   let selectedDidDoc = $state<Record<string, unknown> | null>(null);
+
+  let selectedAlertDid = $state<string | null>(null);
+  let selectedAlertChanges = $state<UnauthorizedChange[]>([]);
 
   // ── Navigation helpers ───────────────────────────────────────────────────
 
@@ -328,6 +333,11 @@
         selectedDidDoc = didDoc;
         goTo('identity_detail');
       }}
+      onalert={(did, changes) => {
+        selectedAlertDid = did;
+        selectedAlertChanges = changes;
+        goTo('alert_detail');
+      }}
     />
 
   {:else if step === 'identity_detail'}
@@ -345,6 +355,13 @@
   {:else if step === 'recovery_info'}
     <RecoveryInfoScreen
       share1InKeychain={homeData?.share1InKeychain ?? false}
+      onback={() => goTo('home')}
+    />
+
+  {:else if step === 'alert_detail'}
+    <AlertDetailScreen
+      did={selectedAlertDid ?? ''}
+      changes={selectedAlertChanges}
       onback={() => goTo('home')}
     />
 
