@@ -273,12 +273,11 @@ mod tests {
         assert_eq!(json["unauthorizedChanges"].as_array().unwrap().len(), 1);
     }
 
-    /// Test PlcMonitor can be created with a PdsClient reference.
+    /// PlcMonitor borrows PdsClient; verify the reference is well-formed.
     #[test]
     fn test_plc_monitor_creation() {
         let pds_client = PdsClient::new();
         let _monitor = PlcMonitor::new(&pds_client);
-        // Verify the monitor is created successfully
     }
 
     /// Test MonitorError serialization with correct error tag.
@@ -318,6 +317,36 @@ mod tests {
     }
 
     // ── Behavior tests: check_for_changes ──────────────────────────────────
+    //
+    // Each test registers DIDs with IdentityStore, generates real device keys,
+    // and builds properly-signed PLC operations via the crypto crate.
+
+    /// Register a DID in IdentityStore and return its device key info + private bytes.
+    fn setup_identity(did: &str) -> (crate::device_key::DevicePublicKey, [u8; 32]) {
+        let store = IdentityStore;
+        // add_identity may fail if already registered from a prior test — ignore
+        let _ = store.add_identity(did);
+        // Clear per-DID keychain entries to ensure fresh device key generation
+        for suffix in [
+            "device-key",
+            "device-key-pub",
+            "device-key-app-label",
+            "did-doc",
+            "plc-log",
+            "oauth-tokens",
+        ] {
+            let _ = crate::keychain::delete_item(&format!("{did}:{suffix}"));
+        }
+        let device_pub = store
+            .get_or_create_device_key(did)
+            .expect("device key generation failed");
+        let priv_bytes_vec = crate::keychain::get_item(&format!("{did}:device-key"))
+            .expect("device key not in keychain");
+        let priv_bytes: [u8; 32] = priv_bytes_vec
+            .try_into()
+            .expect("device key bytes not 32 bytes");
+        (device_pub, priv_bytes)
+    }
 
     /// AC6.1: Monitor detects a new PLC operation signed by the device key
     /// and updates cached log without alerting.
@@ -325,65 +354,50 @@ mod tests {
     async fn test_ac6_1_authorized_change_detected() {
         use httpmock::prelude::*;
 
+        let did = "did:plc:ac61auth";
+        let _ = crate::keychain::delete_item("managed-dids");
+        let (device_pub, device_priv) = setup_identity(did);
+
         let mock_server = MockServer::start();
         let client = PdsClient::new_for_test(mock_server.base_url());
         let monitor = PlcMonitor::new(&client);
 
-        // Generate rotation and device keys
-        let rotation_key = crypto::DidKeyUri("did:key:zQ3test_rotation".to_string());
-        let device_key = crypto::DidKeyUri("did:key:zQ3test_device".to_string());
-        let device_key_bytes: &[u8; 32] = &[1; 32];
-
-        // Build a valid genesis operation signed with the device key
+        // Use a separate rotation key (rotationKeys[0]); device key signs as rotationKeys[1]
+        let other_kp = crypto::generate_p256_keypair().expect("keygen");
         let genesis_op = crypto::build_did_plc_genesis_op(
-            &rotation_key,
-            &device_key,
-            device_key_bytes,
+            &other_kp.key_id,
+            &DidKeyUri(device_pub.key_id.clone()),
+            &device_priv,
             "test.bsky.social",
             "https://pds.test",
         )
-        .expect("Failed to build genesis op");
+        .expect("build genesis op");
 
-        let did = "did:plc:test_authorized";
-
-        // Parse signed_op_json to get the operation object
         let operation: serde_json::Value =
-            serde_json::from_str(&genesis_op.signed_op_json).expect("Failed to parse operation");
+            serde_json::from_str(&genesis_op.signed_op_json).expect("parse op json");
 
-        // Build audit log with the genesis operation
-        let audit_log_json = serde_json::json!([
-            {
-                "did": did,
-                "cid": "bafy123authorized",
-                "createdAt": "2026-03-29T00:00:00Z",
-                "nullified": false,
-                "operation": operation
-            }
-        ]);
+        let audit_log = serde_json::json!([{
+            "did": did,
+            "cid": "bafy_ac61_genesis",
+            "createdAt": "2026-03-29T00:00:00Z",
+            "nullified": false,
+            "operation": operation
+        }]);
 
         mock_server.mock(|when, then| {
-            when.method(GET)
-                .path(format!("/{}/log/audit", did).as_str());
+            when.method(GET).path(format!("/{did}/log/audit"));
             then.status(200)
                 .header("content-type", "application/json")
-                .json_body(audit_log_json.clone());
+                .json_body(audit_log.clone());
         });
 
-        // First call: cache is empty, so entry is new; device key authorizes it
-        let result = monitor.check_for_changes(did).await;
-        assert!(result.is_ok());
-        let changes = result.unwrap();
-        assert_eq!(
-            changes.len(),
-            0,
-            "Authorized change should not create alert"
-        );
+        // First call: new entry signed by device key → authorized → no alert
+        let changes = monitor.check_for_changes(did).await.expect("check failed");
+        assert_eq!(changes.len(), 0, "Device-key-signed op should not alert");
 
-        // Second call: cache is updated, no new entries
-        let result = monitor.check_for_changes(did).await;
-        assert!(result.is_ok());
-        let changes = result.unwrap();
-        assert_eq!(changes.len(), 0, "No new changes should be detected");
+        // Second call: cache updated, no new entries
+        let changes = monitor.check_for_changes(did).await.expect("check failed");
+        assert_eq!(changes.len(), 0, "No new changes after cache update");
     }
 
     /// AC6.2: Monitor detects a new PLC operation signed by a different key
@@ -392,86 +406,46 @@ mod tests {
     async fn test_ac6_2_unauthorized_change_detected() {
         use httpmock::prelude::*;
 
+        let did = "did:plc:ac62unauth";
+        let _ = crate::keychain::delete_item("managed-dids");
+        let (device_pub, _device_priv) = setup_identity(did);
+
         let mock_server = MockServer::start();
         let client = PdsClient::new_for_test(mock_server.base_url());
         let monitor = PlcMonitor::new(&client);
 
-        let device_key = crypto::DidKeyUri("did:key:zQ3test_device".to_string());
-        let other_key = crypto::DidKeyUri("did:key:zQ3test_other".to_string());
-        let rotation_key = crypto::DidKeyUri("did:key:zQ3test_rotation".to_string());
-
-        let did = "did:plc:test_unauthorized";
-
-        // Build initial operation (signed with device key)
+        // Sign the genesis op with a DIFFERENT key (not the device key)
+        let other_kp = crypto::generate_p256_keypair().expect("keygen");
         let genesis_op = crypto::build_did_plc_genesis_op(
-            &rotation_key,
-            &device_key,
-            &[1; 32],
+            &DidKeyUri(device_pub.key_id.clone()),
+            &other_kp.key_id,
+            &*other_kp.private_key_bytes,
             "test.bsky.social",
             "https://pds.test",
         )
-        .expect("Failed to build genesis op");
+        .expect("build genesis op");
 
-        let genesis_op_obj: serde_json::Value =
-            serde_json::from_str(&genesis_op.signed_op_json).expect("Failed to parse genesis op");
+        let operation: serde_json::Value =
+            serde_json::from_str(&genesis_op.signed_op_json).expect("parse op json");
 
-        // Build a rotation operation signed with a different key (other_key_bytes = [2; 32])
-        // Use the genesis_op's signed_op_json to get the CID
-        let rotation_op = crypto::build_did_plc_rotation_op(
-            "bafy123genesis",
-            vec![device_key.0.clone(), other_key.0.clone()],
-            std::collections::BTreeMap::new(),
-            vec![],
-            std::collections::BTreeMap::new(),
-            |data| {
-                let signing_key =
-                    p256::ecdsa::SigningKey::from_bytes(&p256::FieldBytes::from_slice(&[2; 32]))
-                        .map_err(|e| crypto::CryptoError::PlcOperation(e.to_string()))?;
-                let sig: p256::ecdsa::Signature =
-                    p256::ecdsa::signature::Signer::sign(&signing_key, data);
-                Ok(sig.to_bytes().to_vec())
-            },
-        )
-        .expect("Failed to build rotation op");
-
-        let rotation_op_obj: serde_json::Value =
-            serde_json::from_str(&rotation_op.signed_op_json).expect("Failed to parse rotation op");
-
-        let audit_log_json = serde_json::json!([
-            {
-                "did": did,
-                "cid": "bafy123genesis",
-                "createdAt": "2026-03-29T00:00:00Z",
-                "nullified": false,
-                "operation": genesis_op_obj,
-                "rotationKeys": [device_key.0, other_key.0]
-            },
-            {
-                "did": did,
-                "cid": "bafy123rotation",
-                "createdAt": "2026-03-29T01:00:00Z",
-                "nullified": false,
-                "operation": rotation_op_obj
-            }
-        ]);
+        let audit_log = serde_json::json!([{
+            "did": did,
+            "cid": "bafy_ac62_genesis",
+            "createdAt": "2026-03-29T01:00:00Z",
+            "nullified": false,
+            "operation": operation
+        }]);
 
         mock_server.mock(|when, then| {
-            when.method(GET)
-                .path(format!("/{}/log/audit", did).as_str());
+            when.method(GET).path(format!("/{did}/log/audit"));
             then.status(200)
                 .header("content-type", "application/json")
-                .json_body(audit_log_json);
+                .json_body(audit_log);
         });
 
-        // First call: cache is empty
-        let result = monitor.check_for_changes(did).await;
-        assert!(result.is_ok());
-        let changes = result.unwrap();
+        let changes = monitor.check_for_changes(did).await.expect("check failed");
         assert_eq!(changes.len(), 1, "Should detect one unauthorized change");
-
-        let change = &changes[0];
-        assert_eq!(change.cid, "bafy123rotation");
-        // The signing key identification will depend on the rotation keys in previous operation
+        assert_eq!(changes[0].cid, "bafy_ac62_genesis");
     }
 
     /// AC6.3: Alert includes correct recovery deadline (created_at from audit log).
@@ -479,80 +453,50 @@ mod tests {
     async fn test_ac6_3_created_at_matches_audit_log() {
         use httpmock::prelude::*;
 
+        let did = "did:plc:ac63time";
+        let _ = crate::keychain::delete_item("managed-dids");
+        let (device_pub, _device_priv) = setup_identity(did);
+
         let mock_server = MockServer::start();
         let client = PdsClient::new_for_test(mock_server.base_url());
         let monitor = PlcMonitor::new(&client);
 
-        let device_key = crypto::DidKeyUri("did:key:zQ3test_device".to_string());
-        let other_key = crypto::DidKeyUri("did:key:zQ3test_other".to_string());
-        let rotation_key = crypto::DidKeyUri("did:key:zQ3test_rotation".to_string());
-
-        let did = "did:plc:test_deadline";
         let expected_timestamp = "2026-03-29T12:34:56.789Z";
 
+        let other_kp = crypto::generate_p256_keypair().expect("keygen");
         let genesis_op = crypto::build_did_plc_genesis_op(
-            &rotation_key,
-            &device_key,
-            &[1; 32],
+            &DidKeyUri(device_pub.key_id.clone()),
+            &other_kp.key_id,
+            &*other_kp.private_key_bytes,
             "test.bsky.social",
             "https://pds.test",
         )
-        .expect("Failed to build genesis op");
+        .expect("build genesis op");
 
-        let genesis_op_obj: serde_json::Value =
-            serde_json::from_str(&genesis_op.signed_op_json).expect("Failed to parse genesis op");
+        let operation: serde_json::Value =
+            serde_json::from_str(&genesis_op.signed_op_json).expect("parse op json");
 
-        let rotation_op = crypto::build_did_plc_rotation_op(
-            "bafy123genesis",
-            vec![device_key.0.clone(), other_key.0.clone()],
-            std::collections::BTreeMap::new(),
-            vec![],
-            std::collections::BTreeMap::new(),
-            |data| {
-                let signing_key =
-                    p256::ecdsa::SigningKey::from_bytes(&p256::FieldBytes::from_slice(&[2; 32]))
-                        .map_err(|e| crypto::CryptoError::PlcOperation(e.to_string()))?;
-                let sig: p256::ecdsa::Signature =
-                    p256::ecdsa::signature::Signer::sign(&signing_key, data);
-                Ok(sig.to_bytes().to_vec())
-            },
-        )
-        .expect("Failed to build rotation op");
-
-        let rotation_op_obj: serde_json::Value =
-            serde_json::from_str(&rotation_op.signed_op_json).expect("Failed to parse rotation op");
-
-        let audit_log_json = serde_json::json!([
-            {
-                "did": did,
-                "cid": "bafy123genesis",
-                "createdAt": "2026-03-29T00:00:00Z",
-                "nullified": false,
-                "operation": genesis_op_obj,
-                "rotationKeys": [device_key.0, other_key.0]
-            },
-            {
-                "did": did,
-                "cid": "bafy123rotation",
-                "createdAt": expected_timestamp,
-                "nullified": false,
-                "operation": rotation_op_obj
-            }
-        ]);
+        let audit_log = serde_json::json!([{
+            "did": did,
+            "cid": "bafy_ac63_genesis",
+            "createdAt": expected_timestamp,
+            "nullified": false,
+            "operation": operation
+        }]);
 
         mock_server.mock(|when, then| {
-            when.method(GET)
-                .path(format!("/{}/log/audit", did).as_str());
+            when.method(GET).path(format!("/{did}/log/audit"));
             then.status(200)
                 .header("content-type", "application/json")
-                .json_body(audit_log_json);
+                .json_body(audit_log);
         });
 
-        let result = monitor.check_for_changes(did).await;
-        assert!(result.is_ok());
-        let changes = result.unwrap();
+        let changes = monitor.check_for_changes(did).await.expect("check failed");
         assert_eq!(changes.len(), 1);
-        assert_eq!(changes[0].created_at, expected_timestamp);
+        assert_eq!(
+            changes[0].created_at, expected_timestamp,
+            "created_at must match the audit log timestamp for frontend deadline computation"
+        );
     }
 
     /// AC6.7: Monitor handles plc.directory being unreachable gracefully
@@ -565,19 +509,20 @@ mod tests {
         let client = PdsClient::new_for_test(mock_server.base_url());
         let monitor = PlcMonitor::new(&client);
 
-        let did = "did:plc:test_unreachable";
+        let did = "did:plc:ac67net";
 
-        // Mock returns 500 error (network failure)
         mock_server.mock(|when, then| {
-            when.method(GET)
-                .path(format!("/{}/log/audit", did).as_str());
+            when.method(GET).path(format!("/{did}/log/audit"));
             then.status(500);
         });
 
         let result = monitor.check_for_changes(did).await;
         assert!(result.is_ok(), "Network error should return Ok, not Err");
-        let changes = result.unwrap();
-        assert_eq!(changes.len(), 0, "Network error should return empty vec");
+        assert_eq!(
+            result.unwrap().len(),
+            0,
+            "Network error should return empty vec"
+        );
     }
 
     /// AC6.8: Monitor handles empty audit log (newly created identity, no operations yet).
@@ -585,26 +530,22 @@ mod tests {
     async fn test_ac6_8_empty_audit_log() {
         use httpmock::prelude::*;
 
+        let did = "did:plc:ac68empty";
+        let _ = crate::keychain::delete_item("managed-dids");
+        let _ = setup_identity(did);
+
         let mock_server = MockServer::start();
         let client = PdsClient::new_for_test(mock_server.base_url());
         let monitor = PlcMonitor::new(&client);
 
-        let did = "did:plc:test_empty";
-
-        // Empty audit log
-        let audit_log_json = serde_json::json!([]);
-
         mock_server.mock(|when, then| {
-            when.method(GET)
-                .path(format!("/{}/log/audit", did).as_str());
+            when.method(GET).path(format!("/{did}/log/audit"));
             then.status(200)
                 .header("content-type", "application/json")
-                .json_body(audit_log_json);
+                .json_body(serde_json::json!([]));
         });
 
-        let result = monitor.check_for_changes(did).await;
-        assert!(result.is_ok());
-        let changes = result.unwrap();
+        let changes = monitor.check_for_changes(did).await.expect("check failed");
         assert_eq!(changes.len(), 0, "Empty audit log should return no changes");
     }
 
@@ -613,206 +554,145 @@ mod tests {
     async fn test_ac6_1_multi_identity_all_authorized() {
         use httpmock::prelude::*;
 
+        let _ = crate::keychain::delete_item("managed-dids");
+        let did_alice = "did:plc:ac61alice";
+        let did_bob = "did:plc:ac61bob";
+        let (alice_pub, alice_priv) = setup_identity(did_alice);
+        let (bob_pub, bob_priv) = setup_identity(did_bob);
+
         let mock_server = MockServer::start();
         let client = PdsClient::new_for_test(mock_server.base_url());
         let monitor = PlcMonitor::new(&client);
 
-        let device_key_alice = crypto::DidKeyUri("did:key:zQ3alice_device".to_string());
-        let rotation_key_alice = crypto::DidKeyUri("did:key:zQ3alice_rotation".to_string());
-        let did_alice = "did:plc:alice";
-
-        let device_key_bob = crypto::DidKeyUri("did:key:zQ3bob_device".to_string());
-        let rotation_key_bob = crypto::DidKeyUri("did:key:zQ3bob_rotation".to_string());
-        let did_bob = "did:plc:bob";
-
-        let genesis_op_alice = crypto::build_did_plc_genesis_op(
-            &rotation_key_alice,
-            &device_key_alice,
-            &[1; 32],
+        // Alice: genesis signed by alice's device key
+        let alice_rot = crypto::generate_p256_keypair().expect("keygen");
+        let alice_genesis = crypto::build_did_plc_genesis_op(
+            &alice_rot.key_id,
+            &DidKeyUri(alice_pub.key_id.clone()),
+            &alice_priv,
             "alice.bsky.social",
             "https://pds.alice",
         )
-        .expect("Failed to build alice genesis op");
+        .expect("build alice genesis");
+        let alice_op: serde_json::Value =
+            serde_json::from_str(&alice_genesis.signed_op_json).expect("parse");
 
-        let genesis_op_bob = crypto::build_did_plc_genesis_op(
-            &rotation_key_bob,
-            &device_key_bob,
-            &[3; 32],
+        // Bob: genesis signed by bob's device key
+        let bob_rot = crypto::generate_p256_keypair().expect("keygen");
+        let bob_genesis = crypto::build_did_plc_genesis_op(
+            &bob_rot.key_id,
+            &DidKeyUri(bob_pub.key_id.clone()),
+            &bob_priv,
             "bob.bsky.social",
             "https://pds.bob",
         )
-        .expect("Failed to build bob genesis op");
-
-        let genesis_op_alice_obj: serde_json::Value =
-            serde_json::from_str(&genesis_op_alice.signed_op_json)
-                .expect("Failed to parse alice genesis op");
-        let genesis_op_bob_obj: serde_json::Value =
-            serde_json::from_str(&genesis_op_bob.signed_op_json)
-                .expect("Failed to parse bob genesis op");
-
-        let audit_log_alice = serde_json::json!([
-            {
-                "did": did_alice,
-                "cid": "bafy_alice1",
-                "createdAt": "2026-03-29T00:00:00Z",
-                "nullified": false,
-                "operation": genesis_op_alice_obj
-            }
-        ]);
-
-        let audit_log_bob = serde_json::json!([
-            {
-                "did": did_bob,
-                "cid": "bafy_bob1",
-                "createdAt": "2026-03-29T00:00:00Z",
-                "nullified": false,
-                "operation": genesis_op_bob_obj
-            }
-        ]);
+        .expect("build bob genesis");
+        let bob_op: serde_json::Value =
+            serde_json::from_str(&bob_genesis.signed_op_json).expect("parse");
 
         mock_server.mock(|when, then| {
-            when.method(GET)
-                .path(format!("/{}/log/audit", did_alice).as_str());
+            when.method(GET).path(format!("/{did_alice}/log/audit"));
             then.status(200)
                 .header("content-type", "application/json")
-                .json_body(audit_log_alice);
+                .json_body(serde_json::json!([{
+                    "did": did_alice, "cid": "bafy_alice1",
+                    "createdAt": "2026-03-29T00:00:00Z",
+                    "nullified": false, "operation": alice_op
+                }]));
         });
 
         mock_server.mock(|when, then| {
-            when.method(GET)
-                .path(format!("/{}/log/audit", did_bob).as_str());
+            when.method(GET).path(format!("/{did_bob}/log/audit"));
             then.status(200)
                 .header("content-type", "application/json")
-                .json_body(audit_log_bob);
+                .json_body(serde_json::json!([{
+                    "did": did_bob, "cid": "bafy_bob1",
+                    "createdAt": "2026-03-29T00:00:00Z",
+                    "nullified": false, "operation": bob_op
+                }]));
         });
 
-        let result_alice = monitor.check_for_changes(did_alice).await;
-        assert!(result_alice.is_ok());
-        assert_eq!(result_alice.unwrap().len(), 0);
-
-        let result_bob = monitor.check_for_changes(did_bob).await;
-        assert!(result_bob.is_ok());
-        assert_eq!(result_bob.unwrap().len(), 0);
+        let statuses = monitor.check_all().await.expect("check_all failed");
+        assert_eq!(statuses.len(), 2, "Should have two identity statuses");
+        for status in &statuses {
+            assert_eq!(
+                status.alert_count, 0,
+                "DID {} should have no alerts",
+                status.did
+            );
+        }
     }
 
-    /// AC6.2 (multi-identity): Two identities, one with authorized op, one with unauthorized op.
+    /// AC6.2 (multi-identity): Two identities, one authorized, one unauthorized.
     #[tokio::test]
     async fn test_ac6_2_multi_identity_mixed_auth() {
         use httpmock::prelude::*;
 
+        let _ = crate::keychain::delete_item("managed-dids");
+        let did_alice = "did:plc:ac62alice";
+        let did_bob = "did:plc:ac62bob";
+        let (alice_pub, alice_priv) = setup_identity(did_alice);
+        let (bob_pub, _bob_priv) = setup_identity(did_bob);
+
         let mock_server = MockServer::start();
         let client = PdsClient::new_for_test(mock_server.base_url());
         let monitor = PlcMonitor::new(&client);
 
-        let device_key_alice = crypto::DidKeyUri("did:key:zQ3alice_device".to_string());
-        let rotation_key_alice = crypto::DidKeyUri("did:key:zQ3alice_rotation".to_string());
-        let did_alice = "did:plc:alice";
-
-        let device_key_bob = crypto::DidKeyUri("did:key:zQ3bob_device".to_string());
-        let other_key_bob = crypto::DidKeyUri("did:key:zQ3bob_other".to_string());
-        let rotation_key_bob = crypto::DidKeyUri("did:key:zQ3bob_rotation".to_string());
-        let did_bob = "did:plc:bob";
-
-        let genesis_op_alice = crypto::build_did_plc_genesis_op(
-            &rotation_key_alice,
-            &device_key_alice,
-            &[1; 32],
+        // Alice: genesis signed by alice's device key → authorized
+        let alice_rot = crypto::generate_p256_keypair().expect("keygen");
+        let alice_genesis = crypto::build_did_plc_genesis_op(
+            &alice_rot.key_id,
+            &DidKeyUri(alice_pub.key_id.clone()),
+            &alice_priv,
             "alice.bsky.social",
             "https://pds.alice",
         )
-        .expect("Failed to build alice genesis op");
+        .expect("build alice genesis");
+        let alice_op: serde_json::Value =
+            serde_json::from_str(&alice_genesis.signed_op_json).expect("parse");
 
-        let genesis_op_bob = crypto::build_did_plc_genesis_op(
-            &rotation_key_bob,
-            &device_key_bob,
-            &[3; 32],
+        // Bob: genesis signed by a DIFFERENT key → unauthorized
+        let bob_other = crypto::generate_p256_keypair().expect("keygen");
+        let bob_genesis = crypto::build_did_plc_genesis_op(
+            &DidKeyUri(bob_pub.key_id.clone()),
+            &bob_other.key_id,
+            &*bob_other.private_key_bytes,
             "bob.bsky.social",
             "https://pds.bob",
         )
-        .expect("Failed to build bob genesis op");
-
-        let genesis_op_alice_obj: serde_json::Value =
-            serde_json::from_str(&genesis_op_alice.signed_op_json)
-                .expect("Failed to parse alice genesis op");
-        let genesis_op_bob_obj: serde_json::Value =
-            serde_json::from_str(&genesis_op_bob.signed_op_json)
-                .expect("Failed to parse bob genesis op");
-
-        let rotation_op_bob = crypto::build_did_plc_rotation_op(
-            "bafy_bob_genesis",
-            vec![device_key_bob.0.clone(), other_key_bob.0.clone()],
-            std::collections::BTreeMap::new(),
-            vec![],
-            std::collections::BTreeMap::new(),
-            |data| {
-                let signing_key =
-                    p256::ecdsa::SigningKey::from_bytes(&p256::FieldBytes::from_slice(&[4; 32]))
-                        .map_err(|e| crypto::CryptoError::PlcOperation(e.to_string()))?;
-                let sig: p256::ecdsa::Signature =
-                    p256::ecdsa::signature::Signer::sign(&signing_key, data);
-                Ok(sig.to_bytes().to_vec())
-            },
-        )
-        .expect("Failed to build bob rotation op");
-
-        let rotation_op_bob_obj: serde_json::Value =
-            serde_json::from_str(&rotation_op_bob.signed_op_json)
-                .expect("Failed to parse bob rotation op");
-
-        let audit_log_alice = serde_json::json!([
-            {
-                "did": did_alice,
-                "cid": "bafy_alice1",
-                "createdAt": "2026-03-29T00:00:00Z",
-                "nullified": false,
-                "operation": genesis_op_alice_obj
-            }
-        ]);
-
-        let audit_log_bob = serde_json::json!([
-            {
-                "did": did_bob,
-                "cid": "bafy_bob_genesis",
-                "createdAt": "2026-03-29T00:00:00Z",
-                "nullified": false,
-                "operation": genesis_op_bob_obj,
-                "rotationKeys": [device_key_bob.0, other_key_bob.0]
-            },
-            {
-                "did": did_bob,
-                "cid": "bafy_bob_rotation",
-                "createdAt": "2026-03-29T01:00:00Z",
-                "nullified": false,
-                "operation": rotation_op_bob_obj
-            }
-        ]);
+        .expect("build bob genesis");
+        let bob_op: serde_json::Value =
+            serde_json::from_str(&bob_genesis.signed_op_json).expect("parse");
 
         mock_server.mock(|when, then| {
-            when.method(GET)
-                .path(format!("/{}/log/audit", did_alice).as_str());
+            when.method(GET).path(format!("/{did_alice}/log/audit"));
             then.status(200)
                 .header("content-type", "application/json")
-                .json_body(audit_log_alice);
+                .json_body(serde_json::json!([{
+                    "did": did_alice, "cid": "bafy_alice1",
+                    "createdAt": "2026-03-29T00:00:00Z",
+                    "nullified": false, "operation": alice_op
+                }]));
         });
 
         mock_server.mock(|when, then| {
-            when.method(GET)
-                .path(format!("/{}/log/audit", did_bob).as_str());
+            when.method(GET).path(format!("/{did_bob}/log/audit"));
             then.status(200)
                 .header("content-type", "application/json")
-                .json_body(audit_log_bob);
+                .json_body(serde_json::json!([{
+                    "did": did_bob, "cid": "bafy_bob1",
+                    "createdAt": "2026-03-29T00:00:00Z",
+                    "nullified": false, "operation": bob_op
+                }]));
         });
 
-        let result_alice = monitor.check_for_changes(did_alice).await;
-        assert!(result_alice.is_ok());
-        assert_eq!(
-            result_alice.unwrap().len(),
-            0,
-            "Alice should have no alerts"
-        );
+        let statuses = monitor.check_all().await.expect("check_all failed");
+        assert_eq!(statuses.len(), 2);
 
-        let result_bob = monitor.check_for_changes(did_bob).await;
-        assert!(result_bob.is_ok());
-        assert_eq!(result_bob.unwrap().len(), 1, "Bob should have one alert");
+        let alice_status = statuses.iter().find(|s| s.did == did_alice).unwrap();
+        assert_eq!(alice_status.alert_count, 0, "Alice should have no alerts");
+
+        let bob_status = statuses.iter().find(|s| s.did == did_bob).unwrap();
+        assert_eq!(bob_status.alert_count, 1, "Bob should have one alert");
     }
 }
