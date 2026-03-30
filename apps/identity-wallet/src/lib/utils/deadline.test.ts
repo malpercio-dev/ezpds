@@ -11,6 +11,10 @@ describe('deadline utils', () => {
     it('RECOVERY_WINDOW_MS equals 72 hours in milliseconds', () => {
       expect(RECOVERY_WINDOW_MS).toBe(72 * 60 * 60 * 1000);
     });
+
+    it('throws on invalid timestamp', () => {
+      expect(() => getDeadline('not-a-date')).toThrow('Invalid createdAt timestamp');
+    });
   });
 
   describe('getUrgency', () => {
@@ -18,6 +22,11 @@ describe('deadline utils', () => {
 
     it('returns safe when >24 hours remaining', () => {
       const now = deadline.getTime() - 48 * 3600_000; // 48h before
+      expect(getUrgency(deadline, now)).toBe('safe');
+    });
+
+    it('returns safe at exactly 24 hours remaining', () => {
+      const now = deadline.getTime() - 24 * 3600_000; // exactly 24h before
       expect(getUrgency(deadline, now)).toBe('safe');
     });
 
@@ -29,6 +38,11 @@ describe('deadline utils', () => {
     it('returns critical when <4 hours remaining', () => {
       const now = deadline.getTime() - 2 * 3600_000; // 2h before
       expect(getUrgency(deadline, now)).toBe('critical');
+    });
+
+    it('returns warning at exactly 4 hours remaining', () => {
+      const now = deadline.getTime() - 4 * 3600_000; // exactly 4h before
+      expect(getUrgency(deadline, now)).toBe('warning');
     });
 
     it('returns expired at exactly the deadline', () => {

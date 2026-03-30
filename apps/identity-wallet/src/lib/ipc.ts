@@ -510,7 +510,7 @@ export interface UnauthorizedChange {
  */
 export interface IdentityStatus {
   did: string;
-  alertCount: number;
+  checkFailed: boolean;
   unauthorizedChanges: UnauthorizedChange[];
 }
 
@@ -520,7 +520,7 @@ export interface IdentityStatus {
  *
  * This is the foreground check command — called by the frontend when the app
  * becomes visible (visibilitychange event). It supplements the background
- * 15-minute polling timer with immediate checks on app foreground.
+ * polling timer (interval defined by MONITOR_INTERVAL_SECS) with immediate checks on app foreground.
  */
 export const checkIdentityStatus = (): Promise<IdentityStatus[]> =>
   invoke('check_identity_status');

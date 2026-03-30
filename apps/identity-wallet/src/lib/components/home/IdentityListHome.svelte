@@ -96,7 +96,7 @@
       .then((statuses) => {
         const data = new Map<string, UnauthorizedChange[]>();
         for (const s of statuses) {
-          if (s.alertCount > 0) data.set(s.did, s.unauthorizedChanges);
+          if (s.unauthorizedChanges.length > 0) data.set(s.did, s.unauthorizedChanges);
         }
         alertData = data;
       })
@@ -104,9 +104,10 @@
 
     // Listen for plc_alert events from background monitoring timer
     unlisten = await listen<IdentityStatus[]>('plc_alert', (event) => {
+      if (!Array.isArray(event.payload)) return;
       const data = new Map<string, UnauthorizedChange[]>();
       for (const s of event.payload) {
-        if (s.alertCount > 0) data.set(s.did, s.unauthorizedChanges);
+        if (s.unauthorizedChanges.length > 0) data.set(s.did, s.unauthorizedChanges);
       }
       alertData = data;
     });
@@ -151,6 +152,7 @@
     {:else}
       <div class="identity-cards">
         {#each identities as card (card.did)}
+          {@const alerts = alertData.get(card.did)}
           <button
             class="identity-card"
             onclick={() => onselect(card.did, didDocs.get(card.did) ?? {})}
@@ -166,16 +168,16 @@
               </div>
             </div>
             <div class="card-badge">
-              {#if alertData.get(card.did)?.length}
+              {#if alerts?.length}
                 <div
                   class="badge badge--alert"
                   role="button"
                   tabindex="0"
-                  onkeydown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onalert?.(card.did, alertData.get(card.did) ?? []); } }}
-                  onclick={(e) => { e.stopPropagation(); onalert?.(card.did, alertData.get(card.did) ?? []); }}
+                  onkeydown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onalert?.(card.did, alerts ?? []); } }}
+                  onclick={(e) => { e.stopPropagation(); onalert?.(card.did, alerts ?? []); }}
                 >
                   <span class="badge-dot"></span>
-                  {alertData.get(card.did)?.length} {alertData.get(card.did)?.length === 1 ? 'Alert' : 'Alerts'}
+                  {alerts?.length} {alerts?.length === 1 ? 'Alert' : 'Alerts'}
                 </div>
               {/if}
               <span

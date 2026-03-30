@@ -1,7 +1,11 @@
 export const RECOVERY_WINDOW_MS = 72 * 60 * 60 * 1000; // 72 hours
 
 export function getDeadline(createdAt: string): Date {
-  return new Date(new Date(createdAt).getTime() + RECOVERY_WINDOW_MS);
+  const timestamp = new Date(createdAt).getTime();
+  if (isNaN(timestamp)) {
+    throw new Error(`Invalid createdAt timestamp: ${createdAt}`);
+  }
+  return new Date(timestamp + RECOVERY_WINDOW_MS);
 }
 
 export type Urgency = 'safe' | 'warning' | 'critical' | 'expired';

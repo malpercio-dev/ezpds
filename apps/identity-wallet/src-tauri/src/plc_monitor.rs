@@ -14,7 +14,7 @@ pub struct UnauthorizedChange {
     /// CID of the unauthorized operation.
     pub cid: String,
     /// ISO 8601 timestamp when plc.directory accepted the operation.
-    /// Frontend computes recovery deadline as created_at + 72 hours.
+    /// Frontend computes recovery deadline from this timestamp.
     pub created_at: String,
     /// did:key URI of the key that signed this operation, if identified.
     /// None if the signing key could not be determined from known rotation keys.
@@ -28,7 +28,9 @@ pub struct UnauthorizedChange {
 #[serde(rename_all = "camelCase")]
 pub struct IdentityStatus {
     pub did: String,
-    pub alert_count: usize,
+    /// True when the monitor could not reach plc.directory or parse the audit log.
+    /// The frontend should show a degraded-monitoring indicator instead of "all clear."
+    pub check_failed: bool,
     pub unauthorized_changes: Vec<UnauthorizedChange>,
 }
 
@@ -63,12 +65,23 @@ impl<'a> PlcMonitor<'a> {
 
         let mut statuses = Vec::new();
         for did in &dids {
-            let unauthorized = self.check_for_changes(did).await?;
-            statuses.push(IdentityStatus {
-                did: did.clone(),
-                alert_count: unauthorized.len(),
-                unauthorized_changes: unauthorized,
-            });
+            match self.check_for_changes(did).await {
+                Ok(unauthorized) => {
+                    statuses.push(IdentityStatus {
+                        did: did.clone(),
+                        check_failed: false,
+                        unauthorized_changes: unauthorized,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!(did = did.as_str(), error = %e, "check failed for identity, continuing with remaining");
+                    statuses.push(IdentityStatus {
+                        did: did.clone(),
+                        check_failed: true,
+                        unauthorized_changes: vec![],
+                    });
+                }
+            }
         }
         Ok(statuses)
     }
@@ -78,22 +91,20 @@ impl<'a> PlcMonitor<'a> {
         did: &str,
     ) -> Result<Vec<UnauthorizedChange>, MonitorError> {
         // Fetch current audit log
-        let current_log_json = match self.pds_client.fetch_audit_log(did).await {
-            Ok(json) => json,
-            Err(e) => {
-                tracing::warn!(did, error = %e, "Failed to fetch audit log, will retry next cycle");
-                return Ok(vec![]);
+        let current_log_json = self.pds_client.fetch_audit_log(did).await.map_err(|e| {
+            tracing::warn!(did, error = %e, "failed to fetch audit log, will retry next cycle");
+            MonitorError::NetworkError {
+                message: e.to_string(),
             }
-        };
+        })?;
 
         // Parse current log
-        let current_entries = match parse_audit_log(&current_log_json) {
-            Ok(entries) => entries,
-            Err(e) => {
-                tracing::warn!(did, error = %e, "Failed to parse audit log");
-                return Ok(vec![]);
+        let current_entries = parse_audit_log(&current_log_json).map_err(|e| {
+            tracing::warn!(did, error = %e, "failed to parse audit log");
+            MonitorError::ParseError {
+                message: e.to_string(),
             }
-        };
+        })?;
 
         // Load cached log
         let store = IdentityStore;
@@ -155,12 +166,10 @@ impl<'a> PlcMonitor<'a> {
             });
         }
 
-        // Update cached log
-        store.store_plc_log(did, &current_log_json).map_err(|e| {
-            MonitorError::IdentityStoreError {
-                message: e.to_string(),
-            }
-        })?;
+        // Update cached log — warn on failure but still return detected changes
+        if let Err(e) = store.store_plc_log(did, &current_log_json) {
+            tracing::warn!(did, error = %e, "failed to update cached audit log, changes may be re-detected next cycle");
+        }
 
         Ok(unauthorized)
     }
@@ -179,11 +188,13 @@ fn identify_signing_key(
         .last()?;
 
     // Extract rotationKeys from previous operation
-    let rotation_keys: Vec<String> = prev_entry
-        .operation
-        .get("rotationKeys")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default();
+    let rotation_keys: Vec<String> = match prev_entry.operation.get("rotationKeys") {
+        Some(v) => serde_json::from_value(v.clone()).unwrap_or_else(|e| {
+            tracing::debug!(cid = target.cid, error = %e, "failed to parse rotationKeys from previous operation");
+            vec![]
+        }),
+        None => vec![],
+    };
 
     // Try each key individually
     for key in &rotation_keys {
@@ -209,8 +220,8 @@ pub async fn run_monitoring_cycle(monitor: &PlcMonitor<'_>) -> Vec<IdentityStatu
 }
 
 /// Run the PLC monitoring loop. Spawned once during app setup.
-/// Checks all managed identities every 15 minutes and emits "plc_alert"
-/// events to the frontend when unauthorized changes are detected.
+/// Checks all managed identities every MONITOR_INTERVAL_SECS and emits
+/// "plc_alert" events to the frontend when unauthorized changes are detected.
 pub async fn run_monitoring_loop(app_handle: tauri::AppHandle) {
     let mut interval = interval(Duration::from_secs(MONITOR_INTERVAL_SECS));
     // Don't burst-fire missed ticks after iOS suspension
@@ -225,23 +236,36 @@ pub async fn run_monitoring_loop(app_handle: tauri::AppHandle) {
         let monitor = PlcMonitor::new(state.pds_client());
         let statuses = run_monitoring_cycle(&monitor).await;
 
-        let has_alerts = statuses.iter().any(|s| s.alert_count > 0);
-        if has_alerts {
-            if let Err(e) = app_handle.emit("plc_alert", &statuses) {
-                tracing::warn!(error = %e, "Failed to emit plc_alert event");
-            }
+        emit_if_alerts(&app_handle, &statuses);
+    }
+    // If the loop ever exits (shouldn't happen), log it so we know monitoring died.
+    #[allow(unreachable_code)]
+    {
+        tracing::error!("PLC monitoring loop exited unexpectedly");
+    }
+}
+
+/// Emit "plc_alert" event to the frontend if any identity has unauthorized changes.
+fn emit_if_alerts(app_handle: &tauri::AppHandle, statuses: &[IdentityStatus]) {
+    let has_alerts = statuses.iter().any(|s| !s.unauthorized_changes.is_empty());
+    if has_alerts {
+        if let Err(e) = app_handle.emit("plc_alert", statuses) {
+            tracing::warn!(error = %e, "failed to emit plc_alert event");
         }
     }
 }
 
 /// Tauri IPC command: check all managed identities for unauthorized PLC operations.
-/// Returns a list of IdentityStatus, one per managed DID.
+/// Also emits "plc_alert" event so IdentityListHome's event listener receives updates.
 #[tauri::command]
 pub async fn check_identity_status(
+    app: tauri::AppHandle,
     state: tauri::State<'_, crate::oauth::AppState>,
 ) -> Result<Vec<IdentityStatus>, MonitorError> {
     let monitor = PlcMonitor::new(state.pds_client());
-    monitor.check_all().await
+    let statuses = monitor.check_all().await?;
+    emit_if_alerts(&app, &statuses);
+    Ok(statuses)
 }
 
 #[cfg(test)]
@@ -285,13 +309,13 @@ mod tests {
     fn test_identity_status_serializes_camel_case() {
         let status = IdentityStatus {
             did: "did:plc:test".to_string(),
-            alert_count: 2,
+            check_failed: false,
             unauthorized_changes: vec![],
         };
 
         let json = serde_json::to_value(&status).expect("serialize");
         assert_eq!(json["did"], "did:plc:test");
-        assert_eq!(json["alertCount"], 2);
+        assert_eq!(json["checkFailed"], false);
         assert!(json["unauthorizedChanges"].is_array());
     }
 
@@ -307,13 +331,13 @@ mod tests {
 
         let status = IdentityStatus {
             did: "did:plc:test".to_string(),
-            alert_count: 1,
+            check_failed: false,
             unauthorized_changes: vec![change],
         };
 
         let json = serde_json::to_value(&status).expect("serialize");
-        assert_eq!(json["alertCount"], 1);
         assert_eq!(json["unauthorizedChanges"].as_array().unwrap().len(), 1);
+        assert_eq!(json["checkFailed"], false);
     }
 
     /// PlcMonitor borrows PdsClient; verify the reference is well-formed.
@@ -391,8 +415,7 @@ mod tests {
         (device_pub, priv_bytes)
     }
 
-    /// AC6.1: Monitor detects a new PLC operation signed by the device key
-    /// and updates cached log without alerting.
+    /// Authorized change (device-key-signed) produces no alert and updates cache.
     #[tokio::test]
     async fn test_ac6_1_authorized_change_detected() {
         use httpmock::prelude::*;
@@ -443,8 +466,7 @@ mod tests {
         assert_eq!(changes.len(), 0, "No new changes after cache update");
     }
 
-    /// AC6.2: Monitor detects a new PLC operation signed by a different key
-    /// and creates an UnauthorizedChange alert.
+    /// Unauthorized change (different key) creates an UnauthorizedChange alert.
     #[tokio::test]
     async fn test_ac6_2_unauthorized_change_detected() {
         use httpmock::prelude::*;
@@ -491,7 +513,7 @@ mod tests {
         assert_eq!(changes[0].cid, "bafy_ac62_genesis");
     }
 
-    /// AC6.3: Alert includes correct recovery deadline (created_at from audit log).
+    /// Alert created_at matches the audit log timestamp for deadline computation.
     #[tokio::test]
     async fn test_ac6_3_created_at_matches_audit_log() {
         use httpmock::prelude::*;
@@ -542,8 +564,7 @@ mod tests {
         );
     }
 
-    /// AC6.7: Monitor handles plc.directory being unreachable gracefully
-    /// (logs error, returns Ok(vec![]), does not alert).
+    /// Network error returns Err, check_all sets check_failed for that identity.
     #[tokio::test]
     async fn test_ac6_7_network_error_graceful_handling() {
         use httpmock::prelude::*;
@@ -560,15 +581,14 @@ mod tests {
         });
 
         let result = monitor.check_for_changes(did).await;
-        assert!(result.is_ok(), "Network error should return Ok, not Err");
-        assert_eq!(
-            result.unwrap().len(),
-            0,
-            "Network error should return empty vec"
-        );
+        assert!(result.is_err(), "Network error should return Err");
+        match result.unwrap_err() {
+            MonitorError::NetworkError { .. } => {}
+            _ => panic!("Expected NetworkError"),
+        }
     }
 
-    /// AC6.8: Monitor handles empty audit log (newly created identity, no operations yet).
+    /// Empty audit log (newly created identity) returns no changes.
     #[tokio::test]
     async fn test_ac6_8_empty_audit_log() {
         use httpmock::prelude::*;
@@ -592,7 +612,7 @@ mod tests {
         assert_eq!(changes.len(), 0, "Empty audit log should return no changes");
     }
 
-    /// AC6.1 (multi-identity): Two identities, both have authorized operations.
+    /// Multi-identity: both identities authorized, no alerts.
     #[tokio::test]
     async fn test_ac6_1_multi_identity_all_authorized() {
         use httpmock::prelude::*;
@@ -657,12 +677,18 @@ mod tests {
         let statuses = monitor.check_all().await.expect("check_all failed");
         // Filter to our test DIDs (other parallel tests may register additional DIDs)
         let alice_status = statuses.iter().find(|s| s.did == did_alice).unwrap();
-        assert_eq!(alice_status.alert_count, 0, "Alice should have no alerts");
+        assert!(
+            alice_status.unauthorized_changes.is_empty(),
+            "Alice should have no alerts"
+        );
         let bob_status = statuses.iter().find(|s| s.did == did_bob).unwrap();
-        assert_eq!(bob_status.alert_count, 0, "Bob should have no alerts");
+        assert!(
+            bob_status.unauthorized_changes.is_empty(),
+            "Bob should have no alerts"
+        );
     }
 
-    /// AC6.2 (multi-identity): Two identities, one authorized, one unauthorized.
+    /// Multi-identity: one authorized, one unauthorized.
     #[tokio::test]
     async fn test_ac6_2_multi_identity_mixed_auth() {
         use httpmock::prelude::*;
@@ -727,9 +753,16 @@ mod tests {
         let statuses = monitor.check_all().await.expect("check_all failed");
         // Filter to our test DIDs (other parallel tests may register additional DIDs)
         let alice_status = statuses.iter().find(|s| s.did == did_alice).unwrap();
-        assert_eq!(alice_status.alert_count, 0, "Alice should have no alerts");
+        assert!(
+            alice_status.unauthorized_changes.is_empty(),
+            "Alice should have no alerts"
+        );
 
         let bob_status = statuses.iter().find(|s| s.did == did_bob).unwrap();
-        assert_eq!(bob_status.alert_count, 1, "Bob should have one alert");
+        assert_eq!(
+            bob_status.unauthorized_changes.len(),
+            1,
+            "Bob should have one alert"
+        );
     }
 }
