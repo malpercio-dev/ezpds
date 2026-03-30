@@ -1,15 +1,18 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { listIdentities, getStoredDidDoc, getDeviceKeyId } from '$lib/ipc';
+  import { onMount, onDestroy } from 'svelte';
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { listIdentities, getStoredDidDoc, getDeviceKeyId, checkIdentityStatus, type UnauthorizedChange, type IdentityStatus } from '$lib/ipc';
   import { extractPdsFromPlcDoc, extractHandle, truncateDid } from '$lib/did-doc-utils';
   import DIDAvatar from './DIDAvatar.svelte';
 
   let {
     onadd,
     onselect,
+    onalert,
   }: {
     onadd: () => void;
     onselect: (did: string, didDoc: Record<string, unknown>) => void;
+    onalert?: (did: string, changes: UnauthorizedChange[]) => void;
   } = $props();
 
   interface IdentityCard {
@@ -23,6 +26,8 @@
   let didDocs = $state<Map<string, Record<string, unknown>>>(new Map());
   let loading = $state(true);
   let loadError = $state<string | null>(null);
+  let alertData = $state<Map<string, UnauthorizedChange[]>>(new Map());
+  let unlisten: UnlistenFn | null = null;
 
   function isDeviceKeyRoot(
     didDoc: Record<string, unknown>,
@@ -83,8 +88,32 @@
     }
   }
 
-  onMount(() => {
+  onMount(async () => {
     loadData();
+
+    // Fetch initial alert status
+    checkIdentityStatus()
+      .then((statuses) => {
+        const data = new Map<string, UnauthorizedChange[]>();
+        for (const s of statuses) {
+          if (s.alertCount > 0) data.set(s.did, s.unauthorizedChanges);
+        }
+        alertData = data;
+      })
+      .catch((e) => console.warn('Alert check failed:', e));
+
+    // Listen for plc_alert events from background monitoring timer
+    unlisten = await listen<IdentityStatus[]>('plc_alert', (event) => {
+      const data = new Map<string, UnauthorizedChange[]>();
+      for (const s of event.payload) {
+        if (s.alertCount > 0) data.set(s.did, s.unauthorizedChanges);
+      }
+      alertData = data;
+    });
+  });
+
+  onDestroy(() => {
+    unlisten?.();
   });
 
   function getBadgeLabel(deviceKeyIsRoot: boolean | null): string {
@@ -137,6 +166,18 @@
               </div>
             </div>
             <div class="card-badge">
+              {#if alertData.get(card.did)?.length}
+                <div
+                  class="badge badge--alert"
+                  role="button"
+                  tabindex="0"
+                  onkeydown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onalert?.(card.did, alertData.get(card.did) ?? []); } }}
+                  onclick={(e) => { e.stopPropagation(); onalert?.(card.did, alertData.get(card.did) ?? []); }}
+                >
+                  <span class="badge-dot"></span>
+                  {alertData.get(card.did)?.length} {alertData.get(card.did)?.length === 1 ? 'Alert' : 'Alerts'}
+                </div>
+              {/if}
               <span
                 class="badge"
                 class:badge--root={card.deviceKeyIsRoot === true}
@@ -331,6 +372,22 @@
 
   .badge--unknown .badge-dot {
     background: #9ca3af;
+  }
+
+  .badge--alert {
+    background: #fef2f2;
+    color: #991b1b;
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s;
+  }
+
+  .badge--alert:active {
+    background: #fecaca;
+    color: #7f1d1d;
+  }
+
+  .badge--alert .badge-dot {
+    background: #ef4444;
   }
 
   .empty-state {
