@@ -44,7 +44,6 @@
   <div class="alerts-container">
     {#each changes as change (change.cid)}
       {@const deadline = getDeadline(change.createdAt)}
-      {@const remaining = deadline.getTime() - now}
       {@const urgency = getUrgency(deadline, now)}
 
       <div class="alert-card">

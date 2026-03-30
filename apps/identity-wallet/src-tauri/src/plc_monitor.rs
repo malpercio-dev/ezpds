@@ -462,7 +462,7 @@ mod tests {
         let genesis_op = crypto::build_did_plc_genesis_op(
             &DidKeyUri(device_pub.key_id.clone()),
             &other_kp.key_id,
-            &*other_kp.private_key_bytes,
+            &other_kp.private_key_bytes,
             "test.bsky.social",
             "https://pds.test",
         )
@@ -510,7 +510,7 @@ mod tests {
         let genesis_op = crypto::build_did_plc_genesis_op(
             &DidKeyUri(device_pub.key_id.clone()),
             &other_kp.key_id,
-            &*other_kp.private_key_bytes,
+            &other_kp.private_key_bytes,
             "test.bsky.social",
             "https://pds.test",
         )
@@ -597,7 +597,6 @@ mod tests {
     async fn test_ac6_1_multi_identity_all_authorized() {
         use httpmock::prelude::*;
 
-
         let did_alice = "did:plc:ac61alice";
         let did_bob = "did:plc:ac61bob";
         let (alice_pub, alice_priv) = setup_identity(did_alice);
@@ -668,7 +667,6 @@ mod tests {
     async fn test_ac6_2_multi_identity_mixed_auth() {
         use httpmock::prelude::*;
 
-
         let did_alice = "did:plc:ac62alice";
         let did_bob = "did:plc:ac62bob";
         let (alice_pub, alice_priv) = setup_identity(did_alice);
@@ -696,7 +694,7 @@ mod tests {
         let bob_genesis = crypto::build_did_plc_genesis_op(
             &DidKeyUri(bob_pub.key_id.clone()),
             &bob_other.key_id,
-            &*bob_other.private_key_bytes,
+            &bob_other.private_key_bytes,
             "bob.bsky.social",
             "https://pds.bob",
         )
