@@ -40,12 +40,12 @@ pub enum MonitorError {
     ParseError { message: String },
 }
 
-pub struct PlcMonitor {
-    pds_client: PdsClient,
+pub struct PlcMonitor<'a> {
+    pds_client: &'a PdsClient,
 }
 
-impl PlcMonitor {
-    pub fn new(pds_client: PdsClient) -> Self {
+impl<'a> PlcMonitor<'a> {
+    pub fn new(pds_client: &'a PdsClient) -> Self {
         Self { pds_client }
     }
 
@@ -187,6 +187,16 @@ fn identify_signing_key(
     None
 }
 
+/// Tauri IPC command: check all managed identities for unauthorized PLC operations.
+/// Returns a list of IdentityStatus, one per managed DID.
+#[tauri::command]
+pub async fn check_identity_status(
+    state: tauri::State<'_, crate::oauth::AppState>,
+) -> Result<Vec<IdentityStatus>, MonitorError> {
+    let monitor = PlcMonitor::new(state.pds_client());
+    monitor.check_all().await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,11 +269,11 @@ mod tests {
         assert_eq!(json["unauthorizedChanges"].as_array().unwrap().len(), 1);
     }
 
-    /// Test PlcMonitor can be created with a PdsClient.
+    /// Test PlcMonitor can be created with a PdsClient reference.
     #[test]
     fn test_plc_monitor_creation() {
         let pds_client = PdsClient::new();
-        let monitor = PlcMonitor::new(pds_client);
+        let monitor = PlcMonitor::new(&pds_client);
         // Just verify it constructs without panic
         assert!(true);
     }
