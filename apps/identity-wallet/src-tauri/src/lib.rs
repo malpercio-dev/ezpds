@@ -7,6 +7,7 @@ pub mod keychain;
 pub mod oauth;
 pub mod oauth_client;
 pub mod pds_client;
+pub mod plc_monitor;
 
 use crypto::{build_did_plc_genesis_op_with_external_signer, CryptoError, DidKeyUri};
 use serde::{Deserialize, Serialize};
