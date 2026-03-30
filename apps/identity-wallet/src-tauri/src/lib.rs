@@ -791,6 +791,10 @@ pub fn run() {
                 });
             }
 
+            // Start PLC monitoring timer (15-minute interval)
+            let monitor_handle = app.handle().clone();
+            tauri::async_runtime::spawn(plc_monitor::run_monitoring_loop(monitor_handle));
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

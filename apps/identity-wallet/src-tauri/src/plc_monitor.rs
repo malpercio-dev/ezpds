@@ -3,6 +3,9 @@ use crate::identity_store::IdentityStore;
 use crate::pds_client::PdsClient;
 use crypto::{diff_audit_logs, parse_audit_log, verify_plc_operation, AuditEntry, DidKeyUri};
 use serde::Serialize;
+use std::time::Duration;
+use tauri::{Emitter, Manager};
+use tokio::time::{interval, MissedTickBehavior};
 
 /// An unauthorized PLC operation detected by the monitor.
 #[derive(Debug, Clone, Serialize)]
@@ -189,6 +192,46 @@ fn identify_signing_key(
         }
     }
     None
+}
+
+const MONITOR_INTERVAL_SECS: u64 = 15 * 60; // 15 minutes
+
+/// Run a single monitoring cycle. Extracted from the loop for testability.
+/// Returns the list of identity statuses with any alerts.
+pub async fn run_monitoring_cycle(monitor: &PlcMonitor<'_>) -> Vec<IdentityStatus> {
+    match monitor.check_all().await {
+        Ok(statuses) => statuses,
+        Err(e) => {
+            tracing::warn!(error = %e, "Monitoring cycle check_all failed");
+            vec![]
+        }
+    }
+}
+
+/// Run the PLC monitoring loop. Spawned once during app setup.
+/// Checks all managed identities every 15 minutes and emits "plc_alert"
+/// events to the frontend when unauthorized changes are detected.
+pub async fn run_monitoring_loop(app_handle: tauri::AppHandle) {
+    let mut interval = interval(Duration::from_secs(MONITOR_INTERVAL_SECS));
+    // Don't burst-fire missed ticks after iOS suspension
+    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    // Skip the first immediate tick — let the app finish initializing
+    interval.tick().await;
+
+    loop {
+        interval.tick().await;
+
+        let state = app_handle.state::<crate::oauth::AppState>();
+        let monitor = PlcMonitor::new(state.pds_client());
+        let statuses = run_monitoring_cycle(&monitor).await;
+
+        let has_alerts = statuses.iter().any(|s| s.alert_count > 0);
+        if has_alerts {
+            if let Err(e) = app_handle.emit("plc_alert", &statuses) {
+                tracing::warn!(error = %e, "Failed to emit plc_alert event");
+            }
+        }
+    }
 }
 
 /// Tauri IPC command: check all managed identities for unauthorized PLC operations.

@@ -486,3 +486,41 @@ export const getStoredDidDoc = (did: string): Promise<Record<string, unknown> | 
 
 export const getDeviceKeyId = (did: string): Promise<string> =>
   invoke('get_device_key_id', { did });
+
+// ── PLC Monitoring ──────────────────────────────────────────────────────────
+
+/**
+ * An unauthorized PLC operation detected by the monitor.
+ * Matches UnauthorizedChange struct in plc_monitor.rs with #[serde(rename_all = "camelCase")].
+ */
+export interface UnauthorizedChange {
+  /** CID of the unauthorized operation. */
+  cid: string;
+  /** ISO 8601 timestamp when plc.directory accepted the operation. */
+  createdAt: string;
+  /** did:key URI of the key that signed this operation, if identified. */
+  signingKey: string | null;
+  /** The raw PLC operation JSON for display in alert detail. */
+  operation: unknown;
+}
+
+/**
+ * Result of checking a single identity's PLC status.
+ * Matches IdentityStatus struct in plc_monitor.rs with #[serde(rename_all = "camelCase")].
+ */
+export interface IdentityStatus {
+  did: string;
+  alertCount: number;
+  unauthorizedChanges: UnauthorizedChange[];
+}
+
+/**
+ * Check all managed identities for unauthorized PLC operations.
+ * Returns a list of IdentityStatus, one per managed DID.
+ *
+ * This is the foreground check command — called by the frontend when the app
+ * becomes visible (visibilitychange event). It supplements the background
+ * 15-minute polling timer with immediate checks on app foreground.
+ */
+export const checkIdentityStatus = (): Promise<IdentityStatus[]> =>
+  invoke('check_identity_status');

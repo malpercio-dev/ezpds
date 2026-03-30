@@ -1,6 +1,6 @@
 <script lang="ts">
   import { listen } from '@tauri-apps/api/event';
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import ModeSelectScreen from '$lib/components/onboarding/ModeSelectScreen.svelte';
   import RelayConfigScreen from '$lib/components/onboarding/RelayConfigScreen.svelte';
   import WelcomeScreen from '$lib/components/onboarding/WelcomeScreen.svelte';
@@ -21,7 +21,7 @@
   import ClaimSuccessScreen from '$lib/components/onboarding/ClaimSuccessScreen.svelte';
   import DIDDocumentScreen from '$lib/components/home/DIDDocumentScreen.svelte';
   import RecoveryInfoScreen from '$lib/components/home/RecoveryInfoScreen.svelte';
-  import { createAccount, listIdentities, type CreateAccountError, type OAuthError, type HomeData, type IdentityInfo, type VerifiedClaimOp, type ClaimResult } from '$lib/ipc';
+  import { createAccount, listIdentities, checkIdentityStatus, type CreateAccountError, type OAuthError, type HomeData, type IdentityInfo, type VerifiedClaimOp, type ClaimResult } from '$lib/ipc';
   import { normalizePlcDocToW3c } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
 
@@ -94,13 +94,20 @@
 
   // ── Relay configuration and OAuth event listener ──────────────────────
 
+  function handleVisibilityChange() {
+    if (document.visibilityState === 'visible' && step === 'home') {
+      checkIdentityStatus().catch((e) => {
+        console.warn('PLC status check failed:', e);
+      });
+    }
+  }
+
   onMount(async () => {
     // If the user has claimed identities, skip to home.
     try {
       const identities = await listIdentities();
       if (identities.length > 0) {
         step = 'home';
-        return;
       }
     } catch (e) {
       console.error('listIdentities failed on mount:', e);
@@ -120,6 +127,13 @@
     // Promise, not the unlisten function). Since +page.svelte is the root page and never
     // unmounts during the app lifecycle, the listener persists for the app's lifetime,
     // which is the correct behavior.
+
+    // PLC monitoring: check on app foreground
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+  });
+
+  onDestroy(() => {
+    document.removeEventListener('visibilitychange', handleVisibilityChange);
   });
 
   // ── Account creation ─────────────────────────────────────────────────────
