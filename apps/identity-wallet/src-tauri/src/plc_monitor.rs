@@ -49,6 +49,26 @@ impl PlcMonitor {
         Self { pds_client }
     }
 
+    pub async fn check_all(&self) -> Result<Vec<IdentityStatus>, MonitorError> {
+        let store = IdentityStore;
+        let dids = store
+            .list_identities()
+            .map_err(|e| MonitorError::IdentityStoreError {
+                message: e.to_string(),
+            })?;
+
+        let mut statuses = Vec::new();
+        for did in &dids {
+            let unauthorized = self.check_for_changes(did).await?;
+            statuses.push(IdentityStatus {
+                did: did.clone(),
+                alert_count: unauthorized.len(),
+                unauthorized_changes: unauthorized,
+            });
+        }
+        Ok(statuses)
+    }
+
     pub async fn check_for_changes(&self, did: &str) -> Result<Vec<UnauthorizedChange>, MonitorError> {
         // Step 1: Fetch current audit log
         let current_log_json = match self.pds_client.fetch_audit_log(did).await {
@@ -237,6 +257,15 @@ mod tests {
         let json = serde_json::to_value(&status).expect("serialize");
         assert_eq!(json["alertCount"], 1);
         assert_eq!(json["unauthorizedChanges"].as_array().unwrap().len(), 1);
+    }
+
+    /// Test PlcMonitor can be created with a PdsClient.
+    #[test]
+    fn test_plc_monitor_creation() {
+        let pds_client = PdsClient::new();
+        let monitor = PlcMonitor::new(pds_client);
+        // Just verify it constructs without panic
+        assert!(true);
     }
 
     /// Test MonitorError serialization with correct error tag.
