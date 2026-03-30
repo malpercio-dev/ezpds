@@ -326,6 +326,9 @@
   }
 
   .card-badge {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
     flex-shrink: 0;
   }
 

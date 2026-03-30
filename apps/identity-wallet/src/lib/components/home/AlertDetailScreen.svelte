@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { getUrgency, getDeadline, type Urgency } from '$lib/utils/deadline';
+  import { getUrgency, getDeadline, formatCountdown } from '$lib/utils/deadline';
   import type { UnauthorizedChange } from '$lib/ipc';
   import { truncateDid } from '$lib/did-doc-utils';
 
@@ -51,9 +51,7 @@
         <div class="alert-header">
           <span class="alert-urgency alert-urgency--{urgency}">
             <span class="badge-dot"></span>
-            {remaining <= 0
-              ? 'Expired'
-              : `${Math.floor(remaining / 3600000)}h ${Math.floor((remaining % 3600000) / 60000)}m remaining`}
+            {formatCountdown(deadline, now)}
           </span>
         </div>
 

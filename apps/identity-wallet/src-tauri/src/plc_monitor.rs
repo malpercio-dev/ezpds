@@ -140,11 +140,11 @@ impl<'a> PlcMonitor<'a> {
 
             // Try device key first
             if verify_plc_operation(&op_json, std::slice::from_ref(&device_key_uri)).is_ok() {
-                // Authorized — signed by our device key (AC6.1)
+                // Authorized — signed by our device key
                 continue;
             }
 
-            // Unauthorized (AC6.2) — try to identify signing key
+            // Unauthorized — try to identify signing key
             let signing_key = identify_signing_key(&op_json, &current_entries, entry);
 
             unauthorized.push(UnauthorizedChange {
@@ -398,7 +398,7 @@ mod tests {
         use httpmock::prelude::*;
 
         let did = "did:plc:ac61auth";
-        let _ = crate::keychain::delete_item("managed-dids");
+
         let (device_pub, device_priv) = setup_identity(did);
 
         let mock_server = MockServer::start();
@@ -450,7 +450,7 @@ mod tests {
         use httpmock::prelude::*;
 
         let did = "did:plc:ac62unauth";
-        let _ = crate::keychain::delete_item("managed-dids");
+
         let (device_pub, _device_priv) = setup_identity(did);
 
         let mock_server = MockServer::start();
@@ -497,7 +497,7 @@ mod tests {
         use httpmock::prelude::*;
 
         let did = "did:plc:ac63time";
-        let _ = crate::keychain::delete_item("managed-dids");
+
         let (device_pub, _device_priv) = setup_identity(did);
 
         let mock_server = MockServer::start();
@@ -574,7 +574,7 @@ mod tests {
         use httpmock::prelude::*;
 
         let did = "did:plc:ac68empty";
-        let _ = crate::keychain::delete_item("managed-dids");
+
         let _ = setup_identity(did);
 
         let mock_server = MockServer::start();
@@ -597,7 +597,7 @@ mod tests {
     async fn test_ac6_1_multi_identity_all_authorized() {
         use httpmock::prelude::*;
 
-        let _ = crate::keychain::delete_item("managed-dids");
+
         let did_alice = "did:plc:ac61alice";
         let did_bob = "did:plc:ac61bob";
         let (alice_pub, alice_priv) = setup_identity(did_alice);
@@ -656,14 +656,11 @@ mod tests {
         });
 
         let statuses = monitor.check_all().await.expect("check_all failed");
-        assert_eq!(statuses.len(), 2, "Should have two identity statuses");
-        for status in &statuses {
-            assert_eq!(
-                status.alert_count, 0,
-                "DID {} should have no alerts",
-                status.did
-            );
-        }
+        // Filter to our test DIDs (other parallel tests may register additional DIDs)
+        let alice_status = statuses.iter().find(|s| s.did == did_alice).unwrap();
+        assert_eq!(alice_status.alert_count, 0, "Alice should have no alerts");
+        let bob_status = statuses.iter().find(|s| s.did == did_bob).unwrap();
+        assert_eq!(bob_status.alert_count, 0, "Bob should have no alerts");
     }
 
     /// AC6.2 (multi-identity): Two identities, one authorized, one unauthorized.
@@ -671,7 +668,7 @@ mod tests {
     async fn test_ac6_2_multi_identity_mixed_auth() {
         use httpmock::prelude::*;
 
-        let _ = crate::keychain::delete_item("managed-dids");
+
         let did_alice = "did:plc:ac62alice";
         let did_bob = "did:plc:ac62bob";
         let (alice_pub, alice_priv) = setup_identity(did_alice);
@@ -730,8 +727,7 @@ mod tests {
         });
 
         let statuses = monitor.check_all().await.expect("check_all failed");
-        assert_eq!(statuses.len(), 2);
-
+        // Filter to our test DIDs (other parallel tests may register additional DIDs)
         let alice_status = statuses.iter().find(|s| s.did == did_alice).unwrap();
         assert_eq!(alice_status.alert_count, 0, "Alice should have no alerts");
 
