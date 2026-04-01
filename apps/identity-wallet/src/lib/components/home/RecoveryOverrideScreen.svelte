@@ -5,7 +5,6 @@
     submitRecoveryOverride,
     type SignedRecoveryOp,
     type RecoveryError,
-    type ClaimResult,
   } from '$lib/ipc';
   import { getDeadline, formatCountdown, getUrgency } from '$lib/utils/deadline';
   import { isCodedError, truncateDid } from '$lib/did-doc-utils';
@@ -70,8 +69,6 @@
           case 'NETWORK_ERROR':
             error = `Network error: ${err.message || 'unknown error'}`;
             break;
-          default:
-            error = `Operation build failed (${err.code}). Please try again.`;
         }
       } else {
         error = 'Failed to build recovery operation. Please try again.';
@@ -90,7 +87,7 @@
     error = null;
 
     try {
-      const result = await submitRecoveryOverride(did);
+      await submitRecoveryOverride(did);
       onsuccess();
     } catch (raw: unknown) {
       console.error('Recovery submission failed:', raw);
@@ -116,8 +113,6 @@
           case 'UNAUTHORIZED_CHANGE_NOT_FOUND':
             error = 'Unauthorized change not found in audit log.';
             break;
-          default:
-            error = `Submission failed (${err.code}). Please try again.`;
         }
       } else {
         error = 'Submission failed. Please try again.';
