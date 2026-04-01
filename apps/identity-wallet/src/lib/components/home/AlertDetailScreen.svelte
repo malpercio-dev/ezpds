@@ -8,10 +8,12 @@
     did,
     changes,
     onback,
+    onoverride,
   }: {
     did: string;
     changes: UnauthorizedChange[];
     onback: () => void;
+    onoverride: (cid: string, createdAt: string) => void;
   } = $props();
 
   let now = $state(Date.now());
@@ -69,8 +71,12 @@
           <span class="alert-value">{deadline.toLocaleString()}</span>
         </div>
 
-        <button class="action-button" disabled>
-          Review & Override
+        <button
+          class="action-button"
+          disabled={urgency === 'expired'}
+          onclick={() => onoverride(change.cid, change.createdAt)}
+        >
+          {urgency === 'expired' ? 'Recovery Window Expired' : 'Review & Override'}
         </button>
       </div>
     {/each}
@@ -240,9 +246,14 @@
     border-radius: 12px;
     font-size: 0.9rem;
     font-weight: 600;
+    cursor: pointer;
+    opacity: 1;
+    margin-top: 0.5rem;
+  }
+
+  .action-button:disabled {
     cursor: not-allowed;
     opacity: 0.5;
-    margin-top: 0.5rem;
   }
 
   .action-button:active:not(:disabled) {

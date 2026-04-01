@@ -22,6 +22,7 @@
   import DIDDocumentScreen from '$lib/components/home/DIDDocumentScreen.svelte';
   import RecoveryInfoScreen from '$lib/components/home/RecoveryInfoScreen.svelte';
   import AlertDetailScreen from '$lib/components/home/AlertDetailScreen.svelte';
+  import RecoveryOverrideScreen from '$lib/components/home/RecoveryOverrideScreen.svelte';
   import { createAccount, listIdentities, checkIdentityStatus, type CreateAccountError, type OAuthError, type HomeData, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type UnauthorizedChange } from '$lib/ipc';
   import { normalizePlcDocToW3c } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
@@ -56,6 +57,7 @@
     | 'did_document'
     | 'recovery_info'
     | 'alert_detail'
+    | 'recovery_override'
     | 'auth_failed'
     | 'identity_input'
     | 'pds_auth'
@@ -89,6 +91,9 @@
 
   let selectedAlertDid = $state<string | null>(null);
   let selectedAlertChanges = $state<UnauthorizedChange[]>([]);
+
+  let selectedRecoveryCid = $state<string | null>(null);
+  let selectedRecoveryCreatedAt = $state<string | null>(null);
 
   // ── Navigation helpers ───────────────────────────────────────────────────
 
@@ -363,6 +368,20 @@
       did={selectedAlertDid ?? ''}
       changes={selectedAlertChanges}
       onback={() => goTo('home')}
+      onoverride={(cid, createdAt) => {
+        selectedRecoveryCid = cid;
+        selectedRecoveryCreatedAt = createdAt;
+        goTo('recovery_override');
+      }}
+    />
+
+  {:else if step === 'recovery_override'}
+    <RecoveryOverrideScreen
+      did={selectedAlertDid ?? ''}
+      operationCid={selectedRecoveryCid ?? ''}
+      createdAt={selectedRecoveryCreatedAt ?? ''}
+      onback={() => goTo('alert_detail')}
+      onsuccess={() => goTo('home')}
     />
 
   {:else if step === 'auth_failed'}
