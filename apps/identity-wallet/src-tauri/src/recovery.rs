@@ -78,7 +78,7 @@ pub(crate) fn find_fork_point(
 
         // Try to verify with the device key. If verification succeeds,
         // this is the last legitimate operation (the fork point).
-        match crypto::verify_plc_operation(&op_json, &[device_key.clone()]) {
+        match crypto::verify_plc_operation(&op_json, std::slice::from_ref(device_key)) {
             Ok(verified) => return Ok((entry.clone(), verified)),
             Err(_) => continue, // Not signed by device key, keep looking
         }
