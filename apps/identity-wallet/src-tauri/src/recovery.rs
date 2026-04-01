@@ -915,17 +915,8 @@ mod tests {
 
         // Setup identity with IdentityStore (pattern from plc_monitor.rs)
         let store = IdentityStore;
-        let _ = store.add_identity(did);
-        for suffix in [
-            "device-key",
-            "device-key-pub",
-            "device-key-app-label",
-            "did-doc",
-            "plc-log",
-            "oauth-tokens",
-        ] {
-            let _ = crate::keychain::delete_item(&format!("{did}:{suffix}"));
-        }
+        let _ = store.remove_identity(did);
+        store.add_identity(did).expect("add_identity");
         let device_pub = store
             .get_or_create_device_key(did)
             .expect("device key generation failed");
@@ -962,19 +953,22 @@ mod tests {
             "sig": "fake_attacker_signature"
         });
 
-        // Build audit log JSON
+        // Build audit log JSON with dynamic timestamps within the 72-hour recovery window
+        let genesis_time = (Utc::now() - Duration::hours(2)).to_rfc3339();
+        let unauth_time = (Utc::now() - Duration::hours(1)).to_rfc3339();
+
         let audit_log_json = serde_json::json!([
             {
                 "did": did,
                 "cid": "bafy_genesis",
-                "createdAt": "2026-03-29T00:00:00Z",
+                "createdAt": genesis_time,
                 "nullified": false,
                 "operation": genesis_operation
             },
             {
                 "did": did,
                 "cid": "bafy_unauthorized",
-                "createdAt": "2026-03-29T01:00:00Z",
+                "createdAt": unauth_time,
                 "nullified": false,
                 "operation": unauth_operation
             }
@@ -1072,17 +1066,8 @@ mod tests {
 
         // Setup identity with device key
         let store = IdentityStore;
-        let _ = store.add_identity(did);
-        for suffix in [
-            "device-key",
-            "device-key-pub",
-            "device-key-app-label",
-            "did-doc",
-            "plc-log",
-            "oauth-tokens",
-        ] {
-            let _ = crate::keychain::delete_item(&format!("{did}:{suffix}"));
-        }
+        let _ = store.remove_identity(did);
+        store.add_identity(did).expect("add_identity");
         let device_pub = store
             .get_or_create_device_key(did)
             .expect("device key generation failed");
@@ -1148,11 +1133,13 @@ mod tests {
             serde_json::from_str(&recovery_op.signed_op_json).expect("parse recovery op json");
 
         // Updated audit log (after recovery operation is applied)
+        let genesis_time = (Utc::now() - Duration::hours(2)).to_rfc3339();
+
         let updated_audit_log_json = serde_json::json!([
             {
                 "did": did,
                 "cid": "bafy_genesis",
-                "createdAt": "2026-03-29T00:00:00Z",
+                "createdAt": genesis_time,
                 "nullified": false,
                 "operation": genesis_operation
             }
