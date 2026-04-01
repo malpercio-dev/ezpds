@@ -36,7 +36,7 @@
     // Start the countdown timer
     timer = setInterval(() => {
       now = Date.now();
-    }, 60_000);
+    }, 15_000);
 
     // Build the recovery operation
     loading = true;
@@ -69,6 +69,9 @@
           case 'NETWORK_ERROR':
             error = `Network error: ${err.message || 'unknown error'}`;
             break;
+          default:
+            error = (err as { message?: string }).message || 'An unexpected error occurred.';
+            break;
         }
       } else {
         error = 'Failed to build recovery operation. Please try again.';
@@ -88,6 +91,7 @@
 
     try {
       await submitRecoveryOverride(did);
+      submitting = false;
       onsuccess();
     } catch (raw: unknown) {
       console.error('Recovery submission failed:', raw);
@@ -112,6 +116,9 @@
             break;
           case 'UNAUTHORIZED_CHANGE_NOT_FOUND':
             error = 'Unauthorized change not found in audit log.';
+            break;
+          default:
+            error = (err as { message?: string }).message || 'An unexpected error occurred.';
             break;
         }
       } else {
