@@ -350,12 +350,13 @@ pub async fn submit_recovery_override(
         })?;
 
     // 2. Re-fetch the audit log to update the cache.
-    let updated_log = pds_client
-        .fetch_audit_log(did)
-        .await
-        .map_err(|e| RecoveryError::NetworkError {
-            message: format!("Failed to fetch updated audit log: {e}"),
-        })?;
+    let updated_log =
+        pds_client
+            .fetch_audit_log(did)
+            .await
+            .map_err(|e| RecoveryError::NetworkError {
+                message: format!("Failed to fetch updated audit log: {e}"),
+            })?;
 
     store
         .store_plc_log(did, &updated_log)
@@ -400,12 +401,7 @@ pub async fn build_recovery_override_cmd(
     did: String,
     operation_cid: String,
 ) -> Result<SignedRecoveryOp, RecoveryError> {
-    let result = build_recovery_override(
-        state.pds_client(),
-        &did,
-        &operation_cid,
-    )
-    .await?;
+    let result = build_recovery_override(state.pds_client(), &did, &operation_cid).await?;
 
     // Store in RecoveryState for submit_recovery_override_cmd.
     let mut recovery = state.recovery_state.lock().await;
@@ -440,12 +436,7 @@ pub async fn submit_recovery_override_cmd(
     let signed_op = recovery_state.signed_op.clone();
     drop(recovery); // Release lock before network calls.
 
-    let result = submit_recovery_override(
-        state.pds_client(),
-        &did,
-        &signed_op,
-    )
-    .await?;
+    let result = submit_recovery_override(state.pds_client(), &did, &signed_op).await?;
 
     // Clear recovery state on success.
     let mut recovery = state.recovery_state.lock().await;
@@ -928,9 +919,6 @@ mod tests {
         );
 
         // Verify the diff is included
-        assert!(
-            json.get("diff").is_some(),
-            "diff should be present"
-        );
+        assert!(json.get("diff").is_some(), "diff should be present");
     }
 }
