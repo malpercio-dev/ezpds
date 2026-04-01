@@ -3,7 +3,9 @@
 // Functional Core: Types and error enums for recovery override operations
 // Imperative Shell: Recovery override building and submission commands (in later phases)
 
-use crate::claim::OpDiff;
+use crate::claim::{ChangeType, OpDiff, ServiceChange};
+use crate::identity_store::IdentityStore;
+use crate::pds_client::PdsClient;
 use chrono::{DateTime, Duration, Utc};
 use crypto::{AuditEntry, DidKeyUri};
 use serde::Serialize;
@@ -16,6 +18,15 @@ pub struct SignedRecoveryOp {
     /// Human-readable diff of what the recovery operation changes.
     pub diff: OpDiff,
     /// The signed PLC operation JSON, ready to POST to plc.directory.
+    pub signed_op: serde_json::Value,
+}
+
+/// State for a pending recovery override, held between build and submit.
+#[derive(Debug, Clone)]
+pub struct RecoveryState {
+    /// The DID being recovered.
+    pub did: String,
+    /// The signed PLC operation, ready for submission.
     pub signed_op: serde_json::Value,
 }
 
@@ -90,6 +101,36 @@ pub(crate) fn find_fork_point(
 
 const RECOVERY_WINDOW_HOURS: i64 = 72;
 
+/// Computes the diff between the current unauthorized state and the state being
+/// restored by the recovery operation.
+///
+/// `fork_point_state`: the VerifiedPlcOp at the fork point (state to restore)
+/// `fork_point_cid`: the CID of the fork point operation (becomes `prev` in counter-op)
+pub(crate) fn build_op_diff(
+    fork_point_state: &crypto::VerifiedPlcOp,
+    fork_point_cid: &str,
+) -> OpDiff {
+    // The recovery op restores fork_point_state, so the "added" keys are those
+    // in the fork point but not in the current (unauthorized) state. Since we
+    // don't have the unauthorized state readily available as a VerifiedPlcOp,
+    // we report the full fork-point state as what's being restored.
+    OpDiff {
+        added_keys: fork_point_state.rotation_keys.clone(),
+        removed_keys: vec![],
+        changed_services: fork_point_state
+            .services
+            .iter()
+            .map(|(id, svc)| ServiceChange {
+                id: id.clone(),
+                change_type: ChangeType::Modified,
+                old_endpoint: None,
+                new_endpoint: Some(svc.endpoint.clone()),
+            })
+            .collect(),
+        prev_cid: Some(fork_point_cid.to_string()),
+    }
+}
+
 /// Checks whether the 72-hour recovery window is still open for an unauthorized operation.
 ///
 /// Returns `Ok(())` if recovery is still possible, or `Err(RecoveryWindowExpired)` if
@@ -109,6 +150,184 @@ pub(crate) fn check_recovery_window(unauthorized_op_created_at: &str) -> Result<
     }
 
     Ok(())
+}
+
+/// Builds a signed recovery override operation.
+///
+/// Fetches the full audit log, identifies the fork point (last device-key-signed
+/// operation before the unauthorized change), builds a PLC rotation op that
+/// restores the pre-unauthorized state, and signs it with the per-DID device key.
+///
+/// For multiple sequential unauthorized ops (AC7.7), targets the earliest fork point.
+pub async fn build_recovery_override(
+    pds_client: &PdsClient,
+    did: &str,
+    unauthorized_op_cid: &str,
+) -> Result<SignedRecoveryOp, RecoveryError> {
+    let store = IdentityStore;
+
+    // 1. Fetch the current full audit log from plc.directory.
+    let audit_log_json =
+        pds_client
+            .fetch_audit_log(did)
+            .await
+            .map_err(|e| RecoveryError::NetworkError {
+                message: format!("Failed to fetch audit log: {e}"),
+            })?;
+
+    let audit_log =
+        crypto::parse_audit_log(&audit_log_json).map_err(|e| RecoveryError::SigningFailed {
+            message: format!("Failed to parse audit log: {e}"),
+        })?;
+
+    // 2. Find the unauthorized operation and check the recovery window.
+    let unauthorized_entry = audit_log
+        .iter()
+        .find(|e| e.cid == unauthorized_op_cid)
+        .ok_or(RecoveryError::UnauthorizedChangeNotFound)?;
+
+    check_recovery_window(&unauthorized_entry.created_at)?;
+
+    // 3. Get the device key for this DID.
+    let device_pub =
+        store
+            .get_or_create_device_key(did)
+            .map_err(|e| RecoveryError::IdentityNotFound {
+                message: format!("Failed to get device key: {e}"),
+            })?;
+    let device_key_uri = DidKeyUri(device_pub.key_id.clone());
+
+    // 4. Identify the fork point.
+    let (fork_entry, fork_state) =
+        find_fork_point(&audit_log, unauthorized_op_cid, &device_key_uri)?;
+
+    // 5. Build the counter-operation restoring the fork-point state.
+    //    The `prev` field points to the fork point's CID.
+    let diff = build_op_diff(&fork_state, &fork_entry.cid);
+
+    // 6. Sign with the per-DID device key.
+    //    On macOS/simulator: read private key bytes from Keychain, sign with P-256.
+    //    On real iOS: use Secure Enclave via the app label in Keychain.
+    let signed_op = sign_recovery_op(did, &fork_entry.cid, &fork_state)?;
+
+    Ok(SignedRecoveryOp {
+        diff,
+        signed_op: serde_json::from_str(&signed_op.signed_op_json).map_err(|e| {
+            RecoveryError::SigningFailed {
+                message: format!("Failed to parse signed op JSON: {e}"),
+            }
+        })?,
+    })
+}
+
+/// Signs a recovery operation using the per-DID device key.
+///
+/// Uses the same `#[cfg]` dispatch pattern as `identity_store.rs`:
+/// - macOS/simulator: reads private key bytes from Keychain, creates P-256 signing closure
+/// - Real iOS: reads SE app label from Keychain, signs via Secure Enclave
+fn sign_recovery_op(
+    did: &str,
+    prev_cid: &str,
+    fork_state: &crypto::VerifiedPlcOp,
+) -> Result<crypto::SignedPlcOperation, RecoveryError> {
+    let sign_closure = build_sign_closure(did)?;
+
+    crypto::build_did_plc_rotation_op(
+        prev_cid,
+        fork_state.rotation_keys.clone(),
+        fork_state.verification_methods.clone(),
+        fork_state.also_known_as.clone(),
+        fork_state.services.clone(),
+        sign_closure,
+    )
+    .map_err(|e| RecoveryError::SigningFailed {
+        message: format!("Failed to build rotation op: {e}"),
+    })
+}
+
+/// Builds a signing closure for the per-DID device key.
+///
+/// macOS/simulator path: reads the raw P-256 private key scalar from Keychain
+/// and returns a closure that signs CBOR bytes using RFC 6979 deterministic ECDSA.
+#[cfg(any(target_os = "macos", all(target_os = "ios", target_env = "sim")))]
+fn build_sign_closure(
+    did: &str,
+) -> Result<impl FnOnce(&[u8]) -> Result<Vec<u8>, crypto::CryptoError>, RecoveryError> {
+    use p256::ecdsa::signature::Signer;
+    use p256::ecdsa::{Signature, SigningKey};
+
+    let account = format!("{did}:device-key");
+    let private_bytes = crate::keychain::get_item(&account).map_err(|e| {
+        if crate::keychain::is_not_found(&e) {
+            RecoveryError::IdentityNotFound {
+                message: "Device key not found in Keychain".to_string(),
+            }
+        } else {
+            RecoveryError::SigningFailed {
+                message: format!("Keychain error: {e}"),
+            }
+        }
+    })?;
+
+    let signing_key =
+        SigningKey::from_slice(&private_bytes).map_err(|_| RecoveryError::SigningFailed {
+            message: "Invalid P-256 private key in Keychain".to_string(),
+        })?;
+
+    Ok(move |data: &[u8]| -> Result<Vec<u8>, crypto::CryptoError> {
+        let signature: Signature = signing_key.sign(data);
+        let signature = signature.normalize_s().unwrap_or(signature);
+        Ok(signature.to_bytes().to_vec())
+    })
+}
+
+/// Builds a signing closure for the per-DID device key (Secure Enclave path).
+#[cfg(all(target_os = "ios", not(target_env = "sim")))]
+fn build_sign_closure(
+    did: &str,
+) -> Result<impl FnOnce(&[u8]) -> Result<Vec<u8>, crypto::CryptoError>, RecoveryError> {
+    use p256::ecdsa::Signature;
+
+    let app_label_account = format!("{did}:device-key-app-label");
+    let app_label = crate::keychain::get_item(&app_label_account).map_err(|e| {
+        if crate::keychain::is_not_found(&e) {
+            RecoveryError::IdentityNotFound {
+                message: "Device key app label not found in Keychain".to_string(),
+            }
+        } else {
+            RecoveryError::SigningFailed {
+                message: format!("Keychain error: {e}"),
+            }
+        }
+    })?;
+
+    Ok(move |data: &[u8]| -> Result<Vec<u8>, crypto::CryptoError> {
+        use security_framework::item::{ItemClass, ItemSearchOptions, SearchResult};
+        use security_framework::key::Algorithm;
+
+        let query_results = ItemSearchOptions::new()
+            .class(ItemClass::key())
+            .application_label(&app_label)
+            .load_refs(true)
+            .search()
+            .map_err(|e| crypto::CryptoError::PlcOperation(format!("SE key lookup failed: {e}")))?;
+
+        let sec_key = match query_results.first() {
+            Some(SearchResult::Ref(r)) => r.as_sec_key().ok_or_else(|| {
+                crypto::CryptoError::PlcOperation("SE result is not a key".into())
+            })?,
+            _ => return Err(crypto::CryptoError::PlcOperation("SE key not found".into())),
+        };
+
+        let der_sig = sec_key
+            .create_signature(Algorithm::ECDSASignatureMessageX962SHA256, data)
+            .map_err(|e| crypto::CryptoError::PlcOperation(format!("SE signing failed: {e}")))?;
+
+        let sig = Signature::from_der(&der_sig)
+            .map_err(|e| crypto::CryptoError::PlcOperation(format!("DER decode failed: {e}")))?;
+        let sig = sig.normalize_s().unwrap_or(sig);
+        Ok(sig.to_bytes().to_vec())
+    })
 }
 
 #[cfg(test)]
@@ -390,5 +609,173 @@ mod tests {
     fn test_check_recovery_window_malformed_rfc3339() {
         let result = check_recovery_window("2026-03-31T12:00");
         assert!(matches!(result, Err(RecoveryError::SigningFailed { .. })));
+    }
+
+    /// AC7.1: build_op_diff includes fork-point CID as prev
+    #[test]
+    fn test_ac7_1_build_op_diff_includes_fork_cid() {
+        let device_key = crypto::generate_p256_keypair().expect("device key gen");
+        let rotation_key = crypto::generate_p256_keypair().expect("rotation key gen");
+
+        let genesis_op = crypto::build_did_plc_genesis_op(
+            &rotation_key.key_id,
+            &device_key.key_id,
+            &device_key.private_key_bytes,
+            "test.bsky.social",
+            "https://pds.test",
+        )
+        .expect("build genesis op");
+
+        let verified = crypto::verify_plc_operation(
+            &genesis_op.signed_op_json,
+            std::slice::from_ref(&device_key.key_id),
+        )
+        .expect("verify genesis op");
+
+        // AC7.1: build_op_diff should include the fork-point CID as prev
+        let diff = build_op_diff(&verified, "bafy_genesis");
+        assert_eq!(
+            diff.prev_cid.as_deref(),
+            Some("bafy_genesis"),
+            "OpDiff.prev_cid should be the fork point CID"
+        );
+    }
+
+    /// AC7.2: build_op_diff restores fork-point rotationKeys and services
+    #[test]
+    fn test_ac7_2_build_op_diff_restores_keys_and_services() {
+        let device_key = crypto::generate_p256_keypair().expect("device key gen");
+        let rotation_key = crypto::generate_p256_keypair().expect("rotation key gen");
+
+        let genesis_op = crypto::build_did_plc_genesis_op(
+            &rotation_key.key_id,
+            &device_key.key_id,
+            &device_key.private_key_bytes,
+            "test.bsky.social",
+            "https://pds.test",
+        )
+        .expect("build genesis op");
+
+        let verified = crypto::verify_plc_operation(
+            &genesis_op.signed_op_json,
+            std::slice::from_ref(&device_key.key_id),
+        )
+        .expect("verify genesis op");
+
+        // AC7.2: OpDiff should show what's being restored
+        let diff = build_op_diff(&verified, "bafy_genesis");
+
+        // Genesis has rotation_keys, so added_keys should reflect the fork-point state
+        assert!(
+            !diff.added_keys.is_empty(),
+            "Should have added_keys from fork point state"
+        );
+
+        // Genesis has atproto_pds service, should be in changed_services
+        assert!(
+            diff.changed_services.len() > 0,
+            "Should have changed_services from fork point state"
+        );
+
+        // All changes should be "Modified" since we're restoring the fork-point state
+        for svc in &diff.changed_services {
+            assert_eq!(
+                svc.change_type,
+                ChangeType::Modified,
+                "Service changes in recovery should all be Modified"
+            );
+        }
+    }
+
+    /// AC7.5: Recovery window check rejects expired operations
+    #[test]
+    fn test_ac7_5_recovery_window_rejects_expired() {
+        let expired_time = Utc::now() - Duration::hours(73);
+        let expired_timestamp = expired_time.to_rfc3339();
+
+        let result = check_recovery_window(&expired_timestamp);
+        assert!(
+            matches!(result, Err(RecoveryError::RecoveryWindowExpired)),
+            "Should reject operations older than 72 hours"
+        );
+    }
+
+    /// AC7.7: find_fork_point handles multiple unauthorized ops correctly
+    #[test]
+    fn test_ac7_7_fork_point_with_multiple_unauthorized_ops() {
+        let device_key = crypto::generate_p256_keypair().expect("device key gen");
+        let rotation_key = crypto::generate_p256_keypair().expect("rotation key gen");
+
+        // Build genesis op signed by device key
+        let genesis_op = crypto::build_did_plc_genesis_op(
+            &rotation_key.key_id,
+            &device_key.key_id,
+            &device_key.private_key_bytes,
+            "test.bsky.social",
+            "https://pds.test",
+        )
+        .expect("build genesis op");
+
+        let genesis_operation: serde_json::Value =
+            serde_json::from_str(&genesis_op.signed_op_json).expect("parse op");
+
+        // Create two unauthorized ops (not signed by device key)
+        let attacker1 = crypto::generate_p256_keypair().expect("attacker1 gen");
+        let unauth_op1 = serde_json::json!({
+            "type": "plc_operation",
+            "prev": "bafy_genesis",
+            "rotationKeys": [attacker1.key_id.0.as_str()],
+            "verificationMethods": {},
+            "services": {},
+            "alsoKnownAs": [],
+            "sig": "fake_sig_1"
+        });
+
+        let attacker2 = crypto::generate_p256_keypair().expect("attacker2 gen");
+        let unauth_op2 = serde_json::json!({
+            "type": "plc_operation",
+            "prev": "bafy_unauth1",
+            "rotationKeys": [attacker2.key_id.0.as_str()],
+            "verificationMethods": {},
+            "services": {},
+            "alsoKnownAs": [],
+            "sig": "fake_sig_2"
+        });
+
+        let audit_log_json = serde_json::json!([
+            {
+                "did": "did:plc:test",
+                "cid": "bafy_genesis",
+                "createdAt": "2026-03-29T00:00:00Z",
+                "nullified": false,
+                "operation": genesis_operation
+            },
+            {
+                "did": "did:plc:test",
+                "cid": "bafy_unauth1",
+                "createdAt": "2026-03-29T01:00:00Z",
+                "nullified": false,
+                "operation": unauth_op1
+            },
+            {
+                "did": "did:plc:test",
+                "cid": "bafy_unauth2",
+                "createdAt": "2026-03-29T02:00:00Z",
+                "nullified": false,
+                "operation": unauth_op2
+            }
+        ]);
+
+        let audit_log_str = serde_json::to_string(&audit_log_json).expect("serialize");
+        let audit_log = crypto::parse_audit_log(&audit_log_str).expect("parse audit log");
+
+        // AC7.7: When targeting the second unauthorized op, should find genesis (earliest fork point)
+        let (fork_entry, _) = find_fork_point(&audit_log, "bafy_unauth2", &device_key.key_id)
+            .expect("find_fork_point succeeded");
+
+        assert_eq!(
+            fork_entry.cid, "bafy_genesis",
+            "Should find earliest fork point (genesis), not first unauthorized op"
+        );
     }
 }

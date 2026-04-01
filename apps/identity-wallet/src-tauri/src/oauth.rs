@@ -36,6 +36,10 @@ pub struct AppState {
     /// `request_claim_verification`, `sign_and_verify_claim`, `submit_claim`.
     /// Uses tokio::sync::Mutex because claim commands hold the lock across .await points.
     pub claim_state: tokio::sync::Mutex<Option<crate::claim::ClaimState>>,
+    /// Recovery override state persisted between build and submit.
+    /// Set by `build_recovery_override` after signing; used by `submit_recovery_override`.
+    /// Uses tokio::sync::Mutex because recovery commands hold the lock across .await points.
+    pub recovery_state: tokio::sync::Mutex<Option<crate::recovery::RecoveryState>>,
 }
 
 impl AppState {
@@ -46,6 +50,7 @@ impl AppState {
             relay_client: OnceLock::new(),
             pds_client: crate::pds_client::PdsClient::new(),
             claim_state: tokio::sync::Mutex::new(None),
+            recovery_state: tokio::sync::Mutex::new(None),
         }
     }
 

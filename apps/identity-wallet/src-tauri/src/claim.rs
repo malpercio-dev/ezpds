@@ -70,7 +70,7 @@ pub struct OpDiff {
 }
 
 /// Type of change to a service endpoint.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum ChangeType {
     /// Service endpoint was added
