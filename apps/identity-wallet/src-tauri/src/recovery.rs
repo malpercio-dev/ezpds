@@ -6,6 +6,7 @@
 use crate::claim::OpDiff;
 use serde::Serialize;
 use crypto::{AuditEntry, DidKeyUri};
+use chrono::{DateTime, Duration, Utc};
 
 /// Result of building a recovery override operation.
 /// Mirrors `VerifiedClaimOp` from `claim.rs` but without `warnings`.
@@ -86,6 +87,31 @@ pub(crate) fn find_fork_point(
     Err(RecoveryError::SigningFailed {
         message: "No device-key-signed operation found before the unauthorized change".to_string(),
     })
+}
+
+const RECOVERY_WINDOW_HOURS: i64 = 72;
+
+/// Checks whether the 72-hour recovery window is still open for an unauthorized operation.
+///
+/// Returns `Ok(())` if recovery is still possible, or `Err(RecoveryWindowExpired)` if
+/// the 72-hour deadline has passed.
+#[allow(dead_code)]
+pub(crate) fn check_recovery_window(
+    unauthorized_op_created_at: &str,
+) -> Result<(), RecoveryError> {
+    let op_time = DateTime::parse_from_rfc3339(unauthorized_op_created_at)
+        .map_err(|e| RecoveryError::SigningFailed {
+            message: format!("Failed to parse operation timestamp: {e}"),
+        })?
+        .with_timezone(&Utc);
+
+    let deadline = op_time + Duration::hours(RECOVERY_WINDOW_HOURS);
+
+    if Utc::now() > deadline {
+        return Err(RecoveryError::RecoveryWindowExpired);
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -302,5 +328,60 @@ mod tests {
             .expect("find_fork_point succeeds");
 
         assert_eq!(fork_entry.cid, genesis_cid);
+    }
+
+    #[test]
+    fn test_check_recovery_window_expired() {
+        // Create a timestamp 73 hours in the past (beyond the 72-hour window)
+        let expired_time = Utc::now() - Duration::hours(73);
+        let expired_timestamp = expired_time.to_rfc3339();
+
+        let result = check_recovery_window(&expired_timestamp);
+        assert!(matches!(result, Err(RecoveryError::RecoveryWindowExpired)));
+    }
+
+    #[test]
+    fn test_check_recovery_window_at_boundary() {
+        // Create a timestamp 71.5 hours in the past (well within the window)
+        // We use 71.5 hours instead of exactly 72 to avoid race conditions
+        // in the test where the calculation happens between two system calls
+        let boundary_time = Utc::now() - Duration::hours(71) - Duration::minutes(30);
+        let boundary_timestamp = boundary_time.to_rfc3339();
+
+        // Should be OK since we're within the 72-hour window
+        let result = check_recovery_window(&boundary_timestamp);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_check_recovery_window_valid() {
+        // Create a timestamp 1 hour in the past (well within the window)
+        let valid_time = Utc::now() - Duration::hours(1);
+        let valid_timestamp = valid_time.to_rfc3339();
+
+        let result = check_recovery_window(&valid_timestamp);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_check_recovery_window_very_recent() {
+        // Create a timestamp just 1 minute in the past
+        let recent_time = Utc::now() - Duration::minutes(1);
+        let recent_timestamp = recent_time.to_rfc3339();
+
+        let result = check_recovery_window(&recent_timestamp);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_check_recovery_window_invalid_timestamp() {
+        let result = check_recovery_window("not a valid timestamp");
+        assert!(matches!(result, Err(RecoveryError::SigningFailed { .. })));
+    }
+
+    #[test]
+    fn test_check_recovery_window_malformed_rfc3339() {
+        let result = check_recovery_window("2026-03-31T12:00");
+        assert!(matches!(result, Err(RecoveryError::SigningFailed { .. })));
     }
 }
