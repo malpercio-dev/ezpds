@@ -4,9 +4,9 @@
 // Imperative Shell: Recovery override building and submission commands (in later phases)
 
 use crate::claim::OpDiff;
-use serde::Serialize;
-use crypto::{AuditEntry, DidKeyUri};
 use chrono::{DateTime, Duration, Utc};
+use crypto::{AuditEntry, DidKeyUri};
+use serde::Serialize;
 
 /// Result of building a recovery override operation.
 /// Mirrors `VerifiedClaimOp` from `claim.rs` but without `warnings`.
@@ -70,11 +70,10 @@ pub(crate) fn find_fork_point(
     // earliest fork point.
     for i in (0..target_idx).rev() {
         let entry = &audit_log[i];
-        let op_json = serde_json::to_string(&entry.operation).map_err(|e| {
-            RecoveryError::SigningFailed {
+        let op_json =
+            serde_json::to_string(&entry.operation).map_err(|e| RecoveryError::SigningFailed {
                 message: format!("Failed to serialize operation: {e}"),
-            }
-        })?;
+            })?;
 
         // Try to verify with the device key. If verification succeeds,
         // this is the last legitimate operation (the fork point).
@@ -96,9 +95,7 @@ const RECOVERY_WINDOW_HOURS: i64 = 72;
 /// Returns `Ok(())` if recovery is still possible, or `Err(RecoveryWindowExpired)` if
 /// the 72-hour deadline has passed.
 #[allow(dead_code)]
-pub(crate) fn check_recovery_window(
-    unauthorized_op_created_at: &str,
-) -> Result<(), RecoveryError> {
+pub(crate) fn check_recovery_window(unauthorized_op_created_at: &str) -> Result<(), RecoveryError> {
     let op_time = DateTime::parse_from_rfc3339(unauthorized_op_created_at)
         .map_err(|e| RecoveryError::SigningFailed {
             message: format!("Failed to parse operation timestamp: {e}"),
@@ -122,13 +119,19 @@ mod tests {
     fn test_recovery_error_serialization() {
         let err = RecoveryError::RecoveryWindowExpired;
         let serialized = serde_json::to_value(&err).unwrap();
-        assert_eq!(serialized.get("code").map(|v| v.as_str()), Some(Some("RECOVERY_WINDOW_EXPIRED")));
+        assert_eq!(
+            serialized.get("code").map(|v| v.as_str()),
+            Some(Some("RECOVERY_WINDOW_EXPIRED"))
+        );
 
         let err2 = RecoveryError::SigningFailed {
             message: "test error".to_string(),
         };
         let serialized2 = serde_json::to_value(&err2).unwrap();
-        assert_eq!(serialized2.get("code").map(|v| v.as_str()), Some(Some("SIGNING_FAILED")));
+        assert_eq!(
+            serialized2.get("code").map(|v| v.as_str()),
+            Some(Some("SIGNING_FAILED"))
+        );
     }
 
     #[test]
@@ -190,8 +193,9 @@ mod tests {
         let audit_log = crypto::parse_audit_log(&audit_log_str).expect("parse audit log");
 
         // Test: find_fork_point should return the genesis entry (which was signed by device_key)
-        let (fork_entry, _verified) = find_fork_point(&audit_log, unauthorized_cid, &device_key_uri)
-            .expect("find_fork_point succeeds");
+        let (fork_entry, _verified) =
+            find_fork_point(&audit_log, unauthorized_cid, &device_key_uri)
+                .expect("find_fork_point succeeds");
 
         assert_eq!(fork_entry.cid, genesis_cid);
         assert_eq!(fork_entry.created_at, "2026-03-29T00:00:00Z");
@@ -205,7 +209,10 @@ mod tests {
         let audit_log = vec![];
 
         let result = find_fork_point(&audit_log, "bafy_nonexistent", &device_key_uri);
-        assert!(matches!(result, Err(RecoveryError::UnauthorizedChangeNotFound)));
+        assert!(matches!(
+            result,
+            Err(RecoveryError::UnauthorizedChangeNotFound)
+        ));
     }
 
     #[test]
