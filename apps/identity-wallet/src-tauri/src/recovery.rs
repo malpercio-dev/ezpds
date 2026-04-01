@@ -1,7 +1,7 @@
 // pattern: Mixed (Functional Core types + Imperative Shell commands)
 //
 // Functional Core: Types and error enums for recovery override operations
-// Imperative Shell: Recovery override building and submission commands (in later phases)
+// Imperative Shell: Recovery override building and submission commands
 
 use crate::claim::{ChangeType, ClaimResult, OpDiff, ServiceChange};
 use crate::identity_store::IdentityStore;
@@ -367,17 +367,23 @@ pub async fn submit_recovery_override(
     // 3. Re-fetch the DID document (it should now reflect the recovered state).
     // Use the raw plc.directory endpoint, not the audit log.
     let did_doc_url = format!("{}/{}", pds_client.plc_directory_url(), did);
-    let did_doc: serde_json::Value = pds_client
+    let resp = pds_client
         .client()
         .get(&did_doc_url)
         .send()
         .await
         .map_err(|e| RecoveryError::NetworkError {
             message: format!("Failed to fetch DID document: {e}"),
-        })?
-        .json()
-        .await
-        .map_err(|e| RecoveryError::NetworkError {
+        })?;
+
+    if !resp.status().is_success() {
+        return Err(RecoveryError::NetworkError {
+            message: format!("DID document fetch returned {}", resp.status()),
+        });
+    }
+
+    let did_doc: serde_json::Value =
+        resp.json().await.map_err(|e| RecoveryError::NetworkError {
             message: format!("Failed to parse DID document: {e}"),
         })?;
 
@@ -920,5 +926,164 @@ mod tests {
 
         // Verify the diff is included
         assert!(json.get("diff").is_some(), "diff should be present");
+    }
+
+    /// AC7.4: submit_recovery_override POSTs to plc.directory and updates cached log
+    /// Uses httpmock::MockServer to verify the submission flow.
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn test_ac7_4_submit_recovery_override() {
+        use httpmock::prelude::*;
+
+        let did = "did:plc:ac74submit";
+
+        // Setup identity with device key
+        let store = IdentityStore;
+        let _ = store.add_identity(did);
+        for suffix in [
+            "device-key",
+            "device-key-pub",
+            "device-key-app-label",
+            "did-doc",
+            "plc-log",
+            "oauth-tokens",
+        ] {
+            let _ = crate::keychain::delete_item(&format!("{did}:{suffix}"));
+        }
+        let device_pub = store
+            .get_or_create_device_key(did)
+            .expect("device key generation failed");
+
+        // Start mock server
+        let mock_server = MockServer::start();
+        let client = PdsClient::new_for_test(mock_server.base_url());
+
+        // Generate a test genesis operation
+        let device_priv_bytes =
+            crate::keychain::get_item(&format!("{did}:device-key")).expect("device key retrieval");
+        let device_priv_array: [u8; 32] =
+            device_priv_bytes.try_into().expect("device key 32 bytes");
+        let rotation_key = crypto::generate_p256_keypair().expect("rotation key generation");
+
+        let genesis_op = crypto::build_did_plc_genesis_op(
+            &rotation_key.key_id,
+            &crypto::DidKeyUri(device_pub.key_id.clone()),
+            &device_priv_array,
+            "test.bsky.social",
+            "https://pds.test",
+        )
+        .expect("build genesis op");
+
+        let genesis_operation: serde_json::Value =
+            serde_json::from_str(&genesis_op.signed_op_json).expect("parse genesis op json");
+
+        // Create a recovery operation (restored state matches genesis)
+        use std::collections::BTreeMap;
+        let mut verification_methods = BTreeMap::new();
+        verification_methods.insert(
+            "atproto".to_string(),
+            crypto::DidKeyUri(device_pub.key_id.clone()).0,
+        );
+
+        let recovery_op = crypto::build_did_plc_rotation_op(
+            "bafy_genesis",
+            genesis_operation
+                .get("rotationKeys")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            verification_methods,
+            vec![],
+            BTreeMap::new(),
+            |data: &[u8]| -> Result<Vec<u8>, crypto::CryptoError> {
+                use p256::ecdsa::signature::Signer;
+                use p256::ecdsa::{Signature, SigningKey};
+                let signing_key = SigningKey::from_slice(&device_priv_array)
+                    .map_err(|_| crypto::CryptoError::KeyGeneration("Invalid key".into()))?;
+                let signature: Signature = signing_key.sign(data);
+                let signature = signature.normalize_s().unwrap_or(signature);
+                Ok(signature.to_bytes().to_vec())
+            },
+        )
+        .expect("build recovery op");
+
+        let recovery_signed_op_value: serde_json::Value =
+            serde_json::from_str(&recovery_op.signed_op_json).expect("parse recovery op json");
+
+        // Updated audit log (after recovery operation is applied)
+        let updated_audit_log_json = serde_json::json!([
+            {
+                "did": did,
+                "cid": "bafy_genesis",
+                "createdAt": "2026-03-29T00:00:00Z",
+                "nullified": false,
+                "operation": genesis_operation
+            }
+        ]);
+
+        // DID document reflecting recovered state
+        let recovered_did_doc = serde_json::json!({
+            "id": did,
+            "verificationMethod": [],
+            "service": [
+                {
+                    "id": "#atproto_pds",
+                    "type": "AtprotoPersonalDataServer",
+                    "serviceEndpoint": "https://pds.test"
+                }
+            ]
+        });
+
+        // Setup mock expectations:
+        // 1. POST /{did} - submit recovery operation
+        mock_server.mock(|when, then| {
+            when.method(POST).path(format!("/{did}"));
+            then.status(200).json_body(serde_json::json!({}));
+        });
+
+        // 2. GET /{did}/log/audit - fetch updated audit log
+        mock_server.mock(|when, then| {
+            when.method(GET).path(format!("/{did}/log/audit"));
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(updated_audit_log_json.clone());
+        });
+
+        // 3. GET /{did} - fetch updated DID document
+        mock_server.mock(|when, then| {
+            when.method(GET).path(format!("/{did}"));
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(recovered_did_doc.clone());
+        });
+
+        // Execute submit_recovery_override
+        let result = submit_recovery_override(&client, did, &recovery_signed_op_value)
+            .await
+            .expect("submit_recovery_override should succeed");
+
+        // Verify the cache was updated with the new audit log
+        let cached_log = store.get_plc_log(did).expect("get_plc_log should succeed");
+        assert!(
+            cached_log.is_some(),
+            "PLC log should be cached after submission"
+        );
+
+        // Verify the DID document was stored
+        let cached_did_doc = store.get_did_doc(did).expect("get_did_doc should succeed");
+        assert!(
+            cached_did_doc.is_some(),
+            "DID document should be cached after submission"
+        );
+
+        // Verify the result contains the updated DID doc
+        assert_eq!(
+            result.updated_did_doc, recovered_did_doc,
+            "Result should contain the recovered DID document"
+        );
     }
 }
