@@ -299,7 +299,7 @@ fn build_sign_closure(
     })?;
 
     Ok(move |data: &[u8]| -> Result<Vec<u8>, crypto::CryptoError> {
-        use security_framework::item::{ItemClass, ItemSearchOptions, SearchResult};
+        use security_framework::item::{ItemClass, ItemSearchOptions, Reference, SearchResult};
         use security_framework::key::Algorithm;
 
         let query_results = ItemSearchOptions::new()
@@ -309,10 +309,8 @@ fn build_sign_closure(
             .search()
             .map_err(|e| crypto::CryptoError::PlcOperation(format!("SE key lookup failed: {e}")))?;
 
-        let sec_key = match query_results.first() {
-            Some(SearchResult::Ref(r)) => r.as_sec_key().ok_or_else(|| {
-                crypto::CryptoError::PlcOperation("SE result is not a key".into())
-            })?,
+        let sec_key = match query_results.into_iter().next() {
+            Some(SearchResult::Ref(Reference::Key(key))) => key,
             _ => return Err(crypto::CryptoError::PlcOperation("SE key not found".into())),
         };
 

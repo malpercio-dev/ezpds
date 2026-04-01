@@ -757,6 +757,9 @@ async fn check_handle_resolution(
 pub fn run() {
     tauri::Builder::default()
         .manage(oauth::AppState::new())
+        .plugin(tauri_plugin_log::Builder::new()
+            .level(log::LevelFilter::Debug)
+            .build())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {

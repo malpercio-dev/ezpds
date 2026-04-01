@@ -199,20 +199,37 @@ pub async fn resolve_identity(
     let (did, mut handle_for_fallback) = if is_did {
         (handle_or_did.clone(), None)
     } else {
-        (
-            pds_client
-                .resolve_handle(&handle_or_did)
-                .await
-                .map_err(map_pds_error_to_resolve)?,
-            Some(handle_or_did.clone()),
-        )
+        match pds_client.resolve_handle(&handle_or_did).await {
+            Ok(did) => {
+                tracing::info!(handle = %handle_or_did, did = %did, "handle resolved");
+                (did, Some(handle_or_did.clone()))
+            }
+            Err(e) => {
+                tracing::error!(handle = %handle_or_did, error = %e, "handle resolution failed");
+                return Err(map_pds_error_to_resolve(e));
+            }
+        }
     };
 
     // Fetch DID document and PDS endpoint from plc.directory
-    let (pds_url, did_doc) = pds_client
-        .discover_pds(&did)
-        .await
-        .map_err(map_pds_error_to_resolve)?;
+    let (pds_url, mut did_doc) = match pds_client.discover_pds(&did).await {
+        Ok(result) => result,
+        Err(e) => {
+            tracing::error!(did = %did, error = %e, "PDS discovery failed");
+            return Err(map_pds_error_to_resolve(e));
+        }
+    };
+
+    // The W3C DID Document doesn't include rotation keys — fetch them from the audit log.
+    match pds_client.fetch_audit_log(&did).await {
+        Ok(raw_log) => {
+            did_doc.rotation_keys = crate::pds_client::rotation_keys_from_audit_log(&raw_log);
+            tracing::debug!(did = %did, count = did_doc.rotation_keys.len(), "populated rotation keys from audit log");
+        }
+        Err(e) => {
+            tracing::warn!(did = %did, error = %e, "failed to fetch audit log for rotation keys");
+        }
+    }
 
     // Extract handle from also_known_as (format: at://handle)
     let handle = extract_handle_from_also_known_as(&did_doc.also_known_as)
@@ -351,12 +368,17 @@ pub async fn start_pds_auth(
     let pds_client = state.pds_client();
 
     // 2. Discover auth server metadata from the PDS
+    tracing::debug!(pds_url = %pds_url, "discovering auth server metadata");
     let metadata = pds_client
         .discover_auth_server(&pds_url)
         .await
-        .map_err(|e| ClaimError::NetworkError {
-            message: format!("failed to discover auth server: {}", e),
+        .map_err(|e| {
+            tracing::error!(pds_url = %pds_url, error = %e, "auth server discovery failed");
+            ClaimError::NetworkError {
+                message: format!("failed to discover auth server: {}", e),
+            }
         })?;
+    tracing::debug!(issuer = %metadata.issuer, "auth server metadata discovered");
 
     // 3. Generate PKCE and CSRF state
     let (pkce_verifier, pkce_challenge) = crate::oauth::pkce::generate();
@@ -364,38 +386,26 @@ pub async fn start_pds_auth(
 
     // 4. Get DPoP keypair and compute thumbprint
     let dpop =
-        crate::oauth::DPoPKeypair::get_or_create().map_err(|_| ClaimError::NetworkError {
-            message: "failed to create DPoP keypair".to_string(),
+        crate::oauth::DPoPKeypair::get_or_create().map_err(|e| {
+            tracing::error!(error = %e, "DPoP keypair creation failed");
+            ClaimError::NetworkError {
+                message: "failed to create DPoP keypair".to_string(),
+            }
         })?;
     let dpop_jkt = dpop.public_jwk_thumbprint();
 
-    // 5. Build DPoP proof for PAR
+    // 5-6. PAR with DPoP nonce retry
     let par_htu = metadata
         .pushed_authorization_request_endpoint
         .as_ref()
         .cloned()
         .unwrap_or_else(|| format!("{}/oauth/par", metadata.issuer));
 
-    let par_proof =
-        dpop.make_proof("POST", &par_htu, None, None)
-            .map_err(|_| ClaimError::NetworkError {
-                message: "failed to create DPoP proof for PAR".to_string(),
-            })?;
+    let relay_url = state.relay_client().base_url_str().to_string();
+    let client_id = crate::pds_client::client_id_for_relay(&relay_url);
 
-    // 6. Call PDS PAR with the DID as login_hint
-    let par_resp = pds_client
-        .pds_par(
-            &metadata,
-            &pkce_challenge,
-            &csrf_state,
-            &par_proof,
-            &dpop_jkt,
-            Some(&did),
-        )
-        .await
-        .map_err(|e| ClaimError::NetworkError {
-            message: format!("PAR failed: {}", e),
-        })?;
+    let par_resp = pds_par_with_retry(pds_client, &dpop, &metadata, &par_htu, &pkce_challenge, &csrf_state, &dpop_jkt, &did, &client_id).await?;
+    tracing::debug!("PAR succeeded, opening browser");
 
     // 7. Set up oneshot channel and park pending_auth
     let (tx, rx) = tokio::sync::oneshot::channel::<
@@ -415,6 +425,7 @@ pub async fn start_pds_auth(
         &metadata,
         &par_resp.request_uri,
         Some(&did),
+        &client_id,
     );
 
     app.opener()
@@ -425,15 +436,27 @@ pub async fn start_pds_auth(
         })?;
 
     // 9. Await the deep-link callback
+    tracing::debug!("waiting for deep-link callback");
     let callback = rx
         .await
-        .map_err(|_| ClaimError::Unauthorized)?
-        .map_err(|_| ClaimError::Unauthorized)?;
+        .map_err(|e| {
+            tracing::error!(error = %e, "deep-link callback channel closed");
+            ClaimError::Unauthorized
+        })?
+        .map_err(|e| {
+            tracing::error!(error = %e, "deep-link callback returned OAuth error");
+            ClaimError::Unauthorized
+        })?;
+    tracing::debug!("deep-link callback received, exchanging code");
 
     // 10. Token exchange with nonce retry
     let (token_resp, initial_nonce) =
-        pds_exchange_code_with_retry(pds_client, &dpop, &callback.code, &pkce_verifier, &metadata)
-            .await?;
+        pds_exchange_code_with_retry(pds_client, &dpop, &callback.code, &pkce_verifier, &metadata, &client_id)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "PDS token exchange failed");
+                e
+            })?;
 
     // 11. Create OAuthClient and store in ClaimState
     let session = std::sync::Arc::new(std::sync::Mutex::new(crate::oauth::OAuthSession {
@@ -474,6 +497,121 @@ pub async fn start_pds_auth(
     Ok(())
 }
 
+/// Helper function for PAR with DPoP nonce retry.
+///
+/// Some authorization servers (e.g. bsky.social) require a DPoP nonce even for
+/// PAR. On the first call, the server returns 400 `use_dpop_nonce` with a
+/// `DPoP-Nonce` header. We extract the nonce, rebuild the DPoP proof, and retry.
+#[allow(clippy::too_many_arguments)]
+async fn pds_par_with_retry(
+    pds_client: &crate::pds_client::PdsClient,
+    dpop: &crate::oauth::DPoPKeypair,
+    metadata: &crate::pds_client::AuthServerMetadata,
+    par_htu: &str,
+    pkce_challenge: &str,
+    csrf_state: &str,
+    dpop_jkt: &str,
+    did: &str,
+    client_id: &str,
+) -> Result<crate::pds_client::PdsParResponse, ClaimError> {
+    let par_proof = dpop
+        .make_proof("POST", par_htu, None, None)
+        .map_err(|e| {
+            tracing::error!(error = %e, "DPoP proof generation failed for PAR");
+            ClaimError::NetworkError {
+                message: "failed to create DPoP proof for PAR".to_string(),
+            }
+        })?;
+
+    tracing::debug!(par_endpoint = %par_htu, "sending PAR request");
+    match pds_client
+        .pds_par(metadata, pkce_challenge, csrf_state, &par_proof, dpop_jkt, Some(did), client_id)
+        .await
+    {
+        Ok(resp) => return Ok(resp),
+        Err(crate::pds_client::PdsClientError::OauthFailed { message })
+            if message.contains("use_dpop_nonce") =>
+        {
+            tracing::debug!("PAR requires DPoP nonce, retrying");
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "PAR request failed");
+            return Err(ClaimError::NetworkError {
+                message: format!("PAR failed: {}", e),
+            });
+        }
+    }
+
+    // The nonce is in the error response body; we need to get it from the raw
+    // response. Re-issue the PAR as a raw request to extract the nonce header.
+    let raw_par_url = metadata
+        .pushed_authorization_request_endpoint
+        .clone()
+        .unwrap_or_else(|| format!("{}/oauth/par", metadata.issuer));
+
+    let nonce_proof = dpop
+        .make_proof("POST", par_htu, None, None)
+        .map_err(|_| ClaimError::NetworkError {
+            message: "failed to create DPoP proof for nonce discovery".to_string(),
+        })?;
+
+    let form_data = vec![
+        ("response_type", "code"),
+        ("code_challenge_method", "S256"),
+        ("code_challenge", pkce_challenge),
+        ("state", csrf_state),
+        ("client_id", client_id),
+        ("redirect_uri", "dev.malpercio.identitywallet:/oauth/callback"),
+        ("scope", "atproto transition:generic"),
+        ("dpop_jkt", dpop_jkt),
+        ("login_hint", did),
+    ];
+
+    let nonce_resp = pds_client
+        .client()
+        .post(&raw_par_url)
+        .header("DPoP", &nonce_proof)
+        .form(&form_data)
+        .send()
+        .await
+        .map_err(|e| ClaimError::NetworkError {
+            message: format!("PAR nonce discovery failed: {}", e),
+        })?;
+
+    let nonce = nonce_resp
+        .headers()
+        .get("DPoP-Nonce")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    let Some(nonce_val) = nonce else {
+        tracing::error!("PAR returned use_dpop_nonce but no DPoP-Nonce header");
+        return Err(ClaimError::NetworkError {
+            message: "PAR requires nonce but server did not provide one".to_string(),
+        });
+    };
+
+    tracing::debug!(nonce = %nonce_val, "retrying PAR with DPoP nonce");
+    let retry_proof = dpop
+        .make_proof("POST", par_htu, Some(&nonce_val), None)
+        .map_err(|e| {
+            tracing::error!(error = %e, "DPoP proof with nonce failed");
+            ClaimError::NetworkError {
+                message: "failed to create DPoP proof with nonce".to_string(),
+            }
+        })?;
+
+    pds_client
+        .pds_par(metadata, pkce_challenge, csrf_state, &retry_proof, dpop_jkt, Some(did), client_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "PAR retry with nonce failed");
+            ClaimError::NetworkError {
+                message: format!("PAR retry failed: {}", e),
+            }
+        })
+}
+
 /// Helper function for token exchange with nonce retry (PDS version).
 ///
 /// Follows the same pattern as `exchange_code_with_retry` in oauth.rs.
@@ -484,21 +622,30 @@ async fn pds_exchange_code_with_retry(
     code: &str,
     pkce_verifier: &str,
     metadata: &crate::pds_client::AuthServerMetadata,
+    client_id: &str,
 ) -> Result<(crate::http::TokenResponse, Option<String>), ClaimError> {
     let token_htu = &metadata.token_endpoint;
+    tracing::debug!(token_endpoint = %token_htu, "starting PDS token exchange");
     let proof = dpop
         .make_proof("POST", token_htu, None, None)
-        .map_err(|_| ClaimError::NetworkError {
-            message: "failed to create DPoP proof for token exchange".to_string(),
+        .map_err(|e| {
+            tracing::error!(error = %e, "DPoP proof for token exchange failed");
+            ClaimError::NetworkError {
+                message: "failed to create DPoP proof for token exchange".to_string(),
+            }
         })?;
 
     let resp = pds_client
-        .pds_token_exchange(metadata, code, pkce_verifier, &proof)
+        .pds_token_exchange(metadata, code, pkce_verifier, &proof, client_id)
         .await
-        .map_err(|e| ClaimError::NetworkError {
-            message: format!("token exchange failed: {}", e),
+        .map_err(|e| {
+            tracing::error!(error = %e, "PDS token exchange request failed");
+            ClaimError::NetworkError {
+                message: format!("token exchange failed: {}", e),
+            }
         })?;
 
+    tracing::debug!(status = %resp.status(), "PDS token exchange response received");
     if resp.status().as_u16() == 200 {
         let nonce = resp
             .headers()
@@ -522,6 +669,7 @@ async fn pds_exchange_code_with_retry(
         .map(str::to_string);
 
     let error_body = resp.text().await.unwrap_or_else(|_| "{}".to_string());
+    tracing::debug!(status = "non-200", body = %error_body, "token exchange needs retry or failed");
 
     // Detect nonce retry by checking error JSON for "use_dpop_nonce" error code.
     // This is fragile string matching based on PDS/OAuth server error responses.
@@ -537,7 +685,7 @@ async fn pds_exchange_code_with_retry(
                 })?;
 
                 let retry_resp = pds_client
-                    .pds_token_exchange(metadata, code, pkce_verifier, &proof_with_nonce)
+                    .pds_token_exchange(metadata, code, pkce_verifier, &proof_with_nonce, client_id)
                     .await
                     .map_err(|e| ClaimError::NetworkError {
                         message: format!("token exchange retry failed: {}", e),
@@ -557,12 +705,12 @@ async fn pds_exchange_code_with_retry(
                         })?;
                     return Ok((token, retry_nonce));
                 } else {
-                    // Retry response was non-200, extract status and body for error message
                     let status = retry_resp.status();
                     let body = retry_resp
                         .text()
                         .await
                         .unwrap_or_else(|_| "(unable to read response body)".to_string());
+                    tracing::error!(status = %status, body = %body, "token exchange retry failed");
                     return Err(ClaimError::NetworkError {
                         message: format!("token exchange retry returned {}: {}", status, body),
                     });
@@ -571,6 +719,7 @@ async fn pds_exchange_code_with_retry(
         }
     }
 
+    tracing::error!(body = %error_body, "token exchange failed with non-retryable error");
     Err(ClaimError::NetworkError {
         message: format!(
             "token exchange returned non-success response: {}",
@@ -621,14 +770,21 @@ pub(crate) async fn request_claim_verification_impl(
     claim_state: &ClaimState,
 ) -> Result<(), ClaimError> {
     let Some(ref oauth_client) = claim_state.pds_oauth_client else {
+        tracing::error!("request_claim_verification: no pds_oauth_client in ClaimState");
         return Err(ClaimError::Unauthorized);
     };
 
+    tracing::debug!("calling requestPlcOperationSignature XRPC");
     crate::pds_client::request_plc_operation_signature(oauth_client)
         .await
-        .map_err(|e| ClaimError::NetworkError {
-            message: format!("request_plc_operation_signature failed: {}", e),
-        })
+        .map_err(|e| {
+            tracing::error!(error = %e, "requestPlcOperationSignature failed");
+            ClaimError::NetworkError {
+                message: format!("request_plc_operation_signature failed: {}", e),
+            }
+        })?;
+    tracing::info!("email verification requested successfully");
+    Ok(())
 }
 
 /// Sign and verify a PLC operation.
@@ -723,11 +879,16 @@ pub(crate) async fn sign_and_verify_claim_impl(
     };
 
     // Step 1: Get recommended credentials from old PDS
+    tracing::debug!(did = %did, "fetching recommended DID credentials from PDS");
     let recommended = get_recommended_did_credentials(pds_oauth_client)
         .await
-        .map_err(|e| ClaimError::NetworkError {
-            message: format!("get_recommended_did_credentials failed: {}", e),
+        .map_err(|e| {
+            tracing::error!(did = %did, error = %e, "getRecommendedDidCredentials failed");
+            ClaimError::NetworkError {
+                message: format!("get_recommended_did_credentials failed: {}", e),
+            }
         })?;
+    tracing::debug!(did = %did, "recommended credentials received");
 
     // Step 2: Build the sign request with device key at position [0]
     let mut rotation_keys = vec![device_key_id.to_string()];
@@ -744,12 +905,11 @@ pub(crate) async fn sign_and_verify_claim_impl(
     };
 
     // Step 3: Call signPlcOperation on old PDS
+    tracing::debug!(did = %did, "calling signPlcOperation on PDS");
     let response = sign_plc_operation(pds_oauth_client, &request)
         .await
         .map_err(|e| {
-            // Check if this is an invalid token error
-            // OAuthClient intercepts 400 responses with {"error": "InvalidToken"} and returns
-            // OAuthError::NotAuthenticated, which becomes NetworkError("sign_plc_operation failed: Not authenticated")
+            tracing::error!(did = %did, error = %e, "signPlcOperation failed");
             if let crate::pds_client::PdsClientError::NetworkError { message } = &e {
                 let lower_msg = message.to_lowercase();
                 if lower_msg.contains("invalidtoken")
@@ -763,21 +923,30 @@ pub(crate) async fn sign_and_verify_claim_impl(
                 message: format!("sign_plc_operation failed: {}", e),
             }
         })?;
+    tracing::debug!(did = %did, "signPlcOperation succeeded");
 
     // Step 4: Keep operation as JSON value (no need to serialize/deserialize)
     let op_value = response.operation.clone();
 
     // Step 5: Fetch current audit log and get expected prev CID
+    tracing::debug!(did = %did, "fetching audit log for verification");
     let log_json = pds_client
         .fetch_audit_log(did)
         .await
-        .map_err(|e| ClaimError::NetworkError {
-            message: format!("fetch_audit_log failed: {}", e),
+        .map_err(|e| {
+            tracing::error!(did = %did, error = %e, "fetch_audit_log failed");
+            ClaimError::NetworkError {
+                message: format!("fetch_audit_log failed: {}", e),
+            }
         })?;
 
-    let audit_log = crypto::parse_audit_log(&log_json).map_err(|e| ClaimError::NetworkError {
-        message: format!("parse_audit_log failed: {}", e),
+    let audit_log = crypto::parse_audit_log(&log_json).map_err(|e| {
+        tracing::error!(did = %did, error = %e, "parse_audit_log failed");
+        ClaimError::NetworkError {
+            message: format!("parse_audit_log failed: {}", e),
+        }
     })?;
+    tracing::debug!(did = %did, entries = audit_log.len(), "audit log fetched");
 
     let expected_prev = audit_log.last().map(|entry| entry.cid.clone());
 
@@ -792,17 +961,26 @@ pub(crate) async fn sign_and_verify_claim_impl(
         .map(|k| DidKeyUri(k.clone()))
         .collect();
 
+    tracing::debug!(did = %did, authorized_keys = authorized_keys.len(), "verifying PLC operation signature");
     let verified_op =
         crypto::verify_plc_operation(&op_json_str, &authorized_keys).map_err(|e| {
+            tracing::error!(did = %did, error = %e, "PLC operation signature verification failed");
             ClaimError::VerificationFailed {
                 message: format!("signature verification failed: {}", e),
             }
         })?;
+    tracing::debug!(did = %did, "signature verified, running local checks");
 
     // Step 7: Local verification checks
 
     // Check 1: rotationKeys[0] is our device key
     if verified_op.rotation_keys.first() != Some(&device_key_id.to_string()) {
+        tracing::error!(
+            did = %did,
+            expected = %device_key_id,
+            actual = ?verified_op.rotation_keys.first(),
+            "device key not at rotationKeys[0]"
+        );
         return Err(ClaimError::VerificationFailed {
             message: format!(
                 "expected device key at rotationKeys[0], found: {:?}",
@@ -815,6 +993,7 @@ pub(crate) async fn sign_and_verify_claim_impl(
     match (&verified_op.prev, expected_prev.as_deref()) {
         (Some(op_prev), Some(expected)) if op_prev == expected => { /* OK */ }
         (prev, expected) => {
+            tracing::error!(did = %did, op_prev = ?prev, expected = ?expected, "prev CID mismatch");
             return Err(ClaimError::VerificationFailed {
                 message: format!(
                     "prev mismatch: operation has {:?}, expected {:?}",
@@ -951,51 +1130,66 @@ pub(crate) async fn submit_claim_impl(
 ) -> Result<ClaimResult, ClaimError> {
     // Step 1: Read verified_signed_op from ClaimState
     let Some(ref operation) = claim_state.verified_signed_op else {
+        tracing::error!(did = %claim_state.did, "submit_claim: no verified_signed_op in ClaimState");
         return Err(ClaimError::Unauthorized);
     };
 
     // Step 2: POST the signed operation to plc.directory
+    tracing::info!(did = %claim_state.did, "submitting signed PLC operation to plc.directory");
     pds_client
         .post_plc_operation(&claim_state.did, operation)
         .await
-        .map_err(|e| match e {
-            crate::pds_client::PdsClientError::InvalidResponse { message } => {
-                ClaimError::PlcDirectoryError { message }
+        .map_err(|e| {
+            tracing::error!(did = %claim_state.did, error = %e, "post_plc_operation failed");
+            match e {
+                crate::pds_client::PdsClientError::InvalidResponse { message } => {
+                    ClaimError::PlcDirectoryError { message }
+                }
+                other => ClaimError::NetworkError {
+                    message: format!("post_plc_operation failed: {}", other),
+                },
             }
-            other => ClaimError::NetworkError {
-                message: format!("post_plc_operation failed: {}", other),
-            },
         })?;
+    tracing::info!(did = %claim_state.did, "PLC operation accepted by plc.directory");
 
     // Step 3: Persist the claimed identity to IdentityStore
     let store = IdentityStore;
 
     // 3a: Register DID in managed-dids index (may already exist from prior attempts)
+    tracing::debug!(did = %claim_state.did, "registering identity in store");
     if let Err(e) = store.add_identity(&claim_state.did) {
-        // IdentityAlreadyExists is fine — user may have a partially completed prior claim
         if !matches!(
             e,
             crate::identity_store::IdentityStoreError::IdentityAlreadyExists
         ) {
+            tracing::error!(did = %claim_state.did, error = %e, "failed to add identity to store");
             return Err(ClaimError::NetworkError {
                 message: format!("failed to add identity: {}", e),
             });
         }
+        tracing::debug!(did = %claim_state.did, "identity already exists in store (prior partial claim)");
     }
 
     // 3b: Ensure device key exists for the DID
     store
         .get_or_create_device_key(&claim_state.did)
-        .map_err(|e| ClaimError::NetworkError {
-            message: format!("failed to get or create device key: {}", e),
+        .map_err(|e| {
+            tracing::error!(did = %claim_state.did, error = %e, "device key creation failed");
+            ClaimError::NetworkError {
+                message: format!("failed to get or create device key: {}", e),
+            }
         })?;
 
     // 3c: Re-fetch the DID document from plc.directory
+    tracing::debug!(did = %claim_state.did, "re-fetching DID document after claim");
     let (_, updated_did_doc) = pds_client
         .discover_pds(&claim_state.did)
         .await
-        .map_err(|e| ClaimError::NetworkError {
-            message: format!("failed to re-fetch DID document: {}", e),
+        .map_err(|e| {
+            tracing::error!(did = %claim_state.did, error = %e, "failed to re-fetch DID document");
+            ClaimError::NetworkError {
+                message: format!("failed to re-fetch DID document: {}", e),
+            }
         })?;
 
     // Store the updated DID document as JSON string
@@ -1022,23 +1216,34 @@ pub(crate) async fn submit_claim_impl(
 
     store
         .store_did_doc(&claim_state.did, &did_doc_json)
-        .map_err(|e| ClaimError::NetworkError {
-            message: format!("failed to store DID document: {}", e),
+        .map_err(|e| {
+            tracing::error!(did = %claim_state.did, error = %e, "failed to store DID document");
+            ClaimError::NetworkError {
+                message: format!("failed to store DID document: {}", e),
+            }
         })?;
 
     // 3d: Fetch and store the PLC audit log
+    tracing::debug!(did = %claim_state.did, "fetching audit log for persistence");
     let log_json = pds_client
         .fetch_audit_log(&claim_state.did)
         .await
-        .map_err(|e| ClaimError::NetworkError {
-            message: format!("failed to fetch audit log: {}", e),
+        .map_err(|e| {
+            tracing::error!(did = %claim_state.did, error = %e, "failed to fetch audit log for persistence");
+            ClaimError::NetworkError {
+                message: format!("failed to fetch audit log: {}", e),
+            }
         })?;
 
     store
         .store_plc_log(&claim_state.did, &log_json)
-        .map_err(|e| ClaimError::NetworkError {
-            message: format!("failed to store PLC log: {}", e),
+        .map_err(|e| {
+            tracing::error!(did = %claim_state.did, error = %e, "failed to store PLC log");
+            ClaimError::NetworkError {
+                message: format!("failed to store PLC log: {}", e),
+            }
         })?;
+    tracing::info!(did = %claim_state.did, "identity claim persisted successfully");
 
     // Step 4: Clear ClaimState (handled by the Tauri command caller after this function succeeds)
     // Step 5: Return the updated DID document

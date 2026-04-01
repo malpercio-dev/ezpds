@@ -10,11 +10,22 @@ use std::time::Duration;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-/// OAuth client ID for the identity wallet application
-const CLIENT_ID: &str = "dev.malpercio.identitywallet";
+/// OAuth client metadata path, appended to the relay's public URL to form the `client_id`.
+///
+/// External auth servers (e.g. bsky.social) GET `{relay_url}/oauth/client-metadata.json`
+/// to discover redirect_uris, grant_types, etc.
+const CLIENT_METADATA_PATH: &str = "/oauth/client-metadata.json";
 
-/// OAuth redirect URI for the identity wallet application
+/// OAuth redirect URI for external PDS authentication.
 const REDIRECT_URI: &str = "dev.malpercio.identitywallet:/oauth/callback";
+
+/// Build the OAuth client_id URL from a relay base URL.
+///
+/// The client_id is the relay's public URL + `/oauth/client-metadata.json`.
+/// This must match what the relay serves at that path.
+pub fn client_id_for_relay(relay_url: &str) -> String {
+    format!("{}{}", relay_url.trim_end_matches('/'), CLIENT_METADATA_PATH)
+}
 
 /// Error type for PDS client operations.
 ///
@@ -53,15 +64,19 @@ pub enum PdsClientError {
     OauthFailed { message: String },
 }
 
-/// PLC directory DID document response.
+/// PLC operation data for a DID.
 ///
-/// Returned from `GET {plc_directory_url}/{did}`.
-/// Field names use camelCase per the API.
+/// Combines fields from the W3C DID Document (`GET /{did}`) and the PLC audit log
+/// (`GET /{did}/log/audit`). `rotation_keys` only exist in the audit log — they are
+/// NOT part of the W3C DID Document and must be populated separately.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlcDidDocument {
     pub did: String,
     pub also_known_as: Vec<String>,
+    /// Rotation keys from the latest PLC operation. Empty if only populated from
+    /// the W3C DID Document (which doesn't include rotation keys).
+    #[serde(default)]
     pub rotation_keys: Vec<String>,
     pub verification_methods: serde_json::Value,
     pub services: HashMap<String, PlcService>,
@@ -73,6 +88,75 @@ pub struct PlcService {
     #[serde(rename = "type")]
     pub service_type: String,
     pub endpoint: String,
+}
+
+// ── W3C DID Document (private, for parsing `GET /{did}` responses) ───────────
+
+/// W3C DID Document as returned by `GET {plc_directory_url}/{did}`.
+/// Different shape from PLC operations: `id` not `did`, arrays not HashMaps.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct W3cDidDocument {
+    id: String,
+    #[serde(default)]
+    also_known_as: Vec<String>,
+    #[serde(default)]
+    verification_method: Vec<W3cVerificationMethod>,
+    #[serde(default)]
+    service: Vec<W3cService>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct W3cVerificationMethod {
+    id: String,
+    #[serde(default)]
+    public_key_multibase: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct W3cService {
+    id: String,
+    #[serde(rename = "type")]
+    service_type: String,
+    service_endpoint: String,
+}
+
+impl W3cDidDocument {
+    /// Convert to PlcDidDocument. `rotation_keys` will be empty — the caller
+    /// must populate them from the audit log if needed.
+    fn into_plc_doc(self) -> PlcDidDocument {
+        // Convert verification_method array to the { "atproto": "did:key:..." } shape
+        let mut vm_map = serde_json::Map::new();
+        for method in &self.verification_method {
+            // Strip the "did:plc:...#" prefix from the id to get the key name
+            let key_name = method.id.rsplit_once('#')
+                .map(|(_, name)| name.to_string())
+                .unwrap_or_else(|| method.id.clone());
+            if let Some(ref pkm) = method.public_key_multibase {
+                vm_map.insert(key_name, serde_json::Value::String(pkm.clone()));
+            }
+        }
+
+        // Convert service array to HashMap keyed by id (strip leading '#')
+        let services = self.service.into_iter().map(|svc| {
+            let key = svc.id.strip_prefix('#').unwrap_or(&svc.id).to_string();
+            let plc_svc = PlcService {
+                service_type: svc.service_type,
+                endpoint: svc.service_endpoint,
+            };
+            (key, plc_svc)
+        }).collect();
+
+        PlcDidDocument {
+            did: self.id,
+            also_known_as: self.also_known_as,
+            rotation_keys: Vec::new(),
+            verification_methods: serde_json::Value::Object(vm_map),
+            services,
+        }
+    }
 }
 
 /// OAuth authorization server metadata.
@@ -243,14 +327,16 @@ impl PdsClient {
             _ => {}
         }
 
-        // Parse response as PlcDidDocument
-        let doc: PlcDidDocument =
+        // Parse W3C DID Document and convert to PlcDidDocument.
+        // rotation_keys will be empty — callers that need them must fetch the audit log.
+        let w3c_doc: W3cDidDocument =
             response
                 .json()
                 .await
                 .map_err(|e| PdsClientError::InvalidResponse {
                     message: format!("failed to parse DID document: {}", e),
                 })?;
+        let doc = w3c_doc.into_plc_doc();
 
         // Extract the atproto_pds service
         let pds_service =
@@ -275,32 +361,58 @@ impl PdsClient {
         Ok((pds_endpoint.to_string(), doc))
     }
 
-    /// Fetch OAuth authorization server metadata from the PDS.
+    /// Discover the OAuth authorization server for a PDS.
     ///
-    /// Fetches `/.well-known/oauth-authorization-server` and validates that
-    /// `response_types_supported` includes "code" and `code_challenge_methods_supported`
-    /// includes "S256".
+    /// Follows RFC 9728 (OAuth Protected Resource Metadata):
+    /// 1. Try `GET {pds_url}/.well-known/oauth-protected-resource` to find the
+    ///    authorization server URL (e.g. Bluesky entryway at `bsky.social`)
+    /// 2. Fetch `GET {auth_server}/.well-known/oauth-authorization-server`
+    /// 3. Fall back to `GET {pds_url}/.well-known/oauth-authorization-server`
+    ///    if the protected resource endpoint doesn't exist (self-hosted PDS)
+    ///
+    /// Validates that the metadata includes "code" in `response_types_supported`
+    /// and "S256" in `code_challenge_methods_supported`.
     pub async fn discover_auth_server(
         &self,
         pds_url: &str,
     ) -> Result<AuthServerMetadata, PdsClientError> {
-        let url = format!("{}/.well-known/oauth-authorization-server", pds_url);
+        // Step 1: Try protected resource metadata to find the auth server
+        let auth_server_base = self.discover_protected_resource_auth_server(pds_url).await;
+
+        let metadata_base = match &auth_server_base {
+            Some(server) => {
+                tracing::debug!(auth_server = %server, "using authorization server from protected resource metadata");
+                server.as_str()
+            }
+            None => {
+                tracing::debug!(pds_url = %pds_url, "no protected resource metadata, falling back to PDS directly");
+                pds_url
+            }
+        };
+
+        // Step 2: Fetch the OAuth authorization server metadata
+        let url = format!("{}/.well-known/oauth-authorization-server", metadata_base);
+        tracing::debug!(url = %url, "fetching OAuth authorization server metadata");
 
         let response =
             self.client
                 .get(&url)
                 .send()
                 .await
-                .map_err(|e| PdsClientError::NetworkError {
-                    message: format!("failed to fetch OAuth metadata: {}", e),
+                .map_err(|e| {
+                    tracing::error!(url = %url, error = %e, "OAuth metadata fetch failed");
+                    PdsClientError::NetworkError {
+                        message: format!("failed to fetch OAuth metadata: {}", e),
+                    }
                 })?;
 
         if !response.status().is_success() {
+            tracing::error!(url = %url, status = %response.status(), "OAuth metadata returned non-success");
             return Err(PdsClientError::InvalidResponse {
                 message: format!(
                     "OAuth metadata fetch returned {} from {}",
                     response.status(),
-                    pds_url
+                    metadata_base
                 ),
             });
         }
@@ -309,9 +421,13 @@ impl PdsClient {
             response
                 .json()
                 .await
-                .map_err(|e| PdsClientError::InvalidResponse {
-                    message: format!("failed to parse OAuth metadata: {}", e),
+                .map_err(|e| {
+                    tracing::error!(url = %url, error = %e, "OAuth metadata parsing failed");
+                    PdsClientError::InvalidResponse {
+                        message: format!("failed to parse OAuth metadata: {}", e),
+                    }
                 })?;
+        tracing::debug!(issuer = %metadata.issuer, "OAuth metadata parsed");
 
         // Validate required capabilities
         if !metadata
@@ -336,6 +452,46 @@ impl PdsClient {
         Ok(metadata)
     }
 
+    /// Try to discover the authorization server URL from the PDS's protected
+    /// resource metadata (RFC 9728). Returns `None` if the endpoint doesn't
+    /// exist or can't be parsed — the caller should fall back to the PDS URL.
+    async fn discover_protected_resource_auth_server(&self, pds_url: &str) -> Option<String> {
+        let url = format!("{}/.well-known/oauth-protected-resource", pds_url);
+        tracing::debug!(url = %url, "checking protected resource metadata");
+
+        let response = match self.client.get(&url).send().await {
+            Ok(r) if r.status().is_success() => r,
+            Ok(r) => {
+                tracing::debug!(url = %url, status = %r.status(), "protected resource metadata not available");
+                return None;
+            }
+            Err(e) => {
+                tracing::debug!(url = %url, error = %e, "protected resource metadata fetch failed");
+                return None;
+            }
+        };
+
+        #[derive(serde::Deserialize)]
+        struct ProtectedResource {
+            #[serde(default)]
+            authorization_servers: Vec<String>,
+        }
+
+        match response.json::<ProtectedResource>().await {
+            Ok(pr) => {
+                let server = pr.authorization_servers.into_iter().next();
+                if let Some(ref s) = server {
+                    tracing::debug!(auth_server = %s, "found authorization server in protected resource metadata");
+                }
+                server
+            }
+            Err(e) => {
+                tracing::debug!(url = %url, error = %e, "failed to parse protected resource metadata");
+                None
+            }
+        }
+    }
+
     /// Perform a Pushed Authorization Request to an arbitrary PDS.
     ///
     /// Sends a PAR request with PKCE challenge, DPoP proof, and optional login_hint.
@@ -347,6 +503,7 @@ impl PdsClient {
         dpop_proof: &str,
         dpop_jkt: &str,
         login_hint: Option<&str>,
+        client_id: &str,
     ) -> Result<PdsParResponse, PdsClientError> {
         let par_url = metadata
             .pushed_authorization_request_endpoint
@@ -358,7 +515,7 @@ impl PdsClient {
             ("code_challenge_method", "S256".to_string()),
             ("code_challenge", pkce_challenge.to_string()),
             ("state", state_param.to_string()),
-            ("client_id", CLIENT_ID.to_string()),
+            ("client_id", client_id.to_string()),
             ("redirect_uri", REDIRECT_URI.to_string()),
             ("scope", "atproto transition:generic".to_string()),
             ("dpop_jkt", dpop_jkt.to_string()),
@@ -412,6 +569,7 @@ impl PdsClient {
         code: &str,
         pkce_verifier: &str,
         dpop_proof: &str,
+        client_id: &str,
     ) -> Result<reqwest::Response, PdsClientError> {
         let token_url = &metadata.token_endpoint;
 
@@ -420,7 +578,7 @@ impl PdsClient {
             ("code", code),
             ("redirect_uri", REDIRECT_URI),
             ("code_verifier", pkce_verifier),
-            ("client_id", CLIENT_ID),
+            ("client_id", client_id),
         ];
 
         self.client
@@ -441,11 +599,12 @@ impl PdsClient {
         metadata: &AuthServerMetadata,
         request_uri: &str,
         login_hint: Option<&str>,
+        client_id: &str,
     ) -> String {
         let mut url = format!(
             "{}?client_id={}&request_uri={}",
             metadata.authorization_endpoint,
-            CLIENT_ID,
+            urlencoding::encode(client_id),
             urlencoding::encode(request_uri)
         );
 
@@ -525,6 +684,30 @@ impl Default for PdsClient {
 }
 
 // ============================================================================
+// Public helpers
+// ============================================================================
+
+/// Extract rotation keys from the latest entry in a raw PLC audit log JSON string.
+/// Returns an empty Vec if parsing fails or the log has no entries.
+pub fn rotation_keys_from_audit_log(raw_json: &str) -> Vec<String> {
+    let entries: Vec<serde_json::Value> = match serde_json::from_str(raw_json) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    entries
+        .last()
+        .and_then(|entry| entry.get("operation"))
+        .and_then(|op| op.get("rotationKeys"))
+        .and_then(|keys| keys.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+// ============================================================================
 // Helper functions for resolve_handle
 // ============================================================================
 
@@ -532,6 +715,7 @@ impl Default for PdsClient {
 /// `Ok(None)` if no matching TXT record found, `Err` on transport failure.
 async fn try_resolve_dns(handle: &str) -> Result<Option<String>, PdsClientError> {
     let dns_name = format!("_atproto.{}", handle);
+    tracing::debug!(dns_name = %dns_name, "attempting DNS TXT lookup");
 
     // Create a resolver using system DNS config (matches relay pattern in dns.rs:49)
     let resolver = hickory_resolver::Resolver::builder_tokio()
@@ -549,6 +733,7 @@ async fn try_resolve_dns(handle: &str) -> Result<Option<String>, PdsClientError>
                         Ok(s) => {
                             if let Some(did_value) = s.strip_prefix("did=") {
                                 let did = did_value.trim().to_string();
+                                tracing::debug!(did = %did, "DNS TXT resolved");
                                 return Ok(Some(did));
                             }
                         }
@@ -558,14 +743,17 @@ async fn try_resolve_dns(handle: &str) -> Result<Option<String>, PdsClientError>
                     }
                 }
             }
+            tracing::debug!(dns_name = %dns_name, "no did= TXT record found");
             Ok(None)
         }
         Err(e) => {
             // Check if it's a "no records found" error (normal for unregistered handles)
             // vs. a transport error (network failure)
             if e.is_no_records_found() {
+                tracing::debug!(dns_name = %dns_name, "no DNS TXT records found");
                 Ok(None)
             } else {
+                tracing::warn!(dns_name = %dns_name, error = %e, "DNS TXT lookup failed");
                 Err(PdsClientError::NetworkError {
                     message: format!("DNS lookup failed: {}", e),
                 })
@@ -581,27 +769,36 @@ async fn try_resolve_http(
     client: &reqwest::Client,
     url: &str,
 ) -> Result<Option<String>, PdsClientError> {
+    tracing::debug!(url = %url, "attempting HTTP well-known lookup");
     match client.get(url).send().await {
         Ok(response) => {
             if response.status().is_success() {
                 match response.text().await {
-                    Ok(body) => Ok(Some(body.trim().to_string())),
-                    Err(e) => Err(PdsClientError::NetworkError {
-                        message: format!("failed to read response body: {}", e),
-                    }),
+                    Ok(body) => {
+                        tracing::debug!(url = %url, did = %body.trim(), "HTTP well-known resolved");
+                        Ok(Some(body.trim().to_string()))
+                    }
+                    Err(e) => {
+                        tracing::warn!(url = %url, error = %e, "HTTP well-known body read failed");
+                        Err(PdsClientError::NetworkError {
+                            message: format!("failed to read response body: {}", e),
+                        })
+                    }
                 }
             } else if response.status().is_client_error() {
                 // 4xx = handle not found at this endpoint
+                tracing::debug!(url = %url, status = %response.status(), "HTTP well-known not found");
                 Ok(None)
             } else {
                 // 5xx = temporary server error
+                tracing::warn!(url = %url, status = %response.status(), "HTTP well-known server error");
                 Err(PdsClientError::NetworkError {
                     message: format!("server error from {}: {}", url, response.status()),
                 })
             }
         }
         Err(e) => {
-            // Transport error
+            tracing::warn!(url = %url, error = %e, "HTTP well-known request failed");
             Err(PdsClientError::NetworkError {
                 message: format!("HTTP request failed: {}", e),
             })
@@ -749,17 +946,25 @@ mod tests {
         let mock_server = MockServer::start();
         let pds_endpoint = format!("{}/pds", mock_server.base_url());
 
+        // W3C DID Document format (what plc.directory actually returns)
         let did_doc_json = serde_json::json!({
-            "did": "did:plc:test123",
+            "@context": [
+                "https://www.w3.org/ns/did/v1",
+                "https://w3id.org/security/multikey/v1"
+            ],
+            "id": "did:plc:test123",
             "alsoKnownAs": ["at://alice.example.com"],
-            "rotationKeys": ["did:key:zQ3test1", "did:key:zQ3test2"],
-            "verificationMethods": {"atproto": "did:key:zQ3test1"},
-            "services": {
-                "atproto_pds": {
-                    "type": "AtprotoPersonalDataServer",
-                    "endpoint": pds_endpoint
-                }
-            }
+            "verificationMethod": [{
+                "id": "did:plc:test123#atproto",
+                "type": "Multikey",
+                "controller": "did:plc:test123",
+                "publicKeyMultibase": "zQ3test1"
+            }],
+            "service": [{
+                "id": "#atproto_pds",
+                "type": "AtprotoPersonalDataServer",
+                "serviceEndpoint": pds_endpoint
+            }]
         });
 
         // Mock the plc.directory GET request
@@ -784,7 +989,12 @@ mod tests {
         assert!(pds_url.contains("/pds"));
         assert_eq!(doc.did, "did:plc:test123");
         assert_eq!(doc.also_known_as, vec!["at://alice.example.com"]);
-        assert_eq!(doc.rotation_keys.len(), 2);
+        // W3C DID Document doesn't include rotation keys — they come from the audit log
+        assert!(doc.rotation_keys.is_empty());
+        // Service array converted to HashMap keyed by id (without '#' prefix)
+        assert!(doc.services.contains_key("atproto_pds"));
+        // verificationMethod array converted to { "atproto": "zQ3test1" }
+        assert_eq!(doc.verification_methods["atproto"], "zQ3test1");
     }
 
     /// DID_NOT_FOUND error when plc.directory returns 404
@@ -1188,6 +1398,7 @@ mod tests {
                 "test_dpop_proof",
                 "test_dpop_jkt",
                 Some("user@example.com"),
+                "https://test.example.com/oauth/client-metadata.json",
             )
             .await;
 
@@ -1231,7 +1442,7 @@ mod tests {
 
         let client = PdsClient::new();
         let result = client
-            .pds_par(&metadata, "challenge", "state", "proof", "jkt", None)
+            .pds_par(&metadata, "challenge", "state", "proof", "jkt", None, "https://test.example.com/oauth/client-metadata.json")
             .await;
 
         assert!(result.is_ok());
@@ -1267,7 +1478,7 @@ mod tests {
 
         let client = PdsClient::new();
         let result = client
-            .pds_par(&metadata, "challenge", "state", "proof", "jkt", None)
+            .pds_par(&metadata, "challenge", "state", "proof", "jkt", None, "https://test.example.com/oauth/client-metadata.json")
             .await;
 
         assert!(result.is_err());
@@ -1311,7 +1522,7 @@ mod tests {
 
         let client = PdsClient::new();
         let result = client
-            .pds_token_exchange(&metadata, "test_code", "test_verifier", "test_dpop_proof")
+            .pds_token_exchange(&metadata, "test_code", "test_verifier", "test_dpop_proof", "https://test.example.com/oauth/client-metadata.json")
             .await;
 
         assert!(result.is_ok());
@@ -1346,7 +1557,7 @@ mod tests {
 
         let client = PdsClient::new();
         let result = client
-            .pds_token_exchange(&metadata, "test_code", "test_verifier", "test_dpop_proof")
+            .pds_token_exchange(&metadata, "test_code", "test_verifier", "test_dpop_proof", "https://test.example.com/oauth/client-metadata.json")
             .await;
 
         // Should return Ok(Response) with 400 status — caller handles error interpretation.
@@ -1372,7 +1583,7 @@ mod tests {
 
         let client = PdsClient::new();
         let result = client
-            .pds_token_exchange(&metadata, "test_code", "test_verifier", "test_dpop_proof")
+            .pds_token_exchange(&metadata, "test_code", "test_verifier", "test_dpop_proof", "https://test.example.com/oauth/client-metadata.json")
             .await;
 
         assert!(result.is_err());
@@ -1403,9 +1614,10 @@ mod tests {
             &metadata,
             "urn:ietf:params:oauth:request_uri:test",
             Some("user@example.com"),
+            "https://test.example.com/oauth/client-metadata.json",
         );
 
-        assert!(url.contains("client_id=dev.malpercio.identitywallet"));
+        assert!(url.contains("client_id=https%3A%2F%2Ftest.example.com%2Foauth%2Fclient-metadata.json"));
         assert!(url.contains("request_uri="));
         assert!(url.contains("login_hint="));
         assert!(url.starts_with("https://pds.example.com/oauth/authorize?"));
@@ -1430,9 +1642,10 @@ mod tests {
             &metadata,
             "urn:ietf:params:oauth:request_uri:test2",
             None,
+            "https://test.example.com/oauth/client-metadata.json",
         );
 
-        assert!(url.contains("client_id=dev.malpercio.identitywallet"));
+        assert!(url.contains("client_id=https%3A%2F%2Ftest.example.com%2Foauth%2Fclient-metadata.json"));
         assert!(url.contains("request_uri="));
         assert!(!url.contains("login_hint="));
         assert!(url.starts_with("https://pds.example.com/oauth/authorize?"));

@@ -33,6 +33,7 @@ use crate::routes::get_relay_signing_key::get_relay_signing_key;
 use crate::routes::get_session::get_session;
 use crate::routes::health::health;
 use crate::routes::oauth_authorize::{get_authorization, post_authorization};
+use crate::routes::oauth_client_metadata::oauth_client_metadata;
 use crate::routes::oauth_jwks::oauth_jwks;
 use crate::routes::oauth_par::post_par;
 use crate::routes::oauth_server_metadata::oauth_server_metadata;
@@ -154,6 +155,7 @@ pub fn app(state: AppState) -> Router {
             "/oauth/authorize",
             get(get_authorization).post(post_authorization),
         )
+        .route("/oauth/client-metadata.json", get(oauth_client_metadata))
         .route("/oauth/jwks", get(oauth_jwks))
         .route("/oauth/par", post(post_par))
         .route("/oauth/token", post(post_token))
