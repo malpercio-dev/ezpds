@@ -57,7 +57,6 @@ pub enum RecoveryError {
 /// Returns `(fork_point_entry, pre_unauthorized_state)` where:
 /// - `fork_point_entry` is the last legitimate AuditEntry (its CID becomes the `prev` for the counter-op)
 /// - `pre_unauthorized_state` is the VerifiedPlcOp representing the state to restore
-#[allow(dead_code)]
 pub(crate) fn find_fork_point(
     audit_log: &[AuditEntry],
     unauthorized_op_cid: &str,
@@ -135,7 +134,6 @@ pub(crate) fn build_op_diff(
 ///
 /// Returns `Ok(())` if recovery is still possible, or `Err(RecoveryWindowExpired)` if
 /// the 72-hour deadline has passed.
-#[allow(dead_code)]
 pub(crate) fn check_recovery_window(unauthorized_op_created_at: &str) -> Result<(), RecoveryError> {
     let op_time = DateTime::parse_from_rfc3339(unauthorized_op_created_at)
         .map_err(|e| RecoveryError::SigningFailed {
@@ -361,7 +359,7 @@ pub async fn submit_recovery_override(
     store
         .store_plc_log(did, &updated_log)
         .map_err(|e| RecoveryError::NetworkError {
-            message: format!("Failed to update cached log: {e}"),
+            message: format!("Failed to cache updated PLC log in Keychain: {e}"),
         })?;
 
     // 3. Re-fetch the DID document (it should now reflect the recovered state).
@@ -390,7 +388,7 @@ pub async fn submit_recovery_override(
     store
         .store_did_doc(did, &serde_json::to_string(&did_doc).unwrap_or_default())
         .map_err(|e| RecoveryError::NetworkError {
-            message: format!("Failed to update cached DID doc: {e}"),
+            message: format!("Failed to cache updated DID document in Keychain: {e}"),
         })?;
 
     Ok(ClaimResult {
@@ -900,6 +898,138 @@ mod tests {
         );
     }
 
+    /// AC7.3: build_recovery_override returns a SignedRecoveryOp that can be verified with device key.
+    /// Sets up an identity with IdentityStore, generates real keys and signed operations,
+    /// starts a httpmock::MockServer serving an audit log with genesis + unauthorized op,
+    /// calls build_recovery_override with PdsClient pointed at the mock server,
+    /// and verifies the returned SignedRecoveryOp signature and diff integrity.
+    ///
+    /// This test requires socket binding which is blocked in sandboxed environments.
+    /// Run with: cargo test -p identity-wallet test_ac7_3_build_recovery_override_signs_with_device_key -- --ignored
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn test_ac7_3_build_recovery_override_signs_with_device_key() {
+        use httpmock::prelude::*;
+
+        let did = "did:plc:ac73build";
+
+        // Setup identity with IdentityStore (pattern from plc_monitor.rs)
+        let store = IdentityStore;
+        let _ = store.add_identity(did);
+        for suffix in [
+            "device-key",
+            "device-key-pub",
+            "device-key-app-label",
+            "did-doc",
+            "plc-log",
+            "oauth-tokens",
+        ] {
+            let _ = crate::keychain::delete_item(&format!("{did}:{suffix}"));
+        }
+        let device_pub = store
+            .get_or_create_device_key(did)
+            .expect("device key generation failed");
+        let device_priv_bytes: [u8; 32] = crate::keychain::get_item(&format!("{did}:device-key"))
+            .expect("device key retrieval")
+            .try_into()
+            .expect("device key 32 bytes");
+
+        // Generate rotation key for genesis
+        let rotation_key = crypto::generate_p256_keypair().expect("rotation key generation");
+
+        // Build real genesis operation signed by device key
+        let genesis_op = crypto::build_did_plc_genesis_op(
+            &rotation_key.key_id,
+            &crypto::DidKeyUri(device_pub.key_id.clone()),
+            &device_priv_bytes,
+            "test.bsky.social",
+            "https://pds.test",
+        )
+        .expect("build genesis op");
+
+        let genesis_operation: serde_json::Value =
+            serde_json::from_str(&genesis_op.signed_op_json).expect("parse genesis op json");
+
+        // Create unauthorized operation (signed by attacker, not device key)
+        let attacker_key = crypto::generate_p256_keypair().expect("attacker key generation");
+        let unauth_operation = serde_json::json!({
+            "type": "plc_operation",
+            "prev": "bafy_genesis",
+            "rotationKeys": [attacker_key.key_id.0.as_str()],
+            "verificationMethods": {},
+            "services": {},
+            "alsoKnownAs": [],
+            "sig": "fake_attacker_signature"
+        });
+
+        // Build audit log JSON
+        let audit_log_json = serde_json::json!([
+            {
+                "did": did,
+                "cid": "bafy_genesis",
+                "createdAt": "2026-03-29T00:00:00Z",
+                "nullified": false,
+                "operation": genesis_operation
+            },
+            {
+                "did": did,
+                "cid": "bafy_unauthorized",
+                "createdAt": "2026-03-29T01:00:00Z",
+                "nullified": false,
+                "operation": unauth_operation
+            }
+        ]);
+
+        // Setup mock server
+        let mock_server = MockServer::start();
+        let client = PdsClient::new_for_test(mock_server.base_url());
+
+        // Mock GET /{did}/log/audit — returns audit log with genesis + unauthorized op
+        mock_server.mock(|when, then| {
+            when.method(GET).path(format!("/{did}/log/audit"));
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(audit_log_json.clone());
+        });
+
+        // Execute build_recovery_override
+        let signed_recovery = build_recovery_override(&client, did, "bafy_unauthorized")
+            .await
+            .expect("build_recovery_override should succeed");
+
+        // Verify AC7.1: diff.prev_cid is the fork point CID (genesis)
+        assert_eq!(
+            signed_recovery.diff.prev_cid,
+            Some("bafy_genesis".to_string()),
+            "AC7.1: prev_cid should be the fork point (genesis) CID"
+        );
+
+        // Verify AC7.2: diff.added_keys contains the fork-point rotation keys
+        assert!(
+            !signed_recovery.diff.added_keys.is_empty(),
+            "AC7.2: added_keys should contain rotation keys from fork point"
+        );
+        assert!(
+            signed_recovery
+                .diff
+                .added_keys
+                .contains(&rotation_key.key_id.0),
+            "AC7.2: rotation_key should be in added_keys"
+        );
+
+        // Verify AC7.3: signed_op can be verified via crypto::verify_plc_operation with device key
+        let signed_op_json =
+            serde_json::to_string(&signed_recovery.signed_op).expect("serialize signed op to JSON");
+        let device_key_uri = crypto::DidKeyUri(device_pub.key_id.clone());
+        let verification_result =
+            crypto::verify_plc_operation(&signed_op_json, std::slice::from_ref(&device_key_uri));
+        assert!(
+            verification_result.is_ok(),
+            "AC7.3: Recovery operation must be verifiable with device key; got: {:?}",
+            verification_result.err()
+        );
+    }
+
     /// AC7.4: SignedRecoveryOp serializes correctly with camelCase
     #[test]
     fn test_ac7_4_signed_recovery_op_serializes_camel_case() {
@@ -930,6 +1060,9 @@ mod tests {
 
     /// AC7.4: submit_recovery_override POSTs to plc.directory and updates cached log
     /// Uses httpmock::MockServer to verify the submission flow.
+    ///
+    /// This test requires socket binding which is blocked in sandboxed environments.
+    /// Run with: cargo test -p identity-wallet test_ac7_4_submit_recovery_override -- --ignored
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
     async fn test_ac7_4_submit_recovery_override() {
