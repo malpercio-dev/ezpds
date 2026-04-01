@@ -819,6 +819,8 @@ pub fn run() {
             claim::sign_and_verify_claim,
             claim::submit_claim,
             plc_monitor::check_identity_status,
+            recovery::build_recovery_override_cmd,
+            recovery::submit_recovery_override_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

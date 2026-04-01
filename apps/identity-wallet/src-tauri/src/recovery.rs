@@ -3,7 +3,7 @@
 // Functional Core: Types and error enums for recovery override operations
 // Imperative Shell: Recovery override building and submission commands (in later phases)
 
-use crate::claim::{ChangeType, OpDiff, ServiceChange};
+use crate::claim::{ChangeType, ClaimResult, OpDiff, ServiceChange};
 use crate::identity_store::IdentityStore;
 use crate::pds_client::PdsClient;
 use chrono::{DateTime, Duration, Utc};
@@ -328,6 +328,130 @@ fn build_sign_closure(
         let sig = sig.normalize_s().unwrap_or(sig);
         Ok(sig.to_bytes().to_vec())
     })
+}
+
+/// Submits the pending recovery override operation to plc.directory.
+///
+/// Reads the signed op from RecoveryState (set by build_recovery_override),
+/// POSTs it to plc.directory, and updates the cached PLC audit log.
+pub async fn submit_recovery_override(
+    pds_client: &PdsClient,
+    did: &str,
+    signed_op: &serde_json::Value,
+) -> Result<ClaimResult, RecoveryError> {
+    let store = IdentityStore;
+
+    // 1. POST the signed operation to plc.directory.
+    pds_client
+        .post_plc_operation(did, signed_op)
+        .await
+        .map_err(|e| RecoveryError::PlcDirectoryError {
+            message: format!("PLC directory rejected the operation: {e}"),
+        })?;
+
+    // 2. Re-fetch the audit log to update the cache.
+    let updated_log = pds_client
+        .fetch_audit_log(did)
+        .await
+        .map_err(|e| RecoveryError::NetworkError {
+            message: format!("Failed to fetch updated audit log: {e}"),
+        })?;
+
+    store
+        .store_plc_log(did, &updated_log)
+        .map_err(|e| RecoveryError::NetworkError {
+            message: format!("Failed to update cached log: {e}"),
+        })?;
+
+    // 3. Re-fetch the DID document (it should now reflect the recovered state).
+    // Use the raw plc.directory endpoint, not the audit log.
+    let did_doc_url = format!("{}/{}", pds_client.plc_directory_url(), did);
+    let did_doc: serde_json::Value = pds_client
+        .client()
+        .get(&did_doc_url)
+        .send()
+        .await
+        .map_err(|e| RecoveryError::NetworkError {
+            message: format!("Failed to fetch DID document: {e}"),
+        })?
+        .json()
+        .await
+        .map_err(|e| RecoveryError::NetworkError {
+            message: format!("Failed to parse DID document: {e}"),
+        })?;
+
+    store
+        .store_did_doc(did, &serde_json::to_string(&did_doc).unwrap_or_default())
+        .map_err(|e| RecoveryError::NetworkError {
+            message: format!("Failed to update cached DID doc: {e}"),
+        })?;
+
+    Ok(ClaimResult {
+        updated_did_doc: did_doc,
+    })
+}
+
+/// Tauri command: Build a recovery override operation.
+///
+/// Stores the built operation in RecoveryState for subsequent submission.
+#[tauri::command]
+pub async fn build_recovery_override_cmd(
+    state: tauri::State<'_, crate::oauth::AppState>,
+    did: String,
+    operation_cid: String,
+) -> Result<SignedRecoveryOp, RecoveryError> {
+    let result = build_recovery_override(
+        state.pds_client(),
+        &did,
+        &operation_cid,
+    )
+    .await?;
+
+    // Store in RecoveryState for submit_recovery_override_cmd.
+    let mut recovery = state.recovery_state.lock().await;
+    *recovery = Some(RecoveryState {
+        did: did.clone(),
+        signed_op: result.signed_op.clone(),
+    });
+
+    Ok(result)
+}
+
+/// Tauri command: Submit the pending recovery override to plc.directory.
+#[tauri::command]
+pub async fn submit_recovery_override_cmd(
+    state: tauri::State<'_, crate::oauth::AppState>,
+    did: String,
+) -> Result<ClaimResult, RecoveryError> {
+    let recovery = state.recovery_state.lock().await;
+    let recovery_state = recovery.as_ref().ok_or(RecoveryError::SigningFailed {
+        message: "No pending recovery operation. Call build_recovery_override first.".to_string(),
+    })?;
+
+    if recovery_state.did != did {
+        return Err(RecoveryError::SigningFailed {
+            message: format!(
+                "Recovery state DID mismatch: expected {}, got {}",
+                recovery_state.did, did
+            ),
+        });
+    }
+
+    let signed_op = recovery_state.signed_op.clone();
+    drop(recovery); // Release lock before network calls.
+
+    let result = submit_recovery_override(
+        state.pds_client(),
+        &did,
+        &signed_op,
+    )
+    .await?;
+
+    // Clear recovery state on success.
+    let mut recovery = state.recovery_state.lock().await;
+    *recovery = None;
+
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -776,6 +900,37 @@ mod tests {
         assert_eq!(
             fork_entry.cid, "bafy_genesis",
             "Should find earliest fork point (genesis), not first unauthorized op"
+        );
+    }
+
+    /// AC7.4: SignedRecoveryOp serializes correctly with camelCase
+    #[test]
+    fn test_ac7_4_signed_recovery_op_serializes_camel_case() {
+        let signed_op = SignedRecoveryOp {
+            diff: OpDiff {
+                added_keys: vec!["did:key:z6MkhaXgBZDvotzL".to_string()],
+                removed_keys: vec![],
+                changed_services: vec![],
+                prev_cid: Some("bafy_cid".to_string()),
+            },
+            signed_op: serde_json::json!({
+                "type": "plc_operation",
+                "sig": "test_sig"
+            }),
+        };
+
+        let json = serde_json::to_value(&signed_op).expect("serialize");
+
+        // Verify camelCase serialization: "signed_op" -> "signedOp"
+        assert!(
+            json.get("signedOp").is_some(),
+            "signed_op should be serialized as signedOp"
+        );
+
+        // Verify the diff is included
+        assert!(
+            json.get("diff").is_some(),
+            "diff should be present"
         );
     }
 }

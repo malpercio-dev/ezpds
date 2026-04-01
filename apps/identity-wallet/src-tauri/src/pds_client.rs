@@ -172,6 +172,16 @@ impl PdsClient {
         }
     }
 
+    /// Returns the plc.directory base URL.
+    pub fn plc_directory_url(&self) -> &str {
+        &self.plc_directory_url
+    }
+
+    /// Returns a reference to the inner HTTP client.
+    pub fn client(&self) -> &Client {
+        &self.client
+    }
+
     /// Resolve a handle to a DID via DNS TXT lookup with HTTP fallback.
     ///
     /// Attempts DNS TXT lookup for `_atproto.{handle}` first, then falls back to HTTP
