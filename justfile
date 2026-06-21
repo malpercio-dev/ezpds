@@ -20,13 +20,9 @@ clippy:
 run-relay:
     cargo run -p relay
 
-# Build the relay binary via Nix
-nix-build:
-    nix build .#relay --accept-flake-config
-
-# Build the Docker image via Nix (Linux only; on macOS use a remote Linux builder or CI)
+# Build the Docker image locally (requires Docker)
 docker-build:
-    nix build .#docker-image --accept-flake-config
+    docker build -t relay:latest .
 
 # Run the full CI pipeline locally
 ci: fmt-check clippy test
