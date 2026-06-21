@@ -114,6 +114,56 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerTool({
+    name: "tangled_open_pr",
+    label: "Open Tangled PR",
+    description: "Create a new pull request on a Tangled repository.",
+    promptSnippet: "Create a new pull request on Tangled",
+    promptGuidelines: ["Use tangled_open_pr when the user asks to create or open a new pull request."],
+    parameters: Type.Object({
+      repo: Type.String({ description: "Repo handle/name (e.g. malpercio.dev/ezpds)" }),
+      title: Type.String({ description: "PR title" }),
+      description: Type.Optional(Type.String({ description: "PR description (Markdown)" })),
+      source_branch: Type.String({ description: "Source branch name" }),
+      target_branch: Type.Optional(Type.String({ description: "Target branch (default: main)" })),
+    }),
+    async execute(_id, params) {
+      const token = await getToken();
+      const pds = await getPdsUrl();
+      const did = await getDid();
+      const now = new Date().toISOString();
+      const res = await fetch(`${pds}/xrpc/com.atproto.repo.createRecord`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          repo: did,
+          collection: "sh.tangled.pull",
+          record: {
+            repo: `at://${did}/sh.tangled.repo/${params.repo.split("/")[1]}`,
+            title: params.title,
+            description: params.description ?? "",
+            sourceBranch: params.source_branch,
+            targetBranch: params.target_branch ?? "main",
+            state: "open",
+            createdAt: now,
+          },
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.text();
+        throw new Error(`createRecord failed: ${res.status} — ${body}`);
+      }
+      const result = (await res.json()) as { uri: string; cid: string };
+      return {
+        content: [{ type: "text", text: `PR created: ${params.title}\nURI: ${result.uri}` }],
+        details: { result },
+      };
+    },
+  });
+
+  pi.registerTool({
     name: "tangled_list_issues",
     label: "List Tangled Issues",
     description: "List issues for a Tangled repository.",
