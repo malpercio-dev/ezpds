@@ -544,9 +544,74 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // ── linear_create_issue ──────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: "linear_create_issue",
+    label: "Create Linear Issue",
+    description: "Create a new Linear issue. Requires team key, title, and optionally description, priority, project, and labels.",
+    promptSnippet: "Create a new Linear issue with title, description, priority, and labels",
+    promptGuidelines: [
+      "Use linear_create_issue when the user asks to create, file, or open a new Linear issue.",
+    ],
+    parameters: Type.Object({
+      team_key: Type.String({ description: "Team key, e.g. 'MM'" }),
+      title: Type.String({ description: "Issue title" }),
+      description: Type.Optional(Type.String({ description: "Issue description (Markdown supported)" })),
+      priority: Type.Optional(
+        Type.Number({ description: "Priority: 0=No priority, 1=Urgent, 2=High, 3=Medium, 4=Low" }),
+      ),
+      project_id: Type.Optional(Type.String({ description: "Project ID to assign the issue to" })),
+      label_ids: Type.Optional(
+        Type.Array(Type.String(), { description: "Array of label IDs to apply" }),
+      ),
+      assignee_id: Type.Optional(Type.String({ description: "Assignee user ID" })),
+    }),
+    async execute(_id, params) {
+      // Resolve team ID from team key
+      const teamGql = `query TeamId($key: String!) {
+        teams(filter: { key: { eq: $key } }, first: 1) {
+          nodes { id name }
+        }
+      }`;
+      const teamData = await linearQuery(token, teamGql, { key: params.team_key });
+      const teams = teamData.teams?.nodes ?? [];
+      if (teams.length === 0) {
+        throw new Error(`Team with key "${params.team_key}" not found`);
+      }
+      const teamId = teams[0].id;
+
+      const input: Record<string, unknown> = {
+        teamId,
+        title: params.title,
+      };
+      if (params.description !== undefined) input.description = params.description;
+      if (params.priority !== undefined) input.priority = params.priority;
+      if (params.project_id !== undefined) input.projectId = params.project_id;
+      if (params.assignee_id !== undefined) input.assigneeId = params.assignee_id;
+      if (params.label_ids !== undefined) input.labelIds = params.label_ids;
+
+      const createGql = `mutation CreateIssue($input: IssueCreateInput!) {
+        issueCreate(input: $input) {
+          success
+          issue { ${ISSUE_FIELDS} }
+        }
+      }`;
+      const data = await linearQuery(token, createGql, { input });
+      if (!data.issueCreate?.success) {
+        throw new Error("Failed to create issue");
+      }
+      const issue = data.issueCreate.issue;
+      return {
+        content: [{ type: "text", text: `Created ${issue.identifier}: ${issue.title} [${issue.state?.name}]\n${issue.url}` }],
+        details: { issue },
+      };
+    },
+  });
+
   // ── Notify on load ──────────────────────────────────────────────────────
 
   pi.on("session_start", (_e, ctx) => {
-    ctx.ui.notify("Linear extension loaded — 8 tools registered", "info");
+    ctx.ui.notify("Linear extension loaded — 9 tools registered", "info");
   });
 }
