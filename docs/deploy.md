@@ -26,28 +26,43 @@ The relay container expects the following environment variables and mounts:
 
 ## Railway Deployment
 
+### Config as code vs Railway dashboard
+
+`railway.toml` (committed to the repo) captures everything that applies to any deploy of this codebase: Dockerfile builder, health check path, restart policy. Everything else is deliberately Railway-side:
+
+| Config | Where | Why |
+|--------|-------|-----|
+| Dockerfile builder, health check, restart policy | `railway.toml` (repo) | Applies to all deploys; no secrets |
+| `EZPDS_PUBLIC_URL` | Railway dashboard | Environment-specific (staging ≠ production) |
+| `EZPDS_AVAILABLE_USER_DOMAINS` | Railway dashboard | Deployment-specific |
+| `EZPDS_SIGNING_KEY_MASTER_KEY` | Railway dashboard (sealed) | Secret — never in git |
+| `EZPDS_ADMIN_TOKEN` | Railway dashboard (sealed) | Secret — never in git |
+| `EZPDS_DATA_DIR` | Not needed in Railway | Already set to `/data` by Dockerfile `ENV` |
+| `PORT` | Not needed in Railway | Railway injects it automatically; relay falls through to this |
+| Volume mount | Railway dashboard | Railway infra — no `railway.toml` equivalent |
+| Domain | Railway dashboard | Environment-specific |
+
 ### Setup Steps
 
 1. **Create Railway project** for the relay.
 2. **Add a Dockerfile service:**
-   - Connect to the GitHub repo (or configure manual Dockerfile path).
-   - Railway auto-detects the `Dockerfile` at the repo root.
-   - Set the following environment variables in Railway:
+   - Connect to the GitHub repo. Railway detects `railway.toml` and uses the Dockerfile builder automatically.
+   - Set the following environment variables in the Railway dashboard:
      - `EZPDS_PUBLIC_URL` - Use the Railway domain once assigned (see chicken-and-egg note below).
-     - `EZPDS_AVAILABLE_USER_DOMAINS` - Your handle domain list.
-     - `EZPDS_SIGNING_KEY_MASTER_KEY` - 64-character hex string; generate with: openssl rand -hex 32
+     - `EZPDS_AVAILABLE_USER_DOMAINS` - Your handle domain list (comma-separated).
+     - `EZPDS_SIGNING_KEY_MASTER_KEY` - 64-character hex string; generate with: `openssl rand -hex 32`
      - `EZPDS_ADMIN_TOKEN` - A secure random token.
-     - `EZPDS_DATA_DIR` (optional) - Defaults to `/data` (set by Dockerfile ENV); override if mounting the data volume elsewhere.
-   - Optionally override `PORT` (Railway default is `8080`; relay listens on whatever you set).
+   - Do **not** set `PORT` or `EZPDS_DATA_DIR` — Railway injects `PORT` automatically, and `EZPDS_DATA_DIR=/data` is already set by the Dockerfile `ENV`.
 
 3. **Add a volume:**
-   - Create a volume named (e.g., `relay-data`) and mount it to `/data` inside the container.
-   - Railway persists the volume across restarts.
+   - In the Railway dashboard, create a volume and mount it to `/data` inside the container.
+   - Railway persists the volume across restarts and redeploys.
+   - **Note:** The Dockerfile does not contain a `VOLUME` instruction — Railway does not support that directive and rejects builds that include it. The volume is configured entirely in the Railway dashboard.
 
 4. **Domain + HTTPS:**
-   - Railway automatically provisions an HTTPS domain (e.g., `relay-xyz.railway.app`).
+   - Railway automatically provisions an HTTPS domain (e.g., `relay-xyz.up.railway.app`).
    - If you own a custom domain, add a CNAME record to Railway's assigned domain.
-   - Update `EZPDS_PUBLIC_URL` to your final domain once the railway domain is known.
+   - Update `EZPDS_PUBLIC_URL` to your final domain once the Railway domain is known.
 
 ### Chicken-and-Egg: EZPDS_PUBLIC_URL
 
