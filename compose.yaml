@@ -1,0 +1,19 @@
+version: "3.9"
+
+services:
+  relay:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ezpds-relay
+    ports:
+      - "8080:8080"
+    volumes:
+      - ezpds-data:/data
+    env_file: .env.local
+    environment:
+      - PORT=8080
+
+volumes:
+  ezpds-data:
+    driver: local
