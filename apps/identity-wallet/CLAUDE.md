@@ -220,8 +220,7 @@ just ios-dev
 just ios-build
 ```
 
-Both commands automatically source `apps/identity-wallet/scripts/ios-env.sh` to set up
-the Apple toolchain and run `just ios-postinit` to re-apply patches after Xcode init.
+Both commands first run `just ios-check`, which fails fast if the Xcode project is missing a required patch — run `just ios-postinit` to apply them. The Apple toolchain env comes from the dev shell (`enterShell` sources `ios-env.sh`) and from the `ios-env.sh` line that `ios-postinit` injects into the Xcode Run Script phase.
 
 **Do not click Run in Xcode directly.** `just ios-dev` starts a JSON-RPC server that
 Xcode's build phase connects to; bypassing it causes "Connection refused" in the build log.
@@ -371,7 +370,7 @@ If you see this after a fresh clone: make sure you entered the dev shell from th
 
 The Nix devenv's Darwin setup hooks override `DEVELOPER_DIR` to a Nix apple-sdk stub that has no runtime tools. The `xcbuild` xcrun shim in PATH delegates to `$DEVELOPER_DIR/usr/bin/xcrun` — if `DEVELOPER_DIR` points at a Nix stub, it fails.
 
-**Fix:** Already resolved automatically. `devenv.nix`'s `enterShell` sources `apps/identity-wallet/scripts/ios-env.sh`, which calls `/usr/bin/xcode-select -p` to resolve the real Xcode path and re-exports `DEVELOPER_DIR` to point at it. This happens after all Nix hooks run, so the corrected `DEVELOPER_DIR` takes precedence. Additionally, `just ios-postinit` re-applies this patching to the Xcode Run Script phase each time after `cargo tauri ios init`.
+**Fix:** Already resolved automatically. `devenv.nix`'s `enterShell` sources `apps/identity-wallet/scripts/ios-env.sh`, which calls `/usr/bin/xcode-select -p` to resolve the real Xcode path and re-exports `DEVELOPER_DIR` to point at it. This happens after all Nix hooks run, so the corrected `DEVELOPER_DIR` takes precedence.
 
 If you still see this: verify with `echo $DEVELOPER_DIR` inside the dev shell. If it shows a Nix store path, exit and re-enter the shell from the workspace root.
 
