@@ -63,6 +63,31 @@ else
   echo "ios-postinit: injected EZPDS_IOS_BUILD + PATH + ios-env.sh into Run Script phase"
 fi
 
+# --- Patch D: tolerate Xcode's spurious "entitlements modified during build" ---
+# `cargo tauri ios build` re-runs its project sync (synchronize_project_config) on EVERY
+# invocation, restamping the pbxproj. That per-build churn makes Xcode's incremental
+# packaging racily report the (empty, never-actually-modified) entitlements file as
+# "modified during the build" and fail — intermittently. The entitlements is `<dict/>`,
+# so permitting the modification cannot produce incorrect entitlements (nothing to get
+# wrong). CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION=YES is Xcode's documented switch for
+# exactly this. It survives the per-build sync (which preserves existing buildSettings).
+# Idempotent; skips cleanly if a future Tauri template ships no entitlements.
+if grep -q 'CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION' "${PBXPROJ}"; then
+  echo "ios-postinit: entitlements-modification allowance already present"
+elif grep -q 'CODE_SIGN_ENTITLEMENTS = ' "${PBXPROJ}"; then
+  # Append the allowance after each CODE_SIGN_ENTITLEMENTS line, matching its indentation.
+  /usr/bin/perl -0pi -e 's/^([ \t]*)CODE_SIGN_ENTITLEMENTS = ([^\n]*);$/$1CODE_SIGN_ENTITLEMENTS = $2;\n$1CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION = YES;/mg' "${PBXPROJ}"
+  if ! grep -q 'CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION = YES' "${PBXPROJ}"; then
+    echo "error: could not add CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION to the pbxproj." >&2
+    echo "       Expected a CODE_SIGN_ENTITLEMENTS build setting to anchor it; Tauri's" >&2
+    echo "       generated template may differ. Adjust the regex in $(basename "$0")." >&2
+    exit 1
+  fi
+  echo "ios-postinit: added CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION=YES"
+else
+  echo "ios-postinit: no CODE_SIGN_ENTITLEMENTS in pbxproj; skipping entitlements allowance"
+fi
+
 # Structural guard: the patched project MUST still parse. Catches quoting/encoding
 # corruption that a sentinel-only check would miss (plutil reads the pbxproj format).
 if command -v plutil >/dev/null 2>&1; then

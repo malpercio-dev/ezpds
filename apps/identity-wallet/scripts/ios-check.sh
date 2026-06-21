@@ -30,6 +30,11 @@ if ! grep -q '# >>> ezpds-ios-env >>>' "${PBXPROJ}"; then
   fail=1
 fi
 
+if grep -q 'CODE_SIGN_ENTITLEMENTS = ' "${PBXPROJ}" && ! grep -q 'CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION = YES' "${PBXPROJ}"; then
+  echo "ios-check: FAIL — CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION missing (run 'just ios-postinit')" >&2
+  fail=1
+fi
+
 # Structural guard: a sentinel-present-but-corrupt pbxproj must still fail the check.
 if command -v plutil >/dev/null 2>&1 && ! plutil -lint "${PBXPROJ}" >/dev/null 2>&1; then
   echo "ios-check: FAIL — project.pbxproj does not parse (plutil -lint); patching may have corrupted it" >&2
