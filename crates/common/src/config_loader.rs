@@ -1,3 +1,5 @@
+// pattern: Mixed (Functional Core + I/O shell)
+
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -8,11 +10,13 @@ const OTEL_ENV_KEYS: &[&str] = &["OTEL_SERVICE_NAME"];
 
 /// Collect `EZPDS_*` env vars, `PORT`, and selected OTel standard vars from the process environment,
 /// rejecting any with non-UTF-8 values rather than panicking.
-fn collect_ezpds_env() -> Result<HashMap<String, String>, ConfigError> {
+pub fn collect_ezpds_env() -> Result<HashMap<String, String>, ConfigError> {
     let mut map = HashMap::new();
     for (key_os, val_os) in std::env::vars_os() {
         let key = match key_os.to_str() {
-            Some(k) if k.starts_with("EZPDS_") || OTEL_ENV_KEYS.contains(&k) || k == "PORT" => k.to_owned(),
+            Some(k) if k.starts_with("EZPDS_") || OTEL_ENV_KEYS.contains(&k) || k == "PORT" => {
+                k.to_owned()
+            }
             _ => continue,
         };
         let val = val_os.into_string().map_err(|_| {
@@ -27,8 +31,10 @@ fn collect_ezpds_env() -> Result<HashMap<String, String>, ConfigError> {
 
 /// Load [`Config`] from a TOML file with an explicit environment map.
 ///
-/// Prefer [`load_config`] for production use. The explicit env param allows tests to pass a
-/// controlled environment without leaking real `EZPDS_*` vars.
+/// This is a public API that accepts an explicit environment map instead of reading from
+/// the process environment. Useful for tests (passing a controlled environment without
+/// leaking real `EZPDS_*` vars) and for containerized deployments where the environment
+/// has already been collected before calling this function.
 pub fn load_config_with_env(
     path: &Path,
     env: &HashMap<String, String>,
@@ -139,8 +145,14 @@ available_user_domains = ["example.com"]"#
     fn env_only_config_with_required_fields() {
         let env = HashMap::from([
             ("EZPDS_DATA_DIR".to_string(), "/tmp/pds".to_string()),
-            ("EZPDS_PUBLIC_URL".to_string(), "https://pds.test".to_string()),
-            ("EZPDS_AVAILABLE_USER_DOMAINS".to_string(), "pds.test".to_string()),
+            (
+                "EZPDS_PUBLIC_URL".to_string(),
+                "https://pds.test".to_string(),
+            ),
+            (
+                "EZPDS_AVAILABLE_USER_DOMAINS".to_string(),
+                "pds.test".to_string(),
+            ),
         ]);
 
         let config = load_config_from_env_only(&env).unwrap();
@@ -155,14 +167,19 @@ available_user_domains = ["example.com"]"#
         let env = HashMap::from([
             ("EZPDS_DATA_DIR".to_string(), "/tmp/pds".to_string()),
             // Missing EZPDS_PUBLIC_URL
-            ("EZPDS_AVAILABLE_USER_DOMAINS".to_string(), "pds.test".to_string()),
+            (
+                "EZPDS_AVAILABLE_USER_DOMAINS".to_string(),
+                "pds.test".to_string(),
+            ),
         ]);
 
         let result = load_config_from_env_only(&env);
 
         assert!(matches!(
             result,
-            Err(ConfigError::MissingField { field: "public_url" })
+            Err(ConfigError::MissingField {
+                field: "public_url"
+            })
         ));
     }
 
@@ -171,8 +188,14 @@ available_user_domains = ["example.com"]"#
         let env = HashMap::from([
             ("PORT".to_string(), "9000".to_string()),
             ("EZPDS_DATA_DIR".to_string(), "/tmp/pds".to_string()),
-            ("EZPDS_PUBLIC_URL".to_string(), "https://pds.test".to_string()),
-            ("EZPDS_AVAILABLE_USER_DOMAINS".to_string(), "pds.test".to_string()),
+            (
+                "EZPDS_PUBLIC_URL".to_string(),
+                "https://pds.test".to_string(),
+            ),
+            (
+                "EZPDS_AVAILABLE_USER_DOMAINS".to_string(),
+                "pds.test".to_string(),
+            ),
         ]);
 
         let config = load_config_from_env_only(&env).unwrap();
@@ -186,8 +209,14 @@ available_user_domains = ["example.com"]"#
             ("EZPDS_BIND_ADDRESS".to_string(), "127.0.0.1".to_string()),
             ("EZPDS_PORT".to_string(), "5555".to_string()),
             ("EZPDS_DATA_DIR".to_string(), "/var/pds".to_string()),
-            ("EZPDS_PUBLIC_URL".to_string(), "https://pds.example.com".to_string()),
-            ("EZPDS_AVAILABLE_USER_DOMAINS".to_string(), "example.com".to_string()),
+            (
+                "EZPDS_PUBLIC_URL".to_string(),
+                "https://pds.example.com".to_string(),
+            ),
+            (
+                "EZPDS_AVAILABLE_USER_DOMAINS".to_string(),
+                "example.com".to_string(),
+            ),
         ]);
 
         let config = load_config_from_env_only(&env).unwrap();

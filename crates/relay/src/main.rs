@@ -1,3 +1,5 @@
+// pattern: Imperative Shell
+
 use anyhow::Context;
 use clap::Parser;
 use rand_core::RngCore;
@@ -64,15 +66,8 @@ async fn run() -> anyhow::Result<()> {
             Ok(cfg) => cfg,
             Err(common::ConfigError::Io { .. }) => {
                 // File not found: load from env only
-                let env = std::env::vars()
-                    .filter_map(|(k, v)| {
-                        if k.starts_with("EZPDS_") || k == "PORT" || k == "OTEL_SERVICE_NAME" {
-                            Some((k, v))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
+                let env = common::collect_ezpds_env()
+                    .context("failed to collect environment variables")?;
                 common::load_config_from_env_only(&env)
                     .context("failed to load config from environment variables")?
             }
