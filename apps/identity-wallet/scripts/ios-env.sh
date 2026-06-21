@@ -20,13 +20,15 @@ if ! command -v xcrun >/dev/null 2>&1 || ! command -v xcode-select >/dev/null 2>
 fi
 
 # Active Xcode developer dir (Nix's Darwin hooks otherwise point this at a stub SDK).
-_ezpds_dev_dir="$(xcode-select -p 2>/dev/null || true)"
+# Use /usr/bin/xcode-select explicitly to bypass any Nix shim in PATH.
+_ezpds_dev_dir="$(/usr/bin/xcode-select -p 2>/dev/null || true)"
 if [ -n "${_ezpds_dev_dir}" ]; then
   export DEVELOPER_DIR="${_ezpds_dev_dir}"
 fi
 
 # Unwrapped Apple clang/ar — bypasses the Nix cc-wrapper, which injects
 # -mmacos-version-min and the wrong sysroot for iOS targets.
+# xcrun will now read the corrected DEVELOPER_DIR above.
 _ezpds_clang="$(xcrun -f clang 2>/dev/null || true)"
 _ezpds_ar="$(xcrun -f ar 2>/dev/null || true)"
 

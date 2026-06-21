@@ -9,6 +9,7 @@
     pkgs.nodejs_22
     pkgs.pnpm
     pkgs.rustup
+    pkgs.shellcheck
   ];
 
   env.LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
