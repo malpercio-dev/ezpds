@@ -10,10 +10,12 @@
 Run these before any manual steps:
 
 ```bash
-cargo test -p relay -p common -p repo-engine -p crypto
+env -u LIBSQLITE3_SYS_USE_PKG_CONFIG cargo test -p relay -p common -p repo-engine -p crypto
 ```
 
 Expected: 509+ relay tests pass, 59+ common tests pass, 0 failures.
+
+> **macOS + devenv note:** Running bare `cargo test` inside the devenv shell (where `LIBSQLITE3_SYS_USE_PKG_CONFIG=1` is set) may fail with a linker error — Apple's system SQLite in the Xcode 26 SDK is found before the Nix-provided SQLite and strips `sqlite3_load_extension`/`sqlite3_unlock_notify`. The `env -u` prefix unsets the var, so `libsqlite3-sys` compiles bundled SQLite from source (same path the Dockerfile takes). This is a macOS + devenv interaction, not a code issue.
 Do **not** use `cargo test --workspace` — `apps/identity-wallet` has pre-existing flaky tests (keychain/device-key/network) that are out of scope and untouched by this changeset.
 
 | Criterion | Automated Tests | Status |
