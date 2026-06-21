@@ -31,12 +31,16 @@
   env.EZPDS_SIGNING_KEY_MASTER_KEY = "2a55ebbdb7c0a4864a3944a443765b13602c6fbbeda38c2d6afc57b96663810e";
 
   enterShell = ''
-    # Nix's Darwin setup hooks (xcbuild, apple-sdk) override DEVELOPER_DIR to a
-    # Nix SDK stub that has no runtime tools. Re-export here so this shell and all
-    # processes it spawns (cargo tauri ios dev, xcodebuild, xcrun, simctl) use the
-    # real Xcode installation. enterShell runs after all Nix hooks, so it wins.
-    export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
     export PATH="$CARGO_HOME/bin:$PATH"
+    # Apple toolchain for iOS cross-compilation, derived dynamically via xcrun/
+    # xcode-select (no hardcoded Xcode paths). Also sets DEVELOPER_DIR, which Nix's
+    # Darwin hooks otherwise clobber to a stub SDK. enterShell runs after all Nix
+    # hooks, so this wins. Same script is sourced by the Xcode Run Script phase
+    # (patched by apps/identity-wallet/scripts/ios-postinit.sh) so CLI and
+    # Xcode-driven builds resolve the toolchain identically.
+    if [ -f "${config.devenv.root}/apps/identity-wallet/scripts/ios-env.sh" ]; then
+      source "${config.devenv.root}/apps/identity-wallet/scripts/ios-env.sh"
+    fi
     if ! "$CARGO_HOME/bin/cargo" --version > /dev/null 2>&1; then
       echo "Installing Rust toolchain (first time — reads rust-toolchain.toml)…"
       rustup toolchain install
