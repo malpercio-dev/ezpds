@@ -204,18 +204,25 @@ is sourced by the devenv `enterShell` and by the patched Xcode Run Script phase.
 
 ## Development Workflow
 
+The primary iOS build commands are `just ios-dev` and `just ios-build`, run from the
+workspace root:
+
 ```bash
 # Enter the dev shell if not already active (MUST be run from the workspace root,
 # not from apps/identity-wallet/ — CARGO_HOME resolves relative to devenv root)
 nix develop --impure --accept-flake-config
 
-# Launch the app in the iOS Simulator
-# This starts pnpm dev + compiles the Rust crate for aarch64-apple-ios-sim + opens the Simulator
-cd apps/identity-wallet
-cargo tauri ios dev
+# Launch the app in the iOS Simulator (starts pnpm dev + Rust compilation + Simulator)
+just ios-dev
+
+# Build (Xcode project only; does not launch Simulator)
+just ios-build
 ```
 
-**Do not click Run in Xcode directly.** `cargo tauri ios dev` starts a JSON-RPC server that
+Both commands automatically source `apps/identity-wallet/scripts/ios-env.sh` to set up
+the Apple toolchain and run `just ios-postinit` to re-apply patches after Xcode init.
+
+**Do not click Run in Xcode directly.** `just ios-dev` starts a JSON-RPC server that
 Xcode's build phase connects to; bypassing it causes "Connection refused" in the build log.
 
 For a non-iOS build (CI or any machine without Xcode):
@@ -363,33 +370,9 @@ If you see this after a fresh clone: make sure you entered the dev shell from th
 
 The Nix devenv's Darwin setup hooks override `DEVELOPER_DIR` to a Nix apple-sdk stub that has no runtime tools. The `xcbuild` xcrun shim in PATH delegates to `$DEVELOPER_DIR/usr/bin/xcrun` — if `DEVELOPER_DIR` points at a Nix stub, it fails.
 
-**Fix:** Already resolved. `devenv.nix`'s `enterShell` sources `apps/identity-wallet/scripts/ios-env.sh`, which calls `/usr/bin/xcode-select -p` to resolve the real Xcode path and re-exports `DEVELOPER_DIR` to point at it. This happens after all Nix hooks run, so the corrected `DEVELOPER_DIR` takes precedence.
+**Fix:** Already resolved automatically. `devenv.nix`'s `enterShell` sources `apps/identity-wallet/scripts/ios-env.sh`, which calls `/usr/bin/xcode-select -p` to resolve the real Xcode path and re-exports `DEVELOPER_DIR` to point at it. This happens after all Nix hooks run, so the corrected `DEVELOPER_DIR` takes precedence. Additionally, `just ios-postinit` re-applies this patching to the Xcode Run Script phase each time after `cargo tauri ios init`.
 
-If you still see this: verify with `echo $DEVELOPER_DIR` inside the dev shell. If it shows a Nix store path, exit and re-enter the shell from the workspace root. Confirm that `ios-env.sh` was sourced by checking `source apps/identity-wallet/scripts/ios-env.sh && echo "DEVELOPER_DIR=$DEVELOPER_DIR"`.
-
----
-
-### `clang: error: invalid argument '-mmacos-version-min=14.0' not allowed with '-mios-simulator-version-min=14.0'`
-
-The Nix cc-wrapper (in `.devenv/profile/bin/clang`) injects `-mmacos-version-min` for the host platform. When a build script (e.g. `objc2-exception-helper`) compiles Objective-C for the iOS simulator target, clang rejects both version flags simultaneously.
-
-**Fix:** Already resolved. `apps/identity-wallet/scripts/ios-env.sh` sets `CC_aarch64_apple_ios_sim` and `CC_aarch64_apple_ios` (via environment variables exported by Cargo) to Xcode's unwrapped clang, which handles iOS targets correctly. The script is sourced by `devenv.nix`'s `enterShell` on every dev shell entry.
-
----
-
-### `ld: library not found for -libiconv` (host proc-macro build)
-
-Rust proc-macros (e.g. `phf_macros`) are compiled for the host (`aarch64-apple-darwin`) even during an iOS cross-compilation build. The Nix cc-wrapper uses a partial Nix apple-sdk as sysroot, which omits some `/usr/lib` stubs including `libiconv.tbd`. The linker passes `-libiconv` but can't find it.
-
-**Fix:** Already resolved. `apps/identity-wallet/scripts/ios-env.sh` sets `CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER` to Xcode's clang and (when `EZPDS_IOS_BUILD=1`) adds `CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS="-L .../MacOSX.sdk/usr/lib"` so the linker finds `/usr/lib` stubs (including `libiconv.tbd`) from the real Xcode SDK sysroot. The script is sourced by `devenv.nix`'s `enterShell` on every dev shell entry.
-
----
-
-### `ld: framework not found UIKit` (iOS target final link)
-
-The final link of `identity-wallet.dylib` for `aarch64-apple-ios-sim` uses `cc` (the Nix cc-wrapper) as the linker. The cc-wrapper injects its macOS sysroot even when rustc passes `-target arm64-apple-ios-simulator`, so the linker searches the macOS SDK and can't find iOS-only frameworks like UIKit.
-
-**Fix:** Already resolved. `apps/identity-wallet/scripts/ios-env.sh` sets `CARGO_TARGET_AARCH64_APPLE_IOS_SIM_LINKER` to Xcode's clang (via `xcrun -f clang`), which handles the iOS sysroot and frameworks correctly. The script is sourced by `devenv.nix`'s `enterShell` on every dev shell entry.
+If you still see this: verify with `echo $DEVELOPER_DIR` inside the dev shell. If it shows a Nix store path, exit and re-enter the shell from the workspace root.
 
 ---
 
@@ -397,15 +380,7 @@ The final link of `identity-wallet.dylib` for `aarch64-apple-ios-sim` uses `cc` 
 
 Swift Package Manager sandboxes its manifest compilation using `sandbox-exec`. On macOS 26 (Tahoe), `sandbox_apply()` returns `EPERM` in this context, causing `swift-rs`'s build script (used by Tauri) to fail with "Failed to compile swift package Tauri".
 
-**Fix:** Already resolved. A local patch of `swift-rs` 1.0.7 at `apps/identity-wallet/swift-rs-patch/` adds `--disable-sandbox` to the `swift build` invocation inside `SwiftLinker::link`. The workspace `Cargo.toml` wires this in via `[patch.crates-io]`. Remove the patch entry when swift-rs ships a fix upstream.
-
----
-
-### Xcode build phase: `cargo: command not found`
-
-After running `cargo tauri ios init`, the generated `project.pbxproj` build script has the system PATH which doesn't include the Nix dev shell or rustup-managed cargo.
-
-**Fix:** See "Xcode build phase PATH" in the First-Time Setup section above. Patch `project.pbxproj` to prepend `.devenv/state/cargo/bin` and `.devenv/profile/bin`.
+**Fix:** Already resolved and applied automatically. A local patch of `swift-rs` 1.0.7 at `apps/identity-wallet/swift-rs-patch/` adds `--disable-sandbox` to the `swift build` invocation inside `SwiftLinker::link`. The workspace `Cargo.toml` wires this in via `[patch.crates-io]`. See `docs/ios-upstream-bugs.md` for details. Remove the patch entry when swift-rs ships a fix upstream.
 
 ---
 
@@ -418,4 +393,4 @@ error: failed to determine package fingerprint for build script for identity-wal
 Caused by: Failed to update the excludes stack to see if a path is excluded
 ```
 
-**Fix:** See "Disable user script sandboxing" in the First-Time Setup section. Run the `sed` one-liner against `project.pbxproj` after each `cargo tauri ios init`.
+**Fix:** Already resolved automatically. `just ios-postinit` sets `ENABLE_USER_SCRIPT_SANDBOXING = NO` in the generated `project.pbxproj` after each `cargo tauri ios init`, and `just ios-check` verifies the setting is in place.
