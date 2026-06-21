@@ -1,6 +1,6 @@
 # ezpds
 
-Last verified: 2026-03-31
+Last verified: 2026-06-20
 
 ## Tech Stack
 - Language: Rust (stable channel via rust-toolchain.toml)
@@ -43,6 +43,7 @@ Last verified: 2026-03-31
 
 - `apps/identity-wallet/` — Tauri v2 iOS app (SvelteKit 2 + Svelte 5 frontend, Rust backend)
 - Developer setup and iOS workstation guide: see [`apps/identity-wallet/CLAUDE.md`](apps/identity-wallet/CLAUDE.md)
+- iOS build commands: `just ios-dev` / `just ios-build` (run from repo root; macOS + Xcode required). Toolchain resolved by `apps/identity-wallet/scripts/ios-env.sh`; patches re-applied via `just ios-postinit` after `cargo tauri ios init`.
 
 ## Flake Outputs
 - `packages.<system>.relay` - Relay binary
