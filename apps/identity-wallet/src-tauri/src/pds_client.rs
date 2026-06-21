@@ -222,6 +222,16 @@ pub struct RecommendedCredentials {
     pub services: Option<serde_json::Value>,
 }
 
+/// Parameters for a Pushed Authorization Request.
+pub struct PdsParRequest<'a> {
+    pub pkce_challenge: &'a str,
+    pub state_param: &'a str,
+    pub dpop_proof: &'a str,
+    pub dpop_jkt: &'a str,
+    pub login_hint: Option<&'a str>,
+    pub client_id: &'a str,
+}
+
 /// PDS client for discovery and OAuth operations against arbitrary PDS endpoints.
 ///
 /// Stateless except for the HTTP client which pools connections.
@@ -498,12 +508,7 @@ impl PdsClient {
     pub async fn pds_par(
         &self,
         metadata: &AuthServerMetadata,
-        pkce_challenge: &str,
-        state_param: &str,
-        dpop_proof: &str,
-        dpop_jkt: &str,
-        login_hint: Option<&str>,
-        client_id: &str,
+        request: PdsParRequest<'_>,
     ) -> Result<PdsParResponse, PdsClientError> {
         let par_url = metadata
             .pushed_authorization_request_endpoint
@@ -513,22 +518,22 @@ impl PdsClient {
         let mut form_data = vec![
             ("response_type", "code".to_string()),
             ("code_challenge_method", "S256".to_string()),
-            ("code_challenge", pkce_challenge.to_string()),
-            ("state", state_param.to_string()),
-            ("client_id", client_id.to_string()),
+            ("code_challenge", request.pkce_challenge.to_string()),
+            ("state", request.state_param.to_string()),
+            ("client_id", request.client_id.to_string()),
             ("redirect_uri", REDIRECT_URI.to_string()),
             ("scope", "atproto transition:generic".to_string()),
-            ("dpop_jkt", dpop_jkt.to_string()),
+            ("dpop_jkt", request.dpop_jkt.to_string()),
         ];
 
-        if let Some(hint) = login_hint {
+        if let Some(hint) = request.login_hint {
             form_data.push(("login_hint", hint.to_string()));
         }
 
         let response = self
             .client
             .post(&par_url)
-            .header("DPoP", dpop_proof)
+            .header("DPoP", request.dpop_proof)
             .form(&form_data)
             .send()
             .await
@@ -1393,12 +1398,14 @@ mod tests {
         let result = client
             .pds_par(
                 &metadata,
-                "test_pkce_challenge",
-                "test_state",
-                "test_dpop_proof",
-                "test_dpop_jkt",
-                Some("user@example.com"),
-                "https://test.example.com/oauth/client-metadata.json",
+                PdsParRequest {
+                    pkce_challenge: "test_pkce_challenge",
+                    state_param: "test_state",
+                    dpop_proof: "test_dpop_proof",
+                    dpop_jkt: "test_dpop_jkt",
+                    login_hint: Some("user@example.com"),
+                    client_id: "https://test.example.com/oauth/client-metadata.json",
+                },
             )
             .await;
 
@@ -1442,7 +1449,17 @@ mod tests {
 
         let client = PdsClient::new();
         let result = client
-            .pds_par(&metadata, "challenge", "state", "proof", "jkt", None, "https://test.example.com/oauth/client-metadata.json")
+            .pds_par(
+                &metadata,
+                PdsParRequest {
+                    pkce_challenge: "challenge",
+                    state_param: "state",
+                    dpop_proof: "proof",
+                    dpop_jkt: "jkt",
+                    login_hint: None,
+                    client_id: "https://test.example.com/oauth/client-metadata.json",
+                },
+            )
             .await;
 
         assert!(result.is_ok());
@@ -1478,7 +1495,17 @@ mod tests {
 
         let client = PdsClient::new();
         let result = client
-            .pds_par(&metadata, "challenge", "state", "proof", "jkt", None, "https://test.example.com/oauth/client-metadata.json")
+            .pds_par(
+                &metadata,
+                PdsParRequest {
+                    pkce_challenge: "challenge",
+                    state_param: "state",
+                    dpop_proof: "proof",
+                    dpop_jkt: "jkt",
+                    login_hint: None,
+                    client_id: "https://test.example.com/oauth/client-metadata.json",
+                },
+            )
             .await;
 
         assert!(result.is_err());

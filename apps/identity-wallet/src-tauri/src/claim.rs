@@ -404,7 +404,17 @@ pub async fn start_pds_auth(
     let relay_url = state.relay_client().base_url_str().to_string();
     let client_id = crate::pds_client::client_id_for_relay(&relay_url);
 
-    let par_resp = pds_par_with_retry(pds_client, &dpop, &metadata, &par_htu, &pkce_challenge, &csrf_state, &dpop_jkt, &did, &client_id).await?;
+    let par_resp = pds_par_with_retry(PdsParWithRetryParams {
+        pds_client,
+        dpop: &dpop,
+        metadata: &metadata,
+        par_htu: &par_htu,
+        pkce_challenge: &pkce_challenge,
+        csrf_state: &csrf_state,
+        dpop_jkt: &dpop_jkt,
+        did: &did,
+        client_id: &client_id,
+    }).await?;
     tracing::debug!("PAR succeeded, opening browser");
 
     // 7. Set up oneshot channel and park pending_auth
@@ -497,25 +507,30 @@ pub async fn start_pds_auth(
     Ok(())
 }
 
+/// Parameters for PAR with DPoP nonce retry.
+struct PdsParWithRetryParams<'a> {
+    pds_client: &'a crate::pds_client::PdsClient,
+    dpop: &'a crate::oauth::DPoPKeypair,
+    metadata: &'a crate::pds_client::AuthServerMetadata,
+    par_htu: &'a str,
+    pkce_challenge: &'a str,
+    csrf_state: &'a str,
+    dpop_jkt: &'a str,
+    did: &'a str,
+    client_id: &'a str,
+}
+
 /// Helper function for PAR with DPoP nonce retry.
 ///
 /// Some authorization servers (e.g. bsky.social) require a DPoP nonce even for
 /// PAR. On the first call, the server returns 400 `use_dpop_nonce` with a
 /// `DPoP-Nonce` header. We extract the nonce, rebuild the DPoP proof, and retry.
-#[allow(clippy::too_many_arguments)]
 async fn pds_par_with_retry(
-    pds_client: &crate::pds_client::PdsClient,
-    dpop: &crate::oauth::DPoPKeypair,
-    metadata: &crate::pds_client::AuthServerMetadata,
-    par_htu: &str,
-    pkce_challenge: &str,
-    csrf_state: &str,
-    dpop_jkt: &str,
-    did: &str,
-    client_id: &str,
+    params: PdsParWithRetryParams<'_>,
 ) -> Result<crate::pds_client::PdsParResponse, ClaimError> {
-    let par_proof = dpop
-        .make_proof("POST", par_htu, None, None)
+    let par_proof = params
+        .dpop
+        .make_proof("POST", params.par_htu, None, None)
         .map_err(|e| {
             tracing::error!(error = %e, "DPoP proof generation failed for PAR");
             ClaimError::NetworkError {
@@ -523,9 +538,20 @@ async fn pds_par_with_retry(
             }
         })?;
 
-    tracing::debug!(par_endpoint = %par_htu, "sending PAR request");
-    match pds_client
-        .pds_par(metadata, pkce_challenge, csrf_state, &par_proof, dpop_jkt, Some(did), client_id)
+    tracing::debug!(par_endpoint = %params.par_htu, "sending PAR request");
+    match params
+        .pds_client
+        .pds_par(
+            params.metadata,
+            crate::pds_client::PdsParRequest {
+                pkce_challenge: params.pkce_challenge,
+                state_param: params.csrf_state,
+                dpop_proof: &par_proof,
+                dpop_jkt: params.dpop_jkt,
+                login_hint: Some(params.did),
+                client_id: params.client_id,
+            },
+        )
         .await
     {
         Ok(resp) => return Ok(resp),
@@ -544,13 +570,15 @@ async fn pds_par_with_retry(
 
     // The nonce is in the error response body; we need to get it from the raw
     // response. Re-issue the PAR as a raw request to extract the nonce header.
-    let raw_par_url = metadata
+    let raw_par_url = params
+        .metadata
         .pushed_authorization_request_endpoint
         .clone()
-        .unwrap_or_else(|| format!("{}/oauth/par", metadata.issuer));
+        .unwrap_or_else(|| format!("{}/oauth/par", params.metadata.issuer));
 
-    let nonce_proof = dpop
-        .make_proof("POST", par_htu, None, None)
+    let nonce_proof = params
+        .dpop
+        .make_proof("POST", params.par_htu, None, None)
         .map_err(|_| ClaimError::NetworkError {
             message: "failed to create DPoP proof for nonce discovery".to_string(),
         })?;
@@ -558,16 +586,17 @@ async fn pds_par_with_retry(
     let form_data = vec![
         ("response_type", "code"),
         ("code_challenge_method", "S256"),
-        ("code_challenge", pkce_challenge),
-        ("state", csrf_state),
-        ("client_id", client_id),
+        ("code_challenge", params.pkce_challenge),
+        ("state", params.csrf_state),
+        ("client_id", params.client_id),
         ("redirect_uri", "dev.malpercio.identitywallet:/oauth/callback"),
         ("scope", "atproto transition:generic"),
-        ("dpop_jkt", dpop_jkt),
-        ("login_hint", did),
+        ("dpop_jkt", params.dpop_jkt),
+        ("login_hint", params.did),
     ];
 
-    let nonce_resp = pds_client
+    let nonce_resp = params
+        .pds_client
         .client()
         .post(&raw_par_url)
         .header("DPoP", &nonce_proof)
@@ -592,8 +621,9 @@ async fn pds_par_with_retry(
     };
 
     tracing::debug!(nonce = %nonce_val, "retrying PAR with DPoP nonce");
-    let retry_proof = dpop
-        .make_proof("POST", par_htu, Some(&nonce_val), None)
+    let retry_proof = params
+        .dpop
+        .make_proof("POST", params.par_htu, Some(&nonce_val), None)
         .map_err(|e| {
             tracing::error!(error = %e, "DPoP proof with nonce failed");
             ClaimError::NetworkError {
@@ -601,8 +631,19 @@ async fn pds_par_with_retry(
             }
         })?;
 
-    pds_client
-        .pds_par(metadata, pkce_challenge, csrf_state, &retry_proof, dpop_jkt, Some(did), client_id)
+    params
+        .pds_client
+        .pds_par(
+            params.metadata,
+            crate::pds_client::PdsParRequest {
+                pkce_challenge: params.pkce_challenge,
+                state_param: params.csrf_state,
+                dpop_proof: &retry_proof,
+                dpop_jkt: params.dpop_jkt,
+                login_hint: Some(params.did),
+                client_id: params.client_id,
+            },
+        )
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "PAR retry with nonce failed");
