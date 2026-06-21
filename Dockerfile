@@ -13,15 +13,20 @@ RUN cargo build --release --locked -p relay
 
 # ---- runtime stage ----
 FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf87857c4b8188404716 AS runtime
+# gosu: privilege-drop helper used by the entrypoint to hand off to the relay user
+# after fixing /data ownership (Railway Volumes mount as root:root).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates tzdata \
+ && apt-get install -y --no-install-recommends ca-certificates tzdata gosu \
  && rm -rf /var/lib/apt/lists/*
-# Non-root runtime user; /data is the default data dir (mount a volume here).
-RUN useradd --system --uid 10001 --user-group --create-home --home-dir /data relay
+# Non-root runtime user. Home is /home/relay (not /data) so that a root-owned
+# volume mount on /data does not prevent login shell resolution.
+RUN useradd --system --uid 10001 --user-group --create-home --home-dir /home/relay relay
 COPY --from=build /src/target/release/relay /usr/local/bin/relay
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 ENV EZPDS_DATA_DIR=/data \
     RUST_LOG=info
 # Documentation only; the actual listen port comes from EZPDS_PORT/$PORT at runtime.
 EXPOSE 8080
-USER relay
-ENTRYPOINT ["/usr/local/bin/relay"]
+# Entrypoint runs as root, chowns /data to relay, then execs the binary as relay (via gosu).
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
