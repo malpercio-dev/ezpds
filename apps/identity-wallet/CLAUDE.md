@@ -203,6 +203,15 @@ The Apple toolchain (clang/ar/SDKs/`DEVELOPER_DIR`) is resolved dynamically by
 paths, so the build follows whatever Xcode `xcode-select` points at. `ios-env.sh`
 is sourced by the devenv `enterShell` and by the patched Xcode Run Script phase.
 
+One subtlety makes this work: Nix's Darwin stdenv exports `DEVELOPER_DIR`/`SDKROOT`
+pointing at its apple-sdk **stub**, and both `xcode-select -p` and `xcrun` honor those
+env vars *above* the system Xcode selection — so even calling them by absolute path
+returns the Nix stub (→ Nix clang-wrapper → `ld: library not found for -liconv` on the
+host-side proc-macro link). `ios-env.sh` therefore strips `DEVELOPER_DIR`/`SDKROOT`
+**when (and only when) they point into `/nix/store`** before resolving, so the real
+Apple toolchain wins; a genuine Xcode-provided value (e.g. the one Xcode injects into
+its Run Script phase) is preserved.
+
 The script is split into two tiers: iOS-target overrides (`CC_aarch64_apple_ios*`,
 `AR_aarch64_apple_ios*`, the iOS linkers) are always exported — no server crate
 targets iOS, so they never affect a host build — while the **host-target overrides**
@@ -384,9 +393,9 @@ If you see this after a fresh clone: make sure you entered the dev shell from th
 
 ### `error: tool 'simctl' not found` or `xcrun simctl list` fails
 
-The Nix devenv's Darwin setup hooks override `DEVELOPER_DIR` to a Nix apple-sdk stub that has no runtime tools. The `xcbuild` xcrun shim in PATH delegates to `$DEVELOPER_DIR/usr/bin/xcrun` — if `DEVELOPER_DIR` points at a Nix stub, it fails.
+The Nix devenv's Darwin setup hooks override `DEVELOPER_DIR` (and `SDKROOT`) to a Nix apple-sdk stub that has no runtime tools. The `xcbuild` xcrun shim in PATH delegates to `$DEVELOPER_DIR/usr/bin/xcrun` — if `DEVELOPER_DIR` points at a Nix stub, it fails.
 
-**Fix:** Already resolved automatically. `devenv.nix`'s `enterShell` sources `apps/identity-wallet/scripts/ios-env.sh`, which calls `/usr/bin/xcode-select -p` to resolve the real Xcode path and re-exports `DEVELOPER_DIR` to point at it. This happens after all Nix hooks run, so the corrected `DEVELOPER_DIR` takes precedence.
+**Fix:** Already resolved automatically. `devenv.nix`'s `enterShell` sources `apps/identity-wallet/scripts/ios-env.sh`. The catch: `/usr/bin/xcode-select -p` and `/usr/bin/xcrun` both **honor `DEVELOPER_DIR` above the system Xcode selection**, so calling them by absolute path is not enough — they echo the Nix stub straight back. `ios-env.sh` first **unsets `DEVELOPER_DIR` when it points into `/nix/store`**, so `xcode-select -p` falls through to the real Xcode selection; it then re-exports `DEVELOPER_DIR` to that real path. (A genuine Xcode-provided `DEVELOPER_DIR` — not under `/nix/store` — is left untouched, so the Xcode Run Script keeps Xcode's own value.)
 
 If you still see this: verify with `echo $DEVELOPER_DIR` inside the dev shell. If it shows a Nix store path, exit and re-enter the shell from the workspace root.
 

@@ -19,16 +19,28 @@ if [ ! -x /usr/bin/xcrun ] || [ ! -x /usr/bin/xcode-select ]; then
   return 0 2>/dev/null || true
 fi
 
-# Active Xcode developer dir (Nix's Darwin hooks otherwise point this at a stub SDK).
-# Use /usr/bin/xcode-select explicitly to bypass any Nix shim in PATH.
+# Nix's Darwin stdenv exports DEVELOPER_DIR pointing into its apple-sdk STUB (under
+# /nix/store). BOTH /usr/bin/xcode-select and /usr/bin/xcrun honor DEVELOPER_DIR ABOVE
+# the system Xcode selection, so even called by absolute path they would resolve
+# clang/ar/SDK to the Nix clang-wrapper + stub SDK — which lacks the macOS SDK link
+# stubs (e.g. libiconv.tbd) and yields `ld: library not found for -liconv` on the
+# host-side proc-macro link. Clear it WHEN (and only when) it points into /nix/store, so
+# the real Apple toolchain resolves from the persistent `xcode-select` selection. A
+# genuine Xcode DEVELOPER_DIR — the one Xcode injects into its Run Script phase, or a
+# hand-picked beta Xcode — is NOT under /nix/store, so it is left untouched.
+case "${DEVELOPER_DIR:-}" in
+  /nix/store/*) unset DEVELOPER_DIR ;;
+esac
+
+# Active Xcode developer dir, resolved from the (now un-polluted) system selection.
 _ezpds_dev_dir="$(/usr/bin/xcode-select -p 2>/dev/null || true)"
 if [ -n "${_ezpds_dev_dir}" ]; then
   export DEVELOPER_DIR="${_ezpds_dev_dir}"
 fi
 
-# Unwrapped Apple clang/ar — use /usr/bin/xcrun explicitly to bypass any Nix xcrun
-# shim in PATH (same reason we use /usr/bin/xcode-select above: the Nix xcrun shim
-# from .devenv/profile/bin returns the Nix clang-wrapper, not the Apple toolchain).
+# Unwrapped Apple clang/ar. With DEVELOPER_DIR corrected above and /usr/bin/xcrun called
+# by absolute path (bypassing any Nix xcrun shim in PATH), these resolve to the real
+# Apple toolchain rather than the Nix clang-wrapper.
 _ezpds_clang="$(/usr/bin/xcrun -f clang 2>/dev/null || true)"
 _ezpds_ar="$(/usr/bin/xcrun -f ar 2>/dev/null || true)"
 
@@ -61,6 +73,15 @@ if [ -n "${EZPDS_IOS_BUILD:-}" ]; then
   if [ -n "${_ezpds_ar}" ]; then
     export AR_aarch64_apple_darwin="${_ezpds_ar}"
   fi
+  # Same Nix pollution as DEVELOPER_DIR above: a /nix/store SDKROOT would make the macOS
+  # SDK below resolve to the Nix stub. Strip it only when it points into /nix/store, and
+  # only inside this iOS-build gate so a plain `cargo build` keeps the Nix SDKROOT it
+  # expects. A real Xcode SDKROOT (the iOS SDK Xcode sets in its Run Script — needed by
+  # the `cargo tauri ios xcode-script --sdk-root ${SDKROOT}` invocation) is not under
+  # /nix/store, so it is preserved.
+  case "${SDKROOT:-}" in
+    /nix/store/*) unset SDKROOT ;;
+  esac
   _ezpds_macos_sdk="$(/usr/bin/xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
   if [ -n "${_ezpds_macos_sdk}" ]; then
     export CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS="-L ${_ezpds_macos_sdk}/usr/lib"
