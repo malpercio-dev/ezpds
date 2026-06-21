@@ -24,7 +24,11 @@ const REDIRECT_URI: &str = "dev.malpercio.identitywallet:/oauth/callback";
 /// The client_id is the relay's public URL + `/oauth/client-metadata.json`.
 /// This must match what the relay serves at that path.
 pub fn client_id_for_relay(relay_url: &str) -> String {
-    format!("{}{}", relay_url.trim_end_matches('/'), CLIENT_METADATA_PATH)
+    format!(
+        "{}{}",
+        relay_url.trim_end_matches('/'),
+        CLIENT_METADATA_PATH
+    )
 }
 
 /// Error type for PDS client operations.
@@ -131,7 +135,9 @@ impl W3cDidDocument {
         let mut vm_map = serde_json::Map::new();
         for method in &self.verification_method {
             // Strip the "did:plc:...#" prefix from the id to get the key name
-            let key_name = method.id.rsplit_once('#')
+            let key_name = method
+                .id
+                .rsplit_once('#')
                 .map(|(_, name)| name.to_string())
                 .unwrap_or_else(|| method.id.clone());
             if let Some(ref pkm) = method.public_key_multibase {
@@ -140,14 +146,18 @@ impl W3cDidDocument {
         }
 
         // Convert service array to HashMap keyed by id (strip leading '#')
-        let services = self.service.into_iter().map(|svc| {
-            let key = svc.id.strip_prefix('#').unwrap_or(&svc.id).to_string();
-            let plc_svc = PlcService {
-                service_type: svc.service_type,
-                endpoint: svc.service_endpoint,
-            };
-            (key, plc_svc)
-        }).collect();
+        let services = self
+            .service
+            .into_iter()
+            .map(|svc| {
+                let key = svc.id.strip_prefix('#').unwrap_or(&svc.id).to_string();
+                let plc_svc = PlcService {
+                    service_type: svc.service_type,
+                    endpoint: svc.service_endpoint,
+                };
+                (key, plc_svc)
+            })
+            .collect();
 
         PlcDidDocument {
             did: self.id,
@@ -404,17 +414,12 @@ impl PdsClient {
         let url = format!("{}/.well-known/oauth-authorization-server", metadata_base);
         tracing::debug!(url = %url, "fetching OAuth authorization server metadata");
 
-        let response =
-            self.client
-                .get(&url)
-                .send()
-                .await
-                .map_err(|e| {
-                    tracing::error!(url = %url, error = %e, "OAuth metadata fetch failed");
-                    PdsClientError::NetworkError {
-                        message: format!("failed to fetch OAuth metadata: {}", e),
-                    }
-                })?;
+        let response = self.client.get(&url).send().await.map_err(|e| {
+            tracing::error!(url = %url, error = %e, "OAuth metadata fetch failed");
+            PdsClientError::NetworkError {
+                message: format!("failed to fetch OAuth metadata: {}", e),
+            }
+        })?;
 
         if !response.status().is_success() {
             tracing::error!(url = %url, status = %response.status(), "OAuth metadata returned non-success");
@@ -427,16 +432,12 @@ impl PdsClient {
             });
         }
 
-        let metadata: AuthServerMetadata =
-            response
-                .json()
-                .await
-                .map_err(|e| {
-                    tracing::error!(url = %url, error = %e, "OAuth metadata parsing failed");
-                    PdsClientError::InvalidResponse {
-                        message: format!("failed to parse OAuth metadata: {}", e),
-                    }
-                })?;
+        let metadata: AuthServerMetadata = response.json().await.map_err(|e| {
+            tracing::error!(url = %url, error = %e, "OAuth metadata parsing failed");
+            PdsClientError::InvalidResponse {
+                message: format!("failed to parse OAuth metadata: {}", e),
+            }
+        })?;
         tracing::debug!(issuer = %metadata.issuer, "OAuth metadata parsed");
 
         // Validate required capabilities
@@ -1549,7 +1550,13 @@ mod tests {
 
         let client = PdsClient::new();
         let result = client
-            .pds_token_exchange(&metadata, "test_code", "test_verifier", "test_dpop_proof", "https://test.example.com/oauth/client-metadata.json")
+            .pds_token_exchange(
+                &metadata,
+                "test_code",
+                "test_verifier",
+                "test_dpop_proof",
+                "https://test.example.com/oauth/client-metadata.json",
+            )
             .await;
 
         assert!(result.is_ok());
@@ -1584,7 +1591,13 @@ mod tests {
 
         let client = PdsClient::new();
         let result = client
-            .pds_token_exchange(&metadata, "test_code", "test_verifier", "test_dpop_proof", "https://test.example.com/oauth/client-metadata.json")
+            .pds_token_exchange(
+                &metadata,
+                "test_code",
+                "test_verifier",
+                "test_dpop_proof",
+                "https://test.example.com/oauth/client-metadata.json",
+            )
             .await;
 
         // Should return Ok(Response) with 400 status — caller handles error interpretation.
@@ -1610,7 +1623,13 @@ mod tests {
 
         let client = PdsClient::new();
         let result = client
-            .pds_token_exchange(&metadata, "test_code", "test_verifier", "test_dpop_proof", "https://test.example.com/oauth/client-metadata.json")
+            .pds_token_exchange(
+                &metadata,
+                "test_code",
+                "test_verifier",
+                "test_dpop_proof",
+                "https://test.example.com/oauth/client-metadata.json",
+            )
             .await;
 
         assert!(result.is_err());
@@ -1644,7 +1663,9 @@ mod tests {
             "https://test.example.com/oauth/client-metadata.json",
         );
 
-        assert!(url.contains("client_id=https%3A%2F%2Ftest.example.com%2Foauth%2Fclient-metadata.json"));
+        assert!(
+            url.contains("client_id=https%3A%2F%2Ftest.example.com%2Foauth%2Fclient-metadata.json")
+        );
         assert!(url.contains("request_uri="));
         assert!(url.contains("login_hint="));
         assert!(url.starts_with("https://pds.example.com/oauth/authorize?"));
@@ -1672,7 +1693,9 @@ mod tests {
             "https://test.example.com/oauth/client-metadata.json",
         );
 
-        assert!(url.contains("client_id=https%3A%2F%2Ftest.example.com%2Foauth%2Fclient-metadata.json"));
+        assert!(
+            url.contains("client_id=https%3A%2F%2Ftest.example.com%2Foauth%2Fclient-metadata.json")
+        );
         assert!(url.contains("request_uri="));
         assert!(!url.contains("login_hint="));
         assert!(url.starts_with("https://pds.example.com/oauth/authorize?"));

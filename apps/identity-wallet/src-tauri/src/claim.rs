@@ -385,13 +385,12 @@ pub async fn start_pds_auth(
     let csrf_state = crate::oauth::generate_state_param();
 
     // 4. Get DPoP keypair and compute thumbprint
-    let dpop =
-        crate::oauth::DPoPKeypair::get_or_create().map_err(|e| {
-            tracing::error!(error = %e, "DPoP keypair creation failed");
-            ClaimError::NetworkError {
-                message: "failed to create DPoP keypair".to_string(),
-            }
-        })?;
+    let dpop = crate::oauth::DPoPKeypair::get_or_create().map_err(|e| {
+        tracing::error!(error = %e, "DPoP keypair creation failed");
+        ClaimError::NetworkError {
+            message: "failed to create DPoP keypair".to_string(),
+        }
+    })?;
     let dpop_jkt = dpop.public_jwk_thumbprint();
 
     // 5-6. PAR with DPoP nonce retry
@@ -414,7 +413,8 @@ pub async fn start_pds_auth(
         dpop_jkt: &dpop_jkt,
         did: &did,
         client_id: &client_id,
-    }).await?;
+    })
+    .await?;
     tracing::debug!("PAR succeeded, opening browser");
 
     // 7. Set up oneshot channel and park pending_auth
@@ -460,13 +460,19 @@ pub async fn start_pds_auth(
     tracing::debug!("deep-link callback received, exchanging code");
 
     // 10. Token exchange with nonce retry
-    let (token_resp, initial_nonce) =
-        pds_exchange_code_with_retry(pds_client, &dpop, &callback.code, &pkce_verifier, &metadata, &client_id)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "PDS token exchange failed");
-                e
-            })?;
+    let (token_resp, initial_nonce) = pds_exchange_code_with_retry(
+        pds_client,
+        &dpop,
+        &callback.code,
+        &pkce_verifier,
+        &metadata,
+        &client_id,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "PDS token exchange failed");
+        e
+    })?;
 
     // 11. Create OAuthClient and store in ClaimState
     let session = std::sync::Arc::new(std::sync::Mutex::new(crate::oauth::OAuthSession {
@@ -589,7 +595,10 @@ async fn pds_par_with_retry(
         ("code_challenge", params.pkce_challenge),
         ("state", params.csrf_state),
         ("client_id", params.client_id),
-        ("redirect_uri", "dev.malpercio.identitywallet:/oauth/callback"),
+        (
+            "redirect_uri",
+            "dev.malpercio.identitywallet:/oauth/callback",
+        ),
         ("scope", "atproto transition:generic"),
         ("dpop_jkt", params.dpop_jkt),
         ("login_hint", params.did),
@@ -971,15 +980,12 @@ pub(crate) async fn sign_and_verify_claim_impl(
 
     // Step 5: Fetch current audit log and get expected prev CID
     tracing::debug!(did = %did, "fetching audit log for verification");
-    let log_json = pds_client
-        .fetch_audit_log(did)
-        .await
-        .map_err(|e| {
-            tracing::error!(did = %did, error = %e, "fetch_audit_log failed");
-            ClaimError::NetworkError {
-                message: format!("fetch_audit_log failed: {}", e),
-            }
-        })?;
+    let log_json = pds_client.fetch_audit_log(did).await.map_err(|e| {
+        tracing::error!(did = %did, error = %e, "fetch_audit_log failed");
+        ClaimError::NetworkError {
+            message: format!("fetch_audit_log failed: {}", e),
+        }
+    })?;
 
     let audit_log = crypto::parse_audit_log(&log_json).map_err(|e| {
         tracing::error!(did = %did, error = %e, "parse_audit_log failed");
