@@ -1,6 +1,6 @@
 # Relay Deployment
 
-**Last verified:** 2026-06-20
+**Last verified:** 2026-06-21
 
 ## Overview
 
@@ -15,10 +15,11 @@ The relay container expects the following environment variables and mounts:
 - **`EZPDS_AVAILABLE_USER_DOMAINS`** (required) - Comma-separated list of allowed handle domains (e.g., `example.com,example.bsky.social`)
 - **`EZPDS_SIGNING_KEY_MASTER_KEY`** (required) - Base64-encoded 32-byte key for DID key derivation
 - **`EZPDS_ADMIN_TOKEN`** (required) - Bearer token for admin-only endpoints (e.g., rotation key claiming)
+- **`EZPDS_DATA_DIR`** (optional, default `/data`) - Directory where `relay.db` is persisted. Set by the Dockerfile ENV; can be overridden if the data volume is mounted elsewhere. Must be writable by the container process.
 - **`PORT`** (optional, default `8080`) - Port to listen on inside the container
 
 ### Volumes
-- **`/data`** - Host directory bind-mounted for SQLite database persistence. The relay creates `data.db` and `data.db-shm`/`data.db-wal` (WAL files) inside. Must be writable by the container's non-root user (uid 10001). Host permissions should be `0750` or `0755`.
+- **`/data`** - Host directory bind-mounted for SQLite database persistence. The relay creates `relay.db` and `relay.db-shm`/`relay.db-wal` (WAL files) inside. Must be writable by the container's non-root user (uid 10001). Host permissions should be `0750` or `0755`.
 
 ### Health Check
 - **`GET /xrpc/_health`** - Simple liveness probe (returns 200 OK). Container runtimes can use this for health checks and automated restarts.
@@ -36,6 +37,7 @@ The relay container expects the following environment variables and mounts:
      - `EZPDS_AVAILABLE_USER_DOMAINS` - Your handle domain list.
      - `EZPDS_SIGNING_KEY_MASTER_KEY` - Generated signing key (base64).
      - `EZPDS_ADMIN_TOKEN` - A secure random token.
+     - `EZPDS_DATA_DIR` (optional) - Defaults to `/data` (set by Dockerfile ENV); override if mounting the data volume elsewhere.
    - Optionally override `PORT` (Railway default is `8080`; relay listens on whatever you set).
 
 3. **Add a volume:**
@@ -90,8 +92,8 @@ docker build -t ghcr.io/your-org/relay:latest .
 # Push to GHCR:
 docker push ghcr.io/your-org/relay:latest
 
-# For reproducibility in production, pin by digest:
-docker push ghcr.io/your-org/relay:latest
+# For reproducibility in production, capture the digest from the push output or inspect:
+docker buildx imagetools inspect ghcr.io/your-org/relay:latest | grep Digest
 # Then update references to use the returned digest:
 ghcr.io/your-org/relay@sha256:abc123...
 ```
@@ -102,7 +104,7 @@ In CI/CD (e.g., GitHub Actions), automate this: trigger on tag/main push, build,
 
 The relay image is hardened with:
 - **Non-root container** - Runs as uid 10001 (created in the Dockerfile).
-- **NoNewPrivileges** - Set on the systemd unit (oci-containers module enforces this); prevents privilege escalation.
+- **NoNewPrivileges** - Set by the ezpds NixOS module on the generated `podman-ezpds.service` unit; prevents privilege escalation.
 - **No secrets in image** - All runtime secrets injected via `environmentFile` or env vars, not baked into the image.
 - **Read-only root (where possible)** - SQLite writes to `/data` only; rest of the image can be read-only (optional; set `read_only = true` in container config if desired).
 
