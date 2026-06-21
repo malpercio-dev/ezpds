@@ -1,6 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { execSync } from "node:child_process";
 
 export default function (pi: ExtensionAPI) {
   const handle = process.env.TANGLED_HANDLE;
@@ -60,19 +59,6 @@ export default function (pi: ExtensionAPI) {
     return accessToken;
   }
 
-  async function getServiceAuth(audience: string): Promise<string> {
-    const pds = await getPdsUrl();
-    const token = await getToken();
-    const exp = Math.floor(Date.now() / 1000) + 60;
-    const qs = new URLSearchParams({ aud: audience, exp: String(exp) });
-    const res = await fetch(`${pds}/xrpc/com.atproto.server.getServiceAuth?${qs}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) throw new Error(`getServiceAuth failed: ${res.status}`);
-    const data = (await res.json()) as { token: string };
-    return data.token;
-  }
-
   pi.on("session_start", async (_e, ctx) => {
     try {
       await getToken();
@@ -80,130 +66,6 @@ export default function (pi: ExtensionAPI) {
     } catch (err) {
       ctx.ui.notify(`Tangled auth failed: ${err}`, "error");
     }
-  });
-
-  // ── tangled_list_prs ──────────────────────────────────────────────────────
-
-  pi.registerTool({
-    name: "tangled_list_prs",
-    label: "List Tangled PRs",
-    description: "List pull requests for a Tangled repository.",
-    promptSnippet: "List pull requests for a Tangled repo",
-    promptGuidelines: ["Use tangled_list_prs when the user asks about pull requests on a Tangled repo."],
-    parameters: Type.Object({
-      repo: Type.String({ description: "Repo handle/name (e.g. malpercio.dev/ezpds)" }),
-      state: Type.Optional(Type.String({ description: "Filter: open, merged, closed, all (default open)" })),
-      limit: Type.Optional(Type.Number({ description: "Max results (default 20)" })),
-    }),
-    async execute(_id, params) {
-      const token = await getToken();
-      const pds = await getPdsUrl();
-      const did = await getDid();
-      const limit = params.limit ?? 20;
-      const qs = new URLSearchParams({ collection: "sh.tangled.repo.pull", repo: did, limit: String(limit) });
-      const res = await fetch(`${pds}/xrpc/com.atproto.repo.listRecords?${qs}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) throw new Error(`listRecords failed: ${res.status}`);
-      const data = (await res.json()) as { records: Array<{ uri: string; value: Record<string, unknown> }> };
-
-      let prs = data.records;
-      const stateFilter = params.state ?? "open";
-      if (stateFilter !== "all") {
-        prs = prs.filter((r) => r.value.state === stateFilter);
-      }
-
-      if (prs.length === 0) {
-        return { content: [{ type: "text", text: `No ${stateFilter} PRs found.` }], details: { count: 0 } };
-      }
-
-      const lines = prs.map((r) => {
-        const rkey = r.uri.split("/").pop();
-        const target = r.value.target as { repo?: string; branch?: string } | undefined;
-        const branch = target?.branch ?? "";
-        return `#${rkey} — ${r.value.title ?? "Untitled"} [${r.value.state ?? "?"}] → ${branch} — ${r.value.createdAt ?? ""}`;
-      });
-
-      return { content: [{ type: "text", text: lines.join("\n") }], details: { count: prs.length } };
-    },
-  });
-
-  // ── tangled_open_pr ───────────────────────────────────────────────────────
-
-  pi.registerTool({
-    name: "tangled_open_pr",
-    label: "Open Tangled PR",
-    description: "Create a new pull request on a Tangled repository. Generates the git patch automatically from the local repo.",
-    promptSnippet: "Create a new pull request on Tangled",
-    promptGuidelines: ["Use tangled_open_pr when the user asks to create or open a new pull request."],
-    parameters: Type.Object({
-      repo: Type.String({ description: "Repo handle/name (e.g. malpercio.dev/ezpds)" }),
-      title: Type.String({ description: "PR title" }),
-      description: Type.Optional(Type.String({ description: "PR description (Markdown)" })),
-      source_branch: Type.String({ description: "Source branch name (must exist locally with commits)" }),
-      target_branch: Type.Optional(Type.String({ description: "Target branch (default: main)" })),
-      repo_path: Type.Optional(Type.String({ description: "Path to local git repo (default: current directory)" })),
-    }),
-    async execute(_id, params) {
-      const token = await getToken();
-      const pds = await getPdsUrl();
-      const did = await getDid();
-      const repoName = params.repo.split("/")[1];
-      const repoAtUri = `at://${did}/sh.tangled.repo/${repoName}`;
-      const targetBranch = params.target_branch ?? "main";
-      const repoPath = params.repo_path || process.cwd();
-
-      // Generate patch from local git repo
-      let patch: string;
-      try {
-        patch = execSync(
-          `git format-patch ${targetBranch}..${params.source_branch} --stdout`,
-          { cwd: repoPath, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 },
-        );
-      } catch (err) {
-        throw new Error(`git format-patch failed: ${err}`);
-      }
-      if (!patch.trim()) {
-        throw new Error(`No commits between ${targetBranch} and ${params.source_branch}. Push commits to the source branch first.`);
-      }
-
-      const now = new Date().toISOString();
-
-      const record = {
-        $type: "sh.tangled.repo.pull",
-        target: {
-          repo: repoAtUri,
-          branch: targetBranch,
-        },
-        title: params.title,
-        body: params.description ?? "",
-        patch,
-        createdAt: now,
-      };
-
-      const res = await fetch(`${pds}/xrpc/com.atproto.repo.createRecord`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          repo: did,
-          collection: "sh.tangled.repo.pull",
-          validate: false,
-          record,
-        }),
-      });
-      if (!res.ok) {
-        const body = await res.text();
-        throw new Error(`createRecord failed: ${res.status} — ${body}`);
-      }
-      const result = (await res.json()) as { uri: string; cid: string };
-      return {
-        content: [{ type: "text", text: `PR created: ${params.title}\nURI: ${result.uri}` }],
-        details: { result },
-      };
-    },
   });
 
   // ── tangled_list_issues ───────────────────────────────────────────────────
@@ -215,7 +77,7 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "List issues for a Tangled repo",
     promptGuidelines: ["Use tangled_list_issues when the user asks about issues on a Tangled repo."],
     parameters: Type.Object({
-      repo: Type.String({ description: "Repo handle/name" }),
+      repo: Type.String({ description: "Repo handle/name (e.g. malpercio.dev/ezpds)" }),
       limit: Type.Optional(Type.Number({ description: "Max results (default 20)" })),
     }),
     async execute(_id, params) {
@@ -230,9 +92,11 @@ export default function (pi: ExtensionAPI) {
       if (!res.ok) throw new Error(`listRecords failed: ${res.status}`);
       const data = (await res.json()) as { records: Array<{ uri: string; value: Record<string, unknown> }> };
 
+      const repoName = params.repo.split("/")[1];
+      const repoAtUri = `at://${did}/sh.tangled.repo/${repoName}`;
       const issues = data.records.filter((r) => {
         const issueRepo = String(r.value.repo ?? "");
-        return issueRepo === params.repo || issueRepo.endsWith("/" + params.repo.split("/")[1]);
+        return issueRepo === repoAtUri || issueRepo.endsWith("/" + repoName);
       });
 
       if (issues.length === 0) {
@@ -245,6 +109,58 @@ export default function (pi: ExtensionAPI) {
       });
 
       return { content: [{ type: "text", text: lines.join("\n") }], details: { count: issues.length } };
+    },
+  });
+
+  // ── tangled_create_issue ──────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: "tangled_create_issue",
+    label: "Create Tangled Issue",
+    description: "Create a new issue on a Tangled repository.",
+    promptSnippet: "Create a new issue on a Tangled repo",
+    promptGuidelines: ["Use tangled_create_issue when the user asks to create or file a new issue."],
+    parameters: Type.Object({
+      repo: Type.String({ description: "Repo handle/name (e.g. malpercio.dev/ezpds)" }),
+      title: Type.String({ description: "Issue title" }),
+      body: Type.Optional(Type.String({ description: "Issue body (Markdown)" })),
+    }),
+    async execute(_id, params) {
+      const token = await getToken();
+      const pds = await getPdsUrl();
+      const did = await getDid();
+      const repoName = params.repo.split("/")[1];
+      const repoAtUri = `at://${did}/sh.tangled.repo/${repoName}`;
+      const now = new Date().toISOString();
+
+      const res = await fetch(`${pds}/xrpc/com.atproto.repo.createRecord`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          repo: did,
+          collection: "sh.tangled.repo.issue",
+          validate: false,
+          record: {
+            $type: "sh.tangled.repo.issue",
+            repo: repoAtUri,
+            title: params.title,
+            body: params.body ?? "",
+            createdAt: now,
+          },
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.text();
+        throw new Error(`createRecord failed: ${res.status} — ${body}`);
+      }
+      const result = (await res.json()) as { uri: string; cid: string };
+      return {
+        content: [{ type: "text", text: `Issue created: ${params.title}\nURI: ${result.uri}` }],
+        details: { result },
+      };
     },
   });
 }
