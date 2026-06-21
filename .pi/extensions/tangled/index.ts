@@ -1,5 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { execSync } from "node:child_process";
+
+const CONSTELLATION_URL = "https://constellation.microcosm.blue";
 
 export default function (pi: ExtensionAPI) {
   const handle = process.env.TANGLED_HANDLE;
@@ -59,6 +62,24 @@ export default function (pi: ExtensionAPI) {
     return accessToken;
   }
 
+  /** Fetch a record from any PDS by AT-URI */
+  async function getRecord(atUri: string): Promise<Record<string, unknown>> {
+    const token = await getToken();
+    const pds = await getPdsUrl();
+    // Parse at://did/collection/rkey
+    const parts = atUri.replace("at://", "").split("/");
+    const repo = parts[0];
+    const collection = parts[1];
+    const rkey = parts[2];
+    const qs = new URLSearchParams({ repo, collection, rkey });
+    const res = await fetch(`${pds}/xrpc/com.atproto.repo.getRecord?${qs}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error(`getRecord failed: ${res.status}`);
+    const data = (await res.json()) as { value: Record<string, unknown> };
+    return data.value;
+  }
+
   pi.on("session_start", async (_e, ctx) => {
     try {
       await getToken();
@@ -66,6 +87,146 @@ export default function (pi: ExtensionAPI) {
     } catch (err) {
       ctx.ui.notify(`Tangled auth failed: ${err}`, "error");
     }
+  });
+
+  // ── tangled_list_prs ──────────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: "tangled_list_prs",
+    label: "List Tangled PRs",
+    description: "List pull requests targeting a Tangled repository. Uses Constellation to find PRs from all contributors, not just the authenticated user.",
+    promptSnippet: "List pull requests for a Tangled repo",
+    promptGuidelines: ["Use tangled_list_prs when the user asks about pull requests on a Tangled repo."],
+    parameters: Type.Object({
+      repo: Type.String({ description: "Repo handle/name (e.g. malpercio.dev/ezpds)" }),
+      limit: Type.Optional(Type.Number({ description: "Max results (default 20)" })),
+    }),
+    async execute(_id, params) {
+      const did = await getDid();
+      const repoName = params.repo.split("/")[1];
+      const repoAtUri = `at://${did}/sh.tangled.repo/${repoName}`;
+      const limit = params.limit ?? 20;
+
+      // Query Constellation for PRs targeting this repo
+      const qs = new URLSearchParams({
+        subject: repoAtUri,
+        source: "sh.tangled.repo.pull:target.repo",
+        limit: String(limit),
+      });
+      const res = await fetch(`${CONSTELLATION_URL}/xrpc/blue.microcosm.links.getBacklinks?${qs}`);
+      if (!res.ok) throw new Error(`Constellation query failed: ${res.status}`);
+      const data = (await res.json()) as {
+        total: number;
+        records: Array<{ did: string; collection: string; rkey: string }>;
+      };
+
+      if (data.total === 0) {
+        return { content: [{ type: "text", text: `No pull requests found for ${params.repo}.` }], details: { count: 0 } };
+      }
+
+      // Fetch full PR records to get titles, states, etc.
+      const prs: Array<{ rkey: string; title: string; createdAt: string; target: { branch: string }; author: string }> = [];
+      for (const ref of data.records) {
+        try {
+          const atUri = `at://${ref.did}/${ref.collection}/${ref.rkey}`;
+          const record = await getRecord(atUri);
+          prs.push({
+            rkey: ref.rkey,
+            title: String(record.title ?? "Untitled"),
+            createdAt: String(record.createdAt ?? ""),
+            target: (record.target as { branch?: string }) ?? { branch: "" },
+            author: ref.did,
+          });
+        } catch {
+          // Skip PRs we can't fetch
+        }
+      }
+
+      if (prs.length === 0) {
+        return { content: [{ type: "text", text: `No pull requests found for ${params.repo}.` }], details: { count: 0 } };
+      }
+
+      const lines = prs.map((pr) => `#${pr.rkey} — ${pr.title} → ${pr.target.branch} — ${pr.createdAt}`);
+      return { content: [{ type: "text", text: lines.join("\n") }], details: { count: prs.length, total: data.total } };
+    },
+  });
+
+  // ── tangled_open_pr ───────────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: "tangled_open_pr",
+    label: "Open Tangled PR",
+    description: "Create a new pull request on a Tangled repository. Generates the git patch automatically from the local repo.",
+    promptSnippet: "Create a new pull request on Tangled",
+    promptGuidelines: ["Use tangled_open_pr when the user asks to create or open a new pull request."],
+    parameters: Type.Object({
+      repo: Type.String({ description: "Repo handle/name (e.g. malpercio.dev/ezpds)" }),
+      title: Type.String({ description: "PR title" }),
+      description: Type.Optional(Type.String({ description: "PR description (Markdown)" })),
+      source_branch: Type.String({ description: "Source branch name (must exist locally with commits)" }),
+      target_branch: Type.Optional(Type.String({ description: "Target branch (default: main)" })),
+      repo_path: Type.Optional(Type.String({ description: "Path to local git repo (default: current directory)" })),
+    }),
+    async execute(_id, params) {
+      const token = await getToken();
+      const pds = await getPdsUrl();
+      const did = await getDid();
+      const repoName = params.repo.split("/")[1];
+      const repoAtUri = `at://${did}/sh.tangled.repo/${repoName}`;
+      const targetBranch = params.target_branch ?? "main";
+      const repoPath = params.repo_path || process.cwd();
+
+      // Generate patch from local git repo
+      let patch: string;
+      try {
+        patch = execSync(
+          `git format-patch ${targetBranch}..${params.source_branch} --stdout`,
+          { cwd: repoPath, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 },
+        );
+      } catch (err) {
+        throw new Error(`git format-patch failed: ${err}`);
+      }
+      if (!patch.trim()) {
+        throw new Error(`No commits between ${targetBranch} and ${params.source_branch}. Push commits to the source branch first.`);
+      }
+
+      const now = new Date().toISOString();
+
+      const record = {
+        $type: "sh.tangled.repo.pull",
+        target: {
+          repo: repoAtUri,
+          branch: targetBranch,
+        },
+        title: params.title,
+        body: params.description ?? "",
+        patch,
+        createdAt: now,
+      };
+
+      const res = await fetch(`${pds}/xrpc/com.atproto.repo.createRecord`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          repo: did,
+          collection: "sh.tangled.repo.pull",
+          validate: false,
+          record,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.text();
+        throw new Error(`createRecord failed: ${res.status} — ${body}`);
+      }
+      const result = (await res.json()) as { uri: string; cid: string };
+      return {
+        content: [{ type: "text", text: `PR created: ${params.title}\nURI: ${result.uri}\n\nNote: PR is stored on your PDS and indexed by Constellation. It may not appear in the Tangled web UI immediately (known issue: tangled.org/core#576).` }],
+        details: { result },
+      };
+    },
   });
 
   // ── tangled_list_issues ───────────────────────────────────────────────────
