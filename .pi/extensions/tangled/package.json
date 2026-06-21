@@ -1,0 +1,7 @@
+{
+  "name": "pi-tangled-extension",
+  "private": true,
+  "type": "module",
+  "pi": { "extensions": ["./index.ts"] },
+  "dependencies": {}
+}
