@@ -9,8 +9,8 @@ The config and secrets story is unified across all three environments by the rel
 ## Definition of Done
 
 - A committed multi-stage `Dockerfile` builds the `relay` binary and produces a small runtime image that runs with **no Nix and no system OpenSSL**, configured entirely from environment variables (12-factor): HTTP port (including Railway's injected `$PORT`), `public_url`, `data_dir`, and the signing-key master secret — the secret is injected at runtime and **never baked into the image**.
-- The relay runs healthy in a local container (`/health` returns 200) with its SQLite data persisted to a mounted volume across container restarts.
-- The relay deploys to **Railway** from the committed `Dockerfile`, with a persistent volume mounted at the data dir and config/secrets supplied via Railway variables; the public URL resolves and `/health` is green.
+- The relay runs healthy in a local container (`/xrpc/_health` returns 200) with its SQLite data persisted to a mounted volume across container restarts.
+- The relay deploys to **Railway** from the committed `Dockerfile`, with a persistent volume mounted at the data dir and config/secrets supplied via Railway variables; the public URL resolves and `/xrpc/_health` is green.
 - The **NixOS lab host continues to deploy via colmena**, now running the *same* container image through `virtualisation.oci-containers`. `services.ezpds` is reworked (or wrapped) accordingly; the crane relay build (`flake.nix`) and `nix/docker.nix` are retired or explicitly deprecated.
 - Reproducibility is preserved at the **pinned-base-image-digest + `Cargo.lock`** level, documented as an explicit, accepted downgrade from flake-locked builds.
 - Docs (`nix/CLAUDE.md`, root `CLAUDE.md` commands, deploy notes) describe the Docker/Railway workflow and the retained NixOS-via-`oci-containers` path. The Bruno collection and health endpoints are unchanged.
@@ -26,16 +26,16 @@ The config and secrets story is unified across all three environments by the rel
 - **relay-containerization.AC1.5 Edge:** `EZPDS_SIGNING_KEY_MASTER_KEY` is supplied at runtime and is absent from both the image layers and git.
 
 ### relay-containerization.AC2: Stateful & healthy locally
-- **relay-containerization.AC2.1 Success:** `docker run` with a volume mounted at `EZPDS_DATA_DIR` → `/health` returns 200.
+- **relay-containerization.AC2.1 Success:** `docker run` with a volume mounted at `EZPDS_DATA_DIR` → `/xrpc/_health` returns 200.
 - **relay-containerization.AC2.2 Success:** data persists across a container restart (same volume reuses the SQLite DB; migrations idempotent, no data loss).
 
 ### relay-containerization.AC3: Railway deployment
-- **relay-containerization.AC3.1 Success:** Railway builds the committed Dockerfile and deploys; the public domain serves `/health` 200.
+- **relay-containerization.AC3.1 Success:** Railway builds the committed Dockerfile and deploys; the public domain serves `/xrpc/_health` 200.
 - **relay-containerization.AC3.2 Success:** a persistent Railway volume mounted at the data dir survives a redeploy.
 - **relay-containerization.AC3.3 Success:** `public_url` and the master key are supplied via Railway variables; neither is committed to git.
 
 ### relay-containerization.AC4: NixOS via oci-containers (colmena still deploys) + flake cleanup
-- **relay-containerization.AC4.1 Success:** `nix/module.nix` runs the relay as a `virtualisation.oci-containers` service; a colmena deploy to the lab host serves `/health`.
+- **relay-containerization.AC4.1 Success:** `nix/module.nix` runs the relay as a `virtualisation.oci-containers` service; a colmena deploy to the lab host serves `/xrpc/_health`.
 - **relay-containerization.AC4.2 Success:** the secret is injected via `environmentFiles` (agenix/sops-nix), not stored in the Nix store.
 - **relay-containerization.AC4.3 Success:** the crane `relay` build and the `docker-image`/`nix/docker.nix` output are removed or deprecated; `nix flake check` passes; `devShells` and `nixosModules.default` still evaluate.
 
@@ -82,7 +82,7 @@ EZPDS_SIGNING_KEY_MASTER_KEY   Secret; injected at runtime only. Never in the im
 RUST_LOG                   Log level (default info).
 ```
 
-- Listens on `0.0.0.0:$PORT`. Exposes `/health` for platform health checks.
+- Listens on `0.0.0.0:$PORT`. Exposes `/xrpc/_health` for platform health checks.
 - The exact env-var names/precedence are confirmed during implementation against the relay's config loader (`crates/relay/src/main.rs` / `app.rs`); if the loader doesn't yet map `$PORT`, that wiring is added in Phase 1.
 
 ### Image shape
@@ -151,7 +151,7 @@ This is flagged as a decision in the implementation plan's Phase 5; default to O
 
 **Components:**
 - `Dockerfile` (repo root or `docker/`): pinned-by-digest build stage (`cargo build --release -p relay`) + minimal runtime stage (binary, `ca-certificates`, `tzdata`, non-root user, `EXPOSE`, `ENTRYPOINT`).
-- `.dockerignore` (exclude `target/`, `.devenv/`, `apps/`, `.git/`, `result`, etc. for a small, fast build context).
+- `.dockerignore` excluding build artifacts and the SvelteKit frontend (`target/`, `.devenv/`, `.git/`, `result`, `**/node_modules`, `apps/identity-wallet/{.svelte-kit,build,static,dist,src-tauri/gen}`). It must **keep** all Cargo manifests, `crates/`, `Cargo.lock`, `rust-toolchain.toml`, and `apps/identity-wallet/{src-tauri,swift-rs-patch}` — Cargo resolves the whole workspace and the `swift-rs` `[patch.crates-io]` path even for `-p relay`.
 
 **Dependencies:** Phase 1.
 
@@ -167,7 +167,7 @@ This is flagged as a decision in the implementation plan's Phase 5; default to O
 
 **Dependencies:** Phase 2.
 
-**Done when:** `/health` returns 200; data written to the volume survives a container restart; a second run against the same volume reuses the existing SQLite DB (migrations idempotent).
+**Done when:** `/xrpc/_health` returns 200; data written to the volume survives a container restart; a second run against the same volume reuses the existing SQLite DB (migrations idempotent).
 <!-- END_PHASE_3 -->
 
 <!-- START_PHASE_4 -->
@@ -179,7 +179,7 @@ This is flagged as a decision in the implementation plan's Phase 5; default to O
 
 **Dependencies:** Phase 3. **Requires a Railway account/project (environment-specific verification).**
 
-**Done when:** Railway builds and deploys the image; the public domain serves `/health` 200; data persists across redeploys on the attached volume.
+**Done when:** Railway builds and deploys the image; the public domain serves `/xrpc/_health` 200; data persists across redeploys on the attached volume.
 <!-- END_PHASE_4 -->
 
 <!-- START_PHASE_5 -->
@@ -193,7 +193,7 @@ This is flagged as a decision in the implementation plan's Phase 5; default to O
 
 **Dependencies:** Phase 2 (image exists). **Requires the NixOS lab host + colmena (environment-specific verification).**
 
-**Done when:** A colmena deploy brings up the relay container on the lab host serving `/health`; `nix flake check` passes with the reworked outputs; no dangling references to the removed crane/docker.nix outputs.
+**Done when:** A colmena deploy brings up the relay container on the lab host serving `/xrpc/_health`; `nix flake check` passes with the reworked outputs; no dangling references to the removed crane/docker.nix outputs.
 <!-- END_PHASE_5 -->
 
 <!-- START_PHASE_6 -->
