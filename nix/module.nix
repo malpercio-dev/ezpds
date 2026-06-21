@@ -1,122 +1,70 @@
-{ lib, pkgs, config, ... }:
+{ lib, config, ... }:
 
-let
-  cfg = config.services.ezpds;
-
-  # Build the TOML attrset, omitting any null values (currently only
-  # database_url can be null). When null, the relay binary derives the
-  # database path from data_dir.
-  settingsToml = lib.filterAttrs (_: v: v != null) {
-    inherit (cfg.settings) bind_address port data_dir public_url database_url;
-  };
-
-  generatedConfigFile = (pkgs.formats.toml { }).generate "relay.toml" settingsToml;
-
-  # When configFile is set, bypass the Nix-store-generated TOML entirely.
-  # This is the escape hatch for secret injection via agenix or sops-nix.
-  activeConfigFile =
-    if cfg.configFile != null then cfg.configFile else generatedConfigFile;
-
+let cfg = config.services.ezpds;
 in
 {
   options.services.ezpds = {
-    enable = lib.mkEnableOption "ezpds relay server";
+    enable = lib.mkEnableOption "ezpds relay (OCI container)";
 
-    package = lib.mkOption {
-      type = lib.types.package;
-      description = "The ezpds relay package to use.";
+    image = lib.mkOption {
+      type = lib.types.str;
+      description = "Relay OCI image reference, ideally digest-pinned (ghcr.io/<owner>/relay@sha256:...).";
     };
 
-    configFile = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
+    port = lib.mkOption {
+      type = lib.types.port;
+      default = 8080;
+      description = "Host port to publish.";
+    };
+
+    dataDir = lib.mkOption {
+      type = lib.types.str;
+      default = "/var/lib/ezpds";
+      description = "Host dir bind-mounted to the container's /data.";
+    };
+
+    publicUrl = lib.mkOption {
+      type = lib.types.str;
+      description = "Public https URL of the relay.";
+    };
+
+    availableUserDomains = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      description = "Allowed handle domains.";
+    };
+
+    environmentFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
       default = null;
       description = ''
-        Path to a relay.toml configuration file.
-        When set, all settings.* options are ignored and this path is
-        passed directly to --config. Use with agenix or sops-nix to
-        keep secrets outside the world-readable Nix store.
-
-        When using agenix or sops-nix, ensure the secrets service runs
-        before ezpds to avoid a startup race:
-          systemd.services.ezpds.after = [ "agenix.service" ];
-          systemd.services.ezpds.wants = [ "agenix.service" ];
+        Path to an env file (from agenix/sops-nix) holding secrets, e.g.
+        EZPDS_SIGNING_KEY_MASTER_KEY=... and EZPDS_ADMIN_TOKEN=...
+        Keeps secrets out of the world-readable Nix store.
       '';
-    };
-
-    settings = {
-      bind_address = lib.mkOption {
-        type = lib.types.str;
-        default = "0.0.0.0";
-        description = "IP address to bind the relay HTTP server to.";
-      };
-
-      port = lib.mkOption {
-        type = lib.types.port;
-        default = 8080;
-        description = "TCP port to bind the relay HTTP server to.";
-      };
-
-      data_dir = lib.mkOption {
-        type = lib.types.str;
-        default = "/var/lib/ezpds";
-        description = ''
-          Path to the relay data directory. Must be writable by the ezpds user.
-          Uses lib.types.str (not lib.types.path) to preserve the value as a
-          literal string and avoid Nix store coercion of runtime paths.
-        '';
-      };
-
-      public_url = lib.mkOption {
-        type = lib.types.str;
-        description = ''
-          Public URL where this relay is reachable (e.g. https://relay.example.com).
-          Required — Nix evaluation fails if this option is not set.
-        '';
-      };
-
-      database_url = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = ''
-          SQLite database URL. When null (the default), the relay derives
-          the database path from data_dir. Omitted from the generated
-          relay.toml when null.
-        '';
-      };
     };
   };
 
   config = lib.mkIf cfg.enable {
-    users.users.ezpds = {
-      isSystemUser = true;
-      group = "ezpds";
-      description = "ezpds relay service user";
-    };
-
-    users.groups.ezpds = { };
-
-    systemd.services.ezpds = {
-      description = "ezpds relay server";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "network.target" ];
-
-      serviceConfig = {
-        User = "ezpds";
-        Group = "ezpds";
-        ExecStart = "${cfg.package}/bin/relay --config '${activeConfigFile}'";
-        StateDirectory = "ezpds";
-        StateDirectoryMode = "0750";
-        # Extend write access to custom data_dir paths. When data_dir is the
-        # default (/var/lib/ezpds), StateDirectory already covers it and this
-        # is a no-op. For any other path, ProtectSystem=strict would otherwise
-        # block all writes at runtime.
-        ReadWritePaths = [ cfg.settings.data_dir ];
-        Restart = "on-failure";
-        PrivateTmp = true;
-        ProtectSystem = "strict";
-        ProtectHome = true;
-        NoNewPrivileges = true;
+    # The host must enable a backend, e.g.:
+    #   virtualisation.oci-containers.backend = "podman";
+    #   virtualisation.podman.enable = true;
+    virtualisation.oci-containers.containers.ezpds = {
+      image = cfg.image;
+      ports = [ "${toString cfg.port}:8080" ];
+      volumes = [ "${cfg.dataDir}:/data" ];
+      environment = {
+        EZPDS_PUBLIC_URL = cfg.publicUrl;
+        EZPDS_AVAILABLE_USER_DOMAINS = lib.concatStringsSep "," cfg.availableUserDomains;
+        EZPDS_DATA_DIR = "/data";
+        EZPDS_PORT = "8080";
       };
+      environmentFiles = lib.optional (cfg.environmentFile != null) cfg.environmentFile;
     };
+
+    systemd.tmpfiles.rules = [ "d ${cfg.dataDir} 0750 root root - -" ];
+
+    # Preserve hardening intent: the container already runs non-root (relay uid 10001, baked in Phase 2).
+    # Carry NoNewPrivileges onto the generated unit where applicable.
+    systemd.services."podman-ezpds".serviceConfig.NoNewPrivileges = true;
   };
 }
