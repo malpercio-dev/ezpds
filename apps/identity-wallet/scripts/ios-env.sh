@@ -15,7 +15,7 @@
 
 # If Apple tools are missing (e.g. a non-mac shell), do nothing — never break the
 # caller's shell just because it was sourced somewhere without Xcode.
-if ! command -v xcrun >/dev/null 2>&1 || ! command -v xcode-select >/dev/null 2>&1; then
+if [ ! -x /usr/bin/xcrun ] || [ ! -x /usr/bin/xcode-select ]; then
   return 0 2>/dev/null || true
 fi
 
@@ -26,11 +26,11 @@ if [ -n "${_ezpds_dev_dir}" ]; then
   export DEVELOPER_DIR="${_ezpds_dev_dir}"
 fi
 
-# Unwrapped Apple clang/ar — bypasses the Nix cc-wrapper, which injects
-# -mmacos-version-min and the wrong sysroot for iOS targets.
-# xcrun will now read the corrected DEVELOPER_DIR above.
-_ezpds_clang="$(xcrun -f clang 2>/dev/null || true)"
-_ezpds_ar="$(xcrun -f ar 2>/dev/null || true)"
+# Unwrapped Apple clang/ar — use /usr/bin/xcrun explicitly to bypass any Nix xcrun
+# shim in PATH (same reason we use /usr/bin/xcode-select above: the Nix xcrun shim
+# from .devenv/profile/bin returns the Nix clang-wrapper, not the Apple toolchain).
+_ezpds_clang="$(/usr/bin/xcrun -f clang 2>/dev/null || true)"
+_ezpds_ar="$(/usr/bin/xcrun -f ar 2>/dev/null || true)"
 
 if [ -n "${_ezpds_clang}" ]; then
   # iOS TARGET overrides — always safe to export: no server crate targets iOS, so
@@ -61,7 +61,7 @@ if [ -n "${EZPDS_IOS_BUILD:-}" ]; then
   if [ -n "${_ezpds_ar}" ]; then
     export AR_aarch64_apple_darwin="${_ezpds_ar}"
   fi
-  _ezpds_macos_sdk="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
+  _ezpds_macos_sdk="$(/usr/bin/xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
   if [ -n "${_ezpds_macos_sdk}" ]; then
     export CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS="-L ${_ezpds_macos_sdk}/usr/lib"
   fi
