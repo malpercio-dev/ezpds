@@ -49,10 +49,15 @@ ios-postinit:
 ios-check:
     apps/identity-wallet/scripts/ios-check.sh
 
+# Both iOS recipes `export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh` before `cargo tauri`
+# so the OUTER process re-resolves the Apple toolchain, overriding any stale
+# CARGO_TARGET_*/CC_*/AR_* a long-lived dev shell may carry from a pre-fix ios-env.sh
+# sourcing (see apps/identity-wallet/CLAUDE.md "Development Workflow").
+
 # Launch the app in the iOS Simulator (verifies patches first).
 ios-dev: ios-check
-    cd apps/identity-wallet && EZPDS_IOS_BUILD=1 cargo tauri ios dev
+    cd apps/identity-wallet && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && cargo tauri ios dev
 
 # Build the iOS app for the Simulator (verifies patches first).
 ios-build: ios-check
-    cd apps/identity-wallet && EZPDS_IOS_BUILD=1 cargo tauri ios build --debug
+    cd apps/identity-wallet && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && cargo tauri ios build --debug

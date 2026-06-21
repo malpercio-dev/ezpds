@@ -242,7 +242,7 @@ just ios-dev
 just ios-build
 ```
 
-Both commands first run `just ios-check`, which fails fast if the Xcode project is missing a required patch — run `just ios-postinit` to apply them. The Apple toolchain env comes from the dev shell (`enterShell` sources `ios-env.sh`) and from the `ios-env.sh` line that `ios-postinit` injects into the Xcode Run Script phase.
+Both commands first run `just ios-check`, which fails fast if the Xcode project is missing a required patch — run `just ios-postinit` to apply them. Each recipe then **re-sources `ios-env.sh`** (with `EZPDS_IOS_BUILD=1`) before invoking `cargo tauri`, so the build's outer process starts from a freshly-resolved Apple toolchain even when the surrounding shell carries **stale** `CARGO_TARGET_*`/`CC_*`/`AR_*` from an earlier `ios-env.sh` sourcing (e.g. a long-lived dev shell entered before a fix). A stale outer env reaches the build through the shared `target/` even though the Xcode Run Script re-sources `ios-env.sh`, so correcting it at the recipe is what makes the build robust. The Apple toolchain env is thus applied at three points: the dev shell (`enterShell` sources `ios-env.sh`), the recipe re-source, and the `ios-env.sh` line `ios-postinit` injects into the Xcode Run Script phase.
 
 **Do not click Run in Xcode directly.** `just ios-dev` starts a JSON-RPC server that
 Xcode's build phase connects to; bypassing it causes "Connection refused" in the build log.
