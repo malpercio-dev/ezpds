@@ -24,7 +24,7 @@ step.
 
 **Workaround (in this repo):** A vendored fork at
 `apps/identity-wallet/swift-rs-patch/` adds `--disable-sandbox` to the `swift build`
-invocation (`swift-rs-patch/src-rs/build.rs:264`), wired via `[patch.crates-io]` in
+invocation (`swift-rs-patch/src-rs/build.rs:265`), wired via `[patch.crates-io]` in
 the workspace `Cargo.toml`.
 
 **Reproduction:** Remove the `[patch.crates-io] swift-rs` line from `Cargo.toml`,
