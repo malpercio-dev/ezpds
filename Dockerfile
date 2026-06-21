@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---- build stage ----
-FROM rust:1-bookworm@sha256:b931ed58d07d1ecfeba2d6c72b07b6c38007309ca2e0a1f8a9f8e917798fe30a AS build
+FROM rust:1-bookworm@sha256:19817ead3289c8c631c73df281e18b59b172f6a31f4f563290f69cddd06c30e9 AS build
 WORKDIR /src
 # Whole (ignore-trimmed) workspace — needed because cargo resolves all members
 # and the swift-rs [patch.crates-io] path even for `-p relay`.
@@ -12,7 +12,7 @@ COPY . .
 RUN cargo build --release --locked -p relay
 
 # ---- runtime stage ----
-FROM debian:bookworm-slim@sha256:35ae959f6e83ffb465e7614d27b4fddd28288caa551fbca2798367567cce80d3 AS runtime
+FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf87857c4b8188404716 AS runtime
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates tzdata \
  && rm -rf /var/lib/apt/lists/*
