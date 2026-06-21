@@ -11,8 +11,7 @@ Last verified: 2026-06-21
 
 ## Commands
 - `nix develop --impure --accept-flake-config` - Enter dev shell (flags required; --impure for devenv CWD detection, --accept-flake-config activates the Cachix binary cache in nixConfig — without it, a cold build takes 20+ minutes)
-- `nix build .#relay --accept-flake-config` - Build relay binary (output at ./result/bin/relay)
-- `nix build .#docker-image --accept-flake-config` - Build Docker image tarball (Linux only; output at `./result`; load with `docker load < result`; `docker-image` is not exposed on macOS — use a remote Linux builder or CI)
+- `docker build -t relay .` / `just docker-build` - Build relay OCI image
 - `just nix-check` / `nix flake check --impure --accept-flake-config` - Validate NixOS module evaluation and flake structure
 - `cargo build` - Build all crates
 - `cargo test` - Run all tests
@@ -36,7 +35,7 @@ Last verified: 2026-06-21
 - `crates/repo-engine/` - ATProto repo engine
 - `crates/crypto/` - Cryptographic operations (P-256 key generation, did:key derivation, AES-256-GCM encryption, did:plc genesis ops and verification)
 - `crates/common/` - Shared types and utilities
-- `nix/` - Nix packaging and deployment (docker.nix: container image; module.nix: NixOS module)
+- `nix/` - Nix deployment (module.nix: NixOS module for OCI container)
 - `docs/` - Specs, design plans, implementation plans
 
 ## Mobile
@@ -46,9 +45,7 @@ Last verified: 2026-06-21
 - iOS build commands: `just ios-dev` / `just ios-build` (run from repo root; macOS + Xcode required). Toolchain resolved by `apps/identity-wallet/scripts/ios-env.sh`; patches re-applied via `just ios-postinit` after `cargo tauri ios init`.
 
 ## Flake Outputs
-- `packages.<system>.relay` - Relay binary
-- `packages.<system>.docker-image` - Docker image tarball (Linux only)
-- `nixosModules.default` - NixOS module exposing `services.ezpds` options (see `nix/CLAUDE.md`)
+- `nixosModules.default` - NixOS module for relay OCI container deployment (see `nix/CLAUDE.md`)
 - `devShells.<system>.default` - Development shell via devenv
 
 ## Bruno API Collection

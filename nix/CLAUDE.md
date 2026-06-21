@@ -1,45 +1,53 @@
 # Nix Packaging and Deployment
 
-Last verified: 2026-03-09
+Last verified: 2026-06-21
 
 ## Purpose
-Provides Nix-native build outputs (binary, container image) and a NixOS module
-for declarative relay deployment. Keeps all Nix packaging logic out of the
-top-level flake.nix.
+Provides a NixOS module (`module.nix`) for declarative relay deployment via OCI containers
+(podman/Docker). The relay image is built externally (via `docker build` or CI/CD)
+and referenced by digest in the module.
 
 ## Contracts
 
 ### module.nix (NixOS module)
-- **Exposes**: `services.ezpds` option namespace (enable, package, configFile, settings.*)
-- **Guarantees**:
-  - `settings.*` options generate a Nix-store TOML config passed via `--config`
-  - `configFile` overrides all `settings.*` — when set, generated TOML is not used (escape hatch for agenix/sops-nix secret injection)
-  - `database_url = null` is omitted from generated TOML (relay derives path from data_dir)
-  - `public_url` is required; evaluation fails if unset
-  - Dedicated `ezpds` system user/group created automatically
-  - systemd service runs with hardening: ProtectSystem=strict, ProtectHome, NoNewPrivileges, PrivateTmp
-  - StateDirectory "ezpds" managed by systemd (mode 0750)
-  - ReadWritePaths always includes cfg.settings.data_dir — required when data_dir is not /var/lib/ezpds, since ProtectSystem=strict blocks writes elsewhere
-- **Expects**: Caller provides `services.ezpds.settings.public_url` (or a complete `configFile`)
+- **Exposes**: `services.ezpds` option namespace
+  - `enable` - Enable/disable the relay service
+  - `image` (required) - OCI image reference, ideally digest-pinned (e.g., `ghcr.io/owner/relay@sha256:...`)
+  - `port` (default 8080) - Host port to publish
+  - `dataDir` (default `/var/lib/ezpds`) - Host directory bind-mounted to container's `/data`
+  - `publicUrl` (required) - Public https URL of the relay
+  - `availableUserDomains` (required) - Allowed handle domains (list of strings)
+  - `environmentFile` (optional) - Path to env file from agenix/sops-nix holding secrets (e.g., EZPDS_SIGNING_KEY_MASTER_KEY, EZPDS_ADMIN_TOKEN)
 
-### docker.nix
-- **Exposes**: Called by flake.nix to produce `packages.<system>.docker-image`
-- **Guarantees**: Produces an OCI image tarball loadable via `docker load`
-- **Expects**: Linux builder (not exposed on macOS)
+- **Guarantees**:
+  - Creates OCI container configuration via `virtualisation.oci-containers.containers.ezpds`
+  - Binds `dataDir` to container's `/data` mount point
+  - Passes environment variables to container (publicUrl, availableUserDomains, dataDir path, port)
+  - Secrets from `environmentFile` are injected at container start, kept out of Nix store
+  - systemd.tmpfiles creates `dataDir` with mode 0750
+  - NoNewPrivileges=true enforced on generated podman/docker systemd unit
+  - Container runs non-root (relay uid 10001, baked into OCI image)
+
+- **Expects**: 
+  - Caller has enabled a container backend (e.g., `virtualisation.oci-containers.backend = "podman"`)
+  - Caller provides `services.ezpds.image` (digest-pinned OCI image reference)
+  - Caller provides `services.ezpds.publicUrl` and `services.ezpds.availableUserDomains`
 
 ## Dependencies
-- **Uses**: `crates/relay/` binary (via `packages.<system>.relay`)
-- **Used by**: flake.nix (imports module.nix, calls docker.nix)
+- **Uses**: OCI image (built externally, not by Nix)
+- **Used by**: NixOS configurations importing `nixosModules.default` from the flake
 
 ## Key Decisions
-- `lib.types.str` for paths (data_dir, configFile): avoids Nix store coercion of runtime paths
-- configFile escape hatch: secrets must not land in world-readable Nix store
-- systemd hardening on by default: defense-in-depth for a network-facing service
+- Container-based deployment (not binary package) allows runtime secrets via environmentFile
+- `lib.types.str` for paths: avoids Nix store coercion of runtime paths
+- environmentFile escape hatch: secrets must not land in world-readable Nix store
+- Non-root container (uid 10001) + NoNewPrivileges: defense-in-depth for network-facing service
+- Digest-pinned image references: ensures reproducibility and prevents accidental image rollbacks
 
 ## Invariants
 - module.nix must remain a standalone NixOS module importable without the flake
-- ExecStart always passes `--config <path>` (never bare invocation)
+- `services.ezpds.image` is mandatory — evaluation fails if unset
+- Container image is built and distributed externally (not via `nix build`)
 
 ## Key Files
-- `module.nix` - NixOS module for relay deployment
-- `docker.nix` - Docker image builder
+- `module.nix` - NixOS module for relay OCI container deployment
