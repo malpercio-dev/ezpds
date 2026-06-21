@@ -1,7 +1,7 @@
 # Identity Wallet Mobile App
 
-Last verified: 2026-03-31
-Last updated: 2026-03-31
+Last verified: 2026-06-20
+Last updated: 2026-06-20
 
 ## Purpose
 
@@ -170,44 +170,37 @@ pnpm install
 
 # 3. Generate the Xcode project (output is in src-tauri/gen/apple/ — gitignored)
 cargo tauri ios init
+
+# 4. Apply iOS build patches
+just ios-postinit
 ```
 
 Note: `src-tauri/gen/` contains a machine-specific Xcode project. It is gitignored and must be re-generated on each developer machine. Do not commit it.
 
-### Xcode build phase PATH (one-time manual step after `cargo tauri ios init`)
+### After every `cargo tauri ios init`: run `just ios-postinit`
 
-Xcode's Run Script build phases do not inherit the Nix dev shell PATH. After regenerating `src-tauri/gen/`, the generated `project.pbxproj` script must be patched to expose both the devenv tools and the rustup-managed cargo:
-
-Open `src-tauri/gen/apple/identity-wallet.xcodeproj/project.pbxproj` and find the `shellScript` line in the PBXShellScriptBuildPhase section. Prepend:
-
-```
-export PATH="<project-root>/.devenv/state/cargo/bin:<project-root>/.devenv/profile/bin:$PATH"
-```
-
-where `<project-root>` is the absolute path to the repo root (e.g. `/Users/you/workspace/malpercio-dev/ezpds`).
-
-This step is required once per `cargo tauri ios init` run.
-
-### Disable user script sandboxing (one-time manual step after `cargo tauri ios init`)
-
-Xcode 14+ sets `ENABLE_USER_SCRIPT_SANDBOXING = YES` in generated projects, which wraps Run Script build phases in `sandbox-exec`. On macOS 26 (Tahoe), this blocks Cargo's directory walk (package fingerprinting) with:
-
-```
-Failed to update the excludes stack to see if a path is excluded
-```
-
-After regenerating `src-tauri/gen/`, run:
+`cargo tauri ios init` regenerates the gitignored Xcode project at
+`src-tauri/gen/apple/`. Three workarounds must be (re-)applied to it. This is now
+a single idempotent command, run from the repo root:
 
 ```bash
-sed -i '' 's/ENABLE_USER_SCRIPT_SANDBOXING = YES/ENABLE_USER_SCRIPT_SANDBOXING = NO/g' \
-  src-tauri/gen/apple/identity-wallet.xcodeproj/project.pbxproj
+just ios-postinit
 ```
 
-This step is required once per `cargo tauri ios init` run.
+It (1) verifies the `swift-rs` `--disable-sandbox` patch is wired in the workspace
+`Cargo.toml`, (2) sets `ENABLE_USER_SCRIPT_SANDBOXING = NO` (macOS 26 + Xcode
+sandbox blocks Cargo's directory walk), and (3) injects `PATH` + `source
+scripts/ios-env.sh` into the "Build Rust Code" Run Script phase (that phase does
+not inherit the dev-shell environment). Verify at any time with `just ios-check`.
 
 ### Why rustup instead of Nix-managed Rust
 
 `languages.rust` in devenv uses Nix's `rust-default` package, which only ships stdlibs for standard host targets. iOS Simulator requires `aarch64-apple-ios-sim` stdlib. Nix doesn't package iOS cross-compilation stdlibs; `rustup` downloads them from the Rust release infrastructure. The dev shell is configured with project-local `RUSTUP_HOME` and `CARGO_HOME` (inside `.devenv/state/`) so the toolchain is isolated per project.
+
+The Apple toolchain (clang/ar/SDKs/`DEVELOPER_DIR`) is resolved dynamically by
+`scripts/ios-env.sh` via `xcrun`/`xcode-select` — there are no hardcoded Xcode
+paths, so the build follows whatever Xcode `xcode-select` points at. `ios-env.sh`
+is sourced by the devenv `enterShell` and by the patched Xcode Run Script phase.
 
 ## Development Workflow
 
