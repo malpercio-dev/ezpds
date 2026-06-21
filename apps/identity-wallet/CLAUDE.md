@@ -1,7 +1,7 @@
 # Identity Wallet Mobile App
 
-Last verified: 2026-06-21
-Last updated: 2026-06-21
+Last verified: 2026-06-20
+Last updated: 2026-06-20
 
 ## Purpose
 
@@ -171,7 +171,8 @@ pnpm install
 # 3. Generate the Xcode project (output is in src-tauri/gen/apple/ — gitignored)
 cargo tauri ios init
 
-# 4. Apply iOS build patches
+# 4. Apply post-init patches (Run Script phase PATH + sandbox config + swift-rs patch)
+cd .. # back to workspace root
 just ios-postinit
 ```
 
