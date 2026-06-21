@@ -1,0 +1,8 @@
+{
+  "name": "pi-extensions",
+  "private": true,
+  "dependencies": {
+    "pi-hermes-memory": "^0.7.18",
+    "pi-web-access": "^0.10.7"
+  }
+}
