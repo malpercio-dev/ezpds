@@ -37,3 +37,22 @@ ci: fmt-check clippy test
 # escape hatch), run the nix eval commands in phase_03.md Tasks 2-5 manually.
 nix-check:
     nix flake check --impure --accept-flake-config
+
+# --- iOS (identity-wallet) — run from repo root; requires macOS + Xcode ---
+
+# Re-apply the surviving Tauri/macOS patches to the generated Xcode project.
+# Run once after every `cargo tauri ios init`. Idempotent.
+ios-postinit:
+    apps/identity-wallet/scripts/ios-postinit.sh
+
+# Fail if the generated Xcode project is missing any required patch.
+ios-check:
+    apps/identity-wallet/scripts/ios-check.sh
+
+# Launch the app in the iOS Simulator (verifies patches first).
+ios-dev: ios-check
+    cd apps/identity-wallet && EZPDS_IOS_BUILD=1 cargo tauri ios dev
+
+# Build the iOS app for the Simulator (verifies patches first).
+ios-build: ios-check
+    cd apps/identity-wallet && EZPDS_IOS_BUILD=1 cargo tauri ios build --debug
