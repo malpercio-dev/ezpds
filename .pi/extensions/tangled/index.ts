@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { execSync } from "node:child_process";
 
 export default function (pi: ExtensionAPI) {
   const handle = process.env.TANGLED_HANDLE;
@@ -29,7 +30,6 @@ export default function (pi: ExtensionAPI) {
       resolvedPdsUrl = pdsUrl;
       return pdsUrl;
     }
-    // Auto-detect PDS from DID document
     try {
       const didRes = await fetch(`https://${handle}/.well-known/did.json`);
       if (didRes.ok) {
@@ -41,8 +41,6 @@ export default function (pi: ExtensionAPI) {
         }
       }
     } catch {}
-    // Try DNS TXT record for did:plc handles
-    // Fallback to tangled.org
     resolvedPdsUrl = pdsUrl;
     return pdsUrl;
   }
@@ -62,6 +60,19 @@ export default function (pi: ExtensionAPI) {
     return accessToken;
   }
 
+  async function getServiceAuth(audience: string): Promise<string> {
+    const pds = await getPdsUrl();
+    const token = await getToken();
+    const exp = Math.floor(Date.now() / 1000) + 60;
+    const qs = new URLSearchParams({ aud: audience, exp: String(exp) });
+    const res = await fetch(`${pds}/xrpc/com.atproto.server.getServiceAuth?${qs}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error(`getServiceAuth failed: ${res.status}`);
+    const data = (await res.json()) as { token: string };
+    return data.token;
+  }
+
   pi.on("session_start", async (_e, ctx) => {
     try {
       await getToken();
@@ -70,6 +81,8 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.notify(`Tangled auth failed: ${err}`, "error");
     }
   });
+
+  // ── tangled_list_prs ──────────────────────────────────────────────────────
 
   pi.registerTool({
     name: "tangled_list_prs",
@@ -85,9 +98,9 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params) {
       const token = await getToken();
       const pds = await getPdsUrl();
-      const limit = params.limit ?? 20;
       const did = await getDid();
-      const qs = new URLSearchParams({ collection: "sh.tangled.pull", repo: did, limit: String(limit) });
+      const limit = params.limit ?? 20;
+      const qs = new URLSearchParams({ collection: "sh.tangled.repo.pull", repo: did, limit: String(limit) });
       const res = await fetch(`${pds}/xrpc/com.atproto.repo.listRecords?${qs}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -106,31 +119,68 @@ export default function (pi: ExtensionAPI) {
 
       const lines = prs.map((r) => {
         const rkey = r.uri.split("/").pop();
-        return `#${rkey} — ${r.value.title ?? "Untitled"} [${r.value.state ?? "?"}] — ${r.value.createdAt ?? ""}`;
+        const target = r.value.target as { repo?: string; branch?: string } | undefined;
+        const branch = target?.branch ?? "";
+        return `#${rkey} — ${r.value.title ?? "Untitled"} [${r.value.state ?? "?"}] → ${branch} — ${r.value.createdAt ?? ""}`;
       });
 
       return { content: [{ type: "text", text: lines.join("\n") }], details: { count: prs.length } };
     },
   });
 
+  // ── tangled_open_pr ───────────────────────────────────────────────────────
+
   pi.registerTool({
     name: "tangled_open_pr",
     label: "Open Tangled PR",
-    description: "Create a new pull request on a Tangled repository.",
+    description: "Create a new pull request on a Tangled repository. Generates the git patch automatically from the local repo.",
     promptSnippet: "Create a new pull request on Tangled",
     promptGuidelines: ["Use tangled_open_pr when the user asks to create or open a new pull request."],
     parameters: Type.Object({
       repo: Type.String({ description: "Repo handle/name (e.g. malpercio.dev/ezpds)" }),
       title: Type.String({ description: "PR title" }),
       description: Type.Optional(Type.String({ description: "PR description (Markdown)" })),
-      source_branch: Type.String({ description: "Source branch name" }),
+      source_branch: Type.String({ description: "Source branch name (must exist locally with commits)" }),
       target_branch: Type.Optional(Type.String({ description: "Target branch (default: main)" })),
+      repo_path: Type.Optional(Type.String({ description: "Path to local git repo (default: current directory)" })),
     }),
     async execute(_id, params) {
       const token = await getToken();
       const pds = await getPdsUrl();
       const did = await getDid();
+      const repoName = params.repo.split("/")[1];
+      const repoAtUri = `at://${did}/sh.tangled.repo/${repoName}`;
+      const targetBranch = params.target_branch ?? "main";
+      const repoPath = params.repo_path || process.cwd();
+
+      // Generate patch from local git repo
+      let patch: string;
+      try {
+        patch = execSync(
+          `git format-patch ${targetBranch}..${params.source_branch} --stdout`,
+          { cwd: repoPath, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 },
+        );
+      } catch (err) {
+        throw new Error(`git format-patch failed: ${err}`);
+      }
+      if (!patch.trim()) {
+        throw new Error(`No commits between ${targetBranch} and ${params.source_branch}. Push commits to the source branch first.`);
+      }
+
       const now = new Date().toISOString();
+
+      const record = {
+        $type: "sh.tangled.repo.pull",
+        target: {
+          repo: repoAtUri,
+          branch: targetBranch,
+        },
+        title: params.title,
+        body: params.description ?? "",
+        patch,
+        createdAt: now,
+      };
+
       const res = await fetch(`${pds}/xrpc/com.atproto.repo.createRecord`, {
         method: "POST",
         headers: {
@@ -139,16 +189,9 @@ export default function (pi: ExtensionAPI) {
         },
         body: JSON.stringify({
           repo: did,
-          collection: "sh.tangled.pull",
-          record: {
-            repo: `at://${did}/sh.tangled.repo/${params.repo.split("/")[1]}`,
-            title: params.title,
-            description: params.description ?? "",
-            sourceBranch: params.source_branch,
-            targetBranch: params.target_branch ?? "main",
-            state: "open",
-            createdAt: now,
-          },
+          collection: "sh.tangled.repo.pull",
+          validate: false,
+          record,
         }),
       });
       if (!res.ok) {
@@ -163,6 +206,8 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // ── tangled_list_issues ───────────────────────────────────────────────────
+
   pi.registerTool({
     name: "tangled_list_issues",
     label: "List Tangled Issues",
@@ -176,8 +221,8 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params) {
       const token = await getToken();
       const pds = await getPdsUrl();
-      const limit = params.limit ?? 20;
       const did = await getDid();
+      const limit = params.limit ?? 20;
       const qs = new URLSearchParams({ collection: "sh.tangled.repo.issue", repo: did, limit: String(limit) });
       const res = await fetch(`${pds}/xrpc/com.atproto.repo.listRecords?${qs}`, {
         headers: { Authorization: `Bearer ${token}` },
