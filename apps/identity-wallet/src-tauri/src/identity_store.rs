@@ -510,6 +510,7 @@ mod tests {
 
     #[test]
     fn add_identity_and_list() {
+        crate::keychain::clear_for_test();
         clear_managed_dids();
         let store = IdentityStore;
 
@@ -520,6 +521,7 @@ mod tests {
 
     #[test]
     fn list_multiple_identities() {
+        crate::keychain::clear_for_test();
         clear_managed_dids();
         let store = IdentityStore;
 
@@ -536,6 +538,7 @@ mod tests {
 
     #[test]
     fn remove_identity_from_list() {
+        crate::keychain::clear_for_test();
         clear_managed_dids();
         let store = IdentityStore;
 
@@ -550,6 +553,7 @@ mod tests {
 
     #[test]
     fn add_identity_duplicate_fails() {
+        crate::keychain::clear_for_test();
         clear_managed_dids();
         let store = IdentityStore;
 
@@ -564,6 +568,7 @@ mod tests {
 
     #[test]
     fn remove_identity_not_found() {
+        crate::keychain::clear_for_test();
         clear_managed_dids();
         let store = IdentityStore;
 
@@ -603,6 +608,7 @@ mod tests {
 
     #[test]
     fn get_or_create_device_key_success() {
+        crate::keychain::clear_for_test();
         clear_managed_dids();
         let store = IdentityStore;
 
@@ -627,6 +633,7 @@ mod tests {
 
     #[test]
     fn get_or_create_device_key_idempotent() {
+        crate::keychain::clear_for_test();
         clear_managed_dids();
         let store = IdentityStore;
 
@@ -646,6 +653,7 @@ mod tests {
 
     #[test]
     fn get_or_create_device_key_different_dids() {
+        crate::keychain::clear_for_test();
         clear_managed_dids();
         let store = IdentityStore;
 
@@ -667,6 +675,7 @@ mod tests {
 
     #[test]
     fn get_or_create_device_key_unregistered_did_fails() {
+        crate::keychain::clear_for_test();
         clear_managed_dids();
         let store = IdentityStore;
 
@@ -678,6 +687,7 @@ mod tests {
 
     #[test]
     fn did_doc_round_trip() {
+        crate::keychain::clear_for_test();
         clear_managed_dids();
         let store = IdentityStore;
         let did = "did:plc:test1";
@@ -697,6 +707,7 @@ mod tests {
 
     #[test]
     fn plc_log_round_trip() {
+        crate::keychain::clear_for_test();
         clear_managed_dids();
         let store = IdentityStore;
         let did = "did:plc:test1";
@@ -716,6 +727,7 @@ mod tests {
 
     #[test]
     fn get_did_doc_returns_none_if_not_stored() {
+        crate::keychain::clear_for_test();
         clear_managed_dids();
         let store = IdentityStore;
         let did = "did:plc:test1";
@@ -729,6 +741,7 @@ mod tests {
 
     #[test]
     fn get_plc_log_returns_none_if_not_stored() {
+        crate::keychain::clear_for_test();
         clear_managed_dids();
         let store = IdentityStore;
         let did = "did:plc:test1";
@@ -742,6 +755,7 @@ mod tests {
 
     #[test]
     fn store_did_doc_unregistered_did_fails() {
+        crate::keychain::clear_for_test();
         clear_managed_dids();
         let store = IdentityStore;
 
@@ -751,6 +765,7 @@ mod tests {
 
     #[test]
     fn get_did_doc_unregistered_did_fails() {
+        crate::keychain::clear_for_test();
         clear_managed_dids();
         let store = IdentityStore;
 
@@ -760,6 +775,7 @@ mod tests {
 
     #[test]
     fn store_plc_log_unregistered_did_fails() {
+        crate::keychain::clear_for_test();
         clear_managed_dids();
         let store = IdentityStore;
 
@@ -769,6 +785,7 @@ mod tests {
 
     #[test]
     fn get_plc_log_unregistered_did_fails() {
+        crate::keychain::clear_for_test();
         clear_managed_dids();
         let store = IdentityStore;
 
@@ -778,6 +795,7 @@ mod tests {
 
     #[test]
     fn remove_identity_cleans_up_all_entries() {
+        crate::keychain::clear_for_test();
         clear_managed_dids();
         let store = IdentityStore;
         let did = "did:plc:test1";

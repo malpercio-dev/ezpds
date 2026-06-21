@@ -1,5 +1,3 @@
-# Serialize identity-wallet's Rust tests (Keychain / shared-state contention).
 # All toolchain overrides moved to scripts/ios-env.sh — this file intentionally
 # contains NO hardcoded Xcode paths.
-[env]
-RUST_TEST_THREADS = "1"
+

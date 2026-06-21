@@ -31,10 +31,7 @@ pub enum KeychainError {
 pub fn store_item(account: &str, data: &[u8]) -> Result<(), KeychainError> {
     #[cfg(test)]
     {
-        test_store::get()
-            .lock()
-            .unwrap()
-            .insert(account.to_string(), data.to_vec());
+        test_store::set(account, data.to_vec());
         return Ok(());
     }
     #[cfg(not(test))]
@@ -47,12 +44,7 @@ pub fn store_item(account: &str, data: &[u8]) -> Result<(), KeychainError> {
 pub fn get_item(account: &str) -> Result<Vec<u8>, KeychainError> {
     #[cfg(test)]
     {
-        return test_store::get()
-            .lock()
-            .unwrap()
-            .get(account)
-            .cloned()
-            .ok_or(KeychainError::NotFound);
+        return test_store::get(account).ok_or(KeychainError::NotFound);
     }
     #[cfg(not(test))]
     get_generic_password(SERVICE, account).map_err(KeychainError::Security)
@@ -64,7 +56,7 @@ pub fn get_item(account: &str) -> Result<Vec<u8>, KeychainError> {
 pub fn delete_item(account: &str) -> Result<(), KeychainError> {
     #[cfg(test)]
     {
-        test_store::get().lock().unwrap().remove(account);
+        test_store::delete(account);
         return Ok(());
     }
     #[cfg(not(test))]
@@ -191,14 +183,45 @@ pub fn delete_relay_url_test_only() {
 }
 
 /// In-memory Keychain substitute used exclusively in test builds.
+///
+/// Thread-local storage ensures tests on different threads are fully isolated.
+/// Call `clear_for_test()` at the start of each test to handle sequential
+/// reuse of the same OS thread by the Rust test harness.
 #[cfg(test)]
 mod test_store {
+    use std::cell::RefCell;
     use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
 
-    static STORE: OnceLock<Mutex<HashMap<String, Vec<u8>>>> = OnceLock::new();
-
-    pub fn get() -> &'static Mutex<HashMap<String, Vec<u8>>> {
-        STORE.get_or_init(|| Mutex::new(HashMap::new()))
+    thread_local! {
+        static STORE: RefCell<HashMap<String, Vec<u8>>> = RefCell::new(HashMap::new());
     }
+
+    pub fn get(account: &str) -> Option<Vec<u8>> {
+        STORE.with(|s| s.borrow().get(account).cloned())
+    }
+
+    pub fn set(account: &str, data: Vec<u8>) {
+        STORE.with(|s| {
+            s.borrow_mut().insert(account.to_string(), data);
+        });
+    }
+
+    pub fn delete(account: &str) {
+        STORE.with(|s| {
+            s.borrow_mut().remove(account);
+        });
+    }
+
+    pub fn clear_all() {
+        STORE.with(|s| s.borrow_mut().clear());
+    }
+}
+
+/// Reset the in-memory Keychain to a clean state.
+///
+/// Call this at the start of every test that touches the Keychain so that
+/// sequential tests sharing the same OS thread start with an empty store.
+#[cfg(test)]
+pub fn clear_for_test() {
+    test_store::clear_all();
 }

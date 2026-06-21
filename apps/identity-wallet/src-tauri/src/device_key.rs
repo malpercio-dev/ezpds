@@ -306,12 +306,10 @@ pub fn sign(data: &[u8]) -> Result<Vec<u8>, DeviceKeyError> {
 mod tests {
     use super::*;
 
-    // Tests use the real macOS Keychain under service "ezpds-identity-wallet".
-    // Run with `cargo test -- --test-threads=1` to prevent Keychain races between tests.
-
     // multibase starts with 'z' and decodes to 33 bytes
     #[test]
     fn get_or_create_returns_valid_multibase() {
+        crate::keychain::clear_for_test();
         let result = get_or_create().expect("get_or_create should succeed");
         assert!(
             result.multibase.starts_with('z'),
@@ -324,6 +322,7 @@ mod tests {
     // two successive calls are idempotent
     #[test]
     fn get_or_create_is_idempotent() {
+        crate::keychain::clear_for_test();
         let first = get_or_create().expect("first call should succeed");
         let second = get_or_create().expect("second call should succeed");
         assert_eq!(
@@ -336,6 +335,7 @@ mod tests {
     // key_id starts with "did:key:z"
     #[test]
     fn key_id_has_did_key_prefix() {
+        crate::keychain::clear_for_test();
         let result = get_or_create().expect("get_or_create should succeed");
         assert!(
             result.key_id.starts_with("did:key:z"),
@@ -347,6 +347,7 @@ mod tests {
     // sign returns exactly 64 bytes
     #[test]
     fn sign_returns_64_bytes() {
+        crate::keychain::clear_for_test();
         get_or_create().expect("must have key before signing");
         let sig = sign(b"test payload").expect("sign should succeed");
         assert_eq!(sig.len(), 64, "raw r||s signature must be 64 bytes");
@@ -355,6 +356,7 @@ mod tests {
     // signing is deterministic (RFC 6979)
     #[test]
     fn sign_is_deterministic() {
+        crate::keychain::clear_for_test();
         get_or_create().expect("must have key before signing");
         let sig1 = sign(b"determinism test").expect("first sign should succeed");
         let sig2 = sign(b"determinism test").expect("second sign should succeed");
@@ -367,6 +369,7 @@ mod tests {
     // Verify that signatures produced by sign() actually verify against the public key
     #[test]
     fn sign_output_verifies_against_public_key() {
+        crate::keychain::clear_for_test();
         use p256::ecdsa::{signature::Verifier, Signature, VerifyingKey};
         let key = get_or_create().expect("must have key");
         let (_, compressed) = multibase::decode(&key.multibase).expect("must decode");
@@ -382,7 +385,8 @@ mod tests {
     // sign before get_or_create returns KeyNotFound
     #[test]
     fn sign_before_generate_returns_key_not_found() {
-        // Delete any key left by previous tests to simulate a fresh state.
+        crate::keychain::clear_for_test();
+        // Clear ensures no key exists on this thread before we test the not-found path.
         let _ = crate::keychain::delete_item("device-rotation-key-priv");
         let result = sign(b"should fail");
         assert!(
@@ -423,6 +427,7 @@ mod tests {
     // normalize_s() returns None when the signature is already low-S.
     #[test]
     fn sign_produces_low_s_signature() {
+        crate::keychain::clear_for_test();
         use p256::ecdsa::Signature;
         get_or_create().expect("must have key");
         let sig_bytes = sign(b"low-s test").expect("sign must succeed");
