@@ -65,6 +65,6 @@ in
 
     # Preserve hardening intent: the container already runs non-root (relay uid 10001, baked in Phase 2).
     # Carry NoNewPrivileges onto the generated unit where applicable.
-    systemd.services."podman-ezpds".serviceConfig.NoNewPrivileges = true;
+    systemd.services."${config.virtualisation.oci-containers.backend}-ezpds".serviceConfig.NoNewPrivileges = true;
   };
 }

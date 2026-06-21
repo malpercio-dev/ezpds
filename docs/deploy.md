@@ -13,7 +13,7 @@ The relay container expects the following environment variables and mounts:
 ### Environment Variables
 - **`EZPDS_PUBLIC_URL`** (required) - Public HTTPS URL of the relay (e.g., `https://relay.example.com`)
 - **`EZPDS_AVAILABLE_USER_DOMAINS`** (required) - Comma-separated list of allowed handle domains (e.g., `example.com,example.bsky.social`)
-- **`EZPDS_SIGNING_KEY_MASTER_KEY`** (required) - Base64-encoded 32-byte key for DID key derivation
+- **`EZPDS_SIGNING_KEY_MASTER_KEY`** (required) - 64-character hex string (32 bytes) for DID key derivation
 - **`EZPDS_ADMIN_TOKEN`** (required) - Bearer token for admin-only endpoints (e.g., rotation key claiming)
 - **`EZPDS_DATA_DIR`** (optional, default `/data`) - Directory where `relay.db` is persisted. Set by the Dockerfile ENV; can be overridden if the data volume is mounted elsewhere. Must be writable by the container process.
 - **`PORT`** (optional, default `8080`) - Port to listen on inside the container
@@ -35,7 +35,7 @@ The relay container expects the following environment variables and mounts:
    - Set the following environment variables in Railway:
      - `EZPDS_PUBLIC_URL` - Use the Railway domain once assigned (see chicken-and-egg note below).
      - `EZPDS_AVAILABLE_USER_DOMAINS` - Your handle domain list.
-     - `EZPDS_SIGNING_KEY_MASTER_KEY` - Generated signing key (base64).
+     - `EZPDS_SIGNING_KEY_MASTER_KEY` - 64-character hex string; generate with: openssl rand -hex 32
      - `EZPDS_ADMIN_TOKEN` - A secure random token.
      - `EZPDS_DATA_DIR` (optional) - Defaults to `/data` (set by Dockerfile ENV); override if mounting the data volume elsewhere.
    - Optionally override `PORT` (Railway default is `8080`; relay listens on whatever you set).
@@ -75,7 +75,7 @@ virtualisation.oci-containers.backend = "podman";
 
 The `environmentFile` contains secrets not stored in Nix (via agenix or sops-nix):
 ```bash
-EZPDS_SIGNING_KEY_MASTER_KEY=<base64>
+EZPDS_SIGNING_KEY_MASTER_KEY=<64-hex-chars>
 EZPDS_ADMIN_TOKEN=<secure-token>
 ```
 

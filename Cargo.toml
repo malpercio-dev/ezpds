@@ -23,7 +23,8 @@ tokio = { version = "1", features = ["full"] }
 axum = "0.7"
 
 # HTTP client (relay)
-reqwest = { version = "0.12", features = ["json"] }
+# default-features = false: no OpenSSL; future crates must opt in to rustls-tls explicitly.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
