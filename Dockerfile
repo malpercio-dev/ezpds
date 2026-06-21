@@ -20,7 +20,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 # Non-root runtime user. Home is /home/relay (not /data) so that a root-owned
 # volume mount on /data does not prevent login shell resolution.
-RUN useradd --system --uid 10001 --user-group --create-home --home-dir /home/relay relay
+RUN useradd --uid 10001 --user-group --create-home --home-dir /home/relay --shell /usr/sbin/nologin relay
 COPY --from=build /src/target/release/relay /usr/local/bin/relay
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
