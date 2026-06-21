@@ -261,6 +261,7 @@ impl SwiftLinker {
                 .arg("build")
                 // On macOS 26 (Tahoe), sandbox_apply() returns EPERM when SPM tries to
                 // sandbox manifest compilation. Disable the sandbox to allow the build.
+                // See docs/ios-upstream-bugs.md (Bug 1). Remove this fork when fixed upstream.
                 .arg("--disable-sandbox")
                 // SDK path for regular compilation (idk)
                 .args(["--sdk", sdk_path.trim()])

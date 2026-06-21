@@ -96,6 +96,6 @@ repo-engine = { path = "crates/repo-engine" }
 # swift-rs 1.0.7 does not pass --disable-sandbox to `swift build`. On macOS 26
 # (Tahoe), sandbox_apply() returns EPERM during manifest compilation, breaking
 # the Tauri ios-api build step. The local patch adds --disable-sandbox.
-# Remove when swift-rs ships a fix upstream.
+# Remove when swift-rs ships a fix upstream. Tracked in docs/ios-upstream-bugs.md (Bug 1).
 [patch.crates-io]
 swift-rs = { path = "apps/identity-wallet/swift-rs-patch" }
