@@ -273,6 +273,7 @@ cargo build
 - **Signing key identification**: When an unauthorized change is detected, `identify_signing_key` attempts to identify the signer by trying each rotation key from the previous operation in the audit log. If no key matches, `signing_key` is `None`. This is best-effort -- the signer may have used a key not in the previous rotation key set.
 - **Vitest for frontend unit tests**: `vitest` added as a dev dependency with `pnpm test` script (`vitest run`). Used for pure-logic utilities (e.g. `deadline.ts`) that do not require Tauri IPC mocking.
 - **AlertDetailScreen countdown**: `AlertDetailScreen` updates `now` via a 60-second `setInterval`, which re-computes urgency and countdown display. The timer is cleaned up in `onDestroy` to prevent leaks if the component is unmounted.
+- **Native migration is deferred, trigger-gated**: see `docs/mobile-native-migration-decision.md`. Migrate to a SwiftUI shell over the Rust core (UniFFI) only when background PLC monitoring becomes a hard requirement; port the shell, never the crypto.
 
 ## Invariants
 
