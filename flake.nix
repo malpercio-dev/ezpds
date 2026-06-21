@@ -30,7 +30,12 @@
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
         commonArgs = {
-          src = craneLib.cleanCargoSource ./.;
+          src = pkgs.lib.cleanSourceWith {
+            src = craneLib.path ./.;
+            filter = path: type:
+              (builtins.match ".*\\.sql$" path != null) ||
+              (craneLib.filterCargoSources path type);
+          };
           pname = "relay";
           strictDeps = true;
           nativeBuildInputs = [ pkgs.pkg-config ];
