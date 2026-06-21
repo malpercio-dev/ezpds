@@ -192,9 +192,14 @@ pub(crate) fn apply_env_overrides(
     if let Some(v) = env.get("EZPDS_BIND_ADDRESS") {
         raw.bind_address = Some(v.clone());
     }
+    // Precedence: EZPDS_PORT → PORT → 8080 (set during validate_and_build)
     if let Some(v) = env.get("EZPDS_PORT") {
         raw.port = Some(v.parse::<u16>().map_err(|e| {
             ConfigError::Invalid(format!("EZPDS_PORT is not a valid port number: '{v}': {e}"))
+        })?);
+    } else if let Some(v) = env.get("PORT") {
+        raw.port = Some(v.parse::<u16>().map_err(|e| {
+            ConfigError::Invalid(format!("PORT is not a valid port number: '{v}': {e}"))
         })?);
     }
     if let Some(v) = env.get("EZPDS_DATA_DIR") {
@@ -914,5 +919,46 @@ mod tests {
 
         assert!(matches!(err, ConfigError::Invalid(_)));
         assert!(err.to_string().contains("EZPDS_SIGNING_KEY_MASTER_KEY"));
+    }
+
+    // --- PORT fallback tests ---
+
+    #[test]
+    fn port_fallback_uses_port_env_when_ezpds_port_absent() {
+        let env = HashMap::from([("PORT".to_string(), "3000".to_string())]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert_eq!(config.port, 3000);
+    }
+
+    #[test]
+    fn ezpds_port_takes_precedence_over_port() {
+        let env = HashMap::from([
+            ("EZPDS_PORT".to_string(), "5000".to_string()),
+            ("PORT".to_string(), "3000".to_string()),
+        ]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert_eq!(config.port, 5000);
+    }
+
+    #[test]
+    fn port_defaults_to_8080_when_both_absent() {
+        let env = HashMap::new();
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert_eq!(config.port, 8080);
+    }
+
+    #[test]
+    fn invalid_port_env_var_returns_error() {
+        let env = HashMap::from([("PORT".to_string(), "invalid_port".to_string())]);
+        let err = apply_env_overrides(minimal_raw(), &env).unwrap_err();
+
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("PORT"));
     }
 }

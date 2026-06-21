@@ -50,10 +50,35 @@ async fn main() {
 
 async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let config_path = cli.config.unwrap_or_else(|| PathBuf::from("relay.toml"));
 
-    let config = common::load_config(&config_path)
-        .with_context(|| format!("failed to load config from {}", config_path.display()))?;
+    // Load config: if an explicit path is given via --config or EZPDS_CONFIG, error if missing.
+    // Otherwise, tolerate a missing default relay.toml and load from env only.
+    let config = if let Some(config_path) = cli.config {
+        // Explicit config file: must exist
+        common::load_config(&config_path)
+            .with_context(|| format!("failed to load config from {}", config_path.display()))?
+    } else {
+        // Default relay.toml: tolerate absence, load from env only
+        let default_path = PathBuf::from("relay.toml");
+        match common::load_config(&default_path) {
+            Ok(cfg) => cfg,
+            Err(common::ConfigError::Io { .. }) => {
+                // File not found: load from env only
+                let env = std::env::vars()
+                    .filter_map(|(k, v)| {
+                        if k.starts_with("EZPDS_") || k == "PORT" || k == "OTEL_SERVICE_NAME" {
+                            Some((k, v))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                common::load_config_from_env_only(&env)
+                    .context("failed to load config from environment variables")?
+            }
+            Err(e) => return Err(e).context("failed to load config from relay.toml"),
+        }
+    };
 
     // Initialize tracing after config is loaded so telemetry settings can be applied.
     // Any config parse error surfaces via eprintln (the error propagation above); tracing

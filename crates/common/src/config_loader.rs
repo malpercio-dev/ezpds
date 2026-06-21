@@ -6,13 +6,13 @@ use crate::config::{apply_env_overrides, validate_and_build, Config, ConfigError
 /// Standard OpenTelemetry env vars we read in addition to our `EZPDS_*` prefix.
 const OTEL_ENV_KEYS: &[&str] = &["OTEL_SERVICE_NAME"];
 
-/// Collect `EZPDS_*` env vars and selected OTel standard vars from the process environment,
+/// Collect `EZPDS_*` env vars, `PORT`, and selected OTel standard vars from the process environment,
 /// rejecting any with non-UTF-8 values rather than panicking.
 fn collect_ezpds_env() -> Result<HashMap<String, String>, ConfigError> {
     let mut map = HashMap::new();
     for (key_os, val_os) in std::env::vars_os() {
         let key = match key_os.to_str() {
-            Some(k) if k.starts_with("EZPDS_") || OTEL_ENV_KEYS.contains(&k) => k.to_owned(),
+            Some(k) if k.starts_with("EZPDS_") || OTEL_ENV_KEYS.contains(&k) || k == "PORT" => k.to_owned(),
             _ => continue,
         };
         let val = val_os.into_string().map_err(|_| {
@@ -27,9 +27,9 @@ fn collect_ezpds_env() -> Result<HashMap<String, String>, ConfigError> {
 
 /// Load [`Config`] from a TOML file with an explicit environment map.
 ///
-/// Prefer [`load_config`] for production use. This variant is `pub(crate)` so tests can pass a
+/// Prefer [`load_config`] for production use. The explicit env param allows tests to pass a
 /// controlled environment without leaking real `EZPDS_*` vars.
-pub(crate) fn load_config_with_env(
+pub fn load_config_with_env(
     path: &Path,
     env: &HashMap<String, String>,
 ) -> Result<Config, ConfigError> {
@@ -46,6 +46,17 @@ pub(crate) fn load_config_with_env(
 pub fn load_config(path: &Path) -> Result<Config, ConfigError> {
     let env = collect_ezpds_env()?;
     load_config_with_env(path, &env)
+}
+
+/// Load [`Config`] from environment variables alone, with no TOML file.
+///
+/// Useful for containerized deployments where all config comes from env vars.
+/// Constructs a `RawConfig` from defaults (all fields `None`), then applies env overrides
+/// and validates. This allows complete env-based configuration without requiring a file.
+pub fn load_config_from_env_only(env: &HashMap<String, String>) -> Result<Config, ConfigError> {
+    let raw = RawConfig::default();
+    let raw = apply_env_overrides(raw, env)?;
+    validate_and_build(raw)
 }
 
 #[cfg(test)]
@@ -120,5 +131,70 @@ available_user_domains = ["example.com"]"#
         let result = load_config_with_env(tmp.path(), &empty_env());
 
         assert!(matches!(result, Err(ConfigError::Parse(_))));
+    }
+
+    // --- Env-only config tests ---
+
+    #[test]
+    fn env_only_config_with_required_fields() {
+        let env = HashMap::from([
+            ("EZPDS_DATA_DIR".to_string(), "/tmp/pds".to_string()),
+            ("EZPDS_PUBLIC_URL".to_string(), "https://pds.test".to_string()),
+            ("EZPDS_AVAILABLE_USER_DOMAINS".to_string(), "pds.test".to_string()),
+        ]);
+
+        let config = load_config_from_env_only(&env).unwrap();
+
+        assert_eq!(config.data_dir, std::path::PathBuf::from("/tmp/pds"));
+        assert_eq!(config.public_url, "https://pds.test");
+        assert_eq!(config.available_user_domains, vec!["pds.test"]);
+    }
+
+    #[test]
+    fn env_only_config_missing_required_field_returns_error() {
+        let env = HashMap::from([
+            ("EZPDS_DATA_DIR".to_string(), "/tmp/pds".to_string()),
+            // Missing EZPDS_PUBLIC_URL
+            ("EZPDS_AVAILABLE_USER_DOMAINS".to_string(), "pds.test".to_string()),
+        ]);
+
+        let result = load_config_from_env_only(&env);
+
+        assert!(matches!(
+            result,
+            Err(ConfigError::MissingField { field: "public_url" })
+        ));
+    }
+
+    #[test]
+    fn env_only_config_with_port_fallback() {
+        let env = HashMap::from([
+            ("PORT".to_string(), "9000".to_string()),
+            ("EZPDS_DATA_DIR".to_string(), "/tmp/pds".to_string()),
+            ("EZPDS_PUBLIC_URL".to_string(), "https://pds.test".to_string()),
+            ("EZPDS_AVAILABLE_USER_DOMAINS".to_string(), "pds.test".to_string()),
+        ]);
+
+        let config = load_config_from_env_only(&env).unwrap();
+
+        assert_eq!(config.port, 9000);
+    }
+
+    #[test]
+    fn env_only_config_applies_all_env_overrides() {
+        let env = HashMap::from([
+            ("EZPDS_BIND_ADDRESS".to_string(), "127.0.0.1".to_string()),
+            ("EZPDS_PORT".to_string(), "5555".to_string()),
+            ("EZPDS_DATA_DIR".to_string(), "/var/pds".to_string()),
+            ("EZPDS_PUBLIC_URL".to_string(), "https://pds.example.com".to_string()),
+            ("EZPDS_AVAILABLE_USER_DOMAINS".to_string(), "example.com".to_string()),
+        ]);
+
+        let config = load_config_from_env_only(&env).unwrap();
+
+        assert_eq!(config.bind_address, "127.0.0.1");
+        assert_eq!(config.port, 5555);
+        assert_eq!(config.data_dir, std::path::PathBuf::from("/var/pds"));
+        assert_eq!(config.public_url, "https://pds.example.com");
     }
 }
