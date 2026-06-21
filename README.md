@@ -17,10 +17,10 @@ ezpds is a self-hosted PDS implementation for the AT Protocol (the protocol behi
 │  Identity Wallet (iOS)                                  │
 │  Tauri v2 · SvelteKit · Secure Enclave keys             │
 │                                                         │
-│  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐  │
-│  │ Account     │  │ DID Ceremony │  │ OAuth Client  │  │
-│  │ Creation    │  │ (did:plc)    │  │ (DPoP)        │  │
-│  └──────┬──────┘  └──────┬───────┘  └───────┬───────┘  │
+│  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐   │
+│  │ Account     │  │ DID Ceremony │  │ OAuth Client  │   │
+│  │ Creation    │  │ (did:plc)    │  │ (DPoP)        │   │
+│  └──────┬──────┘  └──────┬───────┘  └───────┬───────┘   │
 └─────────┼────────────────┼──────────────────┼───────────┘
           │                │                  │
           ▼                ▼                  ▼
@@ -31,9 +31,9 @@ ezpds is a self-hosted PDS implementation for the AT Protocol (the protocol behi
 │  Provisioning API    XRPC Endpoints    OAuth 2.0        │
 │  /v1/accounts        com.atproto.*     /oauth/*         │
 │  /v1/dids            (catch-all)       DPoP + JWKS      │
-│  /v1/handles                                       │
+│  /v1/handles                                            │
 │  /v1/devices         Auth (JWT + Argon2id)              │
-│                      Handle resolution (DB + DNS + HTTP) │
+│                      Handle resolution (DB + DNS + HTTP)│
 └─────────────────────────────────────────────────────────┘
 ```
 
