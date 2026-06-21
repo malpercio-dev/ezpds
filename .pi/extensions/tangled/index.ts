@@ -223,7 +223,7 @@ export default function (pi: ExtensionAPI) {
       }
       const result = (await res.json()) as { uri: string; cid: string };
       return {
-        content: [{ type: "text", text: `PR created: ${params.title}\nURI: ${result.uri}\n\nNote: PR is stored on your PDS and indexed by Constellation. It may not appear in the Tangled web UI immediately (known issue: tangled.org/core#576).` }],
+        content: [{ type: "text", text: `PR created: ${params.title}\nURI: ${result.uri}\n\n⚠️ Tangled AppView limitation: CLI-created PRs are stored on your PDS and indexed by Constellation, but do NOT appear in the Tangled web UI (tangled.org/core#576). The PR exists in the ATProto record layer and can be listed via tangled_list_prs (which queries Constellation), but the appview firehose ingester does not project them to /pulls/N pages.` }],
         details: { result },
       };
     },
