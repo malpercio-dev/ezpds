@@ -21,7 +21,6 @@ RUN useradd --system --uid 10001 --user-group --create-home --home-dir /data rel
 COPY --from=build /src/target/release/relay /usr/local/bin/relay
 ENV EZPDS_DATA_DIR=/data \
     RUST_LOG=info
-VOLUME ["/data"]
 # Documentation only; the actual listen port comes from EZPDS_PORT/$PORT at runtime.
 EXPOSE 8080
 USER relay
