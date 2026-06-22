@@ -728,13 +728,19 @@ async fn try_resolve_dns(handle: &str) -> Result<Option<String>, PdsClientError>
         .map_err(|e| PdsClientError::NetworkError {
             message: format!("failed to create DNS resolver: {}", e),
         })?
-        .build();
+        .build()
+        .map_err(|e| PdsClientError::NetworkError {
+            message: format!("failed to build DNS resolver: {}", e),
+        })?;
 
     match resolver.txt_lookup(&dns_name).await {
         Ok(lookup) => {
             // Iterate through TXT records and find one starting with "did="
-            for record in lookup.iter() {
-                for part in record.txt_data() {
+            for record in lookup.answers() {
+                let hickory_resolver::proto::rr::RData::TXT(txt) = &record.data else {
+                    continue;
+                };
+                for part in txt.txt_data.iter() {
                     match std::str::from_utf8(part) {
                         Ok(s) => {
                             if let Some(did_value) = s.strip_prefix("did=") {

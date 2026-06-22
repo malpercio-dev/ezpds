@@ -24,9 +24,14 @@ run-relay:
 docker-build:
     docker build -t relay:latest .
 
+# Security audit. RUSTSEC-2023-0071 (rsa Marvin attack) has no fixed release and is
+# pulled only transitively by sqlx-macros' compile-time MySQL backend; the relay is
+# sqlite-only, so rsa is never exercised at runtime. Revisit when a fix ships.
+audit:
+    cargo audit --ignore RUSTSEC-2023-0071
+
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
-ci: fmt-check clippy test
-    cargo audit
+ci: fmt-check clippy test audit
 
 # CI gate for the Linux relay pipeline (tangled spindles). Excludes the iOS app
 # (identity-wallet), which needs the Apple/GTK toolchain absent in CI; the mobile
@@ -34,7 +39,7 @@ ci: fmt-check clippy test
 ci-relay: fmt-check
     cargo clippy --workspace --exclude identity-wallet -- -D warnings
     cargo test --workspace --exclude identity-wallet
-    cargo audit
+    just audit
 
 # Validate that the flake evaluates correctly (devShells + nixosModules).
 nix-check:

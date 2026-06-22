@@ -82,7 +82,7 @@ jsonwebtoken = "9"
 argon2 = { version = "0.5", features = ["password-hash"] }
 
 # ATProto handle resolution — DNS TXT fallback (relay)
-hickory-resolver = { version = "0.25", features = ["tokio", "system-config"] }
+hickory-resolver = { version = "0.26", features = ["tokio", "system-config"] }
 
 # Testing
 tempfile = "3"

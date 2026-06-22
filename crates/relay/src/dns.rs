@@ -39,7 +39,7 @@ pub trait TxtResolver: Send + Sync {
 
 /// Production [`TxtResolver`] backed by `hickory-resolver` using the system DNS config.
 pub struct HickoryTxtResolver {
-    inner: hickory_resolver::Resolver<hickory_resolver::name_server::TokioConnectionProvider>,
+    inner: hickory_resolver::TokioResolver,
 }
 
 impl HickoryTxtResolver {
@@ -48,7 +48,8 @@ impl HickoryTxtResolver {
         Ok(Self {
             inner: hickory_resolver::Resolver::builder_tokio()
                 .map_err(|e| anyhow::anyhow!("failed to read system DNS config: {e}"))?
-                .build(),
+                .build()
+                .map_err(|e| anyhow::anyhow!("failed to build DNS resolver: {e}"))?,
         })
     }
 }
@@ -69,8 +70,11 @@ impl TxtResolver for HickoryTxtResolver {
             };
 
             let mut results = Vec::new();
-            for record in lookup.iter() {
-                for part in record.txt_data() {
+            for record in lookup.answers() {
+                let hickory_resolver::proto::rr::RData::TXT(txt) = &record.data else {
+                    continue;
+                };
+                for part in txt.txt_data.iter() {
                     match std::str::from_utf8(part) {
                         Ok(s) => results.push(s.to_string()),
                         Err(_) => {
