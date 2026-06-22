@@ -1,6 +1,7 @@
 {
   "packages": [
     "npm:pi-web-access",
-    "npm:pi-hermes-memory"
+    "npm:pi-hermes-memory",
+    "npm:@zosmaai/pi-llm-wiki"
   ]
 }
