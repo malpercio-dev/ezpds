@@ -622,6 +622,64 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // ── atproto_get_blob ──────────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: "atproto_get_blob",
+    label: "Get Blob",
+    description:
+      "Retrieve a blob by CID from a DID's repo. Returns the blob content as base64 along with its MIME type and size.",
+    promptSnippet: "Retrieve blob content by CID",
+    promptGuidelines: [
+      "Use to fetch blob content from the relay for inspection or verification.",
+      "The blob must belong to the specified DID.",
+    ],
+    parameters: Type.Object({
+      did: Type.String({ description: "DID that owns the blob" }),
+      cid: Type.String({ description: "Content identifier of the blob" }),
+    }),
+    async execute(_id, params) {
+      const url = new URL(`${baseUrl}/xrpc/com.atproto.sync.getBlob`);
+      url.searchParams.set("did", params.did);
+      url.searchParams.set("cid", params.cid);
+
+      const res = await fetch(url.toString());
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`HTTP ${res.status}: ${text}`);
+      }
+
+      const contentType = res.headers.get("content-type") || "application/octet-stream";
+      const arrayBuffer = await res.arrayBuffer();
+      const bytes = Buffer.from(arrayBuffer);
+      const base64 = bytes.toString("base64");
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: [
+              `Blob retrieved successfully`,
+              `  CID: ${params.cid}`,
+              `  DID: ${params.did}`,
+              `  Content-Type: ${contentType}`,
+              `  Size: ${bytes.length} bytes`,
+              `  Base64: ${base64}`,
+            ].join("\n"),
+          },
+        ],
+        details: {
+          cid: params.cid,
+          did: params.did,
+          contentType,
+          size: bytes.length,
+          base64,
+        },
+      };
+    },
+  });
+
   // ── atproto_xrpc ─────────────────────────────────────────────────────────
 
   pi.registerTool({
