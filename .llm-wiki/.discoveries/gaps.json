@@ -1,0 +1,173 @@
+{
+  "gaps": [
+    {
+      "topic": "entities/secure-enclave",
+      "mentionedBy": [
+        "concepts/did-plc",
+        "entities/crypto",
+        "entities/identity-wallet",
+        "sources/SRC-2026-06-22-005"
+      ]
+    },
+    {
+      "topic": "concepts/did-key",
+      "mentionedBy": [
+        "concepts/did-plc",
+        "concepts/oauth-dpop",
+        "entities/atproto",
+        "entities/crypto",
+        "sources/SRC-2026-06-22-004"
+      ]
+    },
+    {
+      "topic": "entities/plc-directory",
+      "mentionedBy": [
+        "concepts/did-plc",
+        "entities/atproto",
+        "sources/SRC-2026-06-22-005"
+      ]
+    },
+    {
+      "topic": "entities/sqlx",
+      "mentionedBy": [
+        "concepts/ezpds-workspace",
+        "entities/relay",
+        "sources/SRC-2026-06-22-001"
+      ]
+    },
+    {
+      "topic": "concepts/route-isolation",
+      "mentionedBy": [
+        "concepts/functional-core-imperative-shell",
+        "sources/SRC-2026-06-22-003"
+      ]
+    },
+    {
+      "topic": "concepts/pattern-comments",
+      "mentionedBy": [
+        "concepts/functional-core-imperative-shell",
+        "sources/SRC-2026-06-22-003"
+      ]
+    },
+    {
+      "topic": "concepts/ios-toolchain-resolution",
+      "mentionedBy": [
+        "concepts/nix-dev-environment",
+        "sources/SRC-2026-06-22-001"
+      ]
+    },
+    {
+      "topic": "concepts/pkce",
+      "mentionedBy": [
+        "concepts/oauth-dpop",
+        "sources/SRC-2026-06-22-005"
+      ]
+    },
+    {
+      "topic": "concepts/external-signer",
+      "mentionedBy": [
+        "entities/crypto",
+        "sources/SRC-2026-06-22-004"
+      ]
+    },
+    {
+      "topic": "entities/tauri",
+      "mentionedBy": [
+        "entities/identity-wallet",
+        "sources/SRC-2026-06-22-005"
+      ]
+    },
+    {
+      "topic": "entities/sveltekit",
+      "mentionedBy": [
+        "entities/identity-wallet",
+        "sources/SRC-2026-06-22-005"
+      ]
+    },
+    {
+      "topic": "concepts/device-key-dispatch",
+      "mentionedBy": [
+        "entities/identity-wallet",
+        "sources/SRC-2026-06-22-005"
+      ]
+    },
+    {
+      "topic": "concepts/plc-monitoring",
+      "mentionedBy": [
+        "entities/identity-wallet",
+        "sources/SRC-2026-06-22-005"
+      ]
+    },
+    {
+      "topic": "concepts/recovery-override",
+      "mentionedBy": [
+        "entities/identity-wallet",
+        "sources/SRC-2026-06-22-005"
+      ]
+    },
+    {
+      "topic": "entities/db",
+      "mentionedBy": [
+        "entities/relay",
+        "sources/SRC-2026-06-22-003"
+      ]
+    },
+    {
+      "topic": "entities/auth",
+      "mentionedBy": [
+        "entities/relay",
+        "sources/SRC-2026-06-22-003"
+      ]
+    },
+    {
+      "topic": "concepts/atproto",
+      "mentionedBy": [
+        "entities/repo-engine",
+        "sources/SRC-2026-06-22-002"
+      ]
+    },
+    {
+      "topic": "entities/nix-devenv",
+      "mentionedBy": [
+        "sources/SRC-2026-06-22-001"
+      ]
+    },
+    {
+      "topic": "concepts/ezpds",
+      "mentionedBy": [
+        "sources/SRC-2026-06-22-002"
+      ]
+    },
+    {
+      "topic": "entities/routes",
+      "mentionedBy": [
+        "sources/SRC-2026-06-22-003"
+      ]
+    },
+    {
+      "topic": "entities/p256",
+      "mentionedBy": [
+        "sources/SRC-2026-06-22-004"
+      ]
+    },
+    {
+      "topic": "entities/aes-gcm",
+      "mentionedBy": [
+        "sources/SRC-2026-06-22-004"
+      ]
+    },
+    {
+      "topic": "entities/keychain",
+      "mentionedBy": [
+        "sources/SRC-2026-06-22-005"
+      ]
+    },
+    {
+      "topic": "concepts/per-did-keychain",
+      "mentionedBy": [
+        "sources/SRC-2026-06-22-005"
+      ]
+    }
+  ],
+  "generated": "2026-06-22T01:11:12.219Z"
+}

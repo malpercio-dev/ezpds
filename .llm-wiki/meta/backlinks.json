@@ -1,0 +1,113 @@
+{
+  "concepts/did-plc": [
+    "concepts/shamir-secret-sharing",
+    "entities/atproto",
+    "entities/crypto",
+    "entities/identity-wallet",
+    "sources/SRC-2026-06-22-002",
+    "sources/SRC-2026-06-22-004"
+  ],
+  "concepts/ezpds-workspace": [
+    "concepts/functional-core-imperative-shell",
+    "concepts/nix-dev-environment",
+    "entities/common",
+    "entities/crypto",
+    "entities/identity-wallet",
+    "entities/relay",
+    "sources/SRC-2026-06-22-001"
+  ],
+  "concepts/functional-core-imperative-shell": [
+    "concepts/ezpds-workspace",
+    "entities/common",
+    "entities/crypto",
+    "entities/relay",
+    "sources/SRC-2026-06-22-001",
+    "sources/SRC-2026-06-22-003"
+  ],
+  "concepts/nix-dev-environment": [
+    "concepts/ezpds-workspace",
+    "sources/SRC-2026-06-22-001"
+  ],
+  "concepts/oauth-dpop": [
+    "entities/atproto",
+    "entities/identity-wallet",
+    "sources/SRC-2026-06-22-002",
+    "sources/SRC-2026-06-22-005"
+  ],
+  "concepts/shamir-secret-sharing": [
+    "concepts/did-plc",
+    "entities/crypto",
+    "sources/SRC-2026-06-22-002",
+    "sources/SRC-2026-06-22-004"
+  ],
+  "entities/atproto": [
+    "sources/SRC-2026-06-22-002"
+  ],
+  "entities/common": [
+    "concepts/functional-core-imperative-shell",
+    "sources/SRC-2026-06-22-001",
+    "sources/SRC-2026-06-22-002"
+  ],
+  "entities/crypto": [
+    "concepts/did-plc",
+    "concepts/functional-core-imperative-shell",
+    "concepts/shamir-secret-sharing",
+    "entities/common",
+    "entities/identity-wallet",
+    "entities/relay",
+    "sources/SRC-2026-06-22-001",
+    "sources/SRC-2026-06-22-002",
+    "sources/SRC-2026-06-22-004"
+  ],
+  "entities/identity-wallet": [
+    "concepts/did-plc",
+    "concepts/oauth-dpop",
+    "concepts/shamir-secret-sharing",
+    "entities/crypto",
+    "sources/SRC-2026-06-22-001",
+    "sources/SRC-2026-06-22-002",
+    "sources/SRC-2026-06-22-005"
+  ],
+  "entities/relay": [
+    "concepts/functional-core-imperative-shell",
+    "concepts/oauth-dpop",
+    "concepts/shamir-secret-sharing",
+    "entities/atproto",
+    "entities/common",
+    "entities/crypto",
+    "entities/identity-wallet",
+    "entities/repo-engine",
+    "sources/SRC-2026-06-22-001",
+    "sources/SRC-2026-06-22-002",
+    "sources/SRC-2026-06-22-003"
+  ],
+  "entities/repo-engine": [
+    "entities/common",
+    "sources/SRC-2026-06-22-001",
+    "sources/SRC-2026-06-22-002"
+  ],
+  "sources/SRC-2026-06-22-001": [
+    "concepts/ezpds-workspace",
+    "concepts/nix-dev-environment",
+    "sources/SRC-2026-06-22-001"
+  ],
+  "sources/SRC-2026-06-22-002": [
+    "sources/SRC-2026-06-22-002"
+  ],
+  "sources/SRC-2026-06-22-003": [
+    "entities/relay",
+    "sources/SRC-2026-06-22-003"
+  ],
+  "sources/SRC-2026-06-22-004": [
+    "concepts/did-plc",
+    "concepts/shamir-secret-sharing",
+    "entities/crypto",
+    "sources/SRC-2026-06-22-004"
+  ],
+  "sources/SRC-2026-06-22-005": [
+    "concepts/oauth-dpop",
+    "entities/identity-wallet",
+    "sources/SRC-2026-06-22-005"
+  ],
+  "sources/obs-2026-06-22-wiki-bootstrapped-with-17-pages-from-5-source-docs": []
+}

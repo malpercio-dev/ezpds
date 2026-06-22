@@ -1,0 +1,11 @@
+{
+  "id": "SRC-2026-06-22-002",
+  "captured": "2026-06-22",
+  "packet_version": "1.0",
+  "title": "README.md",
+  "file_path": "/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/README.md",
+  "format": "markdown",
+  "extractor": "passthrough",
+  "extraction_status": "success",
+  "content_type": "text/markdown"
+}

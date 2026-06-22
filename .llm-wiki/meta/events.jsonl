@@ -1,0 +1,9 @@
+{"timestamp":"2026-06-22T01:06:57.460Z","kind":"bootstrap","topic":"ezpds identity wallet and relay platform","mode":"company"}
+{"timestamp":"2026-06-22T01:08:00.809Z","kind":"capture","source_id":"SRC-2026-06-22-001","file_path":"/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/AGENTS.md","format":"markdown"}
+{"timestamp":"2026-06-22T01:08:00.813Z","kind":"capture","source_id":"SRC-2026-06-22-002","file_path":"/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/README.md","format":"markdown"}
+{"timestamp":"2026-06-22T01:08:00.816Z","kind":"capture","source_id":"SRC-2026-06-22-003","file_path":"/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/relay/CLAUDE.md","format":"markdown"}
+{"timestamp":"2026-06-22T01:08:00.819Z","kind":"capture","source_id":"SRC-2026-06-22-004","file_path":"/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/crypto/CLAUDE.md","format":"markdown"}
+{"timestamp":"2026-06-22T01:08:00.822Z","kind":"capture","source_id":"SRC-2026-06-22-005","file_path":"/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/apps/identity-wallet/CLAUDE.md","format":"markdown"}
+{"timestamp":"2026-06-22T01:11:12.220Z","kind":"lint","orphans":0,"missing_pages":50,"contradictions":0,"auto_fix":false}
+{"timestamp":"2026-06-22T01:11:21.027Z","kind":"rebuild_meta"}
+{"timestamp":"2026-06-22T01:11:38.250Z","kind":"observe","slug":"obs-2026-06-22-wiki-bootstrapped-with-17-pages-from-5-source-docs","title":"Wiki bootstrapped with 17 pages from 5 source docs","relevance":"high"}

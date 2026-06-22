@@ -1,0 +1,211 @@
+{
+  "version": "1.0",
+  "last_updated": "2026-06-22T01:11:38.251Z",
+  "pages": {
+    "concepts/did-plc": {
+      "type": "concept",
+      "title": "did-plc",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "domain": "engineering",
+      "sources": [
+        "sources/SRC-2026-06-22-002",
+        "sources/SRC-2026-06-22-004"
+      ]
+    },
+    "concepts/ezpds-workspace": {
+      "type": "concept",
+      "title": "ezpds-workspace",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "domain": "engineering",
+      "sources": [
+        "sources/SRC-2026-06-22-001",
+        "sources/SRC-2026-06-22-002"
+      ]
+    },
+    "concepts/functional-core-imperative-shell": {
+      "type": "concept",
+      "title": "functional-core-imperative-shell",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "domain": "engineering",
+      "sources": [
+        "sources/SRC-2026-06-22-001",
+        "sources/SRC-2026-06-22-003",
+        "sources/SRC-2026-06-22-004"
+      ]
+    },
+    "concepts/nix-dev-environment": {
+      "type": "concept",
+      "title": "nix-dev-environment",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "domain": "engineering",
+      "sources": [
+        "sources/SRC-2026-06-22-001"
+      ]
+    },
+    "concepts/oauth-dpop": {
+      "type": "concept",
+      "title": "oauth-dpop",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "domain": "engineering",
+      "sources": [
+        "sources/SRC-2026-06-22-002",
+        "sources/SRC-2026-06-22-005"
+      ]
+    },
+    "concepts/shamir-secret-sharing": {
+      "type": "concept",
+      "title": "shamir-secret-sharing",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "domain": "engineering",
+      "sources": [
+        "sources/SRC-2026-06-22-002",
+        "sources/SRC-2026-06-22-004"
+      ]
+    },
+    "entities/atproto": {
+      "type": "entity",
+      "title": "atproto",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "category": "concept",
+      "sources": [
+        "sources/SRC-2026-06-22-002"
+      ]
+    },
+    "entities/common": {
+      "type": "entity",
+      "title": "common",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "category": "project",
+      "sources": [
+        "sources/SRC-2026-06-22-001",
+        "sources/SRC-2026-06-22-002"
+      ]
+    },
+    "entities/crypto": {
+      "type": "entity",
+      "title": "crypto",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "category": "project",
+      "sources": [
+        "sources/SRC-2026-06-22-001",
+        "sources/SRC-2026-06-22-002",
+        "sources/SRC-2026-06-22-004"
+      ]
+    },
+    "entities/identity-wallet": {
+      "type": "entity",
+      "title": "identity-wallet",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "category": "project",
+      "sources": [
+        "sources/SRC-2026-06-22-001",
+        "sources/SRC-2026-06-22-002",
+        "sources/SRC-2026-06-22-005"
+      ]
+    },
+    "entities/relay": {
+      "type": "entity",
+      "title": "relay",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "category": "project",
+      "sources": [
+        "sources/SRC-2026-06-22-001",
+        "sources/SRC-2026-06-22-002",
+        "sources/SRC-2026-06-22-003"
+      ]
+    },
+    "entities/repo-engine": {
+      "type": "entity",
+      "title": "repo-engine",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "category": "project",
+      "sources": [
+        "sources/SRC-2026-06-22-001",
+        "sources/SRC-2026-06-22-002"
+      ]
+    },
+    "sources/SRC-2026-06-22-001": {
+      "type": "source",
+      "title": "SRC-2026-06-22-001",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "format": "markdown",
+      "source_id": "SRC-2026-06-22-001",
+      "raw_path": "raw/sources/SRC-2026-06-22-001/extracted.md",
+      "captured": "2026-06-22",
+      "status": "complete"
+    },
+    "sources/SRC-2026-06-22-002": {
+      "type": "source",
+      "title": "SRC-2026-06-22-002",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "format": "markdown",
+      "source_id": "SRC-2026-06-22-002",
+      "raw_path": "raw/sources/SRC-2026-06-22-002/extracted.md",
+      "captured": "2026-06-22",
+      "status": "complete"
+    },
+    "sources/SRC-2026-06-22-003": {
+      "type": "source",
+      "title": "SRC-2026-06-22-003",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "format": "markdown",
+      "source_id": "SRC-2026-06-22-003",
+      "raw_path": "raw/sources/SRC-2026-06-22-003/extracted.md",
+      "captured": "2026-06-22",
+      "status": "complete"
+    },
+    "sources/SRC-2026-06-22-004": {
+      "type": "source",
+      "title": "SRC-2026-06-22-004",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "format": "markdown",
+      "source_id": "SRC-2026-06-22-004",
+      "raw_path": "raw/sources/SRC-2026-06-22-004/extracted.md",
+      "captured": "2026-06-22",
+      "status": "complete"
+    },
+    "sources/SRC-2026-06-22-005": {
+      "type": "source",
+      "title": "SRC-2026-06-22-005",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "format": "markdown",
+      "source_id": "SRC-2026-06-22-005",
+      "raw_path": "raw/sources/SRC-2026-06-22-005/extracted.md",
+      "captured": "2026-06-22",
+      "status": "complete"
+    },
+    "sources/obs-2026-06-22-wiki-bootstrapped-with-17-pages-from-5-source-docs": {
+      "type": "source",
+      "title": "\"Observation: Wiki bootstrapped with 17 pages from 5 source docs\"",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "slug": "obs-2026-06-22-wiki-bootstrapped-with-17-pages-from-5-source-docs",
+      "status": "observation",
+      "relevance": "high",
+      "observed_at": "2026-06-22T01:11:38.250Z",
+      "tags": [
+        "wiki",
+        "bootstrap",
+        "setup"
+      ],
+      "source_context": "\"Wiki setup from project docs\""
+    }
+  }
+}

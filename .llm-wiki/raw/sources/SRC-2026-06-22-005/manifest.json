@@ -1,0 +1,11 @@
+{
+  "id": "SRC-2026-06-22-005",
+  "captured": "2026-06-22",
+  "packet_version": "1.0",
+  "title": "CLAUDE.md",
+  "file_path": "/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/apps/identity-wallet/CLAUDE.md",
+  "format": "markdown",
+  "extractor": "passthrough",
+  "extraction_status": "success",
+  "content_type": "text/markdown"
+}
