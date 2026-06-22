@@ -14,7 +14,8 @@
     "entities/crypto",
     "entities/identity-wallet",
     "entities/relay",
-    "sources/SRC-2026-06-22-001"
+    "sources/SRC-2026-06-22-001",
+    "sources/blob-storage-pitfalls"
   ],
   "concepts/functional-core-imperative-shell": [
     "concepts/ezpds-workspace",
@@ -109,5 +110,12 @@
     "entities/identity-wallet",
     "sources/SRC-2026-06-22-005"
   ],
+  "sources/blob-storage-pitfalls": [],
+  "sources/obs-2026-06-22-accounts-table-uses-did-as-text-primary-key": [],
+  "sources/obs-2026-06-22-axum-body-to-bytes-enforces-limit-natively": [],
+  "sources/obs-2026-06-22-blob-storage-cid-implementation-details": [],
+  "sources/obs-2026-06-22-blobsconfig-was-empty-stub-now-has-max-blob-size": [],
+  "sources/obs-2026-06-22-linear-workflow-one-issue-per-pr": [],
+  "sources/obs-2026-06-22-two-pass-review-code-quality-then-adversarial": [],
   "sources/obs-2026-06-22-wiki-bootstrapped-with-17-pages-from-5-source-docs": []
 }

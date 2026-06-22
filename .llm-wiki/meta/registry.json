@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-06-22T01:11:38.251Z",
+  "last_updated": "2026-06-22T02:24:00.749Z",
   "pages": {
     "concepts/did-plc": {
       "type": "concept",
@@ -190,6 +190,118 @@
       "raw_path": "raw/sources/SRC-2026-06-22-005/extracted.md",
       "captured": "2026-06-22",
       "status": "complete"
+    },
+    "sources/blob-storage-pitfalls": {
+      "type": "source",
+      "title": "\"Blob storage implementation pitfalls\"",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "slug": "blob-storage-pitfalls",
+      "status": "insight",
+      "category": "architecture"
+    },
+    "sources/obs-2026-06-22-accounts-table-uses-did-as-text-primary-key": {
+      "type": "source",
+      "title": "\"Observation: accounts table uses DID as TEXT primary key\"",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "slug": "obs-2026-06-22-accounts-table-uses-did-as-text-primary-key",
+      "status": "observation",
+      "relevance": "high",
+      "observed_at": "2026-06-22T01:54:50.118Z",
+      "tags": [
+        "database",
+        "schema",
+        "accounts",
+        "fk"
+      ],
+      "source_context": "\"MM-107 blob migration — initial V015 used integer account_id, had to fix to TEXT account_did\""
+    },
+    "sources/obs-2026-06-22-axum-body-to-bytes-enforces-limit-natively": {
+      "type": "source",
+      "title": "\"Observation: axum::body::to_bytes enforces limit natively\"",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "slug": "obs-2026-06-22-axum-body-to-bytes-enforces-limit-natively",
+      "status": "observation",
+      "relevance": "high",
+      "observed_at": "2026-06-22T02:12:51.346Z",
+      "tags": [
+        "axum",
+        "body",
+        "limit",
+        "review-finding"
+      ],
+      "source_context": "\"PR review fix — oversize body handling in upload_blob\""
+    },
+    "sources/obs-2026-06-22-blob-storage-cid-implementation-details": {
+      "type": "source",
+      "title": "\"Observation: Blob storage CID implementation details\"",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "slug": "obs-2026-06-22-blob-storage-cid-implementation-details",
+      "status": "observation",
+      "relevance": "medium",
+      "observed_at": "2026-06-22T01:54:50.117Z",
+      "tags": [
+        "blob-storage",
+        "cid",
+        "sha256",
+        "infer",
+        "mime"
+      ],
+      "source_context": "\"MM-107 blob storage backend implementation\""
+    },
+    "sources/obs-2026-06-22-blobsconfig-was-empty-stub-now-has-max-blob-size": {
+      "type": "source",
+      "title": "\"Observation: BlobsConfig was empty stub, now has max_blob_size\"",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "slug": "obs-2026-06-22-blobsconfig-was-empty-stub-now-has-max-blob-size",
+      "status": "observation",
+      "relevance": "medium",
+      "observed_at": "2026-06-22T01:54:50.119Z",
+      "tags": [
+        "config",
+        "blobs",
+        "common"
+      ],
+      "source_context": "\"MM-108 uploadBlob — needed configurable size limit\""
+    },
+    "sources/obs-2026-06-22-linear-workflow-one-issue-per-pr": {
+      "type": "source",
+      "title": "\"Observation: Linear workflow: one issue per PR\"",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "slug": "obs-2026-06-22-linear-workflow-one-issue-per-pr",
+      "status": "observation",
+      "relevance": "critical",
+      "observed_at": "2026-06-22T01:54:50.119Z",
+      "tags": [
+        "workflow",
+        "linear",
+        "pr",
+        "convention"
+      ],
+      "source_context": "\"User correction after MM-107/108 were batched — said \"we should do one linear issue at a time and PR it\"\""
+    },
+    "sources/obs-2026-06-22-two-pass-review-code-quality-then-adversarial": {
+      "type": "source",
+      "title": "\"Observation: Two-pass review: code quality then adversarial\"",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "slug": "obs-2026-06-22-two-pass-review-code-quality-then-adversarial",
+      "status": "observation",
+      "relevance": "high",
+      "observed_at": "2026-06-22T02:23:47.129Z",
+      "tags": [
+        "review",
+        "workflow",
+        "adversarial",
+        "pr",
+        "process"
+      ],
+      "source_context": "\"MM-107/MM-108 blob storage PR review cycle\""
     },
     "sources/obs-2026-06-22-wiki-bootstrapped-with-17-pages-from-5-source-docs": {
       "type": "source",
