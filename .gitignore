@@ -39,3 +39,4 @@ apps/identity-wallet/package-lock.json
 
 # Tauri-generated Xcode project (machine-specific; regenerated per developer via `cargo tauri ios init`)
 apps/identity-wallet/src-tauri/gen/
+.pi/extensions/*/node_modules/

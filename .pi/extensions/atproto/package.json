@@ -1,0 +1,14 @@
+{
+  "name": "pi-atproto-extension",
+  "private": true,
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "dependencies": {
+    "@atproto/crypto": "^0.5.1",
+    "@ipld/dag-cbor": "^10.0.1"
+  }
+}
