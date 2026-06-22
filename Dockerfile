@@ -16,12 +16,18 @@ FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf8
 # gosu: privilege-drop helper used by the entrypoint to hand off to the relay user
 # after fixing /data ownership (Railway Volumes mount as root:root).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates tzdata gosu \
+ && apt-get install -y --no-install-recommends ca-certificates tzdata gosu curl \
  && rm -rf /var/lib/apt/lists/*
 # Non-root runtime user. Home is /home/relay (not /data) so that a root-owned
 # volume mount on /data does not prevent login shell resolution.
 RUN useradd --uid 10001 --user-group --create-home --home-dir /home/relay --shell /usr/sbin/nologin relay
+# Litestream: continuous SQLite replication + restore-on-boot. Active only when
+# LITESTREAM_REPLICA_URL is set (production); see docker-entrypoint.sh.
+ARG LITESTREAM_VERSION=0.3.13
+RUN curl -fsSL "https://github.com/benbjohnson/litestream/releases/download/v${LITESTREAM_VERSION}/litestream-v${LITESTREAM_VERSION}-linux-amd64.tar.gz" \
+    | tar -xz -C /usr/local/bin litestream
 COPY --from=build /src/target/release/relay /usr/local/bin/relay
+COPY litestream.yml /etc/litestream.yml
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 ENV EZPDS_DATA_DIR=/data \

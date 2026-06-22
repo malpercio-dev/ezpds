@@ -1,0 +1,9 @@
+# Litestream replication config. Active only when LITESTREAM_REPLICA_URL is set
+# (production); staging/local leave it unset and run the relay directly.
+# Credentials (e.g. LITESTREAM_ACCESS_KEY_ID / LITESTREAM_SECRET_ACCESS_KEY and,
+# for S3-compatible stores, the endpoint) are supplied via the production
+# environment, never committed here.
+dbs:
+  - path: /data/relay.db
+    replicas:
+      - url: ${LITESTREAM_REPLICA_URL}
