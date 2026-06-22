@@ -4982,6 +4982,7 @@ dependencies = [
  "crypto",
  "data-encoding",
  "hickory-resolver",
+ "infer",
  "jsonwebtoken",
  "opentelemetry",
  "opentelemetry-otlp",

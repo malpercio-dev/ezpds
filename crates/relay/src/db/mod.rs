@@ -1,4 +1,5 @@
 pub mod accounts;
+pub mod blobs;
 pub mod dids;
 pub mod jwt_secret;
 pub mod oauth;
@@ -93,6 +94,10 @@ static MIGRATIONS: &[Migration] = &[
     Migration {
         version: 15,
         sql: include_str!("migrations/V015__jwt_signing_secret.sql"),
+    },
+    Migration {
+        version: 16,
+        sql: include_str!("migrations/V016__blobs.sql"),
     },
 ];
 

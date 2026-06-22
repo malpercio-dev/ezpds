@@ -7,6 +7,7 @@ use std::{path::PathBuf, sync::Arc};
 
 mod app;
 mod auth;
+mod blob_store;
 mod db;
 mod dns;
 mod routes;

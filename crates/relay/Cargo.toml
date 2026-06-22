@@ -34,6 +34,7 @@ base64 = { workspace = true }
 rand_core = { workspace = true }
 data-encoding = { workspace = true }
 sha2 = { workspace = true }
+infer = { workspace = true }
 subtle = { workspace = true }
 uuid = { workspace = true }
 zeroize = { workspace = true }
