@@ -62,6 +62,12 @@ Deploys use the Railway CLI (nixpkgs dep) with environment-scoped tokens held as
 - Open in Bruno desktop app; select the `local` environment and set `adminToken` to your relay admin token
 - **Mandatory:** When adding, removing, or changing any route (path, method, request body, response shape, auth), update the corresponding `.bru` file in `bruno/`. New routes get a new `.bru` file with the next `seq` number.
 
+## Project Status / Planning
+- **Live status:** Linear is the source of truth. To see where the project stands, call `linear_wave_status` (team `MM`, `label_prefix: "Wave"`) — one call returns every wave with Done/In Progress/Backlog tallies and percent complete. Prefer this over manually scanning the backlog.
+- For exhaustive label/wave scans use `linear_list_issues` with the `label` filter and `limit=50+`. `linear_search_issues` is relevance-ranked full-text search (good for keyword lookups, NOT for "list every issue in Wave N").
+- **Static plan:** [`docs/v01-issue-plan.md`](docs/v01-issue-plan.md) is the original wave breakdown (does not track live Done/Backlog state — use Linear for that). [`docs/unified-milestone-map.md`](docs/unified-milestone-map.md) is the phase model (v0.1–v2.0+).
+- Wave labels: Wave 2 (Auth), Wave 3 (Key Sovereignty), Wave 4 (Repo + Blobs), Wave 5 (Federation), Wave 7 (Hardening), Wave 8 (auth.md). Tag new issues with their wave on creation.
+
 ## Relay Architecture
 See [`crates/relay/CLAUDE.md`](crates/relay/CLAUDE.md) for relay-specific module structure,
 hard rules (route isolation, pattern comments, DB ownership), and step-by-step guides for

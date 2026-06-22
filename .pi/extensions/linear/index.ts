@@ -158,40 +158,33 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "linear_search_issues",
     label: "Search Linear Issues",
-    description: "Search for Linear issues by text query. Returns matching issues with identifiers, titles, status, assignees, and URLs.",
+    description: "Full-text search for Linear issues. Searches across all issues (any state) via Linear's server-side search API. Returns matching issues with identifiers, titles, status, assignees, and URLs. For label/wave-based scans, prefer linear_list_issues with a label filter.",
     promptSnippet: "Search Linear for issues matching a query string",
     promptGuidelines: [
-      "Use linear_search_issues when the user asks to find, search, or look up Linear issues.",
+      "Use linear_search_issues when the user asks to find, search, or look up Linear issues by free text.",
+      "For label or wave based scans (e.g. 'all Wave 4 issues'), use linear_list_issues with the label filter instead — it is exhaustive, whereas search is ranked/relevance-based.",
     ],
     parameters: Type.Object({
-      query: Type.String({ description: "Search query (issue title, identifier, label, etc.)" }),
+      query: Type.String({ description: "Free-text search query (matches title, description, and identifier)" }),
       project_id: Type.Optional(Type.String({ description: "Filter by project ID" })),
-      limit: Type.Optional(Type.Number({ description: "Max results (default 20, max 50)" })),
+      limit: Type.Optional(Type.Number({ description: "Max results (default 25, max 50)" })),
     }),
     async execute(_id, params) {
-      const limit = Math.min(params.limit ?? 20, 50);
-      const filters: string[] = [];
-      if (params.project_id) filters.push(`project: { id: { eq: "${params.project_id}" } }`);
-      const filterStr = filters.length > 0 ? `filter: { ${filters.join(", ")} }` : "";
+      const limit = Math.min(params.limit ?? 25, 50);
+      const filterStr = params.project_id
+        ? `, filter: { project: { id: { eq: "${params.project_id}" } } }`
+        : "";
 
-      const gql = `query Search($first: Int!) {
-        issues(${filterStr}, first: $first, orderBy: updatedAt) {
+      // Use Linear's server-side full-text search (searchIssues) rather than
+      // fetching recently-updated issues and filtering client-side. The latter
+      // silently misses older Backlog issues that fall outside the fetch window.
+      const gql = `query Search($term: String!, $first: Int!) {
+        searchIssues(term: $term, first: $first${filterStr}) {
           nodes { ${ISSUE_BRIEF} }
         }
       }`;
-      const data = await linearQuery(token, gql, { first: limit });
-      const allIssues = data.issues?.nodes ?? [];
-
-      // Client-side text filter since the issues query doesn't support full-text search
-      const q = params.query.toLowerCase();
-      const issues = q
-        ? allIssues.filter(
-            (i: any) =>
-              i.title?.toLowerCase().includes(q) ||
-              i.identifier?.toLowerCase().includes(q) ||
-              i.labels?.nodes?.some((l: any) => l.name?.toLowerCase().includes(q)),
-          )
-        : allIssues;
+      const data = await linearQuery(token, gql, { term: params.query, first: limit });
+      const issues = data.searchIssues?.nodes ?? [];
 
       if (issues.length === 0) {
         return {
@@ -494,10 +487,11 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "linear_list_issues",
     label: "List Linear Issues",
-    description: "List issues with optional filters. Useful for browsing a team's backlog, a project's issues, or seeing what's in progress.",
+    description: "List issues with optional filters (team, project, state, label, assignee, priority). Exhaustive within the limit — use this (not linear_search_issues) for wave/label-based backlog scans. Default limit is 50; raise it for full-backlog analysis.",
     promptSnippet: "List issues in a Linear team or project with optional filters",
     promptGuidelines: [
       "Use linear_list_issues when the user asks to see, list, or browse issues for a specific team or project.",
+      "For wave or label based analysis (e.g. 'all Wave 4 issues'), pass the label filter and a high limit (50+). This is exhaustive; linear_search_issues is relevance-ranked and may miss issues.",
     ],
     parameters: Type.Object({
       team_key: Type.Optional(Type.String({ description: "Team key, e.g. 'MM'" })),
@@ -507,17 +501,19 @@ export default function (pi: ExtensionAPI) {
           description: "Filter by workflow state",
         }),
       ),
+      label: Type.Optional(Type.String({ description: "Filter by label name, e.g. 'Wave 4: Repo + Blobs'. Returns issues having a label with this exact name." })),
       assignee_id: Type.Optional(Type.String({ description: "Filter by assignee user ID" })),
       priority: Type.Optional(Type.Number({ description: "Filter by priority (0-4)" })),
-      limit: Type.Optional(Type.Number({ description: "Max results (default 30, max 100)" })),
+      limit: Type.Optional(Type.Number({ description: "Max results (default 50, max 100)" })),
     }),
     async execute(_id, params) {
-      const limit = Math.min(params.limit ?? 30, 100);
+      const limit = Math.min(params.limit ?? 50, 100);
 
       const filters: string[] = [];
       if (params.team_key) filters.push(`team: { key: { eq: "${params.team_key}" } }`);
       if (params.project_id) filters.push(`project: { id: { eq: "${params.project_id}" } }`);
       if (params.state) filters.push(`state: { name: { eq: "${params.state}" } }`);
+      if (params.label) filters.push(`labels: { name: { eq: ${JSON.stringify(params.label)} } }`);
       if (params.assignee_id) filters.push(`assignee: { id: { eq: "${params.assignee_id}" } }`);
       if (params.priority !== undefined) filters.push(`priority: { eq: ${params.priority} }`);
 
@@ -609,9 +605,129 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // ── linear_wave_status ───────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: "linear_wave_status",
+    label: "Linear Wave Status",
+    description:
+      "At-a-glance project status: lists a team's issues grouped by label (e.g. waves) with Done/In Progress/In Review/Todo/Backlog tallies and percent complete. Always live from Linear — use this to answer 'where are we in the project?' in a single call instead of scanning the backlog manually.",
+    promptSnippet: "Show project/wave status grouped by label with completion tallies",
+    promptGuidelines: [
+      "Use linear_wave_status when the user asks where the project stands, overall progress, or status of a wave/milestone.",
+      "Prefer this over multiple linear_list_issues calls for a status overview — it is one exhaustive, grouped query.",
+    ],
+    parameters: Type.Object({
+      team_key: Type.String({ description: "Team key, e.g. 'MM'" }),
+      label_prefix: Type.Optional(
+        Type.String({ description: "Only include labels starting with this prefix, e.g. 'Wave'. Omit to group by all labels." }),
+      ),
+      include_done: Type.Optional(
+        Type.Boolean({ description: "Include fully-completed labels in the output (default true)" }),
+      ),
+    }),
+    async execute(_id, params) {
+      // Pull the full team backlog (paginate to be exhaustive).
+      const gql = `query WaveStatus($key: String!, $after: String) {
+        issues(
+          filter: { team: { key: { eq: $key } } }
+          first: 250
+          after: $after
+        ) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            identifier
+            priority
+            state { name type }
+            labels { nodes { name } }
+          }
+        }
+      }`;
+
+      const all: any[] = [];
+      let after: string | null = null;
+      // Safety bound: at most 8 pages (2000 issues).
+      for (let i = 0; i < 8; i++) {
+        const data: any = await linearQuery(token, gql, { key: params.team_key, after });
+        const conn = data.issues;
+        all.push(...(conn?.nodes ?? []));
+        if (!conn?.pageInfo?.hasNextPage) break;
+        after = conn.pageInfo.endCursor;
+      }
+
+      if (all.length === 0) {
+        return {
+          content: [{ type: "text", text: `No issues found for team ${params.team_key}.` }],
+          details: { count: 0 },
+        };
+      }
+
+      const includeDone = params.include_done ?? true;
+      const prefix = params.label_prefix;
+
+      // Group issues by label name. An issue can appear under multiple labels.
+      type Bucket = { total: number; done: number; states: Record<string, number> };
+      const buckets: Record<string, Bucket> = {};
+      let unlabeled = 0;
+
+      for (const issue of all) {
+        const labels: string[] = (issue.labels?.nodes ?? []).map((l: any) => l.name);
+        const matched = prefix ? labels.filter((n) => n.startsWith(prefix)) : labels;
+        if (matched.length === 0) {
+          if (!prefix) unlabeled++;
+          continue;
+        }
+        // `state.type` is one of: backlog, unstarted, started, completed, canceled.
+        const isDone = issue.state?.type === "completed";
+        const stateName = issue.state?.name ?? "Unknown";
+        for (const name of matched) {
+          const b = (buckets[name] ??= { total: 0, done: 0, states: {} });
+          b.total++;
+          if (isDone) b.done++;
+          b.states[stateName] = (b.states[stateName] ?? 0) + 1;
+        }
+      }
+
+      const names = Object.keys(buckets).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+      const lines: string[] = [`# ${params.team_key} status${prefix ? ` — labels matching "${prefix}"` : ""}`, ""];
+
+      let grandTotal = 0;
+      let grandDone = 0;
+      for (const name of names) {
+        const b = buckets[name];
+        grandTotal += b.total;
+        grandDone += b.done;
+        const complete = b.done === b.total;
+        if (complete && !includeDone) continue;
+        const pct = b.total > 0 ? Math.round((b.done / b.total) * 100) : 0;
+        const bar = complete ? "✅" : `${pct}%`;
+        const breakdown = Object.entries(b.states)
+          .sort()
+          .map(([s, n]) => `${s}: ${n}`)
+          .join(", ");
+        lines.push(`- **${name}** — ${b.done}/${b.total} ${bar} (${breakdown})`);
+      }
+
+      const grandPct = grandTotal > 0 ? Math.round((grandDone / grandTotal) * 100) : 0;
+      lines.push("", `**Overall (labeled): ${grandDone}/${grandTotal} = ${grandPct}% complete**`);
+      if (!prefix && unlabeled > 0) lines.push(`${unlabeled} issue(s) have no label.`);
+
+      return {
+        content: [{ type: "text", text: lines.join("\n") }],
+        details: {
+          team_key: params.team_key,
+          scanned: all.length,
+          buckets,
+          overall: { done: grandDone, total: grandTotal, pct: grandPct },
+          unlabeled,
+        },
+      };
+    },
+  });
+
   // ── Notify on load ──────────────────────────────────────────────────────
 
   pi.on("session_start", (_e, ctx) => {
-    ctx.ui.notify("Linear extension loaded — 9 tools registered", "info");
+    ctx.ui.notify("Linear extension loaded — 10 tools registered", "info");
   });
 }

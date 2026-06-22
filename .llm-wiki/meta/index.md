@@ -38,7 +38,9 @@
 - [[sources/obs-2026-06-22-fixed-mm-181-did-document-alsoknownas-now-updated-on-handle-]] — "Observation: Fixed MM-181: DID document alsoKnownAs now updated on handle changes" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-linear-api-key-must-be-set-before-pi-launches]] — "Observation: LINEAR_API_KEY must be set before pi launches" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-linear-api-key-required-for-extension-tools]] — "Observation: Linear API key required for extension tools" *(created: 2026-06-22)*
+- [[sources/obs-2026-06-22-linear-extension-search-root-cause-fixed]] — "Observation: Linear extension search root-cause fixed" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-linear-workflow-one-issue-per-pr]] — "Observation: Linear workflow: one issue per PR" *(created: 2026-06-22)*
+- [[sources/obs-2026-06-22-mm-110-listblobs-endpoint-implemented]] — "Observation: MM-110 listBlobs endpoint implemented" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-sqlite-sessions-db-keeps-corrupting]] — "Observation: SQLite sessions.db keeps corrupting" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-staging-pds-deployed-at-ezpds-staging-up-railway-app]] — "Observation: Staging PDS deployed at ezpds-staging.up.railway.app" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-tangled-pr-records-created-via-atproto-don-t-appear-in-web-u]] — "Observation: Tangled PR records created via ATProto don't appear in web UI" *(created: 2026-06-22)*
@@ -51,4 +53,4 @@
 - [[sources/SRC-2026-06-22-005]] — SRC-2026-06-22-005 *(created: 2026-06-22)*
 
 ---
-*Last updated: 2026-06-22T19:32:05.367Z* | *Total pages: 39*
+*Last updated: 2026-06-22T20:09:49.528Z* | *Total pages: 41*

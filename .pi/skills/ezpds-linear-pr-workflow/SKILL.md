@@ -11,7 +11,7 @@ When picking up any Linear issue for the ezpds project. One issue per branch/PR 
 
 ## Procedure
 
-1. **Pick** — Use `linear_list_issues` to list the team backlog. Analyze by wave/priority/dependency chain. Select one issue. Read its description and acceptance criteria via `linear_get_issue`.
+1. **Pick** — Start with `linear_wave_status` (team `MM`, `label_prefix: "Wave"`) for a one-call overview of where the project stands. Then use `linear_list_issues` to drill into a specific wave's open issues. For wave/label analysis, pass the `label` filter (e.g. `label: "Wave 4: Repo + Blobs"`) with `limit=50+` — this is exhaustive. Do NOT use `linear_search_issues` for completeness checks (it is relevance-ranked and may omit issues). Analyze by wave/priority/dependency chain, propose a recommended issue with rationale, and confirm with the user before starting. Read the chosen issue's description and acceptance criteria via `linear_get_issue`.
 2. **Prep** — Mark the issue In Progress (`linear_update_issue`). Create a feature branch from main (`git checkout -b feat/<short-desc>`). Read existing code first: similar routes, the migration folder, DB modules, and the relay CLAUDE.md.
 3. **Implement** — Migration SQL → DB query module (`db/<entity>.rs`) → register migration in `db/mod.rs` → route handler (`routes/<name>.rs`) → register in `routes/mod.rs` and `app.rs` → Bruno `.bru` file. Check the actual table schema (PRAGMA table_info or migration SQL) before writing queries that reference FK columns.
 4. **Verify** — Run: `cargo fmt --all && cargo clippy --workspace -- -D warnings && cargo test --workspace`. Fix all issues before committing.
@@ -22,6 +22,8 @@ When picking up any Linear issue for the ezpds project. One issue per branch/PR 
 9. **Pause** — Mark the Linear issue as In Review (`linear_update_issue`). Do not start the next issue until the PR is reviewed and merged. Mark Done only after merge.
 
 ## Pitfalls
+
+- For exhaustive wave/backlog scans use `linear_list_issues` with the `label` filter and `limit=50+`. `linear_search_issues` is a relevance-ranked full-text search (server-side `searchIssues`) — good for finding a known issue by keyword, but NOT for "list every issue in Wave N". Confirm completeness by checking the count matches expectations.
 
 - Check the actual database schema before writing queries. The `accounts` table uses `did` (TEXT) as its primary key — there is no integer `id` column. Verify FK column types match the referenced table's PK.
 - Do not mark Linear issues as Done when the PR opens. Use 'In Review' state. Done is only for merged work.

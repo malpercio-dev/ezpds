@@ -91,3 +91,9 @@
 ## [2026-06-22T19:32:05.361Z] observe
 - slug: "obs-2026-06-22-cid-enumeration-prevention-in-getblob", title: "CID enumeration prevention in getBlob", relevance: "high"
 
+## [2026-06-22T19:49:43.316Z] observe
+- slug: "obs-2026-06-22-mm-110-listblobs-endpoint-implemented", title: "MM-110 listBlobs endpoint implemented", relevance: "high"
+
+## [2026-06-22T20:09:49.523Z] observe
+- slug: "obs-2026-06-22-linear-extension-search-root-cause-fixed", title: "Linear extension search root-cause fixed", relevance: "high"
+

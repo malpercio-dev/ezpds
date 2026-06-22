@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-06-22T19:32:05.367Z",
+  "last_updated": "2026-06-22T20:09:49.528Z",
   "pages": {
     "concepts/did-plc": {
       "type": "concept",
@@ -423,6 +423,23 @@
       ],
       "source_context": "\"Creating MM-181 for handle/alsoKnownAs bug\""
     },
+    "sources/obs-2026-06-22-linear-extension-search-root-cause-fixed": {
+      "type": "source",
+      "title": "\"Observation: Linear extension search root-cause fixed\"",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "slug": "obs-2026-06-22-linear-extension-search-root-cause-fixed",
+      "status": "observation",
+      "relevance": "high",
+      "observed_at": "2026-06-22T20:09:49.523Z",
+      "tags": [
+        "pi-extension",
+        "linear",
+        "tooling",
+        "reliability"
+      ],
+      "source_context": "\"Harness reliability review of recent session history\""
+    },
     "sources/obs-2026-06-22-linear-workflow-one-issue-per-pr": {
       "type": "source",
       "title": "\"Observation: Linear workflow: one issue per PR\"",
@@ -439,6 +456,23 @@
         "convention"
       ],
       "source_context": "\"User correction after MM-107/108 were batched — said \"we should do one linear issue at a time and PR it\"\""
+    },
+    "sources/obs-2026-06-22-mm-110-listblobs-endpoint-implemented": {
+      "type": "source",
+      "title": "\"Observation: MM-110 listBlobs endpoint implemented\"",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "slug": "obs-2026-06-22-mm-110-listblobs-endpoint-implemented",
+      "status": "observation",
+      "relevance": "high",
+      "observed_at": "2026-06-22T19:49:43.315Z",
+      "tags": [
+        "ezpds",
+        "wave4",
+        "blobs",
+        "api"
+      ],
+      "source_context": "\"Completing Wave 4 of ezpds project\""
     },
     "sources/obs-2026-06-22-sqlite-sessions-db-keeps-corrupting": {
       "type": "source",
