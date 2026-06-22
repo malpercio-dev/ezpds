@@ -85,8 +85,14 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `claim_codes.rs` | Claim code management |
 | `get_relay_signing_key.rs` | `GET /v1/signing-keys` |
 | `health.rs` | `GET /xrpc/_health` |
+| `delete_session.rs` | `POST /xrpc/com.atproto.server.deleteSession` (session revocation) |
+| `oauth_client_metadata.rs` | `GET /oauth/client-metadata.json` (OAuth client metadata per ATProto spec) |
+| `provisioning_session.rs` | Provisioning session creation (email + password → session token) |
+| `code_gen.rs` | Claim code generation (random alphanumeric codes) |
+| `uniqueness.rs` | Pre-flight uniqueness checks for email and handle (Functional Core) |
 | `auth.rs` | Route-level auth middleware (`require_admin_token`, `require_pending_session`, `require_session`, `require_device_token`) |
 | `token.rs` | Bearer token generation helpers |
+| `test_utils.rs` | Test helpers (excluded from production builds) |
 
 ## Hard Rules
 

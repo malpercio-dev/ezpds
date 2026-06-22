@@ -1002,11 +1002,16 @@ pub(crate) async fn sign_and_verify_claim_impl(
         message: format!("failed to serialize operation: {}", e),
     })?;
 
-    let authorized_keys: Vec<DidKeyUri> = did_doc
+    // For genesis claims (no prior rotation keys), the device key is the signer
+    // and must be included in the authorized set for signature verification.
+    let mut authorized_keys: Vec<DidKeyUri> = did_doc
         .rotation_keys
         .iter()
         .map(|k| DidKeyUri(k.clone()))
         .collect();
+    if authorized_keys.is_empty() {
+        authorized_keys.push(DidKeyUri(device_key_id.to_string()));
+    }
 
     tracing::debug!(did = %did, authorized_keys = authorized_keys.len(), "verifying PLC operation signature");
     let verified_op =
@@ -1839,10 +1844,14 @@ mod tests {
 
     // ── sign_and_verify_claim tests ──────────────────────────────────────────────
 
-    /// Helper: Build a test rotation operation with custom rotation keys.
+    /// Helper: Build a test rotation operation.
+    ///
+    /// Generates a P-256 signing keypair, builds a rotation op signed by that key,
+    /// and includes the key in `rotation_keys`. Returns `(signed_op_json, device_key_id)`
+    /// where `device_key_id` is the `did:key:` URI of the signing key — use it as the
+    /// device key in tests so signature verification succeeds.
     fn build_test_rotation_op(
-        _device_key_id: &str,
-        rotation_keys: Vec<String>,
+        extra_rotation_keys: Vec<String>,
         services: std::collections::BTreeMap<String, crypto::PlcService>,
         prev_cid: &str,
     ) -> (String, String) {
@@ -1852,12 +1861,17 @@ mod tests {
 
         // Generate a signing key for the operation
         let signing_kp = crypto::generate_p256_keypair().expect("signing keypair");
+        let device_key_id = signing_kp.key_id.0.clone();
         let private_key_bytes = *signing_kp.private_key_bytes;
         let field_bytes: FieldBytes = private_key_bytes.into();
         let sk = SigningKey::from_bytes(&field_bytes).expect("valid key");
 
+        // The signing key is always at rotation_keys[0]; extras follow
+        let mut rotation_keys = vec![device_key_id.clone()];
+        rotation_keys.extend(extra_rotation_keys);
+
         let mut verification_methods = BTreeMap::new();
-        verification_methods.insert("atproto".to_string(), signing_kp.key_id.0.clone());
+        verification_methods.insert("atproto".to_string(), device_key_id.clone());
 
         let rotation = crypto::build_did_plc_rotation_op(
             prev_cid,
@@ -1872,7 +1886,7 @@ mod tests {
         )
         .expect("build rotation op");
 
-        (rotation.signed_op_json, signing_kp.key_id.0)
+        (rotation.signed_op_json, device_key_id)
     }
 
     /// Test 1: Success path with device key at rotationKeys[0]
@@ -1884,10 +1898,8 @@ mod tests {
         use std::sync::{Arc, Mutex};
 
         let mock_server = MockServer::start();
-        let device_key = "did:key:zQ3test_device".to_string();
         let prev_cid = "bagtest123".to_string();
 
-        // Build the test rotation operation
         let mut services = BTreeMap::new();
         services.insert(
             "atproto_pds".to_string(),
@@ -1897,12 +1909,10 @@ mod tests {
             },
         );
 
-        let (rotation_json, _signing_key) = build_test_rotation_op(
-            &device_key,
-            vec![device_key.clone()],
-            services.clone(),
-            &prev_cid,
-        );
+        // Build rotation op — helper generates a signing key and includes it in rotation_keys.
+        // The returned device_key is the signing key's did:key URI.
+        let (rotation_json, device_key) =
+            build_test_rotation_op(vec![], services.clone(), &prev_cid);
 
         // Mock getRecommendedDidCredentials
         mock_server.mock(|when, then| {
@@ -2006,11 +2016,10 @@ mod tests {
         use std::sync::{Arc, Mutex};
 
         let mock_server = MockServer::start();
-        let device_key = "did:key:zQ3test_device".to_string();
         let wrong_key = "did:key:zQ3wrong_key".to_string();
         let prev_cid = "bagtest123".to_string();
 
-        // Build rotation with wrong key at [0]
+        // Build rotation — signing key is at rotation_keys[0]
         let mut services = BTreeMap::new();
         services.insert(
             "atproto_pds".to_string(),
@@ -2020,8 +2029,8 @@ mod tests {
             },
         );
 
-        let (rotation_json, signing_key) =
-            build_test_rotation_op(&wrong_key, vec![wrong_key.clone()], services, &prev_cid);
+        // device_key is different from the signing key — should fail verification
+        let (rotation_json, signing_key) = build_test_rotation_op(vec![], services, &prev_cid);
 
         // Mock endpoints
         mock_server.mock(|when, then| {
@@ -2092,7 +2101,7 @@ mod tests {
             &Arc::new(oauth_client),
             "did:plc:test",
             &did_doc,
-            &device_key,
+            &wrong_key,
             "test_token",
         )
         .await;
@@ -2113,7 +2122,6 @@ mod tests {
         use std::sync::{Arc, Mutex};
 
         let mock_server = MockServer::start();
-        let device_key = "did:key:zQ3test_device".to_string();
         let wrong_prev = "bagwrong".to_string();
         let correct_prev = "bagcorrect".to_string();
 
@@ -2126,9 +2134,8 @@ mod tests {
             },
         );
 
-        // Build with wrong_prev
-        let (rotation_json, signing_key) =
-            build_test_rotation_op(&device_key, vec![device_key.clone()], services, &wrong_prev);
+        // Build with wrong_prev — device_key is the signing key
+        let (rotation_json, device_key) = build_test_rotation_op(vec![], services, &wrong_prev);
 
         mock_server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -2189,7 +2196,7 @@ mod tests {
         let did_doc = PlcDidDocument {
             did: "did:plc:test".to_string(),
             also_known_as: vec!["at://alice.example.com".to_string()],
-            rotation_keys: vec![signing_key.clone()],
+            rotation_keys: vec![],
             verification_methods: serde_json::json!({}),
             services: HashMap::new(),
         };
@@ -2220,7 +2227,6 @@ mod tests {
         use std::sync::{Arc, Mutex};
 
         let mock_server = MockServer::start();
-        let device_key = "did:key:zQ3test_device".to_string();
         let original_key = "did:key:zQ3original".to_string();
         let prev_cid = "bagtest123".to_string();
 
@@ -2233,9 +2239,8 @@ mod tests {
             },
         );
 
-        // Build operation with only device key (missing original_key)
-        let (rotation_json, signing_key) =
-            build_test_rotation_op(&device_key, vec![device_key.clone()], services, &prev_cid);
+        // Build operation — signing key is the device key, original_key is not included
+        let (rotation_json, device_key) = build_test_rotation_op(vec![], services, &prev_cid);
 
         mock_server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -2295,7 +2300,7 @@ mod tests {
         let did_doc = PlcDidDocument {
             did: "did:plc:test".to_string(),
             also_known_as: vec!["at://alice.example.com".to_string()],
-            rotation_keys: vec![signing_key.clone(), original_key.clone()],
+            rotation_keys: vec![original_key.clone()],
             verification_methods: serde_json::json!({}),
             services: HashMap::new(),
         };
@@ -2326,7 +2331,6 @@ mod tests {
         use std::sync::{Arc, Mutex};
 
         let mock_server = MockServer::start();
-        let device_key = "did:key:zQ3test_device".to_string();
         let prev_cid = "bagtest123".to_string();
 
         let mut services = BTreeMap::new();
@@ -2338,8 +2342,7 @@ mod tests {
             },
         );
 
-        let (rotation_json, signing_key) =
-            build_test_rotation_op(&device_key, vec![device_key.clone()], services, &prev_cid);
+        let (rotation_json, device_key) = build_test_rotation_op(vec![], services, &prev_cid);
 
         mock_server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -2408,7 +2411,7 @@ mod tests {
         let did_doc = PlcDidDocument {
             did: "did:plc:test".to_string(),
             also_known_as: vec!["at://alice.example.com".to_string()],
-            rotation_keys: vec![signing_key.clone()],
+            rotation_keys: vec![],
             verification_methods: serde_json::json!({}),
             services: original_services,
         };
@@ -2439,7 +2442,6 @@ mod tests {
         use std::sync::{Arc, Mutex};
 
         let mock_server = MockServer::start();
-        let device_key = "did:key:zQ3test_device".to_string();
         let prev_cid = "bagtest123".to_string();
 
         let mut services = BTreeMap::new();
@@ -2459,8 +2461,7 @@ mod tests {
             },
         );
 
-        let (rotation_json, _signing_key) =
-            build_test_rotation_op(&device_key, vec![device_key.clone()], services, &prev_cid);
+        let (rotation_json, device_key) = build_test_rotation_op(vec![], services, &prev_cid);
 
         mock_server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -2656,16 +2657,14 @@ mod tests {
         // routes through the mock server instead of hitting the real internet.
         let pds_endpoint = mock_server.base_url();
         let updated_doc = serde_json::json!({
-            "did": "did:plc:test",
+            "id": "did:plc:test",
             "alsoKnownAs": ["at://alice.example.com"],
-            "rotationKeys": ["did:key:zQ3test"],
-            "verificationMethods": {},
-            "services": {
-                "atproto_pds": {
-                    "type": "AtprotoPersonalDataServer",
-                    "endpoint": pds_endpoint
-                }
-            }
+            "verificationMethod": [],
+            "service": [{
+                "id": "#atproto_pds",
+                "type": "AtprotoPersonalDataServer",
+                "serviceEndpoint": pds_endpoint
+            }]
         });
 
         mock_server.mock(|when, then| {

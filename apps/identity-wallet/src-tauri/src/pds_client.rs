@@ -1031,16 +1031,14 @@ mod tests {
         let mock_server = MockServer::start();
 
         let did_doc_json = serde_json::json!({
-            "did": "did:plc:test123",
+            "id": "did:plc:test123",
             "alsoKnownAs": [],
-            "rotationKeys": [],
-            "verificationMethods": {},
-            "services": {
-                "atproto_pds": {
-                    "type": "AtprotoPersonalDataServer",
-                    "endpoint": "http://127.0.0.1:1"
-                }
-            }
+            "verificationMethod": [],
+            "service": [{
+                "id": "#atproto_pds",
+                "type": "AtprotoPersonalDataServer",
+                "serviceEndpoint": "http://127.0.0.1:1"
+            }]
         });
 
         mock_server.mock(|when, then| {
@@ -1068,11 +1066,10 @@ mod tests {
         let mock_server = MockServer::start();
 
         let did_doc_json = serde_json::json!({
-            "did": "did:plc:test123",
+            "id": "did:plc:test123",
             "alsoKnownAs": [],
-            "rotationKeys": [],
-            "verificationMethods": {},
-            "services": {}
+            "verificationMethod": [],
+            "service": []
         });
 
         mock_server.mock(|when, then| {
