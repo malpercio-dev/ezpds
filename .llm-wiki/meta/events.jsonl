@@ -27,3 +27,4 @@
 {"timestamp":"2026-06-22T18:58:13.103Z","kind":"observe","slug":"obs-2026-06-22-staging-pds-deployed-at-ezpds-staging-up-railway-app","title":"Staging PDS deployed at ezpds-staging.up.railway.app","relevance":"medium"}
 {"timestamp":"2026-06-22T18:58:13.103Z","kind":"observe","slug":"obs-2026-06-22-sqlite-sessions-db-keeps-corrupting","title":"SQLite sessions.db keeps corrupting","relevance":"medium"}
 {"timestamp":"2026-06-22T18:58:13.104Z","kind":"observe","slug":"obs-2026-06-22-linear-api-key-must-be-set-before-pi-launches","title":"LINEAR_API_KEY must be set before pi launches","relevance":"medium"}
+{"timestamp":"2026-06-22T19:32:05.361Z","kind":"observe","slug":"obs-2026-06-22-cid-enumeration-prevention-in-getblob","title":"CID enumeration prevention in getBlob","relevance":"high"}

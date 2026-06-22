@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-06-22T18:58:13.106Z",
+  "last_updated": "2026-06-22T19:32:05.367Z",
   "pages": {
     "concepts/did-plc": {
       "type": "concept",
@@ -337,6 +337,24 @@
         "common"
       ],
       "source_context": "\"MM-108 uploadBlob — needed configurable size limit\""
+    },
+    "sources/obs-2026-06-22-cid-enumeration-prevention-in-getblob": {
+      "type": "source",
+      "title": "\"Observation: CID enumeration prevention in getBlob\"",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "slug": "obs-2026-06-22-cid-enumeration-prevention-in-getblob",
+      "status": "observation",
+      "relevance": "high",
+      "observed_at": "2026-06-22T19:32:05.360Z",
+      "tags": [
+        "security",
+        "atpro",
+        "xrpc",
+        "blob",
+        "enumeration"
+      ],
+      "source_context": "\"MM-109 getBlob implementation, PR feat/sync-get-blob\""
     },
     "sources/obs-2026-06-22-did-ceremony-cbor-interop-issue-fixed": {
       "type": "source",

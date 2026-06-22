@@ -33,6 +33,7 @@
 - [[sources/obs-2026-06-22-axum-body-to-bytes-enforces-limit-natively]] — "Observation: axum::body::to_bytes enforces limit natively" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-blob-storage-cid-implementation-details]] — "Observation: Blob storage CID implementation details" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-blobsconfig-was-empty-stub-now-has-max-blob-size]] — "Observation: BlobsConfig was empty stub, now has max_blob_size" *(created: 2026-06-22)*
+- [[sources/obs-2026-06-22-cid-enumeration-prevention-in-getblob]] — "Observation: CID enumeration prevention in getBlob" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-did-ceremony-cbor-interop-issue-fixed]] — "Observation: DID ceremony CBOR interop issue fixed" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-fixed-mm-181-did-document-alsoknownas-now-updated-on-handle-]] — "Observation: Fixed MM-181: DID document alsoKnownAs now updated on handle changes" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-linear-api-key-must-be-set-before-pi-launches]] — "Observation: LINEAR_API_KEY must be set before pi launches" *(created: 2026-06-22)*
@@ -50,4 +51,4 @@
 - [[sources/SRC-2026-06-22-005]] — SRC-2026-06-22-005 *(created: 2026-06-22)*
 
 ---
-*Last updated: 2026-06-22T18:58:13.106Z* | *Total pages: 38*
+*Last updated: 2026-06-22T19:32:05.367Z* | *Total pages: 39*

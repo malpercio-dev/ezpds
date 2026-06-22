@@ -88,3 +88,6 @@
 ## [2026-06-22T18:58:13.104Z] observe
 - slug: "obs-2026-06-22-linear-api-key-must-be-set-before-pi-launches", title: "LINEAR_API_KEY must be set before pi launches", relevance: "medium"
 
+## [2026-06-22T19:32:05.361Z] observe
+- slug: "obs-2026-06-22-cid-enumeration-prevention-in-getblob", title: "CID enumeration prevention in getBlob", relevance: "high"
+

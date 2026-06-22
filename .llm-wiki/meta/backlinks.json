@@ -121,6 +121,7 @@
   "sources/obs-2026-06-22-axum-body-to-bytes-enforces-limit-natively": [],
   "sources/obs-2026-06-22-blob-storage-cid-implementation-details": [],
   "sources/obs-2026-06-22-blobsconfig-was-empty-stub-now-has-max-blob-size": [],
+  "sources/obs-2026-06-22-cid-enumeration-prevention-in-getblob": [],
   "sources/obs-2026-06-22-did-ceremony-cbor-interop-issue-fixed": [],
   "sources/obs-2026-06-22-fixed-mm-181-did-document-alsoknownas-now-updated-on-handle-": [],
   "sources/obs-2026-06-22-linear-api-key-must-be-set-before-pi-launches": [],
