@@ -15,7 +15,7 @@ fmt-check:
 
 # Lint all crates; all warnings (Clippy and rustc) are treated as errors
 clippy:
-    cargo clippy --workspace -- -D warnings
+    cargo clippy --workspace --all-targets -- -D warnings
 
 run-relay:
     cargo run -p relay
@@ -37,7 +37,7 @@ ci: fmt-check clippy test audit
 # (identity-wallet), which needs the Apple/GTK toolchain absent in CI; the mobile
 # app is built and checked via `just ios-*` on macOS.
 ci-relay: fmt-check
-    cargo clippy --workspace --exclude identity-wallet -- -D warnings
+    cargo clippy --workspace --exclude identity-wallet --all-targets -- -D warnings
     cargo test --workspace --exclude identity-wallet
     just audit
 

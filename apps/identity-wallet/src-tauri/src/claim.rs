@@ -1483,7 +1483,7 @@ mod tests {
         assert_eq!(handle, "alice.example.com");
 
         // Simulate constructing IdentityInfo response
-        let rotation_keys = vec!["did:key:zQ3rot1".to_string(), "did:key:zQ3rot2".to_string()];
+        let rotation_keys = ["did:key:zQ3rot1".to_string(), "did:key:zQ3rot2".to_string()];
         assert_eq!(rotation_keys.len(), 2);
         assert_eq!(rotation_keys[0], "did:key:zQ3rot1");
     }

@@ -403,7 +403,7 @@ mod tests {
         let attempts = state.failed_login_attempts.lock().unwrap();
         let entry = attempts.get("corrupt@example.com");
         assert!(
-            entry.map_or(true, |q| q.is_empty()),
+            entry.is_none_or(|q| q.is_empty()),
             "CorruptHash must not increment the rate-limit counter"
         );
     }

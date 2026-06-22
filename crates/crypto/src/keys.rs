@@ -226,7 +226,7 @@ mod tests {
     fn decrypt_wrong_length_fails() {
         let master_key = [0xab_u8; 32];
         // Valid base64 of 10 bytes — decodes OK but is not 60 bytes.
-        let short = BASE64.encode(&[0u8; 10]);
+        let short = BASE64.encode([0u8; 10]);
         let result = decrypt_private_key(&short, &master_key);
         assert!(matches!(result, Err(CryptoError::Decryption(_))));
     }

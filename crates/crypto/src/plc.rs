@@ -1262,8 +1262,9 @@ mod tests {
         .expect("rotation op");
 
         // Verify the rotation op with the signing key as authorized
-        let verified = verify_plc_operation(&rotation.signed_op_json, &[signing_key.clone()])
-            .expect("verify rotation op");
+        let verified =
+            verify_plc_operation(&rotation.signed_op_json, std::slice::from_ref(&signing_key))
+                .expect("verify rotation op");
 
         assert!(verified.did.is_none(), "rotation op DID must be None");
         assert_eq!(

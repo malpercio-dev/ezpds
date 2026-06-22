@@ -789,7 +789,7 @@ mod tests {
 
         // Genesis has atproto_pds service, should be in changed_services
         assert!(
-            diff.changed_services.len() > 0,
+            !diff.changed_services.is_empty(),
             "Should have changed_services from fork point state"
         );
 

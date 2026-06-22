@@ -505,7 +505,7 @@ mod tests {
         assert_eq!(session.did, "did:plc:xyz123");
         assert_eq!(session.handle, "bob.test");
         assert_eq!(session.email, "bob@example.com");
-        assert_eq!(session.email_confirmed, false);
+        assert!(!session.email_confirmed);
         assert!(data.session_error.is_none());
     }
 

@@ -32,7 +32,7 @@ pub fn store_item(account: &str, data: &[u8]) -> Result<(), KeychainError> {
     #[cfg(test)]
     {
         test_store::set(account, data.to_vec());
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(test))]
     set_generic_password(SERVICE, account, data).map_err(KeychainError::Security)
@@ -44,7 +44,7 @@ pub fn store_item(account: &str, data: &[u8]) -> Result<(), KeychainError> {
 pub fn get_item(account: &str) -> Result<Vec<u8>, KeychainError> {
     #[cfg(test)]
     {
-        return test_store::get(account).ok_or(KeychainError::NotFound);
+        test_store::get(account).ok_or(KeychainError::NotFound)
     }
     #[cfg(not(test))]
     get_generic_password(SERVICE, account).map_err(KeychainError::Security)
@@ -57,7 +57,7 @@ pub fn delete_item(account: &str) -> Result<(), KeychainError> {
     #[cfg(test)]
     {
         test_store::delete(account);
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(test))]
     delete_generic_password(SERVICE, account).map_err(KeychainError::Security)
@@ -182,6 +182,15 @@ pub fn delete_relay_url_test_only() {
     let _ = delete_item(RELAY_URL_ACCOUNT);
 }
 
+/// Reset the in-memory Keychain to a clean state.
+///
+/// Call this at the start of every test that touches the Keychain so that
+/// sequential tests sharing the same OS thread start with an empty store.
+#[cfg(test)]
+pub fn clear_for_test() {
+    test_store::clear_all();
+}
+
 /// In-memory Keychain substitute used exclusively in test builds.
 ///
 /// Thread-local storage ensures tests on different threads are fully isolated.
@@ -215,13 +224,4 @@ mod test_store {
     pub fn clear_all() {
         STORE.with(|s| s.borrow_mut().clear());
     }
-}
-
-/// Reset the in-memory Keychain to a clean state.
-///
-/// Call this at the start of every test that touches the Keychain so that
-/// sequential tests sharing the same OS thread start with an empty store.
-#[cfg(test)]
-pub fn clear_for_test() {
-    test_store::clear_all();
 }

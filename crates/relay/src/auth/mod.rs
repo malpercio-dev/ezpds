@@ -24,11 +24,7 @@ pub use signing_key::{
 
 // Test-only: make private helpers visible to the test module below (which uses `use super::*`).
 #[cfg(test)]
-pub(super) use dpop::{
-    dpop_alg_from_str, jwk_thumbprint, validate_and_consume_nonce, validate_dpop,
-};
-#[cfg(test)]
-pub(super) use jwt::{parse_scope, peek_jwt_typ, verify_access_token};
+pub(super) use dpop::{jwk_thumbprint, validate_and_consume_nonce};
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
@@ -971,7 +967,7 @@ mod tests {
             exp: u64,
             scope: String,
         }
-        let now = now_secs() as u64;
+        let now = now_secs();
         let claims = Es256Claims {
             iss: state.config.public_url.clone(),
             jti: uuid::Uuid::new_v4().to_string(),
@@ -1016,7 +1012,7 @@ mod tests {
             exp: u64,
             scope: String,
         }
-        let now = now_secs() as u64;
+        let now = now_secs();
         let claims = Es256Claims {
             iss: state.config.public_url.clone(),
             jti: uuid::Uuid::new_v4().to_string(),
