@@ -56,6 +56,8 @@ pub enum ErrorCode {
     /// for `com.atproto.server.resetPassword`.
     #[serde(rename = "ExpiredToken")]
     ExpiredToken,
+    /// Request body exceeds the maximum allowed size.
+    PayloadTooLarge,
     // TODO: add remaining codes from Appendix A as endpoints are implemented:
     // 400: INVALID_DOCUMENT, INVALID_PROOF, INVALID_ENDPOINT, INVALID_CONFIRMATION
     // 401: INVALID_CREDENTIALS
@@ -94,6 +96,7 @@ impl ErrorCode {
             ErrorCode::AuthenticationRequired => 401,
             ErrorCode::InvalidToken => 401,
             ErrorCode::ExpiredToken => 400,
+            ErrorCode::PayloadTooLarge => 413,
         }
     }
 }

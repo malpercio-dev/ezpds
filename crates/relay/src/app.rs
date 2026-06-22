@@ -44,6 +44,7 @@ use crate::routes::register_device::register_device;
 use crate::routes::request_password_reset::request_password_reset;
 use crate::routes::reset_password::reset_password;
 use crate::routes::resolve_handle::resolve_handle_handler;
+use crate::routes::upload_blob::upload_blob;
 use crate::well_known::WellKnownResolver;
 
 /// In-memory store for failed login attempts per identifier, shared across all login endpoints.
@@ -189,6 +190,7 @@ pub fn app(state: AppState) -> Router {
             "/xrpc/com.atproto.identity.resolveHandle",
             get(resolve_handle_handler),
         )
+        .route("/xrpc/com.atproto.repo.uploadBlob", post(upload_blob))
         .route("/xrpc/:method", get(xrpc_handler).post(xrpc_handler))
         .route("/v1/accounts", post(create_account))
         .route("/v1/accounts/claim-codes", post(claim_codes))
