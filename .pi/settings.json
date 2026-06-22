@@ -2,6 +2,7 @@
   "packages": [
     "npm:pi-web-access",
     "npm:pi-hermes-memory",
-    "npm:@zosmaai/pi-llm-wiki"
+    "npm:@zosmaai/pi-llm-wiki",
+    "npm:pi-observational-memory"
   ]
 }
