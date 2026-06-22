@@ -1,0 +1,21 @@
+when:
+  - event: ["push", "manual"]
+    branch: ["main"]
+
+engine: nixery
+
+dependencies:
+  nixpkgs:
+    - rustc
+    - cargo
+    - clippy
+    - rustfmt
+    - sqlite
+    - just
+    - cargo-audit
+
+steps:
+  - name: CI (fmt, clippy, test, audit)
+    run: just ci
+  - name: Deploy to staging (wired in Phase 3)
+    run: echo "staging deploy added in Phase 3"
