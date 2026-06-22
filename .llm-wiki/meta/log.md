@@ -76,3 +76,15 @@
 ## [2026-06-22T18:32:10.348Z] observe
 - slug: "obs-2026-06-22-tangled-pr-records-created-via-atproto-don-t-appear-in-web-u", title: "Tangled PR records created via ATProto don't appear in web UI", relevance: "high"
 
+## [2026-06-22T18:56:32.593Z] retro
+- slug: "atproto-extension-sync-with-relay", title: "Keep ATProto extension in sync with relay capabilities", category: "convention"
+
+## [2026-06-22T18:58:13.103Z] observe
+- slug: "obs-2026-06-22-staging-pds-deployed-at-ezpds-staging-up-railway-app", title: "Staging PDS deployed at ezpds-staging.up.railway.app", relevance: "medium"
+
+## [2026-06-22T18:58:13.103Z] observe
+- slug: "obs-2026-06-22-sqlite-sessions-db-keeps-corrupting", title: "SQLite sessions.db keeps corrupting", relevance: "medium"
+
+## [2026-06-22T18:58:13.104Z] observe
+- slug: "obs-2026-06-22-linear-api-key-must-be-set-before-pi-launches", title: "LINEAR_API_KEY must be set before pi launches", relevance: "medium"
+

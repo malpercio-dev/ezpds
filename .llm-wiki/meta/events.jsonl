@@ -23,3 +23,7 @@
 {"timestamp":"2026-06-22T17:48:01.796Z","kind":"retro","slug":"atproto-did-plc-cbor-signing","title":"ATProto DID:PLC CBOR Signing Requirements","category":"architecture"}
 {"timestamp":"2026-06-22T18:01:54.119Z","kind":"observe","slug":"obs-2026-06-22-fixed-mm-181-did-document-alsoknownas-now-updated-on-handle-","title":"Fixed MM-181: DID document alsoKnownAs now updated on handle changes","relevance":"high"}
 {"timestamp":"2026-06-22T18:32:10.348Z","kind":"observe","slug":"obs-2026-06-22-tangled-pr-records-created-via-atproto-don-t-appear-in-web-u","title":"Tangled PR records created via ATProto don't appear in web UI","relevance":"high"}
+{"timestamp":"2026-06-22T18:56:32.593Z","kind":"retro","slug":"atproto-extension-sync-with-relay","title":"Keep ATProto extension in sync with relay capabilities","category":"convention"}
+{"timestamp":"2026-06-22T18:58:13.103Z","kind":"observe","slug":"obs-2026-06-22-staging-pds-deployed-at-ezpds-staging-up-railway-app","title":"Staging PDS deployed at ezpds-staging.up.railway.app","relevance":"medium"}
+{"timestamp":"2026-06-22T18:58:13.103Z","kind":"observe","slug":"obs-2026-06-22-sqlite-sessions-db-keeps-corrupting","title":"SQLite sessions.db keeps corrupting","relevance":"medium"}
+{"timestamp":"2026-06-22T18:58:13.104Z","kind":"observe","slug":"obs-2026-06-22-linear-api-key-must-be-set-before-pi-launches","title":"LINEAR_API_KEY must be set before pi launches","relevance":"medium"}

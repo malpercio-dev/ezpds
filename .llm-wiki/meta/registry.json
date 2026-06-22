@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-06-22T18:32:10.351Z",
+  "last_updated": "2026-06-22T18:58:13.106Z",
   "pages": {
     "concepts/did-plc": {
       "type": "concept",
@@ -218,6 +218,15 @@
       "status": "insight",
       "category": "architecture"
     },
+    "sources/atproto-extension-sync-with-relay": {
+      "type": "source",
+      "title": "\"Keep ATProto extension in sync with relay capabilities\"",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "slug": "atproto-extension-sync-with-relay",
+      "status": "insight",
+      "category": "convention"
+    },
     "sources/blob-storage-pitfalls": {
       "type": "source",
       "title": "\"Blob storage implementation pitfalls\"",
@@ -363,6 +372,22 @@
       ],
       "source_context": "\"MM-181 fix implementation\""
     },
+    "sources/obs-2026-06-22-linear-api-key-must-be-set-before-pi-launches": {
+      "type": "source",
+      "title": "\"Observation: LINEAR_API_KEY must be set before pi launches\"",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "slug": "obs-2026-06-22-linear-api-key-must-be-set-before-pi-launches",
+      "status": "observation",
+      "relevance": "medium",
+      "observed_at": "2026-06-22T18:58:13.103Z",
+      "tags": [
+        "linear",
+        "extension",
+        "environment"
+      ],
+      "source_context": "\"Linear extension debugging\""
+    },
     "sources/obs-2026-06-22-linear-api-key-required-for-extension-tools": {
       "type": "source",
       "title": "\"Observation: Linear API key required for extension tools\"",
@@ -396,6 +421,38 @@
         "convention"
       ],
       "source_context": "\"User correction after MM-107/108 were batched — said \"we should do one linear issue at a time and PR it\"\""
+    },
+    "sources/obs-2026-06-22-sqlite-sessions-db-keeps-corrupting": {
+      "type": "source",
+      "title": "\"Observation: SQLite sessions.db keeps corrupting\"",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "slug": "obs-2026-06-22-sqlite-sessions-db-keeps-corrupting",
+      "status": "observation",
+      "relevance": "medium",
+      "observed_at": "2026-06-22T18:58:13.103Z",
+      "tags": [
+        "sqlite",
+        "corruption",
+        "pi-hermes-memory"
+      ],
+      "source_context": "\"SQLite corruption recovery\""
+    },
+    "sources/obs-2026-06-22-staging-pds-deployed-at-ezpds-staging-up-railway-app": {
+      "type": "source",
+      "title": "\"Observation: Staging PDS deployed at ezpds-staging.up.railway.app\"",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "slug": "obs-2026-06-22-staging-pds-deployed-at-ezpds-staging-up-railway-app",
+      "status": "observation",
+      "relevance": "medium",
+      "observed_at": "2026-06-22T18:58:13.102Z",
+      "tags": [
+        "staging",
+        "deployment",
+        "blob-storage"
+      ],
+      "source_context": "\"Staging deployment and testing\""
     },
     "sources/obs-2026-06-22-tangled-pr-records-created-via-atproto-don-t-appear-in-web-u": {
       "type": "source",

@@ -25,6 +25,7 @@
 - [[sources/atproto-crypto-use-official-library]] — "Use @atproto/crypto for DID:plc signatures" *(created: 2026-06-22)*
 - [[sources/atproto-did-plc-cbor-encoding]] — "DID:plc CBOR encoding interop issue" *(created: 2026-06-22)*
 - [[sources/atproto-did-plc-cbor-signing]] — "ATProto DID:PLC CBOR Signing Requirements" *(created: 2026-06-22)*
+- [[sources/atproto-extension-sync-with-relay]] — "Keep ATProto extension in sync with relay capabilities" *(created: 2026-06-22)*
 - [[sources/blob-storage-pitfalls]] — "Blob storage implementation pitfalls" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-accounts-table-uses-did-as-text-primary-key]] — "Observation: accounts table uses DID as TEXT primary key" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-atproto-extension-created-for-pi]] — "Observation: ATProto extension created for pi" *(created: 2026-06-22)*
@@ -34,8 +35,11 @@
 - [[sources/obs-2026-06-22-blobsconfig-was-empty-stub-now-has-max-blob-size]] — "Observation: BlobsConfig was empty stub, now has max_blob_size" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-did-ceremony-cbor-interop-issue-fixed]] — "Observation: DID ceremony CBOR interop issue fixed" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-fixed-mm-181-did-document-alsoknownas-now-updated-on-handle-]] — "Observation: Fixed MM-181: DID document alsoKnownAs now updated on handle changes" *(created: 2026-06-22)*
+- [[sources/obs-2026-06-22-linear-api-key-must-be-set-before-pi-launches]] — "Observation: LINEAR_API_KEY must be set before pi launches" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-linear-api-key-required-for-extension-tools]] — "Observation: Linear API key required for extension tools" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-linear-workflow-one-issue-per-pr]] — "Observation: Linear workflow: one issue per PR" *(created: 2026-06-22)*
+- [[sources/obs-2026-06-22-sqlite-sessions-db-keeps-corrupting]] — "Observation: SQLite sessions.db keeps corrupting" *(created: 2026-06-22)*
+- [[sources/obs-2026-06-22-staging-pds-deployed-at-ezpds-staging-up-railway-app]] — "Observation: Staging PDS deployed at ezpds-staging.up.railway.app" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-tangled-pr-records-created-via-atproto-don-t-appear-in-web-u]] — "Observation: Tangled PR records created via ATProto don't appear in web UI" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-two-pass-review-code-quality-then-adversarial]] — "Observation: Two-pass review: code quality then adversarial" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-wiki-bootstrapped-with-17-pages-from-5-source-docs]] — "Observation: Wiki bootstrapped with 17 pages from 5 source docs" *(created: 2026-06-22)*
@@ -46,4 +50,4 @@
 - [[sources/SRC-2026-06-22-005]] — SRC-2026-06-22-005 *(created: 2026-06-22)*
 
 ---
-*Last updated: 2026-06-22T18:32:10.351Z* | *Total pages: 34*
+*Last updated: 2026-06-22T18:58:13.106Z* | *Total pages: 38*
