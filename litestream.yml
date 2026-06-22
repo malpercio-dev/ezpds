@@ -1,9 +1,19 @@
-# Litestream replication config. Active only when LITESTREAM_REPLICA_URL is set
-# (production); staging/local leave it unset and run the relay directly.
-# Credentials (e.g. LITESTREAM_ACCESS_KEY_ID / LITESTREAM_SECRET_ACCESS_KEY and,
-# for S3-compatible stores, the endpoint) are supplied via the production
-# environment, never committed here.
+# Litestream replication config. Active only when the entrypoint detects
+# LITESTREAM_S3_BUCKET (production); staging/local leave it unset and run the
+# relay directly.
+#
+# Bucket + endpoint come from the production environment; credentials come from
+# LITESTREAM_ACCESS_KEY_ID / LITESTREAM_SECRET_ACCESS_KEY (never committed here).
+# force-path-style is false because the bucket provider requires virtual-hosted-
+# style addressing — Litestream otherwise defaults to path-style whenever a
+# custom endpoint is set. region "auto" suits S3-compatible providers that ignore
+# it; set a real region here if yours requires one.
 dbs:
   - path: /data/relay.db
     replicas:
-      - url: ${LITESTREAM_REPLICA_URL}
+      - type: s3
+        bucket: ${LITESTREAM_S3_BUCKET}
+        path: relay
+        endpoint: ${LITESTREAM_S3_ENDPOINT}
+        region: auto
+        force-path-style: false

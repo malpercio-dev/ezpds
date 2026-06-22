@@ -4,7 +4,7 @@ set -e
 # Fix /data ownership before dropping to the relay user.
 chown relay:relay /data
 
-if [ -n "${LITESTREAM_REPLICA_URL:-}" ]; then
+if [ -n "${LITESTREAM_S3_BUCKET:-}" ]; then
   # Production: restore the DB from the replica if it's missing, then run the
   # relay under Litestream so the WAL is streamed continuously to object storage.
   gosu relay litestream restore -if-db-not-exists -if-replica-exists -config /etc/litestream.yml /data/relay.db

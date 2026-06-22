@@ -87,7 +87,7 @@ Deploys use the Railway CLI (a `nixpkgs` dependency in the workflow) authenticat
 
 ### Backup & rollback
 
-When `LITESTREAM_REPLICA_URL` is set (production only), the container runs the relay under Litestream, which streams the SQLite WAL to object storage continuously and restores on boot — so a current restore point always exists before a promote. Staging/local leave it unset and run the relay directly.
+When `LITESTREAM_S3_BUCKET` is set on the production environment — together with `LITESTREAM_S3_ENDPOINT` and `LITESTREAM_ACCESS_KEY_ID` / `LITESTREAM_SECRET_ACCESS_KEY` — the container runs the relay under Litestream, which streams the SQLite WAL to object storage continuously and restores on boot, so a current restore point always exists before a promote. The replica is defined in `litestream.yml` with `force-path-style: false` (virtual-hosted-style, as Railway/Tigris-style buckets require). Staging/local leave these unset and run the relay directly.
 
 Rollback: because migrations are **forward-only** (no down-path), redeploying a previous `v*` tag is safe only when the schema change was backward-compatible (expand-contract). Otherwise, roll back by restoring the database from the Litestream replica (`litestream restore`) to a pre-promote point.
 
