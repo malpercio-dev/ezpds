@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-06-22T02:24:00.749Z",
+  "last_updated": "2026-06-22T18:32:10.351Z",
   "pages": {
     "concepts/did-plc": {
       "type": "concept",
@@ -191,6 +191,33 @@
       "captured": "2026-06-22",
       "status": "complete"
     },
+    "sources/atproto-crypto-use-official-library": {
+      "type": "source",
+      "title": "\"Use @atproto/crypto for DID:plc signatures\"",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "slug": "atproto-crypto-use-official-library",
+      "status": "insight",
+      "category": "architecture"
+    },
+    "sources/atproto-did-plc-cbor-encoding": {
+      "type": "source",
+      "title": "\"DID:plc CBOR encoding interop issue\"",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "slug": "atproto-did-plc-cbor-encoding",
+      "status": "insight",
+      "category": "architecture"
+    },
+    "sources/atproto-did-plc-cbor-signing": {
+      "type": "source",
+      "title": "\"ATProto DID:PLC CBOR Signing Requirements\"",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "slug": "atproto-did-plc-cbor-signing",
+      "status": "insight",
+      "category": "architecture"
+    },
     "sources/blob-storage-pitfalls": {
       "type": "source",
       "title": "\"Blob storage implementation pitfalls\"",
@@ -216,6 +243,40 @@
         "fk"
       ],
       "source_context": "\"MM-107 blob migration — initial V015 used integer account_id, had to fix to TEXT account_did\""
+    },
+    "sources/obs-2026-06-22-atproto-extension-created-for-pi": {
+      "type": "source",
+      "title": "\"Observation: ATProto extension created for pi\"",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "slug": "obs-2026-06-22-atproto-extension-created-for-pi",
+      "status": "observation",
+      "relevance": "high",
+      "observed_at": "2026-06-22T17:27:32.853Z",
+      "tags": [
+        "atproto",
+        "extension",
+        "pi",
+        "did-plc"
+      ],
+      "source_context": "\"Building ATProto extension for pi\""
+    },
+    "sources/obs-2026-06-22-atproto-pi-extension-fully-functional": {
+      "type": "source",
+      "title": "\"Observation: ATProto pi extension fully functional\"",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "slug": "obs-2026-06-22-atproto-pi-extension-fully-functional",
+      "status": "observation",
+      "relevance": "high",
+      "observed_at": "2026-06-22T17:47:54.278Z",
+      "tags": [
+        "atproto",
+        "extension",
+        "did:plc",
+        "crypto"
+      ],
+      "source_context": "\"ATProto extension development\""
     },
     "sources/obs-2026-06-22-axum-body-to-bytes-enforces-limit-natively": {
       "type": "source",
@@ -268,6 +329,57 @@
       ],
       "source_context": "\"MM-108 uploadBlob — needed configurable size limit\""
     },
+    "sources/obs-2026-06-22-did-ceremony-cbor-interop-issue-fixed": {
+      "type": "source",
+      "title": "\"Observation: DID ceremony CBOR interop issue fixed\"",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "slug": "obs-2026-06-22-did-ceremony-cbor-interop-issue-fixed",
+      "status": "observation",
+      "relevance": "high",
+      "observed_at": "2026-06-22T17:36:38.536Z",
+      "tags": [
+        "atproto",
+        "did-plc",
+        "crypto",
+        "fix"
+      ],
+      "source_context": "\"Fixing ATProto extension DID ceremony\""
+    },
+    "sources/obs-2026-06-22-fixed-mm-181-did-document-alsoknownas-now-updated-on-handle-": {
+      "type": "source",
+      "title": "\"Observation: Fixed MM-181: DID document alsoKnownAs now updated on handle changes\"",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "slug": "obs-2026-06-22-fixed-mm-181-did-document-alsoknownas-now-updated-on-handle-",
+      "status": "observation",
+      "relevance": "high",
+      "observed_at": "2026-06-22T18:01:54.118Z",
+      "tags": [
+        "did",
+        "handle",
+        "fix",
+        "alsoKnownAs"
+      ],
+      "source_context": "\"MM-181 fix implementation\""
+    },
+    "sources/obs-2026-06-22-linear-api-key-required-for-extension-tools": {
+      "type": "source",
+      "title": "\"Observation: Linear API key required for extension tools\"",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "slug": "obs-2026-06-22-linear-api-key-required-for-extension-tools",
+      "status": "observation",
+      "relevance": "medium",
+      "observed_at": "2026-06-22T17:13:52.960Z",
+      "tags": [
+        "linear",
+        "extension",
+        "environment",
+        "setup"
+      ],
+      "source_context": "\"Creating MM-181 for handle/alsoKnownAs bug\""
+    },
     "sources/obs-2026-06-22-linear-workflow-one-issue-per-pr": {
       "type": "source",
       "title": "\"Observation: Linear workflow: one issue per PR\"",
@@ -284,6 +396,22 @@
         "convention"
       ],
       "source_context": "\"User correction after MM-107/108 were batched — said \"we should do one linear issue at a time and PR it\"\""
+    },
+    "sources/obs-2026-06-22-tangled-pr-records-created-via-atproto-don-t-appear-in-web-u": {
+      "type": "source",
+      "title": "\"Observation: Tangled PR records created via ATProto don't appear in web UI\"",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "slug": "obs-2026-06-22-tangled-pr-records-created-via-atproto-don-t-appear-in-web-u",
+      "status": "observation",
+      "relevance": "high",
+      "observed_at": "2026-06-22T18:32:10.348Z",
+      "tags": [
+        "tangled",
+        "appview",
+        "projection"
+      ],
+      "source_context": "\"Tangled PR creation test\""
     },
     "sources/obs-2026-06-22-two-pass-review-code-quality-then-adversarial": {
       "type": "source",

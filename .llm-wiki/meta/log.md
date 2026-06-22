@@ -49,3 +49,30 @@
 ## [2026-06-22T02:24:00.747Z] retro
 - slug: "blob-storage-pitfalls", title: "Blob storage implementation pitfalls", category: "architecture"
 
+## [2026-06-22T17:13:52.961Z] observe
+- slug: "obs-2026-06-22-linear-api-key-required-for-extension-tools", title: "Linear API key required for extension tools", relevance: "medium"
+
+## [2026-06-22T17:27:28.022Z] retro
+- slug: "atproto-did-plc-cbor-encoding", title: "DID:plc CBOR encoding interop issue", category: "architecture"
+
+## [2026-06-22T17:27:32.853Z] observe
+- slug: "obs-2026-06-22-atproto-extension-created-for-pi", title: "ATProto extension created for pi", relevance: "high"
+
+## [2026-06-22T17:36:18.710Z] retro
+- slug: "atproto-crypto-use-official-library", title: "Use @atproto/crypto for DID:plc signatures", category: "architecture"
+
+## [2026-06-22T17:36:38.537Z] observe
+- slug: "obs-2026-06-22-did-ceremony-cbor-interop-issue-fixed", title: "DID ceremony CBOR interop issue fixed", relevance: "high"
+
+## [2026-06-22T17:47:54.279Z] observe
+- slug: "obs-2026-06-22-atproto-pi-extension-fully-functional", title: "ATProto pi extension fully functional", relevance: "high"
+
+## [2026-06-22T17:48:01.796Z] retro
+- slug: "atproto-did-plc-cbor-signing", title: "ATProto DID:PLC CBOR Signing Requirements", category: "architecture"
+
+## [2026-06-22T18:01:54.119Z] observe
+- slug: "obs-2026-06-22-fixed-mm-181-did-document-alsoknownas-now-updated-on-handle-", title: "Fixed MM-181: DID document alsoKnownAs now updated on handle changes", relevance: "high"
+
+## [2026-06-22T18:32:10.348Z] observe
+- slug: "obs-2026-06-22-tangled-pr-records-created-via-atproto-don-t-appear-in-web-u", title: "Tangled PR records created via ATProto don't appear in web UI", relevance: "high"
+
