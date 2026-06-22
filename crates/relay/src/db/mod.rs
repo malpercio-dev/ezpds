@@ -1,5 +1,6 @@
 pub mod accounts;
 pub mod dids;
+pub mod jwt_secret;
 pub mod oauth;
 pub mod password_reset;
 
@@ -88,6 +89,10 @@ static MIGRATIONS: &[Migration] = &[
     Migration {
         version: 14,
         sql: include_str!("migrations/V014__password_reset_tokens.sql"),
+    },
+    Migration {
+        version: 15,
+        sql: include_str!("migrations/V015__jwt_signing_secret.sql"),
     },
 ];
 

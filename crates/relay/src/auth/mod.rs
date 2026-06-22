@@ -18,7 +18,9 @@ pub use dpop::{
 pub use extractors::AuthenticatedUser;
 #[allow(unused_imports)]
 pub use jwt::{AuthScope, TokenType};
-pub use signing_key::{load_or_create_oauth_signing_key, OAuthSigningKey};
+pub use signing_key::{
+    load_or_create_jwt_secret, load_or_create_oauth_signing_key, OAuthSigningKey,
+};
 
 // Test-only: make private helpers visible to the test module below (which uses `use super::*`).
 #[cfg(test)]

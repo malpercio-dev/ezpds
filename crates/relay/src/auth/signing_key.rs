@@ -2,6 +2,7 @@
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use p256::pkcs8::EncodePrivateKey;
+use rand_core::{OsRng, RngCore};
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
@@ -97,6 +98,57 @@ pub async fn load_or_create_oauth_signing_key(
     })
 }
 
+/// Load the persistent HS256 JWT signing secret from the database, or generate one on
+/// first boot.
+///
+/// Mirrors [`load_or_create_oauth_signing_key`]: the 32-byte secret is AES-256-GCM
+/// encrypted with `master_key` before storage and decrypted on load. If `master_key` is
+/// `None`, a fresh ephemeral secret is returned and a warning logged — access/refresh
+/// tokens then rotate on every restart.
+pub async fn load_or_create_jwt_secret(
+    pool: &SqlitePool,
+    master_key: Option<&[u8; 32]>,
+) -> anyhow::Result<[u8; 32]> {
+    use crate::db::jwt_secret::{get_jwt_secret, store_jwt_secret};
+
+    // Load and decrypt an existing secret.
+    if let Some(row) = get_jwt_secret(pool).await? {
+        let master_key = master_key.ok_or_else(|| {
+            anyhow::anyhow!(
+                "signing_key_master_key not configured but a JWT signing secret exists in the \
+                 DB; cannot decrypt it — set signing_key_master_key in config"
+            )
+        })?;
+        let decrypted = crypto::decrypt_private_key(&row.secret_encrypted, master_key)
+            .map_err(|e| anyhow::anyhow!("failed to decrypt JWT signing secret: {e}"))?;
+        let mut secret = [0u8; 32];
+        secret.copy_from_slice(decrypted.as_ref());
+        tracing::info!(key_id = %row.id, "JWT signing secret loaded from database");
+        return Ok(secret);
+    }
+
+    // No secret stored yet — generate 32 fresh random bytes.
+    let mut secret = [0u8; 32];
+    OsRng.fill_bytes(&mut secret);
+
+    match master_key {
+        Some(key) => {
+            let encrypted = crypto::encrypt_private_key(&secret, key)
+                .map_err(|e| anyhow::anyhow!("JWT signing secret encryption failed: {e}"))?;
+            let key_id = Uuid::new_v4().to_string();
+            store_jwt_secret(pool, &key_id, &encrypted).await?;
+            tracing::info!(key_id = %key_id, "JWT signing secret generated and persisted");
+        }
+        None => {
+            tracing::warn!(
+                "signing_key_master_key not configured; JWT signing secret is ephemeral — \
+                 access/refresh tokens will be invalidated on restart"
+            );
+        }
+    }
+    Ok(secret)
+}
+
 /// Decode a stored OAuth signing key row into an `OAuthSigningKey`.
 fn decode_oauth_signing_key(
     key_id: &str,
@@ -136,4 +188,55 @@ fn build_encoding_key(
         .to_pkcs8_der()
         .map_err(|e| anyhow::anyhow!("PKCS#8 DER encoding failed: {e}"))?;
     Ok(jsonwebtoken::EncodingKey::from_ec_der(pkcs8_der.as_bytes()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::{jwt_secret::get_jwt_secret, open_pool, run_migrations};
+
+    async fn test_pool() -> SqlitePool {
+        let pool = open_pool("sqlite::memory:").await.unwrap();
+        run_migrations(&pool).await.unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn jwt_secret_persists_across_loads_with_master_key() {
+        let pool = test_pool().await;
+        let master_key = [7u8; 32];
+        let first = load_or_create_jwt_secret(&pool, Some(&master_key))
+            .await
+            .unwrap();
+        let second = load_or_create_jwt_secret(&pool, Some(&master_key))
+            .await
+            .unwrap();
+        assert_eq!(first, second, "JWT secret must survive restarts");
+        assert!(get_jwt_secret(&pool).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn jwt_secret_ephemeral_without_master_key_is_not_persisted() {
+        let pool = test_pool().await;
+        let secret = load_or_create_jwt_secret(&pool, None).await.unwrap();
+        assert_eq!(secret.len(), 32);
+        assert!(
+            get_jwt_secret(&pool).await.unwrap().is_none(),
+            "ephemeral secret must not be stored"
+        );
+    }
+
+    #[tokio::test]
+    async fn jwt_secret_wrong_master_key_fails_to_decrypt() {
+        let pool = test_pool().await;
+        load_or_create_jwt_secret(&pool, Some(&[1u8; 32]))
+            .await
+            .unwrap();
+        assert!(
+            load_or_create_jwt_secret(&pool, Some(&[2u8; 32]))
+                .await
+                .is_err(),
+            "decrypt with the wrong master key must fail"
+        );
+    }
 }

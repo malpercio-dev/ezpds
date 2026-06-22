@@ -2,7 +2,6 @@
 
 use anyhow::Context;
 use clap::Parser;
-use rand_core::RngCore;
 use reqwest::Client;
 use std::{path::PathBuf, sync::Arc};
 
@@ -156,9 +155,12 @@ async fn run() -> anyhow::Result<()> {
         well_known::HttpWellKnownResolver::new(http_client.clone()),
     ));
 
-    let mut jwt_secret = [0u8; 32];
-    rand_core::OsRng.fill_bytes(&mut jwt_secret);
-    tracing::info!("JWT signing secret generated (ephemeral — rotates on restart)");
+    let jwt_secret = auth::load_or_create_jwt_secret(
+        &pool,
+        config.signing_key_master_key.as_ref().map(|s| &*s.0),
+    )
+    .await
+    .with_context(|| "failed to load or create JWT signing secret")?;
 
     let state = app::AppState {
         config: Arc::new(config),
