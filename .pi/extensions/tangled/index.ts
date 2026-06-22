@@ -168,63 +168,40 @@ export default function (pi: ExtensionAPI) {
       repo_path: Type.Optional(Type.String({ description: "Path to local git repo (default: current directory)" })),
     }),
     async execute(_id, params) {
-      const token = await getToken();
-      const pds = await getPdsUrl();
-      const did = await getDid();
-      const repoName = params.repo.split("/")[1];
-      const repoAtUri = `at://${did}/sh.tangled.repo/${repoName}`;
       const targetBranch = params.target_branch ?? "main";
       const repoPath = params.repo_path || process.cwd();
 
-      // Generate patch from local git repo
-      let patch: string;
+      // Verify the branch has commits ahead of target
       try {
-        patch = execSync(
+        const patch = execSync(
           `git format-patch ${targetBranch}..${params.source_branch} --stdout`,
           { cwd: repoPath, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 },
         );
+        if (!patch.trim()) {
+          throw new Error(`No commits between ${targetBranch} and ${params.source_branch}.`);
+        }
       } catch (err) {
         throw new Error(`git format-patch failed: ${err}`);
       }
-      if (!patch.trim()) {
-        throw new Error(`No commits between ${targetBranch} and ${params.source_branch}. Push commits to the source branch first.`);
-      }
 
-      const now = new Date().toISOString();
+      const webUrl = `https://tangled.org/${params.repo}/pulls/new?source=branch&sourceBranch=${encodeURIComponent(params.source_branch)}&targetBranch=${encodeURIComponent(targetBranch)}`;
 
-      const record = {
-        $type: "sh.tangled.repo.pull",
-        target: {
-          repo: repoAtUri,
-          branch: targetBranch,
-        },
-        title: params.title,
-        body: params.description ?? "",
-        patch,
-        createdAt: now,
-      };
-
-      const res = await fetch(`${pds}/xrpc/com.atproto.repo.createRecord`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          repo: did,
-          collection: "sh.tangled.repo.pull",
-          validate: false,
-          record,
-        }),
-      });
-      if (!res.ok) {
-        const body = await res.text();
-        throw new Error(`createRecord failed: ${res.status} — ${body}`);
-      }
-      const result = (await res.json()) as { uri: string; cid: string };
       return {
-        content: [{ type: "text", text: `PR created: ${params.title}\nURI: ${result.uri}\n\n⚠️ Tangled AppView limitation: CLI-created PRs are stored on your PDS and indexed by Constellation, but do NOT appear in the Tangled web UI (tangled.org/core#576). The PR exists in the ATProto record layer and can be listed via tangled_list_prs (which queries Constellation), but the appview firehose ingester does not project them to /pulls/N pages.` }],
-        details: { result },
+        content: [{ type: "text", text: [
+          `Open this URL to create the PR:\n${webUrl}`,
+          "",
+          "Paste the following into the form:",
+          "",
+          "---",
+          "",
+          `**Title:** \`${params.title}\``,
+          "",
+          "**Description:**",
+          "",
+          params.description ?? "(none)",
+          "",
+          "---",
+        ].join("\n") }],
       };
     },
   });
