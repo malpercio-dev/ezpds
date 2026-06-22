@@ -19,8 +19,8 @@ dependencies:
 
 steps:
   - name: CI (fmt, clippy, test, audit)
-    run: just ci
+    command: just ci
   - name: Deploy to staging
-    run: RAILWAY_TOKEN="$RAILWAY_TOKEN_STAGING" railway up --service ezpds --environment staging --ci
+    command: RAILWAY_TOKEN="$RAILWAY_TOKEN_STAGING" railway up --service ezpds --environment staging --ci
   - name: Verify staging deploy healthy
-    run: RAILWAY_TOKEN="$RAILWAY_TOKEN_STAGING" sh scripts/ci/railway-wait-healthy.sh
+    command: RAILWAY_TOKEN="$RAILWAY_TOKEN_STAGING" sh scripts/ci/railway-wait-healthy.sh
