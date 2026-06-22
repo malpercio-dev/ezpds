@@ -46,7 +46,7 @@ The relay container expects the following environment variables and mounts:
 
 1. **Create Railway project** for the relay.
 2. **Add a Dockerfile service:**
-   - Connect to the GitHub repo. Railway detects `railway.toml` and uses the Dockerfile builder automatically.
+   - The repo is on tangled, which Railway cannot connect to directly, so deploys are driven by the spindle CI pipeline via the Railway CLI (`railway up`) — see **CI/CD pipeline** below. Railway detects `railway.toml` and uses the Dockerfile builder automatically. (For initial bootstrap you can also run `railway up` from a local checkout.)
    - Set the following environment variables in the Railway dashboard:
      - `EZPDS_PUBLIC_URL` - Use the Railway domain once assigned (see chicken-and-egg note below).
      - `EZPDS_AVAILABLE_USER_DOMAINS` - Your handle domain list (comma-separated).
@@ -70,6 +70,26 @@ The relay validates its public URL against the domain it's accessed through. On 
 1. Set `EZPDS_PUBLIC_URL` to the Railway-assigned domain (e.g., `https://relay-xyz.railway.app`).
 2. Let the first deployment complete and verify health: `curl https://relay-xyz.railway.app/xrpc/_health`.
 3. If migrating a custom domain, update `EZPDS_PUBLIC_URL` and redeploy.
+
+### CI/CD pipeline (tangled spindle → Railway)
+
+The repo and CI live on tangled; there is no GitHub integration. Three spindle workflows in `.tangled/workflows/` drive everything, each running the `just ci` gate first (fmt, clippy, test, audit):
+
+| Workflow | Trigger | Action |
+|----------|---------|--------|
+| `pr.yaml` | pull request → `main` | test gate only (no deploy, no Railway token) |
+| `staging.yaml` | push → `main` | `just ci`, then `railway up` to the **staging** environment |
+| `release.yaml` | push a `v*` tag | `just ci`, then `railway up` to **production** |
+
+Deploys use the Railway CLI (a `nixpkgs` dependency in the workflow) authenticated by an environment-scoped project token stored as a tangled repo secret (`RAILWAY_TOKEN_STAGING` / `RAILWAY_TOKEN_PRODUCTION`). Because `railway up --ci` returns at build completion, `scripts/ci/railway-wait-healthy.sh` then polls deployment status so an unhealthy deploy fails the pipeline. No Railway token is present in PR pipelines.
+
+**Two environments:** `production` (`ezpds-production.up.railway.app`, kept warm) and `staging` (`ezpds-staging.up.railway.app`, serverless sleep), each with its own secrets (distinct master key, admin token, user-domain list) and its own `/data` volume. Production is reached only by pushing a `v*` tag — merging to `main` deploys staging, never production.
+
+### Backup & rollback
+
+When `LITESTREAM_REPLICA_URL` is set (production only), the container runs the relay under Litestream, which streams the SQLite WAL to object storage continuously and restores on boot — so a current restore point always exists before a promote. Staging/local leave it unset and run the relay directly.
+
+Rollback: because migrations are **forward-only** (no down-path), redeploying a previous `v*` tag is safe only when the schema change was backward-compatible (expand-contract). Otherwise, roll back by restoring the database from the Litestream replica (`litestream restore`) to a pre-promote point.
 
 ## Colmena / NixOS oci-containers Deployment
 
@@ -98,7 +118,7 @@ The module creates a systemd unit `podman-ezpds.service` that starts the contain
 
 ## Image Distribution
 
-The relay image is built from the repo `Dockerfile` and published to **GHCR** (GitHub Container Registry):
+For the **Railway** path no registry is required — `railway up` uploads the build context and Railway builds the `Dockerfile`. A published image is only needed for the **secondary** colmena/NixOS path, via **GHCR** (GitHub Container Registry):
 
 ```bash
 # Build locally (development):
@@ -113,7 +133,7 @@ docker buildx imagetools inspect ghcr.io/your-org/relay:latest | grep Digest
 ghcr.io/your-org/relay@sha256:abc123...
 ```
 
-In CI/CD (e.g., GitHub Actions), automate this: trigger on tag/main push, build, push to GHCR, and redeploy via Railway webhook or colmena.
+The primary CI/CD path (tangled spindle → Railway, above) needs none of this. For the colmena/NixOS path, publish to GHCR (a GitHub account/PAT works even though the repo lives on tangled) and pin the image by digest in the NixOS module.
 
 ## Security Posture
 

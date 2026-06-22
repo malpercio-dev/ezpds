@@ -17,6 +17,15 @@ Last verified: 2026-06-21
 - `cargo test` - Run all tests
 - `cargo clippy --workspace -- -D warnings` - Lint (warnings as errors)
 - `cargo fmt --all --check` - Check formatting
+- `just ci` - Full local gate (fmt-check, clippy, test, audit) — the same checks CI runs
+
+## CI/CD
+CI runs on **tangled spindles** (`.tangled/workflows/`), not GitHub Actions. Three workflows, each running `just ci` first:
+- `pr.yaml` — test gate on PRs to `main` (no deploy, no Railway token)
+- `staging.yaml` — push to `main` → deploy to the Railway **staging** environment
+- `release.yaml` — push a `v*` tag → promote to **production**
+
+Deploys use the Railway CLI (nixpkgs dep) with environment-scoped tokens held as tangled repo secrets; production is reached only via a `v*` tag, never by merging to `main`. Litestream backs up the production SQLite DB. See [docs/deploy.md](docs/deploy.md).
 
 ## Dev Environment
 - Managed entirely by Nix flake + devenv; do not install tools globally
