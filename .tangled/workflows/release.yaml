@@ -13,9 +13,14 @@ dependencies:
     - sqlite
     - just
     - cargo-audit
+    - railway
+    - jq
+    - coreutils
 
 steps:
   - name: CI (fmt, clippy, test, audit)
     run: just ci
-  - name: Promote to production (wired in Phase 5)
-    run: echo "production promote added in Phase 5"
+  - name: Promote to production
+    run: RAILWAY_TOKEN="$RAILWAY_TOKEN_PRODUCTION" railway up --service ezpds --environment production --ci
+  - name: Verify production deploy healthy
+    run: RAILWAY_TOKEN="$RAILWAY_TOKEN_PRODUCTION" sh scripts/ci/railway-wait-healthy.sh

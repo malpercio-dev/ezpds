@@ -8,6 +8,8 @@
 
 **Codebase verified:** 2026-06-21. `release.yaml` exists with a placeholder promote step and a `v*` tag trigger (Phase 1, Task 3). `scripts/ci/railway-wait-healthy.sh` exists (Phase 3, Task 1).
 
+> **Execution note (2026-06-21):** like staging (Phase 3), `release.yaml` declares `railway`, `jq`, and `coreutils` as nixpkgs deps and reuses `scripts/ci/railway-wait-healthy.sh` — no CLI install step.
+
 ## Acceptance Criteria Coverage
 ### ci-cd-tangled-railway.AC3: Production promote on tag
 - **ci-cd-tangled-railway.AC3.1 Success:** Pushing a `v*` tag that passes `just ci` deploys that exact tagged commit to `production`.
