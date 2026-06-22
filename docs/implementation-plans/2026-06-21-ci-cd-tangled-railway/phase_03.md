@@ -14,6 +14,8 @@
 - ✓ use-railway execution rule: poll `railway deployment list --json` until newest status is `SUCCESS` (deployed) or `FAILED`/`CRASHED` (fail).
 - **Confirm at execution:** the `railway deployment list --json` shape (`.[0].status` and the status enum values), the CLI install mechanism/PATH in a nixery step, and that an env-scoped token narrows `deployment list` to that environment.
 
+> **Execution note (2026-06-21):** nixpkgs provides `railway` (`pkgs/by-name/ra/railway`), so the workflows declare it (with `jq` and `coreutils`) in `dependencies.nixpkgs` and **drop the separate "Install Railway CLI" step**. A nixpkgs dependency is baked into every step's Nixery image, which avoids both running a prebuilt dynamically-linked binary on a non-FHS Nix image and the fresh-container-per-step persistence problem. The deploy and verify steps both have `railway`/`jq` available.
+
 ## Acceptance Criteria Coverage
 ### ci-cd-tangled-railway.AC2: Staging CD on merge to main
 - **ci-cd-tangled-railway.AC2.1 Success:** A push to `main` that passes `just ci` deploys the relay to the `staging` environment via the Railway CLI.
