@@ -3,8 +3,8 @@
 // Blob storage backend: filesystem I/O, CID computation, MIME type detection.
 // Blobs are stored at `{data_dir}/blobs/{cid[0:2]}/{cid}` with 2-char prefix fanout.
 
-// Allow dead_code: this module's public API is consumed by the upload_blob route (MM-108)
-// which ships in the next commit. Functions are tested here; the warning is transient.
+// Dead code allow: `read_blob` and `delete_blob_file` are consumed by getBlob (MM-109)
+// and GC cleanup. All functions are tested here.
 #![allow(dead_code)]
 
 use sha2::{Digest, Sha256};
@@ -15,8 +15,6 @@ use thiserror::Error;
 pub enum BlobStoreError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("MIME type could not be detected")]
-    UnknownMime,
 }
 
 /// Result of storing a blob on disk.

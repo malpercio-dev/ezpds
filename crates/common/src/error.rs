@@ -262,6 +262,7 @@ mod tests {
             (ErrorCode::AuthenticationRequired, 401),
             (ErrorCode::InvalidToken, 401),
             (ErrorCode::ExpiredToken, 400),
+            (ErrorCode::PayloadTooLarge, 413),
         ];
         for (code, expected) in cases {
             assert_eq!(code.status_code(), expected, "wrong status for {code:?}");

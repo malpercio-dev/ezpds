@@ -1,7 +1,7 @@
 // pattern: Imperative Shell
-//
-// Allow dead_code: this module's public API is consumed by the upload_blob route (MM-108)
-// which ships in the next commit. Functions are tested here; the warning is transient.
+
+// Dead code allow: these functions are consumed by routes that ship in subsequent issues
+// (getBlob, listBlobs, GC cleanup). All functions are tested here.
 #![allow(dead_code)]
 
 use sqlx::SqlitePool;
