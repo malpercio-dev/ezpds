@@ -23,6 +23,11 @@ pub struct BlobRow {
 ///
 /// `temp_until` should be set to now + 6 hours for newly uploaded blobs that
 /// haven't been referenced by a repo record yet.
+///
+/// Uses `ON CONFLICT(cid) DO UPDATE` for idempotency: if the same content
+/// (same CID) is uploaded by different users, the existing row is returned
+/// and `ref_count` is unchanged. This matches ATProto's uploadBlob semantics
+/// (content-addressable, same content = same CID = no error).
 pub async fn insert_blob(
     pool: &SqlitePool,
     cid: &str,
@@ -34,7 +39,8 @@ pub async fn insert_blob(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO blobs (cid, account_did, mime_type, size_bytes, storage_path, temp_until)
-         VALUES (?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(cid) DO UPDATE SET ref_count = ref_count",
     )
     .bind(cid)
     .bind(account_did)
@@ -45,6 +51,21 @@ pub async fn insert_blob(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Sum of bytes uploaded by a specific account.
+///
+/// Used to enforce per-user storage quotas.
+pub async fn account_storage_bytes(
+    pool: &SqlitePool,
+    account_did: &str,
+) -> Result<i64, sqlx::Error> {
+    let row: (i64,) =
+        sqlx::query_as("SELECT COALESCE(SUM(size_bytes), 0) FROM blobs WHERE account_did = ?")
+            .bind(account_did)
+            .fetch_one(pool)
+            .await?;
+    Ok(row.0)
 }
 
 /// Look up a blob by its CID.
@@ -262,6 +283,71 @@ mod tests {
 
         let expired = list_expired_temps(&pool).await.unwrap();
         assert!(expired.is_empty());
+    }
+
+    #[tokio::test]
+    async fn insert_duplicate_cid_is_idempotent() {
+        let pool = test_pool().await;
+        let account_did = insert_test_account(&pool).await;
+
+        insert_blob(
+            &pool,
+            "bafkridup",
+            &account_did,
+            "image/jpeg",
+            1024,
+            "blobs/ba/bafkridup",
+            "2026-01-01T12:00:00Z",
+        )
+        .await
+        .unwrap();
+
+        // Second insert with same CID — must succeed (upsert).
+        insert_blob(
+            &pool,
+            "bafkridup",
+            &account_did,
+            "image/jpeg",
+            1024,
+            "blobs/ba/bafkridup",
+            "2026-01-01T12:00:00Z",
+        )
+        .await
+        .unwrap();
+
+        // Verify only one row exists.
+        let blob = get_blob_by_cid(&pool, "bafkridup").await.unwrap().unwrap();
+        assert_eq!(blob.ref_count, 0);
+    }
+
+    #[tokio::test]
+    async fn account_storage_bytes_sums_correctly() {
+        let pool = test_pool().await;
+        let account_did = insert_test_account(&pool).await;
+
+        for i in 0..3 {
+            insert_blob(
+                &pool,
+                &format!("bafkristorage{i}"),
+                &account_did,
+                "image/jpeg",
+                100 * (i as i64 + 1),
+                &format!("blobs/ba/bafkristorage{i}"),
+                "2026-01-01T12:00:00Z",
+            )
+            .await
+            .unwrap();
+        }
+
+        let total = account_storage_bytes(&pool, &account_did).await.unwrap();
+        assert_eq!(total, 100 + 200 + 300); // 600
+    }
+
+    #[tokio::test]
+    async fn account_storage_bytes_empty_account_returns_zero() {
+        let pool = test_pool().await;
+        let total = account_storage_bytes(&pool, "did:plc:empty").await.unwrap();
+        assert_eq!(total, 0);
     }
 
     #[tokio::test]

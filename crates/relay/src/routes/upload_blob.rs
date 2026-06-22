@@ -79,17 +79,36 @@ pub async fn upload_blob(
     // 2. Read the full request body, enforcing max size.
     let bytes = collect_body_with_limit(request.into_body(), max_size).await?;
 
-    // 3. Store blob on filesystem (CID computation + MIME detection + write).
+    // 3. Check per-account storage quota.
+    let quota = state.config.blobs.max_storage_per_account as i64;
+    let used = blobs::account_storage_bytes(&state.db, &user.did)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to check account storage");
+            ApiError::new(ErrorCode::InternalError, "failed to check storage quota")
+        })?;
+    if used + bytes.len() as i64 > quota {
+        return Err(ApiError::new(
+            ErrorCode::PayloadTooLarge,
+            format!(
+                "account storage quota exceeded: {used} of {quota} bytes used, \
+                 upload of {} bytes would exceed limit",
+                bytes.len()
+            ),
+        ));
+    }
+
+    // 4. Store blob on filesystem (CID computation + MIME detection + write).
     let stored = blob_store::store_blob(&state.config.data_dir, &bytes).map_err(|e| {
         tracing::error!(error = %e, "failed to store blob on filesystem");
         ApiError::new(ErrorCode::InternalError, "failed to store blob")
     })?;
 
-    // 4. Compute temp_until = now + 6 hours.
+    // 5. Compute temp_until = now + 6 hours.
     let temp_until = chrono::Utc::now() + chrono::Duration::hours(6);
     let temp_until_str = temp_until.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
 
-    // 5. Insert blob metadata into SQLite.
+    // 6. Insert blob metadata into SQLite.
     blobs::insert_blob(
         &state.db,
         &stored.cid,
@@ -113,7 +132,7 @@ pub async fn upload_blob(
         "blob uploaded"
     );
 
-    // 6. Build response.
+    // 7. Build response.
     Ok((
         StatusCode::OK,
         Json(UploadBlobResponse {
@@ -173,6 +192,18 @@ mod tests {
         let base = test_state().await;
         let mut config = (*base.config).clone();
         config.blobs.max_blob_size = 100;
+        AppState {
+            config: Arc::new(config),
+            ..base
+        }
+    }
+
+    /// Helper: create a test state with a small per-account storage quota (250 bytes).
+    async fn state_with_small_storage_quota() -> AppState {
+        let base = test_state().await;
+        let mut config = (*base.config).clone();
+        config.blobs.max_blob_size = 1000;
+        config.blobs.max_storage_per_account = 250;
         AppState {
             config: Arc::new(config),
             ..base
@@ -312,5 +343,116 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    /// Uploading the same content twice returns 200 both times (idempotent).
+    #[tokio::test]
+    async fn duplicate_cid_upload_is_idempotent() {
+        let state = test_state().await;
+        seed_account(&state, "did:plc:dup1").await;
+        let jwt = issue_test_jwt(&state, "did:plc:dup1");
+
+        let content = b"duplicate content";
+
+        let r1 = app_with_state(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.repo.uploadBlob")
+                    .header("authorization", format!("Bearer {jwt}"))
+                    .body(Body::from(content.to_vec()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r1.status(), StatusCode::OK);
+
+        let body1: serde_json::Value = body_json(r1).await;
+        let cid = body1["blob"]["ref"]["$link"].as_str().unwrap().to_string();
+
+        // Second upload — same content, same CID, must succeed.
+        let jwt2 = issue_test_jwt(&state, "did:plc:dup1");
+        let r2 = app_with_state(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.repo.uploadBlob")
+                    .header("authorization", format!("Bearer {jwt2}"))
+                    .body(Body::from(content.to_vec()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r2.status(), StatusCode::OK);
+
+        let body2: serde_json::Value = body_json(r2).await;
+        assert_eq!(
+            body2["blob"]["ref"]["$link"].as_str().unwrap(),
+            cid,
+            "same content must produce same CID"
+        );
+    }
+
+    /// Upload exceeding per-account storage quota returns 413.
+    #[tokio::test]
+    async fn storage_quota_exceeded_returns_413() {
+        let state = state_with_small_storage_quota().await;
+        seed_account(&state, "did:plc:quota").await;
+
+        // First upload: 200 bytes — fits within 250 byte quota.
+        let jwt = issue_test_jwt(&state, "did:plc:quota");
+        let r1 = app_with_state(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.repo.uploadBlob")
+                    .header("authorization", format!("Bearer {jwt}"))
+                    .body(Body::from(vec![0xAA; 200]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r1.status(), StatusCode::OK);
+
+        // Second upload: 100 bytes — would bring total to 300, exceeding 250.
+        let jwt2 = issue_test_jwt(&state, "did:plc:quota");
+        let r2 = app_with_state(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.repo.uploadBlob")
+                    .header("authorization", format!("Bearer {jwt2}"))
+                    .body(Body::from(vec![0xBB; 100]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r2.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    /// Empty body (0 bytes) uploads successfully.
+    #[tokio::test]
+    async fn empty_body_uploads_successfully() {
+        let state = test_state().await;
+        seed_account(&state, "did:plc:empty").await;
+        let jwt = issue_test_jwt(&state, "did:plc:empty");
+
+        let response = app_with_state(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.repo.uploadBlob")
+                    .header("authorization", format!("Bearer {jwt}"))
+                    .body(Body::from(Vec::<u8>::new()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_json(response).await;
+        assert_eq!(body["blob"]["size"], 0);
+        assert_eq!(body["blob"]["mimeType"], "application/octet-stream");
     }
 }

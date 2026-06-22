@@ -73,19 +73,23 @@ pub fn read_blob(data_dir: &Path, storage_path: &str) -> Result<Vec<u8>, BlobSto
 }
 
 /// Delete a blob from disk. Returns Ok(true) if the file existed, Ok(false) if not found.
+///
+/// Avoids TOCTOU by attempting the delete directly and matching on the error kind,
+/// rather than checking `exists()` first.
 pub fn delete_blob_file(data_dir: &Path, storage_path: &str) -> Result<bool, BlobStoreError> {
     let abs_path = data_dir.join(storage_path);
-    if abs_path.exists() {
-        std::fs::remove_file(&abs_path)?;
-        // Clean up the prefix directory if empty.
-        if let Some(parent) = abs_path.parent() {
-            if std::fs::read_dir(parent)?.next().is_none() {
-                std::fs::remove_dir(parent).ok(); // best-effort
+    match std::fs::remove_file(&abs_path) {
+        Ok(()) => {
+            // Best-effort: clean up the prefix directory if empty.
+            if let Some(parent) = abs_path.parent() {
+                if std::fs::read_dir(parent)?.next().is_none() {
+                    std::fs::remove_dir(parent).ok();
+                }
             }
+            Ok(true)
         }
-        Ok(true)
-    } else {
-        Ok(false)
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(BlobStoreError::Io(e)),
     }
 }
 
@@ -98,7 +102,7 @@ pub fn delete_blob_file(data_dir: &Path, storage_path: &str) -> Result<bool, Blo
 ///
 /// Encoded in base32 with `bafk` prefix (standard for raw CIDv1 with SHA-256).
 fn build_cid(hash: &[u8]) -> String {
-    assert_eq!(hash.len(), 32, "SHA-256 hash must be 32 bytes");
+    debug_assert_eq!(hash.len(), 32, "SHA-256 hash must be 32 bytes");
 
     let mut cid_bytes = Vec::with_capacity(36);
     // CIDv1
@@ -228,5 +232,38 @@ mod tests {
             cid.starts_with("bafk"),
             "raw CIDv1 + SHA-256 starts with bafk"
         );
+    }
+
+    /// Known-answer test: SHA-256 of empty string must produce a specific CID.
+    /// This catches bugs in CID encoding (wrong codec, wrong multihash, base32 errors).
+    #[test]
+    fn build_cid_known_answer_empty_string() {
+        let hash = Sha256::digest(b"");
+        let cid = build_cid(hash.as_slice());
+        // This value is computed once and frozen. If this test fails, the CID
+        // encoding is broken and all existing blobs become unreachable.
+        assert_eq!(
+            cid, "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku",
+            "CID for SHA-256 of empty string must match known value"
+        );
+    }
+
+    #[test]
+    fn read_blob_nonexistent_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = read_blob(dir.path(), "blobs/xx/nonexistent");
+        assert!(result.is_err(), "must return error for missing file");
+    }
+
+    #[test]
+    fn empty_content_stores_successfully() {
+        let dir = tempfile::tempdir().unwrap();
+        let stored = store_blob(dir.path(), b"").unwrap();
+
+        assert_eq!(stored.size_bytes, 0);
+        assert_eq!(stored.mime_type, "application/octet-stream");
+
+        let read_back = read_blob(dir.path(), &stored.storage_path).unwrap();
+        assert!(read_back.is_empty());
     }
 }

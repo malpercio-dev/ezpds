@@ -61,18 +61,26 @@ pub struct BlobsConfig {
     /// Maximum blob size in bytes. Default: 50 MiB.
     #[serde(default = "default_max_blob_size")]
     pub max_blob_size: u64,
+    /// Per-account storage quota in bytes. Default: 1 GiB.
+    #[serde(default = "default_max_storage_per_account")]
+    pub max_storage_per_account: u64,
 }
 
 impl Default for BlobsConfig {
     fn default() -> Self {
         Self {
             max_blob_size: default_max_blob_size(),
+            max_storage_per_account: default_max_storage_per_account(),
         }
     }
 }
 
 fn default_max_blob_size() -> u64 {
     50 * 1024 * 1024 // 50 MiB
+}
+
+fn default_max_storage_per_account() -> u64 {
+    1024 * 1024 * 1024 // 1 GiB
 }
 
 /// Stub for future OAuth configuration.
