@@ -1,0 +1,17 @@
+meta {
+  name: Get Blob (sync.getBlob)
+  type: http
+  seq: 25
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.sync.getBlob?did={{did}}&cid={{cid}}
+  body: none
+  auth: none
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  did: did:plc:exampleabcdefghijklmnopqrst
+  cid: bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku
+}

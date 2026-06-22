@@ -10,6 +10,7 @@ pub mod create_signing_key;
 pub mod delete_handle;
 pub mod delete_session;
 pub mod describe_server;
+pub mod get_blob;
 pub mod get_device_relay;
 pub mod get_did;
 pub mod get_relay_signing_key;

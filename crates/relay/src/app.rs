@@ -27,6 +27,7 @@ use crate::routes::create_signing_key::create_signing_key;
 use crate::routes::delete_handle::delete_handle_handler;
 use crate::routes::delete_session::delete_session;
 use crate::routes::describe_server::describe_server;
+use crate::routes::get_blob::get_blob;
 use crate::routes::get_device_relay::get_device_relay;
 use crate::routes::get_did::get_did_handler;
 use crate::routes::get_relay_signing_key::get_relay_signing_key;
@@ -191,6 +192,7 @@ pub fn app(state: AppState) -> Router {
             get(resolve_handle_handler),
         )
         .route("/xrpc/com.atproto.repo.uploadBlob", post(upload_blob))
+        .route("/xrpc/com.atproto.sync.getBlob", get(get_blob))
         .route("/xrpc/:method", get(xrpc_handler).post(xrpc_handler))
         .route("/v1/accounts", post(create_account))
         .route("/v1/accounts/claim-codes", post(claim_codes))
