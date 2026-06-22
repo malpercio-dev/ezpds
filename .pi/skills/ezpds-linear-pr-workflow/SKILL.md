@@ -1,6 +1,6 @@
 ---
 name: ezpds-linear-pr-workflow
-description: Standard workflow for implementing one Linear issue in the ezpds repo: pick, implement, verify, ship, review (two-pass), fix, pause.
+description: "Standard workflow for implementing one Linear issue in the ezpds repo: pick, implement, verify, ship, review (two-pass), fix, pause."
 ---
 
 # ezpds Linear PR Workflow
