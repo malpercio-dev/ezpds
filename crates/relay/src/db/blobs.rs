@@ -121,6 +121,42 @@ pub async fn list_blobs_for_account(
     .await
 }
 
+/// List blob CIDs for a DID with cursor-based pagination.
+///
+/// Returns up to `limit` CIDs (default 500, max 2000) for blobs owned by the given DID.
+/// Results are ordered by CID (lexicographic). If `cursor` is provided, only CIDs
+/// strictly greater than the cursor are returned.
+pub async fn list_blob_cids(
+    pool: &SqlitePool,
+    account_did: &str,
+    limit: i64,
+    cursor: Option<&str>,
+) -> Result<Vec<String>, sqlx::Error> {
+    let limit = limit.clamp(1, 2000);
+
+    match cursor {
+        Some(cursor_cid) => {
+            sqlx::query_scalar::<_, String>(
+                "SELECT cid FROM blobs WHERE account_did = ? AND cid > ? ORDER BY cid ASC LIMIT ?",
+            )
+            .bind(account_did)
+            .bind(cursor_cid)
+            .bind(limit + 1) // fetch one extra to detect if there's a next page
+            .fetch_all(pool)
+            .await
+        }
+        None => {
+            sqlx::query_scalar::<_, String>(
+                "SELECT cid FROM blobs WHERE account_did = ? ORDER BY cid ASC LIMIT ?",
+            )
+            .bind(account_did)
+            .bind(limit + 1)
+            .fetch_all(pool)
+            .await
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,5 +407,135 @@ mod tests {
 
         let blobs = list_blobs_for_account(&pool, &account_did).await.unwrap();
         assert_eq!(blobs.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn list_blob_cids_returns_all_cids() {
+        let pool = test_pool().await;
+        let account_did = insert_test_account(&pool).await;
+
+        for i in 0..3 {
+            insert_blob(
+                &pool,
+                &format!("bafkricid{i}"),
+                &account_did,
+                "image/jpeg",
+                100,
+                &format!("blobs/ba/bafkricid{i}"),
+                "2026-01-01T12:00:00Z",
+            )
+            .await
+            .unwrap();
+        }
+
+        let cids = list_blob_cids(&pool, &account_did, 500, None)
+            .await
+            .unwrap();
+        assert_eq!(cids.len(), 3);
+        // Results are ordered by CID (lexicographic).
+        assert!(cids.windows(2).all(|w| w[0] <= w[1]));
+    }
+
+    #[tokio::test]
+    async fn list_blob_cids_empty_for_unknown_did() {
+        let pool = test_pool().await;
+        let cids = list_blob_cids(&pool, "did:plc:unknown", 500, None)
+            .await
+            .unwrap();
+        assert!(cids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_blob_cids_respects_limit() {
+        let pool = test_pool().await;
+        let account_did = insert_test_account(&pool).await;
+
+        for i in 0..5 {
+            insert_blob(
+                &pool,
+                &format!("bafkrilimit{i}"),
+                &account_did,
+                "image/jpeg",
+                100,
+                &format!("blobs/ba/bafkrilimit{i}"),
+                "2026-01-01T12:00:00Z",
+            )
+            .await
+            .unwrap();
+        }
+
+        let cids = list_blob_cids(&pool, &account_did, 3, None).await.unwrap();
+        // DB function returns limit+1 for pagination detection.
+        assert_eq!(cids.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn list_blob_cids_pagination_with_cursor() {
+        let pool = test_pool().await;
+        let account_did = insert_test_account(&pool).await;
+
+        for i in 0..5 {
+            insert_blob(
+                &pool,
+                &format!("bafkricursor{i}"),
+                &account_did,
+                "image/jpeg",
+                100,
+                &format!("blobs/ba/bafkricursor{i}"),
+                "2026-01-01T12:00:00Z",
+            )
+            .await
+            .unwrap();
+        }
+
+        // First page: limit=3, DB returns 4 (limit+1) for pagination detection.
+        let page1 = list_blob_cids(&pool, &account_did, 3, None).await.unwrap();
+        assert_eq!(page1.len(), 4);
+
+        // The caller (route handler) uses page1[limit] as cursor and returns page1[..limit].
+        // Simulate: cursor = page1[3], visible = page1[..3].
+        let cursor = page1[3].clone();
+        let page1_visible = &page1[..3];
+
+        // Second page: cursor = extra item from page 1.
+        let page2 = list_blob_cids(&pool, &account_did, 3, Some(&cursor))
+            .await
+            .unwrap();
+        // Should return remaining CIDs (excluding the cursor itself).
+        assert!(!page2.is_empty());
+        assert!(page2.iter().all(|c| c > &cursor));
+
+        // No overlap between visible page 1 and page 2.
+        for cid in &page2 {
+            assert!(!page1_visible.contains(cid));
+        }
+    }
+
+    #[tokio::test]
+    async fn list_blob_cids_clamps_limit_to_max() {
+        let pool = test_pool().await;
+        let account_did = insert_test_account(&pool).await;
+
+        insert_blob(
+            &pool,
+            "bafkriclamp",
+            &account_did,
+            "image/jpeg",
+            100,
+            "blobs/ba/bafkriclamp",
+            "2026-01-01T12:00:00Z",
+        )
+        .await
+        .unwrap();
+
+        // Limit of 0 should be clamped to 1.
+        let cids = list_blob_cids(&pool, &account_did, 0, None).await.unwrap();
+        assert_eq!(cids.len(), 1);
+
+        // Limit of 9999 should be clamped to 2000.
+        let cids = list_blob_cids(&pool, &account_did, 9999, None)
+            .await
+            .unwrap();
+        assert_eq!(cids.len(), 1);
     }
 }

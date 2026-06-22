@@ -1,0 +1,17 @@
+meta {
+  name: List Blobs (sync.listBlobs)
+  type: http
+  seq: 26
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.sync.listBlobs?did={{did}}&limit={{limit}}
+  body: none
+  auth: none
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  did: did:plc:exampleabcdefghijklmnopqrst
+  limit: 500
+}
