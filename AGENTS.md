@@ -20,7 +20,7 @@ Last verified: 2026-06-21
 - `just ci` - Full local gate (fmt-check, clippy, test, audit) — the same checks CI runs
 
 ## CI/CD
-CI runs on **tangled spindles** (`.tangled/workflows/`), not GitHub Actions. Three workflows, each running `just ci` first:
+CI runs on **tangled spindles** (`.tangled/workflows/`), not GitHub Actions. Three workflows, each running `just ci-relay` first (the Linux gate — like `just ci` but `--exclude identity-wallet`, since the iOS app needs the Apple/GTK toolchain absent in CI):
 - `pr.yaml` — test gate on PRs to `main` (no deploy, no Railway token)
 - `staging.yaml` — push to `main` → deploy to the Railway **staging** environment
 - `release.yaml` — push a `v*` tag → promote to **production**

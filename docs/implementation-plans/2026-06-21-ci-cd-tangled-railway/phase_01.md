@@ -14,6 +14,7 @@
 - ✓ **`just ci` already exists** (`justfile:28`): `ci: fmt-check clippy test` then `cargo audit`. **No recipe change needed** — Phase 1 is purely the workflow split. (Design assumed we'd create it.)
 - ✓ Current gate `.tangled/workflows/ci.yaml` runs fmt/clippy/test/audit as explicit steps on `push`+`pull_request`+`manual` to `main`; `engine: nixery`; deps `rustc, cargo, clippy, rustfmt, sqlite`.
 - ✗ **Correction (post-merge, 2026-06-21):** the documented step key is **`command:`** (shown verbatim in the tangled docs); the pre-existing `ci.yaml` used `run:`, which is undocumented and the likely reason CI never executed. All workflows use `command:`.
+- ✗ **Correction (post-merge, 2026-06-21):** the Nixery CI image needs a C toolchain (`gcc`, `binutils`, `pkg-config`) — Rust build scripts and C deps (bundled SQLite, `ring`) require `cc`/`ar`. And `--workspace` pulls in the `identity-wallet` Tauri crate (GTK/WebKit), unbuildable in Linux CI, so the workflows run **`just ci-relay`** (`--workspace --exclude identity-wallet`); `just ci` stays the full macOS-local gate.
 - + The current `ci.yaml` runs `cargo audit` but does **not** declare `cargo-audit` in deps. The new workflows add `just` and `cargo-audit` to `dependencies.nixpkgs`. **Confirm at execution** that `cargo audit` actually resolves in CI today (possible latent gap).
 
 ## Acceptance Criteria Coverage

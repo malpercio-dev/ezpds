@@ -24,8 +24,16 @@ run-relay:
 docker-build:
     docker build -t relay:latest .
 
-# Run the full CI pipeline locally
+# Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
 ci: fmt-check clippy test
+    cargo audit
+
+# CI gate for the Linux relay pipeline (tangled spindles). Excludes the iOS app
+# (identity-wallet), which needs the Apple/GTK toolchain absent in CI; the mobile
+# app is built and checked via `just ios-*` on macOS.
+ci-relay: fmt-check
+    cargo clippy --workspace --exclude identity-wallet -- -D warnings
+    cargo test --workspace --exclude identity-wallet
     cargo audit
 
 # Validate that the flake evaluates correctly (devShells + nixosModules).

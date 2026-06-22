@@ -11,6 +11,9 @@ dependencies:
     - clippy
     - rustfmt
     - sqlite
+    - gcc
+    - binutils
+    - pkg-config
     - just
     - cargo-audit
     - railway
@@ -19,7 +22,7 @@ dependencies:
 
 steps:
   - name: CI (fmt, clippy, test, audit)
-    command: just ci
+    command: just ci-relay
   - name: Deploy to staging
     command: RAILWAY_TOKEN="$RAILWAY_TOKEN_STAGING" railway up --service ezpds --environment staging --ci
   - name: Verify staging deploy healthy
