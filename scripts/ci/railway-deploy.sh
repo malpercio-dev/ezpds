@@ -2,9 +2,11 @@
 set -eu
 # Deploy the relay to a Railway environment with retries, then wait for health.
 #
-# `railway up` uploads the build context and talks to backboard.railway.com; that
-# call can time out transiently, so retry a few times before failing the pipeline.
-# On a successful upload, railway-wait-healthy.sh polls the deployment to SUCCESS.
+# `railway up --detach` uploads the build context, queues the deploy, and returns
+# immediately. We use --detach (not --ci) because following the deployment log
+# stream hangs/times out from the spindle network (the deploy itself reaches
+# Railway and builds fine); railway-wait-healthy.sh then polls the deployment to
+# SUCCESS via short queries. The retry guards a failed upload/trigger.
 #
 # Usage: RAILWAY_TOKEN=<env-scoped token> sh scripts/ci/railway-deploy.sh <environment>
 # Requires (nixpkgs workflow deps): railway, jq, coreutils.
@@ -13,7 +15,7 @@ attempts="${DEPLOY_ATTEMPTS:-3}"
 
 i=1
 while :; do
-  if railway up --service ezpds --environment "$env_name" --ci; then
+  if railway up --service ezpds --environment "$env_name" --detach; then
     break
   fi
   if [ "$i" -ge "$attempts" ]; then
