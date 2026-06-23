@@ -14,6 +14,7 @@ base64 = { workspace = true }
 futures = "0.3"
 ipld-core = { version = "0.4", features = ["serde"] }
 p256 = { workspace = true }
+rand_core = { workspace = true }
 serde = { workspace = true }
 serde_ipld_dagcbor = "0.6"
 serde_json = { workspace = true }

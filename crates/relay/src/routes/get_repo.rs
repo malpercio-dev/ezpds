@@ -70,39 +70,6 @@ pub async fn get_repo(
         .into_response())
 }
 
-/// Reclaim an account's blocks that are no longer reachable from `root` (the current
-/// repo commit): superseded MST nodes, old commits, orphans from conflicted writes.
-///
-/// Best-effort and idempotent — callers run this after a commit and log (not fail) on
-/// error, since orphaned blocks are harmless until the next sweep. Returns the count
-/// reclaimed. Note: this walks the whole repo, so for very large repos a periodic sweep
-/// would be cheaper than running it on every write.
-pub(crate) async fn gc_repo_blocks(
-    pool: &sqlx::SqlitePool,
-    did: &str,
-    root: repo_engine::Cid,
-) -> Result<u64, ApiError> {
-    use std::collections::HashSet;
-
-    let mut store = SqliteBlockStore::new(pool.clone(), did.to_string());
-    let reachable: HashSet<String> = repo_engine::collect_reachable_cids(&mut store, root)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, did = %did, "failed to compute reachable blocks for GC");
-            ApiError::new(ErrorCode::InternalError, "block GC failed")
-        })?
-        .into_iter()
-        .map(|c| c.to_string())
-        .collect();
-
-    crate::db::blocks::delete_unreachable_blocks(pool, did, &reachable)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, did = %did, "failed to delete unreachable blocks");
-            ApiError::new(ErrorCode::InternalError, "block GC failed")
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

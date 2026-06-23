@@ -10,6 +10,7 @@ mod auth;
 mod blob_store;
 mod db;
 mod dns;
+mod record_write;
 mod routes;
 mod telemetry;
 mod well_known;

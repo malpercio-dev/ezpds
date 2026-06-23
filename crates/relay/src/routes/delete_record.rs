@@ -95,8 +95,7 @@ pub async fn delete_record(
                 "signing key master key not configured",
             )
         })?;
-    let signer =
-        crate::routes::get_repo_signing_key::load_repo_signer(&state.db, did, master_key).await?;
+    let signer = crate::auth::signing_key::load_repo_signer(&state.db, did, master_key).await?;
 
     repo_engine::delete_record(&mut repo, &signer, &mst_key)
         .await
@@ -126,7 +125,7 @@ pub async fn delete_record(
     }
 
     // Best-effort GC: reclaim blocks superseded by this commit (non-fatal on error).
-    if let Err(e) = crate::routes::get_repo::gc_repo_blocks(&state.db, did, repo.root()).await {
+    if let Err(e) = crate::record_write::gc_repo_blocks(&state.db, did, repo.root()).await {
         tracing::warn!(error = %e, did = %did, "post-commit block GC failed (non-fatal)");
     }
 

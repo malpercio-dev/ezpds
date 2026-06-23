@@ -1,6 +1,7 @@
 // pattern: Imperative Shell
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use common::{ApiError, ErrorCode};
 use p256::pkcs8::EncodePrivateKey;
 use rand_core::{OsRng, RngCore};
 use sqlx::SqlitePool;
@@ -188,6 +189,39 @@ fn build_encoding_key(
         .to_pkcs8_der()
         .map_err(|e| anyhow::anyhow!("PKCS#8 DER encoding failed: {e}"))?;
     Ok(jsonwebtoken::EncodingKey::from_ec_der(pkcs8_der.as_bytes()))
+}
+
+/// Load the per-account repo signing key for a promoted DID and build a [`CommitSigner`].
+///
+/// Used by genesis creation and record writes to sign commits with the key published
+/// as the DID's `#atproto` verification method (so the signatures verify network-wide).
+pub async fn load_repo_signer(
+    pool: &sqlx::SqlitePool,
+    did: &str,
+    master_key: &[u8; 32],
+) -> Result<repo_engine::CommitSigner, ApiError> {
+    use crate::db::repo_keys::get_signing_key_by_did;
+
+    let key = get_signing_key_by_did(pool, did)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, did = %did, "failed to load repo signing key");
+            ApiError::new(ErrorCode::InternalError, "failed to load signing key")
+        })?
+        .ok_or_else(|| {
+            ApiError::new(ErrorCode::InternalError, "no repo signing key for account")
+        })?;
+
+    let private =
+        crypto::decrypt_private_key(&key.private_key_encrypted, master_key).map_err(|e| {
+            tracing::error!(error = %e, did = %did, "failed to decrypt repo signing key");
+            ApiError::new(ErrorCode::InternalError, "failed to decrypt signing key")
+        })?;
+
+    repo_engine::CommitSigner::from_bytes(&private).map_err(|e| {
+        tracing::error!(error = %e, did = %did, "invalid repo signing key");
+        ApiError::new(ErrorCode::InternalError, "invalid signing key")
+    })
 }
 
 #[cfg(test)]

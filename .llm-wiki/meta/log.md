@@ -109,3 +109,6 @@
 ## [2026-06-23T14:11:50.979Z] observe
 - slug: "obs-2026-06-23-atproto-extension-fully-tested-after-per-account-signing-key", title: "ATProto extension fully tested after per-account signing key refactor", relevance: "critical"
 
+## [2026-06-23T16:58:11.814Z] observe
+- slug: "obs-2026-06-23-createrecord-endpoint-implemented-mm-100", title: "createRecord endpoint implemented (MM-100)", relevance: "high"
+

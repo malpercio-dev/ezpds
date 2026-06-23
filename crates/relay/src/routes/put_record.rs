@@ -8,9 +8,7 @@ use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::db::blocks::SqliteBlockStore;
 use common::{ApiError, ErrorCode};
-use repo_engine::Repository;
 
 #[derive(Deserialize)]
 pub struct PutRecordParams {
@@ -33,7 +31,8 @@ pub struct PutRecordResponse {
 
 /// PUT /xrpc/com.atproto.repo.putRecord
 ///
-/// Create or update a record in the repository.
+/// Create or update a record in the repository. Unlike createRecord, this always
+/// succeeds regardless of whether the record already exists (upsert semantics).
 pub async fn put_record(
     State(state): State<AppState>,
     Query(params): Query<PutRecordParams>,
@@ -44,111 +43,22 @@ pub async fn put_record(
     let collection = &params.collection;
     let rkey = &params.rkey;
 
-    // Validate DID format.
-    if !did.starts_with("did:") {
-        return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
-    }
-
-    // Authenticate: require a valid access token whose subject owns this repo.
-    let token = crate::auth::extract_bearer_token(&headers)?;
-    let claims = crate::auth::jwt::verify_access_token(token, &state)?;
-    if claims.sub != *did {
-        return Err(ApiError::new(
-            ErrorCode::Forbidden,
-            "authenticated account does not own this repository",
-        ));
-    }
-
     // Reject a malformed collection/rkey before touching the repo.
     repo_engine::validate_record_path(collection, rkey)
         .map_err(|_| ApiError::new(ErrorCode::InvalidClaim, "invalid collection or record key"))?;
 
-    // Look up the repo root CID.
-    let root_cid_str: Option<String> =
-        sqlx::query_scalar("SELECT repo_root_cid FROM accounts WHERE did = ?")
-            .bind(did)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, did = %did, "failed to query repo root CID");
-                ApiError::new(ErrorCode::InternalError, "failed to put record")
-            })?;
-
-    let root_cid_str =
-        root_cid_str.ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
-
-    let root_cid = repo_engine::Cid::try_from(root_cid_str.as_str()).map_err(|e| {
-        tracing::error!(error = %e, did = %did, "invalid repo root CID in database");
-        ApiError::new(ErrorCode::InternalError, "failed to put record")
-    })?;
-
-    // Open the repo.
-    let block_store = SqliteBlockStore::new(state.db.clone(), did.to_string());
-    let mut repo = Repository::open(block_store, root_cid).await.map_err(|e| {
-        tracing::error!(error = %e, did = %did, "failed to open repo");
-        ApiError::new(ErrorCode::InternalError, "failed to put record")
-    })?;
-
-    // Sign the commit with this account's published #atproto signing key.
-    let master_key: &[u8; 32] = state
-        .config
-        .signing_key_master_key
-        .as_ref()
-        .map(|s| &*s.0)
-        .ok_or_else(|| {
-            ApiError::new(
-                ErrorCode::ServiceUnavailable,
-                "signing key master key not configured",
-            )
-        })?;
-    let signer =
-        crate::routes::get_repo_signing_key::load_repo_signer(&state.db, did, master_key).await?;
-
-    // Build the MST key: collection/rkey
     let mst_key = format!("{collection}/{rkey}");
 
-    // Write the record (JSON is converted to the ATProto data model: $link → CID,
-    // $bytes → byte string, floats rejected).
-    let record_cid = repo_engine::put_record_json(&mut repo, &signer, &mst_key, &body.record)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, did = %did, key = %mst_key, "failed to put record");
-            match e {
-                repo_engine::RecordError::InvalidRecord(_) => {
-                    ApiError::new(ErrorCode::InvalidClaim, "invalid record")
-                }
-                _ => ApiError::new(ErrorCode::InternalError, "failed to put record"),
-            }
-        })?;
-
-    // Advance the repo root with optimistic concurrency: only if it hasn't moved
-    // since we read it. If a concurrent write advanced it first, that write wins and
-    // we return 409 so the client retries against the new root (rather than silently
-    // clobbering the other commit). The new blocks we wrote are orphaned and GC-able.
-    let new_root = repo.root().to_string();
-    let updated =
-        sqlx::query("UPDATE accounts SET repo_root_cid = ? WHERE did = ? AND repo_root_cid = ?")
-            .bind(&new_root)
-            .bind(did)
-            .bind(&root_cid_str)
-            .execute(&state.db)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, did = %did, "failed to update repo root CID");
-                ApiError::new(ErrorCode::InternalError, "failed to put record")
-            })?;
-    if updated.rows_affected() != 1 {
-        return Err(ApiError::new(
-            ErrorCode::Conflict,
-            "repository was modified concurrently; retry against the current root",
-        ));
-    }
-
-    // Best-effort GC: reclaim blocks superseded by this commit. A GC failure must not
-    // fail the write — the commit is durable; orphaned blocks are harmless until swept.
-    if let Err(e) = crate::routes::get_repo::gc_repo_blocks(&state.db, did, repo.root()).await {
-        tracing::warn!(error = %e, did = %did, "post-commit block GC failed (non-fatal)");
-    }
+    // Delegate to the shared write helper with create_only=false.
+    let (_result, record_cid) = crate::record_write::write_record(
+        &state,
+        &headers,
+        did,
+        &mst_key,
+        &body.record,
+        false, // create_only=false: upsert semantics
+    )
+    .await?;
 
     let uri = format!("at://{did}/{collection}/{rkey}");
     Ok((

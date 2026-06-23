@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-06-23T14:11:50.983Z",
+  "last_updated": "2026-06-23T16:58:11.824Z",
   "pages": {
     "concepts/did-plc": {
       "type": "concept",
@@ -650,6 +650,24 @@
         "tools"
       ],
       "source_context": "\"Updating ATProto pi extension to use new relay features\""
+    },
+    "sources/obs-2026-06-23-createrecord-endpoint-implemented-mm-100": {
+      "type": "source",
+      "title": "\"Observation: createRecord endpoint implemented (MM-100)\"",
+      "created": "2026-06-23",
+      "updated": "2026-06-23",
+      "slug": "obs-2026-06-23-createrecord-endpoint-implemented-mm-100",
+      "status": "observation",
+      "relevance": "high",
+      "observed_at": "2026-06-23T16:58:11.813Z",
+      "tags": [
+        "relay",
+        "xrpc",
+        "create-record",
+        "tid",
+        "wave-4"
+      ],
+      "source_context": "\"Implementing MM-100 from Linear backlog\""
     }
   }
 }

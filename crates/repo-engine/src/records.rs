@@ -4,6 +4,7 @@
 // atrium-repo's Repository methods with the CommitSigner pattern.
 
 use std::collections::BTreeMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use atrium_repo::repo::Repository;
 use atrium_repo::Cid;
@@ -12,6 +13,47 @@ use ipld_core::ipld::Ipld;
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::signer::CommitSigner;
+
+/// Base32-sortable alphabet for TID encoding.
+///
+/// Maintains lexicographic sort order when encoded TIDs are compared as strings,
+/// ensuring timestamp ordering is preserved.
+const BASE32_SORTABLE: &[u8; 32] = b"234567abcdefghijklmnopqrstuvwxyz";
+
+/// Generate a Timestamp Identifier (TID) for ATProto record keys.
+///
+/// A TID is a 64-bit integer encoded as a 13-character base32-sortable string:
+/// - Bit 0 (MSB): Always 0
+/// - Bits 1-53: Microseconds since UNIX epoch
+/// - Bits 54-63: Random 10-bit clock identifier
+///
+/// The random clock identifier provides collision resistance when multiple workers
+/// generate TIDs in the same microsecond.
+pub fn generate_tid() -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock before UNIX epoch");
+    let micros = now.as_micros() as u64;
+
+    // Random 10-bit clock identifier for collision resistance.
+    // We use OsRng from rand_core which is already a dependency.
+    // The bitmask extracts the bottom 10 bits from a u32.
+    use rand_core::{OsRng, RngCore};
+    let clock_id: u64 = (OsRng.next_u32() & 0x3FF) as u64;
+
+    // Compose the 64-bit integer: 0 | micros (53 bits) | clock_id (10 bits)
+    // Shift micros left by 10 bits to make room for clock_id.
+    let tid_int: u64 = (micros << 10) | clock_id;
+
+    // Encode as 13-character base32-sortable string.
+    let mut chars = [0u8; 13];
+    for i in (0..13).rev() {
+        let idx = (tid_int >> (i * 5)) & 0x1F;
+        chars[12 - i] = BASE32_SORTABLE[idx as usize];
+    }
+
+    String::from_utf8(chars.to_vec()).expect("base32 encoding is always valid ASCII")
+}
 
 /// Errors from record operations.
 #[derive(Debug, thiserror::Error)]

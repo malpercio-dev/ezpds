@@ -139,5 +139,6 @@
   "sources/obs-2026-06-23-atproto-extension-fully-tested-after-per-account-signing-key": [],
   "sources/obs-2026-06-23-atproto-extension-updated-with-deleterecord-and-listblobs-to": [],
   "sources/obs-2026-06-23-atproto-extension-updated-with-per-account-signing-key-flow": [],
-  "sources/obs-2026-06-23-atproto-extension-updated-with-repo-crud-tools": []
+  "sources/obs-2026-06-23-atproto-extension-updated-with-repo-crud-tools": [],
+  "sources/obs-2026-06-23-createrecord-endpoint-implemented-mm-100": []
 }

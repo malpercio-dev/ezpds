@@ -1,0 +1,191 @@
+// pattern: Imperative Shell
+
+//! Shared record write operations for com.atproto.repo.{create,put,delete}Record.
+//!
+//! This module consolidates the common write flow (auth, repo open, signer load,
+//! optimistic concurrency, GC) so that individual route handlers remain thin
+//! gatherers that delegate to a single authoritative write path.
+//!
+//! The `create_only` flag distinguishes `createRecord` (must reject pre-existing rkeys)
+//! from `putRecord` (upsert semantics) and `deleteRecord` (always removes).
+
+use axum::http::HeaderMap;
+use sqlx::SqlitePool;
+
+use crate::app::AppState;
+use crate::db::blocks::SqliteBlockStore;
+use common::{ApiError, ErrorCode};
+use repo_engine::Repository;
+
+/// Result of a successful record write operation.
+#[allow(dead_code)]
+pub struct WriteRecordResult {
+    /// The new repo root CID after the write.
+    pub new_root: String,
+}
+
+/// Shared write flow: authenticate → open repo → load signer → write record →
+/// optimistic-concurrency CAS → GC.
+///
+/// # Arguments
+/// * `state` - Application state (DB pool, config, etc.)
+/// * `headers` - Request headers (for Bearer token extraction)
+/// * `did` - The DID of the repo owner
+/// * `mst_key` - The MST key (collection/rkey)
+/// * `record` - The record data as JSON
+/// * `create_only` - If true, reject writes when the key already exists (createRecord
+///   semantics). If false, upsert (putRecord semantics).
+pub async fn write_record(
+    state: &AppState,
+    headers: &HeaderMap,
+    did: &str,
+    mst_key: &str,
+    record: &serde_json::Value,
+    create_only: bool,
+) -> Result<(WriteRecordResult, repo_engine::Cid), ApiError> {
+    // Validate DID format.
+    if !did.starts_with("did:") {
+        return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
+    }
+
+    // Authenticate: require a valid access token whose subject owns this repo.
+    let token = crate::auth::extract_bearer_token(headers)?;
+    let claims = crate::auth::jwt::verify_access_token(token, state)?;
+    if claims.sub != *did {
+        return Err(ApiError::new(
+            ErrorCode::Forbidden,
+            "authenticated account does not own this repository",
+        ));
+    }
+
+    // Look up the repo root CID.
+    let root_cid_str: Option<String> =
+        sqlx::query_scalar("SELECT repo_root_cid FROM accounts WHERE did = ?")
+            .bind(did)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, did = %did, "failed to query repo root CID");
+                ApiError::new(ErrorCode::InternalError, "failed to write record")
+            })?;
+
+    let root_cid_str =
+        root_cid_str.ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
+
+    let root_cid = repo_engine::Cid::try_from(root_cid_str.as_str()).map_err(|e| {
+        tracing::error!(error = %e, did = %did, "invalid repo root CID in database");
+        ApiError::new(ErrorCode::InternalError, "failed to write record")
+    })?;
+
+    // Open the repo.
+    let block_store = SqliteBlockStore::new(state.db.clone(), did.to_string());
+    let mut repo = Repository::open(block_store, root_cid).await.map_err(|e| {
+        tracing::error!(error = %e, did = %did, "failed to open repo");
+        ApiError::new(ErrorCode::InternalError, "failed to write record")
+    })?;
+
+    // If create_only, check that the record does not already exist.
+    if create_only {
+        let existing: Option<serde_json::Value> =
+            repo_engine::get_record_json(&mut repo, mst_key).await.map_err(|e| {
+                tracing::error!(error = %e, did = %did, key = %mst_key, "failed to check record existence");
+                ApiError::new(ErrorCode::InternalError, "failed to write record")
+            })?;
+        if existing.is_some() {
+            return Err(ApiError::new(
+                ErrorCode::Conflict,
+                "record already exists; use putRecord to update",
+            ));
+        }
+    }
+
+    // Load the signing key for this account.
+    let master_key: &[u8; 32] = state
+        .config
+        .signing_key_master_key
+        .as_ref()
+        .map(|s| &*s.0)
+        .ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::ServiceUnavailable,
+                "signing key master key not configured",
+            )
+        })?;
+    let signer = crate::auth::signing_key::load_repo_signer(&state.db, did, master_key).await?;
+
+    // Write the record (JSON is converted to the ATProto data model: $link → CID,
+    // $bytes → byte string, floats rejected).
+    let record_cid = repo_engine::put_record_json(&mut repo, &signer, mst_key, record)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, did = %did, key = %mst_key, "failed to write record");
+            match e {
+                repo_engine::RecordError::InvalidRecord(_) => {
+                    ApiError::new(ErrorCode::InvalidClaim, "invalid record")
+                }
+                _ => ApiError::new(ErrorCode::InternalError, "failed to write record"),
+            }
+        })?;
+
+    // Advance the repo root with optimistic concurrency: only if it hasn't moved
+    // since we read it. If a concurrent write advanced it first, that write wins and
+    // we return 409 so the client retries against the new root (rather than silently
+    // clobbering the other commit). The new blocks we wrote are orphaned and GC-able.
+    let new_root = repo.root().to_string();
+    let updated =
+        sqlx::query("UPDATE accounts SET repo_root_cid = ? WHERE did = ? AND repo_root_cid = ?")
+            .bind(&new_root)
+            .bind(did)
+            .bind(&root_cid_str)
+            .execute(&state.db)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, did = %did, "failed to update repo root CID");
+                ApiError::new(ErrorCode::InternalError, "failed to write record")
+            })?;
+    if updated.rows_affected() != 1 {
+        return Err(ApiError::new(
+            ErrorCode::Conflict,
+            "repository was modified concurrently; retry against the current root",
+        ));
+    }
+
+    // Best-effort GC: reclaim blocks superseded by this commit. A GC failure must not
+    // fail the write — the commit is durable; orphaned blocks are harmless until swept.
+    if let Err(e) = gc_repo_blocks(&state.db, did, repo.root()).await {
+        tracing::warn!(error = %e, did = %did, "post-commit block GC failed (non-fatal)");
+    }
+
+    Ok((WriteRecordResult { new_root }, record_cid))
+}
+
+/// Garbage-collect blocks that are no longer reachable from the given repo root.
+///
+/// Computes the transitive closure of reachable CIDs from the commit, MST nodes,
+/// and record blocks, then deletes any blocks for this account that are not in
+/// that set. Returns the number of blocks removed.
+pub async fn gc_repo_blocks(
+    pool: &SqlitePool,
+    did: &str,
+    root: repo_engine::Cid,
+) -> Result<u64, ApiError> {
+    use std::collections::HashSet;
+
+    let mut store = SqliteBlockStore::new(pool.clone(), did.to_string());
+    let reachable: HashSet<String> = repo_engine::collect_reachable_cids(&mut store, root)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, did = %did, "failed to compute reachable blocks for GC");
+            ApiError::new(ErrorCode::InternalError, "block GC failed")
+        })?
+        .into_iter()
+        .map(|c| c.to_string())
+        .collect();
+
+    crate::db::blocks::delete_unreachable_blocks(pool, did, &reachable)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, did = %did, "failed to delete unreachable blocks");
+            ApiError::new(ErrorCode::InternalError, "block GC failed")
+        })
+}
