@@ -71,7 +71,7 @@ async fn build_tree_with_stored_leaf(keys: &[&str]) -> (MemoryBlockStore, Cid, C
     (bs, root, leaf_cid)
 }
 
-// ── AC2.2: Known-answer root CIDs ────────────────────────────────────────────────
+// ── Known-answer root CIDs from commit-proof-fixtures.json ──────────────────────
 
 /// Fixture: "two deep split" from commit-proof-fixtures.json
 ///
@@ -176,7 +176,7 @@ async fn interop_split_earlier_leaves_before_root_cid() {
     );
 }
 
-// ── AC2.3: CAR round-trip ─────────────────────────────────────────────────────────
+// ── CAR round-trip ───────────────────────────────────────────────────────────────
 
 /// Build a tree → export all blocks to a CAR → re-import from the CAR → verify root CID.
 #[tokio::test]
@@ -228,7 +228,7 @@ async fn car_round_trip_preserves_root_cid() {
     );
 }
 
-// ── AC2.4: Corrupted fixture detection ────────────────────────────────────────────
+// ── Corrupted fixture detection ──────────────────────────────────────────────────
 
 /// Deliberately corrupt the expected root CID — the test must fail.
 #[tokio::test]

@@ -1,5 +1,6 @@
 pub mod accounts;
 pub mod blobs;
+pub mod blocks;
 pub mod dids;
 pub mod jwt_secret;
 pub mod oauth;
@@ -98,6 +99,10 @@ static MIGRATIONS: &[Migration] = &[
     Migration {
         version: 16,
         sql: include_str!("migrations/V016__blobs.sql"),
+    },
+    Migration {
+        version: 17,
+        sql: include_str!("migrations/V017__repo_blocks.sql"),
     },
 ];
 
