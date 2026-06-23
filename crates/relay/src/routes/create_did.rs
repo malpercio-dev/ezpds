@@ -137,6 +137,38 @@ pub async fn create_did_handler(
         ));
     }
 
+    // Build the (empty) genesis repo in memory, signed with the per-account key, so its
+    // blocks are persisted atomically inside the promotion transaction below. Doing this
+    // before the plc.directory call means a build failure aborts the ceremony cleanly,
+    // with no orphaned PLC registration and no account-without-a-repo.
+    let master_key: &[u8; 32] = state
+        .config
+        .signing_key_master_key
+        .as_ref()
+        .map(|s| &*s.0)
+        .ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::ServiceUnavailable,
+                "signing key master key not configured",
+            )
+        })?;
+    let genesis_private = crypto::decrypt_private_key(&repo_key.private_key_encrypted, master_key)
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to decrypt repo signing key for genesis");
+            ApiError::new(ErrorCode::InternalError, "failed to prepare genesis repo")
+        })?;
+    let genesis_signer = repo_engine::CommitSigner::from_bytes(&genesis_private).map_err(|e| {
+        tracing::error!(error = %e, "invalid repo signing key for genesis");
+        ApiError::new(ErrorCode::InternalError, "failed to prepare genesis repo")
+    })?;
+    let (genesis_root, genesis_blocks) = repo_engine::build_genesis_repo(did, &genesis_signer)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, did = %did, "failed to build genesis repo");
+            ApiError::new(ErrorCode::InternalError, "failed to build genesis repo")
+        })?;
+    let genesis_root_str = genesis_root.to_string();
+
     // Phase 3: Pre-store DID and Shamir shares for retry resilience, then POST to plc.directory.
     // Shares are generated once and stored alongside pending_did so that retries return the
     // same shares — preventing Share 2 from being orphaned in accounts.recovery_share.
@@ -167,14 +199,10 @@ pub async fn create_did_handler(
         &share2,
         &password_hash,
         &repo_key,
+        &genesis_root_str,
+        &genesis_blocks,
     )
     .await?;
-
-    // Phase 5: Create genesis repo for the new account.
-    // This writes the genesis commit (empty MST + signed commit) to the blocks table.
-    // Non-fatal: if this fails, the account is already active; the repo can be
-    // initialized lazily on first getRepo call.
-    create_account_repo(&state, did).await;
 
     Ok(Json(CreateDidResponse {
         did: did.clone(),
@@ -437,57 +465,6 @@ fn generate_recovery_shares() -> Result<(String, String, String), ApiError> {
     ))
 }
 
-/// Create the genesis repo for a newly promoted account.
-///
-/// Non-fatal: logs the error and returns without propagating.
-/// The account is already active; the repo can be initialized lazily.
-async fn create_account_repo(state: &AppState, did: &str) {
-    use crate::db::blocks::SqliteBlockStore;
-    use repo_engine::create_genesis_repo;
-
-    // Sign the genesis commit with this account's published #atproto key (just inserted
-    // into signing_keys by promote_account), so the commit verifies network-wide.
-    let master_key: &[u8; 32] = match state.config.signing_key_master_key.as_ref().map(|s| &*s.0) {
-        Some(k) => k,
-        None => {
-            tracing::error!(did = %did, "signing key master key not configured; skipping genesis repo");
-            return;
-        }
-    };
-
-    let signer =
-        match crate::routes::get_repo_signing_key::load_repo_signer(&state.db, did, master_key)
-            .await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!(error = %e, did = %did, "failed to load repo signer for genesis");
-                return;
-            }
-        };
-
-    let block_store = SqliteBlockStore::new(state.db.clone(), did.to_string());
-
-    match create_genesis_repo(block_store, did, &signer).await {
-        Ok(cid) => {
-            // Store the root CID in the accounts table.
-            let cid_str = cid.to_string();
-            if let Err(e) = sqlx::query("UPDATE accounts SET repo_root_cid = ? WHERE did = ?")
-                .bind(&cid_str)
-                .bind(did)
-                .execute(&state.db)
-                .await
-            {
-                tracing::error!(error = %e, did = %did, "failed to store repo root CID");
-            }
-            tracing::info!(did = %did, commit_cid = %cid_str, "genesis repo created");
-        }
-        Err(e) => {
-            tracing::error!(error = %e, did = %did, "failed to create genesis repo");
-        }
-    }
-}
-
 /// POST the signed genesis operation to plc.directory (Step 9).
 async fn post_to_plc_directory(
     http_client: &reqwest::Client,
@@ -546,6 +523,8 @@ async fn promote_account(
     recovery_share: &str,
     password_hash: &str,
     repo_key: &crate::db::repo_keys::RepoSigningKey,
+    genesis_root: &str,
+    genesis_blocks: &[(repo_engine::Cid, Vec<u8>)],
 ) -> Result<(), ApiError> {
     let did_document_str = serde_json::to_string(did_document).map_err(|e| {
         tracing::error!(error = %e, "failed to serialize DID document");
@@ -560,13 +539,15 @@ async fn promote_account(
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to begin transaction"))?;
 
     sqlx::query(
-        "INSERT INTO accounts (did, email, password_hash, recovery_share, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))",
+        "INSERT INTO accounts \
+         (did, email, password_hash, recovery_share, repo_root_cid, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
     )
     .bind(did)
     .bind(email)
     .bind(password_hash)
     .bind(recovery_share)
+    .bind(genesis_root)
     .execute(&mut *tx)
     .await
     .map_err(|e| {
@@ -607,6 +588,22 @@ async fn promote_account(
         .await
         .inspect_err(|e| tracing::error!(error = %e, "failed to insert repo signing key"))
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store signing key"))?;
+
+    // Persist the genesis repo blocks (built in memory before the PLC call) in the same
+    // transaction, so account + signing key + a complete repo all commit together.
+    for (cid, bytes) in genesis_blocks {
+        sqlx::query(
+            "INSERT INTO blocks (cid, account_did, bytes) VALUES (?, ?, ?) \
+             ON CONFLICT(cid) DO NOTHING",
+        )
+        .bind(cid.to_string())
+        .bind(did)
+        .bind(bytes.as_slice())
+        .execute(&mut *tx)
+        .await
+        .inspect_err(|e| tracing::error!(error = %e, "failed to insert genesis block"))
+        .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store genesis repo"))?;
+    }
 
     sqlx::query("DELETE FROM pending_sessions WHERE account_id = ?")
         .bind(account_id)
@@ -951,6 +948,17 @@ mod tests {
                 .map(|r| r.starts_with("baf"))
                 .unwrap_or(false),
             "genesis repo root CID must be recorded on the account"
+        );
+        // The genesis blocks must have been persisted atomically in the promotion tx.
+        let block_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM blocks WHERE account_did = ?")
+                .bind(did)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(
+            block_count >= 2,
+            "genesis blocks must be persisted (commit + MST node); got {block_count}"
         );
 
         // shamir_share_1 and shamir_share_3 must be present, 52-char BASE32 (A-Z, 2-7).

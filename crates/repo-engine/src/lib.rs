@@ -17,6 +17,6 @@ pub use atrium_repo::mst::Tree;
 pub use atrium_repo::repo::{CommitBuilder, RepoBuilder, Repository};
 pub use atrium_repo::Cid;
 pub use car_export::{export_repo_car, CarExportError};
-pub use genesis::{create_genesis_repo, GenesisError};
+pub use genesis::{build_genesis_repo, create_genesis_repo, CapturingBlockStore, GenesisError};
 pub use records::{delete_record, get_record, put_record, validate_record_path, RecordError};
 pub use signer::{CommitSigner, CommitSignerError};
