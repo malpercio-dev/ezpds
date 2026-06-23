@@ -5,7 +5,7 @@ use std::time::Instant;
 use axum::{
     extract::Path,
     http::Request,
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Router,
 };
 use common::{ApiError, Config, ErrorCode};
@@ -30,6 +30,7 @@ use crate::routes::describe_server::describe_server;
 use crate::routes::get_blob::get_blob;
 use crate::routes::get_device_relay::get_device_relay;
 use crate::routes::get_did::get_did_handler;
+use crate::routes::get_record::get_record;
 use crate::routes::get_relay_signing_key::get_relay_signing_key;
 use crate::routes::get_repo::get_repo;
 use crate::routes::get_session::get_session;
@@ -42,6 +43,7 @@ use crate::routes::oauth_par::post_par;
 use crate::routes::oauth_server_metadata::oauth_server_metadata;
 use crate::routes::oauth_token::post_token;
 use crate::routes::provisioning_session::create_provisioning_session;
+use crate::routes::put_record::put_record;
 use crate::routes::refresh_session::refresh_session;
 use crate::routes::register_device::register_device;
 use crate::routes::request_password_reset::request_password_reset;
@@ -197,6 +199,8 @@ pub fn app(state: AppState) -> Router {
         .route("/xrpc/com.atproto.sync.getBlob", get(get_blob))
         .route("/xrpc/com.atproto.sync.getRepo", get(get_repo))
         .route("/xrpc/com.atproto.sync.listBlobs", get(list_blobs))
+        .route("/xrpc/com.atproto.repo.getRecord", get(get_record))
+        .route("/xrpc/com.atproto.repo.putRecord", put(put_record))
         .route("/xrpc/:method", get(xrpc_handler).post(xrpc_handler))
         .route("/v1/accounts", post(create_account))
         .route("/v1/accounts/claim-codes", post(claim_codes))

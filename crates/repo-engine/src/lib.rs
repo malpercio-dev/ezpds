@@ -5,6 +5,7 @@
 pub mod car_export;
 pub mod genesis;
 pub mod mst;
+pub mod records;
 pub mod signer;
 
 // Re-export the blockstore traits so relay can implement them without depending on atrium-repo
@@ -17,4 +18,5 @@ pub use atrium_repo::repo::{CommitBuilder, RepoBuilder, Repository};
 pub use atrium_repo::Cid;
 pub use car_export::{export_repo_car, CarExportError};
 pub use genesis::{create_genesis_repo, GenesisError};
+pub use records::{delete_record, get_record, put_record, RecordError};
 pub use signer::{CommitSigner, CommitSignerError};
