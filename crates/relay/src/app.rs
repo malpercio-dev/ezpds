@@ -31,6 +31,7 @@ use crate::routes::get_blob::get_blob;
 use crate::routes::get_device_relay::get_device_relay;
 use crate::routes::get_did::get_did_handler;
 use crate::routes::get_relay_signing_key::get_relay_signing_key;
+use crate::routes::get_repo::get_repo;
 use crate::routes::get_session::get_session;
 use crate::routes::health::health;
 use crate::routes::list_blobs::list_blobs;
@@ -194,6 +195,7 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/xrpc/com.atproto.repo.uploadBlob", post(upload_blob))
         .route("/xrpc/com.atproto.sync.getBlob", get(get_blob))
+        .route("/xrpc/com.atproto.sync.getRepo", get(get_repo))
         .route("/xrpc/com.atproto.sync.listBlobs", get(list_blobs))
         .route("/xrpc/:method", get(xrpc_handler).post(xrpc_handler))
         .route("/v1/accounts", post(create_account))

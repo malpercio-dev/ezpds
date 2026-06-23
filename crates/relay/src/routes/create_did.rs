@@ -437,7 +437,17 @@ async fn create_account_repo(state: &AppState, did: &str) {
 
     match create_genesis_repo(block_store, did, &signer).await {
         Ok(cid) => {
-            tracing::info!(did = %did, commit_cid = %cid, "genesis repo created");
+            // Store the root CID in the accounts table.
+            let cid_str = cid.to_string();
+            if let Err(e) = sqlx::query("UPDATE accounts SET repo_root_cid = ? WHERE did = ?")
+                .bind(&cid_str)
+                .bind(did)
+                .execute(&state.db)
+                .await
+            {
+                tracing::error!(error = %e, did = %did, "failed to store repo root CID");
+            }
+            tracing::info!(did = %did, commit_cid = %cid_str, "genesis repo created");
         }
         Err(e) => {
             tracing::error!(error = %e, did = %did, "failed to create genesis repo");
