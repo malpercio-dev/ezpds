@@ -33,6 +33,7 @@ use crate::routes::get_did::get_did_handler;
 use crate::routes::get_record::get_record;
 use crate::routes::get_relay_signing_key::get_relay_signing_key;
 use crate::routes::get_repo::get_repo;
+use crate::routes::get_repo_signing_key::get_repo_signing_key;
 use crate::routes::get_session::get_session;
 use crate::routes::health::health;
 use crate::routes::list_blobs::list_blobs;
@@ -216,6 +217,7 @@ pub fn app(state: AppState) -> Router {
             "/v1/relay/keys",
             get(get_relay_signing_key).post(create_signing_key),
         )
+        .route("/v1/repo-signing-key", get(get_repo_signing_key))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http().make_span_with(OtelMakeSpan))
         .with_state(state)
