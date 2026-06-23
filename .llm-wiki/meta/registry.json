@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-06-22T20:09:49.528Z",
+  "last_updated": "2026-06-23T14:11:50.983Z",
   "pages": {
     "concepts/did-plc": {
       "type": "concept",
@@ -139,7 +139,7 @@
     "sources/SRC-2026-06-22-001": {
       "type": "source",
       "title": "SRC-2026-06-22-001",
-      "created": "2026-06-22",
+      "created": "2026-06-23",
       "updated": "2026-06-22",
       "format": "markdown",
       "source_id": "SRC-2026-06-22-001",
@@ -150,7 +150,7 @@
     "sources/SRC-2026-06-22-002": {
       "type": "source",
       "title": "SRC-2026-06-22-002",
-      "created": "2026-06-22",
+      "created": "2026-06-23",
       "updated": "2026-06-22",
       "format": "markdown",
       "source_id": "SRC-2026-06-22-002",
@@ -161,7 +161,7 @@
     "sources/SRC-2026-06-22-003": {
       "type": "source",
       "title": "SRC-2026-06-22-003",
-      "created": "2026-06-22",
+      "created": "2026-06-23",
       "updated": "2026-06-22",
       "format": "markdown",
       "source_id": "SRC-2026-06-22-003",
@@ -172,7 +172,7 @@
     "sources/SRC-2026-06-22-004": {
       "type": "source",
       "title": "SRC-2026-06-22-004",
-      "created": "2026-06-22",
+      "created": "2026-06-23",
       "updated": "2026-06-22",
       "format": "markdown",
       "source_id": "SRC-2026-06-22-004",
@@ -183,7 +183,7 @@
     "sources/SRC-2026-06-22-005": {
       "type": "source",
       "title": "SRC-2026-06-22-005",
-      "created": "2026-06-22",
+      "created": "2026-06-23",
       "updated": "2026-06-22",
       "format": "markdown",
       "source_id": "SRC-2026-06-22-005",
@@ -226,6 +226,15 @@
       "slug": "atproto-extension-sync-with-relay",
       "status": "insight",
       "category": "convention"
+    },
+    "sources/atproto-mst-deterministic-construction": {
+      "type": "source",
+      "title": "\"ATProto MST determinism: collect-rebuild pattern\"",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "slug": "atproto-mst-deterministic-construction",
+      "status": "insight",
+      "category": "architecture"
     },
     "sources/blob-storage-pitfalls": {
       "type": "source",
@@ -474,6 +483,24 @@
       ],
       "source_context": "\"Completing Wave 4 of ezpds project\""
     },
+    "sources/obs-2026-06-22-mst-implementation-for-repo-engine-completed": {
+      "type": "source",
+      "title": "\"Observation: MST implementation for repo-engine completed\"",
+      "created": "2026-06-22",
+      "updated": "2026-06-22",
+      "slug": "obs-2026-06-22-mst-implementation-for-repo-engine-completed",
+      "status": "observation",
+      "relevance": "high",
+      "observed_at": "2026-06-22T21:09:59.390Z",
+      "tags": [
+        "mst",
+        "repo-engine",
+        "atproto",
+        "cid",
+        "determinism"
+      ],
+      "source_context": "\"MM-98 implementation — MST construction + block store\""
+    },
     "sources/obs-2026-06-22-sqlite-sessions-db-keeps-corrupting": {
       "type": "source",
       "title": "\"Observation: SQLite sessions.db keeps corrupting\"",
@@ -555,6 +582,74 @@
         "setup"
       ],
       "source_context": "\"Wiki setup from project docs\""
+    },
+    "sources/obs-2026-06-23-atproto-extension-fully-tested-after-per-account-signing-key": {
+      "type": "source",
+      "title": "\"Observation: ATProto extension fully tested after per-account signing key refactor\"",
+      "created": "2026-06-23",
+      "updated": "2026-06-23",
+      "slug": "obs-2026-06-23-atproto-extension-fully-tested-after-per-account-signing-key",
+      "status": "observation",
+      "relevance": "critical",
+      "observed_at": "2026-06-23T14:11:50.978Z",
+      "tags": [
+        "atproto",
+        "extension",
+        "testing",
+        "provisioning"
+      ],
+      "source_context": "\"End-to-end testing of ATProto pi extension after refactor\""
+    },
+    "sources/obs-2026-06-23-atproto-extension-updated-with-deleterecord-and-listblobs-to": {
+      "type": "source",
+      "title": "\"Observation: ATProto extension updated with deleteRecord and listBlobs tools\"",
+      "created": "2026-06-23",
+      "updated": "2026-06-23",
+      "slug": "obs-2026-06-23-atproto-extension-updated-with-deleterecord-and-listblobs-to",
+      "status": "observation",
+      "relevance": "high",
+      "observed_at": "2026-06-23T13:36:16.559Z",
+      "tags": [
+        "atproto",
+        "extension",
+        "relay",
+        "sync"
+      ],
+      "source_context": "\"Syncing ATProto pi extension with relay account creation refactor\""
+    },
+    "sources/obs-2026-06-23-atproto-extension-updated-with-per-account-signing-key-flow": {
+      "type": "source",
+      "title": "\"Observation: ATProto extension updated with per-account signing key flow\"",
+      "created": "2026-06-23",
+      "updated": "2026-06-23",
+      "slug": "obs-2026-06-23-atproto-extension-updated-with-per-account-signing-key-flow",
+      "status": "observation",
+      "relevance": "critical",
+      "observed_at": "2026-06-23T13:40:40.379Z",
+      "tags": [
+        "atproto",
+        "extension",
+        "provisioning",
+        "signing-key"
+      ],
+      "source_context": "\"Syncing ATProto pi extension with per-account signing key flow\""
+    },
+    "sources/obs-2026-06-23-atproto-extension-updated-with-repo-crud-tools": {
+      "type": "source",
+      "title": "\"Observation: ATProto extension updated with repo CRUD tools\"",
+      "created": "2026-06-23",
+      "updated": "2026-06-23",
+      "slug": "obs-2026-06-23-atproto-extension-updated-with-repo-crud-tools",
+      "status": "observation",
+      "relevance": "medium",
+      "observed_at": "2026-06-23T01:27:16.585Z",
+      "tags": [
+        "atproto",
+        "extension",
+        "pi",
+        "tools"
+      ],
+      "source_context": "\"Updating ATProto pi extension to use new relay features\""
     }
   }
 }

@@ -114,6 +114,7 @@
   "sources/atproto-did-plc-cbor-encoding": [],
   "sources/atproto-did-plc-cbor-signing": [],
   "sources/atproto-extension-sync-with-relay": [],
+  "sources/atproto-mst-deterministic-construction": [],
   "sources/blob-storage-pitfalls": [],
   "sources/obs-2026-06-22-accounts-table-uses-did-as-text-primary-key": [],
   "sources/obs-2026-06-22-atproto-extension-created-for-pi": [],
@@ -129,9 +130,14 @@
   "sources/obs-2026-06-22-linear-extension-search-root-cause-fixed": [],
   "sources/obs-2026-06-22-linear-workflow-one-issue-per-pr": [],
   "sources/obs-2026-06-22-mm-110-listblobs-endpoint-implemented": [],
+  "sources/obs-2026-06-22-mst-implementation-for-repo-engine-completed": [],
   "sources/obs-2026-06-22-sqlite-sessions-db-keeps-corrupting": [],
   "sources/obs-2026-06-22-staging-pds-deployed-at-ezpds-staging-up-railway-app": [],
   "sources/obs-2026-06-22-tangled-pr-records-created-via-atproto-don-t-appear-in-web-u": [],
   "sources/obs-2026-06-22-two-pass-review-code-quality-then-adversarial": [],
-  "sources/obs-2026-06-22-wiki-bootstrapped-with-17-pages-from-5-source-docs": []
+  "sources/obs-2026-06-22-wiki-bootstrapped-with-17-pages-from-5-source-docs": [],
+  "sources/obs-2026-06-23-atproto-extension-fully-tested-after-per-account-signing-key": [],
+  "sources/obs-2026-06-23-atproto-extension-updated-with-deleterecord-and-listblobs-to": [],
+  "sources/obs-2026-06-23-atproto-extension-updated-with-per-account-signing-key-flow": [],
+  "sources/obs-2026-06-23-atproto-extension-updated-with-repo-crud-tools": []
 }

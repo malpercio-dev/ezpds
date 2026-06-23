@@ -24,16 +24,20 @@ interface PlcGenesisOp {
 interface P256KeypairRaw {
   keypair: P256Keypair;
   keyId: string;
+  privateKey: Uint8Array;
 }
 
 async function generateP256KeypairRaw(): Promise<P256KeypairRaw> {
   // Use official atproto crypto library for compatibility
   const keypair = await P256Keypair.create({ exportable: true });
   const keyId = keypair.did();
+  const exported = await keypair.export();
+  const privateKey = exported instanceof Uint8Array ? exported : (exported as any).bytes || exported;
 
   return {
     keypair,
     keyId,
+    privateKey,
   };
 }
 
@@ -268,14 +272,14 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_id, params) {
       // Generate a device keypair
-      const deviceKeypair = await generateP256Keypair();
+      const deviceKeypair = await generateP256KeypairRaw();
 
       const data = await relayRequest(baseUrl, "/v1/accounts/mobile", {
         method: "POST",
         body: {
           email: params.email,
           handle: params.handle,
-          devicePublicKey: Buffer.from(deviceKeypair.publicKeyBytes()).toString(
+          devicePublicKey: Buffer.from(deviceKeypair.keypair.publicKeyBytes()).toString(
             "base64"
           ),
           platform: "ios",
@@ -311,18 +315,66 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // ── atproto_get_repo_signing_key ──────────────────────────────────────────
+
+  pi.registerTool({
+    name: "atproto_get_repo_signing_key",
+    label: "Get Repo Signing Key",
+    description:
+      "Get the per-account repo signing key issued by the relay. Must be called before the DID ceremony. The returned keyId must be published as verificationMethods.atproto in the genesis op.",
+    promptSnippet: "Get the per-account repo signing key",
+    promptGuidelines: [
+      "Use after atproto_create_mobile_account and before atproto_complete_did_ceremony.",
+      "The relay issues a per-account P-256 key for signing repo commits.",
+      "The returned keyId must be used as rotationKeys[1] and verificationMethods.atproto in the genesis op.",
+      "Idempotent: calling again with the same session returns the same key.",
+    ],
+    parameters: Type.Object({
+      session_token: Type.String({
+        description: "Session token from create_mobile_account",
+      }),
+    }),
+    async execute(_id, params) {
+      const data = await relayRequest<{
+        keyId: string;
+        publicKey: string;
+        algorithm: string;
+      }>(baseUrl, "/v1/repo-signing-key", {
+        token: params.session_token,
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: [
+              `Repo signing key issued by relay`,
+              `  Key ID: ${data.keyId}`,
+              `  Public Key: ${data.publicKey}`,
+              `  Algorithm: ${data.algorithm}`,
+              "",
+              "Use this keyId as rotationKeys[1] and verificationMethods.atproto in the genesis op.",
+            ].join("\n"),
+          },
+        ],
+        details: data,
+      };
+    },
+  });
+
   // ── atproto_complete_did_ceremony ────────────────────────────────────────
 
   pi.registerTool({
     name: "atproto_complete_did_ceremony",
     label: "Complete DID Ceremony",
     description:
-      "Complete the did:plc ceremony for a pending account. Generates rotation key, builds and signs the genesis operation, and registers the DID. Returns the DID, session token, and Shamir shares.",
+      "Complete the did:plc ceremony for a pending account. Fetches the relay-issued repo signing key, builds and signs the genesis operation, and registers the DID. Returns the DID, session token, and Shamir shares.",
     promptSnippet: "Complete the DID ceremony for a pending account",
     promptGuidelines: [
       "Use after atproto_create_mobile_account to finish account setup.",
       "The sessionToken from create_mobile_account is required.",
       "The handle must match what was used during account creation.",
+      "The relay issues a per-account repo signing key which is automatically fetched and published in the genesis op.",
     ],
     parameters: Type.Object({
       session_token: Type.String({
@@ -336,21 +388,33 @@ export default function (pi: ExtensionAPI) {
       }),
     }),
     async execute(_id, params) {
-      // Generate rotation keypair (same key for rotation and signing)
+      // Step 1: Fetch the relay-issued per-account repo signing key.
+      const repoKey = await relayRequest<{
+        keyId: string;
+        publicKey: string;
+        algorithm: string;
+      }>(baseUrl, "/v1/repo-signing-key", {
+        token: params.session_token,
+      });
+
+      // Step 2: Generate device/rotation keypair (signs the op, rotationKeys[0]).
       const rotationKeypair = await generateP256KeypairRaw();
 
-      // Build the genesis operation
+      // Step 3: Build the genesis operation.
+      //   rotationKeys[0] = device key (signs the op)
+      //   rotationKeys[1] = relay-issued repo signing key
+      //   verificationMethods.atproto = relay-issued repo signing key
       const genesisOp = await buildDidPlcGenesisOp(
-        rotationKeypair.keyId,
-        rotationKeypair.keyId,
-        rotationKeypair.keypair,
+        rotationKeypair.keyId,       // rotationKeys[0] — signs the op
+        repoKey.keyId,               // rotationKeys[1] + verificationMethods.atproto
+        rotationKeypair.keypair,     // op is signed by the device/rotation key
         params.handle,
         baseUrl
       );
 
       const signedOp = JSON.parse(genesisOp.signedOpJson);
 
-      // Submit to relay
+      // Step 4: Submit to relay.
       const data = await relayRequest(baseUrl, "/v1/dids", {
         method: "POST",
         token: params.session_token,
@@ -369,6 +433,7 @@ export default function (pi: ExtensionAPI) {
               `DID ceremony complete!`,
               `  DID: ${data.did}`,
               `  Handle: ${params.handle}`,
+              `  Repo signing key: ${repoKey.keyId}`,
               `  Status: ${data.status}`,
               `  Session token: ${data.session_token}`,
               `  Shamir share 1: ${data.shamir_share_1}`,
@@ -381,6 +446,10 @@ export default function (pi: ExtensionAPI) {
           _rotationKeypair: {
             keyId: rotationKeypair.keyId,
             privateKey: Buffer.from(rotationKeypair.privateKey).toString("hex"),
+          },
+          _repoSigningKey: {
+            keyId: repoKey.keyId,
+            publicKey: repoKey.publicKey,
           },
         },
       };
@@ -422,7 +491,7 @@ export default function (pi: ExtensionAPI) {
       const claimCode = claimData.codes[0];
 
       // Step 2: Create mobile account
-      const deviceKeypair = await generateP256Keypair();
+      const deviceKeypair = await generateP256KeypairRaw();
       const accountData = await relayRequest<{
         accountId: string;
         deviceId: string;
@@ -433,7 +502,7 @@ export default function (pi: ExtensionAPI) {
         body: {
           email: params.email,
           handle: params.handle,
-          devicePublicKey: Buffer.from(deviceKeypair.publicKeyBytes()).toString(
+          devicePublicKey: Buffer.from(deviceKeypair.keypair.publicKeyBytes()).toString(
             "base64"
           ),
           platform: "ios",
@@ -441,12 +510,24 @@ export default function (pi: ExtensionAPI) {
         },
       });
 
-      // Step 3: Complete DID ceremony
+      // Step 3: Get the relay-issued per-account repo signing key.
+      const repoKey = await relayRequest<{
+        keyId: string;
+        publicKey: string;
+        algorithm: string;
+      }>(baseUrl, "/v1/repo-signing-key", {
+        token: accountData.sessionToken,
+      });
+
+      // Step 4: Complete DID ceremony.
+      //   rotationKeys[0] = device key (signs the op)
+      //   rotationKeys[1] = relay-issued repo signing key
+      //   verificationMethods.atproto = relay-issued repo signing key
       const rotationKeypair = await generateP256KeypairRaw();
       const genesisOp = await buildDidPlcGenesisOp(
-        rotationKeypair.keyId,
-        rotationKeypair.keyId,
-        rotationKeypair.keypair,
+        rotationKeypair.keyId,       // rotationKeys[0] — signs the op
+        repoKey.keyId,               // rotationKeys[1] + verificationMethods.atproto
+        rotationKeypair.keypair,     // op is signed by the device/rotation key
         params.handle,
         baseUrl
       );
@@ -469,7 +550,7 @@ export default function (pi: ExtensionAPI) {
         },
       });
 
-      // Step 4: Register handle
+      // Step 5: Register handle
       let handleResult: string;
       try {
         await relayRequest(baseUrl, "/v1/handles", {
@@ -485,7 +566,7 @@ export default function (pi: ExtensionAPI) {
         handleResult = `failed: ${e}`;
       }
 
-      // Step 5: Get ATProto session
+      // Step 6: Get ATProto session
       const atprotoSession = await relayRequest<{
         accessJwt: string;
         refreshJwt: string;
@@ -811,6 +892,307 @@ export default function (pi: ExtensionAPI) {
         details: {
           keyId: did,
           privateKeyHex: Buffer.from(privateKeyBytes).toString("hex"),
+        },
+      };
+    },
+  });
+
+  // ── atproto_put_record ──────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: "atproto_put_record",
+    label: "Put Record",
+    description:
+      "Create or update a record in an ATProto repository. Returns the record URI and CID.",
+    promptSnippet: "Write a record to a repo",
+    promptGuidelines: [
+      "Use to create or update records (posts, likes, follows, etc.) in a user's repo.",
+      "The record is stored in the MST under collection/rkey.",
+      "CID links must be encoded as {\"$link\": \"<cid>\"} and byte strings as {\"$bytes\": \"<base64>\"}.",
+      "Floats are rejected — the ATProto data model permits only integers.",
+    ],
+    parameters: Type.Object({
+      did: Type.String({ description: "Account DID (e.g. did:plc:abc123)" }),
+      collection: Type.String({
+        description: "Record collection (e.g. app.bsky.feed.post)",
+      }),
+      rkey: Type.String({
+        description: "Record key (e.g. 3k2y4z5a6b7c8)",
+      }),
+      record: Type.Any({
+        description: "Record data as a JSON object",
+      }),
+      access_jwt: Type.Optional(
+        Type.String({ description: "Access JWT for authentication" })
+      ),
+    }),
+    async execute(_id, params) {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (params.access_jwt) {
+        headers["Authorization"] = `Bearer ${params.access_jwt}`;
+      }
+
+      const url = new URL(`${baseUrl}/xrpc/com.atproto.repo.putRecord`);
+      url.searchParams.set("did", params.did);
+      url.searchParams.set("collection", params.collection);
+      url.searchParams.set("rkey", params.rkey);
+
+      const res = await fetch(url.toString(), {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ record: params.record }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`HTTP ${res.status}: ${text}`);
+      }
+
+      const data = (await res.json()) as { uri: string; cid: string };
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: [
+              `Record written successfully`,
+              `URI: ${data.uri}`,
+              `CID: ${data.cid}`,
+            ].join("\n"),
+          },
+        ],
+        details: data,
+      };
+    },
+  });
+
+  // ── atproto_get_record ──────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: "atproto_get_record",
+    label: "Get Record",
+    description:
+      "Read a record from an ATProto repository. Returns the record data.",
+    promptSnippet: "Read a record from a repo",
+    promptGuidelines: [
+      "Use to fetch and inspect records from a user's repo.",
+      "Returns the record value (the actual data, not metadata).",
+      "CID links appear as {\"$link\": \"<cid>\"} and byte strings as {\"$bytes\": \"<base64>\"}.",
+    ],
+    parameters: Type.Object({
+      did: Type.String({ description: "Account DID (e.g. did:plc:abc123)" }),
+      collection: Type.String({
+        description: "Record collection (e.g. app.bsky.feed.post)",
+      }),
+      rkey: Type.String({
+        description: "Record key (e.g. 3k2y4z5a6b7c8)",
+      }),
+    }),
+    async execute(_id, params) {
+      const url = new URL(`${baseUrl}/xrpc/com.atproto.repo.getRecord`);
+      url.searchParams.set("did", params.did);
+      url.searchParams.set("collection", params.collection);
+      url.searchParams.set("rkey", params.rkey);
+
+      const res = await fetch(url.toString());
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`HTTP ${res.status}: ${text}`);
+      }
+
+      const data = (await res.json()) as {
+        uri: string;
+        cid?: string;
+        value: unknown;
+      };
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: [
+              `Record: ${data.uri}`,
+              `CID: ${data.cid || "(not provided)"}`,
+              `Value: ${JSON.stringify(data.value, null, 2)}`,
+            ].join("\n"),
+          },
+        ],
+        details: data,
+      };
+    },
+  });
+
+  // ── atproto_delete_record ──────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: "atproto_delete_record",
+    label: "Delete Record",
+    description:
+      "Delete a record from an ATProto repository. Idempotent: deleting a nonexistent record succeeds.",
+    promptSnippet: "Delete a record from a repo",
+    promptGuidelines: [
+      "Use to remove records (posts, likes, follows, etc.) from a user's repo.",
+      "Idempotent: deleting a record that does not exist succeeds silently.",
+    ],
+    parameters: Type.Object({
+      did: Type.String({ description: "Account DID (e.g. did:plc:abc123)" }),
+      collection: Type.String({
+        description: "Record collection (e.g. app.bsky.feed.post)",
+      }),
+      rkey: Type.String({
+        description: "Record key (e.g. 3k2y4z5a6b7c8)",
+      }),
+      access_jwt: Type.String({
+        description: "Access JWT for authentication (required)",
+      }),
+    }),
+    async execute(_id, params) {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${params.access_jwt}`,
+      };
+
+      const url = new URL(`${baseUrl}/xrpc/com.atproto.repo.deleteRecord`);
+      url.searchParams.set("did", params.did);
+      url.searchParams.set("collection", params.collection);
+      url.searchParams.set("rkey", params.rkey);
+
+      const res = await fetch(url.toString(), {
+        method: "POST",
+        headers,
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`HTTP ${res.status}: ${text}`);
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Record deleted: ${params.collection}/${params.rkey}`,
+          },
+        ],
+        details: {
+          did: params.did,
+          collection: params.collection,
+          rkey: params.rkey,
+        },
+      };
+    },
+  });
+
+  // ── atproto_list_blobs ──────────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: "atproto_list_blobs",
+    label: "List Blobs",
+    description:
+      "List blob CIDs for a repository. Supports cursor-based pagination.",
+    promptSnippet: "List blobs in a repo",
+    promptGuidelines: [
+      "Use to discover blob CIDs for a given DID.",
+      "Returns up to 2000 CIDs per page; use cursor for pagination.",
+    ],
+    parameters: Type.Object({
+      did: Type.String({ description: "Account DID (e.g. did:plc:abc123)" }),
+      limit: Type.Optional(
+        Type.Number({ description: "Max results per page (default 500, max 2000)" })
+      ),
+      cursor: Type.Optional(
+        Type.String({ description: "Pagination cursor (last CID from previous page)" })
+      ),
+    }),
+    async execute(_id, params) {
+      const url = new URL(`${baseUrl}/xrpc/com.atproto.sync.listBlobs`);
+      url.searchParams.set("did", params.did);
+      if (params.limit) url.searchParams.set("limit", String(params.limit));
+      if (params.cursor) url.searchParams.set("cursor", params.cursor);
+
+      const res = await fetch(url.toString());
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`HTTP ${res.status}: ${text}`);
+      }
+
+      const data = (await res.json()) as {
+        cids: string[];
+        cursor?: string;
+      };
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: [
+              `Blobs for ${params.did}:`,
+              ...data.cids.map((cid) => `  ${cid}`),
+              data.cursor ? `\nNext cursor: ${data.cursor}` : "",
+            ].join("\n"),
+          },
+        ],
+        details: data,
+      };
+    },
+  });
+
+  // ── atproto_get_repo ────────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: "atproto_get_repo",
+    label: "Get Repo (CAR)",
+    description:
+      "Export a repository as a CARv1 file. Returns the raw CAR bytes as base64.",
+    promptSnippet: "Export repo as CAR file",
+    promptGuidelines: [
+      "Use to inspect or verify the MST structure of a repo.",
+      "The CAR contains: signed commit (root), MST nodes, and record blocks.",
+      "CAR bytes are returned as base64 for easy handling.",
+    ],
+    parameters: Type.Object({
+      did: Type.String({ description: "Account DID (e.g. did:plc:abc123)" }),
+    }),
+    async execute(_id, params) {
+      const url = new URL(`${baseUrl}/xrpc/com.atproto.sync.getRepo`);
+      url.searchParams.set("did", params.did);
+
+      const res = await fetch(url.toString());
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`HTTP ${res.status}: ${text}`);
+      }
+
+      const arrayBuffer = await res.arrayBuffer();
+      const carBytes = Buffer.from(arrayBuffer);
+      const carBase64 = carBytes.toString("base64");
+
+      // Parse CAR header to extract root CID.
+      // CARv1: uvarint(header_len) + DAG-CBOR header
+      // For simplicity, we'll report the size and let the user decode if needed.
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: [
+              `CAR export for ${params.did}`,
+              `Size: ${carBytes.length} bytes`,
+              `Base64 (first 200 chars): ${carBase64.substring(0, 200)}...`,
+              ``,
+              `Full base64 stored in details.carBase64`,
+            ].join("\n"),
+          },
+        ],
+        details: {
+          did: params.did,
+          sizeBytes: carBytes.length,
+          carBase64,
         },
       };
     },

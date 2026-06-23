@@ -97,3 +97,15 @@
 ## [2026-06-22T20:09:49.523Z] observe
 - slug: "obs-2026-06-22-linear-extension-search-root-cause-fixed", title: "Linear extension search root-cause fixed", relevance: "high"
 
+## [2026-06-23T01:27:16.585Z] observe
+- slug: "obs-2026-06-23-atproto-extension-updated-with-repo-crud-tools", title: "ATProto extension updated with repo CRUD tools", relevance: "medium"
+
+## [2026-06-23T13:36:16.561Z] observe
+- slug: "obs-2026-06-23-atproto-extension-updated-with-deleterecord-and-listblobs-to", title: "ATProto extension updated with deleteRecord and listBlobs tools", relevance: "high"
+
+## [2026-06-23T13:40:40.381Z] observe
+- slug: "obs-2026-06-23-atproto-extension-updated-with-per-account-signing-key-flow", title: "ATProto extension updated with per-account signing key flow", relevance: "critical"
+
+## [2026-06-23T14:11:50.979Z] observe
+- slug: "obs-2026-06-23-atproto-extension-fully-tested-after-per-account-signing-key", title: "ATProto extension fully tested after per-account signing key refactor", relevance: "critical"
+

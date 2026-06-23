@@ -26,6 +26,7 @@
 - [[sources/atproto-did-plc-cbor-encoding]] — "DID:plc CBOR encoding interop issue" *(created: 2026-06-22)*
 - [[sources/atproto-did-plc-cbor-signing]] — "ATProto DID:PLC CBOR Signing Requirements" *(created: 2026-06-22)*
 - [[sources/atproto-extension-sync-with-relay]] — "Keep ATProto extension in sync with relay capabilities" *(created: 2026-06-22)*
+- [[sources/atproto-mst-deterministic-construction]] — "ATProto MST determinism: collect-rebuild pattern" *(created: 2026-06-22)*
 - [[sources/blob-storage-pitfalls]] — "Blob storage implementation pitfalls" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-accounts-table-uses-did-as-text-primary-key]] — "Observation: accounts table uses DID as TEXT primary key" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-atproto-extension-created-for-pi]] — "Observation: ATProto extension created for pi" *(created: 2026-06-22)*
@@ -41,16 +42,21 @@
 - [[sources/obs-2026-06-22-linear-extension-search-root-cause-fixed]] — "Observation: Linear extension search root-cause fixed" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-linear-workflow-one-issue-per-pr]] — "Observation: Linear workflow: one issue per PR" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-mm-110-listblobs-endpoint-implemented]] — "Observation: MM-110 listBlobs endpoint implemented" *(created: 2026-06-22)*
+- [[sources/obs-2026-06-22-mst-implementation-for-repo-engine-completed]] — "Observation: MST implementation for repo-engine completed" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-sqlite-sessions-db-keeps-corrupting]] — "Observation: SQLite sessions.db keeps corrupting" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-staging-pds-deployed-at-ezpds-staging-up-railway-app]] — "Observation: Staging PDS deployed at ezpds-staging.up.railway.app" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-tangled-pr-records-created-via-atproto-don-t-appear-in-web-u]] — "Observation: Tangled PR records created via ATProto don't appear in web UI" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-two-pass-review-code-quality-then-adversarial]] — "Observation: Two-pass review: code quality then adversarial" *(created: 2026-06-22)*
 - [[sources/obs-2026-06-22-wiki-bootstrapped-with-17-pages-from-5-source-docs]] — "Observation: Wiki bootstrapped with 17 pages from 5 source docs" *(created: 2026-06-22)*
-- [[sources/SRC-2026-06-22-001]] — SRC-2026-06-22-001 *(created: 2026-06-22)*
-- [[sources/SRC-2026-06-22-002]] — SRC-2026-06-22-002 *(created: 2026-06-22)*
-- [[sources/SRC-2026-06-22-003]] — SRC-2026-06-22-003 *(created: 2026-06-22)*
-- [[sources/SRC-2026-06-22-004]] — SRC-2026-06-22-004 *(created: 2026-06-22)*
-- [[sources/SRC-2026-06-22-005]] — SRC-2026-06-22-005 *(created: 2026-06-22)*
+- [[sources/obs-2026-06-23-atproto-extension-fully-tested-after-per-account-signing-key]] — "Observation: ATProto extension fully tested after per-account signing key refactor" *(created: 2026-06-23)*
+- [[sources/obs-2026-06-23-atproto-extension-updated-with-deleterecord-and-listblobs-to]] — "Observation: ATProto extension updated with deleteRecord and listBlobs tools" *(created: 2026-06-23)*
+- [[sources/obs-2026-06-23-atproto-extension-updated-with-per-account-signing-key-flow]] — "Observation: ATProto extension updated with per-account signing key flow" *(created: 2026-06-23)*
+- [[sources/obs-2026-06-23-atproto-extension-updated-with-repo-crud-tools]] — "Observation: ATProto extension updated with repo CRUD tools" *(created: 2026-06-23)*
+- [[sources/SRC-2026-06-22-001]] — SRC-2026-06-22-001 *(created: 2026-06-23)*
+- [[sources/SRC-2026-06-22-002]] — SRC-2026-06-22-002 *(created: 2026-06-23)*
+- [[sources/SRC-2026-06-22-003]] — SRC-2026-06-22-003 *(created: 2026-06-23)*
+- [[sources/SRC-2026-06-22-004]] — SRC-2026-06-22-004 *(created: 2026-06-23)*
+- [[sources/SRC-2026-06-22-005]] — SRC-2026-06-22-005 *(created: 2026-06-23)*
 
 ---
-*Last updated: 2026-06-22T20:09:49.528Z* | *Total pages: 41*
+*Last updated: 2026-06-23T14:11:50.983Z* | *Total pages: 47*

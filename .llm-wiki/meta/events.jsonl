@@ -30,3 +30,7 @@
 {"timestamp":"2026-06-22T19:32:05.361Z","kind":"observe","slug":"obs-2026-06-22-cid-enumeration-prevention-in-getblob","title":"CID enumeration prevention in getBlob","relevance":"high"}
 {"timestamp":"2026-06-22T19:49:43.316Z","kind":"observe","slug":"obs-2026-06-22-mm-110-listblobs-endpoint-implemented","title":"MM-110 listBlobs endpoint implemented","relevance":"high"}
 {"timestamp":"2026-06-22T20:09:49.523Z","kind":"observe","slug":"obs-2026-06-22-linear-extension-search-root-cause-fixed","title":"Linear extension search root-cause fixed","relevance":"high"}
+{"timestamp":"2026-06-23T01:27:16.585Z","kind":"observe","slug":"obs-2026-06-23-atproto-extension-updated-with-repo-crud-tools","title":"ATProto extension updated with repo CRUD tools","relevance":"medium"}
+{"timestamp":"2026-06-23T13:36:16.561Z","kind":"observe","slug":"obs-2026-06-23-atproto-extension-updated-with-deleterecord-and-listblobs-to","title":"ATProto extension updated with deleteRecord and listBlobs tools","relevance":"high"}
+{"timestamp":"2026-06-23T13:40:40.381Z","kind":"observe","slug":"obs-2026-06-23-atproto-extension-updated-with-per-account-signing-key-flow","title":"ATProto extension updated with per-account signing key flow","relevance":"critical"}
+{"timestamp":"2026-06-23T14:11:50.979Z","kind":"observe","slug":"obs-2026-06-23-atproto-extension-fully-tested-after-per-account-signing-key","title":"ATProto extension fully tested after per-account signing key refactor","relevance":"critical"}
