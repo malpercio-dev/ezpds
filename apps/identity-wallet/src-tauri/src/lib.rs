@@ -42,7 +42,7 @@ struct CreateMobileAccountResponse {
     next_step: NextStep,
 }
 
-/// Response from GET /v1/relay/keys — the relay's active signing key.
+/// Response from GET /v1/repo-signing-key — this account's per-account repo signing key.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RelaySigningKey {
@@ -375,10 +375,25 @@ async fn perform_did_ceremony(
         DIDCeremonyError::KeyNotFound
     })?;
 
-    // Step 2: Fetch the relay's active signing key (public, no auth required).
+    // Step 2: Retrieve the pending session token — needed to authenticate the
+    // per-account signing-key request below and the DID promotion later.
+    let pending_token = {
+        let token_bytes = keychain::get_item("session-token").map_err(|e| {
+            tracing::warn!(error = %e, "failed to retrieve session-token from keychain");
+            DIDCeremonyError::KeychainError
+        })?;
+        String::from_utf8(token_bytes).map_err(|e| {
+            tracing::warn!(error = %e, "session-token bytes are not valid UTF-8");
+            DIDCeremonyError::KeychainError
+        })?
+    };
+
+    // Step 3: Fetch this account's per-account repo signing key (pending-session auth).
+    // The relay issues it idempotently; we publish it as the DID's #atproto verification
+    // method, and the relay signs the repo's commits with the matching private key.
     let resp = state
         .relay_client()
-        .get("/v1/relay/keys")
+        .get_with_bearer("/v1/repo-signing-key", &pending_token)
         .await
         .map_err(|e| DIDCeremonyError::NetworkError {
             message: e.to_string(),
@@ -390,19 +405,19 @@ async fn perform_did_ceremony(
     }
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "failed to read GET /v1/relay/keys error body");
+            tracing::warn!(error = %e, "failed to read GET /v1/repo-signing-key error body");
             "<body read failed>".to_string()
         });
-        tracing::error!(status = %status, body = %body, "GET /v1/relay/keys returned non-success status");
+        tracing::error!(status = %status, body = %body, "GET /v1/repo-signing-key returned non-success status");
         return Err(DIDCeremonyError::RelayKeyFetchFailed);
     }
 
     let relay_key: RelaySigningKey = resp.json().await.map_err(|e| {
-        tracing::error!(error = %e, "failed to deserialize relay signing key response");
+        tracing::error!(error = %e, "failed to deserialize repo signing key response");
         DIDCeremonyError::RelayKeyFetchFailed
     })?;
 
-    // Step 3: Build signed genesis op — device key as rotation key, relay key as signing key.
+    // Step 4: Build signed genesis op — device key as rotation key, per-account repo key as signing key.
     // On device, the private key never leaves the Secure Enclave; on Simulator and macOS, a software key is used instead.
     let rotation_key = DidKeyUri(device_key.key_id.clone());
     let signing_key = DidKeyUri(relay_key.key_id.clone());
@@ -422,17 +437,7 @@ async fn perform_did_ceremony(
         DIDCeremonyError::SigningFailed
     })?;
 
-    // Step 4: Retrieve the pending session token from Keychain.
-    let token_bytes = keychain::get_item("session-token").map_err(|e| {
-        tracing::warn!(error = %e, "failed to retrieve session-token from keychain");
-        DIDCeremonyError::KeychainError
-    })?;
-    let pending_token = String::from_utf8(token_bytes).map_err(|e| {
-        tracing::warn!(error = %e, "session-token bytes are not valid UTF-8");
-        DIDCeremonyError::KeychainError
-    })?;
-
-    // Step 5: POST the signed genesis op to the relay to promote the account to a full DID.
+    // Step 6: POST the signed genesis op to the relay to promote the account to a full DID.
     let create_did_req = CreateDidRequest {
         rotation_key_public: device_key.key_id,
         signed_creation_op: serde_json::from_str(&genesis_op.signed_op_json).map_err(|e| {

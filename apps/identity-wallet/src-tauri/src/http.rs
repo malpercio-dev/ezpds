@@ -92,6 +92,19 @@ impl RelayClient {
         self.client.get(&url).send().await
     }
 
+    /// GET `path` with a Bearer token in the Authorization header.
+    ///
+    /// Used for authenticated relay GETs (e.g. `GET /v1/repo-signing-key`, which is
+    /// scoped to the caller's pending session).
+    pub async fn get_with_bearer(
+        &self,
+        path: &str,
+        bearer_token: &str,
+    ) -> reqwest::Result<Response> {
+        let url = format!("{}{}", self.base_url, path);
+        self.client.get(&url).bearer_auth(bearer_token).send().await
+    }
+
     /// POST JSON to `path` with a Bearer token in the Authorization header.
     ///
     /// Used for authenticated relay endpoints (e.g. `POST /v1/dids` which
