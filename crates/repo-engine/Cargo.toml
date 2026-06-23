@@ -10,7 +10,9 @@ publish.workspace = true
 [dependencies]
 atrium-api = { workspace = true }
 atrium-repo = { workspace = true }
+base64 = { workspace = true }
 futures = "0.3"
+ipld-core = { version = "0.4", features = ["serde"] }
 p256 = { workspace = true }
 serde = { workspace = true }
 serde_ipld_dagcbor = "0.6"

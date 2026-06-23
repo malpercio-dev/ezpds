@@ -18,5 +18,8 @@ pub use atrium_repo::repo::{CommitBuilder, RepoBuilder, Repository};
 pub use atrium_repo::Cid;
 pub use car_export::{collect_reachable_cids, export_repo_car, CarExportError};
 pub use genesis::{build_genesis_repo, create_genesis_repo, CapturingBlockStore, GenesisError};
-pub use records::{delete_record, get_record, put_record, validate_record_path, RecordError};
+pub use records::{
+    delete_record, get_record, get_record_json, json_to_record_value, put_record, put_record_json,
+    record_value_to_json, validate_record_path, RecordError,
+};
 pub use signer::{CommitSigner, CommitSignerError};

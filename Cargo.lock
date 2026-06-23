@@ -5182,7 +5182,9 @@ version = "0.1.0"
 dependencies = [
  "atrium-api",
  "atrium-repo",
+ "base64 0.21.7",
  "futures",
+ "ipld-core",
  "p256",
  "rand_core 0.6.4",
  "serde",

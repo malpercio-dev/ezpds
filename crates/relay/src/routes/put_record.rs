@@ -107,12 +107,18 @@ pub async fn put_record(
     // Build the MST key: collection/rkey
     let mst_key = format!("{collection}/{rkey}");
 
-    // Write the record.
-    let record_cid = repo_engine::put_record(&mut repo, &signer, &mst_key, &body.record)
+    // Write the record (JSON is converted to the ATProto data model: $link → CID,
+    // $bytes → byte string, floats rejected).
+    let record_cid = repo_engine::put_record_json(&mut repo, &signer, &mst_key, &body.record)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, key = %mst_key, "failed to put record");
-            ApiError::new(ErrorCode::InternalError, "failed to put record")
+            match e {
+                repo_engine::RecordError::InvalidRecord(_) => {
+                    ApiError::new(ErrorCode::InvalidClaim, "invalid record")
+                }
+                _ => ApiError::new(ErrorCode::InternalError, "failed to put record"),
+            }
         })?;
 
     // Advance the repo root with optimistic concurrency: only if it hasn't moved
@@ -280,6 +286,29 @@ mod tests {
             .header("Authorization", format!("Bearer {token}"))
             .body(Body::from(
                 serde_json::to_string(&serde_json::json!({"record": {"text": "x"}})).unwrap(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn put_record_with_float_returns_400() {
+        let (state, did) = setup_account_with_repo().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        let app = crate::app::app(state);
+
+        // Floats are not part of the ATProto data model.
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri(format!(
+                "/xrpc/com.atproto.repo.putRecord?did={did}&collection=app.bsky.feed.post&rkey=f1"
+            ))
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({"record": {"score": 1.5}})).unwrap(),
             ))
             .unwrap();
 

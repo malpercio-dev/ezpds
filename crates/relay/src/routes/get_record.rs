@@ -64,8 +64,9 @@ pub async fn get_record(
     // Build the MST key: collection/rkey
     let mst_key = format!("{collection}/{rkey}");
 
-    // Read the record.
-    let record: Option<serde_json::Value> = repo_engine::get_record(&mut repo, &mst_key)
+    // Read the record (the stored ATProto data model is mapped back to JSON:
+    // CID links → {"$link": ...}, byte strings → {"$bytes": ...}).
+    let record: Option<serde_json::Value> = repo_engine::get_record_json(&mut repo, &mst_key)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, key = %mst_key, "failed to get record");
@@ -222,5 +223,47 @@ mod tests {
         );
         assert_eq!(resp["value"]["text"], "Hello, ATProto!");
         assert_eq!(resp["value"]["createdAt"], "2026-06-22T00:00:00Z");
+    }
+
+    #[tokio::test]
+    async fn get_record_preserves_cid_link() {
+        let (state, did) = setup_account_with_repo().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        let app = crate::app::app(state);
+
+        let cid = "bafyreie5cvv4h45feadgeuwhbcutmh6t2ceseocckahdoe6uat64zmz454";
+        let record = serde_json::json!({ "embed": { "$link": cid } });
+        let put = Request::builder()
+            .method(http::Method::POST)
+            .uri(format!(
+                "/xrpc/com.atproto.repo.putRecord?did={did}&collection=app.bsky.feed.post&rkey=link1"
+            ))
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({ "record": record })).unwrap(),
+            ))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(put).await.unwrap().status(),
+            StatusCode::OK
+        );
+
+        let get = Request::builder()
+            .method(http::Method::GET)
+            .uri(format!(
+                "/xrpc/com.atproto.repo.getRecord?did={did}&collection=app.bsky.feed.post&rkey=link1"
+            ))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(get).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        // The CID link survives as {"$link": ...}, proving it was stored as a canonical
+        // DAG-CBOR CID tag (not a plain map).
+        assert_eq!(json["value"]["embed"]["$link"], cid);
     }
 }

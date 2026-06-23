@@ -3,8 +3,12 @@
 // Provides put_record, get_record, and delete_record functions that wrap
 // atrium-repo's Repository methods with the CommitSigner pattern.
 
+use std::collections::BTreeMap;
+
 use atrium_repo::repo::Repository;
 use atrium_repo::Cid;
+use base64::Engine;
+use ipld_core::ipld::Ipld;
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::signer::CommitSigner;
@@ -18,6 +22,118 @@ pub enum RecordError {
     NotFound,
     #[error("invalid record path: {0}")]
     InvalidPath(String),
+    #[error("invalid record: {0}")]
+    InvalidRecord(String),
+}
+
+/// Convert an incoming JSON record into the ATProto data model (DAG-CBOR-ready):
+/// `{"$link": "<cid>"}` becomes a CID link, `{"$bytes": "<base64>"}` becomes a byte
+/// string, and floats are rejected (the ATProto data model permits only integers).
+///
+/// Storing the raw JSON instead would encode CID links as plain maps, producing record
+/// CIDs that no other ATProto implementation agrees with (and broken blob references).
+pub fn json_to_record_value(json: &serde_json::Value) -> Result<Ipld, RecordError> {
+    use serde_json::Value;
+    match json {
+        Value::Null => Ok(Ipld::Null),
+        Value::Bool(b) => Ok(Ipld::Bool(*b)),
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(Ipld::Integer(i128::from(i)))
+            } else if let Some(u) = n.as_u64() {
+                Ok(Ipld::Integer(i128::from(u)))
+            } else {
+                Err(RecordError::InvalidRecord(
+                    "floats are not allowed in ATProto records".into(),
+                ))
+            }
+        }
+        Value::String(s) => Ok(Ipld::String(s.clone())),
+        Value::Array(items) => Ok(Ipld::List(
+            items
+                .iter()
+                .map(json_to_record_value)
+                .collect::<Result<_, _>>()?,
+        )),
+        Value::Object(map) => {
+            if map.len() == 1 {
+                if let Some(Value::String(cid)) = map.get("$link") {
+                    let cid = Cid::try_from(cid.as_str()).map_err(|e| {
+                        RecordError::InvalidRecord(format!("invalid $link CID: {e}"))
+                    })?;
+                    return Ok(Ipld::Link(cid));
+                }
+                if let Some(Value::String(b64)) = map.get("$bytes") {
+                    let bytes = base64::engine::general_purpose::STANDARD
+                        .decode(b64)
+                        .map_err(|e| {
+                            RecordError::InvalidRecord(format!("invalid $bytes base64: {e}"))
+                        })?;
+                    return Ok(Ipld::Bytes(bytes));
+                }
+            }
+            let mut out = BTreeMap::new();
+            for (k, v) in map {
+                out.insert(k.clone(), json_to_record_value(v)?);
+            }
+            Ok(Ipld::Map(out))
+        }
+    }
+}
+
+/// Convert a stored record (ATProto data model) back to JSON for API responses:
+/// CID links become `{"$link": "<cid>"}` and byte strings become `{"$bytes": "<base64>"}`.
+pub fn record_value_to_json(ipld: &Ipld) -> serde_json::Value {
+    use serde_json::Value;
+    match ipld {
+        Ipld::Null => Value::Null,
+        Ipld::Bool(b) => Value::Bool(*b),
+        Ipld::Integer(i) => i64::try_from(*i)
+            .map(|n| Value::Number(n.into()))
+            .or_else(|_| u64::try_from(*i).map(|n| Value::Number(n.into())))
+            .unwrap_or(Value::Null),
+        Ipld::Float(f) => serde_json::Number::from_f64(*f).map_or(Value::Null, Value::Number),
+        Ipld::String(s) => Value::String(s.clone()),
+        Ipld::Bytes(b) => {
+            serde_json::json!({ "$bytes": base64::engine::general_purpose::STANDARD.encode(b) })
+        }
+        Ipld::List(items) => Value::Array(items.iter().map(record_value_to_json).collect()),
+        Ipld::Map(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), record_value_to_json(v)))
+                .collect(),
+        ),
+        Ipld::Link(cid) => serde_json::json!({ "$link": cid.to_string() }),
+    }
+}
+
+/// Write a record provided as JSON, converting it to the ATProto data model first.
+/// Returns the record block CID. Errors with `InvalidRecord` for floats or malformed
+/// `$link`/`$bytes`.
+pub async fn put_record_json<S>(
+    repo: &mut Repository<S>,
+    signer: &CommitSigner,
+    key: &str,
+    json: &serde_json::Value,
+) -> Result<Cid, RecordError>
+where
+    S: atrium_repo::blockstore::AsyncBlockStoreRead + atrium_repo::blockstore::AsyncBlockStoreWrite,
+{
+    let value = json_to_record_value(json)?;
+    put_record(repo, signer, key, &value).await
+}
+
+/// Read a record and return it as JSON, mapping the ATProto data model back to its JSON
+/// form (CID links → `{"$link": ...}`, byte strings → `{"$bytes": ...}`).
+pub async fn get_record_json<S>(
+    repo: &mut Repository<S>,
+    key: &str,
+) -> Result<Option<serde_json::Value>, RecordError>
+where
+    S: atrium_repo::blockstore::AsyncBlockStoreRead + atrium_repo::blockstore::AsyncBlockStoreWrite,
+{
+    let value: Option<Ipld> = get_record(repo, key).await?;
+    Ok(value.map(|v| record_value_to_json(&v)))
 }
 
 /// Validate a record's collection (NSID) and record key per the ATProto spec,
@@ -175,6 +291,64 @@ mod tests {
     use atrium_repo::blockstore::MemoryBlockStore;
     use atrium_repo::repo::Repository;
     use p256::ecdsa::SigningKey;
+
+    const TEST_CID: &str = "bafyreie5cvv4h45feadgeuwhbcutmh6t2ceseocckahdoe6uat64zmz454";
+
+    #[test]
+    fn json_to_record_value_rejects_floats() {
+        assert!(json_to_record_value(&serde_json::json!({ "x": 1.5 })).is_err());
+        assert!(json_to_record_value(&serde_json::json!([1, 2.0, 3])).is_err());
+    }
+
+    #[test]
+    fn record_value_round_trips_links_bytes_and_scalars() {
+        let json = serde_json::json!({
+            "$type": "app.bsky.feed.post",
+            "text": "hi",
+            "count": 42,
+            "ref": { "$link": TEST_CID },
+            "data": { "$bytes": "AQIDBA==" },
+            "nested": { "list": [1, 2, 3], "flag": true, "nothing": null }
+        });
+        let ipld = json_to_record_value(&json).unwrap();
+        assert_eq!(record_value_to_json(&ipld), json);
+    }
+
+    #[tokio::test]
+    async fn put_get_json_round_trips_cid_link() {
+        let (mut repo, signer) = create_test_repo("did:plc:linktest").await;
+        let record = serde_json::json!({
+            "$type": "app.bsky.feed.post",
+            "text": "hi",
+            "embed": { "$link": TEST_CID }
+        });
+        let key = "app.bsky.feed.post/abc";
+        put_record_json(&mut repo, &signer, key, &record)
+            .await
+            .unwrap();
+        let got = get_record_json(&mut repo, key).await.unwrap();
+        assert_eq!(
+            got,
+            Some(record),
+            "a $link must survive a store/read round-trip"
+        );
+    }
+
+    #[tokio::test]
+    async fn canonical_link_encoding_differs_from_raw_map() {
+        // The whole point: a $link must encode as a CID tag, not a plain map — so the
+        // record CID differs from naively storing the JSON. Other implementations agree
+        // only with the canonical (CID-tag) encoding.
+        let (mut repo, signer) = create_test_repo("did:plc:enctest").await;
+        let with_link = serde_json::json!({ "ref": { "$link": TEST_CID } });
+        let canonical = put_record_json(&mut repo, &signer, "app.bsky.feed.post/a", &with_link)
+            .await
+            .unwrap();
+        let raw_map = put_record(&mut repo, &signer, "app.bsky.feed.post/b", &with_link)
+            .await
+            .unwrap();
+        assert_ne!(canonical, raw_map);
+    }
 
     #[test]
     fn validate_record_path_accepts_valid() {
