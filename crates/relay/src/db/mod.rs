@@ -5,6 +5,7 @@ pub mod dids;
 pub mod jwt_secret;
 pub mod oauth;
 pub mod password_reset;
+pub mod repo_keys;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::SqlitePool;
@@ -107,6 +108,10 @@ static MIGRATIONS: &[Migration] = &[
     Migration {
         version: 18,
         sql: include_str!("migrations/V018__accounts_repo_root.sql"),
+    },
+    Migration {
+        version: 19,
+        sql: include_str!("migrations/V019__per_account_repo_signing_key.sql"),
     },
 ];
 

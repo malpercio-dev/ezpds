@@ -104,6 +104,26 @@ mod tests {
         (kp, signer)
     }
 
+    fn access_jwt(secret: &[u8; 32], sub: &str) -> String {
+        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        encode(
+            &Header::new(Algorithm::HS256),
+            &serde_json::json!({
+                "scope": "com.atproto.access",
+                "sub": sub,
+                "iat": now,
+                "exp": now + 7200_u64,
+            }),
+            &EncodingKey::from_secret(secret),
+        )
+        .unwrap()
+    }
+
     async fn setup_account_with_repo() -> (AppState, String) {
         let state = crate::app::test_state().await;
 
@@ -184,6 +204,7 @@ mod tests {
     #[tokio::test]
     async fn put_then_get_roundtrip() {
         let (state, did) = setup_account_with_repo().await;
+        let token = access_jwt(&state.jwt_secret, &did);
 
         // First, put a record using the put_record handler.
         let app = crate::app::app(state.clone());
@@ -194,11 +215,12 @@ mod tests {
         });
 
         let put_request = Request::builder()
-            .method(http::Method::PUT)
+            .method(http::Method::POST)
             .uri(format!(
                 "/xrpc/com.atproto.repo.putRecord?did={did}&collection=app.bsky.feed.post&rkey=roundtrip1"
             ))
             .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
             .body(Body::from(
                 serde_json::to_string(&serde_json::json!({"record": record})).unwrap(),
             ))
