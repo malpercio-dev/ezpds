@@ -58,7 +58,7 @@ tower = { version = "0.5", features = ["util"] }
 
 # ATProto (repo-engine)
 # atrium-api = "0.22"
-# atrium-repo = "0.1"
+atrium-repo = "0.1.8"
 
 # Crypto (crypto)
 # rsky-crypto = "0.2"
