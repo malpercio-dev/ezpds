@@ -28,6 +28,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
 crypto = { workspace = true }
+repo-engine = { workspace = true }
+atrium-repo = { workspace = true }
 # rustls (not native-tls): no system OpenSSL needed in the container image.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 base64 = { workspace = true }

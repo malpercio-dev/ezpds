@@ -11,6 +11,9 @@
 //!
 //! Template: `db/blobs.rs` (content-addressed, `account_did` FK, `ON CONFLICT` idempotency).
 
+use atrium_repo::blockstore::{self, AsyncBlockStoreRead, AsyncBlockStoreWrite};
+use atrium_repo::Cid;
+use sha2::Digest;
 use sqlx::SqlitePool;
 
 /// Row returned from the `blocks` table.
@@ -77,6 +80,71 @@ pub async fn delete_blocks_for_account(
         .execute(pool)
         .await?;
     Ok(result.rows_affected())
+}
+
+// ── SqliteBlockStore adapter ─────────────────────────────────────────────────────
+
+/// Adapter that implements atrium-repo's blockstore traits over SQLite.
+///
+/// Each block is written via `db::blocks::put_block` and read via `db::blocks::get_block`.
+/// The CID is computed from `(codec, hash, contents)` using the same algorithm as
+/// atrium-repo's `MemoryBlockStore`.
+pub struct SqliteBlockStore {
+    pool: SqlitePool,
+    account_did: String,
+}
+
+impl SqliteBlockStore {
+    pub fn new(pool: SqlitePool, account_did: String) -> Self {
+        Self { pool, account_did }
+    }
+}
+
+impl AsyncBlockStoreRead for SqliteBlockStore {
+    async fn read_block_into(
+        &mut self,
+        cid: Cid,
+        contents: &mut Vec<u8>,
+    ) -> Result<(), blockstore::Error> {
+        let cid_str = cid.to_string();
+        let row = get_block(&self.pool, &cid_str)
+            .await
+            .map_err(|e| blockstore::Error::Other(Box::new(e)))?;
+
+        match row {
+            Some(block) => {
+                contents.clear();
+                contents.extend_from_slice(&block.bytes);
+                Ok(())
+            }
+            None => Err(blockstore::Error::CidNotFound),
+        }
+    }
+}
+
+impl AsyncBlockStoreWrite for SqliteBlockStore {
+    async fn write_block(
+        &mut self,
+        codec: u64,
+        hash: u64,
+        contents: &[u8],
+    ) -> Result<Cid, blockstore::Error> {
+        // Compute CID using the same algorithm as MemoryBlockStore.
+        if hash != blockstore::SHA2_256 {
+            return Err(blockstore::Error::UnsupportedHash(hash));
+        }
+        let digest = sha2::Sha256::digest(contents);
+        let mh = atrium_repo::Multihash::wrap(hash, digest.as_slice())
+            .expect("SHA2-256 digest is always 32 bytes");
+        let cid = Cid::new_v1(codec, mh);
+
+        let cid_str = cid.to_string();
+        put_block(&self.pool, &cid_str, &self.account_did, contents)
+            .await
+            .map_err(|e| blockstore::Error::Other(Box::new(e)))?;
+
+        Ok(cid)
+    }
 }
 
 #[cfg(test)]
@@ -234,5 +302,99 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(removed, 0);
+    }
+
+    // ── SqliteBlockStore adapter tests ──────────────────────────────────────────────
+
+    use atrium_repo::blockstore::{
+        AsyncBlockStoreRead, AsyncBlockStoreWrite, MemoryBlockStore, DAG_CBOR, SHA2_256,
+    };
+    use atrium_repo::mst::Tree;
+
+    #[tokio::test]
+    async fn sqlite_blockstore_read_write_roundtrip() {
+        let pool = test_pool().await;
+        insert_test_account(&pool, "did:plc:adapter").await;
+
+        let mut bs = SqliteBlockStore::new(pool.clone(), "did:plc:adapter".to_string());
+        let data = b"\xa1hello";
+
+        let cid = bs.write_block(DAG_CBOR, SHA2_256, data).await.unwrap();
+        let mut buf = Vec::new();
+        bs.read_block_into(cid, &mut buf).await.unwrap();
+
+        assert_eq!(buf, data);
+    }
+
+    #[tokio::test]
+    async fn sqlite_blockstore_read_missing_returns_cid_not_found() {
+        let pool = test_pool().await;
+        insert_test_account(&pool, "did:plc:adapter").await;
+
+        let mut bs = SqliteBlockStore::new(pool, "did:plc:adapter".to_string());
+
+        // Write one block to get a valid CID, then try to read a different one.
+        let _cid = bs
+            .write_block(DAG_CBOR, SHA2_256, b"\xa1data")
+            .await
+            .unwrap();
+
+        // Construct a different CID that doesn't exist.
+        let digest = sha2::Sha256::digest(b"\xa1other");
+        let mh = atrium_repo::Multihash::wrap(SHA2_256, &digest).unwrap();
+        let missing_cid = atrium_repo::Cid::new_v1(DAG_CBOR, mh);
+
+        let mut buf = Vec::new();
+        let result = bs.read_block_into(missing_cid, &mut buf).await;
+        assert!(result.is_err());
+    }
+
+    /// Build the same MST through SqliteBlockStore and MemoryBlockStore.
+    /// Root CIDs must be identical — this is the core interop guarantee.
+    #[tokio::test]
+    async fn sqlite_blockstore_parity_with_memory() {
+        let pool = test_pool().await;
+        insert_test_account(&pool, "did:plc:parity").await;
+
+        let keys = &[
+            "A0/374913",
+            "B1/986427",
+            "C0/451630",
+            "E0/670489",
+            "F1/085263",
+            "G0/765327",
+        ];
+        let leaf_data = b"\xa1dummy-record";
+
+        // Build through MemoryBlockStore.
+        let mut mem_bs = MemoryBlockStore::new();
+        let leaf_cid = mem_bs
+            .write_block(DAG_CBOR, SHA2_256, leaf_data)
+            .await
+            .unwrap();
+        let mut mem_tree = Tree::create(&mut mem_bs).await.unwrap();
+        for k in keys {
+            mem_tree.add(k, leaf_cid).await.unwrap();
+        }
+        let mem_root = mem_tree.root();
+
+        // Build through SqliteBlockStore.
+        let mut sqlite_bs = SqliteBlockStore::new(pool, "did:plc:parity".to_string());
+        let leaf_cid2 = sqlite_bs
+            .write_block(DAG_CBOR, SHA2_256, leaf_data)
+            .await
+            .unwrap();
+        assert_eq!(leaf_cid, leaf_cid2, "leaf CID must match");
+
+        let mut sqlite_tree = Tree::create(&mut sqlite_bs).await.unwrap();
+        for k in keys {
+            sqlite_tree.add(k, leaf_cid2).await.unwrap();
+        }
+        let sqlite_root = sqlite_tree.root();
+
+        assert_eq!(
+            mem_root, sqlite_root,
+            "SqliteBlockStore must produce the same root CID as MemoryBlockStore"
+        );
     }
 }

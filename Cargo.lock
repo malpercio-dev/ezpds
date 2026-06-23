@@ -5129,6 +5129,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "argon2",
+ "atrium-repo",
  "axum",
  "base64 0.21.7",
  "chrono",
@@ -5144,6 +5145,7 @@ dependencies = [
  "opentelemetry_sdk",
  "p256",
  "rand_core 0.6.4",
+ "repo-engine",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
