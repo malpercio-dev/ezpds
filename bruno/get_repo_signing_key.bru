@@ -1,0 +1,15 @@
+meta {
+  name: Get Repo Signing Key
+  type: http
+  seq: 30
+}
+
+get {
+  url: {{baseUrl}}/v1/repo-signing-key
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{pendingSessionToken}}
+}

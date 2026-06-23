@@ -1,0 +1,17 @@
+meta {
+  name: Get Record
+  type: http
+  seq: 32
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.repo.getRecord?did={{did}}&collection={{collection}}&rkey={{rkey}}
+  body: none
+  auth: none
+}
+
+params:query {
+  did: {{did}}
+  collection: {{collection}}
+  rkey: {{rkey}}
+}

@@ -1,0 +1,27 @@
+meta {
+  name: Put Record
+  type: http
+  seq: 33
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.repo.putRecord?did={{did}}&collection={{collection}}&rkey={{rkey}}
+  body: json
+  auth: bearer
+}
+
+params:query {
+  did: {{did}}
+  collection: {{collection}}
+  rkey: {{rkey}}
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "record": {{record}}
+  }
+}

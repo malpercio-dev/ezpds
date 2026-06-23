@@ -1,0 +1,15 @@
+meta {
+  name: Get Repo (CAR export)
+  type: http
+  seq: 31
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.sync.getRepo?did={{did}}
+  body: none
+  auth: none
+}
+
+params:query {
+  did: {{did}}
+}
