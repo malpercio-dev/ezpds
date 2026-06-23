@@ -18,6 +18,9 @@ use common::{ApiError, ErrorCode};
 use repo_engine::Repository;
 
 /// Result of a successful record write operation.
+///
+/// `new_root` has no reader yet (hence `#[allow(dead_code)]`); it is retained to feed
+/// the ATProto `commit` field of the create/put responses and future sequencer emission.
 #[allow(dead_code)]
 pub struct WriteRecordResult {
     /// The new repo root CID after the write.
@@ -35,6 +38,10 @@ pub struct WriteRecordResult {
 /// * `record` - The record data as JSON
 /// * `create_only` - If true, reject writes when the key already exists (createRecord
 ///   semantics). If false, upsert (putRecord semantics).
+///
+/// # Precondition
+/// `mst_key` must already be validated via `repo_engine::validate_record_path`; this
+/// helper trusts it and does not re-check the collection/rkey format.
 pub async fn write_record(
     state: &AppState,
     headers: &HeaderMap,
