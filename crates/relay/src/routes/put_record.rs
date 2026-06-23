@@ -138,6 +138,12 @@ pub async fn put_record(
         ));
     }
 
+    // Best-effort GC: reclaim blocks superseded by this commit. A GC failure must not
+    // fail the write — the commit is durable; orphaned blocks are harmless until swept.
+    if let Err(e) = crate::routes::get_repo::gc_repo_blocks(&state.db, did, repo.root()).await {
+        tracing::warn!(error = %e, did = %did, "post-commit block GC failed (non-fatal)");
+    }
+
     let uri = format!("at://{did}/{collection}/{rkey}");
     Ok((
         StatusCode::OK,
@@ -324,5 +330,43 @@ mod tests {
 
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn put_record_gcs_superseded_blocks() {
+        let (state, did) = setup_account_with_repo().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        let db = state.db.clone();
+        let app = crate::app::app(state);
+
+        // Update the same record key repeatedly; each commit supersedes the prior
+        // commit/MST/record, which post-commit GC should reclaim.
+        for i in 0..8 {
+            let request = Request::builder()
+                .method(http::Method::POST)
+                .uri(format!(
+                    "/xrpc/com.atproto.repo.putRecord?did={did}&collection=app.bsky.feed.post&rkey=same"
+                ))
+                .header("Content-Type", "application/json")
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::from(
+                    serde_json::to_string(&serde_json::json!({"record": {"n": i}})).unwrap(),
+                ))
+                .unwrap();
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM blocks WHERE account_did = ?")
+            .bind(&did)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        // With GC only the current commit + MST + record remain (a handful); without GC
+        // this would grow ~linearly with the 8 updates.
+        assert!(
+            count < 10,
+            "GC should keep block count bounded; got {count}"
+        );
     }
 }

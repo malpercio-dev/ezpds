@@ -125,6 +125,11 @@ pub async fn delete_record(
         ));
     }
 
+    // Best-effort GC: reclaim blocks superseded by this commit (non-fatal on error).
+    if let Err(e) = crate::routes::get_repo::gc_repo_blocks(&state.db, did, repo.root()).await {
+        tracing::warn!(error = %e, did = %did, "post-commit block GC failed (non-fatal)");
+    }
+
     Ok((StatusCode::OK, axum::Json(serde_json::json!({}))))
 }
 

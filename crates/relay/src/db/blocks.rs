@@ -11,6 +11,8 @@
 //!
 //! Template: `db/blobs.rs` (content-addressed, `account_did` FK, `ON CONFLICT` idempotency).
 
+use std::collections::HashSet;
+
 use atrium_repo::blockstore::{self, AsyncBlockStoreRead, AsyncBlockStoreWrite};
 use atrium_repo::Cid;
 use sha2::Digest;
@@ -80,6 +82,36 @@ pub async fn delete_blocks_for_account(
         .execute(pool)
         .await?;
     Ok(result.rows_affected())
+}
+
+/// Delete an account's blocks whose CID is NOT in `keep` (the reachable set).
+///
+/// Returns the number of blocks reclaimed. The caller computes `keep` from the current
+/// repo root (`repo_engine::collect_reachable_cids`); everything else for the account is
+/// garbage (superseded MST nodes, orphans from conflicted writes).
+pub async fn delete_unreachable_blocks(
+    pool: &SqlitePool,
+    account_did: &str,
+    keep: &HashSet<String>,
+) -> Result<u64, sqlx::Error> {
+    let all: Vec<String> = sqlx::query_scalar("SELECT cid FROM blocks WHERE account_did = ?")
+        .bind(account_did)
+        .fetch_all(pool)
+        .await?;
+    let garbage: Vec<&String> = all.iter().filter(|c| !keep.contains(*c)).collect();
+
+    let mut removed = 0u64;
+    // Batch the deletes to stay well under SQLite's bound-parameter limit.
+    for chunk in garbage.chunks(500) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql = format!("DELETE FROM blocks WHERE account_did = ? AND cid IN ({placeholders})");
+        let mut q = sqlx::query(&sql).bind(account_did);
+        for cid in chunk {
+            q = q.bind(*cid);
+        }
+        removed += q.execute(pool).await?.rows_affected();
+    }
+    Ok(removed)
 }
 
 // ── SqliteBlockStore adapter ─────────────────────────────────────────────────────
@@ -302,6 +334,33 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(removed, 0);
+    }
+
+    #[tokio::test]
+    async fn delete_unreachable_keeps_reachable_blocks() {
+        let pool = test_pool().await;
+        insert_test_account(&pool, "did:plc:gc").await;
+        put_block(&pool, "bafkeep1", "did:plc:gc", b"\xa1a")
+            .await
+            .unwrap();
+        put_block(&pool, "bafkeep2", "did:plc:gc", b"\xa1b")
+            .await
+            .unwrap();
+        put_block(&pool, "bafgarbage", "did:plc:gc", b"\xa1c")
+            .await
+            .unwrap();
+
+        let keep: HashSet<String> = ["bafkeep1".to_string(), "bafkeep2".to_string()]
+            .into_iter()
+            .collect();
+        let removed = delete_unreachable_blocks(&pool, "did:plc:gc", &keep)
+            .await
+            .unwrap();
+
+        assert_eq!(removed, 1, "only the unreachable block is reclaimed");
+        assert!(get_block(&pool, "bafkeep1").await.unwrap().is_some());
+        assert!(get_block(&pool, "bafkeep2").await.unwrap().is_some());
+        assert!(get_block(&pool, "bafgarbage").await.unwrap().is_none());
     }
 
     // ── SqliteBlockStore adapter tests ──────────────────────────────────────────────

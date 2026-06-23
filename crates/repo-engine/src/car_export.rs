@@ -1,66 +1,157 @@
-// repo-engine: CAR file export for ATProto repositories.
+// repo-engine: CAR file export + reachability for ATProto repositories.
 //
-// Exports a repository as a CARv1 file for the com.atproto.sync.getRepo endpoint.
+// Exports a repository as a CARv1 file for com.atproto.sync.getRepo, and computes
+// the set of blocks reachable from a root commit (used by CAR export and block GC).
 
+use std::collections::HashSet;
 use std::io::Cursor;
 
 use atrium_repo::blockstore::{AsyncBlockStoreRead, AsyncBlockStoreWrite, CarStore, SHA2_256};
+use atrium_repo::repo::Repository;
 use atrium_repo::Cid;
+use futures::StreamExt;
 
-/// Errors from CAR export operations.
+/// Errors from CAR export / reachability operations.
 #[derive(Debug, thiserror::Error)]
 pub enum CarExportError {
     #[error("blockstore error: {0}")]
     BlockStore(String),
 }
 
-/// Export a repository as a CARv1 file given its root CID.
+/// Collect every block reachable from a repo's root commit: the commit itself, all
+/// MST node blocks, and every record block referenced by an MST entry.
 ///
-/// The block store must contain all blocks for the repo (commit, MST nodes, records).
-/// Returns the raw CAR bytes with `root_cid` as the CAR root.
-///
-/// For an empty repo (just a genesis commit), the CAR contains only the commit block.
-/// For a repo with records, the CAR contains: the signed commit (root), MST nodes, and records.
-///
-/// # Usage
-///
-/// ```rust,ignore
-/// use repo_engine::export_repo_car;
-///
-/// let mut block_store = SqliteBlockStore::new(pool, did.clone());
-/// let car_bytes = export_repo_car(&mut block_store, root_cid).await?;
-/// // Return car_bytes as application/vnd.ipld.car
-/// ```
-pub async fn export_repo_car<S>(
-    block_store: &mut S,
-    root_cid: Cid,
-) -> Result<Vec<u8>, CarExportError>
+/// This deliberately does NOT follow the commit's `prev` link — that is repo history,
+/// not part of the current repo's block set. The result is the live block set for the
+/// given root, used both to export a complete CAR and to identify garbage for GC.
+pub async fn collect_reachable_cids<S>(store: &mut S, root: Cid) -> Result<Vec<Cid>, CarExportError>
 where
     S: AsyncBlockStoreRead,
 {
-    let mut car_buf = Vec::new();
+    let mut repo = Repository::open(&mut *store, root)
+        .await
+        .map_err(|e| CarExportError::BlockStore(format!("open repo: {e}")))?;
 
-    // Scope the CarStore so we can return car_buf after it's dropped.
+    // The commit block + every MST node block.
+    let mut reachable: HashSet<Cid> = repo
+        .export()
+        .await
+        .map_err(|e| CarExportError::BlockStore(format!("export: {e}")))?
+        .collect();
+
+    // Every record block (the value CID of each MST entry).
+    {
+        let mut tree = repo.tree();
+        let mut entries = Box::pin(tree.entries());
+        while let Some(res) = entries.next().await {
+            let (_key, value) =
+                res.map_err(|e| CarExportError::BlockStore(format!("walk entries: {e}")))?;
+            reachable.insert(value);
+        }
+    }
+
+    Ok(reachable.into_iter().collect())
+}
+
+/// Export a repository as a CARv1 file given its root CID.
+///
+/// The CAR contains the signed commit (declared as the CAR root), all MST nodes, and
+/// all record blocks — a complete repo that another implementation can re-import.
+pub async fn export_repo_car<S>(store: &mut S, root_cid: Cid) -> Result<Vec<u8>, CarExportError>
+where
+    S: AsyncBlockStoreRead,
+{
+    let reachable = collect_reachable_cids(&mut *store, root_cid).await?;
+
+    let mut car_buf = Vec::new();
     {
         let mut car: CarStore<Cursor<&mut Vec<u8>>> =
             CarStore::create_with_roots(Cursor::new(&mut car_buf), [root_cid])
                 .await
                 .map_err(|e| CarExportError::BlockStore(format!("create CAR: {e}")))?;
 
-        // Read the root block (signed commit) and write it to the CAR.
-        let mut root_block = Vec::new();
-        block_store
-            .read_block_into(root_cid, &mut root_block)
-            .await
-            .map_err(|e| CarExportError::BlockStore(format!("read root block: {e}")))?;
-
-        car.write_block(root_cid.codec(), SHA2_256, &root_block)
-            .await
-            .map_err(|e| CarExportError::BlockStore(format!("write root to CAR: {e}")))?;
-
-        // For Phase 6, we only write the commit block.
-        // Phase 7 will add MST walking to include all record blocks.
+        for cid in reachable {
+            let mut block = Vec::new();
+            store
+                .read_block_into(cid, &mut block)
+                .await
+                .map_err(|e| CarExportError::BlockStore(format!("read block {cid}: {e}")))?;
+            car.write_block(cid.codec(), SHA2_256, &block)
+                .await
+                .map_err(|e| CarExportError::BlockStore(format!("write block to CAR: {e}")))?;
+        }
     }
 
     Ok(car_buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use atrium_repo::blockstore::MemoryBlockStore;
+
+    use crate::genesis::create_genesis_repo;
+    use crate::signer::CommitSigner;
+
+    fn test_signer() -> CommitSigner {
+        use p256::ecdsa::SigningKey;
+        let key = SigningKey::random(&mut rand_core::OsRng);
+        let bytes: [u8; 32] = key.to_bytes().into();
+        CommitSigner::from_bytes(&bytes).unwrap()
+    }
+
+    /// Build a repo with one record. Returns (store, new_root, record_cid).
+    async fn repo_with_record() -> (MemoryBlockStore, Cid, Cid) {
+        let mut store = MemoryBlockStore::new();
+        let signer = test_signer();
+        let root = create_genesis_repo(&mut store, "did:plc:cartest", &signer)
+            .await
+            .unwrap();
+        let mut repo = Repository::open(&mut store, root).await.unwrap();
+        let record = serde_json::json!({ "text": "hello" });
+        let record_cid =
+            crate::records::put_record(&mut repo, &signer, "app.bsky.feed.post/abc", &record)
+                .await
+                .unwrap();
+        let new_root = repo.root();
+        (store, new_root, record_cid)
+    }
+
+    #[tokio::test]
+    async fn collect_reachable_includes_commit_mst_and_records() {
+        let (mut store, root, record_cid) = repo_with_record().await;
+        let reachable = collect_reachable_cids(&mut store, root).await.unwrap();
+        assert!(reachable.contains(&root), "must include the commit (root)");
+        assert!(
+            reachable.contains(&record_cid),
+            "must include the record block"
+        );
+        // commit + at least one MST node + the record.
+        assert!(
+            reachable.len() >= 3,
+            "got {} reachable cids",
+            reachable.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn exported_car_round_trips_records() {
+        let (mut store, root, record_cid) = repo_with_record().await;
+        let car = export_repo_car(&mut store, root).await.unwrap();
+
+        // Re-open the CAR and confirm the record block is present — proves the CAR is
+        // complete (commit + MST + record), not just the commit block (the old stub).
+        let mut car_store = CarStore::open(Cursor::new(&car)).await.unwrap();
+        let mut commit_block = Vec::new();
+        car_store
+            .read_block_into(root, &mut commit_block)
+            .await
+            .expect("commit block must be in the CAR");
+        let mut record_block = Vec::new();
+        car_store
+            .read_block_into(record_cid, &mut record_block)
+            .await
+            .expect("record block must be in the CAR");
+        assert!(!record_block.is_empty());
+    }
 }
