@@ -95,14 +95,7 @@ mod tests {
     use axum::http::{self, Request};
     use tower::ServiceExt;
 
-    use crate::db::blocks::SqliteBlockStore;
-    use repo_engine::{create_genesis_repo, CommitSigner};
-
-    fn test_signer() -> (crypto::P256Keypair, CommitSigner) {
-        let kp = crypto::generate_p256_keypair().expect("keypair");
-        let signer = CommitSigner::from_bytes(&kp.private_key_bytes).expect("signer");
-        (kp, signer)
-    }
+    use crate::routes::test_utils::{seed_account_with_repo, state_with_master_key};
 
     fn access_jwt(secret: &[u8; 32], sub: &str) -> String {
         use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
@@ -125,33 +118,10 @@ mod tests {
     }
 
     async fn setup_account_with_repo() -> (AppState, String) {
-        let state = crate::app::test_state().await;
-
-        let did = "did:plc:getrecordtest";
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, 'getrecord@example.com', 'hash', datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .execute(&state.db)
-        .await
-        .unwrap();
-
-        let (_kp, signer) = test_signer();
-        let block_store = SqliteBlockStore::new(state.db.clone(), did.to_string());
-        let cid = create_genesis_repo(block_store, did, &signer)
-            .await
-            .unwrap();
-
-        let cid_str = cid.to_string();
-        sqlx::query("UPDATE accounts SET repo_root_cid = ? WHERE did = ?")
-            .bind(&cid_str)
-            .bind(did)
-            .execute(&state.db)
-            .await
-            .unwrap();
-
-        (state, did.to_string())
+        let state = state_with_master_key().await;
+        let did = "did:plc:getrecordtest".to_string();
+        seed_account_with_repo(&state.db, &did).await;
+        (state, did)
     }
 
     #[tokio::test]

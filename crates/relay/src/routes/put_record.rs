@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::app::AppState;
 use crate::db::blocks::SqliteBlockStore;
 use common::{ApiError, ErrorCode};
-use repo_engine::{CommitSigner, Repository};
+use repo_engine::Repository;
 
 #[derive(Deserialize)]
 pub struct PutRecordParams {
@@ -85,18 +85,20 @@ pub async fn put_record(
         ApiError::new(ErrorCode::InternalError, "failed to put record")
     })?;
 
-    // TODO: use the actual signing key for this account.
-    // For now, generate a throwaway key. The signing key will be wired
-    // when the key management system is implemented.
-    let signing_key = crypto::generate_p256_keypair().map_err(|e| {
-        tracing::error!(error = %e, did = %did, "failed to generate signing key");
-        ApiError::new(ErrorCode::InternalError, "failed to put record")
-    })?;
-
-    let signer = CommitSigner::from_bytes(&signing_key.private_key_bytes).map_err(|e| {
-        tracing::error!(error = %e, did = %did, "failed to create commit signer");
-        ApiError::new(ErrorCode::InternalError, "failed to put record")
-    })?;
+    // Sign the commit with this account's published #atproto signing key.
+    let master_key: &[u8; 32] = state
+        .config
+        .signing_key_master_key
+        .as_ref()
+        .map(|s| &*s.0)
+        .ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::ServiceUnavailable,
+                "signing key master key not configured",
+            )
+        })?;
+    let signer =
+        crate::routes::get_repo_signing_key::load_repo_signer(&state.db, did, master_key).await?;
 
     // Build the MST key: collection/rkey
     let mst_key = format!("{collection}/{rkey}");
@@ -138,43 +140,13 @@ mod tests {
     use axum::http::{self, Request};
     use tower::ServiceExt;
 
-    use crate::db::blocks::SqliteBlockStore;
-    use repo_engine::{create_genesis_repo, CommitSigner};
-
-    fn test_signer() -> (crypto::P256Keypair, CommitSigner) {
-        let kp = crypto::generate_p256_keypair().expect("keypair");
-        let signer = CommitSigner::from_bytes(&kp.private_key_bytes).expect("signer");
-        (kp, signer)
-    }
+    use crate::routes::test_utils::{seed_account_with_repo, state_with_master_key};
 
     async fn setup_account_with_repo() -> (AppState, String) {
-        let state = crate::app::test_state().await;
-
-        let did = "did:plc:putrecordtest";
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, 'putrecord@example.com', 'hash', datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .execute(&state.db)
-        .await
-        .unwrap();
-
-        let (_kp, signer) = test_signer();
-        let block_store = SqliteBlockStore::new(state.db.clone(), did.to_string());
-        let cid = create_genesis_repo(block_store, did, &signer)
-            .await
-            .unwrap();
-
-        let cid_str = cid.to_string();
-        sqlx::query("UPDATE accounts SET repo_root_cid = ? WHERE did = ?")
-            .bind(&cid_str)
-            .bind(did)
-            .execute(&state.db)
-            .await
-            .unwrap();
-
-        (state, did.to_string())
+        let state = state_with_master_key().await;
+        let did = "did:plc:putrecordtest".to_string();
+        seed_account_with_repo(&state.db, &did).await;
+        (state, did)
     }
 
     fn access_jwt(secret: &[u8; 32], sub: &str) -> String {

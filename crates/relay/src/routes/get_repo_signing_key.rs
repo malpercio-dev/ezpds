@@ -16,7 +16,9 @@ use serde::Serialize;
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::db::repo_keys::{get_pending_repo_key, set_pending_repo_key, RepoSigningKey};
+use crate::db::repo_keys::{
+    get_pending_repo_key, get_signing_key_by_did, set_pending_repo_key, RepoSigningKey,
+};
 use crate::routes::auth::require_pending_session;
 
 #[derive(Serialize)]
@@ -88,6 +90,37 @@ pub async fn get_repo_signing_key(
         public_key: key.public_key,
         algorithm: "p256".to_string(),
     }))
+}
+
+/// Load the per-account repo signing key for a promoted DID and build a [`CommitSigner`].
+///
+/// Used by genesis creation and record writes to sign commits with the key published
+/// as the DID's `#atproto` verification method (so the signatures verify network-wide).
+pub(crate) async fn load_repo_signer(
+    pool: &sqlx::SqlitePool,
+    did: &str,
+    master_key: &[u8; 32],
+) -> Result<repo_engine::CommitSigner, ApiError> {
+    let key = get_signing_key_by_did(pool, did)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, did = %did, "failed to load repo signing key");
+            ApiError::new(ErrorCode::InternalError, "failed to load signing key")
+        })?
+        .ok_or_else(|| {
+            ApiError::new(ErrorCode::InternalError, "no repo signing key for account")
+        })?;
+
+    let private =
+        crypto::decrypt_private_key(&key.private_key_encrypted, master_key).map_err(|e| {
+            tracing::error!(error = %e, did = %did, "failed to decrypt repo signing key");
+            ApiError::new(ErrorCode::InternalError, "failed to decrypt signing key")
+        })?;
+
+    repo_engine::CommitSigner::from_bytes(&private).map_err(|e| {
+        tracing::error!(error = %e, did = %did, "invalid repo signing key");
+        ApiError::new(ErrorCode::InternalError, "invalid signing key")
+    })
 }
 
 #[cfg(test)]
@@ -229,5 +262,48 @@ mod tests {
         let app = app(state);
         let resp = app.oneshot(get_req(Some(&token))).await.unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn load_repo_signer_reconstructs_the_stored_key() {
+        use crate::db::repo_keys::{insert_did_signing_key, RepoSigningKey};
+        use repo_engine::CommitSigner;
+
+        let state = test_state().await;
+        let master = [9u8; 32];
+        let did = "did:plc:signerload";
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES (?, 'sl@example.com', 'h', datetime('now'), datetime('now'))",
+        )
+        .bind(did)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let kp = crypto::generate_p256_keypair().unwrap();
+        let enc = crypto::encrypt_private_key(&kp.private_key_bytes, &master).unwrap();
+        insert_did_signing_key(
+            &state.db,
+            did,
+            &RepoSigningKey {
+                key_id: kp.key_id.to_string(),
+                public_key: kp.public_key.clone(),
+                private_key_encrypted: enc,
+            },
+        )
+        .await
+        .unwrap();
+
+        // The loaded signer must be the SAME key — deterministic RFC6979 sigs match.
+        let loaded = super::load_repo_signer(&state.db, did, &master)
+            .await
+            .unwrap();
+        let direct = CommitSigner::from_bytes(&kp.private_key_bytes).unwrap();
+        assert_eq!(loaded.sign(b"commit bytes"), direct.sign(b"commit bytes"));
+
+        // A wrong master key must fail (auth-tag mismatch), not return a bogus signer.
+        let wrong = super::load_repo_signer(&state.db, did, &[0u8; 32]).await;
+        assert!(wrong.is_err());
     }
 }
