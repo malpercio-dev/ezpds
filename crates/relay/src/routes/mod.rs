@@ -8,6 +8,7 @@ pub mod create_mobile_account;
 pub mod create_session;
 pub mod create_signing_key;
 pub mod delete_handle;
+pub mod delete_record;
 pub mod delete_session;
 pub mod describe_server;
 pub mod get_blob;

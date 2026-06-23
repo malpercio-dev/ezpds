@@ -85,23 +85,21 @@ where
     S: atrium_repo::blockstore::AsyncBlockStoreRead + atrium_repo::blockstore::AsyncBlockStoreWrite,
     T: Serialize,
 {
-    // Try to add the record. If it already exists, update it.
-    let (commit_builder, cid) = match repo.add_raw(key, data).await {
-        Ok((builder, cid)) => (builder, cid),
-        Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("already present")
-                || msg.contains("already exists")
-                || msg.contains("duplicate")
-            {
-                // Key exists, fall through to update.
-                repo.update_raw(key, data)
-                    .await
-                    .map_err(|e| RecordError::Repo(format!("update record: {e}")))?
-            } else {
-                return Err(RecordError::Repo(format!("add record: {e}")));
-            }
-        }
+    // Choose create vs update by checking existence first — robust against atrium's
+    // error message wording (which a string match would couple to).
+    let exists = repo
+        .get_raw::<serde_json::Value>(key)
+        .await
+        .map_err(|e| RecordError::Repo(format!("check record: {e}")))?
+        .is_some();
+    let (commit_builder, cid) = if exists {
+        repo.update_raw(key, data)
+            .await
+            .map_err(|e| RecordError::Repo(format!("update record: {e}")))?
+    } else {
+        repo.add_raw(key, data)
+            .await
+            .map_err(|e| RecordError::Repo(format!("add record: {e}")))?
     };
 
     // Sign and finalize the commit.
