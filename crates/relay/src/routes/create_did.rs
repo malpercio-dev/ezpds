@@ -93,6 +93,22 @@ pub async fn create_did_handler(
     let session = require_pending_session(&headers, &state.db).await?;
     let pending = load_pending_account(&state.db, &session.account_id).await?;
 
+    // The per-account repo signing key must have been issued (GET /v1/repo-signing-key)
+    // before the ceremony, because the op publishes it as #atproto and the relay signs
+    // repo commits with the matching private key.
+    let repo_key = crate::db::repo_keys::get_pending_repo_key(&state.db, &session.account_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to load pending repo signing key");
+            ApiError::new(ErrorCode::InternalError, "failed to load signing key")
+        })?
+        .ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::InvalidClaim,
+                "repo signing key not provisioned; call GET /v1/repo-signing-key before creating the DID",
+            )
+        })?;
+
     // Guard: reject empty passwords before doing any expensive work.
     // argon2 happily hashes "" — this ensures the relay never stores a zero-length password.
     if payload.password.is_empty() {
@@ -106,6 +122,20 @@ pub async fn create_did_handler(
     let (verified, signed_op_str) =
         verify_and_validate_genesis_op(&payload, &pending.handle, &state.config.public_url)?;
     let did = &verified.did;
+
+    // The op must publish the issued per-account key as its #atproto verification method.
+    // A mismatch means the relay could not sign this repo's commits, so reject it.
+    if verified
+        .verification_methods
+        .get("atproto")
+        .map(String::as_str)
+        != Some(repo_key.key_id.as_str())
+    {
+        return Err(ApiError::new(
+            ErrorCode::InvalidClaim,
+            "op verificationMethods.atproto does not match the issued repo signing key",
+        ));
+    }
 
     // Phase 3: Pre-store DID and Shamir shares for retry resilience, then POST to plc.directory.
     // Shares are generated once and stored alongside pending_did so that retries return the
@@ -136,6 +166,7 @@ pub async fn create_did_handler(
         &session_token.hash,
         &share2,
         &password_hash,
+        &repo_key,
     )
     .await?;
 
@@ -412,26 +443,28 @@ fn generate_recovery_shares() -> Result<(String, String, String), ApiError> {
 /// The account is already active; the repo can be initialized lazily.
 async fn create_account_repo(state: &AppState, did: &str) {
     use crate::db::blocks::SqliteBlockStore;
-    use repo_engine::{create_genesis_repo, CommitSigner};
+    use repo_engine::create_genesis_repo;
 
-    // TODO: use the actual signing key from the account/relay config.
-    // For now, generate a throwaway key so the repo structure is correct.
-    // The signing key will be wired in Phase 6 (record writes).
-    let signing_key = match crypto::generate_p256_keypair() {
-        Ok(kp) => kp,
-        Err(e) => {
-            tracing::error!(error = %e, did = %did, "failed to generate signing key for genesis repo");
+    // Sign the genesis commit with this account's published #atproto key (just inserted
+    // into signing_keys by promote_account), so the commit verifies network-wide.
+    let master_key: &[u8; 32] = match state.config.signing_key_master_key.as_ref().map(|s| &*s.0) {
+        Some(k) => k,
+        None => {
+            tracing::error!(did = %did, "signing key master key not configured; skipping genesis repo");
             return;
         }
     };
 
-    let signer = match CommitSigner::from_bytes(&signing_key.private_key_bytes) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!(error = %e, did = %did, "failed to create commit signer");
-            return;
-        }
-    };
+    let signer =
+        match crate::routes::get_repo_signing_key::load_repo_signer(&state.db, did, master_key)
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = %e, did = %did, "failed to load repo signer for genesis");
+                return;
+            }
+        };
 
     let block_store = SqliteBlockStore::new(state.db.clone(), did.to_string());
 
@@ -512,6 +545,7 @@ async fn promote_account(
     token_hash: &str,
     recovery_share: &str,
     password_hash: &str,
+    repo_key: &crate::db::repo_keys::RepoSigningKey,
 ) -> Result<(), ApiError> {
     let did_document_str = serde_json::to_string(did_document).map_err(|e| {
         tracing::error!(error = %e, "failed to serialize DID document");
@@ -566,6 +600,13 @@ async fn promote_account(
     .await
     .inspect_err(|e| tracing::error!(error = %e, "failed to insert session"))
     .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to create session"))?;
+
+    // Move the per-account repo signing key from the pending account into signing_keys
+    // (DID-keyed), atomically with promotion. The relay loads it to sign repo commits.
+    crate::db::repo_keys::insert_did_signing_key(&mut *tx, did, repo_key)
+        .await
+        .inspect_err(|e| tracing::error!(error = %e, "failed to insert repo signing key"))
+        .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store signing key"))?;
 
     sqlx::query("DELETE FROM pending_sessions WHERE account_id = ?")
         .bind(account_id)
@@ -674,6 +715,9 @@ mod tests {
         session_token: String,
         account_id: String,
         handle: String,
+        /// did:key of the per-account repo signing key issued by GET /v1/repo-signing-key.
+        /// The genesis op must publish this as its #atproto verification method.
+        repo_signing_key_id: String,
     }
 
     /// Generate a signed genesis op verifiable by the returned rotation_key_public.
@@ -681,21 +725,27 @@ mod tests {
     /// Uses the same keypair for both rotation and signing: kp signs the op,
     /// AND kp.key_id appears at rotationKeys[0]. Calling verify_genesis_op with
     /// kp.key_id will succeed.
-    fn make_signed_op(handle: &str, public_url: &str) -> (String, serde_json::Value) {
-        use crypto::{build_did_plc_genesis_op, generate_p256_keypair};
-        let kp = generate_p256_keypair().expect("keypair");
-        let private_bytes = *kp.private_key_bytes;
+    fn make_signed_op(
+        handle: &str,
+        public_url: &str,
+        atproto_key_did: &str,
+    ) -> (String, serde_json::Value) {
+        use crypto::{build_did_plc_genesis_op, generate_p256_keypair, DidKeyUri};
+        // The device/rotation key signs the op; the per-account key (issued by the relay)
+        // is published as rotationKeys[1] + verificationMethods.atproto.
+        let device = generate_p256_keypair().expect("device keypair");
+        let device_private = *device.private_key_bytes;
         let genesis_op = build_did_plc_genesis_op(
-            &kp.key_id, // rotation key — placed at rotationKeys[0]
-            &kp.key_id, // signing key (same) — kp's private key performs the signing
-            &private_bytes,
+            &device.key_id,                          // rotationKeys[0] — signs the op
+            &DidKeyUri(atproto_key_did.to_string()), // rotationKeys[1] + verificationMethods.atproto
+            &device_private,                         // op is signed by the device/rotation key
             handle,
             public_url,
         )
         .expect("genesis op");
         let signed_op_value: serde_json::Value =
             serde_json::from_str(&genesis_op.signed_op_json).expect("valid JSON");
-        (kp.key_id.0, signed_op_value)
+        (device.key_id.0, signed_op_value)
     }
 
     /// Insert prerequisite rows for a DID-creation test.
@@ -754,17 +804,46 @@ mod tests {
         .await
         .expect("insert pending_session");
 
+        // Provision the per-account repo signing key (as GET /v1/repo-signing-key would),
+        // encrypted with the same master key configured by test_state_for_did.
+        let repo_kp = crypto::generate_p256_keypair().expect("repo keypair");
+        let private_key_encrypted = crypto::encrypt_private_key(
+            &repo_kp.private_key_bytes,
+            &crate::routes::test_utils::test_master_key(),
+        )
+        .expect("encrypt repo key");
+        crate::db::repo_keys::set_pending_repo_key(
+            db,
+            &account_id,
+            &crate::db::repo_keys::RepoSigningKey {
+                key_id: repo_kp.key_id.to_string(),
+                public_key: repo_kp.public_key.clone(),
+                private_key_encrypted,
+            },
+        )
+        .await
+        .expect("set pending repo key");
+
         TestSetup {
             session_token: token.plaintext,
             account_id,
             handle,
+            repo_signing_key_id: repo_kp.key_id.0,
         }
     }
 
-    /// Create an AppState with plc_directory_url pointing to the mock server.
-    /// No signing_key_master_key needed.
+    /// Create an AppState with plc_directory_url pointing to the mock server and the
+    /// signing-key master key configured (so genesis-repo signing works in tests).
     async fn test_state_for_did(plc_url: String) -> AppState {
-        test_state_with_plc_url(plc_url).await
+        let base = test_state_with_plc_url(plc_url).await;
+        let mut config = (*base.config).clone();
+        config.signing_key_master_key = Some(common::Sensitive(zeroize::Zeroizing::new(
+            crate::routes::test_utils::test_master_key(),
+        )));
+        AppState {
+            config: std::sync::Arc::new(config),
+            ..base
+        }
     }
 
     /// Build a POST /v1/dids request with a default test password.
@@ -804,8 +883,11 @@ mod tests {
         let state = test_state_for_did(mock_server.uri()).await;
         let db = state.db.clone();
         let setup = insert_test_data(&db).await;
-        let (rotation_key_public, signed_op) =
-            make_signed_op(&setup.handle, &state.config.public_url);
+        let (rotation_key_public, signed_op) = make_signed_op(
+            &setup.handle,
+            &state.config.public_url,
+            &setup.repo_signing_key_id,
+        );
 
         let app = crate::app::app(state.clone());
         let response = app
@@ -841,6 +923,34 @@ mod tests {
                 .map(|s| !s.is_empty())
                 .unwrap_or(false),
             "response should include a non-empty session_token"
+        );
+
+        // End-to-end: the issued per-account key was moved into signing_keys (DID-keyed),
+        // and the genesis repo was created and its root recorded on the account.
+        let did = body["did"].as_str().unwrap();
+        let stored_key_id: Option<String> =
+            sqlx::query_scalar("SELECT id FROM signing_keys WHERE did = ?")
+                .bind(did)
+                .fetch_optional(&db)
+                .await
+                .unwrap();
+        assert_eq!(
+            stored_key_id.as_deref(),
+            Some(setup.repo_signing_key_id.as_str()),
+            "issued per-account key must be stored in signing_keys for the DID"
+        );
+        let repo_root: Option<String> =
+            sqlx::query_scalar("SELECT repo_root_cid FROM accounts WHERE did = ?")
+                .bind(did)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(
+            repo_root
+                .as_deref()
+                .map(|r| r.starts_with("baf"))
+                .unwrap_or(false),
+            "genesis repo root CID must be recorded on the account"
         );
 
         // shamir_share_1 and shamir_share_3 must be present, 52-char BASE32 (A-Z, 2-7).
@@ -995,8 +1105,11 @@ mod tests {
         let state = test_state_for_did(mock_server.uri()).await;
         let db = state.db.clone();
         let setup = insert_test_data(&db).await;
-        let (rotation_key_public, signed_op) =
-            make_signed_op(&setup.handle, &state.config.public_url);
+        let (rotation_key_public, signed_op) = make_signed_op(
+            &setup.handle,
+            &state.config.public_url,
+            &setup.repo_signing_key_id,
+        );
 
         // Derive the DID from the signed op to pre-store it.
         let signed_op_str = serde_json::to_string(&signed_op).unwrap();
@@ -1072,8 +1185,11 @@ mod tests {
         let state = test_state_for_did("https://plc.directory".to_string()).await;
         let db = state.db.clone();
         let setup = insert_test_data(&db).await;
-        let (rotation_key_public, signed_op) =
-            make_signed_op(&setup.handle, &state.config.public_url);
+        let (rotation_key_public, signed_op) = make_signed_op(
+            &setup.handle,
+            &state.config.public_url,
+            &setup.repo_signing_key_id,
+        );
 
         // Pre-set pending_did to a DIFFERENT value (tampered/corrupted retry).
         let tampered_did = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
@@ -1115,8 +1231,11 @@ mod tests {
         let state = test_state_for_did("https://plc.directory".to_string()).await;
         let db = state.db.clone();
         let setup = insert_test_data(&db).await;
-        let (rotation_key_public, mut signed_op) =
-            make_signed_op(&setup.handle, &state.config.public_url);
+        let (rotation_key_public, mut signed_op) = make_signed_op(
+            &setup.handle,
+            &state.config.public_url,
+            &setup.repo_signing_key_id,
+        );
 
         // Corrupt the sig: decode, flip one byte, re-encode.
         use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -1152,8 +1271,11 @@ mod tests {
         let db = state.db.clone();
         let setup = insert_test_data(&db).await;
         // Build op with a different handle — pending_accounts has setup.handle.
-        let (rotation_key_public, signed_op) =
-            make_signed_op("different.handle.com", &state.config.public_url);
+        let (rotation_key_public, signed_op) = make_signed_op(
+            "different.handle.com",
+            &state.config.public_url,
+            &setup.repo_signing_key_id,
+        );
 
         let app = crate::app::app(state);
         let response = app
@@ -1182,8 +1304,11 @@ mod tests {
         let db = state.db.clone();
         let setup = insert_test_data(&db).await;
         // Build op with wrong service endpoint.
-        let (rotation_key_public, signed_op) =
-            make_signed_op(&setup.handle, "https://wrong.example.com");
+        let (rotation_key_public, signed_op) = make_signed_op(
+            &setup.handle,
+            "https://wrong.example.com",
+            &setup.repo_signing_key_id,
+        );
 
         let app = crate::app::app(state);
         let response = app
@@ -1201,6 +1326,72 @@ mod tests {
             .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(body["error"]["code"], "INVALID_CLAIM");
+    }
+
+    // ── Per-account repo signing key checks ───────────────────────────────────
+
+    /// An op publishing a different #atproto key than the one issued is rejected,
+    /// before any plc.directory call (the relay could not sign that repo's commits).
+    #[tokio::test]
+    async fn mismatched_atproto_key_returns_400() {
+        let mock_server = MockServer::start().await;
+        // No PLC mock: rejection must happen before Phase 3.
+        let state = test_state_for_did(mock_server.uri()).await;
+        let db = state.db.clone();
+        let setup = insert_test_data(&db).await;
+
+        let unrelated_key = crypto::generate_p256_keypair().unwrap().key_id.0;
+        let (rotation_key_public, signed_op) =
+            make_signed_op(&setup.handle, &state.config.public_url, &unrelated_key);
+
+        let app = crate::app::app(state);
+        let response = app
+            .oneshot(create_did_request(
+                &setup.session_token,
+                &rotation_key_public,
+                &signed_op,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "expected 400");
+    }
+
+    /// The ceremony is rejected if the repo signing key was never issued
+    /// (GET /v1/repo-signing-key not called before /v1/dids).
+    #[tokio::test]
+    async fn missing_repo_signing_key_returns_400() {
+        let mock_server = MockServer::start().await;
+        let state = test_state_for_did(mock_server.uri()).await;
+        let db = state.db.clone();
+        let setup = insert_test_data(&db).await;
+        // Simulate a ceremony that skipped the key-issuance step.
+        sqlx::query(
+            "UPDATE pending_accounts \
+             SET repo_signing_key_id = NULL, repo_signing_public_key = NULL, \
+                 repo_signing_private_key_encrypted = NULL \
+             WHERE id = ?",
+        )
+        .bind(&setup.account_id)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let (rotation_key_public, signed_op) = make_signed_op(
+            &setup.handle,
+            &state.config.public_url,
+            &setup.repo_signing_key_id,
+        );
+
+        let app = crate::app::app(state);
+        let response = app
+            .oneshot(create_did_request(
+                &setup.session_token,
+                &rotation_key_public,
+                &signed_op,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "expected 400");
     }
 
     // ── rotationKeys[0] mismatch ──────────────────────────────────────────────
@@ -1298,8 +1489,11 @@ mod tests {
         let state = test_state_for_did("https://plc.directory".to_string()).await;
         let db = state.db.clone();
         let setup = insert_test_data(&db).await;
-        let (rotation_key_public, signed_op) =
-            make_signed_op(&setup.handle, &state.config.public_url);
+        let (rotation_key_public, signed_op) = make_signed_op(
+            &setup.handle,
+            &state.config.public_url,
+            &setup.repo_signing_key_id,
+        );
 
         // Derive the DID and pre-insert an accounts row.
         let signed_op_str = serde_json::to_string(&signed_op).unwrap();
@@ -1379,8 +1573,11 @@ mod tests {
         let state = test_state_for_did("https://plc.directory".to_string()).await;
         let db = state.db.clone();
         let setup = insert_test_data(&db).await;
-        let (rotation_key_public, signed_op) =
-            make_signed_op(&setup.handle, &state.config.public_url);
+        let (rotation_key_public, signed_op) = make_signed_op(
+            &setup.handle,
+            &state.config.public_url,
+            &setup.repo_signing_key_id,
+        );
 
         // Derive DID and pre-store it with dummy shares to trigger the skip_plc path.
         let signed_op_str = serde_json::to_string(&signed_op).unwrap();
@@ -1482,8 +1679,11 @@ mod tests {
         let state = test_state_for_did("https://plc.directory".to_string()).await;
         let db = state.db.clone();
         let setup = insert_test_data(&db).await;
-        let (rotation_key_public, signed_op) =
-            make_signed_op(&setup.handle, &state.config.public_url);
+        let (rotation_key_public, signed_op) = make_signed_op(
+            &setup.handle,
+            &state.config.public_url,
+            &setup.repo_signing_key_id,
+        );
 
         // Pre-store pending_did to use the skip_plc path (no network required).
         let signed_op_str = serde_json::to_string(&signed_op).unwrap();
@@ -1594,8 +1794,11 @@ mod tests {
         let state = test_state_for_did("https://plc.directory".to_string()).await;
         let db = state.db.clone();
         let setup = insert_test_data(&db).await;
-        let (rotation_key_public, signed_op) =
-            make_signed_op(&setup.handle, &state.config.public_url);
+        let (rotation_key_public, signed_op) = make_signed_op(
+            &setup.handle,
+            &state.config.public_url,
+            &setup.repo_signing_key_id,
+        );
 
         let request_body = serde_json::json!({
             "rotationKeyPublic": rotation_key_public,
@@ -1640,8 +1843,11 @@ mod tests {
         let state = test_state_for_did(mock_server.uri()).await;
         let db = state.db.clone();
         let setup = insert_test_data(&db).await;
-        let (rotation_key_public, signed_op) =
-            make_signed_op(&setup.handle, &state.config.public_url);
+        let (rotation_key_public, signed_op) = make_signed_op(
+            &setup.handle,
+            &state.config.public_url,
+            &setup.repo_signing_key_id,
+        );
 
         let app = crate::app::app(state);
         let response = app
