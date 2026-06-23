@@ -53,6 +53,10 @@ impl CommitSigner {
     /// `CommitBuilder::finalize(sig)`.
     pub fn sign(&self, commit_bytes: &[u8]) -> Vec<u8> {
         let sig: Signature = self.key.sign(commit_bytes);
+        // ATProto requires canonical low-S signatures; ~half of raw P-256 signatures
+        // are high-S and would be rejected by network verifiers. normalize_s() returns
+        // Some(normalized) only when the original was high-S.
+        let sig = sig.normalize_s().unwrap_or(sig);
         sig.to_bytes().to_vec()
     }
 }
@@ -122,6 +126,26 @@ mod tests {
             verifying_key.verify(message, &signature).is_ok(),
             "signature must verify with the corresponding public key"
         );
+    }
+
+    #[test]
+    fn sign_produces_low_s_signatures() {
+        // ATProto requires canonical low-S signatures; verifiers reject high-S.
+        // Sample many keys/messages — roughly half of un-normalized P-256 sigs are high-S.
+        for i in 0..256u32 {
+            let signing_key = SigningKey::random(&mut rand_core::OsRng);
+            let bytes: [u8; 32] = signing_key.to_bytes().into();
+            let signer = CommitSigner::from_bytes(&bytes).unwrap();
+
+            let sig_bytes = signer.sign(format!("commit bytes {i}").as_bytes());
+            let sig = Signature::from_slice(&sig_bytes).unwrap();
+
+            // normalize_s() returns Some(_) only when the signature WAS high-S.
+            assert!(
+                sig.normalize_s().is_none(),
+                "signature must already be canonical low-S (iteration {i})"
+            );
+        }
     }
 
     #[test]
