@@ -1,0 +1,28 @@
+meta {
+  name: Create Record
+  type: http
+  seq: 34
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.repo.createRecord
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "repo": {{did}},
+    "collection": "app.bsky.feed.post",
+    "rkey": "",
+    "record": {
+      "$type": "app.bsky.feed.post",
+      "text": "Hello from Bruno!",
+      "createdAt": "2026-06-22T00:00:00Z"
+    }
+  }
+}

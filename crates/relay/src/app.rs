@@ -22,6 +22,7 @@ use crate::routes::create_account::create_account;
 use crate::routes::create_did::create_did_handler;
 use crate::routes::create_handle::create_handle_handler;
 use crate::routes::create_mobile_account::create_mobile_account;
+use crate::routes::create_record::create_record;
 use crate::routes::create_session::create_session;
 use crate::routes::create_signing_key::create_signing_key;
 use crate::routes::delete_handle::delete_handle_handler;
@@ -201,6 +202,7 @@ pub fn app(state: AppState) -> Router {
         .route("/xrpc/com.atproto.sync.getBlob", get(get_blob))
         .route("/xrpc/com.atproto.sync.getRepo", get(get_repo))
         .route("/xrpc/com.atproto.sync.listBlobs", get(list_blobs))
+        .route("/xrpc/com.atproto.repo.createRecord", post(create_record))
         .route("/xrpc/com.atproto.repo.getRecord", get(get_record))
         .route("/xrpc/com.atproto.repo.putRecord", post(put_record))
         .route("/xrpc/com.atproto.repo.deleteRecord", post(delete_record))
