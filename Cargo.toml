@@ -57,7 +57,7 @@ tower-http = { version = "0.5", features = ["trace", "cors"] }
 tower = { version = "0.5", features = ["util"] }
 
 # ATProto (repo-engine)
-# atrium-api = "0.22"
+atrium-api = "0.25.8"
 atrium-repo = "0.1.8"
 
 # Crypto (crypto)

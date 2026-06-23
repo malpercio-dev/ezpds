@@ -139,6 +139,12 @@ pub async fn create_did_handler(
     )
     .await?;
 
+    // Phase 5: Create genesis repo for the new account.
+    // This writes the genesis commit (empty MST + signed commit) to the blocks table.
+    // Non-fatal: if this fails, the account is already active; the repo can be
+    // initialized lazily on first getRepo call.
+    create_account_repo(&state, did).await;
+
     Ok(Json(CreateDidResponse {
         did: did.clone(),
         did_document,
@@ -398,6 +404,45 @@ fn generate_recovery_shares() -> Result<(String, String, String), ApiError> {
         BASE32_NOPAD.encode(s2.data.as_ref()),
         BASE32_NOPAD.encode(s3.data.as_ref()),
     ))
+}
+
+/// Create the genesis repo for a newly promoted account.
+///
+/// Non-fatal: logs the error and returns without propagating.
+/// The account is already active; the repo can be initialized lazily.
+async fn create_account_repo(state: &AppState, did: &str) {
+    use crate::db::blocks::SqliteBlockStore;
+    use repo_engine::{create_genesis_repo, CommitSigner};
+
+    // TODO: use the actual signing key from the account/relay config.
+    // For now, generate a throwaway key so the repo structure is correct.
+    // The signing key will be wired in Phase 6 (record writes).
+    let signing_key = match crypto::generate_p256_keypair() {
+        Ok(kp) => kp,
+        Err(e) => {
+            tracing::error!(error = %e, did = %did, "failed to generate signing key for genesis repo");
+            return;
+        }
+    };
+
+    let signer = match CommitSigner::from_bytes(&signing_key.private_key_bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(error = %e, did = %did, "failed to create commit signer");
+            return;
+        }
+    };
+
+    let block_store = SqliteBlockStore::new(state.db.clone(), did.to_string());
+
+    match create_genesis_repo(block_store, did, &signer).await {
+        Ok(cid) => {
+            tracing::info!(did = %did, commit_cid = %cid, "genesis repo created");
+        }
+        Err(e) => {
+            tracing::error!(error = %e, did = %did, "failed to create genesis repo");
+        }
+    }
 }
 
 /// POST the signed genesis operation to plc.directory (Step 9).

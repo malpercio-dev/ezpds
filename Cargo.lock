@@ -484,6 +484,7 @@ dependencies = [
  "serde_bytes",
  "serde_json",
  "thiserror 1.0.69",
+ "tokio",
  "trait-variant",
 ]
 
@@ -5178,6 +5179,7 @@ dependencies = [
 name = "repo-engine"
 version = "0.1.0"
 dependencies = [
+ "atrium-api",
  "atrium-repo",
  "futures",
  "p256",
