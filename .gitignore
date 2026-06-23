@@ -1,6 +1,13 @@
 # Rust build artifacts
 /target/
 
+# Stray Cargo home caches — the real CARGO_HOME is .devenv/state/cargo (already
+# ignored via .devenv/). These root-level dirs appear when cargo runs outside the
+# dev shell, or under a sandbox that redirects CARGO_HOME to the repo root. Pure
+# regenerable registry cache (see registry/CACHEDIR.TAG), never source.
+/.cargo/
+/.cargo-home-probe/
+
 # IDE and editor files
 .idea/
 .vscode/
