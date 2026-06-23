@@ -37,6 +37,7 @@ pub struct PutRecordResponse {
 pub async fn put_record(
     State(state): State<AppState>,
     Query(params): Query<PutRecordParams>,
+    headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<PutRecordBody>,
 ) -> Result<impl IntoResponse, ApiError> {
     let did = &params.did;
@@ -46,6 +47,16 @@ pub async fn put_record(
     // Validate DID format.
     if !did.starts_with("did:") {
         return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
+    }
+
+    // Authenticate: require a valid access token whose subject owns this repo.
+    let token = crate::auth::extract_bearer_token(&headers)?;
+    let claims = crate::auth::jwt::verify_access_token(token, &state)?;
+    if claims.sub != *did {
+        return Err(ApiError::new(
+            ErrorCode::Forbidden,
+            "authenticated account does not own this repository",
+        ));
     }
 
     // Look up the repo root CID.
@@ -166,9 +177,72 @@ mod tests {
         (state, did.to_string())
     }
 
+    fn access_jwt(secret: &[u8; 32], sub: &str) -> String {
+        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        encode(
+            &Header::new(Algorithm::HS256),
+            &serde_json::json!({
+                "scope": "com.atproto.access",
+                "sub": sub,
+                "iat": now,
+                "exp": now + 7200_u64,
+            }),
+            &EncodingKey::from_secret(secret),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn put_record_without_auth_returns_401() {
+        let (state, did) = setup_account_with_repo().await;
+        let app = crate::app::app(state);
+
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri(format!(
+                "/xrpc/com.atproto.repo.putRecord?did={did}&collection=app.bsky.feed.post&rkey=t1"
+            ))
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({"record": {"text": "x"}})).unwrap(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn put_record_wrong_did_returns_403() {
+        let (state, did) = setup_account_with_repo().await;
+        let other_token = access_jwt(&state.jwt_secret, "did:plc:someoneelse");
+        let app = crate::app::app(state);
+
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri(format!(
+                "/xrpc/com.atproto.repo.putRecord?did={did}&collection=app.bsky.feed.post&rkey=t1"
+            ))
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {other_token}"))
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({"record": {"text": "x"}})).unwrap(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
     #[tokio::test]
     async fn put_record_returns_uri_and_cid() {
         let (state, did) = setup_account_with_repo().await;
+        let token = access_jwt(&state.jwt_secret, &did);
         let app = crate::app::app(state);
 
         let record = serde_json::json!({
@@ -177,11 +251,12 @@ mod tests {
         });
 
         let request = Request::builder()
-            .method(http::Method::PUT)
+            .method(http::Method::POST)
             .uri(format!(
                 "/xrpc/com.atproto.repo.putRecord?did={did}&collection=app.bsky.feed.post&rkey=test1"
             ))
             .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
             .body(Body::from(serde_json::to_string(&serde_json::json!({"record": record})).unwrap()))
             .unwrap();
 
@@ -200,14 +275,16 @@ mod tests {
     #[tokio::test]
     async fn put_record_nonexistent_account_returns_404() {
         let state = crate::app::test_state().await;
+        let token = access_jwt(&state.jwt_secret, "did:plc:nonexistent");
         let app = crate::app::app(state);
 
         let record = serde_json::json!({"text": "test"});
 
         let request = Request::builder()
-            .method(http::Method::PUT)
+            .method(http::Method::POST)
             .uri("/xrpc/com.atproto.repo.putRecord?did=did:plc:nonexistent&collection=app.bsky.feed.post&rkey=test1")
             .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
             .body(Body::from(serde_json::to_string(&serde_json::json!({"record": record})).unwrap()))
             .unwrap();
 
@@ -218,7 +295,7 @@ mod tests {
     #[tokio::test]
     async fn put_record_updates_repo_root_cid() {
         let (state, did) = setup_account_with_repo().await;
-
+        let token = access_jwt(&state.jwt_secret, &did);
         let app = crate::app::app(state);
 
         let record = serde_json::json!({
@@ -227,11 +304,12 @@ mod tests {
         });
 
         let request = Request::builder()
-            .method(http::Method::PUT)
+            .method(http::Method::POST)
             .uri(format!(
                 "/xrpc/com.atproto.repo.putRecord?did={did}&collection=app.bsky.feed.post&rkey=test2"
             ))
             .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
             .body(Body::from(serde_json::to_string(&serde_json::json!({"record": record})).unwrap()))
             .unwrap();
 

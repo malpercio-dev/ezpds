@@ -5,7 +5,7 @@ use std::time::Instant;
 use axum::{
     extract::Path,
     http::Request,
-    routing::{delete, get, post, put},
+    routing::{delete, get, post},
     Router,
 };
 use common::{ApiError, Config, ErrorCode};
@@ -200,7 +200,7 @@ pub fn app(state: AppState) -> Router {
         .route("/xrpc/com.atproto.sync.getRepo", get(get_repo))
         .route("/xrpc/com.atproto.sync.listBlobs", get(list_blobs))
         .route("/xrpc/com.atproto.repo.getRecord", get(get_record))
-        .route("/xrpc/com.atproto.repo.putRecord", put(put_record))
+        .route("/xrpc/com.atproto.repo.putRecord", post(put_record))
         .route("/xrpc/:method", get(xrpc_handler).post(xrpc_handler))
         .route("/v1/accounts", post(create_account))
         .route("/v1/accounts/claim-codes", post(claim_codes))
