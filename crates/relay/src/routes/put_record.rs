@@ -59,6 +59,10 @@ pub async fn put_record(
         ));
     }
 
+    // Reject a malformed collection/rkey before touching the repo.
+    repo_engine::validate_record_path(collection, rkey)
+        .map_err(|_| ApiError::new(ErrorCode::InvalidClaim, "invalid collection or record key"))?;
+
     // Look up the repo root CID.
     let root_cid_str: Option<String> =
         sqlx::query_scalar("SELECT repo_root_cid FROM accounts WHERE did = ?")
@@ -111,17 +115,28 @@ pub async fn put_record(
             ApiError::new(ErrorCode::InternalError, "failed to put record")
         })?;
 
-    // Update the repo root CID.
+    // Advance the repo root with optimistic concurrency: only if it hasn't moved
+    // since we read it. If a concurrent write advanced it first, that write wins and
+    // we return 409 so the client retries against the new root (rather than silently
+    // clobbering the other commit). The new blocks we wrote are orphaned and GC-able.
     let new_root = repo.root().to_string();
-    sqlx::query("UPDATE accounts SET repo_root_cid = ? WHERE did = ?")
-        .bind(&new_root)
-        .bind(did)
-        .execute(&state.db)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, did = %did, "failed to update repo root CID");
-            ApiError::new(ErrorCode::InternalError, "failed to put record")
-        })?;
+    let updated =
+        sqlx::query("UPDATE accounts SET repo_root_cid = ? WHERE did = ? AND repo_root_cid = ?")
+            .bind(&new_root)
+            .bind(did)
+            .bind(&root_cid_str)
+            .execute(&state.db)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, did = %did, "failed to update repo root CID");
+                ApiError::new(ErrorCode::InternalError, "failed to put record")
+            })?;
+    if updated.rows_affected() != 1 {
+        return Err(ApiError::new(
+            ErrorCode::Conflict,
+            "repository was modified concurrently; retry against the current root",
+        ));
+    }
 
     let uri = format!("at://{did}/{collection}/{rkey}");
     Ok((
@@ -242,6 +257,28 @@ mod tests {
 
         assert_eq!(resp.uri, format!("at://{did}/app.bsky.feed.post/test1"));
         assert!(!resp.cid.is_empty());
+    }
+
+    #[tokio::test]
+    async fn put_record_invalid_collection_returns_400() {
+        let (state, did) = setup_account_with_repo().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        let app = crate::app::app(state);
+
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri(format!(
+                "/xrpc/com.atproto.repo.putRecord?did={did}&collection=notanid&rkey=t1"
+            ))
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({"record": {"text": "x"}})).unwrap(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

@@ -58,6 +58,9 @@ pub enum ErrorCode {
     ExpiredToken,
     /// Request body exceeds the maximum allowed size.
     PayloadTooLarge,
+    /// A write conflicted with a concurrent modification (e.g. the repo root advanced
+    /// since it was read). Clients should retry against the new state.
+    Conflict,
     // TODO: add remaining codes from Appendix A as endpoints are implemented:
     // 400: INVALID_DOCUMENT, INVALID_PROOF, INVALID_ENDPOINT, INVALID_CONFIRMATION
     // 401: INVALID_CREDENTIALS
@@ -97,6 +100,7 @@ impl ErrorCode {
             ErrorCode::InvalidToken => 401,
             ErrorCode::ExpiredToken => 400,
             ErrorCode::PayloadTooLarge => 413,
+            ErrorCode::Conflict => 409,
         }
     }
 }

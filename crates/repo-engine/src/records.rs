@@ -16,6 +16,48 @@ pub enum RecordError {
     Repo(String),
     #[error("record not found")]
     NotFound,
+    #[error("invalid record path: {0}")]
+    InvalidPath(String),
+}
+
+/// Validate a record's collection (NSID) and record key per the ATProto spec,
+/// before any repo mutation.
+///
+/// - `collection` must be a valid NSID: at least three dot-separated segments,
+///   each alphanumeric-or-hyphen and non-empty, total length 1..=317, no slashes.
+/// - `rkey` must be 1..=512 chars from `[A-Za-z0-9._:~-]`, and not `.` or `..`.
+pub fn validate_record_path(collection: &str, rkey: &str) -> Result<(), RecordError> {
+    // Collection: NSID — >=3 dot segments, each [A-Za-z0-9-] and non-empty.
+    if collection.is_empty() || collection.len() > 317 {
+        return Err(RecordError::InvalidPath("collection length".into()));
+    }
+    let segments: Vec<&str> = collection.split('.').collect();
+    if segments.len() < 3
+        || segments
+            .iter()
+            .any(|s| s.is_empty() || !s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+    {
+        return Err(RecordError::InvalidPath(format!(
+            "collection is not a valid NSID: {collection}"
+        )));
+    }
+
+    // Record key: 1..=512 chars from [A-Za-z0-9._:~-], and not "." or "..".
+    if rkey.is_empty() || rkey.len() > 512 || rkey == "." || rkey == ".." {
+        return Err(RecordError::InvalidPath(format!(
+            "invalid record key: {rkey}"
+        )));
+    }
+    if !rkey
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':' | '~'))
+    {
+        return Err(RecordError::InvalidPath(format!(
+            "record key has invalid characters: {rkey}"
+        )));
+    }
+
+    Ok(())
 }
 
 /// Write (create or update) a record in the repository.
@@ -135,6 +177,34 @@ mod tests {
     use atrium_repo::blockstore::MemoryBlockStore;
     use atrium_repo::repo::Repository;
     use p256::ecdsa::SigningKey;
+
+    #[test]
+    fn validate_record_path_accepts_valid() {
+        assert!(validate_record_path("app.bsky.feed.post", "3jzfcijpj2z2a").is_ok());
+        assert!(validate_record_path("com.example.a-b", "self").is_ok());
+        assert!(validate_record_path("app.bsky.feed.post", "a.b_c~d:e-f").is_ok());
+    }
+
+    #[test]
+    fn validate_record_path_rejects_bad_collection() {
+        assert!(validate_record_path("", "x").is_err()); // empty
+        assert!(validate_record_path("foo", "x").is_err()); // too few segments
+        assert!(validate_record_path("app.bsky", "x").is_err()); // 2 segments
+        assert!(validate_record_path("app..post", "x").is_err()); // empty segment
+        assert!(validate_record_path("app/bsky/post", "x").is_err()); // slashes
+        assert!(validate_record_path("app.bsky.po st", "x").is_err()); // space
+    }
+
+    #[test]
+    fn validate_record_path_rejects_bad_rkey() {
+        assert!(validate_record_path("app.bsky.feed.post", "").is_err()); // empty
+        assert!(validate_record_path("app.bsky.feed.post", ".").is_err()); // dot
+        assert!(validate_record_path("app.bsky.feed.post", "..").is_err()); // dotdot
+        assert!(validate_record_path("app.bsky.feed.post", "a/b").is_err()); // slash
+        assert!(validate_record_path("app.bsky.feed.post", "a b").is_err()); // space
+        assert!(validate_record_path("app.bsky.feed.post", &"x".repeat(513)).is_err());
+        // too long
+    }
 
     fn test_signer() -> CommitSigner {
         let key = SigningKey::random(&mut rand_core::OsRng);
