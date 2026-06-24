@@ -37,3 +37,4 @@
 {"timestamp":"2026-06-23T16:58:11.814Z","kind":"observe","slug":"obs-2026-06-23-createrecord-endpoint-implemented-mm-100","title":"createRecord endpoint implemented (MM-100)","relevance":"high"}
 {"timestamp":"2026-06-23T17:31:30.933Z","kind":"observe","slug":"obs-2026-06-23-review-findings-fixed-for-createrecord-mm-100","title":"Review findings fixed for createRecord (MM-100)","relevance":"high"}
 {"timestamp":"2026-06-24T02:18:06.368Z","kind":"observe","slug":"obs-2026-06-24-atproto-extension-updated-with-createrecord-tool","title":"ATProto extension updated with createRecord tool","relevance":"medium"}
+{"timestamp":"2026-06-24T18:58:09.797Z","kind":"rebuild_meta"}

@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-06-23T17:31:30.946Z",
+  "last_updated": "2026-06-24T18:58:09.794Z",
   "pages": {
     "concepts/did-plc": {
       "type": "concept",
@@ -139,7 +139,7 @@
     "sources/SRC-2026-06-22-001": {
       "type": "source",
       "title": "SRC-2026-06-22-001",
-      "created": "2026-06-23",
+      "created": "2026-06-24",
       "updated": "2026-06-22",
       "format": "markdown",
       "source_id": "SRC-2026-06-22-001",
@@ -150,7 +150,7 @@
     "sources/SRC-2026-06-22-002": {
       "type": "source",
       "title": "SRC-2026-06-22-002",
-      "created": "2026-06-23",
+      "created": "2026-06-24",
       "updated": "2026-06-22",
       "format": "markdown",
       "source_id": "SRC-2026-06-22-002",
@@ -161,7 +161,7 @@
     "sources/SRC-2026-06-22-003": {
       "type": "source",
       "title": "SRC-2026-06-22-003",
-      "created": "2026-06-23",
+      "created": "2026-06-24",
       "updated": "2026-06-22",
       "format": "markdown",
       "source_id": "SRC-2026-06-22-003",
@@ -172,7 +172,7 @@
     "sources/SRC-2026-06-22-004": {
       "type": "source",
       "title": "SRC-2026-06-22-004",
-      "created": "2026-06-23",
+      "created": "2026-06-24",
       "updated": "2026-06-22",
       "format": "markdown",
       "source_id": "SRC-2026-06-22-004",
@@ -183,7 +183,7 @@
     "sources/SRC-2026-06-22-005": {
       "type": "source",
       "title": "SRC-2026-06-22-005",
-      "created": "2026-06-23",
+      "created": "2026-06-24",
       "updated": "2026-06-22",
       "format": "markdown",
       "source_id": "SRC-2026-06-22-005",
@@ -686,6 +686,23 @@
         "shared-helper"
       ],
       "source_context": "\"Fixing PR review findings for MM-100 createRecord\""
+    },
+    "sources/obs-2026-06-24-atproto-extension-updated-with-createrecord-tool": {
+      "type": "source",
+      "title": "\"Observation: ATProto extension updated with createRecord tool\"",
+      "created": "2026-06-24",
+      "updated": "2026-06-24",
+      "slug": "obs-2026-06-24-atproto-extension-updated-with-createrecord-tool",
+      "status": "observation",
+      "relevance": "medium",
+      "observed_at": "2026-06-24T02:18:06.367Z",
+      "tags": [
+        "extension",
+        "atproto",
+        "create-record",
+        "tool"
+      ],
+      "source_context": "\"Adding createRecord tool to ATProto extension\""
     }
   }
 }

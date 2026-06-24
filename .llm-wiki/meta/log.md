@@ -115,3 +115,6 @@
 ## [2026-06-23T17:31:30.933Z] observe
 - slug: "obs-2026-06-23-review-findings-fixed-for-createrecord-mm-100", title: "Review findings fixed for createRecord (MM-100)", relevance: "high"
 
+## [2026-06-24T02:18:06.368Z] observe
+- slug: "obs-2026-06-24-atproto-extension-updated-with-createrecord-tool", title: "ATProto extension updated with createRecord tool", relevance: "medium"
+

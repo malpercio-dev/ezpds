@@ -54,11 +54,12 @@
 - [[sources/obs-2026-06-23-atproto-extension-updated-with-repo-crud-tools]] — "Observation: ATProto extension updated with repo CRUD tools" *(created: 2026-06-23)*
 - [[sources/obs-2026-06-23-createrecord-endpoint-implemented-mm-100]] — "Observation: createRecord endpoint implemented (MM-100)" *(created: 2026-06-23)*
 - [[sources/obs-2026-06-23-review-findings-fixed-for-createrecord-mm-100]] — "Observation: Review findings fixed for createRecord (MM-100)" *(created: 2026-06-23)*
-- [[sources/SRC-2026-06-22-001]] — SRC-2026-06-22-001 *(created: 2026-06-23)*
-- [[sources/SRC-2026-06-22-002]] — SRC-2026-06-22-002 *(created: 2026-06-23)*
-- [[sources/SRC-2026-06-22-003]] — SRC-2026-06-22-003 *(created: 2026-06-23)*
-- [[sources/SRC-2026-06-22-004]] — SRC-2026-06-22-004 *(created: 2026-06-23)*
-- [[sources/SRC-2026-06-22-005]] — SRC-2026-06-22-005 *(created: 2026-06-23)*
+- [[sources/obs-2026-06-24-atproto-extension-updated-with-createrecord-tool]] — "Observation: ATProto extension updated with createRecord tool" *(created: 2026-06-24)*
+- [[sources/SRC-2026-06-22-001]] — SRC-2026-06-22-001 *(created: 2026-06-24)*
+- [[sources/SRC-2026-06-22-002]] — SRC-2026-06-22-002 *(created: 2026-06-24)*
+- [[sources/SRC-2026-06-22-003]] — SRC-2026-06-22-003 *(created: 2026-06-24)*
+- [[sources/SRC-2026-06-22-004]] — SRC-2026-06-22-004 *(created: 2026-06-24)*
+- [[sources/SRC-2026-06-22-005]] — SRC-2026-06-22-005 *(created: 2026-06-24)*
 
 ---
-*Last updated: 2026-06-23T17:31:30.946Z* | *Total pages: 49*
+*Last updated: 2026-06-24T18:58:09.794Z* | *Total pages: 50*
