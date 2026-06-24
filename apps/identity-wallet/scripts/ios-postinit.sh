@@ -88,6 +88,31 @@ else
   echo "ios-postinit: no CODE_SIGN_ENTITLEMENTS in pbxproj; skipping entitlements allowance"
 fi
 
+# --- Patch E: link SystemConfiguration.framework (system-configuration crate) ---
+# `hickory-resolver` (system DNS config) and `reqwest` (system proxy detection) both
+# use the `system-configuration` crate, which needs Apple's SystemConfiguration.framework.
+# On host builds rustc honors the crate's `#[link(kind="framework")]`; on iOS the crate is
+# a staticlib that Xcode links, and Xcode never sees that directive — so the framework must
+# be declared in the Xcode project or the link fails with `Undefined symbols ... _SC*`.
+# `bundle.iOS.frameworks` in tauri.conf.json only seeds a FRESH project.yml; cargo-mobile2
+# preserves an existing project.yml, so it does not retroactively apply — we enforce the link
+# on the generated pbxproj here. The grep guard makes this idempotent AND a no-op if a fresh
+# project.yml already linked it as a proper framework (no double-link).
+if grep -q 'SystemConfiguration' "${PBXPROJ}"; then
+  echo "ios-postinit: SystemConfiguration.framework already linked"
+else
+  # Append OTHER_LDFLAGS after each target's PRODUCT_BUNDLE_IDENTIFIER (its two build configs),
+  # reusing that line's indentation. `\$(inherited)` stays literal (Xcode expands it).
+  /usr/bin/perl -0pi -e 's/^([ \t]*)PRODUCT_BUNDLE_IDENTIFIER = ([^\n]*);$/$1PRODUCT_BUNDLE_IDENTIFIER = $2;\n$1OTHER_LDFLAGS = "\$(inherited) -framework SystemConfiguration";/mg' "${PBXPROJ}"
+  if ! grep -q 'SystemConfiguration' "${PBXPROJ}"; then
+    echo "error: could not inject OTHER_LDFLAGS for SystemConfiguration into the pbxproj." >&2
+    echo "       Expected a PRODUCT_BUNDLE_IDENTIFIER build setting to anchor it; Tauri's" >&2
+    echo "       generated template may differ. Adjust the regex in $(basename "$0")." >&2
+    exit 1
+  fi
+  echo "ios-postinit: linked SystemConfiguration.framework via OTHER_LDFLAGS"
+fi
+
 # Structural guard: the patched project MUST still parse. Catches quoting/encoding
 # corruption that a sentinel-only check would miss (plutil reads the pbxproj format).
 if command -v plutil >/dev/null 2>&1; then

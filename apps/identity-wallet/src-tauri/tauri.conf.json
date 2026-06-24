@@ -20,7 +20,10 @@
     ]
   },
   "bundle": {
-    "active": true
+    "active": true,
+    "iOS": {
+      "frameworks": ["SystemConfiguration"]
+    }
   },
   "plugins": {
     "deep-link": {

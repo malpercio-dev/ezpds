@@ -897,6 +897,84 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // ── atproto_create_record ────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: "atproto_create_record",
+    label: "Create Record",
+    description:
+      "Create a new record in an ATProto repository. Auto-generates a TID if rkey is not provided. Returns the record URI and CID.",
+    promptSnippet: "Create a new record in a repo",
+    promptGuidelines: [
+      "Use to create new records (posts, likes, follows, etc.) in a user's repo.",
+      "Unlike put_record, this rejects duplicate rkeys with 409 Conflict.",
+      "If rkey is omitted or empty, a TID (13-char base32-sortable) is auto-generated.",
+      "CID links must be encoded as {\"$link\": \"<cid>\"} and byte strings as {\"$bytes\": \"<base64>\"}.",
+      "Floats are rejected — the ATProto data model permits only integers.",
+    ],
+    parameters: Type.Object({
+      did: Type.String({ description: "Account DID (e.g. did:plc:abc123)" }),
+      collection: Type.String({
+        description: "Record collection (e.g. app.bsky.feed.post)",
+      }),
+      rkey: Type.Optional(
+        Type.String({
+          description: "Record key. If omitted or empty, a TID is auto-generated.",
+        })
+      ),
+      record: Type.Any({
+        description: "Record data as a JSON object",
+      }),
+      access_jwt: Type.Optional(
+        Type.String({ description: "Access JWT for authentication" })
+      ),
+    }),
+    async execute(_id, params) {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (params.access_jwt) {
+        headers["Authorization"] = `Bearer ${params.access_jwt}`;
+      }
+
+      const body: Record<string, unknown> = {
+        repo: params.did,
+        collection: params.collection,
+        record: params.record,
+      };
+      if (params.rkey) {
+        body.rkey = params.rkey;
+      }
+
+      const res = await fetch(`${baseUrl}/xrpc/com.atproto.repo.createRecord`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`HTTP ${res.status}: ${text}`);
+      }
+
+      const data = (await res.json()) as { uri: string; cid: string };
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: [
+              `Record created successfully`,
+              `URI: ${data.uri}`,
+              `CID: ${data.cid}`,
+            ].join("\n"),
+          },
+        ],
+        details: data,
+      };
+    },
+  });
+
   // ── atproto_put_record ──────────────────────────────────────────────────
 
   pi.registerTool({

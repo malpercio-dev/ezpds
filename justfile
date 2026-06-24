@@ -61,9 +61,12 @@ ios-check:
 # CARGO_TARGET_*/CC_*/AR_* a long-lived dev shell may carry from a pre-fix ios-env.sh
 # sourcing (see apps/identity-wallet/CLAUDE.md "Development Workflow").
 
-# Launch the app in the iOS Simulator (verifies patches first).
-ios-dev: ios-check
-    cd apps/identity-wallet && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && cargo tauri ios dev
+# Launch the app on the iOS Simulator (verifies patches first). With no argument,
+# `cargo tauri ios dev` auto-selects a target and PREFERS a connected physical
+# device (which needs code signing). Pass a simulator name to force the Simulator
+# even while a device is plugged in, e.g. `just ios-dev "iPhone 17 Pro Max"`.
+ios-dev device="": ios-check
+    cd apps/identity-wallet && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && if [ -n "{{device}}" ]; then cargo tauri ios dev "{{device}}"; else cargo tauri ios dev; fi
 
 # Build the iOS app for the Simulator (verifies patches first).
 ios-build: ios-check
