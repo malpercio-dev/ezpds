@@ -53,6 +53,7 @@
 - [[sources/obs-2026-06-23-atproto-extension-updated-with-per-account-signing-key-flow]] — "Observation: ATProto extension updated with per-account signing key flow" *(created: 2026-06-23)*
 - [[sources/obs-2026-06-23-atproto-extension-updated-with-repo-crud-tools]] — "Observation: ATProto extension updated with repo CRUD tools" *(created: 2026-06-23)*
 - [[sources/obs-2026-06-23-createrecord-endpoint-implemented-mm-100]] — "Observation: createRecord endpoint implemented (MM-100)" *(created: 2026-06-23)*
+- [[sources/obs-2026-06-23-review-findings-fixed-for-createrecord-mm-100]] — "Observation: Review findings fixed for createRecord (MM-100)" *(created: 2026-06-23)*
 - [[sources/SRC-2026-06-22-001]] — SRC-2026-06-22-001 *(created: 2026-06-23)*
 - [[sources/SRC-2026-06-22-002]] — SRC-2026-06-22-002 *(created: 2026-06-23)*
 - [[sources/SRC-2026-06-22-003]] — SRC-2026-06-22-003 *(created: 2026-06-23)*
@@ -60,4 +61,4 @@
 - [[sources/SRC-2026-06-22-005]] — SRC-2026-06-22-005 *(created: 2026-06-23)*
 
 ---
-*Last updated: 2026-06-23T16:58:11.824Z* | *Total pages: 48*
+*Last updated: 2026-06-23T17:31:30.946Z* | *Total pages: 49*

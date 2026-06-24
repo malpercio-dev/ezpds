@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "last_updated": "2026-06-23T16:58:11.824Z",
+  "last_updated": "2026-06-23T17:31:30.946Z",
   "pages": {
     "concepts/did-plc": {
       "type": "concept",
@@ -668,6 +668,24 @@
         "wave-4"
       ],
       "source_context": "\"Implementing MM-100 from Linear backlog\""
+    },
+    "sources/obs-2026-06-23-review-findings-fixed-for-createrecord-mm-100": {
+      "type": "source",
+      "title": "\"Observation: Review findings fixed for createRecord (MM-100)\"",
+      "created": "2026-06-23",
+      "updated": "2026-06-23",
+      "slug": "obs-2026-06-23-review-findings-fixed-for-createrecord-mm-100",
+      "status": "observation",
+      "relevance": "high",
+      "observed_at": "2026-06-23T17:31:30.932Z",
+      "tags": [
+        "review",
+        "fix",
+        "create-record",
+        "refactor",
+        "shared-helper"
+      ],
+      "source_context": "\"Fixing PR review findings for MM-100 createRecord\""
     }
   }
 }

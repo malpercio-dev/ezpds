@@ -35,3 +35,4 @@
 {"timestamp":"2026-06-23T13:40:40.381Z","kind":"observe","slug":"obs-2026-06-23-atproto-extension-updated-with-per-account-signing-key-flow","title":"ATProto extension updated with per-account signing key flow","relevance":"critical"}
 {"timestamp":"2026-06-23T14:11:50.979Z","kind":"observe","slug":"obs-2026-06-23-atproto-extension-fully-tested-after-per-account-signing-key","title":"ATProto extension fully tested after per-account signing key refactor","relevance":"critical"}
 {"timestamp":"2026-06-23T16:58:11.814Z","kind":"observe","slug":"obs-2026-06-23-createrecord-endpoint-implemented-mm-100","title":"createRecord endpoint implemented (MM-100)","relevance":"high"}
+{"timestamp":"2026-06-23T17:31:30.933Z","kind":"observe","slug":"obs-2026-06-23-review-findings-fixed-for-createrecord-mm-100","title":"Review findings fixed for createRecord (MM-100)","relevance":"high"}
