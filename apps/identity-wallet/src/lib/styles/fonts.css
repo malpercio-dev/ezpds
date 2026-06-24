@@ -1,0 +1,61 @@
+/*
+ * Self-hosted brand fonts — bundled into dist/ for offline use.
+ * A Tauri WKWebView loads from disk with no web server, and a security wallet
+ * must never fetch fonts from a runtime CDN. Files live in static/fonts/ and are
+ * copied to the build by adapter-static. See static/fonts/README.md for sources.
+ */
+
+/* Public Sans — the working voice (USWDS, OFL) */
+@font-face {
+  font-family: 'Public Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/PublicSans-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Public Sans';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/PublicSans-Medium.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Public Sans';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/PublicSans-SemiBold.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Public Sans';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/PublicSans-Bold.woff2') format('woff2');
+}
+
+/* JetBrains Mono — the literal truth: DIDs, keys, CIDs (OFL) */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/JetBrainsMono-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/JetBrainsMono-Medium.woff2') format('woff2');
+}
+
+/* Libre Caslon Display — the signet, for display moments only (OFL) */
+@font-face {
+  font-family: 'Libre Caslon Display';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/LibreCaslonDisplay-Regular.ttf') format('truetype');
+}
