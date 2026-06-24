@@ -1,4 +1,8 @@
 <script lang="ts">
+  import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
+  import SealEmblem from '$lib/components/ui/SealEmblem.svelte';
+  import Button from '$lib/components/ui/Button.svelte';
+
   let {
     did,
     oncontinue,
@@ -28,87 +32,50 @@
   }
 </script>
 
-<div class="screen">
-  <div class="success-icon" aria-hidden="true">✓</div>
-  <h2>Identity Created!</h2>
-  <p class="label">Your decentralized identifier</p>
+<OnboardingShell tone="signet" title="Identity created" subtitle="Your decentralized identifier — yours alone.">
+  {#snippet icon()}
+    <SealEmblem size={80}>
+      <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+        <path d="m9 11.5 2 2 4-4" />
+      </svg>
+    </SealEmblem>
+  {/snippet}
+
   <button class="did" onclick={copyDid} title="Tap to copy full DID">
-    {displayDid}
+    <span class="did-value">{displayDid}</span>
     <span class="copy-hint">{copied ? 'Copied!' : 'Tap to copy'}</span>
   </button>
-  <button class="cta" onclick={oncontinue}>Continue</button>
-</div>
+
+  <Button onclick={oncontinue}>Continue</Button>
+</OnboardingShell>
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    padding: 2rem;
-    gap: 1.25rem;
-    text-align: center;
-  }
-
-  .success-icon {
-    width: 64px;
-    height: 64px;
-    background: #007aff;
-    color: #fff;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 2rem;
-    font-weight: 700;
-  }
-
-  h2 {
-    font-size: 1.5rem;
-    font-weight: 700;
-    margin: 0;
-  }
-
-  .label {
-    font-size: 0.875rem;
-    color: #6b7280;
-    margin: 0;
-  }
-
   .did {
-    font-family: monospace;
-    font-size: 0.9rem;
-    background: #f3f4f6;
-    padding: 0.5rem 1rem;
-    border-radius: 8px;
-    word-break: break-all;
-    border: none;
-    cursor: pointer;
+    width: 100%;
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 0.25rem;
-    width: 100%;
-    max-width: 320px;
-  }
-
-  .copy-hint {
-    font-family: system-ui, sans-serif;
-    font-size: 0.75rem;
-    color: #6b7280;
-  }
-
-  .cta {
-    width: 100%;
-    max-width: 320px;
-    padding: 1rem;
-    background: #007aff;
-    color: #fff;
-    border: none;
-    border-radius: 12px;
-    font-size: 1.1rem;
-    font-weight: 600;
+    gap: var(--space-xs);
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-md);
+    padding: var(--space-md);
     cursor: pointer;
+    transition: background var(--duration-base) var(--ease-standard);
+  }
+  .did:active {
+    background: var(--color-surface-sunk);
+  }
+  .did-value {
+    font-family: var(--font-mono);
+    font-size: var(--text-data);
+    color: var(--color-ink);
+    word-break: break-all;
+  }
+  .copy-hint {
+    font-family: var(--font-sans);
+    font-size: var(--text-label);
+    color: var(--color-muted);
   }
 </style>

@@ -1,4 +1,7 @@
 <script lang="ts">
+  import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
+  import Button from '$lib/components/ui/Button.svelte';
+
   let {
     value = $bindable(''),
     onnext,
@@ -17,12 +20,8 @@
   }
 </script>
 
-<div class="screen">
-  <h2>Enter Your Claim Code</h2>
-  <p class="hint">You'll receive a 6-character code from your administrator.</p>
-
+<OnboardingShell title="Enter your claim code" subtitle="You'll receive a 6-character code from your administrator.">
   <input
-    type="text"
     class="code-input"
     class:error={!!error}
     maxlength="6"
@@ -31,80 +30,45 @@
     autocorrect="off"
     autocapitalize="characters"
     spellcheck={false}
+    aria-label="Claim code"
+    aria-invalid={!!error}
     {value}
     oninput={handleInput}
   />
-
   {#if error}
-    <p class="error-text">{error}</p>
+    <p class="code-error" role="alert">{error}</p>
   {/if}
-
-  <button disabled={!isValid} onclick={onnext}>Next</button>
-</div>
+  <Button disabled={!isValid} onclick={onnext}>Next</Button>
+</OnboardingShell>
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    padding: 2rem;
-    gap: 1rem;
-    height: 100%;
-    justify-content: center;
-  }
-
-  h2 {
-    font-size: 1.5rem;
-    font-weight: 700;
-    margin: 0;
-  }
-
-  .hint {
-    font-size: 0.9rem;
-    color: #6b7280;
-    text-align: center;
-    margin: 0;
-  }
-
   .code-input {
     width: 100%;
-    max-width: 320px;
-    padding: 1rem;
+    padding: var(--space-md);
+    font-family: var(--font-mono);
     font-size: 1.5rem;
-    font-family: monospace;
     letter-spacing: 0.5rem;
     text-align: center;
-    border: 2px solid #d1d5db;
-    border-radius: 12px;
     text-transform: uppercase;
+    color: var(--color-ink);
+    background: var(--color-bg);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-md);
+    transition: border-color var(--duration-base) var(--ease-standard);
   }
-
+  .code-input::placeholder {
+    color: var(--color-muted);
+  }
+  .code-input:focus-visible {
+    border-color: var(--color-accent);
+  }
   .code-input.error {
-    border-color: #ef4444;
+    border-color: var(--color-critical);
   }
-
-  .error-text {
-    color: #ef4444;
-    font-size: 0.875rem;
+  .code-error {
+    font-size: var(--text-label);
+    color: var(--color-critical);
     margin: 0;
     text-align: center;
-  }
-
-  button {
-    width: 100%;
-    max-width: 320px;
-    padding: 1rem;
-    background: #007aff;
-    color: #fff;
-    border: none;
-    border-radius: 12px;
-    font-size: 1rem;
-    font-weight: 600;
-    cursor: pointer;
-  }
-
-  button:disabled {
-    background: #9ca3af;
-    cursor: not-allowed;
   }
 </style>

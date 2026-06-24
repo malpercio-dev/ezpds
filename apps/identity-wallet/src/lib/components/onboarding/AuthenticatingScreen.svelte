@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { startOAuthFlow, type OAuthError } from '$lib/ipc';
+  import Spinner from '$lib/components/ui/Spinner.svelte';
 
   let {
     onresolved,
@@ -25,7 +26,7 @@
 </script>
 
 <div class="screen">
-  <div class="spinner" aria-label="Loading"></div>
+  <Spinner size={44} label="Authenticating" />
   <p class="status">Opening browser for authentication…</p>
 </div>
 
@@ -36,26 +37,13 @@
     align-items: center;
     justify-content: center;
     height: 100%;
-    gap: 24px;
-    padding: 32px;
+    gap: var(--space-lg);
+    padding: var(--space-xl);
   }
-
-  .spinner {
-    width: 40px;
-    height: 40px;
-    border: 4px solid #e5e7eb;
-    border-top-color: #007aff;
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
-
   .status {
+    font-size: var(--text-body);
+    color: var(--color-muted);
+    margin: 0;
     text-align: center;
-    color: #6b7280;
-    font-size: 1rem;
   }
 </style>

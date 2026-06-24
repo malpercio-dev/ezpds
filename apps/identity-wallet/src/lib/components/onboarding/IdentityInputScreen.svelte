@@ -1,6 +1,9 @@
 <script lang="ts">
-  import { resolveIdentity, type IdentityInfo, type ResolveError } from '$lib/ipc';
+  import { resolveIdentity, type IdentityInfo } from '$lib/ipc';
   import { truncateDid, isCodedError } from '$lib/did-doc-utils';
+  import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
+  import TextField from '$lib/components/ui/TextField.svelte';
+  import Button from '$lib/components/ui/Button.svelte';
 
   let {
     value = $bindable(''),
@@ -66,181 +69,74 @@
   let displayDid = $derived(truncateDid(resolved?.did ?? ''));
 </script>
 
-<div class="screen">
-  <h2>Import Identity</h2>
-  <p class="hint">Enter a handle or DID to import an existing identity.</p>
-
-  <input
-    type="text"
-    class:error={!!error}
-    placeholder="alice.example.com or did:plc:..."
-    autocomplete="off"
-    autocorrect="off"
-    autocapitalize="none"
-    spellcheck={false}
+<OnboardingShell title="Import identity" subtitle="Enter a handle or DID to import an existing identity.">
+  <TextField
     bind:value
+    type="text"
+    placeholder="alice.example.com or did:plc:…"
+    autocomplete="off"
+    autocapitalize="none"
+    autocorrect="off"
+    spellcheck={false}
+    aria-label="Handle or DID"
+    error={error ?? undefined}
     oninput={handleInputChange}
   />
-
-  {#if error}
-    <p class="error-text">{error}</p>
-  {/if}
-
-  <button
-    disabled={resolving || !value.trim()}
-    onclick={resolve}
-  >
+  <Button disabled={resolving || !value.trim()} onclick={resolve}>
     {resolving ? 'Resolving…' : 'Resolve'}
-  </button>
+  </Button>
 
   {#if resolved}
-    <div class="identity-card">
-      <div class="card-content">
-        <p class="card-label">Handle</p>
-        <p class="card-value">@{resolved.handle}</p>
-
-        <p class="card-label">DID</p>
-        <p class="card-value did-value">{displayDid}</p>
-
-        <p class="card-label">PDS</p>
-        <p class="card-value">{resolved.pdsUrl}</p>
-
-        <p class="card-label">Rotation Key Status</p>
-        <p class="card-value" class:status-root={resolved.deviceKeyIsRoot} class:status-not-root={!resolved.deviceKeyIsRoot}>
-          {#if resolved.deviceKeyIsRoot}
-            Your device is the root key
-          {:else}
-            Device key is not the root key
-          {/if}
-        </p>
+    <div class="preview">
+      <div class="row"><span class="k">Handle</span><span class="v">@{resolved.handle}</span></div>
+      <div class="row"><span class="k">DID</span><span class="v mono">{displayDid}</span></div>
+      <div class="row"><span class="k">PDS</span><span class="v">{resolved.pdsUrl}</span></div>
+      <div class="row">
+        <span class="k">Rotation key</span>
+        <span class="v" class:ok={resolved.deviceKeyIsRoot}>
+          {resolved.deviceKeyIsRoot ? 'Your device is the root key' : 'Device key is not the root key'}
+        </span>
       </div>
     </div>
-
-    <button class="continue-btn" onclick={() => onnext(resolved!)}>
-      Continue
-    </button>
+    <Button onclick={() => onnext(resolved!)}>Continue</Button>
   {/if}
 
-  <button class="back-btn" onclick={onback}>
-    Back
-  </button>
-</div>
+  <Button variant="secondary" onclick={onback}>Back</Button>
+</OnboardingShell>
 
 <style>
-  .screen {
+  .preview {
+    width: 100%;
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-lg);
+    padding: var(--space-md);
     display: flex;
     flex-direction: column;
-    align-items: center;
-    padding: 2rem;
-    gap: 1rem;
-    height: 100%;
-    justify-content: center;
+    gap: var(--space-sm);
+    text-align: left;
   }
-
-  h2 {
-    font-size: 1.5rem;
-    font-weight: 700;
-    margin: 0;
-  }
-
-  .hint {
-    font-size: 0.9rem;
-    color: #6b7280;
-    text-align: center;
-    margin: 0;
-  }
-
-  input {
-    width: 100%;
-    max-width: 320px;
-    padding: 1rem;
-    font-size: 1rem;
-    border: 2px solid #d1d5db;
-    border-radius: 12px;
-  }
-
-  input.error {
-    border-color: #ef4444;
-  }
-
-  .error-text {
-    color: #ef4444;
-    font-size: 0.875rem;
-    margin: 0;
-    text-align: center;
-    max-width: 320px;
-  }
-
-  button {
-    width: 100%;
-    max-width: 320px;
-    padding: 1rem;
-    background: #007aff;
-    color: #fff;
-    border: none;
-    border-radius: 12px;
-    font-size: 1rem;
-    font-weight: 600;
-    cursor: pointer;
-  }
-
-  button:disabled {
-    background: #9ca3af;
-    cursor: not-allowed;
-  }
-
-  .identity-card {
-    background: #f9fafb;
-    border: 1px solid #d1d5db;
-    border-radius: 12px;
-    padding: 1.25rem;
-    width: 100%;
-    max-width: 320px;
-  }
-
-  .card-content {
+  .row {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: 2px;
   }
-
-  .card-label {
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: #6b7280;
-    margin: 0;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+  .k {
+    font-size: var(--text-label);
+    font-weight: var(--weight-semibold);
+    color: var(--color-muted);
   }
-
-  .card-value {
-    font-size: 0.95rem;
-    color: #111827;
-    margin: 0;
+  .v {
+    font-size: var(--text-body);
+    color: var(--color-ink);
     word-break: break-word;
   }
-
-  .did-value {
-    font-family: monospace;
-    font-size: 0.85rem;
+  .v.mono {
+    font-family: var(--font-mono);
+    font-size: var(--text-data);
   }
-
-  .status-root {
-    color: #22c55e;
-    font-weight: 600;
-  }
-
-  .status-not-root {
-    color: #6b7280;
-  }
-
-  .continue-btn {
-    margin-top: 0.5rem;
-  }
-
-  .back-btn {
-    background: #f3f4f6;
-    color: #000;
-    margin-top: auto;
+  .v.ok {
+    color: var(--color-safe);
+    font-weight: var(--weight-semibold);
   }
 </style>

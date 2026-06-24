@@ -6,8 +6,12 @@
     type SignedRecoveryOp,
     type RecoveryError,
   } from '$lib/ipc';
-  import { getDeadline, formatCountdown, getUrgency } from '$lib/utils/deadline';
+  import { getDeadline, getUrgency } from '$lib/utils/deadline';
   import { isCodedError, truncateDid } from '$lib/did-doc-utils';
+  import UrgencyBadge from '$lib/components/ui/UrgencyBadge.svelte';
+  import DiffRow from '$lib/components/ui/DiffRow.svelte';
+  import Button from '$lib/components/ui/Button.svelte';
+  import Spinner from '$lib/components/ui/Spinner.svelte';
 
   let {
     did,
@@ -30,7 +34,45 @@
   let now = $state(Date.now());
   let timer: ReturnType<typeof setInterval> | null = null;
 
-  const deadline = getDeadline(createdAt);
+  // Derived so the countdown stays reactive as `now` ticks (was a plain const that
+  // captured only the initial value of `createdAt`).
+  let deadline = $derived(getDeadline(createdAt));
+  let urgency = $derived(getUrgency(deadline, now));
+  let isExpired = $derived(urgency === 'expired');
+
+  // Hold-to-override: a deliberate, irreversible confirmation gesture.
+  let holdFill = $state(0); // 0..1
+  const HOLD_MS = 1500;
+  let raf: number | null = null;
+  let startTs: number | null = null;
+
+  function frame(t: number) {
+    if (startTs === null) startTs = t;
+    holdFill = Math.min(1, (t - startTs) / HOLD_MS);
+    if (holdFill >= 1) {
+      raf = null;
+      startTs = null;
+      confirmOverride();
+      return;
+    }
+    raf = requestAnimationFrame(frame);
+  }
+  function holdStart() {
+    if (submitting || isExpired || !signedOp) return;
+    startTs = null;
+    raf = requestAnimationFrame(frame);
+  }
+  function holdEnd() {
+    if (raf === null) return;
+    cancelAnimationFrame(raf);
+    raf = null;
+    startTs = null;
+    holdFill = 0;
+  }
+  function confirmOverride() {
+    holdFill = 1;
+    handleSubmit();
+  }
 
   onMount(async () => {
     // Start the countdown timer
@@ -125,116 +167,99 @@
         error = 'Submission failed. Please try again.';
       }
       submitting = false;
+      holdFill = 0; // reset so the user can retry the hold
     }
   }
 </script>
 
 <div class="screen">
-  <div class="header">
-    <button class="back-btn" onclick={onback} aria-label="Back" disabled={loading || submitting}
-      >‹ Back</button
-    >
-    <h2 class="title">Recovery Override</h2>
+  <div class="appbar">
+    <button class="back" onclick={onback} disabled={loading || submitting} aria-label="Back">
+      <svg width="11" height="18" viewBox="0 0 11 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1 2 9l7 8" /></svg>
+      Back
+    </button>
+    <h2 class="appbar-title">Review override</h2>
+    <UrgencyBadge {urgency} {deadline} {now} />
   </div>
 
-  <!-- Identity section -->
-  <div class="section">
-    <p class="section-label">Identity</p>
-    <p class="mono-value">{truncateDid(did)}</p>
-  </div>
-
-  <!-- Deadline section -->
-  <div class="section">
-    <p class="section-label">Recovery Deadline</p>
-    <span class="deadline-status deadline-status--{getUrgency(deadline, now)}">
-      <span class="badge-dot"></span>
-      {formatCountdown(deadline, now)}
-    </span>
-    <p class="deadline-text">{deadline.toLocaleString()}</p>
-  </div>
-
-  {#if loading}
-    <div class="loading-section">
-      <p>Building recovery operation...</p>
+  <div class="content">
+    <div class="hero">
+      <h1 class="hero-title">Reclaim your identity</h1>
+      <p class="hero-sub">
+        Review what this does, then confirm with your device key. This reverses the change you didn’t
+        authorize.
+      </p>
     </div>
-  {:else if signedOp}
-    <!-- Keys section -->
-    <div class="section">
-      <p class="section-label">Keys</p>
-      {#if signedOp.diff.addedKeys.length > 0 || signedOp.diff.removedKeys.length > 0}
-        {#if signedOp.diff.addedKeys.length > 0}
-          <div class="subsection-label">Keys being restored</div>
-          {#each signedOp.diff.addedKeys as key}
-            <div class="diff-entry added">
-              <span class="diff-prefix">+</span>
-              <code class="diff-value">{key.slice(0, 20)}…</code>
-            </div>
-          {/each}
-        {/if}
 
-        {#if signedOp.diff.removedKeys.length > 0}
-          <div class="subsection-label">Keys being removed</div>
+    <div class="identity">
+      <span class="id-label">Identity</span>
+      <span class="id-did">{truncateDid(did)}</span>
+      <span class="id-deadline">Window closes {deadline.toLocaleString()}</span>
+    </div>
+
+    {#if loading}
+      <div class="loading">
+        <Spinner size={32} label="Building recovery operation" />
+        <p class="loading-text">Building recovery operation…</p>
+      </div>
+    {:else if signedOp}
+      <div class="block">
+        <p class="block-label">This override will</p>
+        {#if signedOp.diff.removedKeys.length === 0 && signedOp.diff.addedKeys.length === 0 && signedOp.diff.changedServices.length === 0}
+          <p class="no-changes">No key or service changes to apply.</p>
+        {:else}
           {#each signedOp.diff.removedKeys as key}
-            <div class="diff-entry removed">
-              <span class="diff-prefix">−</span>
-              <code class="diff-value">{key.slice(0, 20)}…</code>
-            </div>
+            <DiffRow variant="remove" title="Remove the unauthorized key" value="{key.slice(0, 24)}…" />
+          {/each}
+          {#each signedOp.diff.addedKeys as key}
+            <DiffRow variant="restore" title="Restore your key" value="{key.slice(0, 24)}…" />
+          {/each}
+          {#each signedOp.diff.changedServices as service}
+            {#if service.changeType === 'added'}
+              <DiffRow variant="restore" title="Restore service {service.id}" value={service.newEndpoint ?? undefined} />
+            {:else if service.changeType === 'removed'}
+              <DiffRow variant="remove" title="Remove service {service.id}" value="was {service.oldEndpoint}" />
+            {:else if service.changeType === 'modified'}
+              <DiffRow variant="modify" title="Change service {service.id}" value="{service.oldEndpoint} → {service.newEndpoint}" />
+            {/if}
           {/each}
         {/if}
-      {:else}
-        <p class="no-changes">No key changes</p>
-      {/if}
-    </div>
+      </div>
 
-    <!-- Services section -->
-    <div class="section">
-      <p class="section-label">Services</p>
-      {#if signedOp.diff.changedServices.length > 0}
-        {#each signedOp.diff.changedServices as service}
-          {#if service.changeType === 'added'}
-            <div class="diff-entry added">
-              <span class="diff-prefix">+</span>
-              <span class="service-text">Restoring service: {service.id} → {service.newEndpoint}</span>
-            </div>
-          {:else if service.changeType === 'removed'}
-            <div class="diff-entry removed">
-              <span class="diff-prefix">−</span>
-              <span class="service-text">Removing service: {service.id} (was: {service.oldEndpoint})</span>
-            </div>
-          {:else if service.changeType === 'modified'}
-            <div class="diff-entry modified">
-              <span class="diff-prefix">~</span>
-              <span class="service-text">Modifying service: {service.id}: {service.oldEndpoint} → {service.newEndpoint}</span>
-            </div>
-          {/if}
-        {/each}
-      {:else}
-        <p class="no-changes">No service changes</p>
-      {/if}
-    </div>
-  {/if}
+      <div class="sealed">
+        <span class="sealed-ic" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="m9 11.5 2 2 4-4" /></svg></span>
+        Sealed by your device key
+      </div>
+    {/if}
 
-  <!-- Error display -->
-  {#if error}
-    <div class="error-box">
-      <p class="error-text">{error}</p>
-    </div>
-  {/if}
+    {#if error}
+      <div class="error-box" role="alert">
+        <p class="error-text">{error}</p>
+      </div>
+    {/if}
+  </div>
 
-  <!-- Action buttons -->
-  <div class="button-group">
+  <div class="actions">
     {#if !loading && signedOp}
       <button
-        class="cta cta--primary"
-        onclick={handleSubmit}
-        disabled={submitting || getUrgency(deadline, now) === 'expired'}
+        class="hold"
+        disabled={submitting || isExpired}
+        onpointerdown={holdStart}
+        onpointerup={holdEnd}
+        onpointerleave={holdEnd}
+        onpointercancel={holdEnd}
+        aria-label="Press and hold to override"
       >
-        {submitting ? 'Submitting…' : 'Confirm & Submit'}
+        <span class="hold-fill" style="width: {holdFill * 100}%"></span>
+        <span class="hold-label">
+          {#if submitting}Submitting…{:else if isExpired}Recovery window expired{:else}Hold to override{/if}
+        </span>
       </button>
+      {#if !isExpired && !submitting}
+        <p class="hint">Press and hold — this can’t be undone</p>
+      {/if}
     {/if}
-    <button class="cta cta--secondary" onclick={onback} disabled={loading || submitting}>
-      Cancel
-    </button>
+    <Button variant="secondary" onclick={onback} disabled={loading || submitting}>Cancel</Button>
   </div>
 </div>
 
@@ -243,238 +268,188 @@
     display: flex;
     flex-direction: column;
     height: 100%;
-    padding: 2rem 1.5rem;
-    gap: 1.25rem;
-    overflow-y: auto;
   }
 
-  .header {
+  .appbar {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
+    gap: var(--space-sm);
+    padding: var(--space-md) var(--space-md) var(--space-sm);
   }
-
-  .back-btn {
+  .back {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
     background: none;
     border: none;
-    font-size: 1rem;
-    color: #007aff;
+    color: var(--color-accent);
+    font-family: var(--font-sans);
+    font-size: var(--text-body);
+    font-weight: var(--weight-medium);
     cursor: pointer;
-    padding: 0;
-    font-weight: 500;
-    white-space: nowrap;
+    padding: var(--space-xs) 0;
   }
-
-  .back-btn:disabled {
+  .back:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }
-
-  .title {
-    font-size: 1.2rem;
-    font-weight: 700;
-    color: #111827;
+  .appbar-title {
+    flex: 1;
+    text-align: center;
+    font-size: var(--text-title);
+    font-weight: var(--weight-semibold);
+    color: var(--color-ink);
     margin: 0;
   }
 
-  .section {
-    background: #f9fafb;
-    border: 1px solid #d1d5db;
-    border-radius: 12px;
-    padding: 1rem 1.25rem;
+  .content {
+    flex: 1;
+    overflow-y: auto;
+    padding: var(--space-sm) var(--space-md) var(--space-md);
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: var(--space-md);
   }
 
-  .section-label {
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: #6b7280;
+  .hero-title {
+    font-family: var(--font-display);
+    font-weight: var(--weight-regular);
+    font-size: 1.75rem;
+    line-height: 1.15;
+    color: var(--color-ink);
+    margin: 0 0 var(--space-sm);
+  }
+  .hero-sub {
+    font-size: var(--text-body);
+    line-height: var(--leading-body);
+    color: var(--color-ink-soft);
     margin: 0;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
   }
 
-  .mono-value {
-    font-family: monospace;
-    font-size: 0.8rem;
-    color: #374151;
-    margin: 0;
+  .identity {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+  }
+  .id-label {
+    font-size: var(--text-label);
+    font-weight: var(--weight-semibold);
+    color: var(--color-muted);
+  }
+  .id-did {
+    font-family: var(--font-mono);
+    font-size: var(--text-data);
+    color: var(--color-ink-soft);
     word-break: break-all;
   }
+  .id-deadline {
+    font-size: var(--text-label);
+    color: var(--color-muted);
+  }
 
-  .deadline-status {
+  .loading {
     display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: 0.4rem;
-    padding: 0.4rem 0.8rem;
-    border-radius: 6px;
-    font-size: 0.75rem;
-    font-weight: 600;
-    white-space: nowrap;
-    width: fit-content;
+    gap: var(--space-md);
+    padding: var(--space-xl) 0;
+  }
+  .loading-text {
+    font-size: var(--text-body);
+    color: var(--color-muted);
+    margin: 0;
   }
 
-  .badge-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
-
-  .deadline-status--safe {
-    background: #dcfce7;
-    color: #166534;
-  }
-
-  .deadline-status--safe .badge-dot {
-    background: #16a34a;
-  }
-
-  .deadline-status--warning {
-    background: #fef3c7;
-    color: #92400e;
-  }
-
-  .deadline-status--warning .badge-dot {
-    background: #f59e0b;
-  }
-
-  .deadline-status--critical,
-  .deadline-status--expired {
-    background: #fef2f2;
-    color: #991b1b;
-  }
-
-  .deadline-status--critical .badge-dot,
-  .deadline-status--expired .badge-dot {
-    background: #ef4444;
-  }
-
-  .deadline-text {
-    font-size: 0.85rem;
-    color: #6b7280;
-    margin: 0.5rem 0 0 0;
-  }
-
-  .loading-section {
+  .block {
     display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 2rem 1.5rem;
-    color: #6b7280;
-    font-size: 0.9rem;
+    flex-direction: column;
+    gap: var(--space-sm);
   }
-
-  .subsection-label {
-    font-size: 0.8rem;
-    font-weight: 600;
-    color: #374151;
-    margin: 0.5rem 0 0.25rem 0;
+  .block-label {
+    font-size: var(--text-label);
+    font-weight: var(--weight-semibold);
+    color: var(--color-muted);
+    margin: 0;
   }
-
   .no-changes {
-    font-size: 0.85rem;
-    color: #6b7280;
-    margin: 0.5rem 0 0;
-    font-style: italic;
-  }
-
-  .diff-entry {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.5rem;
-    padding: 0.5rem;
-    border-radius: 8px;
-    margin: 0.25rem 0;
-    font-size: 0.85rem;
-  }
-
-  .diff-entry.added {
-    background: rgba(34, 197, 94, 0.1);
-    border-left: 3px solid #22c55e;
-    color: #166534;
-  }
-
-  .diff-entry.removed {
-    background: rgba(239, 68, 68, 0.1);
-    border-left: 3px solid #ef4444;
-    color: #7f1d1d;
-  }
-
-  .diff-entry.modified {
-    background: rgba(245, 158, 11, 0.1);
-    border-left: 3px solid #f59e0b;
-    color: #92400e;
-  }
-
-  .diff-prefix {
-    font-weight: 600;
-    flex-shrink: 0;
-    width: 1rem;
-  }
-
-  .diff-value {
-    font-family: monospace;
-    font-size: 0.75rem;
-    word-break: break-all;
+    font-size: var(--text-body);
+    color: var(--color-muted);
     margin: 0;
   }
 
-  .service-text {
-    word-break: break-word;
+  .sealed {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: var(--text-label);
+    font-weight: var(--weight-semibold);
+    color: var(--color-primary-deep);
   }
 
   .error-box {
-    background: rgba(239, 68, 68, 0.1);
-    border: 1px solid #ef4444;
-    border-radius: 8px;
-    padding: 0.75rem 1rem;
+    background: var(--color-critical-surface);
+    border-radius: var(--radius-md);
+    padding: 12px var(--space-md);
   }
-
   .error-text {
-    font-size: 0.85rem;
-    color: #7f1d1d;
+    font-size: var(--text-label);
+    color: var(--color-critical);
     margin: 0;
     line-height: 1.4;
   }
 
-  .button-group {
+  .actions {
+    flex-shrink: 0;
+    border-top: 1px solid var(--color-line);
+    background: var(--color-surface);
+    padding: var(--space-md) var(--space-md) var(--space-xl);
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
-    margin-top: auto;
+    gap: var(--space-sm);
   }
-
-  .cta {
-    padding: 1rem;
-    border: none;
-    border-radius: 12px;
-    font-size: 1rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: opacity 0.2s;
+  .hold {
+    position: relative;
     width: 100%;
+    height: 54px;
+    border-radius: var(--radius-md);
+    border: none;
+    cursor: pointer;
+    overflow: hidden;
+    background: var(--color-critical-solid);
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
   }
-
-  .cta--primary {
-    background: #007aff;
-    color: #fff;
-  }
-
-  .cta--primary:disabled {
-    opacity: 0.5;
+  .hold:disabled {
+    background: var(--color-surface-sunk);
     cursor: not-allowed;
   }
-
-  .cta--secondary {
-    background: #e5e7eb;
-    color: #374151;
+  .hold-fill {
+    position: absolute;
+    inset: 0;
+    width: 0;
+    background: oklch(0.39 0.17 25);
+    transition: width 0.1s linear;
   }
-
-  .cta--secondary:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
+  .hold-label {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--color-on-color);
+    font-family: var(--font-sans);
+    font-size: var(--text-body);
+    font-weight: var(--weight-semibold);
+  }
+  .hold:disabled .hold-label {
+    color: var(--color-muted);
+  }
+  .hint {
+    text-align: center;
+    font-size: var(--text-label);
+    color: var(--color-muted);
+    margin: 0;
   }
 </style>

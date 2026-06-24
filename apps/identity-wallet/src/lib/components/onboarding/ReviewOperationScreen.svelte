@@ -1,6 +1,8 @@
 <script lang="ts">
   import { submitClaim, type VerifiedClaimOp, type ClaimResult, type ClaimError } from '$lib/ipc';
   import { isCodedError } from '$lib/did-doc-utils';
+  import DiffRow from '$lib/components/ui/DiffRow.svelte';
+  import Button from '$lib/components/ui/Button.svelte';
 
   let {
     did,
@@ -17,6 +19,12 @@
   let submitting = $state(false);
   let error = $state<string | null>(null);
   let warningsAcknowledged = $state(false);
+
+  let hasChanges = $derived(
+    verifiedClaim.diff.addedKeys.length > 0 ||
+      verifiedClaim.diff.removedKeys.length > 0 ||
+      verifiedClaim.diff.changedServices.length > 0
+  );
 
   async function handleSubmit() {
     submitting = true;
@@ -49,112 +57,69 @@
       submitting = false;
     }
   }
-
 </script>
 
 <div class="screen">
-  <div class="header">
-    <h2 class="title">Review Operation</h2>
-  </div>
+  <div class="content">
+    <div class="hero">
+      <h1 class="hero-title">Claim your identity</h1>
+      <p class="hero-sub">Review what this changes, then confirm. This makes your device key the controlling key.</p>
+    </div>
 
-  <!-- Keys section -->
-  <div class="section">
-    <p class="section-label">Keys</p>
-    {#if verifiedClaim.diff.addedKeys.length > 0 || verifiedClaim.diff.removedKeys.length > 0}
-      {#if verifiedClaim.diff.addedKeys.length > 0}
-        <div class="subsection-label">Keys being added</div>
+    <div class="block">
+      <p class="block-label">This will</p>
+      {#if !hasChanges}
+        <p class="no-changes">No key or service changes to apply.</p>
+      {:else}
         {#each verifiedClaim.diff.addedKeys as key}
-          <div class="diff-entry added">
-            <span class="diff-prefix">+</span>
-            <code class="diff-value">{key.slice(0, 20)}…</code>
-          </div>
+          <DiffRow variant="restore" title="Add your device key" value="{key.slice(0, 24)}…" />
         {/each}
-      {/if}
-
-      {#if verifiedClaim.diff.removedKeys.length > 0}
-        <div class="subsection-label">Keys being removed</div>
         {#each verifiedClaim.diff.removedKeys as key}
-          <div class="diff-entry removed">
-            <span class="diff-prefix">−</span>
-            <code class="diff-value">{key.slice(0, 20)}…</code>
-          </div>
+          <DiffRow variant="remove" title="Remove key" value="{key.slice(0, 24)}…" />
+        {/each}
+        {#each verifiedClaim.diff.changedServices as service}
+          {#if service.changeType === 'added'}
+            <DiffRow variant="restore" title="Add service {service.id}" value={service.newEndpoint ?? undefined} />
+          {:else if service.changeType === 'removed'}
+            <DiffRow variant="remove" title="Remove service {service.id}" value="was {service.oldEndpoint}" />
+          {:else if service.changeType === 'modified'}
+            <DiffRow variant="modify" title="Change service {service.id}" value="{service.oldEndpoint} → {service.newEndpoint}" />
+          {/if}
         {/each}
       {/if}
-    {:else}
-      <p class="no-changes">No key changes</p>
-    {/if}
-  </div>
+    </div>
 
-  <!-- Services section -->
-  <div class="section">
-    <p class="section-label">Services</p>
-    {#if verifiedClaim.diff.changedServices.length > 0}
-      {#each verifiedClaim.diff.changedServices as service}
-        {#if service.changeType === 'added'}
-          <div class="diff-entry added">
-            <span class="diff-prefix">+</span>
-            <span class="service-text">Adding service: {service.id} → {service.newEndpoint}</span>
-          </div>
-        {:else if service.changeType === 'removed'}
-          <div class="diff-entry removed">
-            <span class="diff-prefix">−</span>
-            <span class="service-text">Removing service: {service.id} (was: {service.oldEndpoint})</span>
-          </div>
-        {:else if service.changeType === 'modified'}
-          <div class="diff-entry modified">
-            <span class="diff-prefix">~</span>
-            <span class="service-text">Modifying service: {service.id}: {service.oldEndpoint} → {service.newEndpoint}</span>
-          </div>
-        {/if}
-      {/each}
-    {:else}
-      <p class="no-changes">No service changes</p>
-    {/if}
-  </div>
-
-  <!-- Warnings section -->
-  {#if verifiedClaim.warnings.length > 0}
-    <div class="warnings-section">
-      <p class="section-label">Warnings</p>
-      {#each verifiedClaim.warnings as warning}
-        <div class="warning-box">
-          <p class="warning-text">{warning}</p>
+    {#if verifiedClaim.warnings.length > 0}
+      <div class="warnings">
+        <div class="warnings-head">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.2 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.2a2 2 0 0 0-3.4 0z" /><path d="M12 9v4" /><path d="M12 17h.01" /></svg>
+          Warnings
         </div>
-      {/each}
-      <label class="checkbox-label">
-        <input
-          type="checkbox"
-          bind:checked={warningsAcknowledged}
-          disabled={submitting}
-        />
-        <span>I understand these warnings and want to proceed</span>
-      </label>
-    </div>
-  {/if}
+        {#each verifiedClaim.warnings as warning}
+          <p class="warning-text">{warning}</p>
+        {/each}
+        <label class="ack">
+          <input type="checkbox" bind:checked={warningsAcknowledged} disabled={submitting} />
+          <span>I understand these warnings and want to proceed</span>
+        </label>
+      </div>
+    {/if}
 
-  <!-- Error display -->
-  {#if error}
-    <div class="error-box">
-      <p class="error-text">{error}</p>
-    </div>
-  {/if}
+    {#if error}
+      <div class="error-box" role="alert">
+        <p class="error-text">{error}</p>
+      </div>
+    {/if}
+  </div>
 
-  <!-- Action buttons -->
-  <div class="button-group">
-    <button
-      class="cta cta--primary"
-      onclick={handleSubmit}
+  <div class="actions">
+    <Button
       disabled={submitting || (verifiedClaim.warnings.length > 0 && !warningsAcknowledged)}
+      onclick={handleSubmit}
     >
-      {submitting ? 'Submitting…' : 'Confirm & Submit'}
-    </button>
-    <button
-      class="cta cta--secondary"
-      onclick={oncancel}
-      disabled={submitting}
-    >
-      Cancel
-    </button>
+      {submitting ? 'Submitting…' : 'Confirm & submit'}
+    </Button>
+    <Button variant="secondary" onclick={oncancel} disabled={submitting}>Cancel</Button>
   </div>
 </div>
 
@@ -163,197 +128,108 @@
     display: flex;
     flex-direction: column;
     height: 100%;
-    padding: 2rem 1.5rem;
-    gap: 1.25rem;
+  }
+  .content {
+    flex: 1;
     overflow-y: auto;
-  }
-
-  .header {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-  }
-
-  .title {
-    font-size: 1.2rem;
-    font-weight: 700;
-    color: #111827;
-    margin: 0;
-  }
-
-  .section {
-    background: #f9fafb;
-    border: 1px solid #d1d5db;
-    border-radius: 12px;
-    padding: 1rem 1.25rem;
+    padding: var(--space-lg) var(--space-md) var(--space-md);
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: var(--space-md);
   }
 
-  .section-label {
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: #6b7280;
+  .hero-title {
+    font-family: var(--font-display);
+    font-weight: var(--weight-regular);
+    font-size: 1.75rem;
+    line-height: 1.15;
+    color: var(--color-ink);
+    margin: 0 0 var(--space-sm);
+  }
+  .hero-sub {
+    font-size: var(--text-body);
+    line-height: var(--leading-body);
+    color: var(--color-ink-soft);
     margin: 0;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
   }
 
-  .subsection-label {
-    font-size: 0.8rem;
-    font-weight: 600;
-    color: #374151;
-    margin: 0.5rem 0 0.25rem 0;
+  .block {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
   }
-
+  .block-label {
+    font-size: var(--text-label);
+    font-weight: var(--weight-semibold);
+    color: var(--color-muted);
+    margin: 0;
+  }
   .no-changes {
-    font-size: 0.85rem;
-    color: #6b7280;
-    margin: 0.5rem 0 0;
-    font-style: italic;
-  }
-
-  .diff-entry {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.5rem;
-    padding: 0.5rem;
-    border-radius: 8px;
-    margin: 0.25rem 0;
-    font-size: 0.85rem;
-  }
-
-  .diff-entry.added {
-    background: rgba(34, 197, 94, 0.1);
-    border-left: 3px solid #22c55e;
-    color: #166534;
-  }
-
-  .diff-entry.removed {
-    background: rgba(239, 68, 68, 0.1);
-    border-left: 3px solid #ef4444;
-    color: #7f1d1d;
-  }
-
-  .diff-entry.modified {
-    background: rgba(245, 158, 11, 0.1);
-    border-left: 3px solid #f59e0b;
-    color: #92400e;
-  }
-
-  .diff-prefix {
-    font-weight: 600;
-    flex-shrink: 0;
-    width: 1rem;
-  }
-
-  .diff-value {
-    font-family: monospace;
-    font-size: 0.75rem;
-    word-break: break-all;
+    font-size: var(--text-body);
+    color: var(--color-muted);
     margin: 0;
   }
 
-  .service-text {
-    word-break: break-word;
-  }
-
-  .warnings-section {
-    background: #fffbeb;
-    border: 1px solid #f59e0b;
-    border-radius: 12px;
-    padding: 1rem 1.25rem;
+  .warnings {
+    background: var(--color-warning-surface);
+    border-radius: var(--radius-lg);
+    padding: var(--space-md);
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: var(--space-sm);
   }
-
-  .warning-box {
-    background: #fff;
-    border-left: 3px solid #f59e0b;
-    border-radius: 4px;
-    padding: 0.75rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-  }
-
-  .warning-text {
-    font-size: 0.85rem;
-    color: #92400e;
-    margin: 0;
-    line-height: 1.4;
-  }
-
-  .checkbox-label {
+  .warnings-head {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    font-size: 0.85rem;
-    color: #374151;
-    cursor: pointer;
-    margin-top: 0.5rem;
+    gap: 7px;
+    font-size: var(--text-label);
+    font-weight: var(--weight-semibold);
+    color: var(--color-warning);
   }
-
-  .checkbox-label input {
-    cursor: pointer;
-    accent-color: #f59e0b;
+  .warning-text {
+    font-size: var(--text-label);
+    color: var(--color-warning);
+    margin: 0;
+    line-height: 1.45;
   }
-
-  .checkbox-label span {
+  .ack {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    font-size: var(--text-label);
+    color: var(--color-ink);
+    cursor: pointer;
+  }
+  .ack input {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--color-primary);
+    flex-shrink: 0;
+    cursor: pointer;
+  }
+  .ack span {
     user-select: none;
   }
 
   .error-box {
-    background: rgba(239, 68, 68, 0.1);
-    border: 1px solid #ef4444;
-    border-radius: 8px;
-    padding: 0.75rem 1rem;
+    background: var(--color-critical-surface);
+    border-radius: var(--radius-md);
+    padding: 12px var(--space-md);
   }
-
   .error-text {
-    font-size: 0.85rem;
-    color: #7f1d1d;
+    font-size: var(--text-label);
+    color: var(--color-critical);
     margin: 0;
     line-height: 1.4;
   }
 
-  .button-group {
+  .actions {
+    flex-shrink: 0;
+    border-top: 1px solid var(--color-line);
+    background: var(--color-surface);
+    padding: var(--space-md) var(--space-md) var(--space-xl);
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
-    margin-top: auto;
-  }
-
-  .cta {
-    padding: 1rem;
-    border: none;
-    border-radius: 12px;
-    font-size: 1rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: opacity 0.2s;
-    width: 100%;
-  }
-
-  .cta--primary {
-    background: #007aff;
-    color: #fff;
-  }
-
-  .cta--primary:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .cta--secondary {
-    background: #e5e7eb;
-    color: #374151;
-  }
-
-  .cta--secondary:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
+    gap: var(--space-sm);
   }
 </style>

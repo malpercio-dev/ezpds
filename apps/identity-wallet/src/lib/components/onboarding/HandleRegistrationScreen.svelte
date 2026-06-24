@@ -2,6 +2,9 @@
   import { onDestroy, onMount } from 'svelte';
   import LoadingScreen from './LoadingScreen.svelte';
   import { registerHandle, checkHandleResolution, type RegisterHandleError } from '$lib/ipc';
+  import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
+  import Button from '$lib/components/ui/Button.svelte';
+  import Spinner from '$lib/components/ui/Spinner.svelte';
 
   let {
     handleLabel,
@@ -134,92 +137,37 @@
 {#if phase.kind === 'registering'}
   <LoadingScreen statusText="Registering your handle…" />
 {:else if phase.kind === 'polling'}
-  <div class="screen">
-    <div class="handle-badge">{phase.handle}</div>
-    <h2 class="title">Almost there!</h2>
-    <p class="subtitle">Waiting for your handle to become active…</p>
-    <div class="spinner" aria-label="Loading"></div>
+  {@const activeHandle = phase.handle}
+  <OnboardingShell title="Almost there" subtitle="Waiting for your handle to become active…">
+    {#snippet icon()}
+      <span class="handle-chip">{activeHandle}</span>
+    {/snippet}
+    <Spinner size={32} label="Waiting for the handle to resolve" />
     <p class="hint">This usually takes a few seconds.</p>
-  </div>
+  </OnboardingShell>
 {:else if phase.kind === 'error'}
-  <div class="screen">
-    <p class="error-text">{errorMessage(phase.error)}</p>
+  <OnboardingShell title="Handle registration failed" subtitle={errorMessage(phase.error)}>
     {#if canRetry(phase.error)}
-      <button class="retry" onclick={() => run()}>Retry</button>
+      <Button onclick={run}>Try again</Button>
     {/if}
-  </div>
+  </OnboardingShell>
 {/if}
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    padding: 2rem;
-    gap: 1rem;
-    text-align: center;
+  .handle-chip {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: var(--text-data);
+    font-weight: var(--weight-medium);
+    color: var(--color-ink);
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-full);
+    padding: var(--space-sm) var(--space-md);
   }
-
-  .handle-badge {
-    font-size: 1.1rem;
-    font-weight: 600;
-    color: #007aff;
-    background: #eff6ff;
-    border-radius: 8px;
-    padding: 0.5rem 1rem;
-    font-family: monospace;
-  }
-
-  .title {
-    font-size: 1.5rem;
-    font-weight: 700;
-    margin: 0;
-    color: #111827;
-  }
-
-  .subtitle {
-    font-size: 0.95rem;
-    color: #6b7280;
-    margin: 0;
-  }
-
   .hint {
-    font-size: 0.8rem;
-    color: #9ca3af;
+    font-size: var(--text-label);
+    color: var(--color-muted);
     margin: 0;
-  }
-
-  .spinner {
-    width: 32px;
-    height: 32px;
-    border: 3px solid #e5e7eb;
-    border-top-color: #007aff;
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
-
-  .error-text {
-    font-size: 1rem;
-    color: #ef4444;
-    margin: 0;
-  }
-
-  .retry {
-    width: 100%;
-    max-width: 320px;
-    padding: 1rem;
-    background: #007aff;
-    color: #fff;
-    border: none;
-    border-radius: 12px;
-    font-size: 1.1rem;
-    font-weight: 600;
-    cursor: pointer;
   }
 </style>

@@ -1,71 +1,31 @@
 <script lang="ts">
+  import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
+  import SealEmblem from '$lib/components/ui/SealEmblem.svelte';
+  import Button from '$lib/components/ui/Button.svelte';
+
   let { oncreate, onimport }: { oncreate: () => void; onimport: () => void } = $props();
 </script>
 
-<div class="screen">
-  <div class="brand">
-    <h1>Identity Wallet</h1>
-    <p class="tagline">Your self-sovereign identity, in your pocket.</p>
-  </div>
+<OnboardingShell tone="signet" title="Identity Wallet" subtitle="Your self-sovereign identity, sealed in your pocket.">
+  {#snippet icon()}
+    <SealEmblem>
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+        <path d="m9 11.5 2 2 4-4" />
+      </svg>
+    </SealEmblem>
+  {/snippet}
   <div class="actions">
-    <button class="cta" onclick={oncreate}>Create new identity</button>
-    <button class="cta cta--secondary" onclick={onimport}>I have an identity</button>
+    <Button onclick={oncreate}>Create new identity</Button>
+    <Button variant="secondary" onclick={onimport}>I have an identity</Button>
   </div>
-</div>
+</OnboardingShell>
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    padding: 2rem;
-    gap: 3rem;
-  }
-
-  .brand {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.75rem;
-    text-align: center;
-  }
-
-  h1 {
-    font-size: 2rem;
-    font-weight: 700;
-    margin: 0;
-  }
-
-  .tagline {
-    font-size: 1rem;
-    color: #6b7280;
-    margin: 0;
-  }
-
   .actions {
     display: flex;
     flex-direction: column;
-    gap: 1rem;
+    gap: var(--space-sm);
     width: 100%;
-    max-width: 320px;
-  }
-
-  .cta {
-    width: 100%;
-    padding: 1rem;
-    background: #007aff;
-    color: #fff;
-    border: none;
-    border-radius: 12px;
-    font-size: 1.1rem;
-    font-weight: 600;
-    cursor: pointer;
-  }
-
-  .cta--secondary {
-    background: #f3f4f6;
-    color: #000;
   }
 </style>

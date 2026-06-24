@@ -1,6 +1,9 @@
 <script lang="ts">
   import { type ClaimResult } from '$lib/ipc';
   import { extractPdsFromPlcDoc, extractHandle } from '$lib/did-doc-utils';
+  import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
+  import SealEmblem from '$lib/components/ui/SealEmblem.svelte';
+  import Button from '$lib/components/ui/Button.svelte';
 
   let {
     claimResult,
@@ -32,137 +35,60 @@
   });
 </script>
 
-<div class="screen">
-  <!-- Success header -->
-  <div class="header">
-    <div class="checkmark-circle">✓</div>
-    <h2 class="title">Identity Claimed Successfully</h2>
-    <p class="subtitle">Your rotation key has been updated. You are now in control of this identity.</p>
-  </div>
+<OnboardingShell
+  tone="signet"
+  title="Identity claimed"
+  subtitle="Your rotation key has been updated — you're now in control of this identity."
+>
+  {#snippet icon()}
+    <SealEmblem size={80}>
+      <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+        <path d="m9 11.5 2 2 4-4" />
+      </svg>
+    </SealEmblem>
+  {/snippet}
 
-  <!-- DID document summary -->
-  <div class="summary-card">
-    <div class="summary-item">
-      <p class="summary-label">DID</p>
-      <code class="summary-value">{didId}</code>
-    </div>
-
+  <div class="summary">
+    <div class="row"><span class="k">DID</span><span class="v mono">{didId}</span></div>
     {#if handle}
-      <div class="summary-item">
-        <p class="summary-label">Handle</p>
-        <p class="summary-value">@{handle}</p>
-      </div>
+      <div class="row"><span class="k">Handle</span><span class="v">@{handle}</span></div>
     {/if}
-
-    <div class="summary-item">
-      <p class="summary-label">PDS Endpoint</p>
-      <p class="summary-value mono">{pdsEndpoint}</p>
-    </div>
+    <div class="row"><span class="k">PDS</span><span class="v mono">{pdsEndpoint}</span></div>
   </div>
 
-  <!-- Done button -->
-  <button class="cta" onclick={ondone}>Done</button>
-</div>
+  <Button onclick={ondone}>Done</Button>
+</OnboardingShell>
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    padding: 2rem;
-    gap: 2rem;
-    text-align: center;
-  }
-
-  .header {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 1rem;
-  }
-
-  .checkmark-circle {
-    width: 64px;
-    height: 64px;
-    background: #22c55e;
-    color: #fff;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 2rem;
-    font-weight: 700;
-  }
-
-  .title {
-    font-size: 1.5rem;
-    font-weight: 700;
-    color: #111827;
-    margin: 0;
-  }
-
-  .subtitle {
-    font-size: 0.95rem;
-    color: #6b7280;
-    margin: 0;
-    max-width: 300px;
-    line-height: 1.5;
-  }
-
-  .summary-card {
-    background: #f9fafb;
-    border: 1px solid #d1d5db;
-    border-radius: 12px;
-    padding: 1.5rem;
+  .summary {
     width: 100%;
-    max-width: 400px;
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-lg);
+    padding: var(--space-md);
     display: flex;
     flex-direction: column;
-    gap: 1rem;
-  }
-
-  .summary-item {
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-    align-items: flex-start;
-    width: 100%;
-  }
-
-  .summary-label {
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: #6b7280;
-    margin: 0;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-
-  .summary-value {
-    font-size: 0.9rem;
-    color: #374151;
-    margin: 0;
-    word-break: break-all;
+    gap: var(--space-sm);
     text-align: left;
   }
-
-  .summary-value.mono {
-    font-family: monospace;
-    font-size: 0.8rem;
+  .row {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
   }
-
-  .cta {
-    width: 100%;
-    max-width: 320px;
-    padding: 1rem;
-    background: #007aff;
-    color: #fff;
-    border: none;
-    border-radius: 12px;
-    font-size: 1rem;
-    font-weight: 600;
-    cursor: pointer;
+  .k {
+    font-size: var(--text-label);
+    font-weight: var(--weight-semibold);
+    color: var(--color-muted);
+  }
+  .v {
+    font-size: var(--text-body);
+    color: var(--color-ink);
+    word-break: break-all;
+  }
+  .v.mono {
+    font-family: var(--font-mono);
+    font-size: var(--text-data);
   }
 </style>

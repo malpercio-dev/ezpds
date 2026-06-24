@@ -7,6 +7,10 @@
     type ClaimError,
   } from '$lib/ipc';
   import { isCodedError } from '$lib/did-doc-utils';
+  import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
+  import TextField from '$lib/components/ui/TextField.svelte';
+  import Button from '$lib/components/ui/Button.svelte';
+  import Spinner from '$lib/components/ui/Spinner.svelte';
 
   let {
     did,
@@ -76,184 +80,59 @@
     }
   }
 
-  // ── Initialization ───────────────────────────────────────────────────────
-  // Send verification email on component mount
   onMount(() => {
     sendVerificationEmail();
   });
 </script>
 
-<div class="screen">
-  {#if sending}
-    <div class="spinner" aria-label="Loading"></div>
+{#if sending}
+  <div class="centered">
+    <Spinner size={44} label="Sending verification email" />
     <p class="status">Sending verification email…</p>
-  {:else if sendError}
-    <div class="content">
-      <h2>Email Verification</h2>
-      <p class="hint">We couldn't send the verification email.</p>
-      <p class="error-text">{sendError}</p>
-      <div class="button-group">
-        <button class="primary" onclick={sendVerificationEmail}>
-          Retry
-        </button>
-        <button class="secondary" onclick={onback}>
-          Back
-        </button>
-      </div>
-    </div>
-  {:else}
-    <div class="content">
-      <h2>Email Verification</h2>
-      <p class="hint">A verification code has been sent to your email. Enter the code below.</p>
-
-      <input
-        type="text"
-        class:error={!!verifyError}
-        placeholder="Enter verification code"
-        autocomplete="off"
-        bind:value={token}
-        disabled={verifying}
-      />
-
-      {#if verifyError}
-        <p class="error-text">{verifyError}</p>
-      {/if}
-
-      <div class="button-group">
-        <button
-          class="primary"
-          disabled={!token.trim() || verifying}
-          onclick={verifyToken}
-        >
-          {verifying ? 'Verifying…' : 'Verify'}
-        </button>
-        <button class="secondary" onclick={onback} disabled={verifying}>
-          Back
-        </button>
-      </div>
-    </div>
-  {/if}
-</div>
+  </div>
+{:else if sendError}
+  <OnboardingShell title="Email verification" subtitle="We couldn't send the verification email.">
+    <p class="error" role="alert">{sendError}</p>
+    <Button onclick={sendVerificationEmail}>Retry</Button>
+    <Button variant="secondary" onclick={onback}>Back</Button>
+  </OnboardingShell>
+{:else}
+  <OnboardingShell title="Email verification" subtitle="A verification code has been sent to your email. Enter it below.">
+    <TextField
+      bind:value={token}
+      type="text"
+      placeholder="Enter verification code"
+      autocomplete="off"
+      aria-label="Verification code"
+      disabled={verifying}
+      error={verifyError ?? undefined}
+    />
+    <Button disabled={!token.trim() || verifying} onclick={verifyToken}>
+      {verifying ? 'Verifying…' : 'Verify'}
+    </Button>
+    <Button variant="secondary" onclick={onback} disabled={verifying}>Back</Button>
+  </OnboardingShell>
+{/if}
 
 <style>
-  .screen {
+  .centered {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     height: 100%;
-    gap: 24px;
-    padding: 32px;
+    gap: var(--space-lg);
+    padding: var(--space-xl);
   }
-
-  .content {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 1.5rem;
-    max-width: 320px;
-    width: 100%;
-  }
-
-  h2 {
-    font-size: 1.5rem;
-    font-weight: 700;
-    margin: 0;
-    text-align: center;
-  }
-
-  .hint {
-    font-size: 0.95rem;
-    color: #6b7280;
-    text-align: center;
-    margin: 0;
-    line-height: 1.5;
-  }
-
-  .error-text {
-    color: #ef4444;
-    font-size: 0.875rem;
-    margin: 0;
-    text-align: center;
-  }
-
-  input {
-    width: 100%;
-    padding: 1rem;
-    font-size: 1rem;
-    border: 2px solid #d1d5db;
-    border-radius: 12px;
-  }
-
-  input.error {
-    border-color: #ef4444;
-  }
-
-  input:disabled {
-    background: #f3f4f6;
-    color: #9ca3af;
-  }
-
-  .button-group {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-    width: 100%;
-  }
-
-  .spinner {
-    width: 40px;
-    height: 40px;
-    border: 4px solid #e5e7eb;
-    border-top-color: #007aff;
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
   .status {
-    text-align: center;
-    color: #6b7280;
-    font-size: 1rem;
+    font-size: var(--text-body);
+    color: var(--color-muted);
     margin: 0;
+    text-align: center;
   }
-
-  button {
-    width: 100%;
-    padding: 1rem;
-    border: none;
-    border-radius: 12px;
-    font-size: 1rem;
-    font-weight: 600;
-    cursor: pointer;
-  }
-
-  .primary {
-    background: #007aff;
-    color: #fff;
-  }
-
-  .primary:active:not(:disabled) {
-    background: #0051d5;
-  }
-
-  .secondary {
-    background: #f3f4f6;
-    color: #374151;
-  }
-
-  .secondary:active:not(:disabled) {
-    background: #e5e7eb;
-  }
-
-  button:disabled {
-    background: #9ca3af;
-    cursor: not-allowed;
-    color: #fff;
+  .error {
+    font-size: var(--text-label);
+    color: var(--color-critical);
+    margin: 0;
   }
 </style>

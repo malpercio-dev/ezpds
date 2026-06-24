@@ -26,6 +26,9 @@
   import { createAccount, listIdentities, checkIdentityStatus, type CreateAccountError, type OAuthError, type HomeData, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type UnauthorizedChange } from '$lib/ipc';
   import { normalizePlcDocToW3c } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
+  import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
+  import SealEmblem from '$lib/components/ui/SealEmblem.svelte';
+  import Button from '$lib/components/ui/Button.svelte';
 
   // ── Onboarding step type ─────────────────────────────────────────────────
   //
@@ -313,14 +316,18 @@
     />
 
   {:else if step === 'complete'}
-    <div class="complete">
-      <div class="complete-icon" aria-hidden="true">✓</div>
-      <h2>You're All Set!</h2>
-      <p>Your identity is ready. Your recovery key has been safely backed up.</p>
-      <button class="cta" onclick={() => goTo('authenticating')}>
-        Continue
-      </button>
-    </div>
+    <OnboardingShell
+      tone="signet"
+      title="You're all set"
+      subtitle="Your identity is ready. Your recovery key has been safely backed up."
+    >
+      {#snippet icon()}
+        <SealEmblem>
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="m9 11.5 2 2 4-4" /></svg>
+        </SealEmblem>
+      {/snippet}
+      <Button onclick={() => goTo('authenticating')}>Continue</Button>
+    </OnboardingShell>
 
   {:else if step === 'authenticating'}
     <AuthenticatingScreen
@@ -385,33 +392,13 @@
     />
 
   {:else if step === 'auth_failed'}
-    <div class="oauth-screen">
-      <div class="oauth-icon" aria-hidden="true">✗</div>
-      <h2 class="oauth-title">Authentication Failed</h2>
+    <OnboardingShell title="Authentication failed" subtitle="We couldn't complete authentication. Please try again.">
       {#if authError}
-        <p class="oauth-error-code">{authError.code}</p>
+        <span class="code">{authError.code}</span>
       {/if}
-      <div class="oauth-actions">
-        <button
-          class="cta"
-          onclick={() => {
-            authError = null;
-            goTo('authenticating');
-          }}
-        >
-          Try again
-        </button>
-        <button
-          class="cta cta--secondary"
-          onclick={() => {
-            authError = null;
-            goTo('welcome');
-          }}
-        >
-          Start over
-        </button>
-      </div>
-    </div>
+      <Button onclick={() => { authError = null; goTo('authenticating'); }}>Try again</Button>
+      <Button variant="secondary" onclick={() => { authError = null; goTo('welcome'); }}>Start over</Button>
+    </OnboardingShell>
   {/if}
 </div>
 
@@ -422,93 +409,9 @@
     flex-direction: column;
   }
 
-  .complete {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    gap: 1.25rem;
-    text-align: center;
-    padding: 2rem;
-  }
-
-  .complete-icon {
-    width: 64px;
-    height: 64px;
-    background: #007aff;
-    color: #fff;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 2rem;
-    font-weight: 700;
-  }
-
-  .complete h2 {
-    font-size: 1.5rem;
-    font-weight: 700;
-    margin: 0;
-  }
-
-  .complete p {
-    font-size: 0.95rem;
-    color: #6b7280;
-    margin: 0;
-  }
-
-  .oauth-screen {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    gap: 24px;
-    padding: 32px;
-    text-align: center;
-  }
-
-  .oauth-icon {
-    font-size: 3rem;
-  }
-
-  .oauth-title {
-    font-size: 1.5rem;
-    font-weight: 700;
-    color: #111827;
-    margin: 0;
-  }
-
-  .oauth-error-code {
-    font-family: monospace;
-    font-size: 0.875rem;
-    color: #6b7280;
-    margin: 0;
-  }
-
-  .oauth-actions {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    width: 100%;
-  }
-
-  .cta {
-    width: 100%;
-    max-width: 320px;
-    padding: 1rem;
-    background: #007aff;
-    color: #fff;
-    border: none;
-    border-radius: 12px;
-    font-size: 1.1rem;
-    font-weight: 600;
-    cursor: pointer;
-  }
-
-  .cta--secondary {
-    background: #f3f4f6;
-    color: #374151;
+  .code {
+    font-family: var(--font-mono);
+    font-size: var(--text-data);
+    color: var(--color-muted);
   }
 </style>

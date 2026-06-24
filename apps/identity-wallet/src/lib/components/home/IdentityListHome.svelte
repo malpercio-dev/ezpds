@@ -29,6 +29,11 @@
   let alertData = $state<Map<string, UnauthorizedChange[]>>(new Map());
   let unlisten: UnlistenFn | null = null;
 
+  // Total unauthorized changes across all identities, for the monitoring banner.
+  let alertCount = $derived(
+    Array.from(alertData.values()).reduce((n, changes) => n + changes.length, 0)
+  );
+
   function isDeviceKeyRoot(
     didDoc: Record<string, unknown>,
     deviceKeyId: string
@@ -36,6 +41,15 @@
     const rotationKeys = didDoc.rotationKeys;
     if (!Array.isArray(rotationKeys) || rotationKeys.length === 0) return null;
     return rotationKeys[0] === deviceKeyId;
+  }
+
+  // Display the PDS host rather than the full URL ("bsky.social", not "https://bsky.social").
+  function hostOf(url: string): string {
+    try {
+      return new URL(url).host;
+    } catch {
+      return url;
+    }
   }
 
   async function loadData() {
@@ -118,83 +132,128 @@
   });
 
   function getBadgeLabel(deviceKeyIsRoot: boolean | null): string {
-    if (deviceKeyIsRoot === true) {
-      return 'Root Key';
-    } else if (deviceKeyIsRoot === false) {
-      return 'Not Root';
-    }
+    if (deviceKeyIsRoot === true) return 'Root key';
+    if (deviceKeyIsRoot === false) return 'Not root';
     return 'Unknown';
   }
 </script>
 
 {#if loading}
-  <div class="screen screen--center">
-    <div class="spinner" aria-label="Loading"></div>
-    <p class="status-text">Loading…</p>
+  <div class="screen">
+    <div class="header"><h1 class="title">Identities</h1></div>
+    <div class="cards" aria-hidden="true">
+      {#each [0, 1] as i (i)}
+        <div class="skel">
+          <div class="skel-seal"></div>
+          <div class="skel-lines">
+            <span class="skel-line w55"></span>
+            <span class="skel-line w80"></span>
+          </div>
+        </div>
+      {/each}
+    </div>
   </div>
 {:else}
   <div class="screen">
     <div class="header">
-      <h1 class="title">Identity Wallet</h1>
-      <button class="refresh-btn" onclick={loadData} aria-label="Refresh">↻</button>
+      <h1 class="title">Identities</h1>
+      <button class="icon-btn" onclick={loadData} aria-label="Refresh">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>
+      </button>
     </div>
 
     {#if loadError}
-      <div class="empty-state">
-        <p class="error-text">{loadError}</p>
-        <button class="add-btn" onclick={loadData}>Refresh</button>
+      <div class="notice">
+        <p class="notice-text">{loadError}</p>
+        <button class="btn btn-secondary" onclick={loadData}>Try again</button>
       </div>
     {:else if identities.length === 0}
-      <div class="empty-state">
-        <p class="empty-text">No identities yet</p>
-        <button class="add-btn" onclick={onadd}>+ Add Identity</button>
+      <div class="empty">
+        <span class="empty-seal" aria-hidden="true">
+          <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        </span>
+        <p class="empty-title">No identities yet</p>
+        <p class="empty-sub">Create a new identity, or import one you already control.</p>
+        <button class="btn btn-primary" onclick={onadd}>Create or import</button>
       </div>
     {:else}
-      <div class="identity-cards">
+      {#if alertCount === 0}
+        <div class="monitor monitor--safe">
+          <span class="monitor-ic" aria-hidden="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+          </span>
+          <span class="monitor-body">
+            <span class="monitor-t">All identities secure</span>
+            <span class="monitor-s"><span class="pulse" aria-hidden="true"></span>Watching the public record</span>
+          </span>
+        </div>
+      {:else}
+        <div class="monitor monitor--alert">
+          <span class="monitor-ic" aria-hidden="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+          </span>
+          <span class="monitor-body">
+            <span class="monitor-t">{alertCount} unauthorized {alertCount === 1 ? 'change' : 'changes'} need your attention</span>
+            <span class="monitor-s">Open the flagged {alertData.size === 1 ? 'identity' : 'identities'} below to review</span>
+          </span>
+        </div>
+      {/if}
+
+      <p class="section-label">Your seals</p>
+
+      <div class="cards">
         {#each identities as card (card.did)}
           {@const alerts = alertData.get(card.did)}
-          <button
-            class="identity-card"
-            onclick={() => onselect(card.did, didDocs.get(card.did) ?? {})}
-          >
-            <div class="card-content">
-              <DIDAvatar did={card.did} handle={card.handle ?? 'Unknown'} />
-              <div class="identity-info">
-                <p class="handle">@{card.handle ?? 'Unknown handle'}</p>
-                <p class="did">{truncateDid(card.did)}</p>
-                {#if card.pdsUrl}
-                  <p class="pds">{card.pdsUrl}</p>
+          <button class="card" onclick={() => onselect(card.did, didDocs.get(card.did) ?? {})}>
+            <DIDAvatar did={card.did} handle={card.handle ?? 'Unknown'} />
+            <span class="info">
+              <span class="handle">{card.handle ? '@' + card.handle : 'Unknown handle'}</span>
+              <span class="did">{truncateDid(card.did)}</span>
+              {#if card.pdsUrl}<span class="pds">on {hostOf(card.pdsUrl)}</span>{/if}
+              <span class="badges">
+                {#if alerts?.length}
+                  <span
+                    class="badge badge--alert"
+                    role="button"
+                    tabindex="0"
+                    onclick={(e) => { e.stopPropagation(); onalert?.(card.did, alerts ?? []); }}
+                    onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onalert?.(card.did, alerts ?? []); } }}
+                  >
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+                    {alerts.length} {alerts.length === 1 ? 'alert' : 'alerts'}
+                  </span>
                 {/if}
-              </div>
-            </div>
-            <div class="card-badge">
-              {#if alerts?.length}
-                <div
-                  class="badge badge--alert"
-                  role="button"
-                  tabindex="0"
-                  onkeydown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onalert?.(card.did, alerts ?? []); } }}
-                  onclick={(e) => { e.stopPropagation(); onalert?.(card.did, alerts ?? []); }}
+                <span
+                  class="badge"
+                  class:badge--root={card.deviceKeyIsRoot === true}
+                  class:badge--notroot={card.deviceKeyIsRoot === false}
+                  class:badge--unknown={card.deviceKeyIsRoot === null}
                 >
-                  <span class="badge-dot"></span>
-                  {alerts?.length} {alerts?.length === 1 ? 'Alert' : 'Alerts'}
-                </div>
-              {/if}
-              <span
-                class="badge"
-                class:badge--root={card.deviceKeyIsRoot === true}
-                class:badge--not-root={card.deviceKeyIsRoot === false}
-                class:badge--unknown={card.deviceKeyIsRoot === null}
-              >
-                <span class="badge-dot"></span>
-                {getBadgeLabel(card.deviceKeyIsRoot)}
+                  {#if card.deviceKeyIsRoot === true}
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg>
+                  {:else if card.deviceKeyIsRoot === false}
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.2 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.2a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                  {:else}
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 4.5 1.5c0 1.5-2 2-2 3"/><path d="M12 17h.01"/></svg>
+                  {/if}
+                  {getBadgeLabel(card.deviceKeyIsRoot)}
+                </span>
               </span>
-            </div>
+            </span>
+            <svg class="chev" width="9" height="16" viewBox="0 0 11 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 1 7 8-7 8"/></svg>
           </button>
         {/each}
       </div>
 
-      <button class="add-btn" onclick={onadd}>+ Add Identity</button>
+      <button class="add-card" onclick={onadd}>
+        <span class="add-plus" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        </span>
+        <span class="add-body">
+          <span class="add-t">Add an identity</span>
+          <span class="add-s">Create new, or import an existing one</span>
+        </span>
+      </button>
     {/if}
   </div>
 {/if}
@@ -204,34 +263,9 @@
     display: flex;
     flex-direction: column;
     height: 100%;
-    padding: 2rem 1.5rem;
-    gap: 1.5rem;
+    padding: var(--space-lg) var(--space-md) var(--space-xl);
+    gap: var(--space-lg);
     overflow-y: auto;
-  }
-
-  .screen--center {
-    align-items: center;
-    justify-content: center;
-    gap: 1rem;
-  }
-
-  .spinner {
-    width: 48px;
-    height: 48px;
-    border: 4px solid #e5e7eb;
-    border-top-color: #007aff;
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
-
-  .status-text {
-    font-size: 1rem;
-    color: #6b7280;
-    margin: 0;
   }
 
   .header {
@@ -241,196 +275,364 @@
   }
 
   .title {
-    font-size: 1.4rem;
-    font-weight: 700;
+    font-family: var(--font-sans);
+    font-size: 1.875rem;
+    font-weight: var(--weight-bold);
+    letter-spacing: -0.02em;
+    color: var(--color-ink);
     margin: 0;
-    color: #111827;
   }
 
-  .refresh-btn {
-    background: none;
-    border: none;
-    font-size: 1.4rem;
-    color: #007aff;
+  .icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    border-radius: var(--radius-full);
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    color: var(--color-ink);
     cursor: pointer;
-    padding: 0.25rem;
-    line-height: 1;
+    transition: background var(--duration-base) var(--ease-standard);
+  }
+  .icon-btn:active {
+    background: var(--color-surface-sunk);
   }
 
-  .identity-cards {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-  }
-
-  .identity-card {
-    background: #f9fafb;
-    border: 1px solid #d1d5db;
-    border-radius: 12px;
-    padding: 1.25rem;
+  /* Monitoring banner — derived from real alert state, never decorative. */
+  .monitor {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
-    cursor: pointer;
+    gap: 13px;
+    border-radius: var(--radius-lg);
+    padding: 15px 16px;
+  }
+  .monitor-ic {
+    width: 38px;
+    height: 38px;
+    border-radius: var(--radius-full);
+    background: var(--color-bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .monitor-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .monitor-t {
+    font-size: var(--text-title);
+    font-weight: var(--weight-semibold);
+  }
+  .monitor-s {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--text-label);
+  }
+  .monitor--safe {
+    background: var(--color-safe-surface);
+  }
+  .monitor--safe .monitor-ic {
+    color: var(--color-safe);
+  }
+  .monitor--safe .monitor-t {
+    color: var(--color-safe);
+  }
+  .monitor--safe .monitor-s {
+    color: oklch(0.38 0.06 150);
+  }
+  .monitor--alert {
+    background: var(--color-critical-surface);
+  }
+  .monitor--alert .monitor-ic {
+    color: var(--color-critical);
+  }
+  .monitor--alert .monitor-t {
+    color: var(--color-critical);
+  }
+  .monitor--alert .monitor-s {
+    color: oklch(0.40 0.10 25);
+  }
+
+  .pulse {
+    width: 7px;
+    height: 7px;
+    border-radius: var(--radius-full);
+    background: oklch(0.52 0.13 150);
+    flex-shrink: 0;
+    position: relative;
+  }
+  .pulse::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: var(--radius-full);
+    background: oklch(0.52 0.13 150);
+    animation: pulse 2.4s ease-out infinite;
+  }
+  @keyframes pulse {
+    0% { transform: scale(1); opacity: 0.55; }
+    70% { transform: scale(3.2); opacity: 0; }
+    100% { opacity: 0; }
+  }
+
+  .section-label {
+    font-size: var(--text-label);
+    font-weight: var(--weight-semibold);
+    color: var(--color-muted);
+    letter-spacing: 0.01em;
+    margin: 0 0 calc(-1 * var(--space-xs));
+  }
+
+  .cards {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .card {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    background: var(--color-bg);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-xl);
+    padding: 15px 14px 15px 15px;
     width: 100%;
     text-align: left;
-    transition: background 0.2s, border-color 0.2s;
-  }
-
-  .identity-card:active {
-    background: #f3f4f6;
-    border-color: #9ca3af;
-  }
-
-  .card-content {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    min-width: 0;
-    flex: 1;
-  }
-
-  .identity-info {
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-    min-width: 0;
-  }
-
-  .handle {
-    font-size: 1.1rem;
-    font-weight: 600;
-    color: #111827;
-    margin: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .did {
-    font-family: monospace;
-    font-size: 0.8rem;
-    color: #374151;
-    margin: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .pds {
-    font-size: 0.8rem;
-    color: #6b7280;
-    margin: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .card-badge {
-    display: flex;
-    flex-direction: column;
-    gap: 0.4rem;
-    flex-shrink: 0;
-  }
-
-  .badge {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    padding: 0.4rem 0.8rem;
-    border-radius: 6px;
-    font-size: 0.75rem;
-    font-weight: 600;
-    white-space: nowrap;
-  }
-
-  .badge-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
-
-  .badge--root {
-    background: #dcfce7;
-    color: #166534;
-  }
-
-  .badge--root .badge-dot {
-    background: #16a34a;
-  }
-
-  .badge--not-root {
-    background: #fef3c7;
-    color: #92400e;
-  }
-
-  .badge--not-root .badge-dot {
-    background: #f59e0b;
-  }
-
-  .badge--unknown {
-    background: #f3f4f6;
-    color: #374151;
-  }
-
-  .badge--unknown .badge-dot {
-    background: #9ca3af;
-  }
-
-  .badge--alert {
-    background: #fef2f2;
-    color: #991b1b;
     cursor: pointer;
-    transition: background 0.2s, color 0.2s;
+    transition: background var(--duration-base) var(--ease-standard), border-color var(--duration-base) var(--ease-standard);
+  }
+  .card:active {
+    background: var(--color-surface);
+    border-color: oklch(0.85 0.004 75);
   }
 
-  .badge--alert:active {
-    background: #fecaca;
-    color: #7f1d1d;
+  .info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .handle {
+    font-size: var(--text-title);
+    font-weight: var(--weight-semibold);
+    color: var(--color-ink);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .did {
+    font-family: var(--font-mono);
+    font-size: var(--text-data);
+    color: var(--color-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .pds {
+    font-size: var(--text-label);
+    color: var(--color-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
-  .badge--alert .badge-dot {
-    background: #ef4444;
+  .badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 5px;
+  }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 9px;
+    border-radius: var(--radius-full);
+    font-size: 11.5px;
+    font-weight: var(--weight-semibold);
+    white-space: nowrap;
+  }
+  .badge--root {
+    background: var(--color-safe-surface);
+    color: var(--color-safe);
+  }
+  .badge--notroot {
+    background: var(--color-warning-surface);
+    color: var(--color-warning);
+  }
+  .badge--unknown {
+    background: var(--color-surface-sunk);
+    color: var(--color-muted);
+  }
+  .badge--alert {
+    background: var(--color-critical-surface);
+    color: var(--color-critical);
+    cursor: pointer;
   }
 
-  .empty-state {
+  .chev {
+    color: oklch(0.74 0.01 75);
+    flex-shrink: 0;
+  }
+
+  .add-card {
+    display: flex;
+    align-items: center;
+    gap: 13px;
+    background: transparent;
+    border: 1.5px dashed var(--color-line);
+    border-radius: var(--radius-xl);
+    padding: 16px 15px;
+    width: 100%;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color var(--duration-base) var(--ease-standard), background var(--duration-base) var(--ease-standard);
+  }
+  .add-card:active {
+    border-color: var(--color-primary);
+    background: oklch(0.98 0.01 80);
+  }
+  .add-plus {
+    width: 42px;
+    height: 42px;
+    border-radius: var(--radius-full);
+    background: var(--color-surface);
+    color: var(--color-primary-deep);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .add-body {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .add-t {
+    font-size: var(--text-body);
+    font-weight: var(--weight-semibold);
+    color: var(--color-ink);
+  }
+  .add-s {
+    font-size: var(--text-label);
+    color: var(--color-muted);
+  }
+
+  /* Empty + error */
+  .empty {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 1.5rem;
-    padding: 2rem 1rem;
+    text-align: center;
+    gap: var(--space-sm);
+    flex: 1;
+    padding: var(--space-xl) var(--space-md);
   }
-
-  .empty-text {
-    font-size: 1rem;
-    color: #6b7280;
+  .empty-seal {
+    width: 64px;
+    height: 64px;
+    border-radius: var(--radius-full);
+    background: var(--color-seal-pale);
+    color: var(--color-primary-deep);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: var(--space-sm);
+  }
+  .empty-title {
+    font-size: var(--text-headline);
+    font-weight: var(--weight-semibold);
+    color: var(--color-ink);
     margin: 0;
   }
-
-  .error-text {
-    font-size: 1rem;
-    color: #ef4444;
+  .empty-sub {
+    font-size: var(--text-body);
+    color: var(--color-muted);
     margin: 0;
+    max-width: 32ch;
+  }
+  .notice {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-md);
+    background: var(--color-critical-surface);
+    border-radius: var(--radius-lg);
+    padding: var(--space-lg);
     text-align: center;
   }
-
-  .add-btn {
-    width: 100%;
-    padding: 0.9rem;
-    background: #007aff;
-    color: #fff;
-    border: none;
-    border-radius: 12px;
-    font-size: 1rem;
-    font-weight: 600;
-    cursor: pointer;
-    margin-top: auto;
+  .notice-text {
+    font-size: var(--text-body);
+    color: var(--color-critical);
+    margin: 0;
   }
 
-  .add-btn:active {
-    background: #0051d5;
+  .btn {
+    border: none;
+    border-radius: var(--radius-md);
+    font-family: var(--font-sans);
+    font-size: var(--text-body);
+    font-weight: var(--weight-semibold);
+    padding: 14px 24px;
+    cursor: pointer;
+    transition: background var(--duration-base) var(--ease-standard);
+  }
+  .btn-primary {
+    background: var(--color-primary);
+    color: var(--color-on-color);
+  }
+  .btn-primary:active {
+    background: var(--color-primary-deep);
+  }
+  .btn-secondary {
+    background: var(--color-bg);
+    color: var(--color-ink);
+    border: 1px solid var(--color-line);
+  }
+
+  /* Loading skeleton */
+  .skel {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    background: var(--color-bg);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-xl);
+    padding: 15px;
+  }
+  .skel-seal {
+    width: 52px;
+    height: 52px;
+    border-radius: var(--radius-full);
+    background: var(--color-surface-sunk);
+    flex-shrink: 0;
+    animation: shimmer 1.4s ease-in-out infinite;
+  }
+  .skel-lines {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex: 1;
+  }
+  .skel-line {
+    height: 12px;
+    border-radius: var(--radius-sm);
+    background: var(--color-surface-sunk);
+    animation: shimmer 1.4s ease-in-out infinite;
+  }
+  .skel-line.w55 { width: 55%; }
+  .skel-line.w80 { width: 80%; }
+  @keyframes shimmer {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
   }
 </style>

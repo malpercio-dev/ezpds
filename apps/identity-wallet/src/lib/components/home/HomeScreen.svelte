@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { loadHomeData, logOut, type HomeData } from '$lib/ipc';
   import DIDAvatar from './DIDAvatar.svelte';
+  import Spinner from '$lib/components/ui/Spinner.svelte';
 
   let {
     onnavdiddoc,
@@ -69,18 +70,19 @@
 
 {#if loading}
   <div class="screen screen--center">
-    <div class="spinner" aria-label="Loading"></div>
+    <Spinner size={48} label="Loading" />
     <p class="status-text">Loading…</p>
   </div>
 {:else}
   <div class="screen">
     <div class="header">
       <h1 class="title">Identity Wallet</h1>
-      <button class="refresh-btn" onclick={loadData} aria-label="Refresh">↻</button>
+      <button class="refresh" onclick={loadData} aria-label="Refresh">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-15 6.7L3 16" /><path d="M3 21v-5h5" /></svg>
+      </button>
     </div>
 
     {#if homeData?.session}
-      <!-- Identity card -->
       <div class="identity-card">
         <DIDAvatar did={homeData.session.did} handle={homeData.session.handle} />
         <div class="identity-info">
@@ -101,27 +103,16 @@
       </div>
     {/if}
 
-    <!-- Status indicators -->
     <div class="status-section">
       <div class="status-row">
-        <span
-          class="status-dot"
-          class:status-dot--ok={homeData?.relayHealthy}
-          class:status-dot--err={!homeData?.relayHealthy}
-          aria-hidden="true"
-        ></span>
+        <span class="status-dot" class:ok={homeData?.relayHealthy} class:err={!homeData?.relayHealthy} aria-hidden="true"></span>
         <div>
           <p class="status-label">Relay</p>
           <p class="status-value">{homeData?.relayHealthy ? 'Connected' : 'Error'}</p>
         </div>
       </div>
       <div class="status-row">
-        <span
-          class="status-dot"
-          class:status-dot--ok={homeData?.session != null}
-          class:status-dot--err={homeData?.session == null}
-          aria-hidden="true"
-        ></span>
+        <span class="status-dot" class:ok={homeData?.session != null} class:err={homeData?.session == null} aria-hidden="true"></span>
         <div>
           <p class="status-label">Session</p>
           <p class="status-value">{homeData?.session != null ? 'Active' : 'Error'}</p>
@@ -129,19 +120,12 @@
       </div>
     </div>
 
-    <!-- Action buttons -->
     <div class="actions">
       {#if homeData?.session?.didDoc != null}
-        <button class="action-btn" onclick={() => onnavdiddoc(homeData!)}>
-          View DID Document
-        </button>
+        <button class="action" onclick={() => onnavdiddoc(homeData!)}>View DID document</button>
       {/if}
-      <button class="action-btn" onclick={() => onnavrecovery(homeData!)}>
-        Recovery Info
-      </button>
-      <button class="action-btn action-btn--danger" onclick={handleLogOut}>
-        Log Out
-      </button>
+      <button class="action" onclick={() => onnavrecovery(homeData!)}>Recovery info</button>
+      <button class="action action--danger" onclick={handleLogOut}>Log out</button>
     </div>
   </div>
 {/if}
@@ -151,33 +135,18 @@
     display: flex;
     flex-direction: column;
     height: 100%;
-    padding: 2rem 1.5rem;
-    gap: 1.5rem;
+    padding: var(--space-lg) var(--space-md);
+    gap: var(--space-lg);
     overflow-y: auto;
   }
-
   .screen--center {
     align-items: center;
     justify-content: center;
-    gap: 1rem;
+    gap: var(--space-md);
   }
-
-  .spinner {
-    width: 48px;
-    height: 48px;
-    border: 4px solid #e5e7eb;
-    border-top-color: #007aff;
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
-
   .status-text {
-    font-size: 1rem;
-    color: #6b7280;
+    font-size: var(--text-body);
+    color: var(--color-muted);
     margin: 0;
   }
 
@@ -186,56 +155,51 @@
     align-items: center;
     justify-content: space-between;
   }
-
   .title {
     font-size: 1.4rem;
-    font-weight: 700;
+    font-weight: var(--weight-bold);
+    color: var(--color-ink);
     margin: 0;
-    color: #111827;
   }
-
-  .refresh-btn {
+  .refresh {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     background: none;
     border: none;
-    font-size: 1.4rem;
-    color: #007aff;
+    color: var(--color-accent);
     cursor: pointer;
-    padding: 0.25rem;
-    line-height: 1;
+    padding: var(--space-xs);
   }
 
   .identity-card {
-    background: #f9fafb;
-    border: 1px solid #d1d5db;
-    border-radius: 12px;
-    padding: 1.25rem;
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-lg);
+    padding: var(--space-md);
     display: flex;
     align-items: center;
-    gap: 1rem;
+    gap: var(--space-md);
   }
-
   .identity-card--empty {
     flex-direction: column;
     align-items: flex-start;
   }
-
   .identity-info {
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
+    gap: var(--space-xs);
     min-width: 0;
   }
-
   .handle {
-    font-size: 1.1rem;
-    font-weight: 600;
-    color: #111827;
+    font-size: var(--text-title);
+    font-weight: var(--weight-semibold);
+    color: var(--color-ink);
     margin: 0;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-
   .did-btn {
     background: none;
     border: none;
@@ -243,111 +207,99 @@
     cursor: pointer;
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: var(--space-sm);
     text-align: left;
   }
-
   .did-text {
-    font-family: monospace;
-    font-size: 0.8rem;
-    color: #374151;
+    font-family: var(--font-mono);
+    font-size: var(--text-data);
+    color: var(--color-ink-soft);
   }
-
   .copy-hint {
-    font-size: 0.7rem;
-    color: #007aff;
+    font-size: var(--text-label);
+    color: var(--color-accent);
     white-space: nowrap;
   }
-
   .email {
-    font-size: 0.85rem;
-    color: #6b7280;
+    font-size: var(--text-label);
+    color: var(--color-muted);
     margin: 0;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-
   .empty-text {
-    font-size: 0.95rem;
-    color: #6b7280;
+    font-size: var(--text-body);
+    color: var(--color-muted);
     margin: 0;
   }
-
   .error-code {
-    font-family: monospace;
-    font-size: 0.8rem;
-    color: #ef4444;
+    font-family: var(--font-mono);
+    font-size: var(--text-data);
+    color: var(--color-critical);
     margin: 0;
   }
 
   .status-section {
-    background: #f9fafb;
-    border: 1px solid #d1d5db;
-    border-radius: 12px;
-    padding: 1rem 1.25rem;
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-lg);
+    padding: var(--space-md);
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: var(--space-sm);
   }
-
   .status-row {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
+    gap: var(--space-sm);
   }
-
   .status-dot {
     width: 10px;
     height: 10px;
-    border-radius: 50%;
+    border-radius: var(--radius-full);
     flex-shrink: 0;
+    background: var(--color-muted);
   }
-
-  .status-dot--ok {
-    background: #22c55e;
+  .status-dot.ok {
+    background: var(--color-safe);
   }
-
-  .status-dot--err {
-    background: #ef4444;
+  .status-dot.err {
+    background: var(--color-critical);
   }
-
   .status-label {
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: #6b7280;
+    font-size: var(--text-label);
+    font-weight: var(--weight-semibold);
+    color: var(--color-muted);
     margin: 0;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
   }
-
   .status-value {
-    font-size: 0.875rem;
-    color: #111827;
+    font-size: var(--text-label);
+    color: var(--color-ink);
     margin: 0;
   }
 
   .actions {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: var(--space-sm);
     margin-top: auto;
   }
-
-  .action-btn {
+  .action {
     width: 100%;
-    padding: 0.9rem;
-    background: #007aff;
-    color: #fff;
+    padding: var(--space-md);
+    background: var(--color-primary);
+    color: var(--color-on-color);
     border: none;
-    border-radius: 12px;
-    font-size: 1rem;
-    font-weight: 600;
+    border-radius: var(--radius-md);
+    font-family: var(--font-sans);
+    font-size: var(--text-body);
+    font-weight: var(--weight-semibold);
     cursor: pointer;
   }
-
-  .action-btn--danger {
-    background: #f3f4f6;
-    color: #ef4444;
+  .action--danger {
+    background: var(--color-surface);
+    color: var(--color-critical);
+    border: 1px solid var(--color-line);
   }
 </style>

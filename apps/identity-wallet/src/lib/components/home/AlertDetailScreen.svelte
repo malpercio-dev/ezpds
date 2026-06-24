@@ -1,8 +1,10 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { getUrgency, getDeadline, formatCountdown } from '$lib/utils/deadline';
+  import { getUrgency, getDeadline } from '$lib/utils/deadline';
   import type { UnauthorizedChange } from '$lib/ipc';
   import { truncateDid } from '$lib/did-doc-utils';
+  import UrgencyBadge from '$lib/components/ui/UrgencyBadge.svelte';
+  import Button from '$lib/components/ui/Button.svelte';
 
   let {
     did,
@@ -31,53 +33,49 @@
 </script>
 
 <div class="screen">
-  <div class="header">
-    <button class="back-btn" onclick={onback} aria-label="Back">‹ Back</button>
-    <h2 class="title">Security Alerts</h2>
+  <button class="back" onclick={onback}>
+    <svg width="11" height="18" viewBox="0 0 11 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1 2 9l7 8" /></svg>
+    Back
+  </button>
+
+  <div class="hero">
+    <h1 class="hero-title">Someone changed your identity</h1>
+    <p class="hero-sub">
+      {changes.length === 1
+        ? 'A key you didn’t authorize was added.'
+        : `${changes.length} unauthorized changes were detected.`}
+      Reverse {changes.length === 1 ? 'it' : 'them'} before the recovery window closes.
+    </p>
   </div>
 
-  <!-- Identity section -->
-  <div class="section">
-    <p class="section-label">Identity</p>
-    <p class="mono-value">{truncateDid(did)}</p>
+  <div class="identity">
+    <span class="id-label">Affected identity</span>
+    <span class="id-did">{truncateDid(did)}</span>
   </div>
 
-  <!-- Alert cards -->
-  <div class="alerts-container">
+  <div class="cards">
     {#each changes as change (change.cid)}
       {@const deadline = getDeadline(change.createdAt)}
       {@const urgency = getUrgency(deadline, now)}
+      <div class="card">
+        <UrgencyBadge {urgency} {deadline} {now} />
 
-      <div class="alert-card">
-        <div class="alert-header">
-          <span class="alert-urgency alert-urgency--{urgency}">
-            <span class="badge-dot"></span>
-            {formatCountdown(deadline, now)}
-          </span>
+        <div class="field">
+          <span class="k">Signing key</span>
+          <span class="v mono">{change.signingKey ?? 'Unknown key'}</span>
+        </div>
+        <div class="field">
+          <span class="k">Detected</span>
+          <span class="v">{new Date(change.createdAt).toLocaleString()}</span>
+        </div>
+        <div class="field">
+          <span class="k">Recovery deadline</span>
+          <span class="v">{deadline.toLocaleString()}</span>
         </div>
 
-        <div class="alert-field">
-          <span class="alert-label">Signing Key</span>
-          <span class="alert-value monospace">{change.signingKey ?? 'Unknown key'}</span>
-        </div>
-
-        <div class="alert-field">
-          <span class="alert-label">Detected</span>
-          <span class="alert-value">{new Date(change.createdAt).toLocaleString()}</span>
-        </div>
-
-        <div class="alert-field">
-          <span class="alert-label">Recovery Deadline</span>
-          <span class="alert-value">{deadline.toLocaleString()}</span>
-        </div>
-
-        <button
-          class="action-button"
-          disabled={urgency === 'expired'}
-          onclick={() => onoverride(change.cid, change.createdAt)}
-        >
-          {urgency === 'expired' ? 'Recovery Window Expired' : 'Review & Override'}
-        </button>
+        <Button disabled={urgency === 'expired'} onclick={() => onoverride(change.cid, change.createdAt)}>
+          {urgency === 'expired' ? 'Recovery window expired' : 'Review & override'}
+        </Button>
       </div>
     {/each}
   </div>
@@ -88,175 +86,91 @@
     display: flex;
     flex-direction: column;
     height: 100%;
-    padding: 2rem 1.5rem;
-    gap: 1.25rem;
+    padding: var(--space-lg) var(--space-md) var(--space-xl);
+    gap: var(--space-md);
     overflow-y: auto;
   }
 
-  .header {
-    display: flex;
+  .back {
+    align-self: flex-start;
+    display: inline-flex;
     align-items: center;
-    gap: 0.75rem;
-  }
-
-  .back-btn {
+    gap: 3px;
     background: none;
     border: none;
-    font-size: 1rem;
-    color: #007aff;
+    color: var(--color-accent);
+    font-family: var(--font-sans);
+    font-size: var(--text-body);
+    font-weight: var(--weight-medium);
     cursor: pointer;
-    padding: 0;
-    font-weight: 500;
-    white-space: nowrap;
+    padding: var(--space-xs) 0;
   }
 
-  .title {
-    font-size: 1.2rem;
-    font-weight: 700;
-    color: #111827;
+  .hero-title {
+    font-family: var(--font-display);
+    font-weight: var(--weight-regular);
+    font-size: 1.75rem;
+    line-height: 1.15;
+    color: var(--color-ink);
+    margin: 0 0 var(--space-sm);
+  }
+  .hero-sub {
+    font-size: var(--text-body);
+    line-height: var(--leading-body);
+    color: var(--color-ink-soft);
     margin: 0;
   }
 
-  .section {
+  .identity {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: var(--space-xs);
   }
-
-  .section-label {
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: #374151;
-    margin: 0;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+  .id-label {
+    font-size: var(--text-label);
+    font-weight: var(--weight-semibold);
+    color: var(--color-muted);
   }
-
-  .mono-value {
-    font-family: monospace;
-    font-size: 0.8rem;
-    color: #374151;
-    margin: 0;
+  .id-did {
+    font-family: var(--font-mono);
+    font-size: var(--text-data);
+    color: var(--color-ink-soft);
     word-break: break-all;
   }
 
-  .alerts-container {
+  .cards {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: 12px;
   }
-
-  .alert-card {
-    background: #f9fafb;
-    border: 1px solid #d1d5db;
-    border-radius: 12px;
-    padding: 1.25rem;
+  .card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-lg);
+    padding: var(--space-md);
     display: flex;
     flex-direction: column;
-    gap: 1rem;
+    gap: var(--space-md);
   }
 
-  .alert-header {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
-
-  .alert-urgency {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    padding: 0.4rem 0.8rem;
-    border-radius: 6px;
-    font-size: 0.75rem;
-    font-weight: 600;
-    white-space: nowrap;
-  }
-
-  .badge-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
-
-  .alert-urgency--safe {
-    background: #dcfce7;
-    color: #166534;
-  }
-
-  .alert-urgency--safe .badge-dot {
-    background: #16a34a;
-  }
-
-  .alert-urgency--warning {
-    background: #fef3c7;
-    color: #92400e;
-  }
-
-  .alert-urgency--warning .badge-dot {
-    background: #f59e0b;
-  }
-
-  .alert-urgency--critical,
-  .alert-urgency--expired {
-    background: #fef2f2;
-    color: #991b1b;
-  }
-
-  .alert-urgency--critical .badge-dot,
-  .alert-urgency--expired .badge-dot {
-    background: #ef4444;
-  }
-
-  .alert-field {
+  .field {
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
+    gap: 3px;
   }
-
-  .alert-label {
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: #374151;
-    margin: 0;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+  .k {
+    font-size: var(--text-label);
+    font-weight: var(--weight-semibold);
+    color: var(--color-muted);
   }
-
-  .alert-value {
-    font-size: 1rem;
-    color: #374151;
-    margin: 0;
+  .v {
+    font-size: var(--text-body);
+    color: var(--color-ink);
     line-height: 1.4;
   }
-
-  .monospace {
-    font-family: monospace;
-    font-size: 0.8rem;
+  .v.mono {
+    font-family: var(--font-mono);
+    font-size: var(--text-data);
     word-break: break-all;
-  }
-
-  .action-button {
-    width: 100%;
-    padding: 0.9rem;
-    background: #007aff;
-    color: #fff;
-    border: none;
-    border-radius: 12px;
-    font-size: 0.9rem;
-    font-weight: 600;
-    cursor: pointer;
-    opacity: 1;
-    margin-top: 0.5rem;
-  }
-
-  .action-button:disabled {
-    cursor: not-allowed;
-    opacity: 0.5;
-  }
-
-  .action-button:active:not(:disabled) {
-    background: #0051d5;
   }
 </style>

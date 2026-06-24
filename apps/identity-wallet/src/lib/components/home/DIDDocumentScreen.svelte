@@ -45,40 +45,38 @@
 </script>
 
 <div class="screen">
-  <div class="header">
-    <button class="back-btn" onclick={onback} aria-label="Back">‹ Back</button>
-    <h2 class="title">DID Document</h2>
-  </div>
+  <button class="back" onclick={onback} aria-label="Back">
+    <svg width="11" height="18" viewBox="0 0 11 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1 2 9l7 8" /></svg>
+    Back
+  </button>
+  <h1 class="title">DID document</h1>
 
-  <!-- Identity section -->
   <div class="section">
-    <p class="section-label">Identifier</p>
-    <p class="mono-value">{didDoc.id ?? '—'}</p>
+    <p class="label">Identifier</p>
+    <p class="mono">{didDoc.id ?? '—'}</p>
   </div>
 
-  <!-- alsoKnownAs -->
   {#if alsoKnownAs.length > 0}
     <div class="section">
-      <p class="section-label">Also Known As</p>
+      <p class="label">Also known as</p>
       {#each alsoKnownAs as alias}
-        <p class="mono-value">{alias}</p>
+        <p class="mono">{alias}</p>
       {/each}
     </div>
   {/if}
 
-  <!-- Verification Methods -->
   {#if verificationMethods.length > 0}
     <div class="section">
-      <p class="section-label">Verification Keys</p>
+      <p class="label">Verification keys</p>
       {#each verificationMethods as method}
-        <div class="key-card">
-          <p class="key-type">{method.type ?? 'Unknown'}</p>
-          <p class="key-id">{method.id}</p>
+        <div class="card">
+          <p class="card-type">{method.type ?? 'Unknown'}</p>
+          <p class="card-id">{method.id}</p>
           {#if method.publicKeyMultibase}
-            <div class="key-value-row">
-              <code class="key-value">{String(method.publicKeyMultibase).slice(0, 20)}…</code>
+            <div class="kv-row">
+              <code class="kv">{String(method.publicKeyMultibase).slice(0, 20)}…</code>
               <button
-                class="copy-btn"
+                class="copy"
                 onclick={() => copyKey(String(method.id), String(method.publicKeyMultibase))}
               >
                 {copiedKeyId === String(method.id) ? 'Copied!' : failedKeyId === String(method.id) ? 'Failed' : 'Copy'}
@@ -90,29 +88,24 @@
     </div>
   {/if}
 
-  <!-- Services -->
   {#if services.length > 0}
     <div class="section">
-      <p class="section-label">Services</p>
+      <p class="label">Services</p>
       {#each services as svc}
-        <div class="service-card">
-          <p class="service-type">{svc.type ?? 'Unknown'}</p>
-          <p class="service-endpoint">{svc.serviceEndpoint}</p>
+        <div class="card">
+          <p class="card-type">{svc.type ?? 'Unknown'}</p>
+          <p class="mono">{svc.serviceEndpoint}</p>
         </div>
       {/each}
     </div>
   {/if}
 
-  <!-- Raw JSON toggle -->
-  <button
-    class="toggle-btn"
-    onclick={() => { showRaw = !showRaw; }}
-  >
-    {showRaw ? 'Hide Raw JSON' : 'Show Raw JSON'}
+  <button class="toggle" onclick={() => { showRaw = !showRaw; }}>
+    {showRaw ? 'Hide raw JSON' : 'Show raw JSON'}
   </button>
 
   {#if showRaw}
-    <pre class="raw-json">{rawJson}</pre>
+    <pre class="raw">{rawJson}</pre>
   {/if}
 </div>
 
@@ -121,165 +114,128 @@
     display: flex;
     flex-direction: column;
     height: 100%;
-    padding: 2rem 1.5rem;
-    gap: 1.25rem;
+    padding: var(--space-lg) var(--space-md) var(--space-xl);
+    gap: var(--space-md);
     overflow-y: auto;
   }
-
-  .header {
-    display: flex;
+  .back {
+    align-self: flex-start;
+    display: inline-flex;
     align-items: center;
-    gap: 0.75rem;
-  }
-
-  .back-btn {
+    gap: 3px;
     background: none;
     border: none;
-    font-size: 1rem;
-    color: #007aff;
+    color: var(--color-accent);
+    font-family: var(--font-sans);
+    font-size: var(--text-body);
+    font-weight: var(--weight-medium);
     cursor: pointer;
-    padding: 0;
-    font-weight: 500;
-    white-space: nowrap;
+    padding: var(--space-xs) 0;
   }
-
   .title {
-    font-size: 1.2rem;
-    font-weight: 700;
-    color: #111827;
+    font-size: var(--text-headline);
+    font-weight: var(--weight-bold);
+    color: var(--color-ink);
     margin: 0;
   }
 
   .section {
-    background: #f9fafb;
-    border: 1px solid #d1d5db;
-    border-radius: 12px;
-    padding: 1rem 1.25rem;
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-lg);
+    padding: var(--space-md);
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: var(--space-sm);
   }
-
-  .section-label {
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: #6b7280;
+  .label {
+    font-size: var(--text-label);
+    font-weight: var(--weight-semibold);
+    color: var(--color-muted);
     margin: 0;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
   }
-
-  .mono-value {
-    font-family: monospace;
-    font-size: 0.8rem;
-    color: #374151;
+  .mono {
+    font-family: var(--font-mono);
+    font-size: var(--text-data);
+    color: var(--color-ink-soft);
     margin: 0;
     word-break: break-all;
   }
 
-  .key-card {
-    background: #fff;
-    border: 1px solid #e5e7eb;
-    border-radius: 8px;
-    padding: 0.75rem;
+  .card {
+    background: var(--color-bg);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-md);
+    padding: var(--space-sm);
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
+    gap: var(--space-xs);
   }
-
-  .key-type {
-    font-size: 0.8rem;
-    font-weight: 600;
-    color: #374151;
+  .card-type {
+    font-size: var(--text-label);
+    font-weight: var(--weight-semibold);
+    color: var(--color-ink-soft);
     margin: 0;
   }
-
-  .key-id {
-    font-family: monospace;
-    font-size: 0.75rem;
-    color: #6b7280;
+  .card-id {
+    font-family: var(--font-mono);
+    font-size: var(--text-data);
+    color: var(--color-muted);
     margin: 0;
     word-break: break-all;
   }
-
-  .key-value-row {
+  .kv-row {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    margin-top: 0.25rem;
+    gap: var(--space-sm);
   }
-
-  .key-value {
-    font-family: monospace;
-    font-size: 0.75rem;
-    color: #374151;
-    background: #f3f4f6;
-    padding: 0.2rem 0.4rem;
-    border-radius: 4px;
+  .kv {
+    font-family: var(--font-mono);
+    font-size: var(--text-data);
+    color: var(--color-ink);
+    background: var(--color-surface-sunk);
+    padding: 3px 6px;
+    border-radius: var(--radius-sm);
     flex: 1;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-
-  .copy-btn {
-    background: #007aff;
-    color: #fff;
-    border: none;
-    border-radius: 6px;
-    padding: 0.3rem 0.75rem;
-    font-size: 0.8rem;
-    font-weight: 600;
+  .copy {
+    background: var(--color-surface);
+    color: var(--color-ink);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-sm);
+    padding: 5px 12px;
+    font-family: var(--font-sans);
+    font-size: var(--text-label);
+    font-weight: var(--weight-semibold);
     cursor: pointer;
     white-space: nowrap;
     flex-shrink: 0;
   }
 
-  .service-card {
-    background: #fff;
-    border: 1px solid #e5e7eb;
-    border-radius: 8px;
-    padding: 0.75rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-  }
-
-  .service-type {
-    font-size: 0.8rem;
-    font-weight: 600;
-    color: #374151;
-    margin: 0;
-  }
-
-  .service-endpoint {
-    font-family: monospace;
-    font-size: 0.8rem;
-    color: #6b7280;
-    margin: 0;
-    word-break: break-all;
-  }
-
-  .toggle-btn {
-    background: none;
-    border: 1px solid #d1d5db;
-    border-radius: 8px;
-    padding: 0.6rem 1rem;
-    font-size: 0.9rem;
-    color: #374151;
+  .toggle {
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-md);
+    padding: 10px var(--space-md);
+    font-family: var(--font-sans);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
+    color: var(--color-ink);
     cursor: pointer;
     text-align: center;
   }
-
-  .raw-json {
-    background: #f3f4f6;
-    border: 1px solid #d1d5db;
-    border-radius: 8px;
-    padding: 1rem;
-    font-family: monospace;
-    font-size: 0.75rem;
-    color: #374151;
+  .raw {
+    background: var(--color-surface-sunk);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-md);
+    padding: var(--space-md);
+    font-family: var(--font-mono);
+    font-size: var(--text-data);
+    color: var(--color-ink-soft);
     overflow-x: auto;
     white-space: pre;
     word-break: normal;

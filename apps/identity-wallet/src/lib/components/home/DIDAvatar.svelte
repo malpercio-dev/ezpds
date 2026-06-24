@@ -25,24 +25,31 @@
 
 <div
   class="avatar"
-  style="background: hsl({hue}, 65%, 45%)"
-  aria-label="Avatar for {handle}"
+  style="background: oklch(0.55 0.09 {hue})"
+  aria-label="Seal for {handle}"
 >
   {initial}
 </div>
 
 <style>
+  /* The personal seal: a deterministic monogram in the display serif, embossed
+     like pressed wax. Chroma and lightness are constrained (0.55 L, 0.09 C) so a
+     wall of identities reads as a coherent set of seals, not rainbow avatars. */
   .avatar {
     width: 64px;
     height: 64px;
-    border-radius: 50%;
+    border-radius: var(--radius-full);
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #fff;
+    color: var(--color-on-color);
+    font-family: var(--font-display);
     font-size: 1.75rem;
-    font-weight: 700;
+    line-height: 1;
     flex-shrink: 0;
     user-select: none;
+    box-shadow:
+      inset 0 0 0 1.5px oklch(1 0 0 / 0.22),
+      inset 0 -2px 5px oklch(0.2 0.05 60 / 0.18);
   }
 </style>
