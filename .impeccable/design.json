@@ -1,0 +1,195 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-06-23T12:00:00Z",
+  "title": "Design System: Identity Wallet",
+  "extensions": {
+    "colorMeta": {
+      "primary": {
+        "role": "primary",
+        "displayName": "Sealing-Wax Gold",
+        "canonical": "oklch(0.46 0.105 62)",
+        "tonalRamp": ["oklch(0.20 0.05 62)", "oklch(0.30 0.08 62)", "oklch(0.40 0.10 62)", "oklch(0.46 0.105 62)", "oklch(0.58 0.11 65)", "oklch(0.70 0.12 70)", "oklch(0.82 0.09 78)", "oklch(0.93 0.05 80)"]
+      },
+      "accent": {
+        "role": "secondary",
+        "displayName": "Aubergine",
+        "canonical": "oklch(0.34 0.10 330)",
+        "tonalRamp": ["oklch(0.18 0.06 330)", "oklch(0.24 0.08 330)", "oklch(0.30 0.095 330)", "oklch(0.34 0.10 330)", "oklch(0.46 0.11 330)", "oklch(0.60 0.10 330)", "oklch(0.76 0.07 330)", "oklch(0.92 0.03 330)"]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Archival Ink",
+        "canonical": "oklch(0.23 0.012 60)",
+        "tonalRamp": ["oklch(0.18 0.012 60)", "oklch(0.23 0.012 60)", "oklch(0.32 0.012 60)", "oklch(0.42 0.012 60)", "oklch(0.55 0.010 60)", "oklch(0.70 0.008 65)", "oklch(0.85 0.006 70)", "oklch(0.96 0.004 75)"]
+      },
+      "safe": {
+        "role": "status",
+        "displayName": "Verified Green",
+        "canonical": "oklch(0.40 0.10 150)",
+        "tonalRamp": ["oklch(0.20 0.05 150)", "oklch(0.30 0.08 150)", "oklch(0.40 0.10 150)", "oklch(0.50 0.11 150)", "oklch(0.62 0.11 150)", "oklch(0.74 0.10 150)", "oklch(0.86 0.07 150)", "oklch(0.95 0.045 150)"]
+      },
+      "warning": {
+        "role": "status",
+        "displayName": "Caution Amber",
+        "canonical": "oklch(0.42 0.10 60)",
+        "tonalRamp": ["oklch(0.22 0.05 60)", "oklch(0.32 0.08 62)", "oklch(0.42 0.10 60)", "oklch(0.55 0.12 65)", "oklch(0.68 0.14 70)", "oklch(0.80 0.12 75)", "oklch(0.89 0.08 75)", "oklch(0.95 0.055 75)"]
+      },
+      "critical": {
+        "role": "status",
+        "displayName": "Alarm Red",
+        "canonical": "oklch(0.44 0.16 25)",
+        "tonalRamp": ["oklch(0.22 0.10 25)", "oklch(0.32 0.14 25)", "oklch(0.44 0.16 25)", "oklch(0.52 0.20 25)", "oklch(0.62 0.18 25)", "oklch(0.74 0.14 25)", "oklch(0.86 0.09 25)", "oklch(0.95 0.045 25)"]
+      },
+      "expired": {
+        "role": "status",
+        "displayName": "Closed / Inert",
+        "canonical": "oklch(0.42 0.02 25)",
+        "tonalRamp": ["oklch(0.20 0.02 25)", "oklch(0.30 0.02 25)", "oklch(0.42 0.02 25)", "oklch(0.52 0.015 25)", "oklch(0.64 0.012 25)", "oklch(0.76 0.008 25)", "oklch(0.87 0.006 25)", "oklch(0.95 0.004 25)"]
+      },
+      "info": {
+        "role": "status",
+        "displayName": "Calm Slate",
+        "canonical": "oklch(0.42 0.07 250)",
+        "tonalRamp": ["oklch(0.22 0.05 250)", "oklch(0.32 0.06 250)", "oklch(0.42 0.07 250)", "oklch(0.52 0.08 250)", "oklch(0.64 0.08 250)", "oklch(0.76 0.06 250)", "oklch(0.87 0.04 250)", "oklch(0.95 0.03 250)"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display — Libre Caslon Display (the signet)", "purpose": "Serif. The single ceremonial moment per screen — wordmark, hero line, monogram. Rare by design." },
+      "body": { "displayName": "UI / Body — Public Sans", "purpose": "The official-document workhorse: headings, body, buttons, labels. Body in Archival Ink, measure capped 65–75ch, AAA 7:1." },
+      "data": { "displayName": "Data — JetBrains Mono", "purpose": "DIDs, keys, CIDs, signatures — the literal, verifiable machinery. Monospace, always." }
+    },
+    "shadows": [
+      { "name": "sheet", "value": "0 -8px 32px oklch(0.23 0.012 60 / 0.14)", "purpose": "The recovery-override / confirmation sheet rising from the bottom. The only bottom-anchored elevation." },
+      { "name": "toast", "value": "0 4px 20px oklch(0.23 0.012 60 / 0.16)", "purpose": "Transient status toasts. Soft, neutral, never colored." }
+    ],
+    "motion": [
+      { "name": "ease-standard", "value": "cubic-bezier(0.22, 1, 0.36, 1)", "purpose": "Ease-out (quart-like) default for all state transitions. No bounce, no elastic." },
+      { "name": "duration-fast", "value": "120ms", "purpose": "Small state changes (hover, press)." },
+      { "name": "duration-base", "value": "180ms", "purpose": "Most transitions — buttons, fields, badges." },
+      { "name": "duration-slow", "value": "240ms", "purpose": "Sheets and overlays sliding in. Ceiling for product motion." },
+      { "name": "reduced-motion", "value": "@media (prefers-reduced-motion: reduce) { transitions collapse to instant or a 120ms crossfade }", "purpose": "Mandatory alternative on every animation; motion conveys state, never decoration." }
+    ],
+    "breakpoints": [
+      { "name": "mobile", "value": "0px", "purpose": "Primary and default target — iOS WKWebView, single column." },
+      { "name": "tablet", "value": "640px", "purpose": "Larger handsets / iPad: widen measure and padding; structure stays single-column-calm." }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The seal — primary/affirmative actions. Sealing-wax gold with near-white label.",
+      "html": "<button class='ds-btn-primary'>Create new identity</button>",
+      "css": ".ds-btn-primary{background:oklch(0.46 0.105 62);color:oklch(0.99 0.005 80);font:500 0.8125rem/1.3 'Public Sans',system-ui,sans-serif;letter-spacing:0.01em;padding:12px 20px;border:none;border-radius:8px;cursor:pointer;transition:background 180ms cubic-bezier(0.22,1,0.36,1)} .ds-btn-primary:hover{background:oklch(0.38 0.090 60)} .ds-btn-primary:active{background:oklch(0.38 0.090 60)} .ds-btn-primary:focus-visible{outline:2px solid oklch(0.34 0.10 330);outline-offset:2px} .ds-btn-primary:disabled{background:oklch(0.92 0.02 70);color:oklch(0.42 0.012 60);cursor:not-allowed}"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Quiet default for non-committing actions and back navigation. Parchment fill, hairline border.",
+      "html": "<button class='ds-btn-secondary'>Back</button>",
+      "css": ".ds-btn-secondary{background:oklch(0.975 0.004 75);color:oklch(0.23 0.012 60);font:500 0.8125rem/1.3 'Public Sans',system-ui,sans-serif;letter-spacing:0.01em;padding:12px 20px;border:1px solid oklch(0.90 0.004 75);border-radius:8px;cursor:pointer;transition:background 180ms cubic-bezier(0.22,1,0.36,1)} .ds-btn-secondary:hover{background:oklch(0.955 0.005 75)} .ds-btn-secondary:focus-visible{outline:2px solid oklch(0.34 0.10 330);outline-offset:2px}"
+    },
+    {
+      "name": "Override Button (Destructive)",
+      "kind": "button",
+      "refersTo": "button-destructive",
+      "description": "The irreversible recovery-override action — used ONLY after the user reviews the operation. Gravity by scarcity.",
+      "html": "<button class='ds-btn-override'><svg width='15' height='15' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86L7.86 2z'/><path d='M12 8v4'/><path d='M12 16h.01'/></svg>Review &amp; Override</button>",
+      "css": ".ds-btn-override{display:inline-flex;align-items:center;gap:8px;background:oklch(0.52 0.20 25);color:oklch(0.99 0.005 80);font:500 0.8125rem/1.3 'Public Sans',system-ui,sans-serif;padding:12px 20px;border:none;border-radius:8px;cursor:pointer;transition:filter 180ms cubic-bezier(0.22,1,0.36,1)} .ds-btn-override:hover{filter:brightness(0.92)} .ds-btn-override:focus-visible{outline:2px solid oklch(0.34 0.10 330);outline-offset:2px} .ds-btn-override:disabled{background:oklch(0.92 0.004 25);color:oklch(0.42 0.02 25);cursor:not-allowed}"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "White field, hairline border, aubergine focus. Mono variant for DIDs/handles.",
+      "html": "<input class='ds-input' placeholder='alice.bsky.social' />",
+      "css": ".ds-input{width:100%;background:oklch(1 0 0);color:oklch(0.23 0.012 60);font:400 1rem/1.5 'Public Sans',system-ui,sans-serif;padding:12px 14px;border:1px solid oklch(0.90 0.004 75);border-radius:8px;transition:border-color 180ms cubic-bezier(0.22,1,0.36,1)} .ds-input::placeholder{color:oklch(0.42 0.012 60)} .ds-input:focus-visible{border-color:oklch(0.34 0.10 330);outline:2px solid oklch(0.34 0.10 330);outline-offset:1px}"
+    },
+    {
+      "name": "Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Parchment surface, hairline border, flat at rest. Generous padding; depth is breathing room.",
+      "html": "<div class='ds-card'><div class='ds-card-title'>alice.bsky.social</div><div class='ds-card-meta'>did:plc:k3y…q9z2</div></div>",
+      "css": ".ds-card{background:oklch(0.975 0.004 75);border:1px solid oklch(0.90 0.004 75);border-radius:12px;padding:20px;display:flex;flex-direction:column;gap:6px} .ds-card-title{font:600 1.125rem/1.3 'Public Sans',system-ui,sans-serif;color:oklch(0.23 0.012 60)} .ds-card-meta{font:400 0.875rem/1.5 'JetBrains Mono',ui-monospace,monospace;color:oklch(0.42 0.012 60)}"
+    },
+    {
+      "name": "Status Badge — Critical",
+      "kind": "custom",
+      "refersTo": "status-badge-critical",
+      "description": "Signature component. Under attack: tonal-red ground + alert icon + live countdown label. Never color alone.",
+      "html": "<span class='ds-badge-critical'><svg width='13' height='13' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'><path d='M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86L7.86 2z'/><path d='M12 8v4'/><path d='M12 16h.01'/></svg><span>2h 14m remaining</span></span>",
+      "css": ".ds-badge-critical{display:inline-flex;align-items:center;gap:6px;background:oklch(0.95 0.045 25);color:oklch(0.44 0.16 25);font:500 0.8125rem/1.3 'Public Sans',system-ui,sans-serif;padding:4px 10px;border-radius:4px}"
+    },
+    {
+      "name": "Status Badge — Safe",
+      "kind": "custom",
+      "refersTo": "status-badge-safe",
+      "description": "Calm state: tonal-green ground + shield-check icon + label. Static, reassuring.",
+      "html": "<span class='ds-badge-safe'><svg width='13' height='13' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z'/><path d='m9 12 2 2 4-4'/></svg><span>Secure</span></span>",
+      "css": ".ds-badge-safe{display:inline-flex;align-items:center;gap:6px;background:oklch(0.95 0.045 150);color:oklch(0.40 0.10 150);font:500 0.8125rem/1.3 'Public Sans',system-ui,sans-serif;padding:4px 10px;border-radius:4px}"
+    },
+    {
+      "name": "Status Badge — Expired",
+      "kind": "custom",
+      "refersTo": "status-badge-expired",
+      "description": "Recovery window closed: ASHEN ground + lock icon. Deliberately inert — must not read as alarm.",
+      "html": "<span class='ds-badge-expired'><svg width='13' height='13' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'><rect x='3' y='11' width='18' height='11' rx='2'/><path d='M7 11V7a5 5 0 0 1 10 0v4'/></svg><span>Recovery window closed</span></span>",
+      "css": ".ds-badge-expired{display:inline-flex;align-items:center;gap:6px;background:oklch(0.95 0.004 25);color:oklch(0.42 0.02 25);font:500 0.8125rem/1.3 'Public Sans',system-ui,sans-serif;padding:4px 10px;border-radius:4px}"
+    },
+    {
+      "name": "DID Avatar",
+      "kind": "custom",
+      "refersTo": "did-avatar",
+      "description": "Deterministic identity mark — hue hashed from the DID, chroma-constrained to the brand so a wall of identities reads as coherent seals, not rainbow confetti.",
+      "html": "<div class='ds-did-avatar' style='background:oklch(0.55 0.09 200)'>A</div>",
+      "css": ".ds-did-avatar{width:64px;height:64px;border-radius:9999px;display:flex;align-items:center;justify-content:center;color:oklch(0.99 0.005 80);font:400 1.75rem/1 'Libre Caslon Display',Georgia,serif;user-select:none;flex-shrink:0}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Sealed Credential",
+    "overview": "The wax seal, the embossed foil on a passport, the notary's stamp — authenticity made visible, and held by the person it belongs to. The wallet guards the keys to someone's entire decentralized identity, so it must feel as rigorous as the cryptography beneath it: a serious security instrument, not an app with a lock icon. Gravitas comes from precision and restraint, never from chrome, darkness, or decoration. It lives in the humane, light tradition of Proton and 1Password. Gold is gold-as-authenticity, never gold-as-money: sealing-wax gold and aubergine on archival white evoke an official, sovereign credential and pointedly reject the neon, metallic register of crypto. Calm at rest; unmistakable under alarm — when an attacker touches the identity, a 72-hour clock starts and every pixel exists to make the stakes and the single right action impossible to misread.",
+    "keyCharacteristics": [
+      "Sealing-wax gold + aubergine on pure white — authenticity, not currency.",
+      "A serious instrument: precision over polish, restraint over decoration.",
+      "Light and humane (Proton / 1Password lane), never dark-and-heavy.",
+      "Monospace tells the literal truth; progressive disclosure hides it until asked.",
+      "Status is never color alone — it is color + icon + label + position.",
+      "WCAG 2.2 AAA is the target, because a high-assurance tool owes a high-assurance interface."
+    ],
+    "rules": [
+      { "name": "The Seal-vs-Signal Rule", "body": "Gold is identity; the green/amber/red/slate ramp is status. Status colors always carry an icon and a text label and appear only in status contexts. Gold never masquerades as a status; a status color never carries the brand.", "section": "colors" },
+      { "name": "The Authenticity-Not-Currency Rule", "body": "Gold is always matte, dry, editorial — a wax seal. Never metallic gradients, coin shapes, or glint. The moment gold looks like money it has become a crypto anti-reference.", "section": "colors" },
+      { "name": "The Pure-Surface Rule", "body": "The page is pure white (oklch(1 0 0)). Warmth comes from the seal and the type. Tinting the background to feel warm is forbidden — it's the AI-cream cliché and it erodes AAA contrast.", "section": "colors" },
+      { "name": "The Signet Rule", "body": "Libre Caslon Display appears at most once per screen, for the single ceremonial display moment. Everything that works — headings, labels, buttons, data — is Public Sans or JetBrains Mono. A seal you stamp twice is a smudge.", "section": "typography" },
+      { "name": "The Literal-Truth Rule", "body": "Every cryptographic value — DID, rotation key, CID, signature — is set in JetBrains Mono. Monospace signals exactness; proportional type is for prose, never for keys.", "section": "typography" },
+      { "name": "The No-Eyebrow Rule", "body": "No tiny uppercase tracked kicker above every section. One screen, one clear headline; labels are sentence case.", "section": "typography" },
+      { "name": "The Flat-At-Rest Rule", "body": "Surfaces are flat with a hairline at rest. A shadow is a response to floating (modal, toast) — a state, not a decoration. A resting card with a shadow is wrong.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do treat gold as a wax seal — matte, dry, editorial (oklch(0.46 0.105 62)). Authenticity, sovereignty, an official stamp.",
+      "Do keep the page pure white (oklch(1 0 0)) and let the seal and type carry the brand.",
+      "Do hold WCAG 2.2 AAA — Archival Ink body on white is ~13:1; verify every text-on-color pairing.",
+      "Do signal status with color and an icon and a text label and position — always all four.",
+      "Do keep Critical and Expired visually distinct: alarm-red that acts vs. ashen-slate that's closed.",
+      "Do set every DID, key, CID, and signature in JetBrains Mono — verifiable character by character.",
+      "Do lead with plain human stakes and tuck the cryptographic machinery one aubergine tap behind a details/advanced disclosure.",
+      "Do keep a visible 2px aubergine focus ring on every interactive element.",
+      "Do stay flat at rest; reserve the two soft shadows for floating sheets and toasts."
+    ],
+    "donts": [
+      "Don't let gold look like money — no metallic gradients, coin shapes, glint, or 'to the moon'. That's the crypto/web3 anti-reference.",
+      "Don't build the enterprise dashboard: no dense admin panels, SaaS-cream backgrounds, or chart-soup.",
+      "Don't go playful / gamified: no mascots, confetti, reward badges, streaks, or rainbow avatars.",
+      "Don't ship generic stock-iOS: not system blue #007aff, not SF-only, not 12px pills with no identity.",
+      "Don't go Ledger-dark: dark-technical, asset-vault heaviness is the wrong register. This is light and humane.",
+      "Don't signal urgency by color alone — a colorblind user under attack must never have to guess.",
+      "Don't tint the background to feel warm — that's the AI-cream cliché and it erodes contrast.",
+      "Don't use a border-left/border-right colored stripe on cards or alerts; use a full 1px hairline, a tonal ground, or a leading icon.",
+      "Don't use gradient-clipped text, decorative glassmorphism, or a big-number hero-metric template.",
+      "Don't put a tiny uppercase tracked eyebrow above every section."
+    ]
+  }
+}

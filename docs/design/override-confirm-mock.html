@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Identity Wallet — review &amp; override (mock)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Libre+Caslon+Display&family=Public+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --serif:'Libre Caslon Display',Georgia,serif;
+    --sans:'Public Sans',system-ui,sans-serif;
+    --mono:'JetBrains Mono',ui-monospace,monospace;
+    --gold:oklch(0.46 0.105 62); --gold-deep:oklch(0.38 0.09 60); --seal-pale:oklch(0.93 0.05 80);
+    --aubergine:oklch(0.34 0.10 330);
+    --ink:oklch(0.23 0.012 60); --ink-soft:oklch(0.31 0.012 60); --muted:oklch(0.40 0.012 60);
+    --parchment:oklch(0.975 0.004 75); --sunk:oklch(0.955 0.005 75);
+    --hairline:oklch(0.90 0.004 75); --on:oklch(0.99 0.005 80);
+    --crit:oklch(0.44 0.16 25); --crit-surface:oklch(0.95 0.045 25);
+    --crit-solid:oklch(0.50 0.20 25); --crit-fill:oklch(0.39 0.17 25);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:oklch(0.95 0.006 75);font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased;display:flex;justify-content:center;padding:32px 16px;min-height:100vh}
+  .device{position:relative;width:414px;height:862px;background:#fff;border-radius:46px;border:1px solid var(--hairline);box-shadow:0 1px 0 oklch(0.90 0.004 75),0 24px 60px oklch(0.23 0.012 60/0.10);overflow:hidden;display:flex;flex-direction:column}
+  .statusbar{height:46px;flex-shrink:0;display:flex;align-items:flex-end;justify-content:space-between;padding:0 26px 7px;font-size:14px;font-weight:600}
+  .statusbar .icons{display:flex;align-items:center;gap:6px}
+  .battery{width:24px;height:12px;border:1.3px solid var(--ink);border-radius:3px;position:relative;opacity:.9}
+  .battery::after{content:"";position:absolute;top:2px;left:1.5px;bottom:2px;width:70%;background:var(--ink);border-radius:1px}
+  .battery::before{content:"";position:absolute;right:-3px;top:3.5px;height:5px;width:2px;background:var(--ink);border-radius:0 1px 1px 0}
+  .appbar{height:50px;flex-shrink:0;display:flex;align-items:center;padding:0 12px;border-bottom:1px solid var(--hairline)}
+  .back{display:inline-flex;align-items:center;gap:3px;color:var(--aubergine);background:none;border:none;font-family:var(--sans);font-size:16px;font-weight:500;cursor:pointer;padding:8px 6px;border-radius:8px}
+  .appbar h2{flex:1;text-align:center;font-size:17px;font-weight:600;letter-spacing:-.005em}
+  .appbar .chip{font-family:var(--mono);font-size:12px;font-weight:500;color:var(--crit);background:var(--crit-surface);padding:5px 9px;border-radius:7px;white-space:nowrap}
+  .content{flex:1;overflow-y:auto;padding:22px 20px 24px;display:flex;flex-direction:column;gap:20px}
+  .hero h1{font-family:var(--serif);font-weight:400;font-size:30px;line-height:1.12;margin-bottom:10px}
+  .hero p{font-size:15.5px;line-height:1.5;color:var(--ink-soft)}
+  .label{font-size:13px;font-weight:600;color:var(--muted);letter-spacing:.01em;margin-bottom:10px}
+  .row{display:flex;gap:13px;padding:14px;border-radius:13px;align-items:flex-start}
+  .row+.row{margin-top:10px}
+  .row .ic{width:30px;height:30px;border-radius:9999px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+  .row .body{display:flex;flex-direction:column;gap:3px;min-width:0}
+  .row .t{font-size:15px;font-weight:600;line-height:1.3}
+  .row .v{font-family:var(--mono);font-size:12.5px;line-height:1.4;word-break:break-all}
+  .row.remove{background:var(--crit-surface)}
+  .row.remove .ic{background:#fff;color:var(--crit)}
+  .row.remove .t{color:var(--crit)}
+  .row.remove .v{color:oklch(0.40 0.10 25)}
+  .row.restore{background:var(--seal-pale)}
+  .row.restore .ic{background:#fff;color:var(--gold-deep)}
+  .row.restore .t{color:var(--gold-deep)}
+  .row.restore .v{color:oklch(0.40 0.05 70)}
+  .net{font-size:14.5px;line-height:1.5;color:var(--ink-soft);margin-top:14px;padding-left:2px}
+  .net b{font-weight:600;color:var(--ink)}
+  .sealed{display:flex;align-items:center;gap:13px;background:var(--seal-pale);border:1px solid oklch(0.85 0.07 80);border-radius:14px;padding:14px 16px}
+  .seal-emblem{width:42px;height:42px;border-radius:9999px;background:var(--gold);color:var(--on);display:flex;align-items:center;justify-content:center;flex-shrink:0;box-shadow:inset 0 0 0 2px oklch(0.99 0.05 80/0.35)}
+  .sealed .st{font-size:14.5px;font-weight:600;color:var(--gold-deep)}
+  .sealed .sv{font-family:var(--mono);font-size:12px;color:oklch(0.42 0.06 70);margin-top:2px}
+  details{border-top:1px solid var(--hairline);padding-top:15px}
+  summary{display:flex;align-items:center;gap:6px;color:var(--aubergine);font-size:14.5px;font-weight:500;cursor:pointer;list-style:none}
+  summary::-webkit-details-marker{display:none}
+  .chev{transition:transform .2s cubic-bezier(.22,1,.36,1)}
+  details[open] .chev{transform:rotate(180deg)}
+  .tech{margin-top:14px;background:var(--parchment);border:1px solid var(--hairline);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:12px}
+  .field{display:flex;flex-direction:column;gap:3px}
+  .field .k{font-size:12px;font-weight:600;color:var(--muted)}
+  .field .vv{font-family:var(--mono);font-size:12.5px;color:var(--ink);word-break:break-all;line-height:1.45}
+  .note{display:flex;gap:10px;align-items:flex-start;font-size:13.5px;line-height:1.5;color:var(--muted);padding:0 2px}
+  .note svg{flex-shrink:0;margin-top:1px;color:var(--muted)}
+  .actions{flex-shrink:0;border-top:1px solid var(--hairline);background:var(--parchment);padding:14px 20px 26px;display:flex;flex-direction:column;gap:10px}
+  .hold{position:relative;width:100%;height:54px;border-radius:12px;border:none;cursor:pointer;overflow:hidden;background:var(--crit-solid);touch-action:none;user-select:none;-webkit-user-select:none}
+  .hold .fill{position:absolute;inset:0;width:0;background:var(--crit-fill);transition:width .08s linear}
+  .hold .lbl{position:relative;z-index:1;display:flex;align-items:center;justify-content:center;gap:9px;height:100%;color:var(--on);font-family:var(--sans);font-size:16px;font-weight:600}
+  .cancel{width:100%;background:transparent;color:var(--ink);border:1px solid var(--hairline);border-radius:12px;padding:14px;font-family:var(--sans);font-size:16px;font-weight:500;cursor:pointer}
+  .hint{text-align:center;font-size:12.5px;color:var(--muted)}
+  .overlay{position:absolute;inset:0;background:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:40px 32px;gap:8px;opacity:0;visibility:hidden;transition:opacity .3s cubic-bezier(.22,1,.36,1)}
+  .overlay.show{opacity:1;visibility:visible}
+  .big-seal{width:96px;height:96px;border-radius:9999px;background:var(--gold);color:var(--on);display:flex;align-items:center;justify-content:center;margin-bottom:18px;box-shadow:inset 0 0 0 4px oklch(0.99 0.05 80/0.35);transform:scale(.4);transition:transform .45s cubic-bezier(.34,1.4,.5,1)}
+  .overlay.show .big-seal{transform:scale(1)}
+  .overlay h1{font-family:var(--serif);font-weight:400;font-size:30px;color:var(--ink)}
+  .overlay p{font-size:15.5px;line-height:1.55;color:var(--ink-soft);max-width:30ch}
+  .overlay .done{margin-top:24px;width:100%;background:var(--gold);color:var(--on);border:none;border-radius:12px;padding:15px;font-family:var(--sans);font-size:16px;font-weight:600;cursor:pointer}
+  @media (prefers-reduced-motion: reduce){*{transition-duration:.01ms!important}.big-seal{transform:scale(1)}}
+</style>
+</head>
+<body>
+  <div class="device" role="group" aria-label="Identity Wallet review and override screen mock">
+
+    <div class="statusbar">
+      <span>9:41</span>
+      <span class="icons" aria-hidden="true">
+        <svg width="17" height="12" viewBox="0 0 17 12" fill="currentColor"><rect x="0" y="7" width="3" height="5" rx="1"/><rect x="4.5" y="4.5" width="3" height="7.5" rx="1"/><rect x="9" y="2" width="3" height="10" rx="1"/><rect x="13.5" y="0" width="3" height="12" rx="1"/></svg>
+        <svg width="16" height="12" viewBox="0 0 16 12" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1 4.2a10 10 0 0 1 14 0M3.4 6.8a6.4 6.4 0 0 1 9.2 0M8 9.6h.01" stroke-linecap="round"/></svg>
+        <span class="battery"></span>
+      </span>
+    </div>
+
+    <div class="appbar">
+      <button class="back" aria-label="Back to the alert">
+        <svg width="11" height="18" viewBox="0 0 11 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1 2 9l7 8"/></svg>
+        Back
+      </button>
+      <h2>Review override</h2>
+      <span class="chip">2h 41m left</span>
+    </div>
+
+    <div class="content">
+
+      <div class="hero">
+        <h1>Reclaim your identity</h1>
+        <p>Review what this does, then confirm with your device key. This reverses the change you didn&rsquo;t authorize.</p>
+      </div>
+
+      <div>
+        <p class="label">This override will</p>
+        <div class="row remove">
+          <span class="ic" aria-hidden="true">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12h14"/></svg>
+          </span>
+          <span class="body">
+            <span class="t">Remove the unauthorized key</span>
+            <span class="v">did:key:zQ3shrTng2Z9p4q7Xb2vK8wYf6mLcD1aHnU9</span>
+          </span>
+        </div>
+        <div class="row restore">
+          <span class="ic" aria-hidden="true">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+          </span>
+          <span class="body">
+            <span class="t">Return control to your device key</span>
+            <span class="v">did:key:zDnaeY6V3Kp7M2qR9wL4xB1nT8cF5jH3aZ</span>
+          </span>
+        </div>
+        <p class="net">Your identity returns to the last state you signed, on <b>Jun 22, 2026</b>. No posts, follows, or data are affected.</p>
+      </div>
+
+      <div class="sealed">
+        <span class="seal-emblem" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 11.5 2 2 4-4"/></svg>
+        </span>
+        <span>
+          <div class="st">Sealed by your device key</div>
+          <div class="sv">this iPhone · zDnaeY6V…3aZ</div>
+        </span>
+      </div>
+
+      <details>
+        <summary>
+          View the signed operation
+          <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+        </summary>
+        <div class="tech">
+          <div class="field"><span class="k">Operation</span><span class="vv">plc_operation · builds on bafyreib2x4q7m9k3rng2z9p4</span></div>
+          <div class="field"><span class="k">rotationKeys (after)</span><span class="vv">[ did:key:zDnaeY6V…3aZ (device), did:key:zRelay7K…9pQ ]</span></div>
+          <div class="field"><span class="k">Signature</span><span class="vv">3045022100f2a9…b71c · secp256r1 / low-S</span></div>
+          <div class="field"><span class="k">Signed</span><span class="vv">2026-06-26T01:31Z · on device</span></div>
+        </div>
+      </details>
+
+      <div class="note">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        <span>This is permanent. It updates your identity on the public PLC directory &mdash; but it restores your identity; nothing is deleted.</span>
+      </div>
+
+    </div>
+
+    <div class="actions">
+      <button class="hold" id="hold" aria-label="Press and hold to override and reclaim your identity">
+        <span class="fill" id="fill"></span>
+        <span class="lbl">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+          <span id="holdtext">Hold to override</span>
+        </span>
+      </button>
+      <p class="hint" id="hint">Press and hold &mdash; this can&rsquo;t be undone</p>
+      <button class="cancel">Cancel</button>
+    </div>
+
+    <div class="overlay" id="overlay" role="status" aria-hidden="true">
+      <span class="big-seal" aria-hidden="true">
+        <svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 11.5 2 2 4-4"/></svg>
+      </span>
+      <h1>Identity reclaimed</h1>
+      <p>Your device key is back in control. We&rsquo;ll keep watching the public record for you.</p>
+      <button class="done" id="reset">Done</button>
+    </div>
+
+  </div>
+
+<script>
+  var hold = document.getElementById('hold'), fill = document.getElementById('fill');
+  var holdtext = document.getElementById('holdtext'), hint = document.getElementById('hint');
+  var overlay = document.getElementById('overlay'), reset = document.getElementById('reset');
+  var DURATION = 1500, raf = null, start = null, done = false;
+  var HINT_DEFAULT = 'Press and hold — this can’t be undone';
+  function frame(now){
+    if(start === null) start = now;
+    var p = Math.min(1, (now - start) / DURATION);
+    fill.style.width = (p * 100) + '%';
+    if(p >= 1){ complete(); return; }
+    raf = requestAnimationFrame(frame);
+  }
+  function begin(e){
+    if(done) return;
+    e.preventDefault();
+    hint.textContent = 'Keep holding…';
+    start = null; raf = requestAnimationFrame(frame);
+  }
+  function cancel(){
+    if(done || raf === null) return;
+    cancelAnimationFrame(raf); raf = null; start = null;
+    fill.style.transition = 'width .25s cubic-bezier(.22,1,.36,1)';
+    fill.style.width = '0%';
+    hint.textContent = HINT_DEFAULT;
+    setTimeout(function(){ fill.style.transition = 'width .08s linear'; }, 260);
+  }
+  function complete(){
+    done = true; raf = null;
+    fill.style.width = '100%';
+    holdtext.textContent = 'Overriding…';
+    setTimeout(function(){
+      overlay.classList.add('show'); overlay.setAttribute('aria-hidden','false');
+    }, 480);
+  }
+  hold.addEventListener('pointerdown', begin);
+  hold.addEventListener('pointerup', cancel);
+  hold.addEventListener('pointerleave', cancel);
+  hold.addEventListener('pointercancel', cancel);
+  reset.addEventListener('click', function(){
+    overlay.classList.remove('show'); overlay.setAttribute('aria-hidden','true');
+    done = false; fill.style.width = '0%'; holdtext.textContent = 'Hold to override';
+    hint.textContent = HINT_DEFAULT;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Identity Wallet — security alert (mock)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Libre+Caslon+Display&family=Public+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --serif:'Libre Caslon Display',Georgia,serif;
+    --sans:'Public Sans',system-ui,sans-serif;
+    --mono:'JetBrains Mono',ui-monospace,monospace;
+    --gold:oklch(0.46 0.105 62); --gold-deep:oklch(0.38 0.09 60);
+    --aubergine:oklch(0.34 0.10 330);
+    --ink:oklch(0.23 0.012 60); --ink-soft:oklch(0.31 0.012 60); --muted:oklch(0.40 0.012 60);
+    --parchment:oklch(0.975 0.004 75); --sunk:oklch(0.955 0.005 75);
+    --hairline:oklch(0.90 0.004 75); --on:oklch(0.99 0.005 80);
+    --crit:oklch(0.44 0.16 25); --crit-surface:oklch(0.95 0.045 25);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:oklch(0.95 0.006 75);font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased;display:flex;justify-content:center;padding:32px 16px;min-height:100vh}
+  .device{width:414px;height:862px;background:#fff;border-radius:46px;border:1px solid var(--hairline);box-shadow:0 1px 0 oklch(0.90 0.004 75),0 24px 60px oklch(0.23 0.012 60/0.10);overflow:hidden;display:flex;flex-direction:column}
+  /* status bar */
+  .statusbar{height:46px;flex-shrink:0;display:flex;align-items:flex-end;justify-content:space-between;padding:0 26px 7px;font-size:14px;font-weight:600;color:var(--ink)}
+  .statusbar .icons{display:flex;align-items:center;gap:6px}
+  .battery{width:24px;height:12px;border:1.3px solid var(--ink);border-radius:3px;position:relative;opacity:.9}
+  .battery::after{content:"";position:absolute;top:2px;left:1.5px;bottom:2px;width:70%;background:var(--ink);border-radius:1px}
+  .battery::before{content:"";position:absolute;right:-3px;top:3.5px;height:5px;width:2px;background:var(--ink);border-radius:0 1px 1px 0}
+  /* app bar */
+  .appbar{height:50px;flex-shrink:0;display:flex;align-items:center;padding:0 12px;border-bottom:1px solid var(--hairline)}
+  .back{display:inline-flex;align-items:center;gap:3px;color:var(--aubergine);background:none;border:none;font-family:var(--sans);font-size:16px;font-weight:500;cursor:pointer;padding:8px 6px;border-radius:8px}
+  .appbar h2{flex:1;text-align:center;font-size:17px;font-weight:600;letter-spacing:-.005em;color:var(--ink)}
+  .appbar .spacer{width:64px;flex-shrink:0}
+  /* scroll area */
+  .content{flex:1;overflow-y:auto;padding:22px 20px 26px;display:flex;flex-direction:column;gap:20px}
+  .hero h1{font-family:var(--serif);font-weight:400;font-size:30px;line-height:1.12;color:var(--ink);margin-bottom:10px}
+  .hero p{font-size:15.5px;line-height:1.5;color:var(--ink-soft)}
+  /* countdown card */
+  .countdown{background:#fff;border:1px solid var(--hairline);border-radius:16px;padding:20px;display:flex;flex-direction:column;align-items:center;gap:8px}
+  .statuspill{display:inline-flex;align-items:center;gap:7px;background:var(--crit-surface);color:var(--crit);font-size:13px;font-weight:600;letter-spacing:.01em;padding:6px 12px;border-radius:6px;margin-bottom:6px}
+  .timer{font-family:var(--mono);font-weight:500;font-size:46px;line-height:1;letter-spacing:.01em;color:var(--ink);font-variant-numeric:tabular-nums}
+  .timer-label{font-size:13.5px;color:var(--muted)}
+  .track{width:100%;height:6px;background:var(--sunk);border-radius:9999px;overflow:hidden;margin-top:12px}
+  .fill{height:100%;width:96%;background:var(--crit);border-radius:9999px}
+  .deadline{font-size:12.5px;color:var(--muted);font-weight:500}
+  /* identity */
+  .identity{display:flex;align-items:center;gap:13px;background:var(--parchment);border:1px solid var(--hairline);border-radius:14px;padding:14px 16px}
+  .avatar{width:44px;height:44px;border-radius:9999px;background:oklch(0.55 0.09 300);color:var(--on);display:flex;align-items:center;justify-content:center;font-family:var(--serif);font-size:22px;flex-shrink:0}
+  .identity .who{display:flex;flex-direction:column;gap:2px;min-width:0}
+  .identity .handle{font-size:16px;font-weight:600;color:var(--ink)}
+  .identity .did{font-family:var(--mono);font-size:12.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* what happened */
+  .section-label{font-size:13px;font-weight:600;color:var(--muted);letter-spacing:.01em;margin-bottom:9px}
+  .explain{font-size:15.5px;line-height:1.55;color:var(--ink-soft)}
+  details{margin-top:14px;border-top:1px solid var(--hairline);padding-top:14px}
+  summary{display:flex;align-items:center;gap:6px;color:var(--aubergine);font-size:14.5px;font-weight:500;cursor:pointer;list-style:none}
+  summary::-webkit-details-marker{display:none}
+  summary .chev{transition:transform .2s cubic-bezier(.22,1,.36,1)}
+  details[open] summary .chev{transform:rotate(180deg)}
+  .tech{margin-top:14px;background:var(--parchment);border:1px solid var(--hairline);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:13px}
+  .field{display:flex;flex-direction:column;gap:3px}
+  .field .k{font-size:12px;font-weight:600;color:var(--muted);letter-spacing:.01em}
+  .field .v{font-family:var(--mono);font-size:13px;color:var(--ink);word-break:break-all;line-height:1.45}
+  .diff{display:flex;align-items:center;gap:8px;background:var(--crit-surface);border-radius:8px;padding:9px 11px;font-family:var(--mono);font-size:12.5px;color:var(--crit);word-break:break-all}
+  .diff b{font-weight:700;flex-shrink:0}
+  .reassure{display:flex;gap:10px;align-items:flex-start;font-size:13.5px;line-height:1.5;color:var(--muted);padding:2px 2px 0}
+  .reassure svg{flex-shrink:0;margin-top:2px;color:var(--gold-deep)}
+  /* action bar */
+  .actions{flex-shrink:0;border-top:1px solid var(--hairline);background:var(--parchment);padding:14px 20px 26px;display:flex;flex-direction:column;gap:10px}
+  .btn{width:100%;display:inline-flex;align-items:center;justify-content:center;gap:9px;font-family:var(--sans);border-radius:11px;cursor:pointer;border:none;padding:15px;font-size:16px;font-weight:600;letter-spacing:.005em;transition:background .18s cubic-bezier(.22,1,.36,1)}
+  .btn-primary{background:var(--gold);color:var(--on)}
+  .btn-primary:hover{background:var(--gold-deep)}
+  .btn-ghost{background:transparent;color:var(--ink);border:1px solid var(--hairline);font-weight:500}
+  .btn-ghost:hover{background:var(--sunk)}
+  @media (prefers-reduced-motion: reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+  <div class="device" role="group" aria-label="Identity Wallet security alert screen mock">
+
+    <div class="statusbar">
+      <span>9:41</span>
+      <span class="icons" aria-hidden="true">
+        <svg width="17" height="12" viewBox="0 0 17 12" fill="currentColor"><rect x="0" y="7" width="3" height="5" rx="1"/><rect x="4.5" y="4.5" width="3" height="7.5" rx="1"/><rect x="9" y="2" width="3" height="10" rx="1"/><rect x="13.5" y="0" width="3" height="12" rx="1"/></svg>
+        <svg width="16" height="12" viewBox="0 0 16 12" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1 4.2a10 10 0 0 1 14 0M3.4 6.8a6.4 6.4 0 0 1 9.2 0M8 9.6h.01" stroke-linecap="round"/></svg>
+        <span class="battery"></span>
+      </span>
+    </div>
+
+    <div class="appbar">
+      <button class="back" aria-label="Back to identities">
+        <svg width="11" height="18" viewBox="0 0 11 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1 2 9l7 8"/></svg>
+        Back
+      </button>
+      <h2>Security alert</h2>
+      <span class="spacer"></span>
+    </div>
+
+    <div class="content">
+
+      <div class="hero">
+        <h1>Someone changed your identity</h1>
+        <p>A recovery key you didn&rsquo;t authorize was added to this identity. Reverse it before the recovery window closes.</p>
+      </div>
+
+      <div class="countdown">
+        <span class="statuspill">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+          Recovery window closing
+        </span>
+        <div class="timer" id="timer" aria-live="off">02:46:58</div>
+        <div class="timer-label">left to reverse this change</div>
+        <div class="track" role="img" aria-label="About 96 percent of the 72-hour recovery window has elapsed"><div class="fill"></div></div>
+        <div class="deadline" id="deadline">Window closes Thu, Jun 26 · 4:12 PM</div>
+      </div>
+
+      <div class="identity">
+        <div class="avatar" aria-hidden="true">A</div>
+        <div class="who">
+          <span class="handle">alice.bsky.social</span>
+          <span class="did">did:plc:k3yq2x9z7r4w8m1n</span>
+        </div>
+      </div>
+
+      <div>
+        <p class="section-label">What happened</p>
+        <p class="explain">On Jun 23 at 1:25&nbsp;PM, a rotation key was added to your identity. It was signed by a key your device doesn&rsquo;t recognize &mdash; so it wasn&rsquo;t you.</p>
+
+        <details>
+          <summary>
+            View the technical change
+            <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+          </summary>
+          <div class="tech">
+            <div class="field">
+              <span class="k">Signed by (unrecognized key)</span>
+              <span class="v">did:key:zQ3shrTng2Z9p4q7Xb2vK8wYf6mLcD1aHnU9</span>
+            </div>
+            <div class="field">
+              <span class="k">Operation</span>
+              <span class="v">bafyreib2x4q7m9k3rng2z9p4q7xb2vk8wyf6mlcd1ahnu9j5</span>
+            </div>
+            <div class="field">
+              <span class="k">Detected</span>
+              <span class="v">2026-06-23T13:25:04Z · plc.directory audit log</span>
+            </div>
+            <div class="field">
+              <span class="k">Change</span>
+              <span class="diff"><b>+ rotationKey</b> did:key:zQ3shrTng2Z9p4q7Xb2vK8wYf6mLcD1aHnU9</span>
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <div class="reassure">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+        <span>Overriding restores your identity to the last state you signed. Your posts, follows, and data are untouched.</span>
+      </div>
+
+    </div>
+
+    <div class="actions">
+      <button class="btn btn-primary">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        Review &amp; override
+      </button>
+      <button class="btn btn-ghost">What does this mean?</button>
+    </div>
+
+  </div>
+
+<script>
+  var target = new Date(Date.now() + (2 * 3600 + 46 * 60 + 58) * 1000);
+  var timerEl = document.getElementById('timer');
+  var deadlineEl = document.getElementById('deadline');
+  var pad = function (n) { return String(n).padStart(2, '0'); };
+  var days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  var h = target.getHours(), ap = h >= 12 ? 'PM' : 'AM', h12 = ((h + 11) % 12) + 1;
+  deadlineEl.textContent = 'Window closes ' + days[target.getDay()] + ', ' + months[target.getMonth()] + ' ' + target.getDate() + ' · ' + h12 + ':' + pad(target.getMinutes()) + ' ' + ap;
+  function tick() {
+    var s = Math.max(0, Math.floor((target - new Date()) / 1000));
+    timerEl.textContent = pad(Math.floor(s / 3600)) + ':' + pad(Math.floor(s % 3600 / 60)) + ':' + pad(s % 60);
+  }
+  tick();
+  setInterval(tick, 1000);
+</script>
+</body>
+</html>
