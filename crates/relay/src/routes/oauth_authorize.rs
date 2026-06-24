@@ -816,7 +816,7 @@ mod tests {
     #[tokio::test]
     async fn get_consent_page_contains_client_name() {
         let resp = get_authorize(state_with_client().await, &authorize_url("")).await;
-        let body = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(
             html.contains("Test App"),
@@ -832,7 +832,7 @@ mod tests {
             .await
             .unwrap();
         let resp = get_authorize(state, &authorize_url("")).await;
-        let body = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(
             html.contains("app.example.com"),
@@ -848,7 +848,7 @@ mod tests {
             .await
             .unwrap();
         let resp = get_authorize(state, &authorize_url("")).await;
-        let body = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(
             !html.contains("<script>"),
@@ -865,7 +865,7 @@ mod tests {
         // scope=<b>bold</b> URL-encoded in the request
         let url = authorize_url("").replace("scope=atproto", "scope=%3Cb%3Ebold%3C%2Fb%3E");
         let resp = get_authorize(state_with_client().await, &url).await;
-        let body = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(
             !html.contains("<b>"),
@@ -880,7 +880,7 @@ mod tests {
     #[tokio::test]
     async fn get_consent_page_contains_scope_tag() {
         let resp = get_authorize(state_with_client().await, &authorize_url("")).await;
-        let body = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(
             html.contains("atproto"),
@@ -891,7 +891,7 @@ mod tests {
     #[tokio::test]
     async fn get_consent_page_has_approve_and_deny_buttons() {
         let resp = get_authorize(state_with_client().await, &authorize_url("")).await;
-        let body = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(html.contains("value=\"approve\""));
         assert!(html.contains("value=\"deny\""));
@@ -900,7 +900,7 @@ mod tests {
     #[tokio::test]
     async fn get_consent_page_has_hidden_inputs_with_request_values() {
         let resp = get_authorize(state_with_client().await, &authorize_url("")).await;
-        let body = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(html.contains("name=\"state\""));
         assert!(html.contains("name=\"code_challenge\""));
@@ -1022,7 +1022,7 @@ mod tests {
         // themselves. The client never sees a denial; the user can try again.
         let resp = post_authorize(state_with_client().await, &approve_form("")).await;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(
             html.contains("type=\"password\""),
@@ -1035,7 +1035,7 @@ mod tests {
     #[tokio::test]
     async fn get_consent_page_renders_identifier_input() {
         let resp = get_authorize(state_with_client().await, &authorize_url("")).await;
-        let body = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(
             html.contains("name=\"identifier\""),
@@ -1046,7 +1046,7 @@ mod tests {
     #[tokio::test]
     async fn get_consent_page_renders_password_input() {
         let resp = get_authorize(state_with_client().await, &authorize_url("")).await;
-        let body = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(
             html.contains("type=\"password\""),
@@ -1058,7 +1058,7 @@ mod tests {
     async fn get_consent_page_prepopulates_identifier_from_login_hint() {
         let url = authorize_url("&login_hint=alice.test");
         let resp = get_authorize(state_with_client().await, &url).await;
-        let body = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(
             html.contains("alice.test"),
@@ -1084,7 +1084,7 @@ mod tests {
         let body = approve_form_with_credentials(TEST_HANDLE, "wrongpassword");
         let resp = post_authorize(state, &body).await;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body_bytes = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body_bytes).unwrap();
         assert!(
             html.contains("Invalid credentials."),
@@ -1102,7 +1102,7 @@ mod tests {
         let body = approve_form_with_credentials("nobody.test", TEST_PASSWORD);
         let resp = post_authorize(state, &body).await;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body_bytes = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body_bytes).unwrap();
         assert!(
             html.contains("Invalid credentials."),
@@ -1115,7 +1115,7 @@ mod tests {
         let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
         let resp = post_authorize(state, &approve_form("")).await;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body_bytes = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body_bytes).unwrap();
         assert!(
             html.contains("type=\"password\""),
@@ -1171,7 +1171,7 @@ mod tests {
         let body = approve_form_with_credentials(TEST_HANDLE, "anypassword");
         let resp = post_authorize(state, &body).await;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body_bytes = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body_bytes).unwrap();
         assert!(
             html.contains("Invalid credentials."),
@@ -1185,7 +1185,7 @@ mod tests {
         let body = approve_form_with_credentials(TEST_HANDLE, TEST_PASSWORD);
         let resp = post_authorize(state, &body).await;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body_bytes = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body_bytes).unwrap();
         assert!(
             html.contains("Invalid credentials."),
@@ -1224,7 +1224,7 @@ mod tests {
         )
         .await;
         assert_eq!(resp.status(), StatusCode::OK);
-        let body_bytes = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body_bytes).unwrap();
         assert!(
             html.contains("Too many"),
@@ -1281,7 +1281,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), 16384)
+        let body = axum::body::to_bytes(response.into_body(), 32768)
             .await
             .unwrap();
         let html = std::str::from_utf8(&body).unwrap();
@@ -1309,7 +1309,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 8192)
+        let body = axum::body::to_bytes(response.into_body(), 32768)
             .await
             .unwrap();
         let html = std::str::from_utf8(&body).unwrap();
@@ -1350,7 +1350,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 8192)
+        let body = axum::body::to_bytes(response.into_body(), 32768)
             .await
             .unwrap();
         let html = std::str::from_utf8(&body).unwrap();
@@ -1380,7 +1380,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), 16384)
+        let body = axum::body::to_bytes(response.into_body(), 32768)
             .await
             .unwrap();
         let html = std::str::from_utf8(&body).unwrap();
@@ -1409,7 +1409,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 8192)
+        let body = axum::body::to_bytes(response.into_body(), 32768)
             .await
             .unwrap();
         let html = std::str::from_utf8(&body).unwrap();
@@ -1439,7 +1439,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 8192)
+        let body = axum::body::to_bytes(response.into_body(), 32768)
             .await
             .unwrap();
         let html = std::str::from_utf8(&body).unwrap();

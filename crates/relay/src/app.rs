@@ -52,6 +52,7 @@ use crate::routes::register_device::register_device;
 use crate::routes::request_password_reset::request_password_reset;
 use crate::routes::reset_password::reset_password;
 use crate::routes::resolve_handle::resolve_handle_handler;
+use crate::routes::static_assets::static_handler;
 use crate::routes::upload_blob::upload_blob;
 use crate::well_known::WellKnownResolver;
 
@@ -222,6 +223,7 @@ pub fn app(state: AppState) -> Router {
             get(get_relay_signing_key).post(create_signing_key),
         )
         .route("/v1/repo-signing-key", get(get_repo_signing_key))
+        .route("/static/*path", get(static_handler))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http().make_span_with(OtelMakeSpan))
         .with_state(state)

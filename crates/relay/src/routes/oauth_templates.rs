@@ -1,8 +1,11 @@
 // pattern: Functional Core
 //
-// Pure rendering functions for OAuth consent UI. All inputs are plain data; all
+// Pure rendering functions for the OAuth consent UI. All inputs are plain data; all
 // outputs are plain strings or Axum response types that carry no side effects.
 // No I/O, no database, no AppState.
+//
+// Visual system: "The Sealed Credential" (see DESIGN.md). Brand fonts are served by the
+// relay's own /static/fonts route (no third-party CDN — an auth page must not leak logins).
 
 use axum::http::StatusCode;
 use axum::response::{Html, Redirect};
@@ -31,23 +34,26 @@ pub(super) fn error_redirect(
 /// Render a standalone HTML error page for cases where redirecting is unsafe
 /// (unknown `client_id`, mismatched `redirect_uri`).
 pub(super) fn error_page(title: &str, message: &str) -> (StatusCode, Html<String>) {
-    let mut html = String::with_capacity(1500);
+    let mut html = String::with_capacity(2048);
     html.push_str(ERROR_PAGE_HEADER);
     html.push_str(&html_escape(title));
     html.push_str("</title>\n  <style>");
+    html.push_str(FONT_FACES);
     html.push_str(ERROR_CSS);
     html.push_str("  </style>\n</head>\n<body>\n");
-    html.push_str("  <div class=\"card\">\n");
-    html.push_str("    <div class=\"badge\">Error</div>\n");
-    html.push_str("    <h1>");
+    html.push_str(
+        "  <div class=\"card\">\n    <div class=\"top\">\n      <span class=\"seal alarm\">",
+    );
+    html.push_str(ICON_ALARM);
+    html.push_str("</span>\n      <h1>");
     html.push_str(&html_escape(title));
-    html.push_str("</h1>\n    <p>");
+    html.push_str("</h1>\n      <p class=\"err-msg\">");
     html.push_str(&html_escape(message));
-    html.push_str("</p>\n  </div>\n</body>\n</html>");
+    html.push_str("</p>\n    </div>\n  </div>\n</body>\n</html>");
     (StatusCode::BAD_REQUEST, Html(html))
 }
 
-/// Render the neobrutal OAuth consent page.
+/// Render the OAuth consent + sign-in page.
 ///
 /// All user-controlled values are HTML-escaped before insertion.
 /// `login_hint` pre-populates the identifier field (from the ATProto `login_hint` param
@@ -71,33 +77,55 @@ pub(super) fn render_consent_page(
         .split_whitespace()
         .map(|s| format!("<span class=\"scope-tag\">{}</span>", html_escape(s)))
         .collect::<Vec<_>>()
-        .join("\n      ");
+        .join("\n        ");
+
+    // Monogram for the application mark — the first character of the client name.
+    let app_initial = client_name
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_else(|| "·".to_string());
 
     // Build HTML by concatenation — avoids doubling all CSS braces for format!.
-    let mut html = String::with_capacity(4096);
+    let mut html = String::with_capacity(6144);
     html.push_str(CONSENT_PAGE_HEADER);
+    html.push_str(FONT_FACES);
     html.push_str(CONSENT_CSS);
     html.push_str("  </style>\n</head>\n<body>\n");
     html.push_str("  <div class=\"card\">\n");
-    html.push_str("    <div class=\"header\">\n");
-    html.push_str("      <div class=\"badge\">Authorization Request</div>\n");
-    html.push_str("      <h1>Allow Access?</h1>\n");
-    html.push_str("    </div>\n");
+
+    // Header: seal, title, subtitle.
+    html.push_str("    <div class=\"top\">\n      <span class=\"seal\">");
+    html.push_str(ICON_SEAL_LG);
+    html.push_str("</span>\n      <h1>Authorize access</h1>\n");
+    html.push_str("      <p class=\"sub\">An app wants to sign in as your identity. Review the request, then approve to continue.</p>\n    </div>\n");
+    html.push_str("    <div class=\"rule\"></div>\n");
+
+    // Application.
     html.push_str("    <div class=\"section-label\">Application</div>\n");
-    html.push_str("    <div class=\"client-name\">");
+    html.push_str("    <div class=\"app\">\n      <span class=\"app-mark\">");
+    html.push_str(&html_escape(&app_initial));
+    html.push_str("</span>\n      <span>\n        <div class=\"client-name\">");
     html.push_str(&html_escape(client_name));
-    html.push_str("</div>\n");
-    html.push_str("    <div class=\"client-id\">");
+    html.push_str("</div>\n        <div class=\"client-id\">");
     html.push_str(&html_escape(client_id));
-    html.push_str("</div>\n");
-    html.push_str("    <div class=\"section-label\">Requesting Permissions</div>\n");
-    html.push_str("    <div class=\"scopes\">\n      ");
+    html.push_str("</div>\n      </span>\n    </div>\n");
+
+    // Permissions.
+    html.push_str("    <div class=\"section-label\">Requesting permission</div>\n");
+    html.push_str("    <div class=\"scopes\">\n        ");
     html.push_str(&scope_tags);
     html.push_str("\n    </div>\n");
+    html.push_str("    <p class=\"scope-note\">These permissions let the app read and write your data and act as your identity on the network.</p>\n");
+
+    // Sign in.
+    html.push_str("    <div class=\"section-label\">Sign in to approve</div>\n");
     if let Some(msg) = error {
         html.push_str("    <div class=\"error-banner\">");
+        html.push_str(ICON_ALERT);
+        html.push_str("<span>");
         html.push_str(&html_escape(msg));
-        html.push_str("</div>\n");
+        html.push_str("</span></div>\n");
     }
     html.push_str("    <form method=\"POST\" action=\"/oauth/authorize\">\n");
     for (name, value) in [
@@ -115,10 +143,9 @@ pub(super) fn render_consent_page(
             html_escape(value)
         ));
     }
-    html.push_str("      <div class=\"section-label\">Your Account</div>\n");
     html.push_str(&format!(
-        "      <input type=\"text\" name=\"identifier\" placeholder=\"Handle or DID\" \
-         autocomplete=\"username\" value=\"{}\" class=\"field\" />\n",
+        "      <input type=\"text\" name=\"identifier\" placeholder=\"alice.bsky.social or did:plc:…\" \
+         autocomplete=\"username\" value=\"{}\" class=\"field mono\" />\n",
         html_escape(login_hint.unwrap_or(""))
     ));
     html.push_str(
@@ -127,11 +154,17 @@ pub(super) fn render_consent_page(
     );
     html.push_str("      <div class=\"actions\">\n");
     html.push_str("        <button type=\"submit\" name=\"action\" value=\"deny\" class=\"btn btn-deny\">Deny</button>\n");
-    html.push_str("        <button type=\"submit\" name=\"action\" value=\"approve\" class=\"btn btn-approve\">Approve</button>\n");
+    html.push_str("        <button type=\"submit\" name=\"action\" value=\"approve\" class=\"btn btn-approve\">");
+    html.push_str(ICON_SEAL_SM);
+    html.push_str("Approve</button>\n");
     html.push_str("      </div>\n    </form>\n");
+
+    // Footer: which relay is serving this page.
     html.push_str("    <div class=\"server-info\">");
+    html.push_str(ICON_LOCK);
+    html.push_str("<span>");
     html.push_str(&html_escape(public_url));
-    html.push_str("</div>\n  </div>\n</body>\n</html>");
+    html.push_str("</span></div>\n  </div>\n</body>\n</html>");
     html
 }
 
@@ -162,115 +195,102 @@ pub(super) fn html_escape(s: &str) -> String {
 
 // ── Static HTML fragments ─────────────────────────────────────────────────────
 
+/// Self-hosted brand fonts, served by the relay at /static/fonts (no third-party CDN).
+const FONT_FACES: &str = r#"
+    @font-face{font-family:'Public Sans';font-style:normal;font-weight:400;font-display:swap;src:url('/static/fonts/PublicSans-Regular.woff2') format('woff2')}
+    @font-face{font-family:'Public Sans';font-style:normal;font-weight:600;font-display:swap;src:url('/static/fonts/PublicSans-SemiBold.woff2') format('woff2')}
+    @font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400;font-display:swap;src:url('/static/fonts/JetBrainsMono-Regular.woff2') format('woff2')}
+    @font-face{font-family:'Libre Caslon Display';font-style:normal;font-weight:400;font-display:swap;src:url('/static/fonts/LibreCaslonDisplay-Regular.ttf') format('truetype')}
+"#;
+
 const CONSENT_CSS: &str = r#"
+    :root{
+      --serif:'Libre Caslon Display',Georgia,serif;
+      --sans:'Public Sans',system-ui,-apple-system,sans-serif;
+      --mono:'JetBrains Mono',ui-monospace,monospace;
+      --gold:oklch(0.46 0.105 62); --gold-deep:oklch(0.38 0.09 60);
+      --aubergine:oklch(0.34 0.10 330);
+      --ink:oklch(0.23 0.012 60); --ink-soft:oklch(0.31 0.012 60); --muted:oklch(0.40 0.012 60);
+      --bg:oklch(1 0 0); --parchment:oklch(0.975 0.004 75); --sunk:oklch(0.955 0.005 75);
+      --line:oklch(0.90 0.004 75); --on:oklch(0.99 0.005 80);
+      --crit:oklch(0.44 0.16 25); --crit-surface:oklch(0.95 0.045 25);
+    }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: ui-sans-serif, system-ui, sans-serif;
-      background: #FFFBF0;
+      font-family: var(--sans);
+      background: oklch(0.965 0.006 75);
+      color: var(--ink);
       min-height: 100vh;
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 1.5rem;
+      padding: 24px 16px;
+      -webkit-font-smoothing: antialiased;
     }
     .card {
-      background: #fff;
-      border: 3px solid #000;
-      box-shadow: 6px 6px 0 #000;
-      max-width: 440px;
       width: 100%;
-      padding: 2rem;
+      max-width: 420px;
+      background: var(--bg);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 28px 26px;
+      box-shadow: 0 1px 0 var(--line), 0 12px 44px oklch(0.23 0.012 60 / 0.09);
     }
-    .header {
-      border-bottom: 3px solid #000;
-      padding-bottom: 1.25rem;
-      margin-bottom: 1.5rem;
+    .top { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px; margin-bottom: 20px; }
+    .seal {
+      width: 56px; height: 56px; border-radius: 9999px;
+      background: var(--gold); color: var(--on);
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: inset 0 0 0 2px oklch(0.99 0.05 80 / 0.35), inset 0 -3px 8px oklch(0.2 0.05 60 / 0.22);
     }
-    .badge {
-      display: inline-block;
-      background: #FFE600;
-      border: 2px solid #000;
-      padding: 2px 10px;
-      font-size: .75rem;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: .05em;
-      margin-bottom: .75rem;
+    h1 { font-family: var(--serif); font-weight: 400; font-size: 25px; line-height: 1.12; color: var(--ink); }
+    .sub { font-size: 14.5px; line-height: 1.5; color: var(--ink-soft); max-width: 34ch; }
+    .rule { height: 1px; background: var(--line); margin: 0 -26px 18px; }
+    .section-label { font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 8px; }
+    .section-label + .section-label { margin-top: 18px; }
+    .app { display: flex; align-items: center; gap: 12px; background: var(--parchment); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+    .app-mark {
+      width: 38px; height: 38px; border-radius: 10px; flex-shrink: 0;
+      background: var(--aubergine); color: var(--on);
+      display: flex; align-items: center; justify-content: center;
+      font-family: var(--serif); font-size: 19px;
     }
-    h1 {
-      font-size: 1.5rem;
-      font-weight: 900;
-      line-height: 1.2;
-      color: #000;
-    }
-    .section-label {
-      font-size: .7rem;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: .06em;
-      color: #555;
-      margin-bottom: .5rem;
-      margin-top: 1rem;
-    }
-    .client-name { font-size: 1.1rem; font-weight: 800; color: #000; }
-    .client-id { font-size: .78rem; color: #555; word-break: break-all; margin-top: .2rem; }
-    .scopes {
-      display: flex;
-      flex-wrap: wrap;
-      gap: .5rem;
-      margin-top: .5rem;
-      margin-bottom: 1.5rem;
-    }
+    .client-name { font-size: 15px; font-weight: 600; color: var(--ink); }
+    .client-id { font-family: var(--mono); font-size: 12px; color: var(--muted); word-break: break-all; margin-top: 1px; }
+    .scopes { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 6px; }
     .scope-tag {
-      background: #E8F4FF;
-      border: 2px solid #000;
-      padding: 3px 10px;
-      font-size: .85rem;
-      font-weight: 600;
-      font-family: ui-monospace, monospace;
+      font-family: var(--mono); font-size: 12.5px; color: var(--ink-soft);
+      background: var(--sunk); border: 1px solid var(--line); border-radius: 7px; padding: 4px 9px;
     }
-    .actions { display: flex; gap: .75rem; }
-    .btn {
-      flex: 1;
-      border: 3px solid #000;
-      padding: .75rem 1.5rem;
-      font-size: 1rem;
-      font-weight: 800;
-      cursor: pointer;
-      text-transform: uppercase;
-      letter-spacing: .05em;
-    }
-    .btn:active { transform: translate(3px, 3px); box-shadow: none !important; }
-    .btn-approve { background: #00C853; box-shadow: 4px 4px 0 #000; }
-    .btn-approve:hover { background: #00E676; }
-    .btn-deny { background: #fff; box-shadow: 4px 4px 0 #000; }
-    .btn-deny:hover { background: #FFE600; }
+    .scope-note { font-size: 13px; color: var(--muted); line-height: 1.45; }
     .error-banner {
-      background: #FFE5E5;
-      border: 2px solid #000;
-      padding: .6rem 1rem;
-      font-size: .88rem;
-      font-weight: 600;
-      color: #c00;
-      margin-bottom: 1rem;
+      display: flex; align-items: center; gap: 8px;
+      background: var(--crit-surface); color: var(--crit);
+      font-size: 13.5px; font-weight: 500; border-radius: 10px; padding: 10px 12px; margin: 14px 0;
     }
     .field {
-      display: block;
-      width: 100%;
-      border: 2px solid #000;
-      padding: .6rem .75rem;
-      font-size: .95rem;
-      margin-bottom: .75rem;
-      background: #fff;
-      outline: none;
+      display: block; width: 100%;
+      font-family: var(--sans); font-size: 15px; color: var(--ink);
+      background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+      padding: 12px 14px; margin-bottom: 10px; outline: none;
     }
-    .field:focus { box-shadow: 3px 3px 0 #000; }
+    .field.mono { font-family: var(--mono); font-size: 14px; }
+    .field::placeholder { color: var(--muted); }
+    .field:focus-visible { border-color: var(--aubergine); box-shadow: 0 0 0 3px oklch(0.34 0.10 330 / 0.12); }
+    .actions { display: flex; gap: 10px; margin-top: 6px; }
+    .btn {
+      flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      border-radius: 11px; padding: 14px; border: none; cursor: pointer;
+      font-family: var(--sans); font-size: 15px; font-weight: 600;
+    }
+    .btn-approve { background: var(--gold); color: var(--on); }
+    .btn-approve:hover { background: var(--gold-deep); }
+    .btn-deny { background: var(--bg); color: var(--ink); border: 1px solid var(--line); }
+    .btn-deny:hover { background: var(--sunk); }
     .server-info {
-      margin-top: 1.25rem;
-      padding-top: 1rem;
-      border-top: 2px solid #eee;
-      font-size: .75rem;
-      color: #888;
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+      font-family: var(--mono); font-size: 12px; color: var(--muted);
+      margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line);
     }
 "#;
 
@@ -278,43 +298,41 @@ const CONSENT_PAGE_HEADER: &str = concat!(
     "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n",
     "  <meta charset=\"UTF-8\" />\n",
     "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n",
-    "  <title>Authorize Access</title>\n",
+    "  <title>Authorize access</title>\n",
     "  <style>",
 );
 
 const ERROR_CSS: &str = r#"
+    :root{
+      --serif:'Libre Caslon Display',Georgia,serif;
+      --sans:'Public Sans',system-ui,-apple-system,sans-serif;
+      --ink:oklch(0.23 0.012 60); --ink-soft:oklch(0.31 0.012 60);
+      --bg:oklch(1 0 0); --line:oklch(0.90 0.004 75);
+      --crit:oklch(0.44 0.16 25); --crit-surface:oklch(0.95 0.045 25);
+    }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: ui-sans-serif, system-ui, sans-serif;
-      background: #FFFBF0;
+      font-family: var(--sans);
+      background: oklch(0.965 0.006 75);
+      color: var(--ink);
       min-height: 100vh;
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 1.5rem;
+      padding: 24px 16px;
+      -webkit-font-smoothing: antialiased;
     }
     .card {
-      background: #fff;
-      border: 3px solid #000;
-      box-shadow: 6px 6px 0 #000;
-      max-width: 420px;
-      width: 100%;
-      padding: 2rem;
+      width: 100%; max-width: 420px;
+      background: var(--bg); border: 1px solid var(--line); border-radius: 18px;
+      padding: 28px 26px;
+      box-shadow: 0 1px 0 var(--line), 0 12px 44px oklch(0.23 0.012 60 / 0.09);
     }
-    .badge {
-      display: inline-block;
-      background: #FF3B30;
-      color: #fff;
-      border: 2px solid #000;
-      padding: 2px 10px;
-      font-size: .75rem;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: .05em;
-      margin-bottom: .75rem;
-    }
-    h1 { font-size: 1.5rem; font-weight: 900; color: #000; margin-bottom: 1rem; }
-    p { color: #333; font-size: .95rem; line-height: 1.5; }
+    .top { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 12px; }
+    .seal { width: 56px; height: 56px; border-radius: 9999px; display: flex; align-items: center; justify-content: center; }
+    .seal.alarm { background: var(--crit-surface); color: var(--crit); box-shadow: inset 0 0 0 2px oklch(0.44 0.16 25 / 0.18); }
+    h1 { font-family: var(--serif); font-weight: 400; font-size: 25px; line-height: 1.12; color: var(--ink); }
+    .err-msg { font-size: 14.5px; line-height: 1.55; color: var(--ink-soft); max-width: 36ch; }
 "#;
 
 const ERROR_PAGE_HEADER: &str = concat!(
@@ -323,3 +341,11 @@ const ERROR_PAGE_HEADER: &str = concat!(
     "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n",
     "  <title>",
 );
+
+// ── Inline SVG icons (stroke = currentColor; sized per use site) ───────────────
+
+const ICON_SEAL_LG: &str = r#"<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 11.5 2 2 4-4"/></svg>"#;
+const ICON_SEAL_SM: &str = r#"<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 11.5 2 2 4-4"/></svg>"#;
+const ICON_LOCK: &str = r#"<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>"#;
+const ICON_ALERT: &str = r#"<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>"#;
+const ICON_ALARM: &str = r#"<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>"#;

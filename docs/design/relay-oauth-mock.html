@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Relay OAuth — Sealed Credential mock</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Libre+Caslon+Display&family=Public+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --serif:'Libre Caslon Display',Georgia,serif;
+    --sans:'Public Sans',system-ui,sans-serif;
+    --mono:'JetBrains Mono',ui-monospace,monospace;
+    --gold:oklch(0.46 0.105 62); --gold-deep:oklch(0.38 0.09 60); --seal-pale:oklch(0.93 0.05 80);
+    --aubergine:oklch(0.34 0.10 330);
+    --ink:oklch(0.23 0.012 60); --ink-soft:oklch(0.31 0.012 60); --muted:oklch(0.40 0.012 60);
+    --bg:oklch(1 0 0); --parchment:oklch(0.975 0.004 75); --sunk:oklch(0.955 0.005 75);
+    --hairline:oklch(0.90 0.004 75); --on:oklch(0.99 0.005 80);
+    --crit:oklch(0.44 0.16 25); --crit-surface:oklch(0.95 0.045 25);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:oklch(0.965 0.006 75);font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased;
+    display:flex;flex-direction:column;align-items:center;gap:14px;padding:40px 16px 60px;min-height:100vh}
+  .cap{font-size:12px;font-weight:500;color:var(--muted);width:100%;max-width:420px;margin-top:14px}
+  /* the auth card */
+  .card{width:100%;max-width:420px;background:var(--bg);border:1px solid var(--hairline);border-radius:18px;
+    padding:28px 26px;box-shadow:0 1px 0 var(--hairline),0 12px 44px oklch(0.23 0.012 60/0.09)}
+  .top{display:flex;flex-direction:column;align-items:center;text-align:center;gap:10px;margin-bottom:20px}
+  .seal{width:56px;height:56px;border-radius:9999px;background:var(--gold);color:var(--on);display:flex;align-items:center;justify-content:center;
+    box-shadow:inset 0 0 0 2px oklch(0.99 0.05 80/0.35),inset 0 -3px 8px oklch(0.2 0.05 60/0.22)}
+  .seal.alarm{background:var(--crit-surface);color:var(--crit);box-shadow:inset 0 0 0 2px oklch(0.44 0.16 25/0.18)}
+  h1{font-family:var(--serif);font-weight:400;font-size:25px;line-height:1.12;color:var(--ink)}
+  .sub{font-size:14.5px;line-height:1.5;color:var(--ink-soft);max-width:34ch}
+  .rule{height:1px;background:var(--hairline);margin:0 -26px 18px}
+  .label{font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px}
+  .label+.label{margin-top:18px}
+  /* application row */
+  .app{display:flex;align-items:center;gap:12px;background:var(--parchment);border:1px solid var(--hairline);border-radius:12px;padding:12px 14px}
+  .app-mark{width:38px;height:38px;border-radius:10px;background:var(--aubergine);color:var(--on);display:flex;align-items:center;justify-content:center;font-family:var(--serif);font-size:19px;flex-shrink:0}
+  .app-name{font-size:15px;font-weight:600;color:var(--ink)}
+  .app-id{font-family:var(--mono);font-size:12px;color:var(--muted);word-break:break-all;margin-top:1px}
+  /* scopes */
+  .scopes{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:6px}
+  .chip{font-family:var(--mono);font-size:12.5px;color:var(--ink-soft);background:var(--sunk);border:1px solid var(--hairline);border-radius:7px;padding:4px 9px}
+  .scope-note{font-size:13px;color:var(--muted);line-height:1.45}
+  /* error banner (credential failure state) */
+  .err-banner{display:flex;align-items:center;gap:8px;background:var(--crit-surface);color:var(--crit);font-size:13.5px;font-weight:500;border-radius:10px;padding:10px 12px;margin-bottom:14px}
+  /* fields */
+  .field{width:100%;font-family:var(--sans);font-size:15px;color:var(--ink);background:var(--bg);border:1px solid var(--hairline);border-radius:10px;padding:12px 14px;margin-bottom:10px;outline:none}
+  .field.mono{font-family:var(--mono);font-size:14px}
+  .field::placeholder{color:var(--muted)}
+  .field:focus{border-color:var(--aubergine);box-shadow:0 0 0 3px oklch(0.34 0.10 330/0.12)}
+  /* actions */
+  .actions{display:flex;gap:10px;margin-top:6px}
+  .btn{flex:1;display:inline-flex;align-items:center;justify-content:center;gap:8px;border-radius:11px;padding:14px;font-family:var(--sans);font-size:15px;font-weight:600;cursor:pointer;border:none}
+  .btn-approve{background:var(--gold);color:var(--on)}
+  .btn-approve:hover{background:var(--gold-deep)}
+  .btn-deny{background:var(--bg);color:var(--ink);border:1px solid var(--hairline)}
+  .btn-deny:hover{background:var(--sunk)}
+  /* footer */
+  .secured{display:flex;align-items:center;justify-content:center;gap:6px;font-family:var(--mono);font-size:12px;color:var(--muted);
+    margin-top:18px;padding-top:14px;border-top:1px solid var(--hairline)}
+  /* error page card */
+  .err-msg{font-size:14.5px;line-height:1.55;color:var(--ink-soft);text-align:center;max-width:36ch}
+</style>
+</head>
+<body>
+
+  <p class="cap">OAuth sign-in &amp; consent — the page Safari opens during login</p>
+  <div class="card">
+    <div class="top">
+      <span class="seal" aria-hidden="true">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 11.5 2 2 4-4"/></svg>
+      </span>
+      <h1>Authorize access</h1>
+      <p class="sub">An app wants to sign in as your identity. Review the request, then approve to continue.</p>
+    </div>
+
+    <div class="rule"></div>
+
+    <p class="label">Application</p>
+    <div class="app">
+      <span class="app-mark" aria-hidden="true">I</span>
+      <span>
+        <div class="app-name">Identity Wallet</div>
+        <div class="app-id">dev.malpercio.identitywallet</div>
+      </span>
+    </div>
+
+    <p class="label">Requesting permission</p>
+    <div class="scopes">
+      <span class="chip">atproto</span>
+      <span class="chip">transition:generic</span>
+    </div>
+    <p class="scope-note">Read and write your repository, and act as your identity on the network.</p>
+
+    <p class="label">Sign in to approve</p>
+    <input class="field mono" type="text" placeholder="alice.bsky.social or did:plc:…" value="" aria-label="Handle or DID" />
+    <input class="field" type="password" placeholder="Password" aria-label="Password" />
+
+    <div class="actions">
+      <button class="btn btn-deny">Deny</button>
+      <button class="btn btn-approve">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 11.5 2 2 4-4"/></svg>
+        Approve
+      </button>
+    </div>
+
+    <div class="secured">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      relay.ezpds.com
+    </div>
+  </div>
+
+  <p class="cap">Credential-error state — wrong handle or password</p>
+  <div class="card">
+    <div class="top">
+      <span class="seal" aria-hidden="true">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 11.5 2 2 4-4"/></svg>
+      </span>
+      <h1>Authorize access</h1>
+      <p class="sub">An app wants to sign in as your identity. Review the request, then approve to continue.</p>
+    </div>
+    <div class="rule"></div>
+    <p class="label">Sign in to approve</p>
+    <div class="err-banner">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+      Incorrect handle or password.
+    </div>
+    <input class="field mono" type="text" placeholder="alice.bsky.social or did:plc:…" value="alice.bsky.social" aria-label="Handle or DID" style="border-color:var(--crit)" />
+    <input class="field" type="password" placeholder="Password" aria-label="Password" />
+    <div class="actions">
+      <button class="btn btn-deny">Deny</button>
+      <button class="btn btn-approve">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 11.5 2 2 4-4"/></svg>
+        Approve
+      </button>
+    </div>
+    <div class="secured">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      relay.ezpds.com
+    </div>
+  </div>
+
+  <p class="cap">Error page — unsafe request (unknown app or mismatched redirect)</p>
+  <div class="card">
+    <div class="top">
+      <span class="seal alarm" aria-hidden="true">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+      </span>
+      <h1>We couldn't continue</h1>
+      <p class="err-msg">This app's redirect address doesn't match the one on file for it. For your safety, the sign-in was stopped. Close this window and try again from the app.</p>
+    </div>
+    <div class="secured">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      relay.ezpds.com
+    </div>
+  </div>
+
+</body>
+</html>
