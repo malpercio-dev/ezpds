@@ -39,6 +39,19 @@ pub enum DeviceKeyError {
     KeychainError { message: String },
 }
 
+// ── Global device-key Keychain account names ────────────────────────────────
+//
+// The single-identity "global" device key. The create flow signs its did:plc
+// genesis op with this key (the DID does not exist yet, so a per-DID key cannot
+// be namespaced in advance). Exposed `pub(crate)` so `identity_store` can copy
+// this key into a per-DID slot — see `IdentityStore::adopt_global_device_key`.
+// Software path uses only the private-scalar account; the Secure Enclave path
+// uses the pub + app-label metadata accounts (the SE private key never leaves
+// the enclave). Kept here as the single source of truth for these names.
+pub(crate) const DEVICE_KEY_PRIV_ACCOUNT: &str = "device-rotation-key-priv";
+pub(crate) const DEVICE_KEY_PUB_ACCOUNT: &str = "device-rotation-key-pub";
+pub(crate) const DEVICE_KEY_APP_LABEL_ACCOUNT: &str = "device-rotation-key-app-label";
+
 // ── Simulator / macOS host path ───────────────────────────────────────────────
 //
 // Covers:
@@ -53,7 +66,7 @@ pub enum DeviceKeyError {
 pub fn get_or_create() -> Result<DevicePublicKey, DeviceKeyError> {
     use p256::ecdsa::SigningKey;
 
-    const ACCOUNT: &str = "device-rotation-key-priv";
+    const ACCOUNT: &str = DEVICE_KEY_PRIV_ACCOUNT;
 
     // Try to load existing private key bytes from Keychain.
     let private_bytes: Vec<u8> = match crate::keychain::get_item(ACCOUNT) {
@@ -102,7 +115,7 @@ pub fn sign(data: &[u8]) -> Result<Vec<u8>, DeviceKeyError> {
     use p256::ecdsa::signature::Signer;
     use p256::ecdsa::{Signature, SigningKey};
 
-    const ACCOUNT: &str = "device-rotation-key-priv";
+    const ACCOUNT: &str = DEVICE_KEY_PRIV_ACCOUNT;
 
     // If the key doesn't exist, signal that get_or_create must be called first.
     // Distinguish ItemNotFound from other OS errors.
@@ -141,9 +154,9 @@ pub fn sign(data: &[u8]) -> Result<Vec<u8>, DeviceKeyError> {
 /// Account names used to store SE key metadata in the regular Keychain.
 /// The SE private key itself is stored in the Secure Enclave and never leaves it.
 #[cfg(all(target_os = "ios", not(target_env = "sim")))]
-const SE_PUB_ACCOUNT: &str = "device-rotation-key-pub";
+const SE_PUB_ACCOUNT: &str = DEVICE_KEY_PUB_ACCOUNT;
 #[cfg(all(target_os = "ios", not(target_env = "sim")))]
-const SE_APP_LABEL_ACCOUNT: &str = "device-rotation-key-app-label";
+const SE_APP_LABEL_ACCOUNT: &str = DEVICE_KEY_APP_LABEL_ACCOUNT;
 
 #[cfg(all(target_os = "ios", not(target_env = "sim")))]
 pub fn get_or_create() -> Result<DevicePublicKey, DeviceKeyError> {

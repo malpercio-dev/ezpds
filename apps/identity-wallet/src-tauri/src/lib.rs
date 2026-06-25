@@ -274,6 +274,35 @@ fn normalize_relay_url(url: &str) -> Result<String, RelayConfigError> {
     Ok(url.trim_end_matches('/').to_string())
 }
 
+/// Build a minimal PLC-format DID document for a freshly-created identity, from
+/// data known at the end of the create flow.
+///
+/// `IdentityListHome` reads three fields off the stored document: `alsoKnownAs`
+/// (the handle), `services.atproto_pds.endpoint` (the PDS host shown on the card),
+/// and `rotationKeys[0]` (the device-key "root" badge). The document is built
+/// locally rather than fetched so the create flow does not depend on plc.directory
+/// propagation timing right after DID creation. `rotationKeys[0]` is always the
+/// device key, so the badge stays accurate even if the relay holds additional
+/// rotation keys not reflected here.
+fn build_create_flow_did_doc(
+    did: &str,
+    handle: &str,
+    pds_url: &str,
+    rotation_key_id: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "did": did,
+        "alsoKnownAs": [format!("at://{handle}")],
+        "rotationKeys": [rotation_key_id],
+        "services": {
+            "atproto_pds": {
+                "type": "AtprotoPersonalDataServer",
+                "endpoint": pds_url,
+            }
+        }
+    })
+}
+
 // ── IPC command ─────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -758,6 +787,71 @@ async fn check_handle_resolution(
     }
 }
 
+/// Error returned by `register_created_identity`.
+///
+/// Serializes as `{ "code": "KEYCHAIN_ERROR" }` for the frontend.
+#[derive(Debug, Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RegisterIdentityError {
+    #[error("failed to persist identity to device storage")]
+    KeychainError,
+}
+
+/// Register a just-created identity in `IdentityStore` so it appears in
+/// `IdentityListHome` on the home screen.
+///
+/// The relay-OAuth create flow stores its session and DID outside `IdentityStore`
+/// (OAuth tokens + the legacy `"did"` Keychain item), while the home screen lists
+/// identities from `IdentityStore` alone — so without this step the freshly-created
+/// identity never appears after login. This mirrors what the import flow does in
+/// `claim::submit_claim`, with one addition: the create flow's genesis op was signed
+/// with the *global* device key, so `adopt_global_device_key` aliases the per-DID
+/// device key to it (keeps the "root key" badge and PLC monitoring honest).
+///
+/// Idempotent — safe to retry; tolerates an already-registered DID.
+#[tauri::command]
+async fn register_created_identity(
+    did: String,
+    handle: String,
+    state: tauri::State<'_, oauth::AppState>,
+) -> Result<(), RegisterIdentityError> {
+    let store = identity_store::IdentityStore;
+
+    // 1. Register the DID (tolerate AlreadyExists from a prior attempt).
+    if let Err(e) = store.add_identity(&did) {
+        if !matches!(e, identity_store::IdentityStoreError::IdentityAlreadyExists) {
+            tracing::error!(did = %did, error = %e, "register_created_identity: add_identity failed");
+            return Err(RegisterIdentityError::KeychainError);
+        }
+    }
+
+    // 2. Alias the per-DID device key to the global key used as rotationKeys[0].
+    // Non-fatal: on failure the identity still lists; only the "root key" badge
+    // and PLC-monitor classification degrade. Log and continue.
+    if let Err(e) = store.adopt_global_device_key(&did) {
+        tracing::warn!(did = %did, error = %e, "register_created_identity: adopt_global_device_key failed");
+    }
+
+    // 3. Build and store a local DID document so the card shows handle + PDS.
+    let rotation_key_id = match device_key::get_or_create() {
+        Ok(k) => k.key_id,
+        Err(e) => {
+            tracing::warn!(did = %did, error = %e, "register_created_identity: device key unavailable for DID doc");
+            String::new()
+        }
+    };
+    let pds_url = state.relay_client().base_url_str().to_owned();
+    let did_doc_json = build_create_flow_did_doc(&did, &handle, &pds_url, &rotation_key_id).to_string();
+
+    if let Err(e) = store.store_did_doc(&did, &did_doc_json) {
+        tracing::error!(did = %did, error = %e, "register_created_identity: store_did_doc failed");
+        return Err(RegisterIdentityError::KeychainError);
+    }
+
+    tracing::info!(did = %did, "created identity registered in IdentityStore");
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -814,6 +908,7 @@ pub fn run() {
             sign_with_device_key,
             perform_did_ceremony,
             register_handle,
+            register_created_identity,
             check_handle_resolution,
             list_identities,
             get_stored_did_doc,
@@ -1215,6 +1310,37 @@ mod tests {
             normalize_relay_url("https://relay.example.com/api/v1").unwrap_err(),
             RelayConfigError::InvalidUrl
         ));
+    }
+
+    // -- build_create_flow_did_doc --
+
+    // The locally-built DID document must expose exactly the fields IdentityListHome
+    // reads to render a card: alsoKnownAs (handle), rotationKeys[0] (root-key badge),
+    // and services.atproto_pds.endpoint (PDS host).
+    #[test]
+    fn build_create_flow_did_doc_exposes_card_fields() {
+        let doc = build_create_flow_did_doc(
+            "did:plc:abc",
+            "alice.ezpds.com",
+            "https://relay.ezpds.com",
+            "did:key:zDevice",
+        );
+        assert_eq!(doc["did"], "did:plc:abc");
+        // extractHandle() strips the "at://" prefix from alsoKnownAs entries.
+        assert_eq!(doc["alsoKnownAs"][0], "at://alice.ezpds.com");
+        // isDeviceKeyRoot() compares rotationKeys[0] against the device key id.
+        assert_eq!(doc["rotationKeys"][0], "did:key:zDevice");
+        // extractPdsFromPlcDoc() reads services.atproto_pds.endpoint.
+        assert_eq!(
+            doc["services"]["atproto_pds"]["endpoint"],
+            "https://relay.ezpds.com"
+        );
+    }
+
+    #[test]
+    fn register_identity_error_serializes_as_code() {
+        let json = serde_json::to_value(RegisterIdentityError::KeychainError).unwrap();
+        assert_eq!(json["code"], "KEYCHAIN_ERROR");
     }
 
     // -- get_relay_url / load_relay_url round-trip --
