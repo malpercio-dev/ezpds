@@ -22,6 +22,7 @@ pub mod get_repo_signing_key;
 pub mod get_session;
 pub mod health;
 pub mod list_blobs;
+pub mod list_records;
 pub mod oauth_authorize;
 pub mod oauth_client_metadata;
 pub mod oauth_jwks;

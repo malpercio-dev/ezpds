@@ -1,0 +1,19 @@
+meta {
+  name: List Records
+  type: http
+  seq: 35
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.repo.listRecords?repo={{did}}&collection={{collection}}&limit=50&reverse=false
+  body: none
+  auth: none
+}
+
+params:query {
+  repo: {{did}}
+  collection: {{collection}}
+  limit: 50
+  reverse: false
+  ~cursor:
+}

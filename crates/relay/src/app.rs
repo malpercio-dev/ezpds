@@ -39,6 +39,7 @@ use crate::routes::get_repo_signing_key::get_repo_signing_key;
 use crate::routes::get_session::get_session;
 use crate::routes::health::health;
 use crate::routes::list_blobs::list_blobs;
+use crate::routes::list_records::list_records;
 use crate::routes::oauth_authorize::{get_authorization, post_authorization};
 use crate::routes::oauth_client_metadata::oauth_client_metadata;
 use crate::routes::oauth_jwks::oauth_jwks;
@@ -205,6 +206,7 @@ pub fn app(state: AppState) -> Router {
         .route("/xrpc/com.atproto.sync.listBlobs", get(list_blobs))
         .route("/xrpc/com.atproto.repo.createRecord", post(create_record))
         .route("/xrpc/com.atproto.repo.getRecord", get(get_record))
+        .route("/xrpc/com.atproto.repo.listRecords", get(list_records))
         .route("/xrpc/com.atproto.repo.putRecord", post(put_record))
         .route("/xrpc/com.atproto.repo.deleteRecord", post(delete_record))
         .route("/xrpc/:method", get(xrpc_handler).post(xrpc_handler))
