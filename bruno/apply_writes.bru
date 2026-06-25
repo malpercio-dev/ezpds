@@ -1,0 +1,56 @@
+meta {
+  name: Apply Writes
+  type: http
+  seq: 36
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.repo.applyWrites
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "repo": {{did}},
+    "writes": [
+      {
+        "$type": "com.atproto.repo.applyWrites#create",
+        "collection": "app.bsky.feed.post",
+        "rkey": "applywrites1",
+        "value": {
+          "$type": "app.bsky.feed.post",
+          "text": "Created in a batch",
+          "createdAt": "2026-06-25T00:00:00Z"
+        }
+      },
+      {
+        "$type": "com.atproto.repo.applyWrites#update",
+        "collection": "app.bsky.feed.post",
+        "rkey": "applywrites1",
+        "value": {
+          "$type": "app.bsky.feed.post",
+          "text": "Updated in the same batch",
+          "createdAt": "2026-06-25T00:00:00Z"
+        }
+      },
+      {
+        "$type": "com.atproto.repo.applyWrites#delete",
+        "collection": "app.bsky.feed.post",
+        "rkey": "applywrites1"
+      }
+    ]
+  }
+}
+
+docs {
+  Apply multiple record writes (create/update/delete) to a repo in a single
+  atomic commit. Either every write is applied or none is.
+
+  Optional `swapCommit` (a commit CID) enforces optimistic concurrency: the
+  request fails with 409 if the repo's current commit no longer matches.
+}

@@ -1,3 +1,4 @@
+pub mod apply_writes;
 pub mod atproto_did;
 pub(crate) mod auth;
 pub mod claim_codes;
