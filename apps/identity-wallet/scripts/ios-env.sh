@@ -86,6 +86,21 @@ if [ -n "${EZPDS_IOS_BUILD:-}" ]; then
   if [ -n "${_ezpds_macos_sdk}" ]; then
     export CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS="-L ${_ezpds_macos_sdk}/usr/lib"
   fi
+
+  # Tauri's iOS signing decodes IOS_CERTIFICATE / IOS_MOBILE_PROVISION by shelling out to
+  # `base64` with BSD flags (-i/-o). The Nix coreutils `base64` (GNU) earlier in PATH rejects
+  # them ("invalid option -- 'o'"). Shim the system BSD base64 ahead of it — surgical (only
+  # `base64`, only under EZPDS_IOS_BUILD), so other Nix tools are untouched. No-op on CI
+  # (the runner's base64 is already /usr/bin's).
+  if [ -x /usr/bin/base64 ]; then
+    _ezpds_shim="${TMPDIR:-/tmp}/ezpds-ios-shims"
+    mkdir -p "${_ezpds_shim}" 2>/dev/null && ln -sf /usr/bin/base64 "${_ezpds_shim}/base64" 2>/dev/null
+    case ":${PATH}:" in
+      *":${_ezpds_shim}:"*) : ;;
+      *) export PATH="${_ezpds_shim}:${PATH}" ;;
+    esac
+    unset _ezpds_shim
+  fi
 fi
 
 unset _ezpds_dev_dir _ezpds_clang _ezpds_ar _ezpds_macos_sdk

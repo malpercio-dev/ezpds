@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    Tauri merges this into the generated iOS Info.plist on every build (local + CI), so
+    App Store Connect's "Missing Compliance" gate is answered automatically and no one has
+    to click through the encryption dialog per build.
+
+    ITSAppUsesNonExemptEncryption = false  =>  the app's encryption is EXEMPT from US export
+    licensing. Obsign uses only standard, *published* algorithms (TLS via rustls, AES-256-GCM,
+    P-256/ECDSA) for its own security, which qualifies for the standard/mass-market exemption.
+
+    This is a LEGAL self-declaration. If an export-compliance review concludes otherwise, set
+    this to <true/> and supply export documentation in App Store Connect.
+    https://developer.apple.com/documentation/bundleresources/information-property-list/itsappusesnonexemptencryption
+  -->
+  <key>ITSAppUsesNonExemptEncryption</key>
+  <false/>
+
+  <!--
+    Register the custom URL scheme so iOS can open the app on the OAuth redirect
+    (dev.malpercio.identitywallet:/oauth/callback?...). tauri-plugin-deep-link 2.4.7 does
+    NOT register pure custom schemes for iOS — its mobile config only emits CFBundleURLTypes
+    for app-link (https + host) entries and otherwise REMOVES the key — so we declare it here.
+    Tauri merges this Info.ios.plist after the plugin's build.rs runs, so it wins.
+    Must match tauri.conf.json `identifier`, the relay's registered redirect_uri (V013),
+    and the OAuth client_id. Runtime delivery is wired in lib.rs
+    (deep_link().on_open_url -> oauth::handle_deep_link).
+  -->
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>dev.malpercio.identitywallet</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>dev.malpercio.identitywallet</string>
+      </array>
+    </dict>
+  </array>
+</dict>
+</plist>

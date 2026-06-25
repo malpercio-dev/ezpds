@@ -113,6 +113,37 @@ else
   echo "ios-postinit: linked SystemConfiguration.framework via OTHER_LDFLAGS"
 fi
 
+# --- Patch F: don't ship the Rust staticlib inside the .app (App Store rejects it) ---
+# cargo-mobile2 lists the `Externals` dir (which holds `libapp.a`) as a project source with
+# no explicit buildPhase, so XcodeGen infers `resources` and copies the raw `.a` into the
+# .app — which App Store upload rejects ("libapp.a ... is not permitted / Invalid bundle
+# structure", tauri#13578). The staticlib is still LINKED via the separate `framework:
+# libapp.a` entry + LIBRARY_SEARCH_PATHS, so keeping it out of resources is safe. Fix at
+# both layers: project.yml (the source the build re-syncs from) and the live pbxproj.
+PROJYML="$(dirname "${PBXPROJ}")/../project.yml"
+if [ -f "${PROJYML}" ]; then
+  if grep -A1 -E '^[[:space:]]*-[[:space:]]*path:[[:space:]]*Externals[[:space:]]*$' "${PROJYML}" | grep -q 'buildPhase: none'; then
+    echo "ios-postinit: project.yml Externals already buildPhase:none"
+  elif grep -qE '^[[:space:]]*-[[:space:]]*path:[[:space:]]*Externals[[:space:]]*$' "${PROJYML}"; then
+    /usr/bin/perl -0pi -e 's/^([ \t]*)- path: Externals[ \t]*\n/$1- path: Externals\n$1  buildPhase: none\n/m' "${PROJYML}"
+    echo "ios-postinit: set project.yml Externals buildPhase:none (keeps libapp.a out of the bundle)"
+  else
+    echo "ios-postinit: WARN — 'path: Externals' not found in project.yml; skipping (template changed?)" >&2
+  fi
+fi
+# Strip the already-generated `libapp.a in Resources` entries from the live pbxproj (IDs are
+# random per init, so match cargo-mobile2's stable comment). The `in Frameworks` link is kept.
+if grep -q 'libapp\.a in Resources' "${PBXPROJ}"; then
+  /usr/bin/perl -ni -e 'print unless m{/\* libapp\.a in Resources \*/}' "${PBXPROJ}"
+  if grep -q 'libapp\.a in Resources' "${PBXPROJ}"; then
+    echo "error: could not strip 'libapp.a in Resources' from the pbxproj (Patch F)." >&2
+    exit 1
+  fi
+  echo "ios-postinit: stripped libapp.a from Copy Bundle Resources (pbxproj)"
+else
+  echo "ios-postinit: libapp.a already absent from pbxproj Resources phase"
+fi
+
 # Structural guard: the patched project MUST still parse. Catches quoting/encoding
 # corruption that a sentinel-only check would miss (plutil reads the pbxproj format).
 if command -v plutil >/dev/null 2>&1; then

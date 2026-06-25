@@ -42,6 +42,20 @@ if ! grep -q 'SystemConfiguration' "${PBXPROJ}"; then
   fail=1
 fi
 
+# The Rust staticlib must NOT be copied into the bundle — App Store upload rejects a
+# standalone `libapp.a` ("Invalid bundle structure"). Patch F excludes it at both layers:
+# project.yml (Externals -> buildPhase: none) and the live pbxproj (no `in Resources`).
+if grep -q 'libapp\.a in Resources' "${PBXPROJ}"; then
+  echo "ios-check: FAIL — libapp.a still in Copy Bundle Resources, pbxproj (run 'just ios-postinit')" >&2
+  fail=1
+fi
+PROJYML="$(dirname "${PBXPROJ}")/../project.yml"
+if [ -f "${PROJYML}" ] && grep -qE '^[[:space:]]*-[[:space:]]*path:[[:space:]]*Externals[[:space:]]*$' "${PROJYML}" \
+   && ! grep -A1 -E '^[[:space:]]*-[[:space:]]*path:[[:space:]]*Externals[[:space:]]*$' "${PROJYML}" | grep -q 'buildPhase: none'; then
+  echo "ios-check: FAIL — project.yml Externals lacks 'buildPhase: none'; libapp.a would be re-bundled (run 'just ios-postinit')" >&2
+  fail=1
+fi
+
 # Structural guard: a sentinel-present-but-corrupt pbxproj must still fail the check.
 if command -v plutil >/dev/null 2>&1 && ! plutil -lint "${PBXPROJ}" >/dev/null 2>&1; then
   echo "ios-check: FAIL — project.pbxproj does not parse (plutil -lint); patching may have corrupted it" >&2
