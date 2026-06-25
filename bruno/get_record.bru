@@ -14,4 +14,11 @@ params:query {
   did: {{did}}
   collection: {{collection}}
   rkey: {{rkey}}
+  ~cid:
+}
+
+docs {
+  Optional `cid` selects a version of the record. Omit it (or leave it disabled) to get the
+  current version. Only the current version is served: a `cid` that matches the current record
+  returns it; any other (superseded or unknown) CID returns a 404 (record not found).
 }
