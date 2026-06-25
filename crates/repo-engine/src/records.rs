@@ -178,6 +178,105 @@ where
     Ok(value.map(|v| record_value_to_json(&v)))
 }
 
+/// A single record returned by [`list_records_json`].
+pub struct ListedRecord {
+    /// The record key (the MST key with the `<collection>/` prefix stripped).
+    pub rkey: String,
+    /// The CID of the record block.
+    pub cid: Cid,
+    /// The record value as JSON (CID links → `{"$link": ...}`, bytes → `{"$bytes": ...}`).
+    pub value: serde_json::Value,
+}
+
+/// A page of records from [`list_records_json`].
+pub struct ListRecordsPage {
+    /// The records in this page, in traversal order.
+    pub records: Vec<ListedRecord>,
+    /// The cursor to pass to fetch the next page, or `None` when the listing is exhausted.
+    pub cursor: Option<String>,
+}
+
+/// List records in a collection, in MST (lexicographic by rkey) order, with cursor pagination.
+///
+/// - `limit` caps the number of records returned (the caller is responsible for clamping it
+///   to any policy bounds).
+/// - `cursor`, when present, is an rkey from a previous page; only records *after* it in the
+///   current traversal direction are returned.
+/// - `reverse` walks the collection in descending rkey order instead of ascending.
+///
+/// The returned `cursor` is the last rkey of the page, set only when more records remain.
+pub async fn list_records_json<S>(
+    repo: &mut Repository<S>,
+    collection: &str,
+    limit: usize,
+    cursor: Option<&str>,
+    reverse: bool,
+) -> Result<ListRecordsPage, RecordError>
+where
+    S: atrium_repo::blockstore::AsyncBlockStoreRead + atrium_repo::blockstore::AsyncBlockStoreWrite,
+{
+    use futures::StreamExt;
+
+    // The MST key for a record is `<collection>/<rkey>`; the trailing slash confines the
+    // prefix scan to this exact collection (so `app.bsky.feed.post` won't match
+    // `app.bsky.feed.postx`).
+    let prefix = format!("{collection}/");
+
+    // Collect (rkey, cid) for the collection. `entries_prefixed` yields ascending order.
+    let mut entries: Vec<(String, Cid)> = Vec::new();
+    {
+        let mut tree = repo.tree();
+        let mut stream = Box::pin(tree.entries_prefixed(&prefix));
+        while let Some(res) = stream.next().await {
+            let (key, cid) = res.map_err(|e| RecordError::Repo(format!("list entries: {e}")))?;
+            let rkey = key.strip_prefix(&prefix).unwrap_or(&key).to_string();
+            entries.push((rkey, cid));
+        }
+    }
+
+    if reverse {
+        entries.reverse();
+    }
+
+    // Skip everything up to and including the cursor rkey, in the current direction.
+    if let Some(c) = cursor {
+        entries.retain(|(rkey, _)| {
+            if reverse {
+                rkey.as_str() < c
+            } else {
+                rkey.as_str() > c
+            }
+        });
+    }
+
+    // Whether more records remain past this page (drives the returned cursor).
+    let has_more = entries.len() > limit;
+    entries.truncate(limit);
+
+    // Resolve each record's value by its block CID.
+    let mut records = Vec::with_capacity(entries.len());
+    for (rkey, cid) in entries {
+        let value: Option<Ipld> = repo
+            .get_raw_cid(cid)
+            .await
+            .map_err(|e| RecordError::Repo(format!("read record block: {e}")))?;
+        let value = value.ok_or(RecordError::NotFound)?;
+        records.push(ListedRecord {
+            rkey,
+            cid,
+            value: record_value_to_json(&value),
+        });
+    }
+
+    let cursor = if has_more {
+        records.last().map(|r| r.rkey.clone())
+    } else {
+        None
+    };
+
+    Ok(ListRecordsPage { records, cursor })
+}
+
 /// Validate a record's collection (NSID) and record key per the ATProto spec,
 /// before any repo mutation.
 ///
