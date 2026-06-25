@@ -48,8 +48,10 @@ pub enum DeviceKeyError {
 /// base58btc-encoded). This matches `crates/crypto/src/keys.rs`
 /// `P256_MULTICODEC_PREFIX = &[0x80, 0x24]`, which is `pub(crate)` and cannot be
 /// imported across crate boundaries — the constant is duplicated intentionally.
+///
+/// Shared with `identity_store.rs` (per-DID device keys) via `pub(crate)`.
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-fn make_device_public_key(compressed: &[u8]) -> DevicePublicKey {
+pub(crate) fn make_device_public_key(compressed: &[u8]) -> DevicePublicKey {
     let multibase = multibase::encode(multibase::Base::Base58Btc, compressed);
     const P256_MULTICODEC: &[u8] = &[0x80, 0x24];
     let mut multikey = Vec::with_capacity(2 + compressed.len());
