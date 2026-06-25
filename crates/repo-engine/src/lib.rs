@@ -23,3 +23,17 @@ pub use records::{
     put_record_json, record_value_to_json, validate_record_path, RecordError,
 };
 pub use signer::{CommitSigner, CommitSignerError};
+
+/// Shared test helpers for the repo-engine crate's unit tests.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use crate::signer::CommitSigner;
+
+    /// Construct a `CommitSigner` from a fresh random P-256 key.
+    pub(crate) fn test_signer() -> CommitSigner {
+        use p256::ecdsa::SigningKey;
+        let key = SigningKey::random(&mut rand_core::OsRng);
+        let bytes: [u8; 32] = key.to_bytes().into();
+        CommitSigner::from_bytes(&bytes).unwrap()
+    }
+}

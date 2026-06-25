@@ -91,14 +91,7 @@ mod tests {
     use atrium_repo::blockstore::MemoryBlockStore;
 
     use crate::genesis::create_genesis_repo;
-    use crate::signer::CommitSigner;
-
-    fn test_signer() -> CommitSigner {
-        use p256::ecdsa::SigningKey;
-        let key = SigningKey::random(&mut rand_core::OsRng);
-        let bytes: [u8; 32] = key.to_bytes().into();
-        CommitSigner::from_bytes(&bytes).unwrap()
-    }
+    use crate::test_support::test_signer;
 
     /// Build a repo with one record. Returns (store, new_root, record_cid).
     async fn repo_with_record() -> (MemoryBlockStore, Cid, Cid) {

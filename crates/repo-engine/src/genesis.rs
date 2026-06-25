@@ -166,12 +166,7 @@ mod tests {
     use super::*;
     use atrium_repo::blockstore::MemoryBlockStore;
 
-    fn test_signer() -> CommitSigner {
-        use p256::ecdsa::SigningKey;
-        let key = SigningKey::random(&mut rand_core::OsRng);
-        let bytes: [u8; 32] = key.to_bytes().into();
-        CommitSigner::from_bytes(&bytes).unwrap()
-    }
+    use crate::test_support::test_signer;
 
     #[tokio::test]
     async fn create_genesis_repo_returns_valid_cid() {

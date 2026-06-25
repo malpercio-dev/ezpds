@@ -175,19 +175,6 @@ pub struct VerifiedGenesisOp {
     pub atproto_pds_endpoint: Option<String>,
 }
 
-/// Build and sign a did:plc genesis operation, returning the signed operation
-/// JSON and the derived DID.
-///
-/// # Parameters
-/// - `rotation_key`: The user's device key (highest-priority rotation key). Placed at `rotationKeys[0]`.
-/// - `signing_key`: The relay's signing key. Placed at `rotationKeys[1]` and `verificationMethods.atproto`.
-/// - `signing_private_key`: Raw 32-byte P-256 private key scalar for `signing_key`.
-/// - `handle`: The account handle, e.g. `"alice.example.com"`. Stored as `"at://alice.example.com"` in `alsoKnownAs`.
-/// - `service_endpoint`: The relay's public URL, e.g. `"https://relay.example.com"`.
-///
-/// # Errors
-/// Returns `CryptoError::PlcOperation` if `signing_private_key` is not a valid P-256 scalar
-/// (e.g. all-zero bytes, or a value ≥ the curve order).
 /// RFC 4648 base32 with lowercase symbols (a-z, 2-7).
 /// Used by the did:plc spec to derive the DID from a SHA-256 hash.
 fn base32_lowercase() -> Result<data_encoding::Encoding, CryptoError> {
