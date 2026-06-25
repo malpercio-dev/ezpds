@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount } from 'svelte';
   import {
     buildRecoveryOverride,
     submitRecoveryOverride,
@@ -12,6 +12,9 @@
   import DiffRow from '$lib/components/ui/DiffRow.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
+  import ChevronLeftIcon from '$lib/components/ui/ChevronLeftIcon.svelte';
+  import { useCountdown } from '$lib/components/ui/use-countdown.svelte';
+  import { useHoldGesture } from '$lib/components/ui/use-hold-gesture.svelte';
 
   let {
     did,
@@ -31,55 +34,36 @@
   let submitting = $state(false);
   let error = $state<string | null>(null);
   let signedOp = $state<SignedRecoveryOp | null>(null);
-  let now = $state(Date.now());
-  let timer: ReturnType<typeof setInterval> | null = null;
+
+  const countdown = useCountdown(15_000);
 
   // Derived so the countdown stays reactive as `now` ticks (was a plain const that
   // captured only the initial value of `createdAt`).
   let deadline = $derived(getDeadline(createdAt));
-  let urgency = $derived(getUrgency(deadline, now));
+  let urgency = $derived(getUrgency(deadline, countdown.now));
   let isExpired = $derived(urgency === 'expired');
 
   // Hold-to-override: a deliberate, irreversible confirmation gesture.
-  let holdFill = $state(0); // 0..1
   const HOLD_MS = 1500;
-  let raf: number | null = null;
-  let startTs: number | null = null;
+  const hold = useHoldGesture({
+    durationMs: HOLD_MS,
+    oncomplete: confirmOverride,
+    canStart: () => !(submitting || isExpired || !signedOp),
+  });
+  let holdFill = $derived(hold.state.progress); // 0..1
 
-  function frame(t: number) {
-    if (startTs === null) startTs = t;
-    holdFill = Math.min(1, (t - startTs) / HOLD_MS);
-    if (holdFill >= 1) {
-      raf = null;
-      startTs = null;
-      confirmOverride();
-      return;
-    }
-    raf = requestAnimationFrame(frame);
-  }
   function holdStart() {
-    if (submitting || isExpired || !signedOp) return;
-    startTs = null;
-    raf = requestAnimationFrame(frame);
+    hold.start();
   }
   function holdEnd() {
-    if (raf === null) return;
-    cancelAnimationFrame(raf);
-    raf = null;
-    startTs = null;
-    holdFill = 0;
+    hold.end();
   }
   function confirmOverride() {
-    holdFill = 1;
+    hold.state.progress = 1;
     handleSubmit();
   }
 
   onMount(async () => {
-    // Start the countdown timer
-    timer = setInterval(() => {
-      now = Date.now();
-    }, 15_000);
-
     // Build the recovery operation
     loading = true;
     error = null;
@@ -123,10 +107,6 @@
     }
   });
 
-  onDestroy(() => {
-    if (timer) clearInterval(timer);
-  });
-
   async function handleSubmit() {
     submitting = true;
     error = null;
@@ -167,7 +147,7 @@
         error = 'Submission failed. Please try again.';
       }
       submitting = false;
-      holdFill = 0; // reset so the user can retry the hold
+      hold.state.progress = 0; // reset so the user can retry the hold
     }
   }
 </script>
@@ -175,11 +155,11 @@
 <div class="screen">
   <div class="appbar">
     <button class="back" onclick={onback} disabled={loading || submitting} aria-label="Back">
-      <svg width="11" height="18" viewBox="0 0 11 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1 2 9l7 8" /></svg>
+      <ChevronLeftIcon />
       Back
     </button>
     <h2 class="appbar-title">Review override</h2>
-    <UrgencyBadge {urgency} {deadline} {now} />
+    <UrgencyBadge {urgency} {deadline} now={countdown.now} />
   </div>
 
   <div class="content">

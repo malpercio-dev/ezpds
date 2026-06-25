@@ -3,6 +3,7 @@
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
+  import { useHoldGesture } from '$lib/components/ui/use-hold-gesture.svelte';
 
   let {
     handle,
@@ -18,43 +19,30 @@
   // triggers the real DID genesis. ready → (hold) → sealing → success | error.
   let phase = $state<'ready' | 'sealing' | 'error'>('ready');
   let error = $state<DIDCeremonyError | null>(null);
-  let fill = $state(0); // 0..1 hold progress, drives the wax fill
 
   const HOLD_MS = 1500;
-  let raf: number | null = null;
-  let startTs: number | null = null;
+  // 0..1 hold progress, drives the wax fill.
+  const hold = useHoldGesture({
+    durationMs: HOLD_MS,
+    oncomplete: beginCeremony,
+    canStart: () => phase === 'ready',
+    canEnd: () => phase === 'ready',
+  });
+  let fill = $derived(hold.state.progress);
 
   let monogram = $derived((handle.charAt(0) || '?').toUpperCase());
 
-  function frame(now: number) {
-    if (startTs === null) startTs = now;
-    fill = Math.min(1, (now - startTs) / HOLD_MS);
-    if (fill >= 1) {
-      raf = null;
-      startTs = null;
-      beginCeremony();
-      return;
-    }
-    raf = requestAnimationFrame(frame);
-  }
-
   function holdStart() {
-    if (phase !== 'ready') return;
-    startTs = null;
-    raf = requestAnimationFrame(frame);
+    hold.start();
   }
 
   function holdEnd() {
-    if (phase !== 'ready' || raf === null) return;
-    cancelAnimationFrame(raf);
-    raf = null;
-    startTs = null;
-    fill = 0;
+    hold.end();
   }
 
   async function beginCeremony() {
     phase = 'sealing';
-    fill = 1;
+    hold.state.progress = 1;
     // Defense-in-depth: guard against an empty password reaching the relay.
     // The PasswordScreen enforces ≥8 chars, but this makes the ceremony self-contained.
     if (!password || password.length === 0) {
@@ -82,7 +70,7 @@
 
   function retry() {
     error = null;
-    fill = 0;
+    hold.state.progress = 0;
     phase = 'ready';
   }
 

@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import ChevronLeftIcon from './ChevronLeftIcon.svelte';
 
   // The shared onboarding layout: an optional back affordance, a centered column
   // with an optional icon, title (work sans or signet serif), subtitle, and content.
@@ -23,7 +24,7 @@
 <div class="screen">
   {#if onback}
     <button class="back" onclick={onback} aria-label="Back">
-      <svg width="11" height="18" viewBox="0 0 11 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1 2 9l7 8" /></svg>
+      <ChevronLeftIcon />
       Back
     </button>
   {/if}

@@ -14,15 +14,6 @@ pub enum AuthScope {
     AppPass,
 }
 
-/// Whether this token was presented as a plain Bearer or a DPoP-bound token.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TokenType {
-    /// Simple Bearer JWT issued by `createSession`.
-    Legacy,
-    /// DPoP-bound token (RFC 9449).
-    DPoP,
-}
-
 /// Claims decoded from the server-issued access/refresh JWT.
 #[derive(Debug, Deserialize)]
 pub(crate) struct AccessTokenClaims {

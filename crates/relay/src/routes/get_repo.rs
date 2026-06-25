@@ -29,20 +29,17 @@ pub async fn get_repo(
     let did = &params.did;
 
     // Validate DID format.
-    if !did.starts_with("did:") {
+    if !crate::auth::validation::is_valid_did(did) {
         return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
     }
 
     // Look up the repo root CID from the accounts table.
-    let root_cid_str: Option<String> =
-        sqlx::query_scalar("SELECT repo_root_cid FROM accounts WHERE did = ?")
-            .bind(did)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, did = %did, "failed to query repo root CID");
-                ApiError::new(ErrorCode::InternalError, "failed to get repo")
-            })?;
+    let root_cid_str = crate::db::accounts::get_repo_root_cid(&state.db, did)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, did = %did, "failed to query repo root CID");
+            ApiError::new(ErrorCode::InternalError, "failed to get repo")
+        })?;
 
     let root_cid_str =
         root_cid_str.ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;

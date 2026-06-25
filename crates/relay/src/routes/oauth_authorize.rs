@@ -20,7 +20,8 @@ use crate::auth::password::{verify_password, VerifyResult, TIMING_DUMMY_HASH};
 use crate::auth::rate_limit::{clear_failures, is_rate_limited, record_failure};
 use crate::db::accounts::resolve_identifier;
 use crate::db::oauth::{
-    consume_par_request, get_oauth_client, store_authorization_code, StoredPARParams,
+    consume_par_request, get_oauth_client, store_authorization_code, ClientMetadata,
+    StoredPARParams,
 };
 use crate::routes::oauth_templates::{
     encode_param, error_page, error_redirect, render_consent_page,
@@ -84,14 +85,6 @@ pub struct ConsentForm {
     pub identifier: Option<String>,
     /// Password for the identified account. `None` when absent (same as above).
     pub password: Option<String>,
-}
-
-/// Subset of RFC 7591 client metadata fields used by the authorization endpoint.
-#[derive(Deserialize, Default)]
-struct ClientMetadata {
-    #[serde(default)]
-    redirect_uris: Vec<String>,
-    client_name: Option<String>,
 }
 
 /// Distinguishes client-caused failures from server-caused failures in PAR resolution.
@@ -178,6 +171,60 @@ async fn resolve_authorize_params(
     }
 }
 
+/// Failure modes of [`lookup_and_validate_client`].
+///
+/// Each variant maps to a distinct error page in the caller. The caller picks the
+/// title and message so the GET and POST handlers can keep their existing wording.
+enum ClientValidationError {
+    /// No client is registered under the supplied `client_id`.
+    UnknownClient,
+    /// A database error occurred while looking up the client.
+    DbError,
+    /// The stored client metadata could not be deserialized.
+    MalformedMetadata,
+    /// The supplied `redirect_uri` is not among the client's registered URIs.
+    InvalidRedirectUri,
+}
+
+/// Look up the registered client, parse its metadata, and validate `redirect_uri`.
+///
+/// Shared by both the GET and POST authorization handlers, which must confirm the
+/// client and redirect target are safe before issuing any redirect. Returns the
+/// parsed [`ClientMetadata`] on success, or a [`ClientValidationError`] the caller
+/// renders as its own error page.
+async fn lookup_and_validate_client(
+    state: &AppState,
+    client_id: &str,
+    redirect_uri: &str,
+) -> Result<ClientMetadata, ClientValidationError> {
+    let client = match get_oauth_client(&state.db, client_id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => return Err(ClientValidationError::UnknownClient),
+        Err(e) => {
+            tracing::error!(error = %e, "db error looking up OAuth client");
+            return Err(ClientValidationError::DbError);
+        }
+    };
+
+    let metadata: ClientMetadata = match serde_json::from_str(&client.client_metadata) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!(
+                client_id = %client.client_id,
+                error = %e,
+                "failed to parse stored client metadata"
+            );
+            return Err(ClientValidationError::MalformedMetadata);
+        }
+    };
+
+    if !metadata.redirect_uris.contains(&redirect_uri.to_string()) {
+        return Err(ClientValidationError::InvalidRedirectUri);
+    }
+
+    Ok(metadata)
+}
+
 /// `GET /oauth/authorize` — validate request parameters and render the consent page.
 ///
 /// Accepts either direct query parameters or a PAR `request_uri` (RFC 9126).
@@ -197,48 +244,38 @@ pub async fn get_authorization(
     };
 
     // Client and redirect_uri must be validated before any redirect is issued.
-    let client = match get_oauth_client(&state.db, &params.client_id).await {
-        Ok(Some(row)) => row,
-        Ok(None) => {
-            return error_page(
-                "Unknown Client",
-                "The client_id is not registered with this server.",
-            )
-            .into_response()
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "db error looking up OAuth client");
-            return error_page(
-                "Server Error",
-                "A database error occurred. Please try again.",
-            )
-            .into_response();
-        }
-    };
-
-    let metadata: ClientMetadata = match serde_json::from_str(&client.client_metadata) {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::error!(
-                client_id = %client.client_id,
-                error = %e,
-                "failed to parse stored client metadata"
-            );
-            return error_page(
-                "Client Configuration Error",
-                "The client's registered metadata is malformed.",
-            )
-            .into_response();
-        }
-    };
-
-    if !metadata.redirect_uris.contains(&params.redirect_uri) {
-        return error_page(
-            "Invalid Redirect URI",
-            "The redirect_uri does not match the client's registered URIs.",
-        )
-        .into_response();
-    }
+    let metadata =
+        match lookup_and_validate_client(&state, &params.client_id, &params.redirect_uri).await {
+            Ok(m) => m,
+            Err(ClientValidationError::UnknownClient) => {
+                return error_page(
+                    "Unknown Client",
+                    "The client_id is not registered with this server.",
+                )
+                .into_response()
+            }
+            Err(ClientValidationError::DbError) => {
+                return error_page(
+                    "Server Error",
+                    "A database error occurred. Please try again.",
+                )
+                .into_response()
+            }
+            Err(ClientValidationError::MalformedMetadata) => {
+                return error_page(
+                    "Client Configuration Error",
+                    "The client's registered metadata is malformed.",
+                )
+                .into_response()
+            }
+            Err(ClientValidationError::InvalidRedirectUri) => {
+                return error_page(
+                    "Invalid Redirect URI",
+                    "The redirect_uri does not match the client's registered URIs.",
+                )
+                .into_response()
+            }
+        };
 
     // From here on redirect_uri is validated — errors redirect there, not to an error page.
     if params.response_type != "code" {
@@ -292,40 +329,31 @@ pub async fn post_authorization(
 ) -> Response {
     // Validate client and redirect_uri first — deny/approve both redirect there,
     // so we must confirm it is safe before using it as a redirect target.
-    let client = match get_oauth_client(&state.db, &form.client_id).await {
-        Ok(Some(row)) => row,
-        Ok(None) => {
+    let metadata = match lookup_and_validate_client(&state, &form.client_id, &form.redirect_uri)
+        .await
+    {
+        Ok(m) => m,
+        Err(ClientValidationError::UnknownClient) => {
             return error_page("Unknown Client", "The client_id is not registered.").into_response()
         }
-        Err(e) => {
-            tracing::error!(error = %e, "db error looking up OAuth client");
-            return error_page("Server Error", "A database error occurred.").into_response();
+        Err(ClientValidationError::DbError) => {
+            return error_page("Server Error", "A database error occurred.").into_response()
         }
-    };
-
-    let metadata: ClientMetadata = match serde_json::from_str(&client.client_metadata) {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::error!(
-                client_id = %client.client_id,
-                error = %e,
-                "failed to parse stored client metadata"
-            );
+        Err(ClientValidationError::MalformedMetadata) => {
             return error_page(
                 "Client Configuration Error",
                 "Client metadata is malformed.",
             )
-            .into_response();
+            .into_response()
+        }
+        Err(ClientValidationError::InvalidRedirectUri) => {
+            return error_page(
+                "Invalid Redirect URI",
+                "The redirect_uri does not match the client's registered URIs.",
+            )
+            .into_response()
         }
     };
-
-    if !metadata.redirect_uris.contains(&form.redirect_uri) {
-        return error_page(
-            "Invalid Redirect URI",
-            "The redirect_uri does not match the client's registered URIs.",
-        )
-        .into_response();
-    }
 
     // redirect_uri is now validated — denial and all subsequent errors redirect there.
     if form.action == "deny" {

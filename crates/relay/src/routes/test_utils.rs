@@ -287,6 +287,28 @@ pub async fn seed_device(db: &sqlx::SqlitePool) -> (String, String) {
     (device_id, token.plaintext)
 }
 
+/// Mint a short-lived HS256 access JWT (`com.atproto.access` scope) for `sub`,
+/// signed with `secret`. Used by the repo record-write/read route tests.
+pub(crate) fn access_jwt(secret: &[u8; 32], sub: &str) -> String {
+    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    encode(
+        &Header::new(Algorithm::HS256),
+        &serde_json::json!({
+            "scope": "com.atproto.access",
+            "sub": sub,
+            "iat": now,
+            "exp": now + 7200_u64,
+        }),
+        &EncodingKey::from_secret(secret),
+    )
+    .unwrap()
+}
+
 /// Deserialise a response body as `serde_json::Value`, consuming the response.
 pub async fn body_json(response: axum::response::Response) -> serde_json::Value {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)

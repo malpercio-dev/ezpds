@@ -31,20 +31,17 @@ pub async fn get_record(
     let rkey = &params.rkey;
 
     // Validate DID format.
-    if !did.starts_with("did:") {
+    if !crate::auth::validation::is_valid_did(did) {
         return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
     }
 
     // Look up the repo root CID.
-    let root_cid_str: Option<String> =
-        sqlx::query_scalar("SELECT repo_root_cid FROM accounts WHERE did = ?")
-            .bind(did)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, did = %did, "failed to query repo root CID");
-                ApiError::new(ErrorCode::InternalError, "failed to get record")
-            })?;
+    let root_cid_str = crate::db::accounts::get_repo_root_cid(&state.db, did)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, did = %did, "failed to query repo root CID");
+            ApiError::new(ErrorCode::InternalError, "failed to get record")
+        })?;
 
     let root_cid_str =
         root_cid_str.ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
@@ -96,27 +93,7 @@ mod tests {
     use axum::http::{self, Request};
     use tower::ServiceExt;
 
-    use crate::routes::test_utils::{seed_account_with_repo, state_with_master_key};
-
-    fn access_jwt(secret: &[u8; 32], sub: &str) -> String {
-        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        encode(
-            &Header::new(Algorithm::HS256),
-            &serde_json::json!({
-                "scope": "com.atproto.access",
-                "sub": sub,
-                "iat": now,
-                "exp": now + 7200_u64,
-            }),
-            &EncodingKey::from_secret(secret),
-        )
-        .unwrap()
-    }
+    use crate::routes::test_utils::{access_jwt, seed_account_with_repo, state_with_master_key};
 
     async fn setup_account_with_repo() -> (AppState, String) {
         let state = state_with_master_key().await;

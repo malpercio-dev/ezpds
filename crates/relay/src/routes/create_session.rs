@@ -53,10 +53,10 @@ pub async fn create_session(
     // --- Rate limit gate ---
     // Check before any DB work to shed load on targeted accounts.
     {
-        let mut attempts = state.failed_login_attempts.lock().map_err(|_| {
-            tracing::error!("failed_login_attempts mutex is poisoned");
-            ApiError::new(ErrorCode::InternalError, "internal error")
-        })?;
+        let mut attempts = crate::auth::validation::lock_failed_login_attempts(
+            &state.failed_login_attempts,
+            None,
+        )?;
         if is_rate_limited(&mut attempts, &payload.identifier) {
             return Err(ApiError::new(
                 ErrorCode::RateLimited,
@@ -80,10 +80,10 @@ pub async fn create_session(
             match result {
                 VerifyResult::Ok => {}
                 VerifyResult::WrongPassword => {
-                    let mut attempts = state.failed_login_attempts.lock().map_err(|_| {
-                        tracing::error!("failed_login_attempts mutex is poisoned");
-                        ApiError::new(ErrorCode::InternalError, "internal error")
-                    })?;
+                    let mut attempts = crate::auth::validation::lock_failed_login_attempts(
+                        &state.failed_login_attempts,
+                        None,
+                    )?;
                     record_failure(&mut attempts, &payload.identifier);
                     return Err(ApiError::new(
                         ErrorCode::AuthenticationRequired,
@@ -101,10 +101,10 @@ pub async fn create_session(
             row
         }
         None => {
-            let mut attempts = state.failed_login_attempts.lock().map_err(|_| {
-                tracing::error!("failed_login_attempts mutex is poisoned");
-                ApiError::new(ErrorCode::InternalError, "internal error")
-            })?;
+            let mut attempts = crate::auth::validation::lock_failed_login_attempts(
+                &state.failed_login_attempts,
+                None,
+            )?;
             record_failure(&mut attempts, &payload.identifier);
             return Err(ApiError::new(
                 ErrorCode::AuthenticationRequired,

@@ -20,7 +20,7 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::routes::create_account::validate_handle;
-use crate::routes::register_device::{Platform, MAX_PUBLIC_KEY_LEN};
+use crate::routes::register_device::Platform;
 use crate::routes::token::generate_token;
 
 #[derive(Deserialize)]
@@ -48,18 +48,8 @@ pub async fn create_mobile_account(
     Json(payload): Json<CreateMobileAccountRequest>,
 ) -> Result<(StatusCode, Json<CreateMobileAccountResponse>), ApiError> {
     // --- Validate device_public_key ---
-    if payload.device_public_key.is_empty() {
-        return Err(ApiError::new(
-            ErrorCode::InvalidClaim,
-            "devicePublicKey must not be empty",
-        ));
-    }
-    if payload.device_public_key.len() > MAX_PUBLIC_KEY_LEN {
-        return Err(ApiError::new(
-            ErrorCode::InvalidClaim,
-            format!("devicePublicKey must be at most {MAX_PUBLIC_KEY_LEN} characters"),
-        ));
-    }
+    crate::auth::validation::validate_device_public_key(&payload.device_public_key)
+        .map_err(|msg| ApiError::new(ErrorCode::InvalidClaim, msg))?;
 
     // --- Validate email (basic non-empty check; format validation is deferred) ---
     if payload.email.is_empty() {
@@ -294,25 +284,24 @@ async fn provision_mobile_account(
 /// Classify a unique constraint violation from the pending_accounts INSERT into the
 /// appropriate ApiError. Returns InternalError for non-unique-violation errors.
 fn classify_pending_account_error(e: &sqlx::Error) -> ApiError {
-    match crate::db::unique_violation_column(e, "pending_accounts") {
-        Some("email") => {
-            return ApiError::new(
-                ErrorCode::AccountExists,
-                "an account with this email already exists",
-            );
+    use crate::db::accounts::PendingAccountConflict;
+    match crate::db::accounts::classify_pending_account_conflict(e) {
+        Some(PendingAccountConflict::Email) => ApiError::new(
+            ErrorCode::AccountExists,
+            "an account with this email already exists",
+        ),
+        Some(PendingAccountConflict::Handle) => {
+            ApiError::new(ErrorCode::HandleTaken, "this handle is already claimed")
         }
-        Some("handle") => {
-            return ApiError::new(ErrorCode::HandleTaken, "this handle is already claimed");
-        }
-        Some(col) => {
+        Some(PendingAccountConflict::Other(col)) => {
             tracing::error!(
                 column = col,
                 "unique violation on unexpected column in pending_accounts insert"
             );
+            ApiError::new(ErrorCode::InternalError, "failed to create account")
         }
-        None => {}
+        None => ApiError::new(ErrorCode::InternalError, "failed to create account"),
     }
-    ApiError::new(ErrorCode::InternalError, "failed to create account")
 }
 
 #[cfg(test)]
@@ -911,8 +900,8 @@ mod tests {
 
     #[tokio::test]
     async fn oversized_public_key_returns_400() {
-        use crate::routes::register_device::MAX_PUBLIC_KEY_LEN;
-        let big_key = "x".repeat(MAX_PUBLIC_KEY_LEN + 1);
+        use crate::auth::validation::MAX_DEVICE_PUBLIC_KEY_LEN;
+        let big_key = "x".repeat(MAX_DEVICE_PUBLIC_KEY_LEN + 1);
         let body = format!(
             r#"{{"email":"a@example.com","handle":"a.example.com","devicePublicKey":"{big_key}","platform":"ios","claimCode":"ABC123"}}"#
         );

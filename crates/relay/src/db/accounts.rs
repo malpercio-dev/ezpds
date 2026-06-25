@@ -63,6 +63,48 @@ pub(crate) async fn get_session_account(
     ))
 }
 
+/// Classification of a `pending_accounts` UNIQUE constraint violation.
+///
+/// Produced by [`classify_pending_account_conflict`] so callers don't repeat the
+/// SQLite error-string matching. `Email`/`Handle` name the conflicting column;
+/// `Other` covers a UNIQUE violation on some different column of `pending_accounts`.
+pub(crate) enum PendingAccountConflict<'a> {
+    Email,
+    Handle,
+    Other(&'a str),
+}
+
+/// Classify a UNIQUE constraint violation against the `pending_accounts` table.
+///
+/// Returns `None` when the error is not a `pending_accounts` UNIQUE violation
+/// (e.g. a different table's constraint, or a non-constraint error). Callers
+/// decide how to surface each variant — this only inspects the error.
+pub(crate) fn classify_pending_account_conflict(
+    e: &sqlx::Error,
+) -> Option<PendingAccountConflict<'_>> {
+    match crate::db::unique_violation_column(e, "pending_accounts") {
+        Some("email") => Some(PendingAccountConflict::Email),
+        Some("handle") => Some(PendingAccountConflict::Handle),
+        Some(col) => Some(PendingAccountConflict::Other(col)),
+        None => None,
+    }
+}
+
+/// Fetch the raw `repo_root_cid` for an account by DID.
+///
+/// Returns `Ok(None)` when no account row exists for the DID; `Ok(Some(cid))`
+/// with the raw stored string otherwise. Callers own the None→404 mapping and
+/// the CID parse — this function only runs the query.
+pub(crate) async fn get_repo_root_cid(
+    db: &sqlx::SqlitePool,
+    did: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT repo_root_cid FROM accounts WHERE did = ?")
+        .bind(did)
+        .fetch_optional(db)
+        .await
+}
+
 /// Resolve an email address to an active (non-deactivated) account.
 ///
 /// Used by the provisioning session login endpoint (`POST /v1/accounts/sessions`).

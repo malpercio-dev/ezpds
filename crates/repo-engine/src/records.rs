@@ -332,7 +332,8 @@ mod tests {
     use super::*;
     use atrium_repo::blockstore::MemoryBlockStore;
     use atrium_repo::repo::Repository;
-    use p256::ecdsa::SigningKey;
+
+    use crate::test_support::test_signer;
 
     const TEST_CID: &str = "bafyreie5cvv4h45feadgeuwhbcutmh6t2ceseocckahdoe6uat64zmz454";
 
@@ -418,12 +419,6 @@ mod tests {
         assert!(validate_record_path("app.bsky.feed.post", "a b").is_err()); // space
         assert!(validate_record_path("app.bsky.feed.post", &"x".repeat(513)).is_err());
         // too long
-    }
-
-    fn test_signer() -> CommitSigner {
-        let key = SigningKey::random(&mut rand_core::OsRng);
-        let bytes: [u8; 32] = key.to_bytes().into();
-        CommitSigner::from_bytes(&bytes).unwrap()
     }
 
     async fn create_test_repo(did: &str) -> (Repository<MemoryBlockStore>, CommitSigner) {

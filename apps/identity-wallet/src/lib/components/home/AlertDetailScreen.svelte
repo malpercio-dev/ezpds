@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
   import { getUrgency, getDeadline } from '$lib/utils/deadline';
   import type { UnauthorizedChange } from '$lib/ipc';
   import { truncateDid } from '$lib/did-doc-utils';
   import UrgencyBadge from '$lib/components/ui/UrgencyBadge.svelte';
   import Button from '$lib/components/ui/Button.svelte';
+  import ChevronLeftIcon from '$lib/components/ui/ChevronLeftIcon.svelte';
+  import { useCountdown } from '$lib/components/ui/use-countdown.svelte';
 
   let {
     did,
@@ -18,23 +19,12 @@
     onoverride: (cid: string, createdAt: string) => void;
   } = $props();
 
-  let now = $state(Date.now());
-  let timer: ReturnType<typeof setInterval> | null = null;
-
-  onMount(() => {
-    timer = setInterval(() => {
-      now = Date.now();
-    }, 60_000);
-  });
-
-  onDestroy(() => {
-    if (timer) clearInterval(timer);
-  });
+  const countdown = useCountdown(60_000);
 </script>
 
 <div class="screen">
   <button class="back" onclick={onback}>
-    <svg width="11" height="18" viewBox="0 0 11 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1 2 9l7 8" /></svg>
+    <ChevronLeftIcon />
     Back
   </button>
 
@@ -56,9 +46,9 @@
   <div class="cards">
     {#each changes as change (change.cid)}
       {@const deadline = getDeadline(change.createdAt)}
-      {@const urgency = getUrgency(deadline, now)}
+      {@const urgency = getUrgency(deadline, countdown.now)}
       <div class="card">
-        <UrgencyBadge {urgency} {deadline} {now} />
+        <UrgencyBadge {urgency} {deadline} now={countdown.now} />
 
         <div class="field">
           <span class="k">Signing key</span>

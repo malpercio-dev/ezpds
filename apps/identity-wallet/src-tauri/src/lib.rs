@@ -47,10 +47,6 @@ struct CreateMobileAccountResponse {
 #[serde(rename_all = "camelCase")]
 struct RelaySigningKey {
     key_id: String,
-    #[allow(dead_code)]
-    public_key: String,
-    #[allow(dead_code)]
-    algorithm: String,
 }
 
 /// Request body for POST /v1/dids — submit the signed genesis op for DID promotion.
@@ -844,7 +840,8 @@ async fn register_created_identity(
         }
     };
     let pds_url = state.relay_client().base_url_str().to_owned();
-    let did_doc_json = build_create_flow_did_doc(&did, &handle, &pds_url, &rotation_key_id).to_string();
+    let did_doc_json =
+        build_create_flow_did_doc(&did, &handle, &pds_url, &rotation_key_id).to_string();
 
     if let Err(e) = store.store_did_doc(&did, &did_doc_json) {
         tracing::error!(did = %did, error = %e, "register_created_identity: store_did_doc failed");

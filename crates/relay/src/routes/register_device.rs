@@ -18,12 +18,6 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::routes::token::generate_token;
 
-/// Maximum allowed length for a device public key string.
-/// A P-256 uncompressed public key in base64 is ~88 chars; 512 is generous
-/// enough to accommodate any standard encoding without accepting unbounded input.
-/// Shared by create_mobile_account, which also validates device_public_key.
-pub(crate) const MAX_PUBLIC_KEY_LEN: usize = 512;
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RegisterDeviceRequest {
@@ -45,18 +39,8 @@ pub async fn register_device(
     Json(payload): Json<RegisterDeviceRequest>,
 ) -> Result<(StatusCode, Json<RegisterDeviceResponse>), ApiError> {
     // --- Validate device_public_key ---
-    if payload.device_public_key.is_empty() {
-        return Err(ApiError::new(
-            ErrorCode::InvalidClaim,
-            "devicePublicKey must not be empty",
-        ));
-    }
-    if payload.device_public_key.len() > MAX_PUBLIC_KEY_LEN {
-        return Err(ApiError::new(
-            ErrorCode::InvalidClaim,
-            format!("devicePublicKey must be at most {MAX_PUBLIC_KEY_LEN} characters"),
-        ));
-    }
+    crate::auth::validation::validate_device_public_key(&payload.device_public_key)
+        .map_err(|msg| ApiError::new(ErrorCode::InvalidClaim, msg))?;
 
     // --- Generate device credentials ---
     let device_id = Uuid::new_v4().to_string();
@@ -689,7 +673,7 @@ mod tests {
 
     #[tokio::test]
     async fn oversized_public_key_returns_400() {
-        let oversized_key = "A".repeat(super::MAX_PUBLIC_KEY_LEN + 1);
+        let oversized_key = "A".repeat(crate::auth::validation::MAX_DEVICE_PUBLIC_KEY_LEN + 1);
         let body = format!(
             r#"{{"claimCode":"ABC123","devicePublicKey":"{oversized_key}","platform":"ios"}}"#
         );

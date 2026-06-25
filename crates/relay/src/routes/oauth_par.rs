@@ -16,7 +16,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
 use crate::db::oauth::{
-    cleanup_expired_par_requests, get_oauth_client, store_par_request, StoredPARParams,
+    cleanup_expired_par_requests, get_oauth_client, store_par_request, ClientMetadata,
+    StoredPARParams,
 };
 use crate::routes::token::generate_token;
 
@@ -149,7 +150,7 @@ pub async fn post_par(State(state): State<AppState>, Form(form): Form<PARForm>) 
         }
     };
 
-    let metadata: serde_json::Value = match serde_json::from_str(&client.client_metadata) {
+    let metadata: ClientMetadata = match serde_json::from_str(&client.client_metadata) {
         Ok(m) => m,
         Err(e) => {
             tracing::error!(
@@ -161,16 +162,7 @@ pub async fn post_par(State(state): State<AppState>, Form(form): Form<PARForm>) 
         }
     };
 
-    let registered_redirect_uris: Vec<String> = metadata["redirect_uris"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(str::to_owned))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    if !registered_redirect_uris.contains(&redirect_uri) {
+    if !metadata.redirect_uris.contains(&redirect_uri) {
         return PARError::new(
             "invalid_request",
             "redirect_uri does not match registered URIs",

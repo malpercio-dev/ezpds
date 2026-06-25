@@ -207,6 +207,47 @@ fn verify_pkce_s256(code_verifier: &str, stored_challenge: &str) -> bool {
     subtle::ConstantTimeEq::ct_eq(computed.as_bytes(), stored_challenge.as_bytes()).into()
 }
 
+/// Prune stale nonces and expired tokens. Run on every token request.
+async fn cleanup_expired_state(state: &AppState) {
+    cleanup_expired_nonces(&state.dpop_nonces).await;
+    cleanup_expired_auth_codes(&state.db)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to clean up expired auth codes");
+        });
+    cleanup_expired_refresh_tokens(&state.db)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to clean up expired refresh tokens");
+        });
+}
+
+/// Build the success-response headers for a token issuance: a fresh DPoP-Nonce
+/// for the client's next request plus Cache-Control directives that prevent
+/// caching of sensitive token responses (RFC 6749 §5.1).
+fn token_response_headers(fresh_nonce: &str) -> Result<axum::http::HeaderMap, OAuthTokenError> {
+    let mut response_headers = axum::http::HeaderMap::new();
+    match axum::http::HeaderValue::from_str(fresh_nonce) {
+        Ok(hval) => {
+            response_headers.insert("DPoP-Nonce", hval);
+        }
+        Err(e) => {
+            tracing::error!(nonce = ?fresh_nonce, error = %e, "failed to insert fresh DPoP-Nonce header, nonce format invalid");
+            return Err(OAuthTokenError::new(
+                "server_error",
+                "failed to generate nonce header",
+            ));
+        }
+    }
+    // Add Cache-Control headers to prevent caching of sensitive token responses (RFC 6749 §5.1).
+    response_headers.insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response_headers.insert("Pragma", axum::http::HeaderValue::from_static("no-cache"));
+    Ok(response_headers)
+}
+
 // ── Handler ───────────────────────────────────────────────────────────────────
 
 /// `POST /oauth/token` — OAuth 2.0 token endpoint (RFC 6749 §3.2).
@@ -245,17 +286,7 @@ async fn handle_authorization_code(
     form: TokenRequestForm,
 ) -> Response {
     // Prune stale nonces and expired tokens on every request.
-    cleanup_expired_nonces(&state.dpop_nonces).await;
-    cleanup_expired_auth_codes(&state.db)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "failed to clean up expired auth codes");
-        });
-    cleanup_expired_refresh_tokens(&state.db)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "failed to clean up expired refresh tokens");
-        });
+    cleanup_expired_state(state).await;
 
     // Required fields: code, redirect_uri, client_id, code_verifier.
     let code = match form.code.as_deref() {
@@ -434,23 +465,10 @@ async fn handle_authorization_code(
     // Issue a fresh DPoP nonce for the next request.
     let fresh_nonce = issue_nonce(&state.dpop_nonces).await;
 
-    let mut response_headers = axum::http::HeaderMap::new();
-    match axum::http::HeaderValue::from_str(&fresh_nonce) {
-        Ok(hval) => {
-            response_headers.insert("DPoP-Nonce", hval);
-        }
-        Err(e) => {
-            tracing::error!(nonce = ?fresh_nonce, error = %e, "failed to insert fresh DPoP-Nonce header, nonce format invalid");
-            return OAuthTokenError::new("server_error", "failed to generate nonce header")
-                .into_response();
-        }
-    }
-    // Add Cache-Control headers to prevent caching of sensitive token responses (RFC 6749 §5.1).
-    response_headers.insert(
-        axum::http::header::CACHE_CONTROL,
-        axum::http::HeaderValue::from_static("no-store"),
-    );
-    response_headers.insert("Pragma", axum::http::HeaderValue::from_static("no-cache"));
+    let response_headers = match token_response_headers(&fresh_nonce) {
+        Ok(h) => h,
+        Err(e) => return e.into_response(),
+    };
 
     (
         StatusCode::OK,
@@ -472,17 +490,7 @@ async fn handle_refresh_token(
     form: TokenRequestForm,
 ) -> Response {
     // Prune stale nonces and expired tokens on every request.
-    cleanup_expired_nonces(&state.dpop_nonces).await;
-    cleanup_expired_auth_codes(&state.db)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "failed to clean up expired auth codes");
-        });
-    cleanup_expired_refresh_tokens(&state.db)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "failed to clean up expired refresh tokens");
-        });
+    cleanup_expired_state(state).await;
 
     // Required fields.
     let refresh_token_plaintext = match form.refresh_token.as_deref() {
@@ -629,23 +637,10 @@ async fn handle_refresh_token(
     // Issue fresh DPoP nonce for the next request.
     let fresh_nonce = issue_nonce(&state.dpop_nonces).await;
 
-    let mut response_headers = axum::http::HeaderMap::new();
-    match axum::http::HeaderValue::from_str(&fresh_nonce) {
-        Ok(hval) => {
-            response_headers.insert("DPoP-Nonce", hval);
-        }
-        Err(e) => {
-            tracing::error!(nonce = ?fresh_nonce, error = %e, "failed to insert fresh DPoP-Nonce header, nonce format invalid");
-            return OAuthTokenError::new("server_error", "failed to generate nonce header")
-                .into_response();
-        }
-    }
-    // Add Cache-Control headers to prevent caching of sensitive token responses (RFC 6749 §5.1).
-    response_headers.insert(
-        axum::http::header::CACHE_CONTROL,
-        axum::http::HeaderValue::from_static("no-store"),
-    );
-    response_headers.insert("Pragma", axum::http::HeaderValue::from_static("no-cache"));
+    let response_headers = match token_response_headers(&fresh_nonce) {
+        Ok(h) => h,
+        Err(e) => return e.into_response(),
+    };
 
     (
         StatusCode::OK,

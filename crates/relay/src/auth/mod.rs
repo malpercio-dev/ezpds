@@ -4,6 +4,7 @@ pub mod jwt;
 pub mod password;
 pub mod rate_limit;
 pub mod signing_key;
+pub mod validation;
 
 mod bearer;
 pub(crate) use bearer::extract_bearer_token;
@@ -17,7 +18,7 @@ pub use dpop::{
 #[allow(unused_imports)]
 pub use extractors::AuthenticatedUser;
 #[allow(unused_imports)]
-pub use jwt::{AuthScope, TokenType};
+pub use jwt::AuthScope;
 pub use signing_key::{
     load_or_create_jwt_secret, load_or_create_oauth_signing_key, OAuthSigningKey,
 };

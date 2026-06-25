@@ -118,14 +118,15 @@ pub async fn create_account(
                 ))
             }
             Err(e) if crate::db::is_unique_violation(&e) => {
-                match unique_violation_column_in_pending(&e) {
-                    Some("email") => {
+                use crate::db::accounts::PendingAccountConflict;
+                match crate::db::accounts::classify_pending_account_conflict(&e) {
+                    Some(PendingAccountConflict::Email) => {
                         return Err(ApiError::new(
                             ErrorCode::AccountExists,
                             "an account with this email already exists",
                         ));
                     }
-                    Some("handle") => {
+                    Some(PendingAccountConflict::Handle) => {
                         return Err(ApiError::new(
                             ErrorCode::HandleTaken,
                             "this handle is already claimed",
@@ -225,13 +226,6 @@ async fn insert_pending_account(
     })?;
 
     Ok(())
-}
-
-/// Classify a unique violation from the transaction (which spans claim_codes and
-/// pending_accounts). Returns `Some("email")` or `Some("handle")` for pending_accounts
-/// violations, `None` (treated as claim_code collision) for everything else.
-fn unique_violation_column_in_pending(e: &sqlx::Error) -> Option<&str> {
-    crate::db::unique_violation_column(e, "pending_accounts")
 }
 
 #[cfg(test)]

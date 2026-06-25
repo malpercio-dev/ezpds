@@ -29,7 +29,7 @@ use axum::{
 };
 
 use crate::app::AppState;
-use crate::db::dids::update_also_known_as;
+use crate::db::dids::{fetch_also_known_as, update_also_known_as};
 use crate::routes::auth::require_session;
 use common::{ApiError, ErrorCode};
 
@@ -107,19 +107,7 @@ pub async fn delete_handle_handler(
 
     // Step 5b: Update DID document alsoKnownAs to remove the deleted handle.
     // Fetch remaining handles for this DID and update the document.
-    let handles: Vec<(String,)> = sqlx::query_as("SELECT handle FROM handles WHERE did = ?")
-        .bind(&session.did)
-        .fetch_all(&state.db)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to fetch handles for alsoKnownAs update");
-            ApiError::new(ErrorCode::InternalError, "failed to update DID document")
-        })?;
-
-    let also_known_as: Vec<String> = handles
-        .into_iter()
-        .map(|(h,)| format!("at://{h}"))
-        .collect();
+    let also_known_as = fetch_also_known_as(&state.db, &session.did).await?;
 
     if let Err(e) = update_also_known_as(&state.db, &session.did, &also_known_as).await {
         // Log the error but don't fail the request — handle is already deleted.
