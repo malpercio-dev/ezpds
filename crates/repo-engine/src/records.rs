@@ -264,6 +264,21 @@ where
     Ok(value.map(|v| record_value_to_json(&v)))
 }
 
+/// Decode a stored DAG-CBOR record block directly into its JSON representation.
+///
+/// Unlike [`get_record_json`], this bypasses the MST: it decodes the raw block bytes, so it
+/// can serve a *historical* record version addressed by a CID that the current MST no longer
+/// points to — as long as that block is still present in storage. CID links and byte strings
+/// are mapped back to `{"$link": ...}` / `{"$bytes": ...}`, identically to [`get_record_json`].
+///
+/// The caller is responsible for fetching the block (and for scoping it to the right repo);
+/// this function only decodes the bytes it is handed.
+pub fn decode_record_block(bytes: &[u8]) -> Result<serde_json::Value, RecordError> {
+    let ipld: Ipld = serde_ipld_dagcbor::from_slice(bytes)
+        .map_err(|e| RecordError::InvalidRecord(format!("decode record block: {e}")))?;
+    Ok(record_value_to_json(&ipld))
+}
+
 /// A single record returned by [`list_records_json`].
 pub struct ListedRecord {
     /// The record key (the MST key with the `<collection>/` prefix stripped).
@@ -615,6 +630,26 @@ mod tests {
         });
         let ipld = json_to_record_value(&json).unwrap();
         assert_eq!(record_value_to_json(&ipld), json);
+    }
+
+    #[test]
+    fn decode_record_block_round_trips_dagcbor() {
+        // A record encoded to DAG-CBOR decodes back to the same JSON, with $link and $bytes
+        // tags preserved — this is how a historical version is served straight from its block.
+        let json = serde_json::json!({
+            "$type": "app.bsky.feed.post",
+            "text": "hi",
+            "ref": { "$link": TEST_CID },
+            "data": { "$bytes": "AQIDBA==" }
+        });
+        let ipld = json_to_record_value(&json).unwrap();
+        let bytes = serde_ipld_dagcbor::to_vec(&ipld).unwrap();
+        assert_eq!(decode_record_block(&bytes).unwrap(), json);
+    }
+
+    #[test]
+    fn decode_record_block_rejects_non_cbor() {
+        assert!(decode_record_block(b"not dag-cbor at all").is_err());
     }
 
     #[tokio::test]
