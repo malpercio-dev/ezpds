@@ -88,15 +88,71 @@ pub async fn mark_referenced(pool: &SqlitePool, cid: &str) -> Result<bool, sqlx:
     Ok(result.rows_affected() > 0)
 }
 
-/// Return all blobs whose temporary period has expired.
+/// Return all blobs whose temporary period has expired and that no record references.
 ///
-/// These are candidates for garbage collection — uploaded but never referenced.
+/// These are the garbage-collection deletion candidates: a `temp_until` in the past with a
+/// zero `ref_count` means the blob was either uploaded and never referenced, or it lost its
+/// last reference and outlived the grace period. The `ref_count = 0` guard ensures an
+/// in-use blob is never returned even if its `temp_until` somehow lingered.
 pub async fn list_expired_temps(pool: &SqlitePool) -> Result<Vec<BlobRow>, sqlx::Error> {
     sqlx::query_as::<_, BlobRow>(
-        "SELECT * FROM blobs WHERE temp_until IS NOT NULL AND temp_until < datetime('now')",
+        "SELECT * FROM blobs \
+         WHERE temp_until IS NOT NULL AND temp_until < datetime('now') AND ref_count = 0",
     )
     .fetch_all(pool)
     .await
+}
+
+/// Return the distinct DIDs that own at least one blob.
+///
+/// The garbage collector walks each such repo to reconcile blob references against the MST,
+/// so bounding the scan to accounts that actually hold blobs avoids opening every repo.
+pub async fn list_blob_owner_dids(pool: &SqlitePool) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar::<_, String>("SELECT DISTINCT account_did FROM blobs")
+        .fetch_all(pool)
+        .await
+}
+
+/// Mark a blob as actively referenced by `ref_count` repo records.
+///
+/// Sets `ref_count` to the exact count and clears `temp_until`, making the blob permanent.
+/// Unlike [`mark_referenced`] (which increments), this assigns an absolute count and is
+/// therefore idempotent — the GC recomputes references from the MST on every pass and can
+/// call this repeatedly without inflating the counter. Returns true if a row was updated.
+pub async fn set_blob_referenced(
+    pool: &SqlitePool,
+    cid: &str,
+    ref_count: i64,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("UPDATE blobs SET ref_count = ?, temp_until = NULL WHERE cid = ?")
+        .bind(ref_count)
+        .bind(cid)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Release a blob that no record references any longer: zero its `ref_count` and start the
+/// grace clock by setting `temp_until`.
+///
+/// The `temp_until IS NULL` guard makes this a one-shot transition from permanent to
+/// temporary: it only fires for a blob that was previously referenced (and thus had a null
+/// `temp_until`). A blob already counting down its grace period is left untouched so each GC
+/// pass does not keep resetting the clock and the blob can actually expire. Returns true if
+/// a row transitioned.
+pub async fn release_blob(
+    pool: &SqlitePool,
+    cid: &str,
+    temp_until: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE blobs SET ref_count = 0, temp_until = ? WHERE cid = ? AND temp_until IS NULL",
+    )
+    .bind(temp_until)
+    .bind(cid)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 /// Delete blob metadata by CID. Returns true if a row was removed.
@@ -537,5 +593,126 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(cids.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn list_expired_temps_skips_referenced_blobs() {
+        let pool = test_pool().await;
+        let account_did = insert_test_account(&pool).await;
+
+        // An expired temp_until but with a live reference must never be a deletion candidate.
+        sqlx::query(
+            "INSERT INTO blobs (cid, account_did, mime_type, size_bytes, storage_path, ref_count, temp_until)
+             VALUES ('bafkrirefexpired', ?, 'image/png', 100, 'blobs/ba/bafkrirefexpired', 2, '2020-01-01T00:00:00Z')",
+        )
+        .bind(&account_did)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let expired = list_expired_temps(&pool).await.unwrap();
+        assert!(
+            expired.is_empty(),
+            "a referenced blob must not be returned even with an expired temp_until"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_blob_owner_dids_returns_distinct() {
+        let pool = test_pool().await;
+        let account_did = insert_test_account(&pool).await;
+
+        for i in 0..2 {
+            insert_blob(
+                &pool,
+                &format!("bafkriowner{i}"),
+                &account_did,
+                "image/jpeg",
+                100,
+                &format!("blobs/ba/bafkriowner{i}"),
+                "2026-01-01T12:00:00Z",
+            )
+            .await
+            .unwrap();
+        }
+
+        let dids = list_blob_owner_dids(&pool).await.unwrap();
+        assert_eq!(dids, vec![account_did]);
+    }
+
+    #[tokio::test]
+    async fn set_blob_referenced_sets_count_and_clears_temp() {
+        let pool = test_pool().await;
+        let account_did = insert_test_account(&pool).await;
+
+        insert_blob(
+            &pool,
+            "bafkrisetref",
+            &account_did,
+            "image/png",
+            512,
+            "blobs/ba/bafkrisetref",
+            "2026-01-01T12:00:00Z",
+        )
+        .await
+        .unwrap();
+
+        let changed = set_blob_referenced(&pool, "bafkrisetref", 3).await.unwrap();
+        assert!(changed);
+
+        let blob = get_blob_by_cid(&pool, "bafkrisetref")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(blob.ref_count, 3);
+        assert!(blob.temp_until.is_none());
+
+        // Idempotent: setting the same count again keeps it at 3 (no inflation).
+        set_blob_referenced(&pool, "bafkrisetref", 3).await.unwrap();
+        let blob = get_blob_by_cid(&pool, "bafkrisetref")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(blob.ref_count, 3);
+    }
+
+    #[tokio::test]
+    async fn release_blob_only_transitions_permanent_blobs() {
+        let pool = test_pool().await;
+        let account_did = insert_test_account(&pool).await;
+
+        // A permanent, referenced blob (temp_until NULL, ref_count 1).
+        sqlx::query(
+            "INSERT INTO blobs (cid, account_did, mime_type, size_bytes, storage_path, ref_count, temp_until)
+             VALUES ('bafkrirelease', ?, 'image/png', 100, 'blobs/ba/bafkrirelease', 1, NULL)",
+        )
+        .bind(&account_did)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let released = release_blob(&pool, "bafkrirelease", "2030-01-01T00:00:00Z")
+            .await
+            .unwrap();
+        assert!(released);
+
+        let blob = get_blob_by_cid(&pool, "bafkrirelease")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(blob.ref_count, 0);
+        assert_eq!(blob.temp_until.as_deref(), Some("2030-01-01T00:00:00Z"));
+
+        // Second release must be a no-op: temp_until is already set, so the grace clock
+        // is not reset to a new value.
+        let released_again = release_blob(&pool, "bafkrirelease", "2040-01-01T00:00:00Z")
+            .await
+            .unwrap();
+        assert!(!released_again);
+        let blob = get_blob_by_cid(&pool, "bafkrirelease")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(blob.temp_until.as_deref(), Some("2030-01-01T00:00:00Z"));
     }
 }

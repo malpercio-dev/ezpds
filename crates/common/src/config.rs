@@ -64,6 +64,14 @@ pub struct BlobsConfig {
     /// Per-account storage quota in bytes. Default: 1 GiB.
     #[serde(default = "default_max_storage_per_account")]
     pub max_storage_per_account: u64,
+    /// How often the blob garbage collector runs, in seconds. Default: 1800 (30 min).
+    #[serde(default = "default_gc_interval_secs")]
+    pub gc_interval_secs: u64,
+    /// Grace period, in seconds, before an unreferenced blob is deleted. Applies both to
+    /// freshly uploaded blobs that are never referenced and to blobs that lose their last
+    /// reference. Default: 21600 (6 hours).
+    #[serde(default = "default_temp_ttl_secs")]
+    pub temp_ttl_secs: u64,
 }
 
 impl Default for BlobsConfig {
@@ -71,6 +79,8 @@ impl Default for BlobsConfig {
         Self {
             max_blob_size: default_max_blob_size(),
             max_storage_per_account: default_max_storage_per_account(),
+            gc_interval_secs: default_gc_interval_secs(),
+            temp_ttl_secs: default_temp_ttl_secs(),
         }
     }
 }
@@ -81,6 +91,14 @@ fn default_max_blob_size() -> u64 {
 
 fn default_max_storage_per_account() -> u64 {
     1024 * 1024 * 1024 // 1 GiB
+}
+
+fn default_gc_interval_secs() -> u64 {
+    30 * 60 // 30 minutes
+}
+
+fn default_temp_ttl_secs() -> u64 {
+    6 * 60 * 60 // 6 hours
 }
 
 /// Stub for future OAuth configuration.
