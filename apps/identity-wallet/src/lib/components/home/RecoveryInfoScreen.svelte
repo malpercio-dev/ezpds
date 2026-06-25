@@ -1,4 +1,6 @@
 <script lang="ts">
+  import ChevronLeftIcon from '$lib/components/ui/ChevronLeftIcon.svelte';
+
   let {
     share1InKeychain,
     onback,
@@ -10,7 +12,7 @@
 
 <div class="screen">
   <button class="back" onclick={onback} aria-label="Back">
-    <svg width="11" height="18" viewBox="0 0 11 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1 2 9l7 8" /></svg>
+    <ChevronLeftIcon />
     Back
   </button>
   <h1 class="title">Recovery info</h1>
