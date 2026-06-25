@@ -392,9 +392,12 @@ where
     S: atrium_repo::blockstore::AsyncBlockStoreRead + atrium_repo::blockstore::AsyncBlockStoreWrite,
 {
     use futures::StreamExt;
-    use std::collections::BTreeSet;
 
-    let mut collections: BTreeSet<String> = BTreeSet::new();
+    // MST keys arrive in lexicographic order, and every key for a collection shares the
+    // `<collection>/` prefix — so any key sorting between two of a collection's keys must
+    // also carry that prefix. Equal-collection keys are therefore contiguous, and a single
+    // last-seen comparison dedupes them in O(n) with no intermediate set.
+    let mut collections: Vec<String> = Vec::new();
     let mut tree = repo.tree();
     let mut stream = Box::pin(tree.keys());
     while let Some(res) = stream.next().await {
@@ -402,10 +405,12 @@ where
         // MST keys are `<collection>/<rkey>`; the collection is everything before the
         // first slash. Keys without a slash are not valid records and are skipped.
         if let Some((collection, _)) = key.split_once('/') {
-            collections.insert(collection.to_string());
+            if collections.last().map(String::as_str) != Some(collection) {
+                collections.push(collection.to_string());
+            }
         }
     }
-    Ok(collections.into_iter().collect())
+    Ok(collections)
 }
 
 /// Validate that `collection` is a syntactically valid NSID per the ATProto spec:

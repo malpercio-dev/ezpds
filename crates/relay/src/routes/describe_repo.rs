@@ -46,6 +46,9 @@ pub async fn describe_repo(
 
     // handleIsCorrect: the handle resolves to this DID (it lives in our handles table)
     // *and* the DID document's alsoKnownAs lists `at://<handle>` — a bidirectional match.
+    // A missing DID document (`did_doc` is Null) deliberately yields `false`: without a
+    // document we cannot confirm the backward link, so an unverifiable handle and a
+    // genuine alsoKnownAs mismatch intentionally collapse to the same `false` outcome.
     let (handle, handle_is_correct) = match account.handle {
         Some(handle) => {
             let at_uri = format!("at://{handle}");
@@ -242,6 +245,28 @@ mod tests {
         let (status, body) = describe(&app, did).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["handle"], "real.test.example.com");
+        assert_eq!(body["handleIsCorrect"], false);
+    }
+
+    #[tokio::test]
+    async fn handle_is_incorrect_when_did_doc_absent() {
+        let state = state_with_master_key().await;
+        let did = "did:plc:describenodoc";
+        seed_account_with_repo(&state.db, did).await;
+        // Handle present, but no DID document was ever cached. Without a document we
+        // cannot confirm the backward link, so handleIsCorrect is false and didDoc is null.
+        sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
+            .bind("nodoc.test.example.com")
+            .bind(did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let app = crate::app::app(state);
+
+        let (status, body) = describe(&app, did).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["handle"], "nodoc.test.example.com");
+        assert!(body["didDoc"].is_null());
         assert_eq!(body["handleIsCorrect"], false);
     }
 
