@@ -37,7 +37,9 @@ concurrency:
 jobs:
   testflight:
     name: Build & upload to TestFlight
-    runs-on: macos-15
+    # macos-26 ships Xcode 26 / iOS 26 SDK — Apple rejects uploads built with older SDKs,
+    # and it matches the local macOS 26 / Xcode 26 dev environment. Apple Silicon native.
+    runs-on: macos-26
     timeout-minutes: 60
     env:
       # SIGNING — explicit cert + App Store profile. Tauri's *automatic* iOS signing emits

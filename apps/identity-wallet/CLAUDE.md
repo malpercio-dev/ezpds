@@ -268,7 +268,7 @@ cargo build
 ## CI / TestFlight
 
 The iOS app builds in **GitHub Actions** (not tangled — spindles are Linux-only),
-on a free `macos-15` runner via a **public mirror**. `.github/workflows/ios-testflight.yml`
+on a free `macos-26` runner via a **public mirror**. `.github/workflows/ios-testflight.yml`
 runs on every push to `main`: regenerate the gitignored Xcode project
 (`cargo tauri ios init` + `just ios-postinit`), stamp `bundle.iOS.bundleVersion` from
 the CI run number (TestFlight needs unique build numbers; `version` is pinned at 0.1.0),

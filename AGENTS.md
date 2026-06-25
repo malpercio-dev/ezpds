@@ -29,7 +29,7 @@ CI is split by platform: the **relay** builds and deploys on **tangled spindles*
 
 Deploys use the Railway CLI (nixpkgs dep) with environment-scoped tokens held as tangled repo secrets; production is reached only via a `v*` tag, never by merging to `main`. Litestream backs up the production SQLite DB. See [docs/deploy.md](docs/deploy.md).
 
-**iOS (GitHub Actions).** `.github/workflows/ios-testflight.yml` builds the `identity-wallet` Tauri app on a free public-repo `macos-15` runner and uploads to TestFlight on every push to `main` (App Store Connect API-key signing; never runs on `pull_request`, keeping secrets off fork PRs). Needs a public GitHub mirror (`origin` dual-push). The build/upload core is shared `just` recipes (`ios-ipa`, `ios-upload`, `ios-release`) usable locally. See [docs/ios-cicd.md](docs/ios-cicd.md).
+**iOS (GitHub Actions).** `.github/workflows/ios-testflight.yml` builds the `identity-wallet` Tauri app on a free public-repo `macos-26` runner and uploads to TestFlight on every push to `main` (App Store Connect API-key signing; never runs on `pull_request`, keeping secrets off fork PRs). Needs a public GitHub mirror (`origin` dual-push). The build/upload core is shared `just` recipes (`ios-ipa`, `ios-upload`, `ios-release`) usable locally. See [docs/ios-cicd.md](docs/ios-cicd.md).
 
 ## Dev Environment
 - Managed entirely by Nix flake + devenv; do not install tools globally

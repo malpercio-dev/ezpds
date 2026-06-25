@@ -95,7 +95,7 @@ the public repo only ever holds source.
 
 ## How the Pipeline Works
 
-Each run on `macos-15`:
+Each run on `macos-26`:
 
 1. Checkout, install `just`, pnpm, Node 22, and the Rust iOS target (driven by
    `rust-toolchain.toml`), then `cargo binstall tauri-cli`.
@@ -169,9 +169,10 @@ for the first time inside a CI log.
   the app's encryption is non-exempt.
 - **CocoaPods** is pre-installed on GitHub macOS runners; `cargo tauri ios init`
   invokes it. A transient pod failure usually clears on re-run.
-- **Runner Xcode version.** `macos-15` ships a recent stable Xcode. Local dev may run a
-  newer Xcode; the `ios-postinit` patches are version-tolerant, but if a build breaks on
-  an Xcode-specific issue, bumping the `runs-on` image is the lever.
+- **Runner Xcode / iOS SDK.** `macos-26` ships Xcode 26 / the iOS 26 SDK, which Apple
+  *requires* for uploads (older SDKs are rejected at the altool validation step) and which
+  matches the local macOS 26 / Xcode 26 dev environment. If Apple raises the minimum SDK
+  again, bump `runs-on` to the next `macos-NN` image.
 - **Hardening follow-up.** Actions are pinned to tags (`@v4`, `@v2`). For a public repo,
   pinning to commit SHAs is the stricter supply-chain posture; consider it once the
   pipeline is stable.
