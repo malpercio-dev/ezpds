@@ -61,6 +61,14 @@ pub enum ErrorCode {
     /// A write conflicted with a concurrent modification (e.g. the repo root advanced
     /// since it was read). Clients should retry against the new state.
     Conflict,
+    /// A `swapCommit` or `swapRecord` optimistic-concurrency precondition did not match the
+    /// current repo state. Distinct from the generic concurrent-write [`Conflict`] so clients
+    /// can tell a failed compare-and-swap from a lost race.
+    ///
+    /// Serialized as `"InvalidSwap"` (PascalCase) to match the AT Protocol XRPC error format
+    /// for `com.atproto.repo.{put,delete}Record`.
+    #[serde(rename = "InvalidSwap")]
+    InvalidSwap,
     // TODO: add remaining codes from Appendix A as endpoints are implemented:
     // 400: INVALID_DOCUMENT, INVALID_PROOF, INVALID_ENDPOINT, INVALID_CONFIRMATION
     // 401: INVALID_CREDENTIALS
@@ -101,6 +109,7 @@ impl ErrorCode {
             ErrorCode::ExpiredToken => 400,
             ErrorCode::PayloadTooLarge => 413,
             ErrorCode::Conflict => 409,
+            ErrorCode::InvalidSwap => 409,
         }
     }
 }
@@ -232,6 +241,14 @@ mod tests {
         let err = ApiError::new(ErrorCode::ExpiredToken, "token has expired");
         let actual = serde_json::to_value(ApiErrorEnvelope { error: err }).unwrap();
         assert_eq!(actual["error"]["code"], "ExpiredToken");
+    }
+
+    #[test]
+    fn invalid_swap_serializes_as_pascal_case() {
+        let err = ApiError::new(ErrorCode::InvalidSwap, "swap precondition failed");
+        let actual = serde_json::to_value(ApiErrorEnvelope { error: err }).unwrap();
+        assert_eq!(actual["error"]["code"], "InvalidSwap");
+        assert_eq!(ErrorCode::InvalidSwap.status_code(), 409);
     }
 
     #[test]

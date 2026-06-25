@@ -27,6 +27,82 @@ pub struct WriteRecordResult {
     pub new_root: String,
 }
 
+/// Optimistic-concurrency preconditions parsed from the ATProto `swapCommit` / `swapRecord`
+/// request parameters. An all-`None` value (the [`Default`]) imposes no preconditions, so the
+/// only guard is the existing commit-level compare-and-swap on the repo root.
+#[derive(Default)]
+pub struct SwapCheck {
+    /// `swapCommit`: when set, the repo head must equal this commit CID before the write.
+    pub commit: Option<String>,
+    /// `swapRecord`: when set, the record at the target key must satisfy this precondition —
+    /// `Some(cid)` requires the current record block to have exactly `cid`; `None` requires the
+    /// record to be absent (create-only semantics, i.e. the client passed `swapRecord: null`).
+    pub record: Option<Option<String>>,
+}
+
+impl SwapCheck {
+    /// True when no `swapCommit`/`swapRecord` precondition was supplied.
+    pub fn is_empty(&self) -> bool {
+        self.commit.is_none() && self.record.is_none()
+    }
+}
+
+/// Enforce the `swapCommit` / `swapRecord` preconditions against the current repo state.
+///
+/// `current_root` is the persisted repo head CID (string form) and `repo` is the already-opened
+/// repository. Returns [`ErrorCode::InvalidSwap`] (409) on any mismatch — distinct from the
+/// generic concurrent-write [`ErrorCode::Conflict`] raised by the root compare-and-swap.
+pub(crate) async fn enforce_swap<S>(
+    swap: &SwapCheck,
+    current_root: &str,
+    repo: &mut Repository<S>,
+    mst_key: &str,
+) -> Result<(), ApiError>
+where
+    S: repo_engine::AsyncBlockStoreRead + repo_engine::AsyncBlockStoreWrite,
+{
+    if let Some(expected_commit) = &swap.commit {
+        if expected_commit != current_root {
+            return Err(ApiError::new(
+                ErrorCode::InvalidSwap,
+                "swapCommit did not match the current repo head",
+            ));
+        }
+    }
+
+    if let Some(expected_record) = &swap.record {
+        let current = repo_engine::get_record_cid(repo, mst_key)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, key = %mst_key, "failed to read record CID for swap check");
+                ApiError::new(ErrorCode::InternalError, "failed to evaluate swapRecord")
+            })?
+            .map(|c| c.to_string());
+        match expected_record {
+            // swapRecord: <cid> — the record must currently exist with exactly this CID.
+            Some(expected_cid) => {
+                if current.as_deref() != Some(expected_cid.as_str()) {
+                    return Err(ApiError::new(
+                        ErrorCode::InvalidSwap,
+                        "swapRecord did not match the current record",
+                    ));
+                }
+            }
+            // swapRecord: null — the record must be absent (create-only semantics).
+            None => {
+                if current.is_some() {
+                    return Err(ApiError::new(
+                        ErrorCode::InvalidSwap,
+                        "swapRecord was null but the record already exists",
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Shared write flow: authenticate → open repo → load signer → write record →
 /// optimistic-concurrency CAS → GC.
 ///
@@ -38,6 +114,8 @@ pub struct WriteRecordResult {
 /// * `record` - The record data as JSON
 /// * `create_only` - If true, reject writes when the key already exists (createRecord
 ///   semantics). If false, upsert (putRecord semantics).
+/// * `swap` - Optional `swapCommit`/`swapRecord` optimistic-concurrency preconditions
+///   enforced before the write; pass [`SwapCheck::default`] for none.
 ///
 /// # Precondition
 /// `mst_key` must already be validated via `repo_engine::validate_record_path`; this
@@ -49,6 +127,7 @@ pub async fn write_record(
     mst_key: &str,
     record: &serde_json::Value,
     create_only: bool,
+    swap: &SwapCheck,
 ) -> Result<(WriteRecordResult, repo_engine::Cid), ApiError> {
     // Validate DID format.
     if !crate::auth::validation::is_valid_did(did) {
@@ -87,6 +166,10 @@ pub async fn write_record(
         tracing::error!(error = %e, did = %did, "failed to open repo");
         ApiError::new(ErrorCode::InternalError, "failed to write record")
     })?;
+
+    // Enforce explicit swapCommit/swapRecord preconditions (ATProto optimistic concurrency)
+    // before mutating anything, so a stale client fails with InvalidSwap rather than racing.
+    enforce_swap(swap, &root_cid_str, &mut repo, mst_key).await?;
 
     // If create_only, check that the record does not already exist.
     if create_only {
