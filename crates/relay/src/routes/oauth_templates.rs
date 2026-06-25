@@ -9,17 +9,6 @@
 
 use axum::http::StatusCode;
 use axum::response::{Html, Redirect};
-use serde::Deserialize;
-
-// ── Shared types ──────────────────────────────────────────────────────────────
-
-/// Subset of RFC 7591 client metadata fields used by the authorization and PAR endpoints.
-#[derive(Deserialize, Default)]
-pub(super) struct ClientMetadata {
-    #[serde(default)]
-    pub(super) redirect_uris: Vec<String>,
-    pub(super) client_name: Option<String>,
-}
 
 // ── Public rendering functions ────────────────────────────────────────────────
 

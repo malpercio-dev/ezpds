@@ -16,9 +16,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
 use crate::db::oauth::{
-    cleanup_expired_par_requests, get_oauth_client, store_par_request, StoredPARParams,
+    cleanup_expired_par_requests, get_oauth_client, store_par_request, ClientMetadata,
+    StoredPARParams,
 };
-use crate::routes::oauth_templates::ClientMetadata;
 use crate::routes::token::generate_token;
 
 // ── Request / response types ──────────────────────────────────────────────────

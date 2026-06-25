@@ -19,6 +19,17 @@ pub struct OAuthClientRow {
     pub created_at: String,
 }
 
+/// Subset of RFC 7591 client metadata fields used by the authorization and PAR endpoints.
+///
+/// Deserialized from `OAuthClientRow::client_metadata` (a raw JSON string) by the
+/// authorization and PAR handlers.
+#[derive(Deserialize, Default)]
+pub struct ClientMetadata {
+    #[serde(default)]
+    pub redirect_uris: Vec<String>,
+    pub client_name: Option<String>,
+}
+
 /// Register a new OAuth client.
 ///
 /// `client_id` is an HTTPS URL (the client's metadata document URL per AT Protocol OAuth spec).

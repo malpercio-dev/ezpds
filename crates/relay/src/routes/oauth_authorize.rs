@@ -20,10 +20,11 @@ use crate::auth::password::{verify_password, VerifyResult, TIMING_DUMMY_HASH};
 use crate::auth::rate_limit::{clear_failures, is_rate_limited, record_failure};
 use crate::db::accounts::resolve_identifier;
 use crate::db::oauth::{
-    consume_par_request, get_oauth_client, store_authorization_code, StoredPARParams,
+    consume_par_request, get_oauth_client, store_authorization_code, ClientMetadata,
+    StoredPARParams,
 };
 use crate::routes::oauth_templates::{
-    encode_param, error_page, error_redirect, render_consent_page, ClientMetadata,
+    encode_param, error_page, error_redirect, render_consent_page,
 };
 use crate::routes::token::generate_token;
 
