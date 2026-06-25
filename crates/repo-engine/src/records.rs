@@ -221,35 +221,54 @@ where
     // prefix scan to this exact collection (so `app.bsky.feed.post` won't match
     // `app.bsky.feed.postx`).
     let prefix = format!("{collection}/");
+    let strip = |key: &str| key.strip_prefix(&prefix).unwrap_or(key).to_string();
 
-    // Collect (rkey, cid) for the collection. `entries_prefixed` yields ascending order.
+    // Collect up to `limit + 1` post-cursor entries — the extra one tells us whether more
+    // records remain (and thus whether to emit a cursor) without reading the whole page.
+    let want = limit.saturating_add(1);
     let mut entries: Vec<(String, Cid)> = Vec::new();
     {
         let mut tree = repo.tree();
         let mut stream = Box::pin(tree.entries_prefixed(&prefix));
-        while let Some(res) = stream.next().await {
-            let (key, cid) = res.map_err(|e| RecordError::Repo(format!("list entries: {e}")))?;
-            let rkey = key.strip_prefix(&prefix).unwrap_or(&key).to_string();
-            entries.push((rkey, cid));
+
+        if reverse {
+            // `entries_prefixed` only yields ascending order and atrium-repo exposes no
+            // reverse traversal, so descending order requires materializing the collection
+            // and walking it backwards. Cursor/limit are then applied while walking.
+            let mut all: Vec<(String, Cid)> = Vec::new();
+            while let Some(res) = stream.next().await {
+                let (key, cid) =
+                    res.map_err(|e| RecordError::Repo(format!("list entries: {e}")))?;
+                all.push((strip(&key), cid));
+            }
+            for (rkey, cid) in all.into_iter().rev() {
+                if cursor.is_some_and(|c| rkey.as_str() >= c) {
+                    continue;
+                }
+                entries.push((rkey, cid));
+                if entries.len() == want {
+                    break;
+                }
+            }
+        } else {
+            // Ascending: skip up to and including the cursor, then take `limit + 1` and stop.
+            // Memory and block reads stay proportional to the page, not the collection.
+            while let Some(res) = stream.next().await {
+                let (key, cid) =
+                    res.map_err(|e| RecordError::Repo(format!("list entries: {e}")))?;
+                let rkey = strip(&key);
+                if cursor.is_some_and(|c| rkey.as_str() <= c) {
+                    continue;
+                }
+                entries.push((rkey, cid));
+                if entries.len() == want {
+                    break;
+                }
+            }
         }
     }
 
-    if reverse {
-        entries.reverse();
-    }
-
-    // Skip everything up to and including the cursor rkey, in the current direction.
-    if let Some(c) = cursor {
-        entries.retain(|(rkey, _)| {
-            if reverse {
-                rkey.as_str() < c
-            } else {
-                rkey.as_str() > c
-            }
-        });
-    }
-
-    // Whether more records remain past this page (drives the returned cursor).
+    // The (limit + 1)-th entry, if present, means more records remain past this page.
     let has_more = entries.len() > limit;
     entries.truncate(limit);
 
@@ -277,14 +296,10 @@ where
     Ok(ListRecordsPage { records, cursor })
 }
 
-/// Validate a record's collection (NSID) and record key per the ATProto spec,
-/// before any repo mutation.
-///
-/// - `collection` must be a valid NSID: at least three dot-separated segments,
-///   each alphanumeric-or-hyphen and non-empty, total length 1..=317, no slashes.
-/// - `rkey` must be 1..=512 chars from `[A-Za-z0-9._:~-]`, and not `.` or `..`.
-pub fn validate_record_path(collection: &str, rkey: &str) -> Result<(), RecordError> {
-    // Collection: NSID — >=3 dot segments, each [A-Za-z0-9-] and non-empty.
+/// Validate that `collection` is a syntactically valid NSID per the ATProto spec:
+/// at least three dot-separated segments, each non-empty and `[A-Za-z0-9-]`, with a
+/// total length of 1..=317 and no slashes.
+pub fn validate_collection(collection: &str) -> Result<(), RecordError> {
     if collection.is_empty() || collection.len() > 317 {
         return Err(RecordError::InvalidPath("collection length".into()));
     }
@@ -298,6 +313,17 @@ pub fn validate_record_path(collection: &str, rkey: &str) -> Result<(), RecordEr
             "collection is not a valid NSID: {collection}"
         )));
     }
+    Ok(())
+}
+
+/// Validate a record's collection (NSID) and record key per the ATProto spec,
+/// before any repo mutation.
+///
+/// - `collection` must be a valid NSID: at least three dot-separated segments,
+///   each alphanumeric-or-hyphen and non-empty, total length 1..=317, no slashes.
+/// - `rkey` must be 1..=512 chars from `[A-Za-z0-9._:~-]`, and not `.` or `..`.
+pub fn validate_record_path(collection: &str, rkey: &str) -> Result<(), RecordError> {
+    validate_collection(collection)?;
 
     // Record key: 1..=512 chars from [A-Za-z0-9._:~-], and not "." or "..".
     if rkey.is_empty() || rkey.len() > 512 || rkey == "." || rkey == ".." {

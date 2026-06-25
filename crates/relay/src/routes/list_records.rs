@@ -41,6 +41,15 @@ pub async fn list_records(
         return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
     }
 
+    // Validate the collection is a syntactically valid NSID. Without this, a malformed
+    // collection would silently match nothing and return an empty 200 rather than a 400.
+    if repo_engine::validate_collection(collection).is_err() {
+        return Err(ApiError::new(
+            ErrorCode::InvalidClaim,
+            "invalid collection NSID",
+        ));
+    }
+
     // Clamp the page size to the documented bounds (default 50, max 100, min 1).
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
 
@@ -331,6 +340,17 @@ mod tests {
         let app = crate::app::app(state);
 
         let (status, _) = list(&app, "repo=not-a-did&collection=app.bsky.feed.post").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn invalid_collection_returns_400() {
+        let (state, did) = setup_account_with_repo().await;
+        let app = crate::app::app(state);
+
+        // "app.bsky" is only two segments — not a valid NSID. Must be rejected, not
+        // silently matched as an empty collection.
+        let (status, _) = list(&app, &format!("repo={did}&collection=app.bsky")).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
