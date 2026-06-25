@@ -118,17 +118,20 @@ pub async fn delete_record(
 
     // Advance the root with optimistic concurrency (see putRecord for rationale).
     let new_root = repo.root().to_string();
-    let updated =
-        sqlx::query("UPDATE accounts SET repo_root_cid = ? WHERE did = ? AND repo_root_cid = ?")
-            .bind(&new_root)
-            .bind(did)
-            .bind(&root_cid_str)
-            .execute(&state.db)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, did = %did, "failed to update repo root CID");
-                ApiError::new(ErrorCode::InternalError, "failed to delete record")
-            })?;
+    let new_rev = repo.commit().rev().as_str().to_string();
+    let updated = sqlx::query(
+        "UPDATE accounts SET repo_root_cid = ?, repo_rev = ? WHERE did = ? AND repo_root_cid = ?",
+    )
+    .bind(&new_root)
+    .bind(&new_rev)
+    .bind(did)
+    .bind(&root_cid_str)
+    .execute(&state.db)
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, did = %did, "failed to update repo root CID");
+        ApiError::new(ErrorCode::InternalError, "failed to delete record")
+    })?;
     if updated.rows_affected() != 1 {
         return Err(ApiError::new(
             ErrorCode::Conflict,

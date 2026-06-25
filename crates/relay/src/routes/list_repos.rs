@@ -73,11 +73,17 @@ pub async fn list_repos(
 
     let mut repos = Vec::with_capacity(rows.len());
     for row in rows {
-        // A single unreadable repo — e.g. an interrupted write that set `repo_root_cid`
-        // before the commit block landed — must not 500 the whole enumeration. Log and skip
-        // it so a crawler can still page through the healthy repos.
-        let Some(rev) = read_repo_rev(&state, &row.did, &row.head).await else {
-            continue;
+        // The rev is normally stored on the account row (written at every commit), so the
+        // common path is a pure column read with no repo open. Pre-migration accounts have
+        // no stored rev: fall back to reading it from the commit block. A single unreadable
+        // repo — e.g. an interrupted write that set `repo_root_cid` before the commit block
+        // landed — must not 500 the whole enumeration, so skip it and keep paging.
+        let rev = match row.rev {
+            Some(rev) => rev,
+            None => match read_repo_rev(&state, &row.did, &row.head).await {
+                Some(rev) => rev,
+                None => continue,
+            },
         };
         repos.push(RepoEntry {
             did: row.did,
@@ -240,6 +246,33 @@ mod tests {
         let repos = body["repos"].as_array().unwrap();
         assert_eq!(repos.len(), 1, "only the healthy repo should be returned");
         assert_eq!(repos[0]["did"], "did:plc:listreposhealthy");
+    }
+
+    #[tokio::test]
+    async fn legacy_null_rev_falls_back_to_commit_block() {
+        let state = state_with_master_key().await;
+        // A pre-migration account: repo blocks exist and repo_root_cid is set, but repo_rev
+        // was never populated. listRepos must still report the rev, read from the commit.
+        let did = "did:plc:listreposlegacy";
+        seed_account_with_repo(&state.db, did).await;
+        let expected_rev: String =
+            sqlx::query_scalar("SELECT repo_rev FROM accounts WHERE did = ?")
+                .bind(did)
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        sqlx::query("UPDATE accounts SET repo_rev = NULL WHERE did = ?")
+            .bind(did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let app = crate::app::app(state);
+
+        let (status, body) = list(&app, "").await;
+        assert_eq!(status, StatusCode::OK);
+        let repos = body["repos"].as_array().unwrap();
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0]["rev"], expected_rev);
     }
 
     #[tokio::test]

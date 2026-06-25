@@ -238,17 +238,20 @@ pub async fn apply_writes(
     // Atomic commit: advance the persisted root only if it hasn't moved since we read it.
     // A concurrent write losing this race returns 409 rather than clobbering the other commit.
     let new_root = repo.root().to_string();
-    let updated =
-        sqlx::query("UPDATE accounts SET repo_root_cid = ? WHERE did = ? AND repo_root_cid = ?")
-            .bind(&new_root)
-            .bind(did)
-            .bind(&root_cid_str)
-            .execute(&state.db)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, did = %did, "failed to update repo root CID");
-                ApiError::new(ErrorCode::InternalError, "failed to apply writes")
-            })?;
+    let new_rev = repo.commit().rev().as_str().to_string();
+    let updated = sqlx::query(
+        "UPDATE accounts SET repo_root_cid = ?, repo_rev = ? WHERE did = ? AND repo_root_cid = ?",
+    )
+    .bind(&new_root)
+    .bind(&new_rev)
+    .bind(did)
+    .bind(&root_cid_str)
+    .execute(&state.db)
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, did = %did, "failed to update repo root CID");
+        ApiError::new(ErrorCode::InternalError, "failed to apply writes")
+    })?;
     if updated.rows_affected() != 1 {
         return Err(ApiError::new(
             ErrorCode::Conflict,

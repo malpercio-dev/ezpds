@@ -135,14 +135,15 @@ impl AsyncBlockStoreWrite for CapturingBlockStore {
     }
 }
 
-/// Build an empty, signed genesis repo in memory, returning the root commit CID
-/// and every block written. The caller persists the blocks (and root) atomically —
-/// e.g. inside the account-promotion transaction — so a half-created repo (account
-/// without a repo, or a root pointing at missing blocks) is structurally impossible.
+/// Build an empty, signed genesis repo in memory, returning the root commit CID, the
+/// commit revision (`rev`), and every block written. The caller persists the blocks (and
+/// root + rev) atomically — e.g. inside the account-promotion transaction — so a
+/// half-created repo (account without a repo, or a root pointing at missing blocks) is
+/// structurally impossible.
 pub async fn build_genesis_repo(
     did: &str,
     signer: &CommitSigner,
-) -> Result<(Cid, Vec<(Cid, Vec<u8>)>), GenesisError> {
+) -> Result<(Cid, String, Vec<(Cid, Vec<u8>)>), GenesisError> {
     let store = CapturingBlockStore::new();
     let did_typed =
         Did::new(did.to_string()).map_err(|e: &str| GenesisError::InvalidDid(e.to_string()))?;
@@ -158,7 +159,8 @@ pub async fn build_genesis_repo(
         .await
         .map_err(|e| GenesisError::BlockStore(e.to_string()))?;
 
-    Ok((repo.root(), store.blocks()))
+    let rev = repo.commit().rev().as_str().to_string();
+    Ok((repo.root(), rev, store.blocks()))
 }
 
 #[cfg(test)]
@@ -227,10 +229,11 @@ mod tests {
         use atrium_repo::blockstore::{AsyncBlockStoreWrite, DAG_CBOR, SHA2_256};
 
         let signer = test_signer();
-        let (root, blocks) = build_genesis_repo("did:plc:buildtest", &signer)
+        let (root, rev, blocks) = build_genesis_repo("did:plc:buildtest", &signer)
             .await
             .unwrap();
 
+        assert!(!rev.is_empty(), "genesis commit must have a rev");
         assert!(
             blocks.len() >= 2,
             "genesis has a commit + an empty MST node"

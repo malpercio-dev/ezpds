@@ -114,6 +114,9 @@ pub(crate) struct RepoListRow {
     pub(crate) did: String,
     /// Raw stored repo root commit CID string (the repo `head`).
     pub(crate) head: String,
+    /// Stored commit revision (TID). `None` for pre-`repo_rev`-migration accounts; the
+    /// caller falls back to reading the rev from the commit block in that case.
+    pub(crate) rev: Option<String>,
     /// `true` when `deactivated_at` is NULL.
     pub(crate) active: bool,
 }
@@ -128,8 +131,8 @@ pub(crate) async fn list_repos(
     cursor: &str,
     limit: i64,
 ) -> Result<Vec<RepoListRow>, sqlx::Error> {
-    let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
-        "SELECT did, repo_root_cid, deactivated_at FROM accounts \
+    let rows: Vec<(String, String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT did, repo_root_cid, repo_rev, deactivated_at FROM accounts \
          WHERE repo_root_cid IS NOT NULL AND did > ? \
          ORDER BY did ASC LIMIT ?",
     )
@@ -140,9 +143,10 @@ pub(crate) async fn list_repos(
 
     Ok(rows
         .into_iter()
-        .map(|(did, head, deactivated_at)| RepoListRow {
+        .map(|(did, head, rev, deactivated_at)| RepoListRow {
             did,
             head,
+            rev,
             active: deactivated_at.is_none(),
         })
         .collect())

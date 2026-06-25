@@ -161,12 +161,13 @@ pub async fn create_did_handler(
         tracing::error!(error = %e, "invalid repo signing key for genesis");
         ApiError::new(ErrorCode::InternalError, "failed to prepare genesis repo")
     })?;
-    let (genesis_root, genesis_blocks) = repo_engine::build_genesis_repo(did, &genesis_signer)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, did = %did, "failed to build genesis repo");
-            ApiError::new(ErrorCode::InternalError, "failed to build genesis repo")
-        })?;
+    let (genesis_root, genesis_rev, genesis_blocks) =
+        repo_engine::build_genesis_repo(did, &genesis_signer)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, did = %did, "failed to build genesis repo");
+                ApiError::new(ErrorCode::InternalError, "failed to build genesis repo")
+            })?;
     let genesis_root_str = genesis_root.to_string();
 
     // Phase 3: Pre-store DID and Shamir shares for retry resilience, then POST to plc.directory.
@@ -200,6 +201,7 @@ pub async fn create_did_handler(
         &password_hash,
         &repo_key,
         &genesis_root_str,
+        &genesis_rev,
         &genesis_blocks,
     )
     .await?;
@@ -524,6 +526,7 @@ async fn promote_account(
     password_hash: &str,
     repo_key: &crate::db::repo_keys::RepoSigningKey,
     genesis_root: &str,
+    genesis_rev: &str,
     genesis_blocks: &[(repo_engine::Cid, Vec<u8>)],
 ) -> Result<(), ApiError> {
     let did_document_str = serde_json::to_string(did_document).map_err(|e| {
@@ -540,14 +543,15 @@ async fn promote_account(
 
     sqlx::query(
         "INSERT INTO accounts \
-         (did, email, password_hash, recovery_share, repo_root_cid, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+         (did, email, password_hash, recovery_share, repo_root_cid, repo_rev, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
     )
     .bind(did)
     .bind(email)
     .bind(password_hash)
     .bind(recovery_share)
     .bind(genesis_root)
+    .bind(genesis_rev)
     .execute(&mut *tx)
     .await
     .map_err(|e| {

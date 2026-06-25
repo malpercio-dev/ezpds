@@ -212,17 +212,20 @@ pub async fn write_record(
     // we return 409 so the client retries against the new root (rather than silently
     // clobbering the other commit). The new blocks we wrote are orphaned and GC-able.
     let new_root = repo.root().to_string();
-    let updated =
-        sqlx::query("UPDATE accounts SET repo_root_cid = ? WHERE did = ? AND repo_root_cid = ?")
-            .bind(&new_root)
-            .bind(did)
-            .bind(&root_cid_str)
-            .execute(&state.db)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, did = %did, "failed to update repo root CID");
-                ApiError::new(ErrorCode::InternalError, "failed to write record")
-            })?;
+    let new_rev = repo.commit().rev().as_str().to_string();
+    let updated = sqlx::query(
+        "UPDATE accounts SET repo_root_cid = ?, repo_rev = ? WHERE did = ? AND repo_root_cid = ?",
+    )
+    .bind(&new_root)
+    .bind(&new_rev)
+    .bind(did)
+    .bind(&root_cid_str)
+    .execute(&state.db)
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, did = %did, "failed to update repo root CID");
+        ApiError::new(ErrorCode::InternalError, "failed to write record")
+    })?;
     if updated.rows_affected() != 1 {
         return Err(ApiError::new(
             ErrorCode::Conflict,
