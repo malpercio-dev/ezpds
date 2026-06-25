@@ -79,33 +79,13 @@ mod tests {
     use axum::http::{self, Request, StatusCode};
     use tower::ServiceExt;
 
-    use crate::routes::test_utils::{seed_account_with_repo, state_with_master_key};
+    use crate::routes::test_utils::{access_jwt, seed_account_with_repo, state_with_master_key};
 
     async fn setup_account_with_repo() -> (AppState, String) {
         let state = state_with_master_key().await;
         let did = "did:plc:createrecordtest".to_string();
         seed_account_with_repo(&state.db, &did).await;
         (state, did)
-    }
-
-    fn access_jwt(secret: &[u8; 32], sub: &str) -> String {
-        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        encode(
-            &Header::new(Algorithm::HS256),
-            &serde_json::json!({
-                "scope": "com.atproto.access",
-                "sub": sub,
-                "iat": now,
-                "exp": now + 7200_u64,
-            }),
-            &EncodingKey::from_secret(secret),
-        )
-        .unwrap()
     }
 
     #[tokio::test]

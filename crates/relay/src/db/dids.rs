@@ -36,6 +36,27 @@ pub async fn get_did_document(
     }
 }
 
+/// Fetch all handles for a DID and assemble them into `at://<handle>` form,
+/// suitable for a DID document's `alsoKnownAs` array.
+///
+/// The order follows the `handles` table's natural row order. Returns an empty
+/// vec when the DID has no handles.
+pub async fn fetch_also_known_as(db: &SqlitePool, did: &str) -> Result<Vec<String>, ApiError> {
+    let handles: Vec<(String,)> = sqlx::query_as("SELECT handle FROM handles WHERE did = ?")
+        .bind(did)
+        .fetch_all(db)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to fetch handles for alsoKnownAs update");
+            ApiError::new(ErrorCode::InternalError, "failed to update DID document")
+        })?;
+
+    Ok(handles
+        .into_iter()
+        .map(|(h,)| format!("at://{h}"))
+        .collect())
+}
+
 /// Update the `alsoKnownAs` array in a DID document.
 ///
 /// Fetches the current document, replaces the `alsoKnownAs` field, and writes it back.

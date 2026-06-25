@@ -51,7 +51,7 @@ pub async fn write_record(
     create_only: bool,
 ) -> Result<(WriteRecordResult, repo_engine::Cid), ApiError> {
     // Validate DID format.
-    if !did.starts_with("did:") {
+    if !crate::auth::validation::is_valid_did(did) {
         return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
     }
 
@@ -66,15 +66,12 @@ pub async fn write_record(
     }
 
     // Look up the repo root CID.
-    let root_cid_str: Option<String> =
-        sqlx::query_scalar("SELECT repo_root_cid FROM accounts WHERE did = ?")
-            .bind(did)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, did = %did, "failed to query repo root CID");
-                ApiError::new(ErrorCode::InternalError, "failed to write record")
-            })?;
+    let root_cid_str = crate::db::accounts::get_repo_root_cid(&state.db, did)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, did = %did, "failed to query repo root CID");
+            ApiError::new(ErrorCode::InternalError, "failed to write record")
+        })?;
 
     let root_cid_str =
         root_cid_str.ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
