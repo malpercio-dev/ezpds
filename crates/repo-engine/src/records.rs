@@ -382,6 +382,37 @@ where
     Ok(ListRecordsPage { records, cursor })
 }
 
+/// List the distinct collection NSIDs present in a repository, in lexicographic order.
+///
+/// Walks every MST key (`<collection>/<rkey>`) and collects the unique `<collection>`
+/// prefixes. An empty repo (genesis, no records) yields an empty list. Used by
+/// `com.atproto.repo.describeRepo` to report which collections a repo holds.
+pub async fn list_collections<S>(repo: &mut Repository<S>) -> Result<Vec<String>, RecordError>
+where
+    S: atrium_repo::blockstore::AsyncBlockStoreRead + atrium_repo::blockstore::AsyncBlockStoreWrite,
+{
+    use futures::StreamExt;
+
+    // MST keys arrive in lexicographic order, and every key for a collection shares the
+    // `<collection>/` prefix — so any key sorting between two of a collection's keys must
+    // also carry that prefix. Equal-collection keys are therefore contiguous, and a single
+    // last-seen comparison dedupes them in O(n) with no intermediate set.
+    let mut collections: Vec<String> = Vec::new();
+    let mut tree = repo.tree();
+    let mut stream = Box::pin(tree.keys());
+    while let Some(res) = stream.next().await {
+        let key = res.map_err(|e| RecordError::Repo(format!("list keys: {e}")))?;
+        // MST keys are `<collection>/<rkey>`; the collection is everything before the
+        // first slash. Keys without a slash are not valid records and are skipped.
+        if let Some((collection, _)) = key.split_once('/') {
+            if collections.last().map(String::as_str) != Some(collection) {
+                collections.push(collection.to_string());
+            }
+        }
+    }
+    Ok(collections)
+}
+
 /// Validate that `collection` is a syntactically valid NSID per the ATProto spec:
 /// at least three dot-separated segments, each non-empty and `[A-Za-z0-9-]`, with a
 /// total length of 1..=317 and no slashes.
@@ -824,6 +855,35 @@ mod tests {
         assert!(outcomes[0].cid.is_none());
         // A no-op delete must not write a commit, so the root is unchanged.
         assert_eq!(repo.root(), root_before);
+    }
+
+    #[tokio::test]
+    async fn list_collections_returns_distinct_sorted_names() {
+        let (mut repo, signer) = create_test_repo("did:plc:collections").await;
+
+        // Empty repo: no collections.
+        assert!(list_collections(&mut repo).await.unwrap().is_empty());
+
+        // Two records in one collection, one in another (inserted out of order).
+        for key in [
+            "app.bsky.feed.post/b",
+            "app.bsky.feed.like/x",
+            "app.bsky.feed.post/a",
+        ] {
+            put_record_json(&mut repo, &signer, key, &serde_json::json!({ "t": 1 }))
+                .await
+                .unwrap();
+        }
+
+        let collections = list_collections(&mut repo).await.unwrap();
+        assert_eq!(
+            collections,
+            vec![
+                "app.bsky.feed.like".to_string(),
+                "app.bsky.feed.post".to_string()
+            ],
+            "collections must be distinct and lexicographically sorted"
+        );
     }
 
     #[tokio::test]
