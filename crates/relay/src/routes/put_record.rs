@@ -21,6 +21,25 @@ pub struct PutRecordParams {
 pub struct PutRecordBody {
     /// The record data as a JSON object.
     record: serde_json::Value,
+    /// `swapCommit`: when present, only write if the repo head matches this commit CID.
+    #[serde(default, rename = "swapCommit")]
+    swap_commit: Option<String>,
+    /// `swapRecord`: optimistic concurrency on the record itself. Absent imposes no check;
+    /// an explicit `null` requires the record to not yet exist; a CID requires the current
+    /// record to match. The double-`Option` (via [`double_option`]) preserves the
+    /// absent-vs-null distinction that a plain `Option` would collapse.
+    #[serde(default, rename = "swapRecord", deserialize_with = "double_option")]
+    swap_record: Option<Option<String>>,
+}
+
+/// Deserialize a field so that an explicit JSON `null` becomes `Some(None)` while an omitted
+/// field (via `#[serde(default)]`) stays `None`. This is the only way to tell `swapRecord: null`
+/// (require-absent) apart from a missing `swapRecord` (no precondition).
+fn double_option<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde::Deserialize::deserialize(deserializer).map(Some)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -49,6 +68,11 @@ pub async fn put_record(
 
     let mst_key = format!("{collection}/{rkey}");
 
+    let swap = crate::record_write::SwapCheck {
+        commit: body.swap_commit,
+        record: body.swap_record,
+    };
+
     // Delegate to the shared write helper with create_only=false.
     let (_result, record_cid) = crate::record_write::write_record(
         &state,
@@ -57,6 +81,7 @@ pub async fn put_record(
         &mst_key,
         &body.record,
         false, // create_only=false: upsert semantics
+        &swap,
     )
     .await?;
 
@@ -249,6 +274,176 @@ mod tests {
 
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// Helper: issue a putRecord and return (status, parsed JSON body).
+    async fn put(
+        app: &axum::Router,
+        token: &str,
+        did: &str,
+        rkey: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri(format!(
+                "/xrpc/com.atproto.repo.putRecord?did={did}&collection=app.bsky.feed.post&rkey={rkey}"
+            ))
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn put_record_swap_record_matching_cid_succeeds() {
+        let (state, did) = setup_account_with_repo().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        let app = crate::app::app(state);
+
+        // Create v1, capture its CID.
+        let (status, v1) = put(
+            &app,
+            &token,
+            &did,
+            "swap1",
+            serde_json::json!({"record": {"n": 1}}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let v1_cid = v1["cid"].as_str().unwrap().to_string();
+
+        // Update with swapRecord = current CID → succeeds.
+        let (status, _) = put(
+            &app,
+            &token,
+            &did,
+            "swap1",
+            serde_json::json!({"record": {"n": 2}, "swapRecord": v1_cid}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn put_record_swap_record_stale_cid_returns_invalid_swap() {
+        let (state, did) = setup_account_with_repo().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        let app = crate::app::app(state);
+
+        let (status, v1) = put(
+            &app,
+            &token,
+            &did,
+            "swap2",
+            serde_json::json!({"record": {"n": 1}}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let v1_cid = v1["cid"].as_str().unwrap().to_string();
+
+        // Advance the record so v1_cid is now stale.
+        let (status, _) = put(
+            &app,
+            &token,
+            &did,
+            "swap2",
+            serde_json::json!({"record": {"n": 2}}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // swapRecord against the now-stale CID → 409 InvalidSwap.
+        let (status, body) = put(
+            &app,
+            &token,
+            &did,
+            "swap2",
+            serde_json::json!({"record": {"n": 3}, "swapRecord": v1_cid}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"]["code"], "InvalidSwap");
+    }
+
+    #[tokio::test]
+    async fn put_record_swap_record_null_requires_absent() {
+        let (state, did) = setup_account_with_repo().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        let app = crate::app::app(state);
+
+        // swapRecord: null on an absent key acts as create → succeeds.
+        let (status, _) = put(
+            &app,
+            &token,
+            &did,
+            "swap3",
+            serde_json::json!({"record": {"n": 1}, "swapRecord": null}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // The record now exists; swapRecord: null must now fail with InvalidSwap.
+        let (status, body) = put(
+            &app,
+            &token,
+            &did,
+            "swap3",
+            serde_json::json!({"record": {"n": 2}, "swapRecord": null}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"]["code"], "InvalidSwap");
+    }
+
+    #[tokio::test]
+    async fn put_record_swap_commit_stale_returns_invalid_swap() {
+        let (state, did) = setup_account_with_repo().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        let app = crate::app::app(state);
+
+        // A bogus commit CID never matches the head → InvalidSwap.
+        let bogus = "bafyreie5cvv4h45feadgeuwhbcutmh6t2ceseocckahdoe6uat64zmz454";
+        let (status, body) = put(
+            &app,
+            &token,
+            &did,
+            "swap4",
+            serde_json::json!({"record": {"n": 1}, "swapCommit": bogus}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"]["code"], "InvalidSwap");
+    }
+
+    #[tokio::test]
+    async fn put_record_swap_commit_matching_head_succeeds() {
+        let (state, did) = setup_account_with_repo().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        let db = state.db.clone();
+        let app = crate::app::app(state);
+
+        // Read the current repo head, then put with swapCommit = head → succeeds.
+        let head = crate::db::accounts::get_repo_root_cid(&db, &did)
+            .await
+            .unwrap()
+            .unwrap();
+        let (status, _) = put(
+            &app,
+            &token,
+            &did,
+            "swap5",
+            serde_json::json!({"record": {"n": 1}, "swapCommit": head}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
     }
 
     #[tokio::test]

@@ -512,6 +512,24 @@ where
     Ok(cid)
 }
 
+/// Return the CID of the record block currently stored at `key`, or `None` if absent.
+///
+/// The MST maps each record key directly to its block CID, so this is a single tree
+/// lookup with no record-block fetch. Used to enforce the `swapRecord`
+/// optimistic-concurrency precondition without deserializing the record itself.
+pub async fn get_record_cid<S>(
+    repo: &mut Repository<S>,
+    key: &str,
+) -> Result<Option<Cid>, RecordError>
+where
+    S: atrium_repo::blockstore::AsyncBlockStoreRead + atrium_repo::blockstore::AsyncBlockStoreWrite,
+{
+    repo.tree()
+        .get(key)
+        .await
+        .map_err(|e| RecordError::Repo(format!("get record cid: {e}")))
+}
+
 /// Read a record from the repository.
 ///
 /// Returns `None` if the key does not exist.

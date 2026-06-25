@@ -59,6 +59,7 @@ pub async fn create_record(
         &mst_key,
         &body.record,
         true, // create_only: reject if record already exists
+        &crate::record_write::SwapCheck::default(),
     )
     .await?;
 

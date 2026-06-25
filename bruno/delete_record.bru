@@ -14,8 +14,16 @@ params:query {
   did: {{did}}
   collection: {{collection}}
   rkey: {{rkey}}
+  ~swapCommit:
+  ~swapRecord:
 }
 
 auth:bearer {
   token: {{accessToken}}
+}
+
+docs {
+  Optional optimistic-concurrency params (enable as needed):
+  - swapCommit: only delete if the repo head matches this commit CID, else 409 InvalidSwap.
+  - swapRecord: only delete if the record currently at the key has this CID, else 409 InvalidSwap.
 }

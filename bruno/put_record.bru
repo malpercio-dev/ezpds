@@ -25,3 +25,10 @@ body:json {
     "record": {{record}}
   }
 }
+
+docs {
+  Optional optimistic-concurrency body fields (add alongside "record"):
+  - "swapCommit": "<cid>" — only write if the repo head matches this commit CID, else 409 InvalidSwap.
+  - "swapRecord": "<cid>" — only write if the record currently at the key has this CID;
+    "swapRecord": null requires the record to be absent (create-only). Mismatch returns 409 InvalidSwap.
+}
