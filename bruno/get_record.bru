@@ -5,7 +5,7 @@ meta {
 }
 
 get {
-  url: {{baseUrl}}/xrpc/com.atproto.repo.getRecord?did={{did}}&collection={{collection}}&rkey={{rkey}}&cid=
+  url: {{baseUrl}}/xrpc/com.atproto.repo.getRecord?did={{did}}&collection={{collection}}&rkey={{rkey}}
   body: none
   auth: none
 }
@@ -18,7 +18,7 @@ params:query {
 }
 
 docs {
-  Optional `cid` selects a specific version of the record. Omit it (or leave it disabled)
-  to get the current version. A `cid` is only served if that block is still stored for this
-  repo; a garbage-collected or unknown CID returns a 404 (record not found).
+  Optional `cid` selects a version of the record. Omit it (or leave it disabled) to get the
+  current version. Only the current version is served: a `cid` that matches the current record
+  returns it; any other (superseded or unknown) CID returns a 404 (record not found).
 }

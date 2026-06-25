@@ -26,12 +26,12 @@ pub struct GetRecordParams {
 ///
 /// Read a record from the repository.
 ///
-/// When `cid` is supplied and differs from the current version, the requested version is
-/// served directly from the block store — but only if that block is still present. We keep no
-/// version index and never resurrect blocks, so a CID that has been garbage-collected (or never
-/// belonged to this repo) returns not-found. This matches how the wider network behaves: a PDS
-/// is not obligated to retain superseded record versions, so consumers already treat a
-/// historical-CID miss as the normal, interoperable outcome.
+/// The optional `cid` selects a version of the record. We retain (and can verify as belonging
+/// to this key) only the current version, so a `cid` that matches the current record is served
+/// and any other `cid` returns not-found. Superseded versions are reclaimed by post-commit GC
+/// and we keep no version index. This is spec-compliant network behavior: `getRecord`'s `cid`
+/// is a best-effort selector and a PDS is not obligated to serve historical record versions, so
+/// consumers already treat a non-current-CID miss as the normal, interoperable outcome.
 pub async fn get_record(
     State(state): State<AppState>,
     Query(params): Query<GetRecordParams>,
@@ -72,7 +72,12 @@ pub async fn get_record(
     let mst_key = format!("{collection}/{rkey}");
     let uri = format!("at://{did}/{collection}/{rkey}");
 
-    // The MST maps the key directly to the current record block's CID.
+    // An empty `cid=` query param means "no version pinned" — treat it as absent so a bare
+    // `?cid=` returns the current record instead of being read as a never-matching version.
+    let requested_cid = params.cid.as_deref().filter(|s| !s.is_empty());
+
+    // The MST maps the key directly to the current record block's CID; this is None exactly
+    // when the record does not exist.
     let current_cid = repo_engine::get_record_cid(&mut repo, &mst_key)
         .await
         .map_err(|e| {
@@ -81,49 +86,16 @@ pub async fn get_record(
         })?
         .map(|c| c.to_string());
 
-    // A requested CID that matches the current version (or no CID at all) is served from the
-    // MST. Any other requested CID is a historical version fetched directly from the block store.
-    let wants_historical = params
-        .cid
-        .as_deref()
-        .is_some_and(|requested| current_cid.as_deref() != Some(requested));
-
-    if wants_historical {
-        let requested = params
-            .cid
-            .as_deref()
-            .expect("historical implies cid present");
-        // Scope the lookup to this repo: a block is only "this record's" history if it belongs
-        // to this account. Blocks are content-addressed, so the stored bytes hash to the CID.
-        let block = crate::db::blocks::get_block(&state.db, requested)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, did = %did, cid = %requested, "failed to query block");
-                ApiError::new(ErrorCode::InternalError, "failed to get record")
-            })?
-            .filter(|b| b.account_did == *did)
-            .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "record not found"))?;
-
-        let value = repo_engine::decode_record_block(&block.bytes).map_err(|e| {
-            tracing::error!(error = %e, did = %did, cid = %requested, "failed to decode record block");
-            ApiError::new(ErrorCode::InternalError, "failed to get record")
-        })?;
-
-        return Ok((
-            StatusCode::OK,
-            axum::Json(serde_json::json!({
-                "uri": uri,
-                "cid": requested,
-                "value": value,
-            })),
-        )
-            .into_response());
-    }
-
-    // Current version. `current_cid` is None exactly when the record does not exist.
     let Some(cid) = current_cid else {
         return Err(ApiError::new(ErrorCode::NotFound, "record not found"));
     };
+
+    // A pinned `cid` selects a version of the record. We retain (and can verify as bound to this
+    // key) only the current one, so any other version is not-found — superseded versions are
+    // reclaimed by post-commit GC and we keep no version index.
+    if requested_cid.is_some_and(|requested| requested != cid) {
+        return Err(ApiError::new(ErrorCode::NotFound, "record not found"));
+    }
 
     // Read the record (the stored ATProto data model is mapped back to JSON:
     // CID links → {"$link": ...}, byte strings → {"$bytes": ...}).
@@ -396,9 +368,9 @@ mod tests {
 
     #[tokio::test]
     async fn get_record_superseded_cid_is_gced_and_returns_404() {
-        // putRecord runs post-commit GC, so overwriting a record reclaims the prior block.
-        // Pinning the superseded CID therefore returns not-found — the retention contract
-        // ("serve only still-stored CIDs") and exactly how the wider network behaves.
+        // Overwriting a record makes the prior CID non-current (and post-commit GC reclaims its
+        // block). Pinning that superseded CID therefore returns not-found — the current-version
+        // -only contract, and exactly how the wider network behaves.
         let (state, did) = setup_account_with_repo().await;
         let token = access_jwt(&state.jwt_secret, &did);
         let app = crate::app::app(state);
@@ -424,10 +396,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_record_stored_historical_block_is_served() {
-        // The positive historical path: when a non-current record block is *still present* in
-        // this repo's store, pinning its CID decodes and returns it directly (bypassing the MST).
-        // We seed the block to exercise the path deterministically, independent of GC timing.
+    async fn get_record_noncurrent_cid_returns_404_even_if_block_present() {
+        // Current-version-only contract: we only serve the version the MST currently points to.
+        // Even a record block that is still physically present in this repo's store is *not*
+        // served when its CID isn't the current one — we keep no version index and never
+        // resurrect superseded versions.
         use atrium_repo::blockstore::{AsyncBlockStoreWrite, DAG_CBOR, SHA2_256};
 
         let (state, did) = setup_account_with_repo().await;
@@ -438,22 +411,38 @@ mod tests {
         let (status, _) = put_record(&app, &token, &did, "ver", json!({"n": 2})).await;
         assert_eq!(status, StatusCode::OK);
 
-        // …and a prior version's block is still stored (written content-addressed, exactly as
-        // a real commit would have written it).
-        let prior = json!({"n": 1});
-        let ipld = repo_engine::json_to_record_value(&prior).unwrap();
+        // …and some other record block is still stored for this account.
+        let other = json!({"n": 1});
+        let ipld = repo_engine::json_to_record_value(&other).unwrap();
         let bytes = serde_ipld_dagcbor::to_vec(&ipld).unwrap();
         let mut bs = crate::db::blocks::SqliteBlockStore::new(state.db.clone(), did.clone());
-        let prior_cid = bs
+        let other_cid = bs
             .write_block(DAG_CBOR, SHA2_256, &bytes)
             .await
             .unwrap()
             .to_string();
 
-        let (status, body) = get(&app, &did, "ver", Some(&prior_cid)).await;
+        // Pinning that non-current CID is not-found, even though the block is present.
+        let (status, _) = get(&app, &did, "ver", Some(&other_cid)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn get_record_empty_cid_returns_current() {
+        // A bare `?cid=` (empty value) deserializes to Some("") — it must be treated as "no
+        // version pinned" and return the current record, not 404.
+        let (state, did) = setup_account_with_repo().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        let app = crate::app::app(state);
+
+        let (status, put) = put_record(&app, &token, &did, "emptycid", json!({"n": 5})).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["cid"], prior_cid);
-        assert_eq!(body["value"]["n"], 1);
+        let cur_cid = put["cid"].as_str().unwrap().to_string();
+
+        let (status, body) = get(&app, &did, "emptycid", Some("")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["cid"], cur_cid);
+        assert_eq!(body["value"]["n"], 5);
     }
 
     #[tokio::test]
@@ -465,7 +454,7 @@ mod tests {
         let (status, _) = put_record(&app, &token, &did, "unknown", json!({"n": 1})).await;
         assert_eq!(status, StatusCode::OK);
 
-        // A well-formed CID that was never stored for this record → not found.
+        // A well-formed CID that isn't the current record's CID → not found.
         let bogus = "bafyreie5cvv4h45feadgeuwhbcutmh6t2ceseocckahdoe6uat64zmz454";
         let (status, _) = get(&app, &did, "unknown", Some(bogus)).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
