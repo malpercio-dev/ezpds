@@ -58,13 +58,6 @@ enum Kind {
     Delete,
 }
 
-/// Per-write metadata retained for building the response after the batch commits.
-struct WriteMeta {
-    kind: Kind,
-    collection: String,
-    rkey: String,
-}
-
 #[derive(Serialize)]
 struct CommitMeta {
     cid: String,
@@ -133,8 +126,9 @@ pub async fn apply_writes(
 
     // Resolve each write to a concrete (collection, rkey) and validate its path up front,
     // so an invalid path or float rejects the whole batch before any mutation. `value` is
-    // moved into the engine op; `metas` retains the path for building the response.
-    let mut metas: Vec<WriteMeta> = Vec::with_capacity(body.writes.len());
+    // moved into the engine op; `kinds` retains each write's variant for building the
+    // response (the AT-URI is rebuilt from the matching `WriteOutcome.key`).
+    let mut kinds: Vec<Kind> = Vec::with_capacity(body.writes.len());
     let mut ops: Vec<WriteOp> = Vec::with_capacity(body.writes.len());
     for item in body.writes {
         let (kind, collection, rkey, value) = match item {
@@ -174,11 +168,7 @@ pub async fn apply_writes(
             }
         };
         ops.push(op);
-        metas.push(WriteMeta {
-            kind,
-            collection,
-            rkey,
-        });
+        kinds.push(kind);
     }
 
     // Look up the repo root CID.
@@ -273,14 +263,16 @@ pub async fn apply_writes(
 
     let rev = repo.commit().rev().as_str().to_string();
 
-    // Build per-write results in batch order, pairing each retained meta with its outcome.
-    let results = metas
+    // Build per-write results in batch order, pairing each write's variant with its outcome.
+    // `outcome.key` is the `<collection>/<rkey>` written by the engine, so the AT-URI is just
+    // `at://<did>/<key>` — no need to retain the split collection/rkey separately.
+    let results = kinds
         .iter()
         .zip(outcomes.iter())
-        .map(|(meta, outcome)| {
-            let uri = format!("at://{did}/{}/{}", meta.collection, meta.rkey);
+        .map(|(kind, outcome)| {
+            let uri = format!("at://{did}/{}", outcome.key);
             let cid = outcome.cid.map(|c| c.to_string()).unwrap_or_default();
-            match meta.kind {
+            match kind {
                 Kind::Create => WriteResult::Create {
                     uri,
                     cid,
