@@ -47,10 +47,6 @@ struct CreateMobileAccountResponse {
 #[serde(rename_all = "camelCase")]
 struct RelaySigningKey {
     key_id: String,
-    #[allow(dead_code)]
-    public_key: String,
-    #[allow(dead_code)]
-    algorithm: String,
 }
 
 /// Request body for POST /v1/dids — submit the signed genesis op for DID promotion.

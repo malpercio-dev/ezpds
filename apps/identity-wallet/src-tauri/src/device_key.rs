@@ -39,6 +39,29 @@ pub enum DeviceKeyError {
     KeychainError { message: String },
 }
 
+// ── did:key construction ──────────────────────────────────────────────────────
+
+/// Build a [`DevicePublicKey`] from a compressed (33-byte SEC1) P-256 point.
+///
+/// Produces the multibase base58btc encoding of the raw point and the full
+/// did:key URI (P-256 multicodec varint prefix [0x80, 0x24] prepended, then
+/// base58btc-encoded). This matches `crates/crypto/src/keys.rs`
+/// `P256_MULTICODEC_PREFIX = &[0x80, 0x24]`, which is `pub(crate)` and cannot be
+/// imported across crate boundaries — the constant is duplicated intentionally.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn make_device_public_key(compressed: &[u8]) -> DevicePublicKey {
+    let multibase = multibase::encode(multibase::Base::Base58Btc, compressed);
+    const P256_MULTICODEC: &[u8] = &[0x80, 0x24];
+    let mut multikey = Vec::with_capacity(2 + compressed.len());
+    multikey.extend_from_slice(P256_MULTICODEC);
+    multikey.extend_from_slice(compressed);
+    let key_id = format!(
+        "did:key:{}",
+        multibase::encode(multibase::Base::Base58Btc, &multikey)
+    );
+    DevicePublicKey { multibase, key_id }
+}
+
 // ── Simulator / macOS host path ───────────────────────────────────────────────
 //
 // Covers:
@@ -80,21 +103,8 @@ pub fn get_or_create() -> Result<DevicePublicKey, DeviceKeyError> {
         })?;
     let encoded = signing_key.verifying_key().to_encoded_point(true); // compressed (33 bytes)
     let compressed = encoded.as_bytes();
-    let multibase = multibase::encode(multibase::Base::Base58Btc, compressed);
-    // did:key requires the P-256 multicodec varint prefix [0x80, 0x24] (0x1200 as LEB128)
-    // prepended to the compressed point. This matches crates/crypto/src/keys.rs
-    // `P256_MULTICODEC_PREFIX = &[0x80, 0x24]`, which is `pub(crate)` and cannot be
-    // imported across crate boundaries — the constant is duplicated intentionally.
-    const P256_MULTICODEC: &[u8] = &[0x80, 0x24];
-    let mut multikey = Vec::with_capacity(2 + compressed.len());
-    multikey.extend_from_slice(P256_MULTICODEC);
-    multikey.extend_from_slice(compressed);
-    let key_id = format!(
-        "did:key:{}",
-        multibase::encode(multibase::Base::Base58Btc, &multikey)
-    );
 
-    Ok(DevicePublicKey { multibase, key_id })
+    Ok(make_device_public_key(compressed))
 }
 
 #[cfg(any(target_os = "macos", all(target_os = "ios", target_env = "sim")))]
@@ -156,17 +166,7 @@ pub fn get_or_create() -> Result<DevicePublicKey, DeviceKeyError> {
     ) {
         (Ok(compressed), Ok(_)) => {
             // Both present — fast path. Return the cached public key.
-            let multibase = multibase::encode(multibase::Base::Base58Btc, &compressed);
-            // did:key requires the P-256 multicodec varint prefix [0x80, 0x24] (0x1200 as LEB128).
-            const P256_MULTICODEC: &[u8] = &[0x80, 0x24];
-            let mut multikey = Vec::with_capacity(2 + compressed.len());
-            multikey.extend_from_slice(P256_MULTICODEC);
-            multikey.extend_from_slice(&compressed);
-            let key_id = format!(
-                "did:key:{}",
-                multibase::encode(multibase::Base::Base58Btc, &multikey)
-            );
-            return Ok(DevicePublicKey { multibase, key_id });
+            return Ok(make_device_public_key(&compressed));
         }
         (Err(e), _) | (_, Err(e)) if !crate::keychain::is_not_found(&e) => {
             // Transient OS error — do not fall through to generation.
@@ -244,17 +244,7 @@ pub fn get_or_create() -> Result<DevicePublicKey, DeviceKeyError> {
         }
     })?;
 
-    let multibase = multibase::encode(multibase::Base::Base58Btc, &compressed);
-    // did:key requires the P-256 multicodec varint prefix [0x80, 0x24] (0x1200 as LEB128).
-    const P256_MULTICODEC: &[u8] = &[0x80, 0x24];
-    let mut multikey = Vec::with_capacity(2 + compressed.len());
-    multikey.extend_from_slice(P256_MULTICODEC);
-    multikey.extend_from_slice(&compressed);
-    let key_id = format!(
-        "did:key:{}",
-        multibase::encode(multibase::Base::Base58Btc, &multikey)
-    );
-    Ok(DevicePublicKey { multibase, key_id })
+    Ok(make_device_public_key(&compressed))
 }
 
 #[cfg(all(target_os = "ios", not(target_env = "sim")))]
