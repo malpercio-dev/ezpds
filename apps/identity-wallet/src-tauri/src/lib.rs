@@ -836,8 +836,11 @@ async fn register_created_identity(
     let rotation_key_id = match device_key::get_or_create() {
         Ok(k) => k.key_id,
         Err(e) => {
-            tracing::warn!(did = %did, error = %e, "register_created_identity: device key unavailable for DID doc");
-            String::new()
+            // The global device key was created earlier in the flow (perform_did_ceremony),
+            // so a failure here is a genuine Keychain error — surface it rather than persist
+            // a malformed `rotationKeys: [""]` doc that would show a wrong "Not root" badge.
+            tracing::error!(did = %did, error = %e, "register_created_identity: device key unavailable for DID doc");
+            return Err(RegisterIdentityError::KeychainError);
         }
     };
     let pds_url = state.relay_client().base_url_str().to_owned();
