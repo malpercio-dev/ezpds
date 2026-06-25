@@ -40,13 +40,6 @@ pub struct SwapCheck {
     pub record: Option<Option<String>>,
 }
 
-impl SwapCheck {
-    /// True when no `swapCommit`/`swapRecord` precondition was supplied.
-    pub fn is_empty(&self) -> bool {
-        self.commit.is_none() && self.record.is_none()
-    }
-}
-
 /// Enforce the `swapCommit` / `swapRecord` preconditions against the current repo state.
 ///
 /// `current_root` is the persisted repo head CID (string form) and `repo` is the already-opened

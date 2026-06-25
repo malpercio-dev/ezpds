@@ -83,9 +83,7 @@ pub async fn delete_record(
         commit: params.swap_commit.clone(),
         record: params.swap_record.clone().map(Some),
     };
-    if !swap.is_empty() {
-        crate::record_write::enforce_swap(&swap, &root_cid_str, &mut repo, &mst_key).await?;
-    }
+    crate::record_write::enforce_swap(&swap, &root_cid_str, &mut repo, &mst_key).await?;
 
     // Idempotent: if the record is already absent, succeed without a new commit.
     let existing: Option<serde_json::Value> = repo_engine::get_record(&mut repo, &mst_key)
@@ -233,6 +231,35 @@ mod tests {
             .method(http::Method::POST)
             .uri(format!(
                 "/xrpc/com.atproto.repo.deleteRecord?did={did}&collection=app.bsky.feed.post&rkey=d2&swapRecord={bogus}"
+            ))
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"]["code"], "InvalidSwap");
+    }
+
+    #[tokio::test]
+    async fn delete_record_swap_record_on_absent_returns_invalid_swap() {
+        let state = state_with_master_key().await;
+        let did = "did:plc:delrec".to_string();
+        seed_account_with_repo(&state.db, &did).await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        let app = crate::app::app(state);
+
+        // swapRecord names a CID, but the record was never written. The swap must be a hard
+        // error (current CID is None, expected is Some) rather than the idempotent no-op
+        // success that an absent record would otherwise produce.
+        let cid = "bafyreie5cvv4h45feadgeuwhbcutmh6t2ceseocckahdoe6uat64zmz454";
+        let req = Request::builder()
+            .method(http::Method::POST)
+            .uri(format!(
+                "/xrpc/com.atproto.repo.deleteRecord?did={did}&collection=app.bsky.feed.post&rkey=ghost&swapRecord={cid}"
             ))
             .header("Authorization", format!("Bearer {token}"))
             .body(Body::empty())
