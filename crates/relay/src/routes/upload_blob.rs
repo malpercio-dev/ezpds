@@ -104,9 +104,14 @@ pub async fn upload_blob(
         ApiError::new(ErrorCode::InternalError, "failed to store blob")
     })?;
 
-    // 5. Compute temp_until = now + 6 hours.
-    let temp_until = chrono::Utc::now() + chrono::Duration::hours(6);
-    let temp_until_str = temp_until.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+    // 5. Compute temp_until = now + the configured grace TTL. Until a repo record
+    //    references this blob, it is a garbage-collection candidate after this instant.
+    //    Format must match SQLite's `datetime('now')` (`YYYY-MM-DD HH:MM:SS`): `temp_until`
+    //    is compared lexicographically as TEXT, so a `T`/`Z` ISO form would sort after the
+    //    space-separated form and delay collection until the calendar date advances.
+    let temp_until =
+        chrono::Utc::now() + chrono::Duration::seconds(state.config.blobs.temp_ttl_secs as i64);
+    let temp_until_str = temp_until.format("%Y-%m-%d %H:%M:%S").to_string();
 
     // 6. Insert blob metadata into SQLite.
     blobs::insert_blob(

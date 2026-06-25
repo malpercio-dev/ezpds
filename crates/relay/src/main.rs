@@ -7,6 +7,7 @@ use std::{path::PathBuf, sync::Arc};
 
 mod app;
 mod auth;
+mod blob_gc;
 mod blob_store;
 mod db;
 mod dns;
@@ -182,6 +183,16 @@ async fn run() -> anyhow::Result<()> {
         .with_context(|| format!("failed to bind to {addr}"))?;
 
     tracing::info!(address = %addr, "listening");
+
+    // Spawn the periodic blob garbage collector. It reclaims unreferenced and expired blobs;
+    // it is best-effort and runs for the life of the process, so the handle is dropped on
+    // shutdown rather than joined.
+    let gc_interval = std::time::Duration::from_secs(state.config.blobs.gc_interval_secs);
+    let _blob_gc = blob_gc::spawn_blob_gc(state.clone(), gc_interval);
+    tracing::info!(
+        interval_secs = state.config.blobs.gc_interval_secs,
+        "blob garbage collector started"
+    );
 
     axum::serve(listener, app::app(state))
         .with_graceful_shutdown(async {
