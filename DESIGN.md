@@ -1,5 +1,5 @@
 ---
-name: Identity Wallet
+name: Obsign
 description: A serious security instrument for holding and defending your self-sovereign identity.
 # Colors are OKLCH-canonical (impeccable's OKLCH-throughout doctrine). Stitch's linter
 # prefers hex and will warn; OKLCH is the source of truth here. Do not redefine these as hex elsewhere.
@@ -120,7 +120,7 @@ components:
     typography: "{typography.label}"
 ---
 
-# Design System: Identity Wallet
+# Design System: Obsign
 
 ## 1. Overview
 

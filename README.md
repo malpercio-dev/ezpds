@@ -8,13 +8,13 @@ ezpds is a self-hosted PDS implementation for the AT Protocol (the protocol behi
 
 - **A relay server** ([`crates/relay`](crates/relay/)) — an Axum-based HTTP server that implements the ATProto provisioning API, XRPC endpoints, and OAuth 2.0 flows. It stores accounts, DIDs, handles, and signing keys in SQLite.
 - **A crypto library** ([`crates/crypto`](crates/crypto/)) — P-256 key generation, `did:key` derivation, AES-256-GCM encryption, and full `did:plc` lifecycle support (genesis ops, rotation ops, audit log verification, CID computation).
-- **An iOS identity wallet** ([`apps/identity-wallet`](apps/identity-wallet/)) — a Tauri v2 app (SvelteKit 2 + Svelte 5 frontend, Rust backend) that walks users through account creation, DID ceremony, handle registration, and identity recovery. Keys are backed by the device Secure Enclave.
+- **Obsign**, an iOS identity wallet ([`apps/identity-wallet`](apps/identity-wallet/)) — a Tauri v2 app (SvelteKit 2 + Svelte 5 frontend, Rust backend) that walks users through account creation, DID ceremony, handle registration, and identity recovery. Keys are backed by the device Secure Enclave.
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  Identity Wallet (iOS)                                  │
+│  Obsign (iOS)                                           │
 │  Tauri v2 · SvelteKit · Secure Enclave keys             │
 │                                                         │
 │  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐   │
@@ -80,7 +80,7 @@ ezpds is a self-hosted PDS implementation for the AT Protocol (the protocol behi
 **Well-known**:
 - `GET /.well-known/atproto-did` — DID document
 
-### Identity Wallet (iOS)
+### Obsign (iOS)
 
 The mobile app guides users through:
 

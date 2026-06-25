@@ -6,7 +6,7 @@
   let { onstart }: { onstart: () => void } = $props();
 </script>
 
-<OnboardingShell tone="signet" title="Identity Wallet" subtitle="Your self-sovereign identity, sealed in your pocket.">
+<OnboardingShell tone="signet" title="Obsign" subtitle="Your self-sovereign identity, sealed in your pocket.">
   {#snippet icon()}
     <SealEmblem>
       <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

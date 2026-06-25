@@ -1,5 +1,5 @@
 /*
- * Identity Wallet — design tokens ("The Sealed Credential")
+ * Obsign — design tokens ("The Sealed Credential")
  * The single source of truth for color, type, space, and motion in the app.
  * Mirrors DESIGN.md / .impeccable/design.json at the repo root. Components
  * reference these custom properties via var(); never hardcode raw values.
