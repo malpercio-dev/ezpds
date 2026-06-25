@@ -82,6 +82,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `register_device.rs` | `POST /v1/devices` |
 | `get_device_relay.rs` | `GET /v1/devices/:id/relay` |
 | `describe_server.rs` | `GET /xrpc/com.atproto.server.describeServer` |
+| `describe_repo.rs` | `GET /xrpc/com.atproto.repo.describeRepo` |
 | `resolve_handle.rs` | `GET /xrpc/com.atproto.identity.resolveHandle` |
 | `claim_codes.rs` | Claim code management |
 | `get_relay_signing_key.rs` | `GET /v1/signing-keys` |

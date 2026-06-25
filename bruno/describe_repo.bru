@@ -1,0 +1,15 @@
+meta {
+  name: Describe Repo
+  type: http
+  seq: 37
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.repo.describeRepo?repo={{did}}
+  body: none
+  auth: none
+}
+
+params:query {
+  repo: {{did}}
+}
