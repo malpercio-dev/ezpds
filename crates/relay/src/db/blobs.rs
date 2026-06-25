@@ -118,17 +118,26 @@ pub async fn list_blob_owner_dids(pool: &SqlitePool) -> Result<Vec<String>, sqlx
 /// Sets `ref_count` to the exact count and clears `temp_until`, making the blob permanent.
 /// Unlike [`mark_referenced`] (which increments), this assigns an absolute count and is
 /// therefore idempotent — the GC recomputes references from the MST on every pass and can
-/// call this repeatedly without inflating the counter. Returns true if a row was updated.
+/// call this repeatedly without inflating the counter.
+///
+/// The `ref_count != ? OR temp_until IS NOT NULL` guard skips rows already in the desired
+/// state, so the statement only writes blobs that actually need correcting. Returns true
+/// only when a row was changed — letting callers count real churn rather than every
+/// referenced blob they visited (SQLite reports a value-identical UPDATE as a changed row).
 pub async fn set_blob_referenced(
     pool: &SqlitePool,
     cid: &str,
     ref_count: i64,
 ) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query("UPDATE blobs SET ref_count = ?, temp_until = NULL WHERE cid = ?")
-        .bind(ref_count)
-        .bind(cid)
-        .execute(pool)
-        .await?;
+    let result = sqlx::query(
+        "UPDATE blobs SET ref_count = ?, temp_until = NULL \
+         WHERE cid = ? AND (ref_count != ? OR temp_until IS NOT NULL)",
+    )
+    .bind(ref_count)
+    .bind(cid)
+    .bind(ref_count)
+    .execute(pool)
+    .await?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -667,13 +676,68 @@ mod tests {
         assert_eq!(blob.ref_count, 3);
         assert!(blob.temp_until.is_none());
 
-        // Idempotent: setting the same count again keeps it at 3 (no inflation).
-        set_blob_referenced(&pool, "bafkrisetref", 3).await.unwrap();
+        // Idempotent and a true no-op: setting the same count again must not report a
+        // change (so the GC's churn counter is not inflated) and keeps ref_count at 3.
+        let unchanged = set_blob_referenced(&pool, "bafkrisetref", 3).await.unwrap();
+        assert!(
+            !unchanged,
+            "re-setting the same state must report no change"
+        );
         let blob = get_blob_by_cid(&pool, "bafkrisetref")
             .await
             .unwrap()
             .unwrap();
         assert_eq!(blob.ref_count, 3);
+    }
+
+    #[tokio::test]
+    async fn list_expired_temps_uses_sqlite_comparable_format() {
+        // Regression guard: temp_until must be stored in the same `YYYY-MM-DD HH:MM:SS` form
+        // SQLite's datetime('now') returns. A `T`/`Z` ISO form sorts lexicographically after
+        // the space-separated form, hiding same-day-expired blobs from this query.
+        let pool = test_pool().await;
+        let account_did = insert_test_account(&pool).await;
+
+        let past = (chrono::Utc::now() - chrono::Duration::minutes(5))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        insert_blob(
+            &pool,
+            "bafkripast",
+            &account_did,
+            "image/png",
+            1,
+            "blobs/ba/bafkripast",
+            &past,
+        )
+        .await
+        .unwrap();
+
+        let future = (chrono::Utc::now() + chrono::Duration::hours(1))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        insert_blob(
+            &pool,
+            "bafkrifuture",
+            &account_did,
+            "image/png",
+            1,
+            "blobs/ba/bafkrifuture",
+            &future,
+        )
+        .await
+        .unwrap();
+
+        let expired = list_expired_temps(&pool).await.unwrap();
+        let cids: Vec<&str> = expired.iter().map(|b| b.cid.as_str()).collect();
+        assert!(
+            cids.contains(&"bafkripast"),
+            "a same-day past deadline must be collected"
+        );
+        assert!(
+            !cids.contains(&"bafkrifuture"),
+            "a future deadline must not be collected"
+        );
     }
 
     #[tokio::test]

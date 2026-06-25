@@ -150,9 +150,12 @@ async fn reconcile_account(state: &AppState, did: &str) -> Result<(u64, u64), Gc
     let owned = blobs::list_blobs_for_account(&state.db, did).await?;
 
     // A fresh grace deadline for blobs that lose their last reference this pass.
+    // Format must match SQLite's `datetime('now')` (`YYYY-MM-DD HH:MM:SS`): `temp_until` is
+    // stored as TEXT and compared lexicographically, so a `T`/`Z` ISO form would sort after
+    // the space-separated form and hide same-day deadlines from `list_expired_temps`.
     let grace =
         chrono::Utc::now() + chrono::Duration::seconds(state.config.blobs.temp_ttl_secs as i64);
-    let grace_str = grace.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+    let grace_str = grace.format("%Y-%m-%d %H:%M:%S").to_string();
 
     let mut reconciled = 0;
     let mut released = 0;
