@@ -211,6 +211,85 @@ impl IdentityStore {
         get_or_create_per_did_device_key(did)
     }
 
+    /// Adopt the app's global device key ([`crate::device_key`]) as this
+    /// identity's per-DID device key, by copying its Keychain material into the
+    /// per-DID accounts.
+    ///
+    /// The create flow signs its did:plc genesis op with the *global* device key
+    /// (a did:plc is the hash of its own genesis op, so the rotation key must
+    /// exist before the DID does — a per-DID key cannot be namespaced in
+    /// advance). Without adoption, [`Self::get_or_create_device_key`] would
+    /// lazily mint a *new* per-DID key that does not match the DID document's
+    /// `rotationKeys[0]`, which would (a) render a misleading "Not root" badge in
+    /// `IdentityListHome` and (b) make `plc_monitor` flag the user's own
+    /// operations as unauthorized (it verifies audit-log signatures against the
+    /// per-DID key).
+    ///
+    /// Copying is platform-agnostic and best-effort per account: the software
+    /// path has a private-scalar account; the Secure Enclave path has pub +
+    /// app-label metadata accounts (the SE private key itself never moves — the
+    /// per-DID SE lookup finds the same hardware key via the copied app-label).
+    /// Idempotent: re-running overwrites the per-DID accounts with identical bytes.
+    ///
+    /// Returns `Err(IdentityNotFound)` if the DID is not registered.
+    pub fn adopt_global_device_key(&self, did: &str) -> Result<(), IdentityStoreError> {
+        if !self.is_managed(did)? {
+            return Err(IdentityStoreError::IdentityNotFound);
+        }
+
+        // (global account, per-DID account) pairs. Only the accounts that exist
+        // on the current platform are present: the software path has the private
+        // scalar; the SE path has the pub key + app-label. The rest are absent.
+        let mappings = [
+            (
+                crate::device_key::DEVICE_KEY_PRIV_ACCOUNT,
+                device_key_account(did),
+            ),
+            (
+                crate::device_key::DEVICE_KEY_PUB_ACCOUNT,
+                device_key_pub_account(did),
+            ),
+            (
+                crate::device_key::DEVICE_KEY_APP_LABEL_ACCOUNT,
+                device_key_app_label_account(did),
+            ),
+        ];
+
+        let mut copied = 0;
+        for (global_account, per_did_account) in mappings {
+            match crate::keychain::get_item(global_account) {
+                Ok(bytes) => {
+                    crate::keychain::store_item(&per_did_account, &bytes).map_err(|e| {
+                        IdentityStoreError::KeychainError {
+                            message: e.to_string(),
+                        }
+                    })?;
+                    copied += 1;
+                }
+                // Account absent on this platform — expected; skip it.
+                Err(e) if crate::keychain::is_not_found(&e) => {}
+                Err(e) => {
+                    return Err(IdentityStoreError::KeychainError {
+                        message: e.to_string(),
+                    })
+                }
+            }
+        }
+
+        if copied == 0 {
+            // No global device key exists to adopt. Surface it rather than
+            // silently letting a lazily-minted per-DID key diverge from the DID
+            // document's rotationKeys[0].
+            tracing::warn!(
+                did = did,
+                "adopt_global_device_key: no global device key material found to adopt"
+            );
+            return Err(IdentityStoreError::KeyGenerationFailed);
+        }
+
+        Ok(())
+    }
+
     /// Store a DID document for a managed identity.
     ///
     /// The document is stored as opaque JSON bytes.
@@ -470,6 +549,40 @@ mod tests {
         let _ = crate::keychain::delete_item(&did_doc_account(did));
         let _ = crate::keychain::delete_item(&plc_log_account(did));
         let _ = crate::keychain::delete_item(&oauth_tokens_account(did));
+    }
+
+    // adopt_global_device_key must make the per-DID device key resolve to the
+    // same key the create flow's genesis op signed with (the global device key),
+    // so the DID doc's rotationKeys[0] matches getDeviceKeyId ("Root key" badge
+    // is honest) and PLC monitoring does not flag the user's own operations.
+    #[test]
+    fn adopt_global_device_key_aliases_per_did_key_to_global() {
+        clear_managed_dids();
+        let did = "did:plc:adoptglobal";
+        clear_per_did_entries(did);
+        let _ = crate::keychain::delete_item(crate::device_key::DEVICE_KEY_PRIV_ACCOUNT);
+
+        // The global device key — what perform_did_ceremony uses as rotationKeys[0].
+        let global = crate::device_key::get_or_create().expect("global device key");
+
+        let store = IdentityStore;
+        store.add_identity(did).expect("add_identity");
+        store
+            .adopt_global_device_key(did)
+            .expect("adopt_global_device_key");
+
+        let per_did = store
+            .get_or_create_device_key(did)
+            .expect("per-DID device key");
+        assert_eq!(
+            per_did.key_id, global.key_id,
+            "per-DID device key must resolve to the global key after adoption"
+        );
+        assert_eq!(per_did.multibase, global.multibase);
+
+        clear_per_did_entries(did);
+        clear_managed_dids();
+        let _ = crate::keychain::delete_item(crate::device_key::DEVICE_KEY_PRIV_ACCOUNT);
     }
 
     // ── Identity lifecycle (add / remove / list) ──────────────────────────────
