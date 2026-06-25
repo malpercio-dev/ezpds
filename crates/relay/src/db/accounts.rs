@@ -105,6 +105,49 @@ pub(crate) async fn get_repo_root_cid(
         .await
 }
 
+/// A single repo entry for `com.atproto.sync.listRepos`.
+///
+/// Only accounts that have created their repo (non-NULL `repo_root_cid`) produce a row —
+/// the lexicon requires `head` and `rev`, so an account without a repo root has nothing
+/// to list. `active` is derived from `deactivated_at`.
+pub(crate) struct RepoListRow {
+    pub(crate) did: String,
+    /// Raw stored repo root commit CID string (the repo `head`).
+    pub(crate) head: String,
+    /// `true` when `deactivated_at` is NULL.
+    pub(crate) active: bool,
+}
+
+/// List hosted repos in DID order for `listRepos`, starting strictly after `cursor`.
+///
+/// Pass `cursor = ""` (or any value sorting below all DIDs) for the first page. Returns up
+/// to `limit` rows ordered by DID ascending; the caller derives the next cursor from the
+/// last returned DID. Only accounts with a non-NULL `repo_root_cid` are included.
+pub(crate) async fn list_repos(
+    db: &sqlx::SqlitePool,
+    cursor: &str,
+    limit: i64,
+) -> Result<Vec<RepoListRow>, sqlx::Error> {
+    let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT did, repo_root_cid, deactivated_at FROM accounts \
+         WHERE repo_root_cid IS NOT NULL AND did > ? \
+         ORDER BY did ASC LIMIT ?",
+    )
+    .bind(cursor)
+    .bind(limit)
+    .fetch_all(db)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(did, head, deactivated_at)| RepoListRow {
+            did,
+            head,
+            active: deactivated_at.is_none(),
+        })
+        .collect())
+}
+
 /// Resolve an email address to an active (non-deactivated) account.
 ///
 /// Used by the provisioning session login endpoint (`POST /v1/accounts/sessions`).

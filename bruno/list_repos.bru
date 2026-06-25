@@ -1,0 +1,22 @@
+meta {
+  name: List Repos (sync.listRepos)
+  type: http
+  seq: 38
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.sync.listRepos?limit={{limit}}&cursor={{cursor}}
+  body: none
+  auth: none
+}
+
+params:query {
+  limit: {{limit}}
+  cursor: {{cursor}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  limit: 500
+  cursor:
+}
