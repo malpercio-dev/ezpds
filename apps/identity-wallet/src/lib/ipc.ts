@@ -197,6 +197,24 @@ export const registerHandle = (handleLabel: string): Promise<RegisterHandleResul
   invoke('register_handle', { handleLabel });
 
 /**
+ * Error returned by the `register_created_identity` Rust command.
+ * Serialized as `{ code: "KEYCHAIN_ERROR" }` by the Rust backend.
+ */
+export type RegisterIdentityError = { code: 'KEYCHAIN_ERROR' };
+
+/**
+ * Register a just-created identity in IdentityStore so it appears on the home
+ * screen (IdentityListHome lists identities from IdentityStore alone).
+ *
+ * Call this once the create flow's DID and handle both exist (i.e. after handle
+ * registration). Mirrors what the import flow does in submit_claim; also aliases
+ * the per-DID device key to the genesis rotation key on the Rust side. Idempotent.
+ * On failure the Promise rejects with a RegisterIdentityError.
+ */
+export const registerCreatedIdentity = (did: string, handle: string): Promise<void> =>
+  invoke('register_created_identity', { did, handle });
+
+/**
  * Check whether `handle` resolves to `expectedDid` via the relay's `resolveHandle` endpoint.
  *
  * Returns `true` when the relay resolves the handle to the expected DID.

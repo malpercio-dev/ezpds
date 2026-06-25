@@ -23,7 +23,7 @@
   import RecoveryInfoScreen from '$lib/components/home/RecoveryInfoScreen.svelte';
   import AlertDetailScreen from '$lib/components/home/AlertDetailScreen.svelte';
   import RecoveryOverrideScreen from '$lib/components/home/RecoveryOverrideScreen.svelte';
-  import { createAccount, listIdentities, checkIdentityStatus, type CreateAccountError, type OAuthError, type HomeData, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type UnauthorizedChange } from '$lib/ipc';
+  import { createAccount, registerCreatedIdentity, listIdentities, checkIdentityStatus, type CreateAccountError, type OAuthError, type HomeData, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type UnauthorizedChange } from '$lib/ipc';
   import { normalizePlcDocToW3c } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
@@ -214,6 +214,29 @@
         break;
     }
   }
+
+  // ── Finish the create flow ────────────────────────────────────────────────
+  //
+  // Called once the new identity's DID (form.did) and full handle both exist.
+  // Registering here is what makes the identity appear on the home screen:
+  // IdentityListHome lists identities from IdentityStore alone, and the relay
+  // OAuth flow never writes to it — so without this call the home screen shows
+  // "No identities yet" after login. This is the fix for that bug.
+  //
+  // Error-handling strategy: best-effort, matching this app's "always reach
+  // home" pattern (loadHomeData / logOut never block the UI). If registration
+  // fails we log and continue — the user keeps their identity and can refresh
+  // the card later. (Strict alternative: surface the error and let the user
+  // retry before advancing — see the accompanying notes.)
+  async function finishCreateFlow(handle: string) {
+    form.registeredHandle = handle;
+    try {
+      await registerCreatedIdentity(form.did, handle);
+    } catch (e) {
+      console.error('Failed to register created identity in IdentityStore:', e);
+    }
+    step = 'complete';
+  }
 </script>
 
 <div class="app">
@@ -311,8 +334,8 @@
     <HandleRegistrationScreen
       handleLabel={form.handle}
       did={form.did}
-      onsuccess={(handle) => { form.registeredHandle = handle; step = 'complete'; }}
-      ontimeout={(handle) => { form.registeredHandle = handle; step = 'complete'; }}
+      onsuccess={(handle) => finishCreateFlow(handle)}
+      ontimeout={(handle) => finishCreateFlow(handle)}
     />
 
   {:else if step === 'complete'}
