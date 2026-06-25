@@ -105,13 +105,20 @@ jobs:
           # in ~/.appstoreconnect/private_keys, so writing it there satisfies both.
           echo "APPLE_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
 
-      # cargo-mobile2 uses xcodegen to generate the Xcode project. It isn't pre-installed,
-      # and the Tauri CLI runs x86_64 (Rosetta) on the arm64 runner, so its own
-      # `brew install xcodegen` fails ("Cannot install under Rosetta 2 in ARM default
-      # prefix"). Pre-install it natively under arm64 so cargo-mobile2 finds it and never
-      # shells out to brew (tauri#11244).
-      - name: Install xcodegen (native arm64)
-        run: arch -arm64 brew install xcodegen
+      # The Tauri CLI runs x86_64 (Rosetta) on the arm64 runner, so every `brew` it shells
+      # out to (cargo-mobile2 installs xcodegen, libimobiledevice, ios-deploy, ...) is
+      # refused: "Cannot install under Rosetta 2 in ARM default prefix". Shim `brew` to
+      # always re-exec under arm64 — fixes all of cargo-mobile2's brew calls at once,
+      # rather than pre-installing each dep (tauri#11244, cargo-mobile2#291).
+      - name: Force Homebrew under arm64 (Tauri CLI runs under Rosetta)
+        run: |
+          mkdir -p "$RUNNER_TEMP/arm64-shims"
+          cat > "$RUNNER_TEMP/arm64-shims/brew" <<'SH'
+          #!/bin/bash
+          exec arch -arm64 /opt/homebrew/bin/brew "$@"
+          SH
+          chmod +x "$RUNNER_TEMP/arm64-shims/brew"
+          echo "$RUNNER_TEMP/arm64-shims" >> "$GITHUB_PATH"
 
       # gen/apple is gitignored — regenerate it from scratch, then re-apply the six
       # pbxproj/project.yml patches (sandbox, Run Script env, entitlements,
