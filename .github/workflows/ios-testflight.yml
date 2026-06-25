@@ -105,8 +105,17 @@ jobs:
           # in ~/.appstoreconnect/private_keys, so writing it there satisfies both.
           echo "APPLE_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
 
-      # gen/apple is gitignored — regenerate it from scratch, then re-apply the five
-      # pbxproj patches (sandbox, Run Script env, entitlements, SystemConfiguration).
+      # cargo-mobile2 uses xcodegen to generate the Xcode project. It isn't pre-installed,
+      # and the Tauri CLI runs x86_64 (Rosetta) on the arm64 runner, so its own
+      # `brew install xcodegen` fails ("Cannot install under Rosetta 2 in ARM default
+      # prefix"). Pre-install it natively under arm64 so cargo-mobile2 finds it and never
+      # shells out to brew (tauri#11244).
+      - name: Install xcodegen (native arm64)
+        run: arch -arm64 brew install xcodegen
+
+      # gen/apple is gitignored — regenerate it from scratch, then re-apply the six
+      # pbxproj/project.yml patches (sandbox, Run Script env, entitlements,
+      # SystemConfiguration, libapp.a strip).
       - name: Generate the Xcode project
         working-directory: apps/identity-wallet
         run: cargo tauri ios init
