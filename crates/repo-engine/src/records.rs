@@ -66,6 +66,92 @@ pub enum RecordError {
     InvalidPath(String),
     #[error("invalid record: {0}")]
     InvalidRecord(String),
+    #[error("record already exists: {0}")]
+    AlreadyExists(String),
+}
+
+/// A single mutation in an [`apply_writes`] batch.
+///
+/// `key` is the MST key (`<collection>/<rkey>`) and must already be validated via
+/// [`validate_record_path`]; this layer trusts it and does not re-check the format.
+pub enum WriteOp {
+    /// Create a record, failing with [`RecordError::AlreadyExists`] if `key` is present.
+    Create {
+        key: String,
+        value: serde_json::Value,
+    },
+    /// Create or update a record (upsert semantics, matching `putRecord`).
+    Update {
+        key: String,
+        value: serde_json::Value,
+    },
+    /// Delete a record; a no-op (no commit) if `key` is absent, matching `deleteRecord`.
+    Delete { key: String },
+}
+
+/// The outcome of one applied [`WriteOp`], returned by [`apply_writes`] in batch order.
+#[derive(Debug)]
+pub struct WriteOutcome {
+    /// The MST key that was written (`<collection>/<rkey>`).
+    pub key: String,
+    /// The new record block CID for create/update; `None` for delete.
+    pub cid: Option<Cid>,
+}
+
+/// Apply a batch of record writes to `repo`, signing one commit per mutating write.
+///
+/// Writes are applied in order against the in-memory repo, so a later write observes the
+/// effects of earlier ones. The repo root advances with each write; the **caller** then
+/// performs a single optimistic-concurrency swap of the persisted root to `repo.root()`.
+/// That makes the batch atomic: on any error this returns before the caller swaps, so the
+/// persisted root is unchanged and nothing in the batch is observable. The intermediate
+/// commits become orphaned blocks reclaimed by GC — the repo durably advances to a single
+/// new head commit whose MST reflects every write.
+///
+/// Per-op semantics mirror the standalone record routes: `Create` fails if the key already
+/// exists, `Update` upserts, and `Delete` is idempotent.
+pub async fn apply_writes<S>(
+    repo: &mut Repository<S>,
+    signer: &CommitSigner,
+    writes: &[WriteOp],
+) -> Result<Vec<WriteOutcome>, RecordError>
+where
+    S: atrium_repo::blockstore::AsyncBlockStoreRead + atrium_repo::blockstore::AsyncBlockStoreWrite,
+{
+    let mut outcomes = Vec::with_capacity(writes.len());
+    for op in writes {
+        let outcome = match op {
+            WriteOp::Create { key, value } => {
+                if get_record_json(repo, key).await?.is_some() {
+                    return Err(RecordError::AlreadyExists(key.clone()));
+                }
+                let cid = put_record_json(repo, signer, key, value).await?;
+                WriteOutcome {
+                    key: key.clone(),
+                    cid: Some(cid),
+                }
+            }
+            WriteOp::Update { key, value } => {
+                let cid = put_record_json(repo, signer, key, value).await?;
+                WriteOutcome {
+                    key: key.clone(),
+                    cid: Some(cid),
+                }
+            }
+            WriteOp::Delete { key } => {
+                // Idempotent: only commit a delete when the record is actually present.
+                if get_record_json(repo, key).await?.is_some() {
+                    delete_record(repo, signer, key).await?;
+                }
+                WriteOutcome {
+                    key: key.clone(),
+                    cid: None,
+                }
+            }
+        };
+        outcomes.push(outcome);
+    }
+    Ok(outcomes)
 }
 
 /// Convert an incoming JSON record into the ATProto data model (DAG-CBOR-ready):
@@ -651,6 +737,93 @@ mod tests {
 
         let result = delete_record(&mut repo, &signer, "app.bsky.feed.post/nope").await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn apply_writes_batch_creates_updates_and_deletes() {
+        let (mut repo, signer) = create_test_repo("did:plc:applybatch").await;
+
+        let writes = vec![
+            WriteOp::Create {
+                key: "app.bsky.feed.post/a".into(),
+                value: serde_json::json!({ "text": "a" }),
+            },
+            WriteOp::Create {
+                key: "app.bsky.feed.post/b".into(),
+                value: serde_json::json!({ "text": "b" }),
+            },
+            WriteOp::Update {
+                key: "app.bsky.feed.post/a".into(),
+                value: serde_json::json!({ "text": "a2" }),
+            },
+            WriteOp::Delete {
+                key: "app.bsky.feed.post/b".into(),
+            },
+        ];
+
+        let outcomes = apply_writes(&mut repo, &signer, &writes).await.unwrap();
+        assert_eq!(outcomes.len(), 4);
+        assert!(outcomes[0].cid.is_some(), "create yields a record CID");
+        assert!(outcomes[3].cid.is_none(), "delete yields no CID");
+
+        // Final state reflects the whole batch: a updated, b gone.
+        let a = get_record_json(&mut repo, "app.bsky.feed.post/a")
+            .await
+            .unwrap();
+        assert_eq!(a, Some(serde_json::json!({ "text": "a2" })));
+        let b = get_record_json(&mut repo, "app.bsky.feed.post/b")
+            .await
+            .unwrap();
+        assert_eq!(b, None);
+    }
+
+    #[tokio::test]
+    async fn apply_writes_create_on_existing_key_errors() {
+        let (mut repo, signer) = create_test_repo("did:plc:applydup").await;
+
+        apply_writes(
+            &mut repo,
+            &signer,
+            &[WriteOp::Create {
+                key: "app.bsky.feed.post/x".into(),
+                value: serde_json::json!({ "text": "first" }),
+            }],
+        )
+        .await
+        .unwrap();
+
+        let err = apply_writes(
+            &mut repo,
+            &signer,
+            &[WriteOp::Create {
+                key: "app.bsky.feed.post/x".into(),
+                value: serde_json::json!({ "text": "again" }),
+            }],
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, RecordError::AlreadyExists(_)));
+    }
+
+    #[tokio::test]
+    async fn apply_writes_delete_missing_is_noop() {
+        let (mut repo, signer) = create_test_repo("did:plc:applydelmissing").await;
+        let root_before = repo.root();
+
+        let outcomes = apply_writes(
+            &mut repo,
+            &signer,
+            &[WriteOp::Delete {
+                key: "app.bsky.feed.post/ghost".into(),
+            }],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcomes.len(), 1);
+        assert!(outcomes[0].cid.is_none());
+        // A no-op delete must not write a commit, so the root is unchanged.
+        assert_eq!(repo.root(), root_before);
     }
 
     #[tokio::test]

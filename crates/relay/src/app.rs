@@ -16,6 +16,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::auth::{DpopNonceStore, OAuthSigningKey};
 use crate::dns::{DnsProvider, TxtResolver};
+use crate::routes::apply_writes::apply_writes;
 use crate::routes::atproto_did::atproto_did_handler;
 use crate::routes::claim_codes::claim_codes;
 use crate::routes::create_account::create_account;
@@ -204,6 +205,7 @@ pub fn app(state: AppState) -> Router {
         .route("/xrpc/com.atproto.sync.getBlob", get(get_blob))
         .route("/xrpc/com.atproto.sync.getRepo", get(get_repo))
         .route("/xrpc/com.atproto.sync.listBlobs", get(list_blobs))
+        .route("/xrpc/com.atproto.repo.applyWrites", post(apply_writes))
         .route("/xrpc/com.atproto.repo.createRecord", post(create_record))
         .route("/xrpc/com.atproto.repo.getRecord", get(get_record))
         .route("/xrpc/com.atproto.repo.listRecords", get(list_records))
