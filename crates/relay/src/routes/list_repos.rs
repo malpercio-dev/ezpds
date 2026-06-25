@@ -3,9 +3,8 @@
 //! com.atproto.sync.listRepos - List all repositories hosted on this PDS.
 
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
-use serde::Deserialize;
+use axum::response::Json;
+use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
 use crate::db::blocks::SqliteBlockStore;
@@ -21,6 +20,25 @@ pub struct ListReposParams {
     cursor: Option<String>,
 }
 
+/// A single repo entry in the `listRepos` response.
+#[derive(Serialize)]
+pub struct RepoEntry {
+    pub did: String,
+    /// The repo's current commit CID (its `head`).
+    pub head: String,
+    /// The commit revision (TID), read from the signed commit block.
+    pub rev: String,
+    /// `false` when the account is deactivated.
+    pub active: bool,
+}
+
+#[derive(Serialize)]
+pub struct ListReposResponse {
+    pub repos: Vec<RepoEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
 /// GET /xrpc/com.atproto.sync.listRepos?limit=500&cursor=<did>
 ///
 /// Enumerate every repo hosted on this PDS, in DID order, with cursor-based pagination.
@@ -30,7 +48,7 @@ pub struct ListReposParams {
 pub async fn list_repos(
     State(state): State<AppState>,
     Query(params): Query<ListReposParams>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<Json<ListReposResponse>, ApiError> {
     // Clamp the page size to the documented bounds (default 500, max 1000, min 1).
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
 
@@ -46,55 +64,66 @@ pub async fn list_repos(
         })?;
 
     // A full page means more rows may follow — surface the last DID as the next cursor.
-    // A short page is the last page, so no cursor is emitted.
+    // A short page is the last page, so no cursor is emitted. The cursor is derived from the
+    // DB rows (not the emitted entries), so a skipped bad repo still advances pagination and
+    // the next page resumes past it rather than re-examining it.
     let next_cursor = (rows.len() as i64 == limit)
         .then(|| rows.last().map(|r| r.did.clone()))
         .flatten();
 
     let mut repos = Vec::with_capacity(rows.len());
     for row in rows {
-        let rev = read_repo_rev(&state, &row.did, &row.head).await?;
-        repos.push(serde_json::json!({
-            "did": row.did,
-            "head": row.head,
-            "rev": rev,
-            "active": row.active,
-        }));
+        // A single unreadable repo — e.g. an interrupted write that set `repo_root_cid`
+        // before the commit block landed — must not 500 the whole enumeration. Log and skip
+        // it so a crawler can still page through the healthy repos.
+        let Some(rev) = read_repo_rev(&state, &row.did, &row.head).await else {
+            continue;
+        };
+        repos.push(RepoEntry {
+            did: row.did,
+            head: row.head,
+            rev,
+            active: row.active,
+        });
     }
 
-    let mut body = serde_json::json!({ "repos": repos });
-    if let Some(cursor) = next_cursor {
-        body["cursor"] = serde_json::Value::String(cursor);
-    }
-
-    Ok((StatusCode::OK, axum::Json(body)).into_response())
+    Ok(Json(ListReposResponse {
+        repos,
+        cursor: next_cursor,
+    }))
 }
 
-/// Open `did`'s repo at `head` and return its commit revision (`rev`).
+/// Open `did`'s repo at `head` and return its commit revision (`rev`), or `None` if the
+/// repo cannot be read.
 ///
 /// The rev is not stored in the accounts table; it lives in the signed commit block, so
-/// reading it means opening the repo. A parse/open failure is an internal error — the head
-/// CID came from our own database and must always resolve to a valid commit block.
-async fn read_repo_rev(state: &AppState, did: &str, head: &str) -> Result<String, ApiError> {
-    let root_cid = repo_engine::Cid::try_from(head).map_err(|e| {
-        tracing::error!(error = %e, did = %did, "invalid repo root CID in database");
-        ApiError::new(ErrorCode::InternalError, "failed to list repos")
-    })?;
+/// reading it means opening the repo. A parse/open failure (bad CID, missing block) yields
+/// `None` — the caller skips the repo rather than failing the whole page.
+async fn read_repo_rev(state: &AppState, did: &str, head: &str) -> Option<String> {
+    let root_cid = match repo_engine::Cid::try_from(head) {
+        Ok(cid) => cid,
+        Err(e) => {
+            tracing::error!(error = %e, did = %did, "invalid repo root CID in database; skipping");
+            return None;
+        }
+    };
 
     let block_store = SqliteBlockStore::new(state.db.clone(), did.to_string());
-    let repo = Repository::open(block_store, root_cid).await.map_err(|e| {
-        tracing::error!(error = %e, did = %did, "failed to open repo");
-        ApiError::new(ErrorCode::InternalError, "failed to list repos")
-    })?;
+    let repo = match Repository::open(block_store, root_cid).await {
+        Ok(repo) => repo,
+        Err(e) => {
+            tracing::warn!(error = %e, did = %did, "failed to open repo for listRepos; skipping");
+            return None;
+        }
+    };
 
-    Ok(repo.commit().rev().as_str().to_string())
+    Some(repo.commit().rev().as_str().to_string())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use axum::body::Body;
-    use axum::http::{self, Request};
+    use axum::http::{self, Request, StatusCode};
     use tower::ServiceExt;
 
     use crate::routes::test_utils::{body_json, seed_account_with_repo, state_with_master_key};
@@ -186,6 +215,31 @@ mod tests {
         let (status, body) = list(&app, "").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["repos"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn unreadable_repo_is_skipped_not_fatal() {
+        let state = state_with_master_key().await;
+        // One healthy repo and one whose repo_root_cid points at a commit block that was
+        // never written (a valid CIDv1, but absent from `blocks`). The bad repo must be
+        // skipped, not turn the whole page into a 500.
+        seed_account_with_repo(&state.db, "did:plc:listreposhealthy").await;
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, repo_root_cid, created_at, updated_at) \
+             VALUES (?, 'bad@example.com', 'hash', ?, datetime('now'), datetime('now'))",
+        )
+        .bind("did:plc:listreposbad")
+        .bind("bafyreigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi")
+        .execute(&state.db)
+        .await
+        .unwrap();
+        let app = crate::app::app(state);
+
+        let (status, body) = list(&app, "").await;
+        assert_eq!(status, StatusCode::OK);
+        let repos = body["repos"].as_array().unwrap();
+        assert_eq!(repos.len(), 1, "only the healthy repo should be returned");
+        assert_eq!(repos[0]["did"], "did:plc:listreposhealthy");
     }
 
     #[tokio::test]
