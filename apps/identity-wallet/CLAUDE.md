@@ -1,4 +1,4 @@
-# Identity Wallet Mobile App
+# Obsign (identity-wallet) Mobile App
 
 Last verified: 2026-06-24
 Last updated: 2026-06-24
@@ -63,7 +63,7 @@ Tauri v2 iOS application — SvelteKit 2 + Svelte 5 frontend running in a native
 - `log_out` always returns Ok -- Keychain delete errors are swallowed; the frontend unconditionally navigates to the welcome screen; device key and DPoP key are deliberately preserved (not deleted)
 - `HomeData` and `SessionInfo` serialize with `#[serde(rename_all = "camelCase")]` -- TypeScript receives `{ relayHealthy, session, sessionError, share1InKeychain }` and `{ did, handle, email, emailConfirmed, didDoc }`
 - `start_oauth_flow` maps failures to typed `OAuthError` variants (DPOP_KEY_GEN_FAILED, DPOP_KEY_INVALID, DPOP_PROOF_FAILED, KEYCHAIN_ERROR, STATE_MISMATCH, CALLBACK_ABANDONED, PAR_FAILED, TOKEN_EXCHANGE_FAILED, TOKEN_REFRESH_FAILED, INVALID_GRANT, NOT_AUTHENTICATED) serialized as `{ code: "SCREAMING_SNAKE_CASE" }` for the frontend
-- `tauri.conf.json` registers `deep-link` plugin with mobile scheme `dev.malpercio.identitywallet`; deep-link URLs matching `dev.malpercio.identitywallet:/oauth/callback?code=...&state=...` are routed to `handle_deep_link`
+- The iOS custom URL scheme `dev.malpercio.identitywallet` is registered via `src-tauri/Info.ios.plist` (`CFBundleURLTypes`), **not** `tauri.conf.json`: tauri-plugin-deep-link 2.4.7 only emits `CFBundleURLTypes` for app-link (https+host) entries and otherwise *removes* the key, so it cannot register a pure custom scheme (the `plugins.deep-link` config is effectively a no-op for iOS here). iOS opens the app on `dev.malpercio.identitywallet:/oauth/callback?code=...&state=...`; the plugin's `on_open_url` (wired in `lib.rs`) then routes it to `handle_deep_link`
 - On app startup, if OAuth tokens exist in Keychain, the session is restored into `AppState.oauth_session` and an `auth_ready` Tauri event is emitted after a 300ms delay (allows SvelteKit to boot and register its listener)
 - `OAuthClient` transparently refreshes access tokens with <60s remaining before each request; retries once on `use_dpop_nonce` 400 responses from the server
 - `DPoPKeypair` is idempotent: `get_or_create()` generates and persists to Keychain on first call, loads from Keychain on subsequent calls; the same key is used across all DPoP proofs and app sessions
@@ -181,7 +181,7 @@ Note: `src-tauri/gen/` contains a machine-specific Xcode project. It is gitignor
 ### After every `cargo tauri ios init`: run `just ios-postinit`
 
 `cargo tauri ios init` regenerates the gitignored Xcode project at
-`src-tauri/gen/apple/`. Five workarounds must be (re-)applied to it. This is now
+`src-tauri/gen/apple/`. Six workarounds must be (re-)applied to it. This is now
 a single idempotent command, run from the repo root:
 
 ```bash
@@ -197,8 +197,10 @@ not inherit the dev-shell environment), (4) sets
 "entitlements modified during build" failure caused by the per-build project sync),
 and (5) injects `OTHER_LDFLAGS = -framework SystemConfiguration` (the
 `system-configuration` crate — pulled in by `hickory-resolver` + `reqwest` — needs
-`SystemConfiguration.framework`; see Troubleshooting). Verify at any time with
-`just ios-check`.
+`SystemConfiguration.framework`; see Troubleshooting), and (6) keeps the Rust staticlib
+`libapp.a` out of the app bundle (sets `Externals → buildPhase: none` in `project.yml` and
+strips the `libapp.a in Resources` entry from the pbxproj — App Store rejects a loose `.a`;
+see Troubleshooting). Verify at any time with `just ios-check`.
 
 ### Why rustup instead of Nix-managed Rust
 
@@ -262,6 +264,28 @@ For a non-iOS build (CI or any machine without Xcode):
 # From workspace root — builds all workspace crates including src-tauri for the host platform
 cargo build
 ```
+
+## CI / TestFlight
+
+The iOS app builds in **GitHub Actions** (not tangled — spindles are Linux-only),
+on a free `macos-15` runner via a **public mirror**. `.github/workflows/ios-testflight.yml`
+runs on every push to `main`: regenerate the gitignored Xcode project
+(`cargo tauri ios init` + `just ios-postinit`), stamp `bundle.iOS.bundleVersion` from
+the CI run number (TestFlight needs unique build numbers; `version` is pinned at 0.1.0),
+build a signed App Store IPA, and upload to TestFlight. Signing is **explicit** — Tauri's
+automatic iOS signing emits an "Apple Distribution: Tauri (unset)" placeholder that App
+Store rejects (tauri#11092), so Tauri reads `IOS_CERTIFICATE` / `IOS_CERTIFICATE_PASSWORD`
+/ `IOS_MOBILE_PROVISION` (an Apple Distribution cert + App Store profile); the App Store
+Connect API key (`APPLE_API_*`) is used only for the `altool` upload.
+
+The build/upload core is shared `just` recipes (workspace root) so CI and local runs are
+identical: `just ios-ipa` (build signed IPA via `--export-method app-store-connect`),
+`just ios-upload` (`xcrun altool` → TestFlight), `just ios-release` (both). Run
+`just ios-release` locally once to validate signing before trusting CI. The workflow
+never runs on `pull_request` (public repo — keeps the Apple key off fork PRs).
+
+Full setup (mirror dual-push, App Store Connect, GitHub secrets) and gotchas:
+**[docs/ios-cicd.md](../../docs/ios-cicd.md)**.
 
 ## Key Decisions
 
@@ -338,7 +362,7 @@ cargo build
 - PLC monitoring interval is 15 minutes (`MONITOR_INTERVAL_SECS = 900`); changing this constant alters battery/network impact
 - Recovery deadline window is 72 hours (`RECOVERY_WINDOW_MS` in `deadline.ts`); this matches the PLC directory's 72-hour recovery window specification
 - OAuth client_id is always `"dev.malpercio.identitywallet"` -- must match the seeded row in relay migration V013 and the `tauri.conf.json` bundle identifier
-- OAuth redirect_uri is always `"dev.malpercio.identitywallet:/oauth/callback"` -- must match the deep-link scheme in `tauri.conf.json` and the seeded client_metadata redirect_uris in V013
+- OAuth redirect_uri is always `"dev.malpercio.identitywallet:/oauth/callback"` -- its scheme must match the `CFBundleURLTypes` entry in `src-tauri/Info.ios.plist` (the iOS scheme registration), the bundle `identifier`, and the seeded client_metadata redirect_uris in V013
 - `DevicePublicKey` serializes with `#[serde(rename_all = "camelCase")]` -- TypeScript receives `{ multibase, keyId }` (not `key_id`)
 - `HomeData` serializes with `#[serde(rename_all = "camelCase")]` -- TypeScript receives `{ relayHealthy, session, sessionError, share1InKeychain }`; the TypeScript `HomeData` type in `ipc.ts` must match exactly
 - `SessionInfo` serializes with `#[serde(rename_all = "camelCase")]` -- TypeScript receives `{ did, handle, email, emailConfirmed, didDoc }`; the TypeScript `SessionInfo` type in `ipc.ts` must match exactly
@@ -369,7 +393,7 @@ cargo build
 - `src-tauri/src/http.rs` -- RelayClient with runtime-configurable base URL; OAuth methods (par, token_exchange)
 - `src-tauri/.cargo/config.toml` -- Cargo configuration: `RUST_TEST_THREADS=1` (prevent test race conditions)
 - `apps/identity-wallet/scripts/ios-env.sh` -- Apple toolchain derivation for iOS cross-compilation: resolves `DEVELOPER_DIR` via `/usr/bin/xcode-select -p`, exports iOS-target `CC`/`AR`/linker overrides unconditionally and macOS-host overrides only under `EZPDS_IOS_BUILD=1`. Sourced (never executed) by devenv `enterShell` and the patched Xcode Run Script phase
-- `apps/identity-wallet/scripts/ios-postinit.sh` -- re-applies the five surviving workarounds to the gitignored Xcode project after every `cargo tauri ios init` (idempotent): verifies the swift-rs `[patch.crates-io]` entry, sets `ENABLE_USER_SCRIPT_SANDBOXING = NO`, injects `EZPDS_IOS_BUILD=1` + `PATH` + `source ios-env.sh` into the "Build Rust Code" Run Script phase, sets `CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION = YES`, and injects `OTHER_LDFLAGS = -framework SystemConfiguration` to link `SystemConfiguration.framework` (needed by the `system-configuration` crate) (sentinel/grep-guarded; `plutil -lint` structural check)
+- `apps/identity-wallet/scripts/ios-postinit.sh` -- re-applies the six surviving workarounds to the gitignored Xcode project after every `cargo tauri ios init` (idempotent): verifies the swift-rs `[patch.crates-io]` entry, sets `ENABLE_USER_SCRIPT_SANDBOXING = NO`, injects `EZPDS_IOS_BUILD=1` + `PATH` + `source ios-env.sh` into the "Build Rust Code" Run Script phase, sets `CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION = YES`, injects `OTHER_LDFLAGS = -framework SystemConfiguration` to link `SystemConfiguration.framework` (needed by the `system-configuration` crate), and strips `libapp.a` from the app bundle (Patch F: project.yml `Externals → buildPhase: none` + pbxproj `in Resources` entry; App Store rejects a loose `.a`) (sentinel/grep-guarded; `plutil -lint` structural check)
 - `apps/identity-wallet/scripts/ios-check.sh` -- read-only verifier: fails if any `ios-postinit` patch is missing (including the `SystemConfiguration` link) or the pbxproj no longer parses; gates `just ios-dev`/`ios-build`
 - `src/lib/ipc.ts` -- Typed TypeScript wrappers for all Tauri IPC commands (getRelayUrl, saveRelayUrl, createAccount, getOrCreateDeviceKey, signWithDeviceKey, performDIDCeremony, startOAuthFlow, loadHomeData, logOut, resolveIdentity, startPdsAuth, requestClaimVerification, signAndVerifyClaim, submitClaim, listIdentities, getStoredDidDoc, getDeviceKeyId, checkIdentityStatus, buildRecoveryOverride, submitRecoveryOverride)
 - `src/lib/components/onboarding/` -- Eighteen onboarding screen components (ModeSelectScreen, RelayConfigScreen, WelcomeScreen, ClaimCodeScreen, EmailScreen, HandleScreen, PasswordScreen, LoadingScreen, DIDCeremonyScreen, DIDSuccessScreen, ShamirBackupScreen, HandleRegistrationScreen, AuthenticatingScreen, IdentityInputScreen, PdsAuthScreen, EmailVerificationScreen, ReviewOperationScreen, ClaimSuccessScreen)
@@ -438,3 +462,21 @@ The Rust code compiles, then Xcode's link step fails with `Undefined symbols for
 Host builds (`cargo test` / `cargo build`) link fine because **rustc** does the final link and honors the crate's `#[link(name = "SystemConfiguration", kind = "framework")]`. On iOS the crate is built as a `staticlib` (`libapp.a`) and **Xcode** does the final link — it never sees that embedded directive, so the framework must be declared in the Xcode project or the symbols stay undefined. A `build.rs` `cargo:rustc-link-lib=framework=...` does NOT help (same staticlib → Xcode gap).
 
 **Fix:** Already resolved automatically. `just ios-postinit` (Patch E) injects `OTHER_LDFLAGS = -framework SystemConfiguration` into the generated `project.pbxproj`, and `just ios-check` verifies it. `bundle.iOS.frameworks` in `tauri.conf.json` is best-effort only: `cargo tauri ios init` preserves an existing `project.yml` rather than regenerating it, so that config seeds only a fresh project and the pbxproj patch is the enforced mechanism. To link another Apple framework a new Rust dep requires, copy Patch E with the new name.
+
+---
+
+### `libapp.a ... is not permitted` / `Invalid bundle structure` on TestFlight upload
+
+`cargo tauri ios build` succeeds and `xcrun altool` then rejects the upload (HTTP 409): *"The 'Obsign.app/libapp.a' binary file is not permitted. Your app cannot contain standalone executables or libraries."* (tauri#13578.)
+
+cargo-mobile2 lists the `Externals` directory (which holds the Rust staticlib `libapp.a`) as a project source with **no explicit `buildPhase`**, so XcodeGen infers `resources` and copies the raw `.a` into the `.app` — which App Store validation forbids. The library is also (correctly) **linked** via the separate `framework: libapp.a` entry + `LIBRARY_SEARCH_PATHS`, so excluding it from resources is safe.
+
+**Fix:** Already resolved automatically. `just ios-postinit` (Patch F) sets `Externals → buildPhase: none` in `gen/apple/project.yml` (the source the per-build sync regenerates from) **and** strips the `libapp.a in Resources` entry from the generated `project.pbxproj` (the `in Frameworks` link entry is kept). `just ios-check` verifies both.
+
+---
+
+### `base64: invalid option -- 'o'` during `cargo tauri ios build` signing
+
+The build reads `IOS_CERTIFICATE` and fails decoding it: `base64: invalid option -- 'o'`. In the Nix dev shell, GNU coreutils `base64` shadows macOS's BSD `base64` in `PATH`, but Tauri's cert decode uses BSD-only flags (`-i`/`-o`). (CI is unaffected — the runner has no Nix.)
+
+**Fix:** Already resolved automatically. `scripts/ios-env.sh` (under `EZPDS_IOS_BUILD=1`) shims `/usr/bin/base64` ahead of the Nix one via a tiny symlink dir on `PATH` — surgical (only `base64`), leaving every other Nix tool untouched.

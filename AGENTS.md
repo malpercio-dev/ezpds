@@ -1,6 +1,6 @@
 # ezpds
 
-Last verified: 2026-06-21
+Last verified: 2026-06-24
 
 ## Tech Stack
 - Language: Rust (stable channel via rust-toolchain.toml)
@@ -20,12 +20,16 @@ Last verified: 2026-06-21
 - `just ci` - Full local gate (fmt-check, clippy, test, audit) — the same checks CI runs
 
 ## CI/CD
-CI runs on **tangled spindles** (`.tangled/workflows/`), not GitHub Actions. Three workflows, each running `just ci-relay` first (the Linux gate — like `just ci` but `--exclude identity-wallet`, since the iOS app needs the Apple/GTK toolchain absent in CI):
+CI is split by platform: the **relay** builds and deploys on **tangled spindles** (`.tangled/workflows/`, Linux); the **iOS app** builds and ships on **GitHub Actions** (a public mirror, macOS), because `cargo tauri ios build` needs macOS + Xcode that Linux spindles lack.
+
+**Relay (tangled spindles).** Three workflows, each running `just ci-relay` first (the Linux gate — like `just ci` but `--exclude identity-wallet`, since the iOS app needs the Apple/GTK toolchain absent in CI):
 - `pr.yaml` — test gate on PRs to `main` (no deploy, no Railway token)
 - `staging.yaml` — push to `main` → deploy to the Railway **staging** environment
 - `release.yaml` — push a `v*` tag → promote to **production**
 
 Deploys use the Railway CLI (nixpkgs dep) with environment-scoped tokens held as tangled repo secrets; production is reached only via a `v*` tag, never by merging to `main`. Litestream backs up the production SQLite DB. See [docs/deploy.md](docs/deploy.md).
+
+**iOS (GitHub Actions).** `.github/workflows/ios-testflight.yml` builds the `identity-wallet` Tauri app on a free public-repo `macos-15` runner and uploads to TestFlight on every push to `main` (App Store Connect API-key signing; never runs on `pull_request`, keeping secrets off fork PRs). Needs a public GitHub mirror (`origin` dual-push). The build/upload core is shared `just` recipes (`ios-ipa`, `ios-upload`, `ios-release`) usable locally. See [docs/ios-cicd.md](docs/ios-cicd.md).
 
 ## Dev Environment
 - Managed entirely by Nix flake + devenv; do not install tools globally
