@@ -7,10 +7,10 @@ use crate::app::AppState;
 
 use super::bearer::extract_bearer_token;
 use super::dpop::validate_dpop;
-use super::jwt::{parse_scope, verify_access_token, AuthScope, TokenType};
+use super::jwt::{parse_scope, verify_access_token, AuthScope};
 
 /// Axum extractor that validates a Bearer (or DPoP-bound) JWT and yields the
-/// authenticated caller's DID, scope, and token type.
+/// authenticated caller's DID and scope.
 ///
 /// Extract this in any handler that requires authentication:
 /// ```rust,ignore
@@ -20,9 +20,6 @@ use super::jwt::{parse_scope, verify_access_token, AuthScope, TokenType};
 pub struct AuthenticatedUser {
     pub did: String,
     pub scope: AuthScope,
-    /// Available for routes that need to distinguish DPoP-bound from plain Bearer tokens.
-    #[allow(dead_code)]
-    pub token_type: TokenType,
 }
 
 #[async_trait]
@@ -99,16 +96,9 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
             )?;
         }
 
-        let token_type = if has_dpop {
-            TokenType::DPoP
-        } else {
-            TokenType::Legacy
-        };
-
         Ok(AuthenticatedUser {
             did: claims.sub,
             scope,
-            token_type,
         })
     }
 }
