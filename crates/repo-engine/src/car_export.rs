@@ -105,10 +105,21 @@ where
 ///
 /// Shared by [`export_repo_car`] (full repo) and [`export_commit_blocks_car`] (commit diff);
 /// every CID in `cids` must be readable from `store`.
-async fn build_car<S>(store: &mut S, root: Cid, cids: Vec<Cid>) -> Result<Vec<u8>, CarExportError>
+///
+/// Blocks are written in a deterministic, root-first order: the CARv1 spec does not mandate
+/// block ordering, but many streaming parsers and interop tools expect the declared root
+/// block first, and the inputs here are `HashSet`-derived (otherwise non-reproducible). The
+/// root sorts ahead of everything else; the remaining blocks follow in CID order.
+async fn build_car<S>(
+    store: &mut S,
+    root: Cid,
+    mut cids: Vec<Cid>,
+) -> Result<Vec<u8>, CarExportError>
 where
     S: AsyncBlockStoreRead,
 {
+    cids.sort_unstable_by_key(|c| (*c != root, *c));
+
     let mut car_buf = Vec::new();
     {
         let mut car: CarStore<Cursor<&mut Vec<u8>>> =
@@ -231,6 +242,21 @@ mod tests {
             car_store.read_block_into(r1, &mut buf).await.is_err(),
             "unchanged record from the prior commit must be excluded from the diff"
         );
+    }
+
+    #[tokio::test]
+    async fn commit_blocks_car_is_deterministic() {
+        // HashSet iteration order is not stable across runs; the root-first sort in build_car
+        // must make the CAR byte-identical every time (and the declared root the first block).
+        let (mut store, root, _record_cid) = repo_with_record().await;
+
+        let car_a = export_commit_blocks_car(&mut store, None, root)
+            .await
+            .unwrap();
+        let car_b = export_commit_blocks_car(&mut store, None, root)
+            .await
+            .unwrap();
+        assert_eq!(car_a, car_b, "CAR output must be deterministic across runs");
     }
 
     #[tokio::test]
