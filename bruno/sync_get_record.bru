@@ -17,8 +17,14 @@ params:query {
 }
 
 docs {
-  Returns a CARv1 file (Content-Type: application/vnd.ipld.car) containing the signed commit
-  block, the MST node path from the tree root down to the record (the inclusion proof), and the
-  record block itself. The CAR's declared root is the commit CID. Unauthenticated. A missing
-  record or unknown account returns 404.
+  Returns a CARv1 file (Content-Type: application/vnd.ipld.car) carrying the blocks needed to
+  prove the existence OR non-existence of a record. The CAR's declared root is always the signed
+  commit CID. Unauthenticated.
+
+  - Record present -> 200 inclusion proof: commit block, the MST node path from the tree root down
+    to the record, and the record block itself. Walk commit.data -> MST root -> ... -> record CID
+    to verify the record is committed.
+  - Record absent (in an existing repo) -> 200 exclusion proof: commit block plus the covering MST
+    nodes that prove the key is absent, and NO record block. This matches the reference PDS.
+  - Unknown DID/account -> 404. (Absence of a record is not a 404; absence of the repo is.)
 }

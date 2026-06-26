@@ -1,6 +1,10 @@
 // pattern: Imperative Shell
 
-//! com.atproto.sync.getRecord - Export a single record with its MST inclusion proof as a CAR.
+//! com.atproto.sync.getRecord - Export a single record with its MST proof as a CAR.
+//!
+//! Returns the blocks needed to prove the existence *or non-existence* of a record: a present
+//! record yields a 200 inclusion-proof CAR; an absent record (in an existing repo) yields a 200
+//! exclusion-proof CAR carrying the covering MST nodes. Only an unknown DID/account returns 404.
 
 use axum::extract::{Query, State};
 use axum::http::{header, StatusCode};
@@ -21,10 +25,13 @@ pub struct SyncGetRecordParams {
 
 /// GET /xrpc/com.atproto.sync.getRecord?did=<did>&collection=<nsid>&rkey=<rkey>
 ///
-/// Returns a CARv1 file whose declared root is the signed commit and which contains the commit
-/// block, the MST node path from the tree root down to the record (the inclusion proof), and the
-/// record block itself. A consumer can verify the record belongs to the repo by walking the proof
-/// from the commit root to the record CID. Unauthenticated, like the other sync endpoints.
+/// Returns a CARv1 file whose declared root is the signed commit. When the record exists the CAR
+/// carries the commit block, the MST node path down to the record (the inclusion proof), and the
+/// record block itself; when it does not, the CAR carries the covering MST nodes that prove the
+/// key is absent (an exclusion proof) and no record block. A consumer verifies either claim by
+/// walking the proof from the commit root. Only an unknown DID/account is a 404 — an absent record
+/// in an existing repo is a 200 exclusion proof, matching the reference PDS. Unauthenticated, like
+/// the other sync endpoints.
 pub async fn sync_get_record(
     State(state): State<AppState>,
     Query(params): Query<SyncGetRecordParams>,
@@ -55,15 +62,16 @@ pub async fn sync_get_record(
     // The MST key is `<collection>/<rkey>`.
     let mst_key = format!("{}/{}", params.collection, params.rkey);
 
-    // Export the record with its inclusion proof. `None` means the record does not exist.
+    // Export the record's proof CAR. A present record yields an inclusion proof; an absent record
+    // yields an exclusion proof (covering MST nodes, no record block) — both are a 200 here, since
+    // the repo exists. A genuinely missing block (corruption) surfaces as an error → 500.
     let mut block_store = SqliteBlockStore::new(state.db.clone(), did.to_string());
     let car_bytes = export_record_proof_car(&mut block_store, root_cid, &mst_key)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, key = %mst_key, "failed to export record proof CAR");
             ApiError::new(ErrorCode::InternalError, "failed to get record")
-        })?
-        .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "record not found"))?;
+        })?;
 
     Ok((
         StatusCode::OK,
@@ -183,12 +191,74 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn nonexistent_record_returns_404() {
+    async fn nonexistent_record_returns_exclusion_proof_car() {
+        use atrium_repo::blockstore::CarStore;
+        use repo_engine::AsyncBlockStoreRead;
+
+        // A record that does not exist in an *existing* repo is a 200 exclusion-proof CAR, not a
+        // 404: the commit is the declared root, the commit block is present (covering MST nodes
+        // prove the key's absence), and the consumer can verify it. (404 is reserved for an
+        // unknown account — see `nonexistent_account_returns_404`.)
         let (state, did) = setup_account_with_repo().await;
-        let app = crate::app::app(state);
+        let app = crate::app::app(state.clone());
+
+        let expected_root: String =
+            sqlx::query_scalar("SELECT repo_root_cid FROM accounts WHERE did = ?")
+                .bind(&did)
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
 
         let response = app.oneshot(get_request(&did, "ghost")).await.unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "application/vnd.ipld.car"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+
+        let mut car = CarStore::open(std::io::Cursor::new(body.as_ref()))
+            .await
+            .expect("parse CAR");
+        let roots: Vec<_> = car.roots().collect();
+        assert_eq!(roots.len(), 1, "exclusion-proof CAR must declare one root");
+        assert_eq!(
+            roots[0].to_string(),
+            expected_root,
+            "exclusion-proof CAR root must be the commit CID"
+        );
+        let root_cid = repo_engine::Cid::try_from(expected_root.as_str()).unwrap();
+        car.read_block(root_cid)
+            .await
+            .expect("commit block must be in the exclusion-proof CAR");
+
+        // End-to-end: re-open the returned CAR as the *only* blockstore and walk commit → MST root
+        // → … → covering node, confirming the absent key resolves to `None`. The shape checks above
+        // would miss a relay-layer regression that drops MST node blocks before sending; this walk
+        // fails if any covering node is missing. Mirrors the engine-level exclusion proof test.
+        use atrium_repo::repo::Repository;
+        let car_store = CarStore::open(std::io::Cursor::new(body.as_ref()))
+            .await
+            .expect("re-parse CAR");
+        let mut proof_repo = Repository::open(car_store, root_cid)
+            .await
+            .expect("commit block must be readable from the exclusion-proof CAR");
+        let resolved = proof_repo
+            .tree()
+            .get("app.bsky.feed.post/ghost")
+            .await
+            .expect("MST walk must succeed using only the proof blocks");
+        assert_eq!(
+            resolved, None,
+            "exclusion proof must resolve the absent key to None using only the CAR blocks"
+        );
     }
 
     #[tokio::test]
