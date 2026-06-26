@@ -238,6 +238,11 @@ pub async fn write_record(
         ));
     }
 
+    // Stamp the blocks this commit just wrote with its revision, so getRepo?since reports them as
+    // newer than any earlier revision. Best-effort: the commit is already durable, and untagged
+    // blocks still ship in a full export — they are only absent from `since` deltas.
+    tag_commit_blocks(&state.db, did, &new_rev).await;
+
     // Emit the firehose `#commit` event before GC, while the previous block set still exists
     // (the diff CAR is computed against it).
     let (collection, rkey) = split_record_path(mst_key);
@@ -326,6 +331,22 @@ pub(crate) fn split_record_path(mst_key: &str) -> (String, String) {
     match mst_key.split_once('/') {
         Some((collection, rkey)) => (collection.to_string(), rkey.to_string()),
         None => (mst_key.to_string(), String::new()),
+    }
+}
+
+/// Tag the blocks a just-committed write introduced with the commit's revision.
+///
+/// Newly written blocks land with a NULL `rev` (the blockstore can't know the commit's rev as the
+/// MST mutates); this stamps every still-untagged block for the account with `rev` once the root
+/// swap has won. `com.atproto.sync.getRepo?since=<rev>` then returns exactly the blocks newer than
+/// a requested revision. Shared by all three write paths (create/put, delete, applyWrites).
+///
+/// Best-effort and non-fatal: the commit is durable regardless. A tagging failure leaves the
+/// blocks untagged — they still appear in a full `getRepo`, only in no `since` delta — so it is
+/// logged, never propagated.
+pub async fn tag_commit_blocks(pool: &SqlitePool, did: &str, rev: &str) {
+    if let Err(e) = crate::db::blocks::tag_untagged_blocks_rev(pool, did, rev).await {
+        tracing::warn!(error = %e, did = %did, "failed to tag commit block revisions (non-fatal)");
     }
 }
 

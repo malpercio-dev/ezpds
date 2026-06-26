@@ -151,6 +151,58 @@ where
     build_car(store, root_cid, blocks.into_iter().collect()).await
 }
 
+/// CARv1 header shape, serialized as DAG-CBOR. Mirrors the `{version, roots}` field order
+/// of the header `CarStore` writes, so a hand-streamed CAR (see [`car_v1_header`]) is parsed
+/// identically by `CarStore::open` and by any other CARv1 reader.
+#[derive(serde::Serialize)]
+struct CarV1Header {
+    version: u64,
+    roots: Vec<Cid>,
+}
+
+/// Append `n` as an unsigned LEB128 varint — the length prefix CARv1 puts before its header
+/// and before every block frame.
+fn write_uvarint(buf: &mut Vec<u8>, mut n: u64) {
+    while n >= 0x80 {
+        buf.push((n as u8) | 0x80);
+        n >>= 7;
+    }
+    buf.push(n as u8);
+}
+
+/// Encode the length-prefixed CARv1 header declaring `root` as the file's single root.
+///
+/// Emit this once, before any block frames, to stream a CAR without buffering the whole archive
+/// in memory: a consumer reads the header, then each [`car_v1_block_frame`] as it arrives. The
+/// bytes are identical to what [`build_car`] (via `CarStore`) would write for the same root.
+pub fn car_v1_header(root: Cid) -> Vec<u8> {
+    let header = CarV1Header {
+        version: 1,
+        roots: vec![root],
+    };
+    // The header is a tiny fixed-shape map; DAG-CBOR encoding cannot fail.
+    let header_bytes = serde_ipld_dagcbor::to_vec(&header).expect("encode CAR header");
+
+    let mut out = Vec::with_capacity(header_bytes.len() + 2);
+    write_uvarint(&mut out, header_bytes.len() as u64);
+    out.extend_from_slice(&header_bytes);
+    out
+}
+
+/// Encode one length-prefixed CARv1 block frame: `uvarint(len(cid) + len(data)) || cid || data`.
+///
+/// `data` must be the exact bytes that hash to `cid` (the caller reads them straight from the
+/// blockstore). Pairs with [`car_v1_header`] to stream a CAR block-by-block.
+pub fn car_v1_block_frame(cid: Cid, data: &[u8]) -> Vec<u8> {
+    let cid_bytes = cid.to_bytes();
+
+    let mut frame = Vec::with_capacity(cid_bytes.len() + data.len() + 4);
+    write_uvarint(&mut frame, (cid_bytes.len() + data.len()) as u64);
+    frame.extend_from_slice(&cid_bytes);
+    frame.extend_from_slice(data);
+    frame
+}
+
 /// Build a CARv1 file declaring `root` as its single root and containing exactly `cids`.
 ///
 /// Shared by [`export_repo_car`] (full repo) and [`export_commit_blocks_car`] (commit diff);
@@ -562,5 +614,55 @@ mod tests {
             .await
             .expect("record block must be in the CAR");
         assert!(!record_block.is_empty());
+    }
+
+    #[tokio::test]
+    async fn streamed_car_frames_parse_as_a_valid_car() {
+        // A CAR assembled by hand from car_v1_header + car_v1_block_frame (the streaming path)
+        // must be byte-compatible with a real CARv1 reader: re-open it with atrium's CarStore and
+        // confirm the declared root and every block resolve. This pins the framing wire format.
+        let (mut store, root, record_cid) = repo_with_record().await;
+        let reachable = collect_reachable_cids(&mut store, root).await.unwrap();
+
+        let mut car = car_v1_header(root);
+        for cid in &reachable {
+            let mut block = Vec::new();
+            store.read_block_into(*cid, &mut block).await.unwrap();
+            car.extend_from_slice(&car_v1_block_frame(*cid, &block));
+        }
+
+        let mut car_store = CarStore::open(Cursor::new(&car)).await.unwrap();
+        assert_eq!(
+            car_store.roots().collect::<Vec<_>>(),
+            vec![root],
+            "streamed CAR must declare the commit as its root"
+        );
+        let mut buf = Vec::new();
+        car_store
+            .read_block_into(root, &mut buf)
+            .await
+            .expect("commit block must be readable from the streamed CAR");
+        car_store
+            .read_block_into(record_cid, &mut buf)
+            .await
+            .expect("record block must be readable from the streamed CAR");
+    }
+
+    #[tokio::test]
+    async fn streamed_car_header_matches_carstore_header() {
+        // The hand-rolled header must be byte-identical to the one CarStore writes, so both export
+        // paths (buffered build_car and the streaming framing) emit the same bytes for a given root.
+        let (mut store, root, _record_cid) = repo_with_record().await;
+
+        // build_car with only the root yields: [uvarint len][header][root block frame]. Slice off
+        // the header portion and compare against car_v1_header.
+        let buffered = build_car(&mut store, root, vec![root]).await.unwrap();
+        let streamed_header = car_v1_header(root);
+
+        assert_eq!(
+            &buffered[..streamed_header.len()],
+            streamed_header.as_slice(),
+            "streamed header bytes must match CarStore's header bytes"
+        );
     }
 }

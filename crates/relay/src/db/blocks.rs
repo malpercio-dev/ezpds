@@ -114,6 +114,45 @@ pub async fn delete_unreachable_blocks(
     Ok(removed)
 }
 
+/// Tag an account's not-yet-tagged blocks with the revision of the commit that introduced them.
+///
+/// A write persists its new blocks (via `put_block`) with a NULL `rev` before the commit's
+/// revision is final; once the root swap succeeds the caller stamps those blocks with `rev`.
+/// Only `rev IS NULL` rows are touched — blocks from earlier commits keep their original rev,
+/// which is what `com.atproto.sync.getRepo?since=<rev>` compares against. Returns the number of
+/// blocks tagged. Best-effort: a failure leaves blocks NULL (absent from `since` deltas but still
+/// present in a full export), never corrupts the repo.
+pub async fn tag_untagged_blocks_rev(
+    pool: &SqlitePool,
+    account_did: &str,
+    rev: &str,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query("UPDATE blocks SET rev = ? WHERE account_did = ? AND rev IS NULL")
+        .bind(rev)
+        .bind(account_did)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
+}
+
+/// List the CIDs of an account's blocks introduced after revision `since`.
+///
+/// Drives `com.atproto.sync.getRepo?since=<rev>`: returns exactly the blocks a consumer holding
+/// the repo as of `since` is missing. Revisions are TIDs, so the `rev > since` string comparison
+/// orders by commit time. Blocks with a NULL `rev` (an in-flight commit's, or a backfill gap) are
+/// excluded — they are not part of any committed delta past `since`.
+pub async fn list_block_cids_since(
+    pool: &SqlitePool,
+    account_did: &str,
+    since: &str,
+) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT cid FROM blocks WHERE account_did = ? AND rev > ? ORDER BY cid")
+        .bind(account_did)
+        .bind(since)
+        .fetch_all(pool)
+        .await
+}
+
 // ── SqliteBlockStore adapter ─────────────────────────────────────────────────────
 
 /// Adapter that implements atrium-repo's blockstore traits over SQLite.
@@ -361,6 +400,87 @@ mod tests {
         assert!(get_block(&pool, "bafkeep1").await.unwrap().is_some());
         assert!(get_block(&pool, "bafkeep2").await.unwrap().is_some());
         assert!(get_block(&pool, "bafgarbage").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn tag_untagged_only_touches_null_rev_blocks() {
+        let pool = test_pool().await;
+        insert_test_account(&pool, "did:plc:tag").await;
+        put_block(&pool, "bafrev1", "did:plc:tag", b"\xa1a")
+            .await
+            .unwrap();
+        put_block(&pool, "bafrev2", "did:plc:tag", b"\xa1b")
+            .await
+            .unwrap();
+
+        // First commit tags both freshly-written (NULL) blocks.
+        let tagged = tag_untagged_blocks_rev(&pool, "did:plc:tag", "3aaa")
+            .await
+            .unwrap();
+        assert_eq!(tagged, 2);
+
+        // A later block, then a second commit: only the new (still-NULL) block is re-tagged;
+        // the earlier blocks keep their original rev.
+        put_block(&pool, "bafrev3", "did:plc:tag", b"\xa1c")
+            .await
+            .unwrap();
+        let tagged = tag_untagged_blocks_rev(&pool, "did:plc:tag", "3bbb")
+            .await
+            .unwrap();
+        assert_eq!(tagged, 1, "only the still-untagged block is stamped");
+
+        let since_aaa = list_block_cids_since(&pool, "did:plc:tag", "3aaa")
+            .await
+            .unwrap();
+        assert_eq!(
+            since_aaa,
+            vec!["bafrev3".to_string()],
+            "since the first rev, only the second commit's block is new"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_block_cids_since_excludes_at_or_before_and_null() {
+        let pool = test_pool().await;
+        insert_test_account(&pool, "did:plc:since").await;
+        put_block(&pool, "bafold", "did:plc:since", b"\xa1a")
+            .await
+            .unwrap();
+        tag_untagged_blocks_rev(&pool, "did:plc:since", "3kkk")
+            .await
+            .unwrap();
+        put_block(&pool, "bafnew", "did:plc:since", b"\xa1b")
+            .await
+            .unwrap();
+        tag_untagged_blocks_rev(&pool, "did:plc:since", "3mmm")
+            .await
+            .unwrap();
+        // A still-untagged (NULL rev) block must never appear in a since delta.
+        put_block(&pool, "bafnull", "did:plc:since", b"\xa1c")
+            .await
+            .unwrap();
+
+        // since == latest rev → nothing new.
+        assert!(list_block_cids_since(&pool, "did:plc:since", "3mmm")
+            .await
+            .unwrap()
+            .is_empty());
+
+        // since == first rev → only the second commit's block (NULL excluded).
+        assert_eq!(
+            list_block_cids_since(&pool, "did:plc:since", "3kkk")
+                .await
+                .unwrap(),
+            vec!["bafnew".to_string()]
+        );
+
+        // since below everything → both tagged blocks (NULL still excluded).
+        assert_eq!(
+            list_block_cids_since(&pool, "did:plc:since", "3aaa")
+                .await
+                .unwrap(),
+            vec!["bafnew".to_string(), "bafold".to_string()]
+        );
     }
 
     // ── SqliteBlockStore adapter tests ──────────────────────────────────────────────

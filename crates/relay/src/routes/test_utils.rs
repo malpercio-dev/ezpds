@@ -177,6 +177,11 @@ pub async fn seed_account_with_repo(db: &sqlx::SqlitePool, did: &str) {
         .execute(db)
         .await
         .unwrap();
+    // Tag the genesis blocks with the repo rev, mirroring the production genesis insert, so tests
+    // that exercise getRepo?since see correctly-revisioned blocks.
+    crate::db::blocks::tag_untagged_blocks_rev(db, did, &rev)
+        .await
+        .unwrap();
 }
 
 /// Insert a fully provisioned account row with an argon2id-hashed password and a handle.

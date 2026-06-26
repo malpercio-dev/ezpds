@@ -597,12 +597,13 @@ async fn promote_account(
     // transaction, so account + signing key + a complete repo all commit together.
     for (cid, bytes) in genesis_blocks {
         sqlx::query(
-            "INSERT INTO blocks (cid, account_did, bytes) VALUES (?, ?, ?) \
+            "INSERT INTO blocks (cid, account_did, bytes, rev) VALUES (?, ?, ?, ?) \
              ON CONFLICT(cid) DO NOTHING",
         )
         .bind(cid.to_string())
         .bind(did)
         .bind(bytes.as_slice())
+        .bind(genesis_rev)
         .execute(&mut *tx)
         .await
         .inspect_err(|e| tracing::error!(error = %e, "failed to insert genesis block"))

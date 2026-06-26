@@ -142,6 +142,9 @@ pub async fn delete_record(
         ));
     }
 
+    // Stamp this commit's new blocks with its revision for getRepo?since (best-effort, non-fatal).
+    crate::record_write::tag_commit_blocks(&state.db, did, &new_rev).await;
+
     // Emit the firehose `#commit` event before GC (the diff CAR needs the prior block set).
     let op = crate::firehose::RepoOp {
         action: crate::firehose::OpAction::Delete,

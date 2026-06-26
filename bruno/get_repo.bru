@@ -5,11 +5,36 @@ meta {
 }
 
 get {
-  url: {{baseUrl}}/xrpc/com.atproto.sync.getRepo?did={{did}}
+  url: {{baseUrl}}/xrpc/com.atproto.sync.getRepo?did={{did}}&since=
   body: none
   auth: none
 }
 
 params:query {
   did: {{did}}
+  ~since:
+}
+
+docs {
+  # com.atproto.sync.getRepo
+
+  Streams the repository identified by `did` as a CARv1 file
+  (`application/vnd.ipld.car`). The CAR's declared root is the signed commit
+  CID. No authentication required.
+
+  ## Parameters
+  - `did` (required) — the repository to export.
+  - `since` (optional) — a commit revision (TID). When set, the response is an
+    **incremental** export: only the blocks introduced after this revision,
+    plus the commit block (so the declared root is always present). A consumer
+    holding the repo as of `since` applies these blocks on top of its existing
+    state to reach the current root, without re-downloading the whole repo.
+    Omit `since` (it is disabled with `~` by default) for the full repo.
+
+  ## Notes
+  - The body is streamed block-by-block rather than buffered, so large repos
+    export without materializing the entire CAR in memory.
+  - `since` at or ahead of the current revision yields a CAR carrying just the
+    commit block.
+  - An unknown DID/account returns 404.
 }

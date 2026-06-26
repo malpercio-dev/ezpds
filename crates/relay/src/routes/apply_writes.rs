@@ -266,6 +266,9 @@ pub async fn apply_writes(
         ));
     }
 
+    // Stamp this commit's new blocks with its revision for getRepo?since (best-effort, non-fatal).
+    crate::record_write::tag_commit_blocks(&state.db, did, &new_rev).await;
+
     // Emit one firehose `#commit` event for the whole batch, before GC (the diff CAR is
     // computed against the previous block set). Each engine outcome maps back to its write's
     // kind and retained value to form a `#repoOp`.
