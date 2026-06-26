@@ -272,6 +272,7 @@ mod tests {
             failed_login_attempts: base.failed_login_attempts,
             firehose: base.firehose,
             crawlers: base.crawlers,
+            iroh: base.iroh,
         }
     }
 

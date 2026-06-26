@@ -13,6 +13,7 @@ mod crawler;
 mod db;
 mod dns;
 mod firehose;
+mod iroh_tunnel;
 mod record_write;
 mod routes;
 mod telemetry;
@@ -167,21 +168,26 @@ async fn run() -> anyhow::Result<()> {
     .await
     .with_context(|| "failed to load or create JWT signing secret")?;
 
-    // Iroh node identity: when the Iroh endpoint is enabled, load (or generate on first boot)
-    // the persistent Ed25519 secret key so the relay advertises a stable node id across
-    // restarts. The endpoint itself is bound in a later step; here we establish the identity
-    // and surface the node id in the logs so operators can see it. Disabled by default, so a
-    // plain relay does no Iroh work at all.
-    if config.iroh.enabled {
+    // Iroh tunnel: when enabled, load (or generate on first boot) the persistent Ed25519
+    // identity so the relay advertises a stable node id across restarts, then bind the QUIC
+    // endpoint. Disabled by default, so a plain relay does no Iroh work at all. A bind failure
+    // is fatal — if the operator asked for the tunnel, starting without it would silently
+    // drop a configured capability.
+    let iroh = if config.iroh.enabled {
         let secret = auth::load_or_create_iroh_secret_key(
             &pool,
             config.signing_key_master_key.as_ref().map(|s| &*s.0),
         )
         .await
         .with_context(|| "failed to load or create Iroh node identity")?;
-        let node_id = iroh::SecretKey::from_bytes(&secret).public();
-        tracing::info!(%node_id, "Iroh node identity ready");
-    }
+        let iroh_state = iroh_tunnel::start(secret)
+            .await
+            .with_context(|| "failed to bind Iroh endpoint")?;
+        tracing::info!(node_id = %iroh_state.node_id, "Iroh endpoint bound");
+        Some(Arc::new(iroh_state))
+    } else {
+        None
+    };
 
     // Crawler notifier: after each commit, ping the configured relays/BGSes via requestCrawl.
     // The hostname advertised to crawlers is derived from the relay's public URL.
@@ -213,6 +219,7 @@ async fn run() -> anyhow::Result<()> {
         failed_login_attempts: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         firehose: Arc::new(firehose::Firehose::new()),
         crawlers,
+        iroh,
     };
 
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -231,6 +238,15 @@ async fn run() -> anyhow::Result<()> {
         "blob garbage collector started"
     );
 
+    // Spawn the Iroh accept loop when the tunnel is enabled. Like the blob GC it is detached
+    // and runs for the life of the endpoint; closing the endpoint at shutdown ends the loop.
+    // Keep a clone of the endpoint state so we can close it after the HTTP server stops.
+    let iroh_shutdown = state.iroh.clone();
+    if let Some(iroh) = &state.iroh {
+        let _iroh_accept = iroh_tunnel::spawn_accept_loop(iroh.endpoint.clone());
+        tracing::info!("iroh accept loop started");
+    }
+
     axum::serve(listener, app::app(state))
         .with_graceful_shutdown(async {
             if let Err(e) = shutdown_signal().await {
@@ -242,6 +258,13 @@ async fn run() -> anyhow::Result<()> {
             tracing::error!(error = %e, "axum server exited with error");
             anyhow::anyhow!("server error: {e}")
         })?;
+
+    // The HTTP server has stopped. Close the Iroh endpoint so in-flight connections drain and
+    // the accept loop exits cleanly (accept() yields None once the endpoint is closed).
+    if let Some(iroh) = iroh_shutdown {
+        iroh.endpoint.close().await;
+        tracing::info!("iroh endpoint closed");
+    }
 
     tracing::info!("relay shut down");
     Ok(())
