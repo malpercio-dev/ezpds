@@ -24,12 +24,12 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::response::Response;
 use futures_util::stream::SplitSink;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::app::AppState;
-use crate::firehose::{CommitEvent, FirehoseEvent, Subscription};
+use crate::firehose::{CommitEvent, FirehoseEvent, SubscribeOutcome, Subscription};
 use repo_engine::Cid;
 
 /// How often to send a keepalive Ping to detect dead connections.
@@ -59,22 +59,30 @@ pub async fn subscribe_repos(
 async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) {
     let (mut sender, mut receiver) = socket.split();
 
-    // A cursor ahead of everything we've emitted is a client error: refuse and close.
-    let current = state.firehose.current_seq();
-    if let Some(c) = cursor {
-        if c > current {
+    // Validate the cursor and attach to the stream atomically: the future-cursor check, the
+    // backlog snapshot, and the live subscribe all happen under one lock inside `subscribe_from`,
+    // so a concurrent commit can't produce a spurious FutureCursor or slip an event past us.
+    let Subscription { replay, mut rx } = match state.firehose.subscribe_from(cursor) {
+        SubscribeOutcome::Subscribed(sub) => sub,
+        SubscribeOutcome::FutureCursor { .. } => {
+            // A cursor ahead of everything we've emitted is a client error: refuse and close.
             let frame = encode_error_frame("FutureCursor", "cursor is in the future");
             let _ = sender.send(Message::Binary(frame)).await;
             let _ = sender.close().await;
             return;
         }
-    }
+    };
 
-    // Snapshot the replay backlog and attach to the live stream atomically.
-    let Subscription { replay, mut rx } = state.firehose.subscribe_from(cursor);
-
-    // Replay missed events first, oldest first, before any live event.
+    // Replay missed events first, oldest first, before any live event. Poll the incoming half
+    // between sends so that a client that closes (or errors) mid-replay aborts immediately
+    // rather than after we encode and write up to a full backlog of now-unwanted events.
     for event in &replay {
+        if let Some(incoming) = receiver.next().now_or_never() {
+            match incoming {
+                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
+                Some(Ok(_)) => {}
+            }
+        }
         if !send_event(&mut sender, event).await {
             return;
         }

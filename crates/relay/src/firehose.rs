@@ -143,6 +143,15 @@ pub struct Subscription {
     pub rx: broadcast::Receiver<FirehoseEvent>,
 }
 
+/// The outcome of [`Firehose::subscribe_from`].
+pub enum SubscribeOutcome {
+    /// The subscription was established; replay its backlog, then stream `rx`.
+    Subscribed(Subscription),
+    /// The requested cursor is ahead of the latest assigned sequence (`current`), so it cannot
+    /// be honoured — the client is claiming to have seen events that do not exist.
+    FutureCursor { current: u64 },
+}
+
 /// The mutable core of the firehose, guarded by a single mutex so sequence assignment, the
 /// replay backlog, and broadcast ordering all advance atomically.
 struct Inner {
@@ -197,12 +206,24 @@ impl Firehose {
     /// With `cursor = None`, the returned [`Subscription`] has an empty `replay` and streams
     /// only future events. With `cursor = Some(n)`, `replay` carries every still-buffered event
     /// whose `seq` is strictly greater than `n` (so a client passing the last `seq` it processed
-    /// receives exactly what it missed), and `rx` continues seamlessly from there.
+    /// receives exactly what it missed), and `rx` continues seamlessly from there. A cursor
+    /// ahead of the latest assigned sequence yields [`SubscribeOutcome::FutureCursor`].
     ///
     /// Events older than the retained backlog cannot be replayed; such a cursor yields only the
     /// events still in the buffer (best effort), matching how a real relay's buffer ages out.
-    pub fn subscribe_from(&self, cursor: Option<u64>) -> Subscription {
+    ///
+    /// The future-cursor check, the backlog snapshot, and the channel subscribe all happen under
+    /// the single `inner` lock that [`Firehose::emit_commit`] also holds. This is atomic with
+    /// respect to emission: there is no window in which a concurrent `emit_commit` could turn a
+    /// valid cursor into a spurious `FutureCursor`, nor let an event slip past both the backlog
+    /// snapshot and the receiver.
+    pub fn subscribe_from(&self, cursor: Option<u64>) -> SubscribeOutcome {
         let inner = self.inner.lock().expect("firehose inner mutex poisoned");
+        if let Some(c) = cursor {
+            if c > inner.seq {
+                return SubscribeOutcome::FutureCursor { current: inner.seq };
+            }
+        }
         // Subscribe to the live channel *before* releasing the lock so that no event emitted
         // after this snapshot can slip past both the backlog copy and the receiver.
         let rx = self.tx.subscribe();
@@ -215,7 +236,7 @@ impl Firehose {
                 .collect(),
             None => Vec::new(),
         };
-        Subscription { replay, rx }
+        SubscribeOutcome::Subscribed(Subscription { replay, rx })
     }
 
     /// Number of live subscribers. Primarily for diagnostics and tests.
@@ -367,6 +388,16 @@ mod tests {
         assert!(!c.time.is_empty());
     }
 
+    /// Unwrap a successful subscription, panicking on an unexpected `FutureCursor`.
+    fn subscribed(outcome: SubscribeOutcome) -> Subscription {
+        match outcome {
+            SubscribeOutcome::Subscribed(sub) => sub,
+            SubscribeOutcome::FutureCursor { current } => {
+                panic!("expected a subscription, got FutureCursor (current={current})")
+            }
+        }
+    }
+
     #[tokio::test]
     async fn subscribe_from_replays_events_after_cursor() {
         let fh = Firehose::new();
@@ -375,7 +406,7 @@ mod tests {
         }
 
         // Cursor at seq 2: replay must contain exactly seqs 3, 4, 5 in order.
-        let sub = fh.subscribe_from(Some(2));
+        let sub = subscribed(fh.subscribe_from(Some(2)));
         let seqs: Vec<u64> = sub.replay.iter().map(|e| e.seq()).collect();
         assert_eq!(seqs, vec![3, 4, 5]);
     }
@@ -386,8 +417,24 @@ mod tests {
         fh.emit_commit(commit_input("did:plc:a"));
         fh.emit_commit(commit_input("did:plc:a"));
 
-        let sub = fh.subscribe_from(None);
+        let sub = subscribed(fh.subscribe_from(None));
         assert!(sub.replay.is_empty(), "no cursor means no backfill");
+    }
+
+    #[tokio::test]
+    async fn subscribe_from_rejects_future_cursor() {
+        let fh = Firehose::new();
+        fh.emit_commit(commit_input("did:plc:a")); // seq 1
+
+        // A cursor past the latest sequence is a future cursor and reports the current seq.
+        match fh.subscribe_from(Some(2)) {
+            SubscribeOutcome::FutureCursor { current } => assert_eq!(current, 1),
+            SubscribeOutcome::Subscribed(_) => panic!("cursor 2 is in the future of seq 1"),
+        }
+
+        // The current seq itself is not "in the future": it subscribes with no replay.
+        let sub = subscribed(fh.subscribe_from(Some(1)));
+        assert!(sub.replay.is_empty());
     }
 
     #[tokio::test]
@@ -397,7 +444,7 @@ mod tests {
         fh.emit_commit(commit_input("did:plc:a")); // seq 2
 
         // Subscribe from cursor 1: should replay seq 2, then receive seq 3 live.
-        let mut sub = fh.subscribe_from(Some(1));
+        let mut sub = subscribed(fh.subscribe_from(Some(1)));
         assert_eq!(
             sub.replay.iter().map(|e| e.seq()).collect::<Vec<_>>(),
             vec![2]
@@ -419,7 +466,7 @@ mod tests {
             fh.emit_commit(commit_input("did:plc:a"));
         }
         // Only the last 3 (seqs 4,5,6) remain; a cursor of 0 replays just those.
-        let sub = fh.subscribe_from(Some(0));
+        let sub = subscribed(fh.subscribe_from(Some(0)));
         assert_eq!(
             sub.replay.iter().map(|e| e.seq()).collect::<Vec<_>>(),
             vec![4, 5, 6]
