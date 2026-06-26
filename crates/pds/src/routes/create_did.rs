@@ -94,7 +94,7 @@ pub async fn create_did_handler(
     let pending = load_pending_account(&state.db, &session.account_id).await?;
 
     // The per-account repo signing key must have been issued (GET /v1/repo-signing-key)
-    // before the ceremony, because the op publishes it as #atproto and the relay signs
+    // before the ceremony, because the op publishes it as #atproto and the PDS signs
     // repo commits with the matching private key.
     let repo_key = crate::db::repo_keys::get_pending_repo_key(&state.db, &session.account_id)
         .await
@@ -110,7 +110,7 @@ pub async fn create_did_handler(
         })?;
 
     // Guard: reject empty passwords before doing any expensive work.
-    // argon2 happily hashes "" — this ensures the relay never stores a zero-length password.
+    // argon2 happily hashes "" — this ensures the PDS never stores a zero-length password.
     if payload.password.is_empty() {
         return Err(ApiError::new(
             ErrorCode::InvalidClaim,
@@ -124,7 +124,7 @@ pub async fn create_did_handler(
     let did = &verified.did;
 
     // The op must publish the issued per-account key as its #atproto verification method.
-    // A mismatch means the relay could not sign this repo's commits, so reject it.
+    // A mismatch means the PDS could not sign this repo's commits, so reject it.
     if verified
         .verification_methods
         .get("atproto")
@@ -439,7 +439,7 @@ async fn check_already_promoted(db: &sqlx::SqlitePool, did: &str) -> Result<(), 
 /// and return the shares base32-encoded as `(share1, share2, share3)`.
 ///
 /// Share 1 → user's iCloud Keychain (returned to app).
-/// Share 2 → relay DB custody (stored in accounts.recovery_share).
+/// Share 2 → PDS DB custody (stored in accounts.recovery_share).
 /// Share 3 → user-directed manual backup (returned to app).
 ///
 /// Any 2 of the 3 shares can reconstruct the original secret.
@@ -512,7 +512,7 @@ async fn post_to_plc_directory(
 ///
 /// In a single transaction: INSERT accounts + did_documents + sessions,
 /// then DELETE pending_sessions + devices + pending_accounts.
-/// `recovery_share` is Share 2 of the Shamir split; stored for relay-side custody.
+/// `recovery_share` is Share 2 of the Shamir split; stored for PDS-side custody.
 /// `password_hash` is the argon2id PHC string for the account's password set during the ceremony.
 #[allow(clippy::too_many_arguments)]
 async fn promote_account(
@@ -587,7 +587,7 @@ async fn promote_account(
     .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to create session"))?;
 
     // Move the per-account repo signing key from the pending account into signing_keys
-    // (DID-keyed), atomically with promotion. The relay loads it to sign repo commits.
+    // (DID-keyed), atomically with promotion. The PDS loads it to sign repo commits.
     crate::db::repo_keys::insert_did_signing_key(&mut *tx, did, repo_key)
         .await
         .inspect_err(|e| tracing::error!(error = %e, "failed to insert repo signing key"))
@@ -733,7 +733,7 @@ mod tests {
         atproto_key_did: &str,
     ) -> (String, serde_json::Value) {
         use crypto::{build_did_plc_genesis_op, generate_p256_keypair, DidKeyUri};
-        // The device/rotation key signs the op; the per-account key (issued by the relay)
+        // The device/rotation key signs the op; the per-account key (issued by the PDS)
         // is published as rotationKeys[1] + verificationMethods.atproto.
         let device = generate_p256_keypair().expect("device keypair");
         let device_private = *device.private_key_bytes;
@@ -753,7 +753,7 @@ mod tests {
     /// Insert prerequisite rows for a DID-creation test.
     ///
     /// Inserts: claim_code, pending_account, device, pending_session.
-    /// No relay signing key needed.
+    /// No PDS signing key needed.
     async fn insert_test_data(db: &sqlx::SqlitePool) -> TestSetup {
         let claim_code = format!("TEST-{}", Uuid::new_v4());
         sqlx::query(
@@ -1034,7 +1034,7 @@ mod tests {
         );
         let rs = recovery_share
             .as_deref()
-            .expect("recovery_share should not be NULL — Share 2 must be stored for relay custody");
+            .expect("recovery_share should not be NULL — Share 2 must be stored for PDS custody");
         assert_eq!(rs.len(), 52, "recovery_share should be 52 chars");
         assert!(
             rs.chars().all(|c| matches!(c, 'A'..='Z' | '2'..='7')),
@@ -1344,7 +1344,7 @@ mod tests {
     // ── Per-account repo signing key checks ───────────────────────────────────
 
     /// An op publishing a different #atproto key than the one issued is rejected,
-    /// before any plc.directory call (the relay could not sign that repo's commits).
+    /// before any plc.directory call (the PDS could not sign that repo's commits).
     #[tokio::test]
     async fn mismatched_atproto_key_returns_400() {
         let mock_server = MockServer::start().await;

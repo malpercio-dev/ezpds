@@ -96,7 +96,7 @@ impl TxtResolver for HickoryTxtResolver {
 /// Object-safe: uses `Pin<Box<dyn Future>>` so `dyn DnsProvider` works with `Arc`.
 pub trait DnsProvider: Send + Sync {
     /// Create a DNS record pointing `name` (a subdomain label, e.g. `"alice"`) to
-    /// `target` (an IP address or hostname the relay is reachable at).
+    /// `target` (an IP address or hostname the PDS is reachable at).
     ///
     /// The provider is responsible for constructing the full qualified name from
     /// `name` and its configured zone.

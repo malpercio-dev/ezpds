@@ -17,7 +17,7 @@ impl<T> std::fmt::Debug for Sensitive<T> {
     }
 }
 
-/// Validated, fully-resolved relay configuration.
+/// Validated, fully-resolved pds configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind_address: String,
@@ -117,7 +117,7 @@ pub struct IrohConfig {
 ///
 /// After every repo commit the relay notifies each configured crawler so newly produced
 /// content is pulled promptly into the wider network. Each entry is a service base URL
-/// (e.g. `https://bsky.network`); the relay POSTs to
+/// (e.g. `https://bsky.network`); the pds POSTs to
 /// `<url>/xrpc/com.atproto.sync.requestCrawl`. The default is the public bsky.network BGS;
 /// set `urls = []` to disable crawl notifications entirely.
 #[derive(Debug, Clone, Deserialize)]
@@ -350,7 +350,7 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
     // Reject signing_key_master_key if it appears in TOML (must be env var only).
     if raw.signing_key_master_key_toml_sentinel.is_some() {
         return Err(ConfigError::Invalid(
-            "signing_key_master_key must be set via env var EZPDS_SIGNING_KEY_MASTER_KEY, not relay.toml (security-sensitive field)".to_string()
+            "signing_key_master_key must be set via env var EZPDS_SIGNING_KEY_MASTER_KEY, not pds.toml (security-sensitive field)".to_string()
         ));
     }
 
@@ -1073,7 +1073,7 @@ mod tests {
 
     #[test]
     fn signing_key_master_key_in_toml_returns_error() {
-        // Operator mistakenly puts signing_key_master_key in relay.toml instead of env var.
+        // Operator mistakenly puts signing_key_master_key in pds.toml instead of env var.
         // The sentinel field must catch this and reject the configuration.
         let toml = r#"
             data_dir = "/var/pds"

@@ -166,7 +166,7 @@ fn validate_handle<'a>(
         return Err("handle domain cannot be empty");
     }
     if !available_domains.iter().any(|d| d == domain) {
-        return Err("handle domain is not served by this relay");
+        return Err("handle domain is not served by this server");
     }
 
     Ok(name)

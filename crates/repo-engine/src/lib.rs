@@ -8,7 +8,7 @@ pub mod mst;
 pub mod records;
 pub mod signer;
 
-// Re-export the blockstore traits so relay can implement them without depending on atrium-repo
+// Re-export the blockstore traits so PDS can implement them without depending on atrium-repo
 // directly.
 pub use atrium_repo::blockstore::{AsyncBlockStoreRead, AsyncBlockStoreWrite};
 

@@ -2,7 +2,7 @@
 //
 // Pure did:plc genesis operation builder. No I/O, no HTTP, no DB.
 // Builds a signed genesis operation from key material and identity fields,
-// derives the DID, and returns both for use by the relay's imperative shell.
+// derives the DID, and returns both for use by the PDS's imperative shell.
 //
 // Algorithm:
 //   1. Construct UnsignedPlcOp (fields in DAG-CBOR canonical order)
@@ -69,7 +69,7 @@ pub struct PlcService {
     /// Service type, e.g. `"AtprotoPersonalDataServer"`.
     #[serde(rename = "type")]
     pub service_type: String,
-    /// Service endpoint URL, e.g. `"https://relay.example.com"`.
+    /// Service endpoint URL, e.g. `"https://pds.example.com"`.
     pub endpoint: String,
 }
 
@@ -154,7 +154,7 @@ pub struct SignedPlcOperation {
 /// The result of verifying a client-submitted did:plc genesis operation.
 ///
 /// Returned by [`verify_genesis_op`]. Fields are extracted directly from the
-/// verified signed op; the relay uses them for semantic validation and DID
+/// verified signed op; the PDS uses them for semantic validation and DID
 /// document construction.
 ///
 /// Only valid if constructed via [`verify_genesis_op`] — the `#[non_exhaustive]`
@@ -193,7 +193,7 @@ fn base32_lowercase() -> Result<data_encoding::Encoding, CryptoError> {
 /// - `rotation_key`: The user's device key (highest-priority rotation key). Placed at `rotationKeys[0]`.
 /// - `signing_key`: The relay's signing key. Placed at `rotationKeys[1]` and `verificationMethods.atproto`.
 /// - `handle`: The account handle, e.g. `"alice.example.com"`. Stored as `"at://alice.example.com"` in `alsoKnownAs`.
-/// - `service_endpoint`: The relay's public URL, e.g. `"https://relay.example.com"`.
+/// - `service_endpoint`: The relay's public URL, e.g. `"https://pds.example.com"`.
 /// - `sign`: A callback that receives the CBOR-encoded unsigned op bytes and must return the
 ///   raw 64-byte r‖s P-256 ECDSA signature bytes (big-endian, low-S canonical).
 ///
@@ -293,7 +293,7 @@ where
 /// - `signing_key`: The relay's signing key. Placed at `rotationKeys[1]` and `verificationMethods.atproto`.
 /// - `signing_private_key`: Raw 32-byte P-256 private key scalar for `signing_key`.
 /// - `handle`: The account handle, e.g. `"alice.example.com"`. Stored as `"at://alice.example.com"` in `alsoKnownAs`.
-/// - `service_endpoint`: The relay's public URL, e.g. `"https://relay.example.com"`.
+/// - `service_endpoint`: The relay's public URL, e.g. `"https://pds.example.com"`.
 ///
 /// # Errors
 /// Returns `CryptoError::PlcOperation` if `signing_private_key` is not a valid P-256 scalar
@@ -739,7 +739,7 @@ mod tests {
             &signing_kp.key_id,
             &private_key_bytes,
             "alice.example.com",
-            "https://relay.example.com",
+            "https://pds.example.com",
         )
         .expect("genesis op should succeed");
         (
@@ -820,7 +820,7 @@ mod tests {
             &signing_kp.key_id,
             &private_key_bytes,
             "alice.example.com",
-            "https://relay.example.com",
+            "https://pds.example.com",
         )
         .expect("first call should succeed");
 
@@ -829,7 +829,7 @@ mod tests {
             &signing_kp.key_id,
             &private_key_bytes,
             "alice.example.com",
-            "https://relay.example.com",
+            "https://pds.example.com",
         )
         .expect("second call should succeed");
 
@@ -852,7 +852,7 @@ mod tests {
             &signing_kp.key_id,
             &zero_bytes,
             "alice.example.com",
-            "https://relay.example.com",
+            "https://pds.example.com",
         );
 
         assert!(
@@ -897,7 +897,7 @@ mod tests {
             &signing_kp.key_id,
             &private_key_bytes,
             "alice.example.com",
-            "https://relay.example.com",
+            "https://pds.example.com",
         )
         .expect("genesis op should succeed");
 
@@ -925,7 +925,7 @@ mod tests {
             &signing_kp.key_id,
             &private_key_bytes,
             "alice.example.com",
-            "https://relay.example.com",
+            "https://pds.example.com",
         )
         .expect("genesis op");
         (signing_kp.key_id, op)
@@ -961,7 +961,7 @@ mod tests {
         );
         assert_eq!(
             verified.atproto_pds_endpoint,
-            Some("https://relay.example.com".to_string()),
+            Some("https://pds.example.com".to_string()),
             "atproto_pds_endpoint should be set correctly"
         );
     }
@@ -1091,7 +1091,7 @@ mod tests {
             &kp.key_id,
             &private_key_bytes,
             "alice.example.com",
-            "https://relay.example.com",
+            "https://pds.example.com",
         )
         .expect("genesis op should succeed");
 
@@ -1123,7 +1123,7 @@ mod tests {
             &rotation_kp.key_id,
             &signing_kp.key_id,
             "alice.example.com",
-            "https://relay.example.com",
+            "https://pds.example.com",
             |data| {
                 let sig: Signature = Signer::sign(&sk, data);
                 Ok(sig.to_bytes().to_vec())
@@ -1231,7 +1231,7 @@ mod tests {
             "atproto_pds".to_string(),
             PlcService {
                 service_type: "AtprotoPersonalDataServer".to_string(),
-                endpoint: "https://relay.example.com".to_string(),
+                endpoint: "https://pds.example.com".to_string(),
             },
         );
 
@@ -1459,7 +1459,7 @@ mod tests {
             &signing_kp.key_id,
             &private_key_bytes,
             "alice.example.com",
-            "https://relay.example.com",
+            "https://pds.example.com",
         )
         .expect("genesis op");
 
@@ -1487,7 +1487,7 @@ mod tests {
             "atproto_pds".to_string(),
             PlcService {
                 service_type: "AtprotoPersonalDataServer".to_string(),
-                endpoint: "https://relay.example.com".to_string(),
+                endpoint: "https://pds.example.com".to_string(),
             },
         );
 
@@ -1528,7 +1528,7 @@ mod tests {
             "atproto_pds".to_string(),
             PlcService {
                 service_type: "AtprotoPersonalDataServer".to_string(),
-                endpoint: "https://relay.example.com".to_string(),
+                endpoint: "https://pds.example.com".to_string(),
             },
         );
 
@@ -1586,7 +1586,7 @@ mod tests {
             &rotation_kp.key_id,
             &signing_kp.key_id,
             "alice.example.com",
-            "https://relay.example.com",
+            "https://pds.example.com",
             |_data| Err(CryptoError::PlcOperation("SE signing failed".to_string())),
         );
 

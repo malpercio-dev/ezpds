@@ -216,7 +216,7 @@ pub async fn get_authorization_code(
 ///
 /// The code column stores the SHA-256 hex hash of the raw code bytes.
 ///
-/// The SELECT+DELETE sequence is safe from TOCTOU races because the relay's
+/// The SELECT+DELETE sequence is safe from TOCTOU races because the PDS's
 /// connection pool uses `max_connections(1)`, making all DB operations serialized.
 pub async fn delete_authorization_code(
     pool: &SqlitePool,
@@ -303,7 +303,7 @@ pub async fn get_oauth_refresh_token(
 ///
 /// The `id` column stores the SHA-256 hex hash of the raw token bytes.
 ///
-/// The SELECT+DELETE sequence is safe from TOCTOU races because the relay's
+/// The SELECT+DELETE sequence is safe from TOCTOU races because the PDS's
 /// connection pool uses `max_connections(1)`, making all DB operations serialized.
 pub async fn delete_oauth_refresh_token(
     pool: &SqlitePool,

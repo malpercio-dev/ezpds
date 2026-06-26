@@ -39,9 +39,9 @@ fn to_sqlite_url(s: &str) -> String {
 }
 
 #[derive(Parser)]
-#[command(name = "relay", about = "ezpds relay server")]
+#[command(name = "pds", about = "ezpds PDS server (Custos)")]
 struct Cli {
-    /// Path to relay.toml config file
+    /// Path to pds.toml config file
     #[arg(long, env = "EZPDS_CONFIG")]
     config: Option<PathBuf>,
 }
@@ -58,14 +58,14 @@ async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     // Load config: if an explicit path is given via --config or EZPDS_CONFIG, error if missing.
-    // Otherwise, tolerate a missing default relay.toml and load from env only.
+    // Otherwise, tolerate a missing default pds.toml and load from env only.
     let config = if let Some(config_path) = cli.config {
         // Explicit config file: must exist
         common::load_config(&config_path)
             .with_context(|| format!("failed to load config from {}", config_path.display()))?
     } else {
-        // Default relay.toml: tolerate absence, load from env only
-        let default_path = PathBuf::from("relay.toml");
+        // Default pds.toml: tolerate absence, load from env only
+        let default_path = PathBuf::from("pds.toml");
         match common::load_config(&default_path) {
             Ok(cfg) => cfg,
             Err(common::ConfigError::Io { .. }) => {
@@ -75,7 +75,7 @@ async fn run() -> anyhow::Result<()> {
                 common::load_config_from_env_only(&env)
                     .context("failed to load config from environment variables")?
             }
-            Err(e) => return Err(e).context("failed to load config from relay.toml"),
+            Err(e) => return Err(e).context("failed to load config from pds.toml"),
         }
     };
 
@@ -92,7 +92,7 @@ async fn run() -> anyhow::Result<()> {
         bind_address = %config.bind_address,
         port = config.port,
         public_url = %config.public_url,
-        "relay starting"
+        "pds starting"
     );
 
     let addr = format!("{}:{}", config.bind_address, config.port);
@@ -227,7 +227,7 @@ async fn run() -> anyhow::Result<()> {
             anyhow::anyhow!("server error: {e}")
         })?;
 
-    tracing::info!("relay shut down");
+    tracing::info!("pds shut down");
     Ok(())
 }
 

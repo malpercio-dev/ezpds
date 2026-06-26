@@ -116,7 +116,7 @@ pub async fn validate_and_consume_nonce(store: &DpopNonceStore, nonce: &str) -> 
 /// Remove all expired nonces from the store.
 ///
 /// Call this on every token request to prevent unbounded memory growth.
-/// Under normal relay load (low request volume) this is sufficient without a background task.
+/// Under normal PDS load (low request volume) this is sufficient without a background task.
 pub async fn cleanup_expired_nonces(store: &DpopNonceStore) {
     let now = std::time::Instant::now();
     store.lock().await.retain(|_, expiry| *expiry > now);
@@ -130,7 +130,7 @@ pub async fn cleanup_expired_nonces(store: &DpopNonceStore) {
 /// - Returns the JWK thumbprint (jkt) so the handler can embed it in `cnf.jkt`.
 ///
 /// `htm` must be `"POST"`. `htu` must be the token endpoint URL (e.g.
-/// `"https://relay.example.com/oauth/token"`).
+/// `"https://pds.example.com/oauth/token"`).
 pub async fn validate_dpop_for_token_endpoint(
     dpop_token: &str,
     htm: &str,

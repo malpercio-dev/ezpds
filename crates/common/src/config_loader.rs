@@ -124,7 +124,7 @@ available_user_domains = ["example.com"]"#
 
     #[test]
     fn returns_error_for_missing_file() {
-        let result = load_config_with_env(Path::new("/nonexistent/relay.toml"), &empty_env());
+        let result = load_config_with_env(Path::new("/nonexistent/pds.toml"), &empty_env());
 
         assert!(matches!(result, Err(ConfigError::Io { .. })));
     }

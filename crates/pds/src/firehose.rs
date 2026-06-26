@@ -163,7 +163,7 @@ struct Inner {
 
 /// The in-memory firehose: a monotonic sequencer plus a broadcast fan-out.
 ///
-/// The relay holds a single `Arc<Firehose>` in `AppState`; every request handler shares it.
+/// The PDS holds a single `Arc<Firehose>` in `AppState`; every request handler shares it.
 pub struct Firehose {
     /// Guards the sequence counter and replay backlog and serialises broadcast order.
     /// Never held across an await — the critical section only mutates memory and does a

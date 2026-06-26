@@ -86,7 +86,7 @@ pub async fn create_signing_key(
     .execute(&state.db)
     .await
     .map_err(|e| {
-        tracing::error!(error = %e, key_id = %keypair.key_id, "failed to insert relay signing key");
+        tracing::error!(error = %e, key_id = %keypair.key_id, "failed to insert PDS signing key");
         ApiError::new(ErrorCode::InternalError, "failed to store signing key")
     })?;
 
