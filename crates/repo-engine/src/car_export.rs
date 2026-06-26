@@ -132,31 +132,21 @@ where
 
     let mut tree = repo.tree();
 
-    // The MST maps a present key directly to its record block CID; `None` means the key is absent,
-    // and the CAR will carry only the covering MST nodes (an exclusion proof) — not a 404.
-    let value_cid = tree
-        .get(key)
-        .await
-        .map_err(|e| CarExportError::BlockStore(format!("tree get: {e}")))?;
-
     // Proof path: every MST node CID from the tree root down to the node that holds the key
     // (present) or that would hold it (absent). For a present key `extract_path` also appends the
-    // record block. Collect while `tree` is still borrowed — the returned iterator captures it.
+    // record block; for an absent key it yields only the covering nodes — an exclusion proof, not a
+    // 404. Collect while `tree` is still borrowed — the returned iterator captures it.
     let mut blocks: HashSet<Cid> = tree
         .extract_path(key)
         .await
         .map_err(|e| CarExportError::BlockStore(format!("extract proof path: {e}")))?
         .collect();
 
-    // Add the commit block (the declared CAR root). When the record is present, `extract_path`
-    // already yields its block, so re-inserting `value_cid` is a deliberate belt-and-suspenders
-    // guarantee — it keeps "the record block is in the CAR" from silently depending on that
-    // iterator's append behaviour. The `HashSet` makes a duplicate a no-op; an absent key has no
-    // record block to add.
+    // Add the commit block (the declared CAR root). For a present key the record block is already
+    // in `blocks` via `extract_path`'s append (the `HashSet` would dedup a duplicate anyway), so we
+    // deliberately avoid a second `tree.get` walk just to re-insert it. That the record block is
+    // always carried is pinned end to end by `record_proof_car_resolves_record_from_proof_blocks_only`.
     blocks.insert(root_cid);
-    if let Some(value_cid) = value_cid {
-        blocks.insert(value_cid);
-    }
 
     build_car(store, root_cid, blocks.into_iter().collect()).await
 }

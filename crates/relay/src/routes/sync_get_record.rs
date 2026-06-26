@@ -238,6 +238,27 @@ mod tests {
         car.read_block(root_cid)
             .await
             .expect("commit block must be in the exclusion-proof CAR");
+
+        // End-to-end: re-open the returned CAR as the *only* blockstore and walk commit → MST root
+        // → … → covering node, confirming the absent key resolves to `None`. The shape checks above
+        // would miss a relay-layer regression that drops MST node blocks before sending; this walk
+        // fails if any covering node is missing. Mirrors the engine-level exclusion proof test.
+        use atrium_repo::repo::Repository;
+        let car_store = CarStore::open(std::io::Cursor::new(body.as_ref()))
+            .await
+            .expect("re-parse CAR");
+        let mut proof_repo = Repository::open(car_store, root_cid)
+            .await
+            .expect("commit block must be readable from the exclusion-proof CAR");
+        let resolved = proof_repo
+            .tree()
+            .get("app.bsky.feed.post/ghost")
+            .await
+            .expect("MST walk must succeed using only the proof blocks");
+        assert_eq!(
+            resolved, None,
+            "exclusion proof must resolve the absent key to None using only the CAR blocks"
+        );
     }
 
     #[tokio::test]
