@@ -162,6 +162,12 @@ mod tests {
         let state = state_with_master_key().await;
         let did = "did:plc:repostatusdeactivated";
         seed_account_with_repo(&state.db, did).await;
+        let expected_rev: String =
+            sqlx::query_scalar("SELECT repo_rev FROM accounts WHERE did = ?")
+                .bind(did)
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
         sqlx::query("UPDATE accounts SET deactivated_at = datetime('now') WHERE did = ?")
             .bind(did)
             .execute(&state.db)
@@ -174,8 +180,8 @@ mod tests {
         assert_eq!(body["did"], did);
         assert_eq!(body["active"], false);
         assert_eq!(body["status"], "deactivated");
-        // A deactivated repo still reports its last known rev.
-        assert!(body["rev"].as_str().unwrap().len() == 13);
+        // A deactivated repo still reports its exact last-known rev.
+        assert_eq!(body["rev"], expected_rev);
     }
 
     #[tokio::test]
