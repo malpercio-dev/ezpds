@@ -143,7 +143,10 @@ where
         .map_err(|e| CarExportError::BlockStore(format!("extract proof path: {e}")))?
         .collect();
 
-    // Commit block (the declared root) + proof nodes + record block, de-duplicated.
+    // Add the commit block (the declared CAR root). For a present key `extract_path` already
+    // yields the record block, so the `value_cid` insert is a deliberate belt-and-suspenders
+    // guarantee — it keeps "the record block is in the CAR" from silently depending on that
+    // iterator's append behaviour. The `HashSet` makes a duplicate a no-op.
     blocks.insert(root_cid);
     blocks.insert(value_cid);
 
@@ -418,6 +421,56 @@ mod tests {
                 .await
                 .is_err(),
             "a sibling record block must NOT be in a single-record proof"
+        );
+    }
+
+    #[tokio::test]
+    async fn record_proof_car_resolves_record_from_proof_blocks_only() {
+        // End-to-end proof verification: re-open the proof CAR as the *only* blockstore and walk
+        // commit → MST root → … → record. If `extract_path` ever returned an incomplete path
+        // (e.g. skipping an intermediate MST node), a block read during the tree walk would fail
+        // and this resolution would error — structural presence checks alone wouldn't catch that.
+        let mut store = MemoryBlockStore::new();
+        let signer = test_signer();
+        let root = create_genesis_repo(&mut store, "did:plc:proofwalk", &signer)
+            .await
+            .unwrap();
+        // Enough records to push the MST past a single node, so the proof has intermediate nodes.
+        let mut repo = Repository::open(&mut store, root).await.unwrap();
+        for i in 0..64 {
+            crate::records::put_record(
+                &mut repo,
+                &signer,
+                &format!("app.bsky.feed.post/rec{i:03}"),
+                &serde_json::json!({ "text": format!("post {i}") }),
+            )
+            .await
+            .unwrap();
+        }
+        let root = repo.root();
+
+        let key = "app.bsky.feed.post/rec042";
+        let expected = repo.tree().get(key).await.unwrap().expect("record present");
+
+        let proof = export_record_proof_car(&mut store, root, key)
+            .await
+            .unwrap()
+            .expect("record present");
+
+        // Resolve the record using nothing but the blocks carried in the proof CAR.
+        let car_store = CarStore::open(Cursor::new(&proof)).await.unwrap();
+        let mut proof_repo = Repository::open(car_store, root)
+            .await
+            .expect("commit block must be readable from the proof CAR");
+        let resolved = proof_repo
+            .tree()
+            .get(key)
+            .await
+            .expect("MST walk must succeed using only the proof blocks");
+        assert_eq!(
+            resolved,
+            Some(expected),
+            "proof must resolve the record CID by walking commit → MST → record"
         );
     }
 
