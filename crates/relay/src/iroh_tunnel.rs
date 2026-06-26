@@ -83,29 +83,39 @@ async fn handle_connection(incoming: Incoming) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Bind an offline endpoint for tests: the `Minimal` preset sets only the rustls crypto
+/// provider (no relay, no DNS discovery), and binding to loopback keeps everything local and
+/// deterministic — no network required. With `with_alpn`, the endpoint accepts the ezpds ALPN
+/// (relay side); without it, the endpoint can only dial (device side).
+#[cfg(test)]
+pub(crate) async fn loopback_endpoint(with_alpn: bool) -> Endpoint {
+    let mut builder = Endpoint::builder(presets::Minimal)
+        .bind_addr("127.0.0.1:0")
+        .expect("valid bind addr");
+    if with_alpn {
+        builder = builder.alpns(vec![ALPN.to_vec()]);
+    }
+    builder.bind().await.expect("bind loopback endpoint")
+}
+
+/// Build an offline [`IrohState`] bound to loopback, for tests in other modules (e.g. the
+/// `get_device_relay` handler) that need a running endpoint with a real node id.
+#[cfg(test)]
+pub(crate) async fn loopback_state() -> IrohState {
+    let endpoint = loopback_endpoint(true).await;
+    let node_id = endpoint.id().to_string();
+    IrohState { endpoint, node_id }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iroh::endpoint::presets;
     use iroh::EndpointAddr;
     use std::time::Duration;
 
     #[test]
     fn alpn_is_versioned() {
         assert_eq!(ALPN, b"ezpds/iroh/0");
-    }
-
-    /// Bind an offline endpoint for tests: the `Minimal` preset sets only the rustls crypto
-    /// provider (no relay, no DNS discovery), and binding to loopback keeps everything local
-    /// and deterministic — no network required.
-    async fn loopback_endpoint(with_alpn: bool) -> Endpoint {
-        let mut builder = Endpoint::builder(presets::Minimal)
-            .bind_addr("127.0.0.1:0")
-            .expect("valid bind addr");
-        if with_alpn {
-            builder = builder.alpns(vec![ALPN.to_vec()]);
-        }
-        builder.bind().await.expect("bind loopback endpoint")
     }
 
     /// AC2.2 + AC3.1: a client dials the relay's endpoint by node id over the `ezpds/iroh/0`

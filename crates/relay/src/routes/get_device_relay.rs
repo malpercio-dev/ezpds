@@ -40,7 +40,15 @@ pub async fn get_device_relay(
         "public_url must start with https://, got: {relay_url:?}"
     );
     let websocket_url = relay_url.replacen("https://", "wss://", 1);
-    let iroh_endpoint = state.config.iroh.endpoint.clone();
+    // Advertise the running endpoint's live node id. `config.iroh.endpoint`, when set, is a
+    // manual override that takes precedence; otherwise fall back to the bound endpoint's node
+    // id (present only when the tunnel is enabled). Absent → field omitted from the response.
+    let iroh_endpoint = state
+        .config
+        .iroh
+        .endpoint
+        .clone()
+        .or_else(|| state.iroh.as_ref().map(|i| i.node_id.clone()));
 
     Ok(Json(GetDeviceRelayResponse {
         relay_url,
@@ -146,7 +154,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn iroh_endpoint_present_when_configured() {
+    async fn iroh_endpoint_uses_config_override_when_set() {
+        // A configured `iroh.endpoint` is a manual override and is advertised verbatim,
+        // even with no running endpoint.
         let base = test_state().await;
         let mut config = (*base.config).clone();
         config.iroh.endpoint = Some("abc123nodeid".to_string());
@@ -163,6 +173,56 @@ mod tests {
 
         let json = body_json(response).await;
         assert_eq!(json["irohEndpoint"], "abc123nodeid");
+    }
+
+    #[tokio::test]
+    async fn iroh_endpoint_is_live_node_id_when_endpoint_running() {
+        // No config override, but the tunnel is enabled — advertise the bound endpoint's
+        // live node id.
+        let base = test_state().await;
+        let iroh = crate::iroh_tunnel::loopback_state().await;
+        let expected = iroh.node_id.clone();
+        let state = crate::app::AppState {
+            iroh: Some(Arc::new(iroh)),
+            ..base
+        };
+        let (device_id, token) = seed_device(&state.db).await;
+
+        let response = app(state)
+            .oneshot(get_device_relay(&device_id, &token))
+            .await
+            .unwrap();
+
+        let json = body_json(response).await;
+        assert_eq!(json["irohEndpoint"], expected);
+    }
+
+    #[tokio::test]
+    async fn config_override_takes_precedence_over_live_node_id() {
+        // When both a manual override and a running endpoint are present, the override wins.
+        let base = test_state().await;
+        let iroh = crate::iroh_tunnel::loopback_state().await;
+        let live_node_id = iroh.node_id.clone();
+        let mut config = (*base.config).clone();
+        config.iroh.endpoint = Some("manual-override".to_string());
+        let state = crate::app::AppState {
+            config: Arc::new(config),
+            iroh: Some(Arc::new(iroh)),
+            ..base
+        };
+        let (device_id, token) = seed_device(&state.db).await;
+
+        let response = app(state)
+            .oneshot(get_device_relay(&device_id, &token))
+            .await
+            .unwrap();
+
+        let json = body_json(response).await;
+        assert_eq!(json["irohEndpoint"], "manual-override");
+        assert_ne!(
+            json["irohEndpoint"], live_node_id,
+            "override must replace the live node id"
+        );
     }
 
     #[tokio::test]
