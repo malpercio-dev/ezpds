@@ -86,17 +86,24 @@ impl CrawlerNotifier {
     /// Notify every crawler that is currently outside its rate-limit window.
     ///
     /// Returns immediately: due crawlers are notified on detached background tasks. With no
-    /// configured crawlers (or all of them rate-limited) this does nothing.
-    pub fn notify(self: &Arc<Self>) {
+    /// configured crawlers (or all of them rate-limited) this spawns nothing.
+    ///
+    /// Returns the spawned task handles. Production callers ignore them (fire-and-forget —
+    /// dropping a [`JoinHandle`](tokio::task::JoinHandle) does not cancel its task), while tests
+    /// await them to observe the notification deterministically.
+    pub fn notify(self: &Arc<Self>) -> Vec<tokio::task::JoinHandle<()>> {
         if self.crawlers.is_empty() {
-            return;
+            return Vec::new();
         }
-        for base_url in self.select_due(Instant::now()) {
-            let this = Arc::clone(self);
-            tokio::spawn(async move {
-                this.send_with_retry(&base_url).await;
-            });
-        }
+        self.select_due(Instant::now())
+            .into_iter()
+            .map(|base_url| {
+                let this = Arc::clone(self);
+                tokio::spawn(async move {
+                    this.send_with_retry(&base_url).await;
+                })
+            })
+            .collect()
     }
 
     /// Return the crawlers due for notification at `now`, recording `now` as their last-notified
@@ -131,6 +138,16 @@ impl CrawlerNotifier {
             match self.client.post(&endpoint).json(&body).send().await {
                 Ok(resp) if resp.status().is_success() => {
                     tracing::debug!(crawler = %base_url, "requestCrawl accepted");
+                    return;
+                }
+                // A 4xx means the request itself is wrong or unauthorised: the crawler has
+                // rejected it permanently, so retrying would only repeat the same failure.
+                Ok(resp) if resp.status().is_client_error() => {
+                    tracing::warn!(
+                        crawler = %base_url,
+                        status = %resp.status(),
+                        "requestCrawl rejected with a client error; not retrying"
+                    );
                     return;
                 }
                 Ok(resp) => {
@@ -309,6 +326,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_does_not_retry_on_client_error() {
+        let server = MockServer::start().await;
+        // A 4xx is a permanent rejection: exactly one request, no retries.
+        Mock::given(method("POST"))
+            .and(path("/xrpc/com.atproto.sync.requestCrawl"))
+            .respond_with(ResponseTemplate::new(400))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let n = notifier(&[server.uri()]);
+        n.send_with_retry(n.crawlers[0].as_str()).await;
+    }
+
+    #[tokio::test]
     async fn send_stops_retrying_after_success() {
         let server = MockServer::start().await;
         // First attempt fails, second succeeds: exactly 2 requests, no third.
@@ -342,16 +374,24 @@ mod tests {
             .await;
 
         let n = notifier(&[server.uri()]);
-        n.notify();
-        n.notify();
-        // Let the spawned task reach the server before the assertion on drop.
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        let handles = n.notify();
+        // Second call is inside the rate-limit window: the crawler is skipped, so no task
+        // is spawned and no second request is sent.
+        assert!(
+            n.notify().is_empty(),
+            "a rate-limited crawler must not be notified again"
+        );
+        // Await the first call's task so the assertion is deterministic (no fixed sleep).
+        assert_eq!(handles.len(), 1);
+        for handle in handles {
+            handle.await.expect("crawler notify task panicked");
+        }
         server.verify().await;
     }
 
     #[tokio::test]
     async fn notify_with_no_crawlers_is_noop() {
         let n = notifier(&[]);
-        n.notify(); // must not panic or spawn anything.
+        assert!(n.notify().is_empty(), "no crawlers means nothing spawned");
     }
 }
