@@ -157,6 +157,9 @@ pub struct AppState {
     /// In-memory firehose pipeline: every repo commit emits a sequenced event here, which
     /// `com.atproto.sync.subscribeRepos` fans out to connected relays/BGSes. Shared via Arc.
     pub firehose: Arc<crate::firehose::Firehose>,
+    /// Outbound `requestCrawl` notifier: after each commit, pings the configured relays/BGSes
+    /// so newly produced content is crawled promptly. Shared via Arc.
+    pub crawlers: Arc<crate::crawler::CrawlerNotifier>,
 }
 
 /// Build the Axum router with middleware and routes.
@@ -267,7 +270,7 @@ pub(crate) async fn test_state() -> AppState {
 pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
     use crate::auth::new_nonce_store;
     use crate::db::{open_pool, run_migrations};
-    use common::{BlobsConfig, IrohConfig, OAuthConfig, TelemetryConfig};
+    use common::{BlobsConfig, CrawlersConfig, IrohConfig, OAuthConfig, TelemetryConfig};
     use p256::pkcs8::EncodePrivateKey;
     use rand_core::OsRng;
     use std::path::PathBuf;
@@ -321,13 +324,15 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
             blobs: BlobsConfig::default(),
             oauth: OAuthConfig::default(),
             iroh: IrohConfig::default(),
+            // Tests must never make outbound crawl notifications.
+            crawlers: CrawlersConfig { urls: vec![] },
             telemetry: TelemetryConfig::default(),
             admin_token: None,
             signing_key_master_key: None,
             plc_directory_url,
         }),
         db,
-        http_client,
+        http_client: http_client.clone(),
         dns_provider: None,
         txt_resolver: None,
         well_known_resolver: None,
@@ -337,6 +342,11 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
         dpop_nonces,
         failed_login_attempts: Arc::new(Mutex::new(HashMap::new())),
         firehose: Arc::new(crate::firehose::Firehose::new()),
+        crawlers: Arc::new(crate::crawler::CrawlerNotifier::new(
+            http_client,
+            "test.example.com".to_string(),
+            &[],
+        )),
     }
 }
 

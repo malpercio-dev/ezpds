@@ -33,3 +33,11 @@ invite_code_required = true
 # Optional: admin contact
 # [contact]
 # email = "admin@example.com"
+
+# Crawler (relay/BGS) notifications via com.atproto.sync.requestCrawl.
+# After each repo commit the relay POSTs to each <url>/xrpc/com.atproto.sync.requestCrawl
+# so the crawler pulls new content promptly. Defaults to ["https://bsky.network"] in
+# production; disabled here so local development never pings the public network.
+# Override with EZPDS_CRAWLERS (comma-separated URLs; empty disables).
+[crawlers]
+urls = []
