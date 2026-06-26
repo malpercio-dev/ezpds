@@ -19,12 +19,13 @@
 //! concurrent requests. The critical section never awaits (it only assigns an integer and
 //! does a non-blocking `send`), so a `std::sync::Mutex` is appropriate.
 
-// Dead code allow: the subscriber-facing surface (`subscribe`, the `FirehoseEvent`/`RepoOp`
-// accessors, the `#repoOp` wire helpers) is consumed by the `subscribeRepos` WebSocket
-// handler, which ships separately. The emit path is already wired into the commit routes,
-// and every item here is exercised by this module's unit tests.
+// Dead code allow: a few accessors (`subscriber_count`, the `at_uri`/`as_str` wire helpers)
+// are exercised only by this module's unit tests and the `subscribeRepos` handler's tests.
+// The emit path is wired into the commit routes and the subscribe path into the WebSocket
+// handler.
 #![allow(dead_code)]
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -128,12 +129,39 @@ pub struct CommitInput {
     pub blocks: Vec<u8>,
 }
 
+/// A new subscription: the backlog to replay first, then live events on `rx`.
+///
+/// `replay` holds the buffered events the subscriber missed (those with `seq` greater than the
+/// requested cursor, oldest first). `rx` delivers every event emitted *after* the subscription
+/// was taken. Because the snapshot and the channel subscribe happen under one lock that
+/// [`Firehose::emit_commit`] also holds while appending and broadcasting, the boundary between
+/// `replay` and `rx` is exact: no event is dropped between them and none is delivered twice.
+pub struct Subscription {
+    /// Buffered events with `seq` > cursor, oldest first, to send before live streaming begins.
+    pub replay: Vec<FirehoseEvent>,
+    /// Live event stream for everything emitted after this subscription was created.
+    pub rx: broadcast::Receiver<FirehoseEvent>,
+}
+
+/// The mutable core of the firehose, guarded by a single mutex so sequence assignment, the
+/// replay backlog, and broadcast ordering all advance atomically.
+struct Inner {
+    /// Monotonic sequence counter; the last value assigned (0 before the first emit).
+    seq: u64,
+    /// Recent events retained for cursor replay, oldest first, capped at `capacity`.
+    backlog: VecDeque<FirehoseEvent>,
+}
+
 /// The in-memory firehose: a monotonic sequencer plus a broadcast fan-out.
 ///
 /// The relay holds a single `Arc<Firehose>` in `AppState`; every request handler shares it.
 pub struct Firehose {
-    /// Guards the sequence counter and serialises broadcast order. Never held across await.
-    seq: Mutex<u64>,
+    /// Guards the sequence counter and replay backlog and serialises broadcast order.
+    /// Never held across an await — the critical section only mutates memory and does a
+    /// non-blocking `send`.
+    inner: Mutex<Inner>,
+    /// Number of recent events retained for cursor replay (matches the broadcast capacity).
+    capacity: usize,
     tx: broadcast::Sender<FirehoseEvent>,
 }
 
@@ -143,20 +171,51 @@ impl Firehose {
         Self::with_capacity(DEFAULT_CAPACITY)
     }
 
-    /// Create a firehose whose broadcast buffer retains `capacity` events for slow consumers.
+    /// Create a firehose whose broadcast buffer and replay backlog each retain `capacity`
+    /// events for slow consumers and late (cursor-bearing) subscribers respectively.
     pub fn with_capacity(capacity: usize) -> Self {
         let (tx, _rx) = broadcast::channel(capacity);
         Self {
-            seq: Mutex::new(0),
+            inner: Mutex::new(Inner {
+                seq: 0,
+                backlog: VecDeque::with_capacity(capacity),
+            }),
+            capacity,
             tx,
         }
     }
 
-    /// Subscribe to the event stream. Each subscriber receives every event emitted after it
-    /// subscribes; a subscriber that falls more than `capacity` events behind observes
-    /// `RecvError::Lagged` on its next `recv`.
+    /// Subscribe to the live event stream only (no replay). Each subscriber receives every
+    /// event emitted after it subscribes; a subscriber that falls more than `capacity` events
+    /// behind observes `RecvError::Lagged` on its next `recv`.
     pub fn subscribe(&self) -> broadcast::Receiver<FirehoseEvent> {
         self.tx.subscribe()
+    }
+
+    /// Subscribe with optional cursor replay.
+    ///
+    /// With `cursor = None`, the returned [`Subscription`] has an empty `replay` and streams
+    /// only future events. With `cursor = Some(n)`, `replay` carries every still-buffered event
+    /// whose `seq` is strictly greater than `n` (so a client passing the last `seq` it processed
+    /// receives exactly what it missed), and `rx` continues seamlessly from there.
+    ///
+    /// Events older than the retained backlog cannot be replayed; such a cursor yields only the
+    /// events still in the buffer (best effort), matching how a real relay's buffer ages out.
+    pub fn subscribe_from(&self, cursor: Option<u64>) -> Subscription {
+        let inner = self.inner.lock().expect("firehose inner mutex poisoned");
+        // Subscribe to the live channel *before* releasing the lock so that no event emitted
+        // after this snapshot can slip past both the backlog copy and the receiver.
+        let rx = self.tx.subscribe();
+        let replay = match cursor {
+            Some(c) => inner
+                .backlog
+                .iter()
+                .filter(|e| e.seq() > c)
+                .cloned()
+                .collect(),
+            None => Vec::new(),
+        };
+        Subscription { replay, rx }
     }
 
     /// Number of live subscribers. Primarily for diagnostics and tests.
@@ -166,20 +225,25 @@ impl Firehose {
 
     /// The last sequence number assigned (0 if nothing has been emitted yet).
     pub fn current_seq(&self) -> u64 {
-        *self.seq.lock().expect("firehose seq mutex poisoned")
+        self.inner
+            .lock()
+            .expect("firehose inner mutex poisoned")
+            .seq
     }
 
-    /// Assign the next sequence number, build a [`CommitEvent`], and broadcast it.
+    /// Assign the next sequence number, build a [`CommitEvent`], retain it for replay, and
+    /// broadcast it.
     ///
     /// Returns the assigned sequence number. Never blocks and never fails: if there are no
-    /// subscribers the event is simply dropped (its `seq` is still consumed, keeping the
-    /// sequence dense). Sequence assignment and the broadcast are serialised so subscribers
-    /// always observe events in increasing `seq` order.
+    /// subscribers the event is simply dropped from the live channel (its `seq` is still
+    /// consumed, keeping the sequence dense, and it still enters the replay backlog). Sequence
+    /// assignment, backlog append, and the broadcast are serialised so subscribers always
+    /// observe events in increasing `seq` order.
     pub fn emit_commit(&self, input: CommitInput) -> u64 {
-        let mut seq = self.seq.lock().expect("firehose seq mutex poisoned");
-        *seq += 1;
-        let assigned = *seq;
-        let event = Arc::new(CommitEvent {
+        let mut inner = self.inner.lock().expect("firehose inner mutex poisoned");
+        inner.seq += 1;
+        let assigned = inner.seq;
+        let event = FirehoseEvent::Commit(Arc::new(CommitEvent {
             seq: assigned,
             time: now_rfc3339(),
             repo: input.repo,
@@ -188,9 +252,14 @@ impl Firehose {
             since: input.since,
             ops: input.ops,
             blocks: input.blocks,
-        });
+        }));
+        // Retain for cursor replay, evicting the oldest once the buffer is full.
+        if inner.backlog.len() == self.capacity {
+            inner.backlog.pop_front();
+        }
+        inner.backlog.push_back(event.clone());
         // A send error means "no subscribers"; that is expected, not a failure.
-        let _ = self.tx.send(FirehoseEvent::Commit(event));
+        let _ = self.tx.send(event);
         assigned
     }
 }
@@ -296,6 +365,65 @@ mod tests {
         assert_eq!(c.ops[0].cid.as_deref(), Some("bafyrecord"));
         assert_eq!(c.ops[0].value, Some(serde_json::json!({ "text": "hi" })));
         assert!(!c.time.is_empty());
+    }
+
+    #[tokio::test]
+    async fn subscribe_from_replays_events_after_cursor() {
+        let fh = Firehose::new();
+        for _ in 0..5 {
+            fh.emit_commit(commit_input("did:plc:a"));
+        }
+
+        // Cursor at seq 2: replay must contain exactly seqs 3, 4, 5 in order.
+        let sub = fh.subscribe_from(Some(2));
+        let seqs: Vec<u64> = sub.replay.iter().map(|e| e.seq()).collect();
+        assert_eq!(seqs, vec![3, 4, 5]);
+    }
+
+    #[tokio::test]
+    async fn subscribe_from_without_cursor_replays_nothing() {
+        let fh = Firehose::new();
+        fh.emit_commit(commit_input("did:plc:a"));
+        fh.emit_commit(commit_input("did:plc:a"));
+
+        let sub = fh.subscribe_from(None);
+        assert!(sub.replay.is_empty(), "no cursor means no backfill");
+    }
+
+    #[tokio::test]
+    async fn subscribe_from_bridges_replay_and_live_without_gap_or_dup() {
+        let fh = Firehose::new();
+        fh.emit_commit(commit_input("did:plc:a")); // seq 1
+        fh.emit_commit(commit_input("did:plc:a")); // seq 2
+
+        // Subscribe from cursor 1: should replay seq 2, then receive seq 3 live.
+        let mut sub = fh.subscribe_from(Some(1));
+        assert_eq!(
+            sub.replay.iter().map(|e| e.seq()).collect::<Vec<_>>(),
+            vec![2]
+        );
+
+        fh.emit_commit(commit_input("did:plc:a")); // seq 3, after subscribe
+
+        let FirehoseEvent::Commit(live) = sub.rx.recv().await.unwrap();
+        assert_eq!(
+            live.seq, 3,
+            "live stream resumes exactly after the replay tail"
+        );
+    }
+
+    #[tokio::test]
+    async fn backlog_is_bounded_and_evicts_oldest() {
+        let fh = Firehose::with_capacity(3);
+        for _ in 0..6 {
+            fh.emit_commit(commit_input("did:plc:a"));
+        }
+        // Only the last 3 (seqs 4,5,6) remain; a cursor of 0 replays just those.
+        let sub = fh.subscribe_from(Some(0));
+        assert_eq!(
+            sub.replay.iter().map(|e| e.seq()).collect::<Vec<_>>(),
+            vec![4, 5, 6]
+        );
     }
 
     #[test]

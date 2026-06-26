@@ -58,6 +58,7 @@ use crate::routes::reset_password::reset_password;
 use crate::routes::resolve_handle::resolve_handle_handler;
 use crate::routes::static_assets::static_handler;
 use crate::routes::sync_get_record::sync_get_record;
+use crate::routes::sync_subscribe_repos::subscribe_repos;
 use crate::routes::upload_blob::upload_blob;
 use crate::well_known::WellKnownResolver;
 
@@ -213,6 +214,10 @@ pub fn app(state: AppState) -> Router {
         .route("/xrpc/com.atproto.sync.getRepo", get(get_repo))
         .route("/xrpc/com.atproto.sync.listBlobs", get(list_blobs))
         .route("/xrpc/com.atproto.sync.listRepos", get(list_repos))
+        .route(
+            "/xrpc/com.atproto.sync.subscribeRepos",
+            get(subscribe_repos),
+        )
         .route("/xrpc/com.atproto.repo.applyWrites", post(apply_writes))
         .route("/xrpc/com.atproto.repo.createRecord", post(create_record))
         .route("/xrpc/com.atproto.repo.getRecord", get(get_record))
