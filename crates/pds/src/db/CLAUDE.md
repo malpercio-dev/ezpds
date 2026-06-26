@@ -7,12 +7,12 @@ Last verified: 2026-03-25
 - **V013**: Seeds the identity-wallet as a registered OAuth client (`dev.malpercio.identitywallet`) with native application type, DPoP-bound tokens, and custom URL scheme redirect URI (`dev.malpercio.identitywallet:/oauth/callback`); uses INSERT OR IGNORE for idempotency
 - **V012**: Adds nullable `jkt` TEXT column to `oauth_tokens` (DPoP key thumbprint for DPoP-bound refresh tokens); creates `oauth_signing_key` table (WITHOUT ROWID, single-row, stores the server's persistent ES256 keypair with AES-256-GCM-encrypted private key)
 - **V011**: Adds nullable `pending_share_{1,2,3}` TEXT columns to `pending_accounts` — stores pre-generated Shamir shares alongside `pending_did` so retried DID ceremony requests return the same shares (prevents Share 2 orphaning in accounts.recovery_share)
-- **V010**: Adds nullable `recovery_share` column to `accounts` — stores Share 2 of the Shamir 2-of-3 split for relay-side custody; base32-encoded (52 chars); NULL for pre-Shamir accounts
+- **V010**: Adds nullable `recovery_share` column to `accounts` — stores Share 2 of the Shamir 2-of-3 split for PDS-side custody; base32-encoded (52 chars); NULL for pre-Shamir accounts
 - **V009**: Rebuilt sessions with nullable device_id (devices are deleted at DID promotion) and added token_hash UNIQUE column for Bearer token authentication (same SHA-256 hex pattern as pending_sessions)
 - **V008**: Rebuilt accounts with nullable password_hash (mobile accounts have no password); added pending_did column to pending_accounts for DID pre-store retry resilience
 
 ## Purpose
-Owns SQLite connection lifecycle and schema migration for the relay's server-level database.
+Owns SQLite connection lifecycle and schema migration for the PDS's server-level database.
 Keeps database concerns out of handler code and provides a reusable pool+migration API
 that can later serve per-user SQLite databases (Wave 3/4).
 
@@ -43,7 +43,7 @@ that can later serve per-user SQLite databases (Wave 3/4).
 - `oauth.rs` - OAuth client lookup, authorization code storage, PAR request storage, token read/write
 - `migrations/V001__init.sql` - server_metadata table (WITHOUT ROWID)
 - `migrations/V002__auth_identity.sql` - 12 Wave 2 tables: accounts, handles, did_documents, signing_keys, devices, claim_codes, sessions, refresh_tokens, oauth_clients, oauth_authorization_codes, oauth_tokens, oauth_par_requests
-- `migrations/V003__relay_signing_keys.sql` - relay_signing_keys table (WITHOUT ROWID, keyed by did:key URI) for operator-level relay signing keys (not tied to a specific account DID)
+- `migrations/V003__relay_signing_keys.sql` - relay_signing_keys table (WITHOUT ROWID, keyed by did:key URI) for operator-level PDS signing keys (not tied to a specific account DID)
 - `migrations/V004__claim_codes_invite.sql` - Rebuilds claim_codes: removes DID FK, adds redeemed_at; status derived not stored
 - `migrations/V005__pending_accounts.sql` - pending_accounts table: pre-provisioned account slots (id, email, handle, tier, claim_code)
 - `migrations/V006__devices_v2.sql` - Rebuilds devices: replaces did FK (accounts) with account_id FK (pending_accounts); adds platform, public_key, device_token_hash; also rebuilds sessions, oauth_tokens, refresh_tokens (cascade due to FK references)

@@ -57,7 +57,8 @@ impl AppState {
     /// Returns the configured custos client, or initializes with the compile-time
     /// default URL if none has been set yet.
     pub fn custos_client(&self) -> &crate::http::CustosClient {
-        self.custos_client.get_or_init(crate::http::CustosClient::new)
+        self.custos_client
+            .get_or_init(crate::http::CustosClient::new)
     }
 
     /// Set the custos client from a runtime URL. Silently ignored if already set

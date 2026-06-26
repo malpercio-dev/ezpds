@@ -14,11 +14,11 @@ The architecture defined two milestones (v0.1, v1.0). The mobile spec defined fo
 
 ### 1.1 Why Four Phases
 
-The architecture was written before the mobile-first strategy existed. Its two milestones assumed a desktop-only product. The mobile spec introduced a relay-as-full-PDS phase that precedes any desktop involvement. The four-phase model reflects the actual build order:
+The architecture was written before the mobile-first strategy existed. Its two milestones assumed a desktop-only product. The mobile spec introduced a PDS-as-full-PDS phase that precedes any desktop involvement. The four-phase model reflects the actual build order:
 
-1. **v0.1** — Relay is a full PDS. User creates identity from phone, logs into Bluesky.
-2. **v0.2** — Desktop enrolls. Relay becomes a proxy+signer. Device management from phone.
-3. **v1.0** — Recovery, polish, production readiness. BYO relay support.
+1. **v0.1** — PDS is a full PDS. User creates identity from phone, logs into Bluesky.
+2. **v0.2** — Desktop enrolls. PDS becomes a proxy+signer. Device management from phone.
+3. **v1.0** — Recovery, polish, production readiness. BYO PDS support.
 4. **v2.0+** — Signing sovereignty. Contingent on ATProto protocol evolution.
 
 ### 1.2 Timeline Estimates
@@ -40,9 +40,9 @@ Solo developer estimates from architecture spec. v0.2 is new — estimated at 2�
 
 **Goal:** User creates an ATProto identity from their iPhone and logs into Bluesky.
 
-**Lifecycle phase:** Mobile-Only. Relay is a full PDS — hosts repo, serves XRPC, signs commits, emits firehose.
+**Lifecycle phase:** Mobile-Only. PDS is a full PDS — hosts repo, serves XRPC, signs commits, emits firehose.
 
-#### Relay
+#### PDS
 
 | Component | Description | Source |
 |-----------|-------------|--------|
@@ -51,8 +51,8 @@ Solo developer estimates from architecture spec. v0.2 is new — estimated at 2�
 | Repo engine | CAR file storage, Merkle tree, commit signing | architecture |
 | Signing key management | P-256 key generation, Secure Enclave on phone stores root rotation key | mobile §3 |
 | XRPC endpoints | `com.atproto.*` read + write | architecture |
-| Firehose emitter | Native event stream (not proxy — relay IS the PDS) | cross-spec §2.6 |
-| Iroh tunnel | NAT traversal for phone ↔ relay | mobile §5 |
+| Firehose emitter | Native event stream (not proxy — PDS IS the PDS) | cross-spec §2.6 |
+| Iroh tunnel | NAT traversal for phone ↔ PDS | mobile §5 |
 
 #### OAuth (blocks Bluesky login)
 
@@ -78,17 +78,17 @@ Solo developer estimates from architecture spec. v0.2 is new — estimated at 2�
 | Endpoint | Description | Source |
 |----------|-------------|--------|
 | POST /v1/accounts/mobile | Combined account creation + device binding | cross-spec §2.1 |
-| POST /v1/dids | DID creation (relay constructs did:plc doc from key material) | cross-spec §1.2 |
+| POST /v1/dids | DID creation (PDS constructs did:plc doc from key material) | cross-spec §1.2 |
 | POST /v1/sessions | Session creation (login) | provisioning §2 |
-| POST /v1/relay/keys | Generate relay signing key | mobile §9 |
+| POST /v1/pds/keys | Generate PDS signing key | mobile §9 |
 
 #### Identity & Keys
 
 | Component | Description | Source |
 |-----------|-------------|--------|
-| DID creation | did:plc via PLC directory (relay proxies) | provisioning, cross-spec §1.2 |
+| DID creation | did:plc via PLC directory (PDS proxies) | provisioning, cross-spec §1.2 |
 | Key types | P-256 for rotation key, P-256/secp256k1 for signing | cross-spec §1.1 |
-| Shamir share generation | 2-of-3 split during onboarding. Share 1 = iCloud Keychain, Share 2 = relay escrow, Share 3 = user's choice | cross-spec §2.5 |
+| Shamir share generation | 2-of-3 split during onboarding. Share 1 = iCloud Keychain, Share 2 = PDS escrow, Share 3 = user's choice | cross-spec §2.5 |
 
 #### Migration
 
@@ -98,7 +98,7 @@ Solo developer estimates from architecture spec. v0.2 is new — estimated at 2�
 
 #### XRPC Federation Surface (minimum viable endpoint set)
 
-The following XRPC endpoints are the minimum required for the relay to join the ATProto network as a federating PDS. Derived from @threddyrex.org's C# PDS implementation (the first non-reference PDS to successfully federate) and cross-referenced with the ATProto spec.
+The following XRPC endpoints are the minimum required for the PDS to join the ATProto network as a federating PDS. Derived from @threddyrex.org's C# PDS implementation (the first non-reference PDS to successfully federate) and cross-referenced with the ATProto spec.
 
 **com.atproto.repo — Repo CRUD + blobs (8 endpoints)**
 
@@ -163,9 +163,9 @@ The following XRPC endpoints are the minimum required for the relay to join the 
 |----------|--------|-------------|
 | `/_health` | GET | Liveness check |
 
-**Total: 25 XRPC endpoints + health check.** This is the federation acceptance test — if these all work correctly, the relay is a functioning PDS on the network.
+**Total: 25 XRPC endpoints + health check.** This is the federation acceptance test — if these all work correctly, the PDS is a functioning PDS on the network.
 
-Note: `app.bsky.*` calls are proxied to the appview, not implemented locally. The relay only stores preferences locally. The `chat.bsky.convo` endpoints may also be proxied depending on whether ezpds hosts chat state or defers to a chat service.
+Note: `app.bsky.*` calls are proxied to the appview, not implemented locally. The PDS only stores preferences locally. The `chat.bsky.convo` endpoints may also be proxied depending on whether ezpds hosts chat state or defers to a chat service.
 
 #### Not in v0.1
 
@@ -177,7 +177,7 @@ Note: `app.bsky.*` calls are proxied to the appview, not implemented locally. Th
 - Tier pricing (all users on free tier)
 - PostgreSQL backend
 - CDN/S3 blob storage (optional, not required)
-- BYO relay distribution
+- BYO PDS distribution
 
 ---
 
@@ -185,7 +185,7 @@ Note: `app.bsky.*` calls are proxied to the appview, not implemented locally. Th
 
 **Goal:** User pairs a desktop machine and manages devices from their phone.
 
-**Lifecycle phase:** Desktop-Enrolled. Relay becomes XRPC proxy + signer. Desktop hosts the repo.
+**Lifecycle phase:** Desktop-Enrolled. PDS becomes XRPC proxy + signer. Desktop hosts the repo.
 
 #### New in v0.2
 
@@ -196,18 +196,18 @@ Note: `app.bsky.*` calls are proxied to the appview, not implemented locally. Th
 | POST /v1/devices/:id/promote | Promote desktop to repo host | mobile §9 |
 | GET /v1/devices/:id/status | Device health/status | mobile §9 |
 | DELETE /v1/devices/:id | De-enroll device | mobile §9 |
-| XRPC write proxying | Relay forwards createRecord etc. to desktop | mobile §4 |
-| POST /v1/relay/commits/sign | Sign unsigned commit from desktop | mobile §9 |
-| GET /v1/relay/repo/snapshot | Full repo snapshot (CAR) for desktop sync | mobile §9 |
-| GET /v1/relay/mode | Current operating mode (mobile-only vs desktop-enrolled) | mobile §9 |
+| XRPC write proxying | PDS forwards createRecord etc. to desktop | mobile §4 |
+| POST /v1/pds/commits/sign | Sign unsigned commit from desktop | mobile §9 |
+| GET /v1/pds/repo/snapshot | Full repo snapshot (CAR) for desktop sync | mobile §9 |
+| GET /v1/pds/mode | Current operating mode (mobile-only vs desktop-enrolled) | mobile §9 |
 | Desktop offline handling | 503 on writes when desktop unreachable, reads from cache | mobile §4.3 |
-| Firehose proxy | Relay maintains BGS WebSocket on behalf of sleeping desktop | architecture |
+| Firehose proxy | PDS maintains BGS WebSocket on behalf of sleeping desktop | architecture |
 | Blob forwarding | Forward uploaded blobs to desktop via Iroh | blob spec §5.2 |
-| Blob cache | Relay caches blobs, fetches from desktop on miss | blob spec §5.2 |
+| Blob cache | PDS caches blobs, fetches from desktop on miss | blob spec §5.2 |
 
 #### Unchanged from v0.1
 
-- OAuth (no changes needed — relay remains the auth endpoint)
+- OAuth (no changes needed — PDS remains the auth endpoint)
 - Provisioning API core endpoints
 - Firehose native emission (still works alongside proxy)
 
@@ -215,7 +215,7 @@ Note: `app.bsky.*` calls are proxied to the appview, not implemented locally. Th
 
 ### 2.3 v1.0 — Production Launch
 
-**Goal:** Production-ready identity wallet. Recovery support. BYO relay.
+**Goal:** Production-ready identity wallet. Recovery support. BYO PDS.
 
 **Lifecycle phase:** All phases stable and polished.
 
@@ -226,26 +226,26 @@ Note: `app.bsky.*` calls are proxied to the appview, not implemented locally. Th
 | Unplanned device recovery | Shamir reconstruction ceremony | migration §4 |
 | POST /v1/recovery/initiate | Begin recovery | migration §9 |
 | POST /v1/recovery/verify-key | Prove DID key reconstruction | migration §9 |
-| GET /v1/recovery/restore | Stream repo + blobs from relay | migration §9 |
-| PUT /v1/keys/shares/:id | Update relay-held Shamir share | migration §9 |
+| GET /v1/recovery/restore | Stream repo + blobs from PDS | migration §9 |
+| PUT /v1/keys/shares/:id | Update PDS-held Shamir share | migration §9 |
 | GET /v1/keys/rotation-log | Audit log of Shamir rotations | migration §9 |
-| Key rotation | Shamir-based rotation via relay | architecture |
-| DELETE /v1/relay/keys/:keyId | Revoke relay signing key | mobile §9 |
+| Key rotation | Shamir-based rotation via PDS | architecture |
+| DELETE /v1/pds/keys/:keyId | Revoke PDS signing key | mobile §9 |
 | Tier pricing | Free/Pro/Business subscription tiers | architecture, cross-spec §1.4 |
-| BYO relay binary | Nix/Docker distribution for self-hosted operators | architecture |
+| BYO PDS binary | Nix/Docker distribution for self-hosted operators | architecture |
 | PostgreSQL option | Alternative to SQLite for larger deployments | oauth spec §8, architecture |
-| S3 blob backend | Default for managed relay (R2 recommended) | blob spec §9 |
+| S3 blob backend | Default for managed PDS (R2 recommended) | blob spec §9 |
 | CDN integration | R2 + Workers for Pro/Business blob serving | blob spec §9 |
 | Local → S3 migration tool | For operators upgrading storage | blob spec §9 |
 | OAuth rate limiting | Per-endpoint limits | oauth spec §8 |
 | OAuth audit logging | Authorization grant logging | oauth spec §8 |
-| Customizable auth UI | Branding for BYO relay operators | oauth spec §6 |
+| Customizable auth UI | Branding for BYO PDS operators | oauth spec §6 |
 | Token revocation endpoint | Active session management | oauth spec §8 |
 | Client metadata caching | TTL-based re-validation (24h) | oauth spec §7.2 |
 | Blob manifest in transfer | Include blobs in device transfer bundle | blob spec §9 |
 | PLC directory mirror | Read-only cache for DID resolution | provisioning |
 | Dereferenced blob cleanup | Remove blobs no longer referenced by any record | blob spec §9 |
-| MinIO docs | BYO relay blob storage documentation | blob spec §9 |
+| MinIO docs | BYO PDS blob storage documentation | blob spec §9 |
 
 ---
 
@@ -257,7 +257,7 @@ Note: `app.bsky.*` calls are proxied to the appview, not implemented locally. Th
 
 | Component | Description | Source |
 |-----------|-------------|--------|
-| Pluggable signer: desktop-remote | Desktop signs commits directly, relay no longer signs | mobile §10 |
+| Pluggable signer: desktop-remote | Desktop signs commits directly, PDS no longer signs | mobile §10 |
 | Multi-device sync | Share key across devices without full migration | migration §8 |
 | Scoped OAuth tokens | Read-only grants for specific collections | oauth spec §8 |
 | Token introspection endpoint | RFC 7662 | oauth spec §8 |
@@ -309,7 +309,7 @@ v0.2 Critical Path:
 
 v1.0 Critical Path:
   v0.2 complete → Recovery ceremony → Shamir reconstruction
-                → Tier pricing → BYO relay packaging
+                → Tier pricing → BYO PDS packaging
                 → S3 migration → CDN setup
                 → PostgreSQL option
 ```
@@ -327,11 +327,11 @@ Quick reference: which phase delivers which user-visible capability.
 | Post, like, follow via third-party apps | v0.1 |
 | Transfer identity to new phone (planned) | v0.1 |
 | Pair a desktop Mac | v0.2 |
-| Desktop runs full PDS, relay proxies | v0.2 |
+| Desktop runs full PDS, PDS proxies | v0.2 |
 | Manage devices from phone | v0.2 |
-| Desktop sleeps, relay keeps firehose alive | v0.2 |
+| Desktop sleeps, PDS keeps firehose alive | v0.2 |
 | Recover from lost device | v1.0 |
-| Self-host your own relay | v1.0 |
+| Self-host your own PDS | v1.0 |
 | Choose subscription tier | v1.0 |
 | CDN-accelerated media serving | v1.0 |
 | Desktop signs its own commits | v2.0+ |

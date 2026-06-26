@@ -6,9 +6,9 @@ Sovereign AT Protocol PDS on macOS via Tauri + Repo Engine + Iroh
 
 ## Milestone Legend
 
-**v0.1** — Mobile-Only PDS · relay is full PDS
+**v0.1** — Mobile-Only PDS · PDS is full PDS
 
-**v0.2** — Desktop Enrollment · relay as proxy+signer
+**v0.2** — Desktop Enrollment · PDS as proxy+signer
 
 **v1.0** — Public Launch · product-ready
 
@@ -20,11 +20,11 @@ Sovereign AT Protocol PDS on macOS via Tauri + Repo Engine + Iroh
 
 ### v8 Changes — Mobile-First Reconciliation
 
-Architecture reconciled with mobile architecture spec v1.2 (canonical). The relay is no longer just a tunnel+proxy — in the mobile-only phase, it IS the PDS.
+Architecture reconciled with mobile architecture spec v1.2 (canonical). The PDS is no longer just a tunnel+proxy — in the mobile-only phase, it IS the PDS.
 
 - **NEW** Four-phase milestone model (v0.1 / v0.2 / v1.0 / v2.0+)
-- **NEW** Phase 0: Mobile-Only lifecycle (relay as full PDS)
-- **FIX** Signing model: relay always signs, device constructs unsigned commits
+- **NEW** Phase 0: Mobile-Only lifecycle (PDS as full PDS)
+- **FIX** Signing model: PDS always signs, device constructs unsigned commits
 - **FIX** Tier model: Free/Pro/Business + BYO as deployment model
 - **FIX** Firehose: native emission (mobile-only) vs proxy (desktop-enrolled)
 - **FIX** Shamir: basic share generation moves to v0.1 (required at onboarding)
@@ -33,28 +33,28 @@ Architecture reconciled with mobile architecture spec v1.2 (canonical). The rela
 
 ### Previous Versions
 
-v2: Corrected relay model (outbound only). v3: Shamir key recovery + repo snapshots. v4: Conformance strategy. v5: Custom PDS shell + atrium/rsky deps. v6: GeoDNS + BYO relay. v7: Milestone scoping + runtime threats.
+v2: Corrected PDS model (outbound only). v3: Shamir key recovery + repo snapshots. v4: Conformance strategy. v5: Custom PDS shell + atrium/rsky deps. v6: GeoDNS + BYO PDS. v7: Milestone scoping + runtime threats.
 
 ---
 
 ## Device Lifecycle Phases
 
-The product launches mobile-first. The relay is a full PDS before any desktop is involved.
+The product launches mobile-first. The PDS is a full PDS before any desktop is involved.
 
 **Phase: Mobile-Only (v0.1)**
-- Relay behavior: Full PDS — hosts repo, serves XRPC, signs commits, emits firehose
-- Repo location: Relay (primary and only copy)
+- PDS behavior: Full PDS — hosts repo, serves XRPC, signs commits, emits firehose
+- Repo location: PDS (primary and only copy)
 - Phone role: Identity wallet (key management, device admin)
 - Desktop: Does not exist yet
 
 **Phase: Desktop-Enrolled (v0.2)**
-- Relay behavior: XRPC proxy + signer — forwards writes to desktop, signs commits, serves reads from cache
-- Repo location: Desktop (primary), relay (cache)
+- PDS behavior: XRPC proxy + signer — forwards writes to desktop, signs commits, serves reads from cache
+- Repo location: Desktop (primary), PDS (cache)
 - Phone role: Identity wallet + device manager
 - Desktop: Runs repo engine, constructs unsigned commits
 
 **Phase: Desktop-Offline (v0.2+)**
-- Relay behavior: Serves reads from cache, 503 on writes
+- PDS behavior: Serves reads from cache, 503 on writes
 - Repo location: Desktop (authoritative but unreachable)
 - Phone role: Same as desktop-enrolled
 - Desktop: Sleeping / powered off
@@ -63,7 +63,7 @@ The product launches mobile-first. The relay is a full PDS before any desktop is
 
 ## Layer 01 — Device Layer (Desktop, v0.2+)
 
-*In v0.1 (Mobile-Only), there is no device layer. All operations run on the relay.*
+*In v0.1 (Mobile-Only), there is no device layer. All operations run on the PDS.*
 
 ### Tauri Shell
 
@@ -75,7 +75,7 @@ The product launches mobile-first. The relay is a full PDS before any desktop is
 
 **v0.2**
 
-📦 Purpose-built repo construction engine. SQLite-backed, local-first. Builds MST structures, constructs unsigned commits, manages collection storage. In desktop-enrolled mode, the relay proxies XRPC writes here, then signs the resulting commits. Does not serve XRPC directly to the network — the relay is always the network-facing endpoint.
+📦 Purpose-built repo construction engine. SQLite-backed, local-first. Builds MST structures, constructs unsigned commits, manages collection storage. In desktop-enrolled mode, the PDS proxies XRPC writes here, then signs the resulting commits. Does not serve XRPC directly to the network — the PDS is always the network-facing endpoint.
 
 ### Dependency Stack
 
@@ -87,13 +87,13 @@ The product launches mobile-first. The relay is a full PDS before any desktop is
 
 **v0.1**
 
-🔗 QUIC-based tunnel to relay. NAT traversal, connection resumption on wake. Pushes unsigned repo commits to relay for signing when online.
+🔗 QUIC-based tunnel to PDS. NAT traversal, connection resumption on wake. Pushes unsigned repo commits to PDS for signing when online.
 
 ### DID Keystore
 
 **v0.1**
 
-🔐 Signing keys in macOS Keychain (desktop) / Secure Enclave (phone). At account creation, root rotation key is split via 2-of-3 Shamir: Share 1 = iCloud Keychain, Share 2 = relay escrow, Share 3 = user's choice (device-local or BIP-39 paper backup). Basic key management for v0.1. Full recovery UI in v1.0.
+🔐 Signing keys in macOS Keychain (desktop) / Secure Enclave (phone). At account creation, root rotation key is split via 2-of-3 Shamir: Share 1 = iCloud Keychain, Share 2 = PDS escrow, Share 3 = user's choice (device-local or BIP-39 paper backup). Basic key management for v0.1. Full recovery UI in v1.0.
 
 ### Recovery Share Manager
 
@@ -111,21 +111,21 @@ The product launches mobile-first. The relay is a full PDS before any desktop is
 
 **v1.0**
 
-🛡️ Request size limits on all endpoints. Rate limiting at relay. cargo-fuzz targets for CBOR/CAR/MST parsing paths. Adversarial MST key distribution testing per ATProto spec guidance.
+🛡️ Request size limits on all endpoints. Rate limiting at PDS. cargo-fuzz targets for CBOR/CAR/MST parsing paths. Adversarial MST key distribution testing per ATProto spec guidance.
 
 *REMOVED: rsky-pds (fork) — Replaced by repo engine in v5. Now tracking a spec, not a codebase.*
 
 ---
 
-## Layer 02 — Relay Layer (Managed + BYO)
+## Layer 02 — PDS Layer (Managed + BYO)
 
-### Managed Relay (Your Infrastructure)
+### Managed PDS (Your Infrastructure)
 
-#### Iroh Relay Node
+#### Iroh PDS Node
 
 **v0.1**
 
-🚇 Single-region for v0.1. Always-on tunnel endpoint. In mobile-only mode, serves as full PDS — no tunnel needed, relay handles all XRPC directly. In desktop-enrolled mode, acts as tunnel endpoint for device ↔ relay communication. Receives unsigned commits from device, constructs signed commits, proxies XRPC repo reads.
+🚇 Single-region for v0.1. Always-on tunnel endpoint. In mobile-only mode, serves as full PDS — no tunnel needed, PDS handles all XRPC directly. In desktop-enrolled mode, acts as tunnel endpoint for device ↔ PDS communication. Receives unsigned commits from device, constructs signed commits, proxies XRPC repo reads.
 
 #### requestCrawl Trigger
 
@@ -137,13 +137,13 @@ The product launches mobile-first. The relay is a full PDS before any desktop is
 
 **v0.1**
 
-📡 Native com.atproto.sync.subscribeRepos WebSocket endpoint. Required for federation — every PDS must emit a firehose. In mobile-only mode, the relay is the PDS and emits directly. In desktop-enrolled mode, emits commits as they're signed.
+📡 Native com.atproto.sync.subscribeRepos WebSocket endpoint. Required for federation — every PDS must emit a firehose. In mobile-only mode, the PDS is the PDS and emits directly. In desktop-enrolled mode, emits commits as they're signed.
 
 #### Firehose Proxy
 
 **v0.2**
 
-📡 Maintains persistent BGS WebSocket on behalf of sleeping desktop. Replays commits from buffer when desktop reconnects. Ensures BGS sees continuous uptime even when desktop is offline. Desktop-enrolled feature — not applicable in mobile-only mode. Pro/Business tier on managed relay.
+📡 Maintains persistent BGS WebSocket on behalf of sleeping desktop. Replays commits from buffer when desktop reconnects. Ensures BGS sees continuous uptime even when desktop is offline. Desktop-enrolled feature — not applicable in mobile-only mode. Pro/Business tier on managed PDS.
 
 #### Commit Buffer
 
@@ -155,31 +155,31 @@ The product launches mobile-first. The relay is a full PDS before any desktop is
 
 **v0.1**
 
-⚙️ Account setup, domain linking, relay config. Onboarding flow for new connections. Core provisioning needed from day one.
+⚙️ Account setup, domain linking, PDS config. Onboarding flow for new connections. Core provisioning needed from day one.
 
 #### Key Share Escrow
 
 **v0.1**
 
-🔏 Holds one encrypted Shamir share. Cannot reconstruct alone. Encrypted at rest, access-logged. Relay holds Share 2 from account creation.
+🔏 Holds one encrypted Shamir share. Cannot reconstruct alone. Encrypted at rest, access-logged. PDS holds Share 2 from account creation.
 
 #### Health Monitor
 
 **v1.0**
 
-💓 Device liveness, relay uptime, ATProto spec compat. Includes canary account for silent federation failure detection.
+💓 Device liveness, PDS uptime, ATProto spec compat. Includes canary account for silent federation failure detection.
 
 #### GeoDNS Multi-Region
 
 **LATER**
 
-🌎 2–3 relay nodes, route to nearest healthy. Simple failover with brief firehose gap. Cross-region replication interface designed but not built.
+🌎 2–3 PDS nodes, route to nearest healthy. Simple failover with brief firehose gap. Cross-region replication interface designed but not built.
 
 #### Repo Snapshot
 
 **LATER**
 
-🗄️ Full repo backup on relay. Incremental from commit buffer. Pro+ feature. Enables one-click device migration.
+🗄️ Full repo backup on PDS. Incremental from commit buffer. Pro+ feature. Enables one-click device migration.
 
 #### CDN / Public Cache
 
@@ -187,15 +187,15 @@ The product launches mobile-first. The relay is a full PDS before any desktop is
 
 🌐 Serves public repo content during offline windows.
 
-### BYO Relay (User-Hosted, Free)
+### BYO PDS (User-Hosted, Free)
 
-#### Relay Binary
+#### PDS Binary
 
 **v1.0**
 
 📦 Open-source. Nix flake (source of truth) → Docker image + NixOS module. Tunnel + commit forwarding + requestCrawl. No firehose proxy, no snapshots.
 
-#### Device-Relay Protocol Spec
+#### Device-PDS Protocol Spec
 
 **v1.0**
 
@@ -205,7 +205,7 @@ The product launches mobile-first. The relay is a full PDS before any desktop is
 
 **v1.0**
 
-🔌 App queries relay capabilities on connect. Gracefully degrades when extended features unavailable. Suggests upgrade for missing features.
+🔌 App queries PDS capabilities on connect. Gracefully degrades when extended features unavailable. Suggests upgrade for missing features.
 
 *REMOVED: Inbound Message Queue — Not needed. ATProto records live in author's repo.*
 
@@ -217,22 +217,22 @@ The product launches mobile-first. The relay is a full PDS before any desktop is
 
 1. App creates record via XRPC (Tauri webview → Rust backend)
 2. Repo Engine constructs MST diff + unsigned commit
-3. Unsigned commit sent to relay via Iroh tunnel
-4. Relay signs commit with P-256 signing key
-5. Relay stores signed commit in buffer
-6. Relay emits to firehose / serves via XRPC
+3. Unsigned commit sent to PDS via Iroh tunnel
+4. PDS signs commit with P-256 signing key
+5. PDS stores signed commit in buffer
+6. PDS emits to firehose / serves via XRPC
 
 ### Mobile-Only Write Path (v0.1)
 
-1. Third-party app (e.g. Bluesky) calls relay XRPC directly
-2. Relay constructs record, MST diff, signs commit
-3. Relay stores and emits to firehose
+1. Third-party app (e.g. Bluesky) calls PDS XRPC directly
+2. PDS constructs record, MST diff, signs commit
+3. PDS stores and emits to firehose
 
 ### Desktop-Offline Read Path
 
-1. XRPC read request hits relay
-2. Relay serves from commit buffer / repo cache
-3. Writes return 503 (relay cannot construct commits from stale state)
+1. XRPC read request hits PDS
+2. PDS serves from commit buffer / repo cache
+3. Writes return 503 (PDS cannot construct commits from stale state)
 
 ---
 
@@ -240,19 +240,19 @@ The product launches mobile-first. The relay is a full PDS before any desktop is
 
 *Current scenario showing firehose proxy operation during v0.2+:*
 
-**Bob's Mac** (Repo Engine constructs unsigned commit) → **Iroh tunnel** → **Relay** (Signs commit with P-256 key) → **Commit Buffer** (Persists signed commit) → **Firehose Proxy** (Stable WebSocket) → **subscribeRepos** → **BGS** (Network firehose) → **indexes** → **AppView** (Bluesky etc.)
+**Bob's Mac** (Repo Engine constructs unsigned commit) → **Iroh tunnel** → **PDS** (Signs commit with P-256 key) → **Commit Buffer** (Persists signed commit) → **Firehose Proxy** (Stable WebSocket) → **subscribeRepos** → **BGS** (Network firehose) → **indexes** → **AppView** (Bluesky etc.)
 
-*If Bob's Mac is asleep → relay serves reads from cache, returns 503 on writes. Commit buffer feeds firehose proxy from stored commits on wake.*
+*If Bob's Mac is asleep → PDS serves reads from cache, returns 503 on writes. Commit buffer feeds firehose proxy from stored commits on wake.*
 
 ---
 
 ## Recovery Flow — Device Migration / Dead SSD (v1.0+)
 
-**New Mac** (Installs Tauri app) → **authenticates** → **2-of-3 Shares** (iCloud + relay escrow) → **reconstructs** → **Rotation Key** (Shamir recombination) → **did:plc op** → **Key Rotation** (New signing key) → **syncs** → **Repo Snapshot** (Full repo restore)
+**New Mac** (Installs Tauri app) → **authenticates** → **2-of-3 Shares** (iCloud + PDS escrow) → **reconstructs** → **Rotation Key** (Shamir recombination) → **did:plc op** → **Key Rotation** (New signing key) → **syncs** → **Repo Snapshot** (Full repo restore)
 
 **Share sources (any 2 of 3):**
 - ① iCloud Keychain
-- ② Relay escrow
+- ② PDS escrow
 - ③ Exported recovery file
 - Future: ④ Trusted contact (social recovery) — interface designed, not yet shipped
 
@@ -264,7 +264,7 @@ The product launches mobile-first. The relay is a full PDS before any desktop is
 
 **v0.1**
 
-🌍 PDS participates in ATProto network via relay. DID document points to relay URL as canonical PDS endpoint.
+🌍 PDS participates in ATProto network via PDS. DID document points to PDS URL as canonical PDS endpoint.
 
 ### DNS / Domain Automation
 
@@ -276,7 +276,7 @@ The product launches mobile-first. The relay is a full PDS before any desktop is
 
 **v0.1**
 
-🪪 did:plc or did:web pointing to relay endpoint. Relay always reachable, DID resolution never fails due to offline device.
+🪪 did:plc or did:web pointing to PDS endpoint. PDS always reachable, DID resolution never fails due to offline device.
 
 ---
 
@@ -332,7 +332,7 @@ The product launches mobile-first. The relay is a full PDS before any desktop is
 
 **v1.0**
 
-🐤 Live account on real Bluesky via your relay. Health monitor verifies posts appear in AppView. Catches silent federation failures.
+🐤 Live account on real Bluesky via your PDS. Health monitor verifies posts appear in AppView. Catches silent federation failures.
 
 ### Runtime Threat Mitigations
 
@@ -340,7 +340,7 @@ The product launches mobile-first. The relay is a full PDS before any desktop is
 
 **v1.0**
 
-🔒 Request size limits per endpoint. Rate limiting at relay layer. cargo-fuzz targets for CBOR/CAR/MST parsing. Adversarial MST key testing per spec DoS guidance.
+🔒 Request size limits per endpoint. Rate limiting at PDS layer. cargo-fuzz targets for CBOR/CAR/MST parsing. Adversarial MST key testing per spec DoS guidance.
 
 #### Tauri IPC Lockdown
 
@@ -348,15 +348,15 @@ The product launches mobile-first. The relay is a full PDS before any desktop is
 
 🏗️ Minimal allowlist: create/list/get records + status. Webview cannot access filesystem, shell, HTTP, or crypto. All sensitive ops in Rust backend only.
 
-#### Relay Trust Verification
+#### PDS Trust Verification
 
 **LATER**
 
-🤝 Device verifies commits appear in firehose. Protocol designed now (commit ack with seq number), verification logic built later. Protects against censorship by relay.
+🤝 Device verifies commits appear in firehose. Protocol designed now (commit ack with seq number), verification logic built later. Protects against censorship by PDS.
 
 ---
 
-## Relay Tier Pricing — v1.0 Launch
+## PDS Tier Pricing — v1.0 Launch
 
 ### Free
 
@@ -368,7 +368,7 @@ The product launches mobile-first. The relay is a full PDS before any desktop is
 - Key share escrow (1 share)
 - Apple notarized updates
 - No firehose proxy — BGS drops on sleep
-- See "BYO Relay" section for self-hosted option
+- See "BYO PDS" section for self-hosted option
 
 ### Pro
 
@@ -393,15 +393,15 @@ The product launches mobile-first. The relay is a full PDS before any desktop is
 - Continuous repo snapshot (post-launch)
 - Admin dashboard
 - Priority support
-- Custom relay config
+- Custom PDS config
 - Audit logs
 
-### BYO Relay (Self-Hosted)
+### BYO PDS (Self-Hosted)
 
-Not a subscription tier — an alternative deployment model. Operators run their own relay binary (distributed via Nix flake or Docker image).
+Not a subscription tier — an alternative deployment model. Operators run their own PDS binary (distributed via Nix flake or Docker image).
 
 **Includes:**
-- Full relay functionality (identical binary to managed relay)
+- Full PDS functionality (identical binary to managed PDS)
 - SQLite or PostgreSQL backend (operator's choice)
 - Local or S3-compatible blob storage
 - No subscription fees — operator provides their own infrastructure
@@ -415,27 +415,27 @@ Available at v1.0 launch.
 
 ### ✅ Availability — v0.1+
 
-Firehose emitter for native federation. Firehose proxy + commit buffer for v0.2+. In mobile-only phase, relay is the PDS. In desktop-enrolled, relay maintains persistent connection for sleeping device.
+Firehose emitter for native federation. Firehose proxy + commit buffer for v0.2+. In mobile-only phase, PDS is the PDS. In desktop-enrolled, PDS maintains persistent connection for sleeping device.
 
 ### ✅ Durability — v1.0+
 
-2-of-3 Shamir key recovery. Tiered repo snapshots. iCloud + file export + relay escrow.
+2-of-3 Shamir key recovery. Tiered repo snapshots. iCloud + file export + PDS escrow.
 
 ### ✅ Spec Drift — v0.1+
 
 Repo Engine (atrium + rsky-crypto). 3-layer conformance: interop vectors → oracle → canary.
 
-### ✅ Relay Redundancy — v1.0+
+### ✅ PDS Redundancy — v1.0+
 
-GeoDNS multi-region + BYO relay (Nix/Docker, free). Device-relay protocol spec. Feature negotiation.
+GeoDNS multi-region + BYO PDS (Nix/Docker, free). Device-PDS protocol spec. Feature negotiation.
 
 ### ✅ Runtime Threats — v1.0+
 
-XRPC fuzzing + size limits. Tauri IPC lockdown. Commit ack protocol (designed). cargo-audit. Relay trust verification (designed, deferred).
+XRPC fuzzing + size limits. Tauri IPC lockdown. Commit ack protocol (designed). cargo-audit. PDS trust verification (designed, deferred).
 
 ### ✅ Mobile-First Architecture — v8
 
-Relay is full PDS in v0.1. Desktop enrolls in v0.2 as repo construction engine. Four-phase milestones reconcile mobile and desktop workflows.
+PDS is full PDS in v0.1. Desktop enrolls in v0.2 as repo construction engine. Four-phase milestones reconcile mobile and desktop workflows.
 
 ---
 
@@ -444,9 +444,9 @@ Relay is full PDS in v0.1. Desktop enrolls in v0.2 as repo construction engine. 
 ### v0.1 — Mobile-Only PDS (~3–4 months)
 
 **Goal:** User creates ATProto identity from iPhone, logs into Bluesky.
-Relay is a full PDS. No desktop involved.
+PDS is a full PDS. No desktop involved.
 
-**Relay:** Axum + SQLite + repo engine + signing + XRPC + firehose emitter
+**PDS:** Axum + SQLite + repo engine + signing + XRPC + firehose emitter
 **OAuth:** atproto-oauth-axum integration (blocks Bluesky login)
 **Blobs:** upload/serve with local storage
 **Identity:** DID creation + Shamir split at onboarding
@@ -455,10 +455,10 @@ Relay is a full PDS. No desktop involved.
 
 ### v0.2 — Desktop Enrollment (~2–3 months)
 
-**Goal:** User pairs desktop Mac, relay becomes proxy+signer.
+**Goal:** User pairs desktop Mac, PDS becomes proxy+signer.
 
 **Device pairing:** via QR code + desktop promotion
-**XRPC write proxying:** relay → desktop → relay signs
+**XRPC write proxying:** PDS → desktop → PDS signs
 **Firehose proxy:** for sleeping desktop
 **Blob forwarding:** via Iroh
 **Desktop offline:** → 503 on writes, reads from cache
@@ -469,7 +469,7 @@ Relay is a full PDS. No desktop involved.
 
 **Shamir recovery ceremony:** + full share management UI
 **Tier pricing:** Free/Pro/Business
-**BYO relay binary:** Nix/Docker
+**BYO PDS binary:** Nix/Docker
 **S3 blob backend:** + CDN
 **PostgreSQL option:** for scale
 **L2 oracle suite + L3 canary**

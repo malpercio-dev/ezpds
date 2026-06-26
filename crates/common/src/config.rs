@@ -115,7 +115,7 @@ pub struct IrohConfig {
 
 /// Crawler (relay/BGS) notification configuration for `com.atproto.sync.requestCrawl`.
 ///
-/// After every repo commit the relay notifies each configured crawler so newly produced
+/// After every repo commit the pds notifies each configured crawler so newly produced
 /// content is pulled promptly into the wider network. Each entry is a service base URL
 /// (e.g. `https://bsky.network`); the pds POSTs to
 /// `<url>/xrpc/com.atproto.sync.requestCrawl`. The default is the public bsky.network BGS;

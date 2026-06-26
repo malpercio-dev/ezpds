@@ -1,12 +1,12 @@
-# Relay Crate
+# PDS Crate (Custos)
 
-Last verified: 2026-06-21
+Last verified: 2026-06-26
 
 ## Purpose
 
-The relay is the axum-based web server. It is the sole Imperative Shell in the workspace —
+The PDS is the axum-based web server. It is the sole Imperative Shell in the workspace —
 the only crate that touches SQLite, handles HTTP, or manages process-level state. All other
-crates (`crypto`, `repo-engine`, `common`) are pure Functional Cores that the relay calls.
+crates (`crypto`, `repo-engine`, `common`) are pure Functional Cores that the PDS calls.
 
 ## Module Map
 
@@ -44,7 +44,7 @@ Outbound `com.atproto.sync.requestCrawl` notifier. `AppState.crawlers: Arc<Crawl
 is shared by every handler; `record_write::emit_firehose_commit` calls `crawlers.notify()`
 once per commit, right after the firehose event is emitted. `notify` is fire-and-forget: it
 selects the crawlers outside their rate-limit window (one notification per crawler per 30s),
-then spawns a detached task per crawler that POSTs `{ "hostname": <relay-host> }` to
+then spawns a detached task per crawler that POSTs `{ "hostname": <PDS-host> }` to
 `<url>/xrpc/com.atproto.sync.requestCrawl`, retrying with exponential backoff up to 3 times.
 All outcomes are logged, never propagated — a commit never blocks on or fails because of a
 crawler. Configured via `[crawlers] urls = [...]` (default `["https://bsky.network"]`; empty
@@ -111,13 +111,13 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `create_mobile_account.rs` | `POST /v1/accounts/mobile` |
 | `create_signing_key.rs` | `POST /v1/signing-keys` |
 | `register_device.rs` | `POST /v1/devices` |
-| `get_device_relay.rs` | `GET /v1/devices/:id/relay` |
+| `get_device_pds.rs` | `GET /v1/devices/:id/pds` |
 | `describe_server.rs` | `GET /xrpc/com.atproto.server.describeServer` |
 | `describe_repo.rs` | `GET /xrpc/com.atproto.repo.describeRepo` |
 | `resolve_handle.rs` | `GET /xrpc/com.atproto.identity.resolveHandle` |
 | `sync_subscribe_repos.rs` | `GET /xrpc/com.atproto.sync.subscribeRepos` (WebSocket firehose) |
 | `claim_codes.rs` | Claim code management |
-| `get_relay_signing_key.rs` | `GET /v1/signing-keys` |
+| `get_pds_signing_key.rs` | `GET /v1/signing-keys` |
 | `health.rs` | `GET /xrpc/_health` |
 | `delete_session.rs` | `POST /xrpc/com.atproto.server.deleteSession` (session revocation) |
 | `oauth_client_metadata.rs` | `GET /oauth/client-metadata.json` (OAuth client metadata per ATProto spec) |

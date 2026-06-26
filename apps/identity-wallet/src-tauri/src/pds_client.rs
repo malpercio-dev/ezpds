@@ -24,11 +24,7 @@ const REDIRECT_URI: &str = "dev.malpercio.identitywallet:/oauth/callback";
 /// The client_id is the PDS's public URL + `/oauth/client-metadata.json`.
 /// This must match what the PDS serves at that path.
 pub fn client_id_for_pds(pds_url: &str) -> String {
-    format!(
-        "{}{}",
-        pds_url.trim_end_matches('/'),
-        CLIENT_METADATA_PATH
-    )
+    format!("{}{}", pds_url.trim_end_matches('/'), CLIENT_METADATA_PATH)
 }
 
 /// Error type for PDS client operations.

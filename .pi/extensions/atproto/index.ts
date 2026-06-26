@@ -1,7 +1,7 @@
 /**
  * ATProto Extension for Pi
  *
- * Tools for interacting with ezpds provisioning relay and ATProto endpoints.
+ * Tools for interacting with ezpds provisioning PDS and ATProto endpoints.
  * Requires EZPDS_BASE_URL and optionally EZPDS_ADMIN_TOKEN in the environment.
  */
 
@@ -154,7 +154,7 @@ function base32Encode(buffer: Buffer): string {
 
 // ── ATProto HTTP Client ──────────────────────────────────────────────────────
 
-async function relayRequest<T = any>(
+async function pdsRequest<T = any>(
   baseUrl: string,
   path: string,
   options: {
@@ -233,7 +233,7 @@ export default function (pi: ExtensionAPI) {
       if (!adminToken) {
         throw new Error("EZPDS_ADMIN_TOKEN not set");
       }
-      const data = await relayRequest(baseUrl, "/v1/accounts/claim-codes", {
+      const data = await pdsRequest(baseUrl, "/v1/accounts/claim-codes", {
         method: "POST",
         adminToken,
         body: {
@@ -274,7 +274,7 @@ export default function (pi: ExtensionAPI) {
       // Generate a device keypair
       const deviceKeypair = await generateP256KeypairRaw();
 
-      const data = await relayRequest(baseUrl, "/v1/accounts/mobile", {
+      const data = await pdsRequest(baseUrl, "/v1/accounts/mobile", {
         method: "POST",
         body: {
           email: params.email,
@@ -321,11 +321,11 @@ export default function (pi: ExtensionAPI) {
     name: "atproto_get_repo_signing_key",
     label: "Get Repo Signing Key",
     description:
-      "Get the per-account repo signing key issued by the relay. Must be called before the DID ceremony. The returned keyId must be published as verificationMethods.atproto in the genesis op.",
+      "Get the per-account repo signing key issued by the PDS. Must be called before the DID ceremony. The returned keyId must be published as verificationMethods.atproto in the genesis op.",
     promptSnippet: "Get the per-account repo signing key",
     promptGuidelines: [
       "Use after atproto_create_mobile_account and before atproto_complete_did_ceremony.",
-      "The relay issues a per-account P-256 key for signing repo commits.",
+      "The PDS issues a per-account P-256 key for signing repo commits.",
       "The returned keyId must be used as rotationKeys[1] and verificationMethods.atproto in the genesis op.",
       "Idempotent: calling again with the same session returns the same key.",
     ],
@@ -335,7 +335,7 @@ export default function (pi: ExtensionAPI) {
       }),
     }),
     async execute(_id, params) {
-      const data = await relayRequest<{
+      const data = await pdsRequest<{
         keyId: string;
         publicKey: string;
         algorithm: string;
@@ -348,7 +348,7 @@ export default function (pi: ExtensionAPI) {
           {
             type: "text",
             text: [
-              `Repo signing key issued by relay`,
+              `Repo signing key issued by PDS`,
               `  Key ID: ${data.keyId}`,
               `  Public Key: ${data.publicKey}`,
               `  Algorithm: ${data.algorithm}`,
@@ -368,13 +368,13 @@ export default function (pi: ExtensionAPI) {
     name: "atproto_complete_did_ceremony",
     label: "Complete DID Ceremony",
     description:
-      "Complete the did:plc ceremony for a pending account. Fetches the relay-issued repo signing key, builds and signs the genesis operation, and registers the DID. Returns the DID, session token, and Shamir shares.",
+      "Complete the did:plc ceremony for a pending account. Fetches the PDS-issued repo signing key, builds and signs the genesis operation, and registers the DID. Returns the DID, session token, and Shamir shares.",
     promptSnippet: "Complete the DID ceremony for a pending account",
     promptGuidelines: [
       "Use after atproto_create_mobile_account to finish account setup.",
       "The sessionToken from create_mobile_account is required.",
       "The handle must match what was used during account creation.",
-      "The relay issues a per-account repo signing key which is automatically fetched and published in the genesis op.",
+      "The PDS issues a per-account repo signing key which is automatically fetched and published in the genesis op.",
     ],
     parameters: Type.Object({
       session_token: Type.String({
@@ -388,8 +388,8 @@ export default function (pi: ExtensionAPI) {
       }),
     }),
     async execute(_id, params) {
-      // Step 1: Fetch the relay-issued per-account repo signing key.
-      const repoKey = await relayRequest<{
+      // Step 1: Fetch the PDS-issued per-account repo signing key.
+      const repoKey = await pdsRequest<{
         keyId: string;
         publicKey: string;
         algorithm: string;
@@ -402,8 +402,8 @@ export default function (pi: ExtensionAPI) {
 
       // Step 3: Build the genesis operation.
       //   rotationKeys[0] = device key (signs the op)
-      //   rotationKeys[1] = relay-issued repo signing key
-      //   verificationMethods.atproto = relay-issued repo signing key
+      //   rotationKeys[1] = PDS-issued repo signing key
+      //   verificationMethods.atproto = PDS-issued repo signing key
       const genesisOp = await buildDidPlcGenesisOp(
         rotationKeypair.keyId,       // rotationKeys[0] — signs the op
         repoKey.keyId,               // rotationKeys[1] + verificationMethods.atproto
@@ -414,8 +414,8 @@ export default function (pi: ExtensionAPI) {
 
       const signedOp = JSON.parse(genesisOp.signedOpJson);
 
-      // Step 4: Submit to relay.
-      const data = await relayRequest(baseUrl, "/v1/dids", {
+      // Step 4: Submit to PDS.
+      const data = await pdsRequest(baseUrl, "/v1/dids", {
         method: "POST",
         token: params.session_token,
         body: {
@@ -479,7 +479,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       // Step 1: Create claim code
-      const claimData = await relayRequest<{ codes: string[] }>(
+      const claimData = await pdsRequest<{ codes: string[] }>(
         baseUrl,
         "/v1/accounts/claim-codes",
         {
@@ -492,7 +492,7 @@ export default function (pi: ExtensionAPI) {
 
       // Step 2: Create mobile account
       const deviceKeypair = await generateP256KeypairRaw();
-      const accountData = await relayRequest<{
+      const accountData = await pdsRequest<{
         accountId: string;
         deviceId: string;
         deviceToken: string;
@@ -510,8 +510,8 @@ export default function (pi: ExtensionAPI) {
         },
       });
 
-      // Step 3: Get the relay-issued per-account repo signing key.
-      const repoKey = await relayRequest<{
+      // Step 3: Get the PDS-issued per-account repo signing key.
+      const repoKey = await pdsRequest<{
         keyId: string;
         publicKey: string;
         algorithm: string;
@@ -521,8 +521,8 @@ export default function (pi: ExtensionAPI) {
 
       // Step 4: Complete DID ceremony.
       //   rotationKeys[0] = device key (signs the op)
-      //   rotationKeys[1] = relay-issued repo signing key
-      //   verificationMethods.atproto = relay-issued repo signing key
+      //   rotationKeys[1] = PDS-issued repo signing key
+      //   verificationMethods.atproto = PDS-issued repo signing key
       const rotationKeypair = await generateP256KeypairRaw();
       const genesisOp = await buildDidPlcGenesisOp(
         rotationKeypair.keyId,       // rotationKeys[0] — signs the op
@@ -533,7 +533,7 @@ export default function (pi: ExtensionAPI) {
       );
       const signedOp = JSON.parse(genesisOp.signedOpJson);
 
-      const didData = await relayRequest<{
+      const didData = await pdsRequest<{
         did: string;
         did_document: unknown;
         status: string;
@@ -553,7 +553,7 @@ export default function (pi: ExtensionAPI) {
       // Step 5: Register handle
       let handleResult: string;
       try {
-        await relayRequest(baseUrl, "/v1/handles", {
+        await pdsRequest(baseUrl, "/v1/handles", {
           method: "POST",
           token: didData.session_token,
           body: {
@@ -567,7 +567,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       // Step 6: Get ATProto session
-      const atprotoSession = await relayRequest<{
+      const atprotoSession = await pdsRequest<{
         accessJwt: string;
         refreshJwt: string;
       }>(baseUrl, "/xrpc/com.atproto.server.createSession", {
@@ -634,7 +634,7 @@ export default function (pi: ExtensionAPI) {
       password: Type.String({ description: "Account password" }),
     }),
     async execute(_id, params) {
-      const data = await relayRequest<{
+      const data = await pdsRequest<{
         accessJwt: string;
         refreshJwt: string;
         handle: string;
@@ -682,7 +682,7 @@ export default function (pi: ExtensionAPI) {
       did: Type.String({ description: "Account DID" }),
     }),
     async execute(_id, params) {
-      const data = await relayRequest(baseUrl, "/v1/handles", {
+      const data = await pdsRequest(baseUrl, "/v1/handles", {
         method: "POST",
         token: params.session_token,
         body: {
@@ -712,7 +712,7 @@ export default function (pi: ExtensionAPI) {
       "Retrieve a blob by CID from a DID's repo. Returns the blob content as base64 along with its MIME type and size.",
     promptSnippet: "Retrieve blob content by CID",
     promptGuidelines: [
-      "Use to fetch blob content from the relay for inspection or verification.",
+      "Use to fetch blob content from the PDS for inspection or verification.",
       "The blob must belong to the specified DID.",
     ],
     parameters: Type.Object({
@@ -767,7 +767,7 @@ export default function (pi: ExtensionAPI) {
     name: "atproto_xrpc",
     label: "XRPC Call",
     description:
-      "Make a generic XRPC call to the relay. Supports GET, POST, PUT, DELETE.",
+      "Make a generic XRPC call to the PDS. Supports GET, POST, PUT, DELETE.",
     promptSnippet: "Make an XRPC API call",
     promptGuidelines: [
       "Use for testing any ATProto endpoint not covered by other tools.",
@@ -848,7 +848,7 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Get server information",
     parameters: Type.Object({}),
     async execute() {
-      const data = await relayRequest(baseUrl, "/xrpc/com.atproto.server.describeServer");
+      const data = await pdsRequest(baseUrl, "/xrpc/com.atproto.server.describeServer");
       return {
         content: [
           {

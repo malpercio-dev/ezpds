@@ -1,11 +1,11 @@
 meta {
-  name: Get Device Relay
+  name: Get Device PDS
   type: http
   seq: 25
 }
 
 get {
-  url: {{baseUrl}}/v1/devices/{{deviceId}}/relay
+  url: {{baseUrl}}/v1/devices/{{deviceId}}/pds
   body: none
   auth: bearer
 }
