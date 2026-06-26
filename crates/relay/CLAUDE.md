@@ -31,8 +31,11 @@ publishes a sequenced `CommitEvent` carrying the DID, rev, `since`, per-record `
 (action + collection/rkey + cid + value), and the CARv1 diff blocks. Backpressure is by design:
 the bounded channel never blocks producers — a slow subscriber observes `Lagged` and is expected
 to disconnect. All three write paths (`create_record`/`put_record` via `record_write`,
-`delete_record`, `apply_writes`) emit exactly one event per commit. The subscriber-facing
-WebSocket frame encoding lives in the (separate) `subscribeRepos` handler.
+`delete_record`, `apply_writes`) emit exactly one event per commit. Alongside the broadcast
+channel the firehose keeps a bounded replay backlog so a late subscriber that passes a `cursor`
+can be backfilled; `subscribe_from(cursor)` snapshots that backlog and attaches the live
+receiver under one lock, so the replay→live boundary is exact (no gap, no duplication). The
+subscriber-facing WebSocket frame encoding lives in the `sync_subscribe_repos` handler.
 
 ### `auth/`
 
@@ -99,6 +102,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `describe_server.rs` | `GET /xrpc/com.atproto.server.describeServer` |
 | `describe_repo.rs` | `GET /xrpc/com.atproto.repo.describeRepo` |
 | `resolve_handle.rs` | `GET /xrpc/com.atproto.identity.resolveHandle` |
+| `sync_subscribe_repos.rs` | `GET /xrpc/com.atproto.sync.subscribeRepos` (WebSocket firehose) |
 | `claim_codes.rs` | Claim code management |
 | `get_relay_signing_key.rs` | `GET /v1/signing-keys` |
 | `health.rs` | `GET /xrpc/_health` |
