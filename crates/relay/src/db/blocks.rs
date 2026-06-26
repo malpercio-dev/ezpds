@@ -114,6 +114,57 @@ pub async fn delete_unreachable_blocks(
     Ok(removed)
 }
 
+/// Tag a specific set of an account's blocks with the revision of the commit that introduced them.
+///
+/// A write persists its new blocks (via `put_block`) with a NULL `rev` before the commit's
+/// revision is final; once the root swap succeeds the caller stamps that commit's blocks with
+/// `rev`. The caller passes the *exact* CID set the commit added (`collect_commit_diff_cids`),
+/// not "every untagged block": two concurrent writes to the same repo have disjoint diff sets, so
+/// scoping by CID prevents one commit's tag from stealing the other's still-NULL blocks (a blanket
+/// `rev IS NULL` sweep could, silently dropping them from `getRepo?since` deltas). The UPDATE is
+/// unconditional on rev, so a block re-introduced by a later commit is re-stamped with the newer
+/// rev (correct: a consumer past the old rev must still receive it). Returns the number of rows
+/// updated. Best-effort: a failure leaves blocks untagged (absent from `since` deltas but still in
+/// a full export), never corrupts the repo.
+pub async fn tag_blocks_rev(
+    pool: &SqlitePool,
+    account_did: &str,
+    cids: &[String],
+    rev: &str,
+) -> Result<u64, sqlx::Error> {
+    let mut updated = 0u64;
+    // Batch to stay well under SQLite's bound-parameter limit.
+    for chunk in cids.chunks(500) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql =
+            format!("UPDATE blocks SET rev = ? WHERE account_did = ? AND cid IN ({placeholders})");
+        let mut q = sqlx::query(&sql).bind(rev).bind(account_did);
+        for cid in chunk {
+            q = q.bind(cid);
+        }
+        updated += q.execute(pool).await?.rows_affected();
+    }
+    Ok(updated)
+}
+
+/// List the CIDs of an account's blocks introduced after revision `since`.
+///
+/// Drives `com.atproto.sync.getRepo?since=<rev>`: returns exactly the blocks a consumer holding
+/// the repo as of `since` is missing. Revisions are TIDs, so the `rev > since` string comparison
+/// orders by commit time. Blocks with a NULL `rev` (an in-flight commit's, or a backfill gap) are
+/// excluded — they are not part of any committed delta past `since`.
+pub async fn list_block_cids_since(
+    pool: &SqlitePool,
+    account_did: &str,
+    since: &str,
+) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT cid FROM blocks WHERE account_did = ? AND rev > ? ORDER BY cid")
+        .bind(account_did)
+        .bind(since)
+        .fetch_all(pool)
+        .await
+}
+
 // ── SqliteBlockStore adapter ─────────────────────────────────────────────────────
 
 /// Adapter that implements atrium-repo's blockstore traits over SQLite.
@@ -361,6 +412,109 @@ mod tests {
         assert!(get_block(&pool, "bafkeep1").await.unwrap().is_some());
         assert!(get_block(&pool, "bafkeep2").await.unwrap().is_some());
         assert!(get_block(&pool, "bafgarbage").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn tag_blocks_rev_stamps_only_the_named_cids() {
+        let pool = test_pool().await;
+        insert_test_account(&pool, "did:plc:tag").await;
+        for c in ["bafa", "bafb", "bafc"] {
+            put_block(&pool, c, "did:plc:tag", b"\xa1x").await.unwrap();
+        }
+
+        // Commit A tags only its two blocks; the third stays NULL (it belongs to no committed set).
+        let tagged = tag_blocks_rev(
+            &pool,
+            "did:plc:tag",
+            &["bafa".to_string(), "bafb".to_string()],
+            "3aaa",
+        )
+        .await
+        .unwrap();
+        assert_eq!(tagged, 2);
+
+        // Commit B tags its own block, disjoint from A's — no contention, A's tags are untouched.
+        tag_blocks_rev(&pool, "did:plc:tag", &["bafc".to_string()], "3bbb")
+            .await
+            .unwrap();
+
+        // since == A's rev → only B's block is newer; A's blocks (rev == since) are excluded.
+        assert_eq!(
+            list_block_cids_since(&pool, "did:plc:tag", "3aaa")
+                .await
+                .unwrap(),
+            vec!["bafc".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn tag_blocks_rev_restamps_reintroduced_block() {
+        let pool = test_pool().await;
+        insert_test_account(&pool, "did:plc:restamp").await;
+        put_block(&pool, "bafx", "did:plc:restamp", b"\xa1x")
+            .await
+            .unwrap();
+
+        tag_blocks_rev(&pool, "did:plc:restamp", &["bafx".to_string()], "3aaa")
+            .await
+            .unwrap();
+        // A later commit re-introduces the same CID: the unconditional UPDATE moves it forward, so
+        // a consumer past the original rev still receives it.
+        tag_blocks_rev(&pool, "did:plc:restamp", &["bafx".to_string()], "3ccc")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            list_block_cids_since(&pool, "did:plc:restamp", "3bbb")
+                .await
+                .unwrap(),
+            vec!["bafx".to_string()],
+            "re-introduced block must carry the newer rev"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_block_cids_since_excludes_at_or_before_and_null() {
+        let pool = test_pool().await;
+        insert_test_account(&pool, "did:plc:since").await;
+        put_block(&pool, "bafold", "did:plc:since", b"\xa1a")
+            .await
+            .unwrap();
+        tag_blocks_rev(&pool, "did:plc:since", &["bafold".to_string()], "3kkk")
+            .await
+            .unwrap();
+        put_block(&pool, "bafnew", "did:plc:since", b"\xa1b")
+            .await
+            .unwrap();
+        tag_blocks_rev(&pool, "did:plc:since", &["bafnew".to_string()], "3mmm")
+            .await
+            .unwrap();
+        // A still-untagged (NULL rev) block must never appear in a since delta.
+        put_block(&pool, "bafnull", "did:plc:since", b"\xa1c")
+            .await
+            .unwrap();
+
+        // since == latest rev → nothing new.
+        assert!(list_block_cids_since(&pool, "did:plc:since", "3mmm")
+            .await
+            .unwrap()
+            .is_empty());
+
+        // since == first rev → only the second commit's block (NULL excluded).
+        assert_eq!(
+            list_block_cids_since(&pool, "did:plc:since", "3kkk")
+                .await
+                .unwrap(),
+            vec!["bafnew".to_string()]
+        );
+
+        // since below everything → both tagged blocks (NULL still excluded).
+        assert_eq!(
+            list_block_cids_since(&pool, "did:plc:since", "3aaa")
+                .await
+                .unwrap(),
+            vec!["bafnew".to_string(), "bafold".to_string()]
+        );
     }
 
     // ── SqliteBlockStore adapter tests ──────────────────────────────────────────────

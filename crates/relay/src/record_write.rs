@@ -290,18 +290,48 @@ pub async fn emit_firehose_commit(
     ops: Vec<crate::firehose::RepoOp>,
 ) {
     let mut store = SqliteBlockStore::new(state.db.clone(), did.to_string());
-    let blocks =
-        match repo_engine::export_commit_blocks_car(&mut store, Some(prev_root), new_root).await {
-            Ok(blocks) => blocks,
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    did = %did,
-                    "failed to build firehose commit CAR; dropping event (non-fatal)"
-                );
-                return;
-            }
-        };
+
+    // The exact CID set this commit introduced drives two things, computed once here while both
+    // block sets are still present (pre-GC): the firehose diff CAR, and the per-block rev tag for
+    // getRepo?since. Tagging this precise set (not "all untagged blocks") is what keeps the rev
+    // correct under concurrent same-repo writes — see `db::blocks::tag_blocks_rev`.
+    let diff_cids = match repo_engine::collect_commit_diff_cids(
+        &mut store,
+        Some(prev_root),
+        new_root,
+    )
+    .await
+    {
+        Ok(cids) => cids,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                did = %did,
+                "failed to compute commit block diff; dropping firehose event + rev tag (non-fatal)"
+            );
+            return;
+        }
+    };
+
+    // Stamp this commit's blocks with its revision so getRepo?since reports them as newer than any
+    // earlier revision. Best-effort: the commit is durable regardless, and untagged blocks still
+    // ship in a full export — they are only absent from `since` deltas.
+    let cid_strs: Vec<String> = diff_cids.iter().map(|c| c.to_string()).collect();
+    if let Err(e) = crate::db::blocks::tag_blocks_rev(&state.db, did, &cid_strs, &new_rev).await {
+        tracing::warn!(error = %e, did = %did, "failed to tag commit block revisions (non-fatal)");
+    }
+
+    let blocks = match repo_engine::build_car_from_cids(&mut store, new_root, diff_cids).await {
+        Ok(blocks) => blocks,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                did = %did,
+                "failed to build firehose commit CAR; dropping event (non-fatal)"
+            );
+            return;
+        }
+    };
 
     state.firehose.emit_commit(crate::firehose::CommitInput {
         repo: did.to_string(),

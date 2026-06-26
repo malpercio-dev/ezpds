@@ -177,6 +177,18 @@ pub async fn seed_account_with_repo(db: &sqlx::SqlitePool, did: &str) {
         .execute(db)
         .await
         .unwrap();
+    // Tag the genesis blocks with the repo rev, mirroring the production genesis insert, so tests
+    // that exercise getRepo?since see correctly-revisioned blocks. Tag the exact reachable set.
+    let mut store = crate::db::blocks::SqliteBlockStore::new(db.clone(), did.to_string());
+    let cids: Vec<String> = repo_engine::collect_reachable_cids(&mut store, root)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|c| c.to_string())
+        .collect();
+    crate::db::blocks::tag_blocks_rev(db, did, &cids, &rev)
+        .await
+        .unwrap();
 }
 
 /// Insert a fully provisioned account row with an argon2id-hashed password and a handle.

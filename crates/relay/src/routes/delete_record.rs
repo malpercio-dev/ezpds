@@ -142,7 +142,8 @@ pub async fn delete_record(
         ));
     }
 
-    // Emit the firehose `#commit` event before GC (the diff CAR needs the prior block set).
+    // Emit the firehose `#commit` event before GC (the diff CAR needs the prior block set). This
+    // also stamps the commit's blocks with its revision for getRepo?since.
     let op = crate::firehose::RepoOp {
         action: crate::firehose::OpAction::Delete,
         collection: collection.clone(),
