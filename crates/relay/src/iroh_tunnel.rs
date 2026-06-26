@@ -86,9 +86,81 @@ async fn handle_connection(incoming: Incoming) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iroh::endpoint::presets;
+    use iroh::EndpointAddr;
+    use std::time::Duration;
 
     #[test]
     fn alpn_is_versioned() {
         assert_eq!(ALPN, b"ezpds/iroh/0");
+    }
+
+    /// Bind an offline endpoint for tests: the `Minimal` preset sets only the rustls crypto
+    /// provider (no relay, no DNS discovery), and binding to loopback keeps everything local
+    /// and deterministic — no network required.
+    async fn loopback_endpoint(with_alpn: bool) -> Endpoint {
+        let mut builder = Endpoint::builder(presets::Minimal)
+            .bind_addr("127.0.0.1:0")
+            .expect("valid bind addr");
+        if with_alpn {
+            builder = builder.alpns(vec![ALPN.to_vec()]);
+        }
+        builder.bind().await.expect("bind loopback endpoint")
+    }
+
+    /// AC2.2 + AC3.1: a client dials the relay's endpoint by node id over the `ezpds/iroh/0`
+    /// ALPN and the accept loop echoes a bidirectional message back. Runs entirely over
+    /// loopback against the real `spawn_accept_loop`/`handle_connection`.
+    #[tokio::test]
+    async fn echo_round_trip_over_loopback() {
+        // Relay side: an endpoint accepting the ezpds ALPN, driven by the real accept loop.
+        let server = loopback_endpoint(true).await;
+        let server_addr = EndpointAddr::new(server.id()).with_ip_addr(server.bound_sockets()[0]);
+        let _accept = spawn_accept_loop(server.clone());
+
+        // Device side: a plain endpoint that dials by node id + direct loopback address.
+        let client = loopback_endpoint(false).await;
+
+        let echoed = tokio::time::timeout(Duration::from_secs(10), async {
+            let conn = client.connect(server_addr, ALPN).await.expect("connect");
+            let (mut send, mut recv) = conn.open_bi().await.expect("open_bi");
+            send.write_all(b"ping").await.expect("write");
+            send.finish().expect("finish");
+            recv.read_to_end(1024).await.expect("read echo")
+        })
+        .await
+        .expect("echo round-trip timed out");
+
+        assert_eq!(echoed, b"ping", "relay must echo the message back");
+
+        client.close().await;
+        server.close().await;
+    }
+
+    /// AC3.2: a connection on an unknown ALPN is rejected — the relay's endpoint only
+    /// negotiates `ezpds/iroh/0`, so a dial with a different ALPN fails at the handshake.
+    #[tokio::test]
+    async fn unknown_alpn_is_rejected() {
+        let server = loopback_endpoint(true).await;
+        let server_addr = EndpointAddr::new(server.id()).with_ip_addr(server.bound_sockets()[0]);
+        let _accept = spawn_accept_loop(server.clone());
+
+        let client = loopback_endpoint(false).await;
+
+        let result = tokio::time::timeout(Duration::from_secs(10), async {
+            client
+                .connect(server_addr, b"ezpds/iroh/SOMETHING-ELSE")
+                .await
+        })
+        .await
+        .expect("connect attempt timed out");
+
+        assert!(
+            result.is_err(),
+            "connecting with an unconfigured ALPN must be rejected"
+        );
+
+        client.close().await;
+        server.close().await;
     }
 }

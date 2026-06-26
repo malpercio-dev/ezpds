@@ -17,6 +17,7 @@ The relay container expects the following environment variables and mounts:
 - **`EZPDS_ADMIN_TOKEN`** (required) - Bearer token for admin-only endpoints (e.g., rotation key claiming)
 - **`EZPDS_DATA_DIR`** (optional, default `/data`) - Directory where `relay.db` is persisted. Set by the Dockerfile ENV; can be overridden if the data volume is mounted elsewhere. Must be writable by the container process.
 - **`PORT`** (optional, default `8080`) - Port to listen on inside the container
+- **`EZPDS_IROH_ENABLED`** (optional, default `false`) - Set to `true` to bind the Iroh QUIC tunnel alongside the HTTP server, letting devices reach the relay through NAT by dialing its node id. The node id is advertised via `GET /v1/devices/:id/relay` and is **stable across restarts only when `EZPDS_SIGNING_KEY_MASTER_KEY` is set** (otherwise the identity is ephemeral and rotates each boot). Iroh uses outbound UDP and the n0 discovery/relay servers for NAT traversal.
 
 ### Volumes
 - **`/data`** - Host directory bind-mounted for SQLite database persistence. The relay creates `relay.db` and `relay.db-shm`/`relay.db-wal` (WAL files) inside. Must be writable by the container's non-root user (uid 10001). Host permissions should be `0750` or `0755`.
