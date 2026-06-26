@@ -59,7 +59,12 @@ pub async fn get_repo(
 
     // Resolve the ordered set of block CIDs to export. Only CIDs are held in memory here; the
     // block *bytes* (the bulk) are read lazily one at a time while streaming the response.
-    let cids = match &params.since {
+    //
+    // An empty `?since=` is treated as omitted (full export), not as the revision `""`: the latter
+    // would route through the incremental path and, since `rev > ''` matches every tagged block,
+    // return a near-full repo while silently dropping any NULL-rev block — a misleading "delta".
+    let since = params.since.as_deref().filter(|s| !s.is_empty());
+    let cids = match since {
         // Full export: every block reachable from the current commit.
         None => {
             let mut store = SqliteBlockStore::new(state.db.clone(), did.to_string());
@@ -518,6 +523,48 @@ mod tests {
                 .is_some(),
             "rec2 (committed after `since`) must resolve"
         );
+    }
+
+    #[tokio::test]
+    async fn get_repo_empty_since_is_treated_as_full_export() {
+        use atrium_repo::blockstore::CarStore;
+        use repo_engine::AsyncBlockStoreRead;
+
+        // `?since=` (empty) must mean "full repo", NOT the incremental path with `rev > ''` (which
+        // would return a near-full repo while silently dropping any NULL-rev block).
+        let (state, did) = setup_revtagged_account().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        let app = crate::app::app(state.clone());
+
+        assert_eq!(put_post(&app, &token, &did, "rec1").await, StatusCode::OK);
+        let current_rev = rev_of(&state, &did).await;
+        let new_root: String =
+            sqlx::query_scalar("SELECT repo_root_cid FROM accounts WHERE did = ?")
+                .bind(&did)
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+
+        // A non-root block at the current rev — a genuine `since=current` CAR would exclude it.
+        let other_block: String = sqlx::query_scalar(
+            "SELECT cid FROM blocks WHERE account_did = ? AND rev = ? AND cid != ?",
+        )
+        .bind(&did)
+        .bind(&current_rev)
+        .bind(&new_root)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+
+        let car = since_car(&app, &did, "").await; // ?since= (empty)
+        let mut store = CarStore::open(std::io::Cursor::new(&car)).await.unwrap();
+        store
+            .read_block_into(
+                Cid::try_from(other_block.as_str()).unwrap(),
+                &mut Vec::new(),
+            )
+            .await
+            .expect("empty since must yield the FULL repo, including current-rev blocks");
     }
 
     #[tokio::test]

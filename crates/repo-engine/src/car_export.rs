@@ -84,6 +84,30 @@ pub async fn export_commit_blocks_car<S>(
 where
     S: AsyncBlockStoreRead,
 {
+    let diff = collect_commit_diff_cids(&mut *store, prev_root, new_root).await?;
+    build_car(store, new_root, diff).await
+}
+
+/// Compute the CIDs introduced by a single commit: `reachable(new_root) − reachable(prev_root)`.
+///
+/// This is the exact block set a commit added — its commit block, any MST nodes the write rewrote,
+/// and any newly created record blocks. It is the source of truth for both the firehose `#commit`
+/// diff CAR ([`export_commit_blocks_car`]) and the per-block revision tag that drives
+/// `com.atproto.sync.getRepo?since`. Tagging exactly these CIDs (rather than every untagged block
+/// for the account) is what makes the rev stamp correct under concurrent writes to the same repo:
+/// two commits' diff sets are disjoint, so neither can steal the other's blocks.
+///
+/// `prev_root` is `None` only for a repo's first commit (genesis), where every reachable block is
+/// new. Both roots' block sets must still be present in `store` — call this before any post-commit
+/// GC reclaims the superseded blocks.
+pub async fn collect_commit_diff_cids<S>(
+    store: &mut S,
+    prev_root: Option<Cid>,
+    new_root: Cid,
+) -> Result<Vec<Cid>, CarExportError>
+where
+    S: AsyncBlockStoreRead,
+{
     let new_set: HashSet<Cid> = collect_reachable_cids(&mut *store, new_root)
         .await?
         .into_iter()
@@ -97,8 +121,22 @@ where
         None => HashSet::new(),
     };
 
-    let diff: Vec<Cid> = new_set.difference(&prev_set).copied().collect();
-    build_car(store, new_root, diff).await
+    Ok(new_set.difference(&prev_set).copied().collect())
+}
+
+/// Build a CARv1 file declaring `root` as its root and containing exactly the blocks in `cids`.
+///
+/// For callers that have already computed the block set (e.g. via [`collect_commit_diff_cids`] so
+/// they can both tag and package the same blocks) and want to avoid recomputing the reachable set.
+pub async fn build_car_from_cids<S>(
+    store: &mut S,
+    root: Cid,
+    cids: Vec<Cid>,
+) -> Result<Vec<u8>, CarExportError>
+where
+    S: AsyncBlockStoreRead,
+{
+    build_car(store, root, cids).await
 }
 
 /// Export a single record together with its MST proof as a CARv1 file.
