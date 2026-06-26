@@ -156,8 +156,19 @@ pub async fn seed_account_with_repo(db: &sqlx::SqlitePool, did: &str) {
     let root = repo_engine::create_genesis_repo(block_store, did, &signer)
         .await
         .unwrap();
-    sqlx::query("UPDATE accounts SET repo_root_cid = ? WHERE did = ?")
+    // Persist repo_root_cid + repo_rev together, mirroring the production write paths so
+    // tests exercise the stored-rev path rather than the legacy commit-block fallback.
+    let reopen = crate::db::blocks::SqliteBlockStore::new(db.clone(), did.to_string());
+    let rev = repo_engine::Repository::open(reopen, root)
+        .await
+        .unwrap()
+        .commit()
+        .rev()
+        .as_str()
+        .to_string();
+    sqlx::query("UPDATE accounts SET repo_root_cid = ?, repo_rev = ? WHERE did = ?")
         .bind(root.to_string())
+        .bind(&rev)
         .bind(did)
         .execute(db)
         .await
