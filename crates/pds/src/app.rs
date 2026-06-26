@@ -32,10 +32,10 @@ use crate::routes::delete_session::delete_session;
 use crate::routes::describe_repo::describe_repo;
 use crate::routes::describe_server::describe_server;
 use crate::routes::get_blob::get_blob;
-use crate::routes::get_device_relay::get_device_relay;
+use crate::routes::get_device_pds::get_device_pds;
 use crate::routes::get_did::get_did_handler;
 use crate::routes::get_record::get_record;
-use crate::routes::get_relay_signing_key::get_relay_signing_key;
+use crate::routes::get_pds_signing_key::get_pds_signing_key;
 use crate::routes::get_repo::get_repo;
 use crate::routes::get_repo_signing_key::get_repo_signing_key;
 use crate::routes::get_session::get_session;
@@ -239,14 +239,21 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/accounts/mobile", post(create_mobile_account))
         .route("/v1/accounts/sessions", post(create_provisioning_session))
         .route("/v1/devices", post(register_device))
-        .route("/v1/devices/:id/relay", get(get_device_relay))
+        .route("/v1/devices/:id/pds", get(get_device_pds))
         .route("/v1/dids", post(create_did_handler))
         .route("/v1/dids/:did", get(get_did_handler))
         .route("/v1/handles", post(create_handle_handler))
         .route("/v1/handles/:handle", delete(delete_handle_handler))
         .route(
+            "/v1/pds/keys",
+            get(get_pds_signing_key).post(create_signing_key),
+        )
+        // DEPRECATED: relay-named aliases, kept one release cycle so already-deployed
+        // app builds keep working. Remove once all clients use the /pds paths.
+        .route("/v1/devices/:id/relay", get(get_device_pds))
+        .route(
             "/v1/relay/keys",
-            get(get_relay_signing_key).post(create_signing_key),
+            get(get_pds_signing_key).post(create_signing_key),
         )
         .route("/v1/repo-signing-key", get(get_repo_signing_key))
         .route("/static/*path", get(static_handler))

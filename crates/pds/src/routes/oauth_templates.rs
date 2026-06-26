@@ -5,7 +5,7 @@
 // No I/O, no database, no AppState.
 //
 // Visual system: "The Sealed Credential" (see DESIGN.md). Brand fonts are served by the
-// relay's own /static/fonts route (no third-party CDN — an auth page must not leak logins).
+// the PDS's own /static/fonts route (no third-party CDN — an auth page must not leak logins).
 
 use axum::http::StatusCode;
 use axum::response::{Html, Redirect};
@@ -159,7 +159,7 @@ pub(super) fn render_consent_page(
     html.push_str("Approve</button>\n");
     html.push_str("      </div>\n    </form>\n");
 
-    // Footer: which relay is serving this page.
+    // Footer: which PDS is serving this page.
     html.push_str("    <div class=\"server-info\">");
     html.push_str(ICON_LOCK);
     html.push_str("<span>");
@@ -195,7 +195,7 @@ pub(super) fn html_escape(s: &str) -> String {
 
 // ── Static HTML fragments ─────────────────────────────────────────────────────
 
-/// Self-hosted brand fonts, served by the relay at /static/fonts (no third-party CDN).
+/// Self-hosted brand fonts, served by the PDS at /static/fonts (no third-party CDN).
 const FONT_FACES: &str = r#"
     @font-face{font-family:'Public Sans';font-style:normal;font-weight:400;font-display:swap;src:url('/static/fonts/PublicSans-Regular.woff2') format('woff2')}
     @font-face{font-family:'Public Sans';font-style:normal;font-weight:600;font-display:swap;src:url('/static/fonts/PublicSans-SemiBold.woff2') format('woff2')}

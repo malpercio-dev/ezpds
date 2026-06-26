@@ -14,15 +14,15 @@ use crate::app::AppState;
 // Response uses camelCase per JSON API convention (keyId, publicKey).
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GetRelaySigningKeyResponse {
+pub struct GetPdsSigningKeyResponse {
     key_id: String,
     public_key: String,
     algorithm: String,
 }
 
-pub async fn get_relay_signing_key(
+pub async fn get_pds_signing_key(
     State(state): State<AppState>,
-) -> Result<Json<GetRelaySigningKeyResponse>, ApiError> {
+) -> Result<Json<GetPdsSigningKeyResponse>, ApiError> {
     let row: Option<(String, String, String)> = sqlx::query_as(
         "SELECT id, public_key, algorithm \
          FROM relay_signing_keys \
@@ -32,7 +32,7 @@ pub async fn get_relay_signing_key(
     .fetch_optional(&state.db)
     .await
     .map_err(|e| {
-        tracing::error!(error = %e, "failed to query relay signing key");
+        tracing::error!(error = %e, "failed to query pds signing key");
         ApiError::new(ErrorCode::InternalError, "failed to query signing key")
     })?;
 
@@ -40,7 +40,7 @@ pub async fn get_relay_signing_key(
         ApiError::new(ErrorCode::ServiceUnavailable, "no signing key provisioned")
     })?;
 
-    Ok(Json(GetRelaySigningKeyResponse {
+    Ok(Json(GetPdsSigningKeyResponse {
         key_id: id,
         public_key,
         algorithm,
@@ -78,23 +78,23 @@ mod tests {
         .unwrap();
     }
 
-    /// Build a GET /v1/relay/keys request with no Authorization header (public endpoint).
+    /// Build a GET /v1/pds/keys request with no Authorization header (public endpoint).
     fn get_keys() -> Request<Body> {
         Request::builder()
             .method("GET")
-            .uri("/v1/relay/keys")
+            .uri("/v1/pds/keys")
             .body(Body::empty())
             .unwrap()
     }
 
     #[tokio::test]
-    async fn get_relay_keys_returns_503_when_no_key_provisioned() {
+    async fn get_pds_keys_returns_503_when_no_key_provisioned() {
         let response = app(test_state().await).oneshot(get_keys()).await.unwrap();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
-    async fn get_relay_keys_returns_200_with_active_key() {
+    async fn get_pds_keys_returns_200_with_active_key() {
         let state = test_state().await;
         insert_test_key(&state.db, "did:key:zTestKey1", "2026-01-01T00:00:00").await;
 
@@ -111,7 +111,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_relay_keys_returns_most_recently_created_key() {
+    async fn get_pds_keys_returns_most_recently_created_key() {
         let state = test_state().await;
         insert_test_key(&state.db, "did:key:zOlderKey", "2026-01-01T00:00:00").await;
         insert_test_key(&state.db, "did:key:zNewerKey", "2026-01-02T00:00:00").await;
@@ -129,7 +129,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_relay_keys_requires_no_authentication() {
+    async fn get_pds_keys_requires_no_authentication() {
         // test_state() has no admin_token configured.
         // get_keys() sends no Authorization header.
         // If the endpoint incorrectly required auth, this would return 401 instead of 200.

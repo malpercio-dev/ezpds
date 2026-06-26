@@ -1,8 +1,8 @@
 // pattern: Imperative Shell
 //
 // Gathers: Path param (device_id), Authorization header, AppState (config)
-// Processes: device_token auth → read relay URLs from config
-// Returns: JSON { relay_url, websocket_url, iroh_endpoint? } on success; ApiError on failure
+// Processes: device_token auth → read PDS URLs from config
+// Returns: JSON { pds_url, websocket_url, iroh_endpoint? } on success; ApiError on failure
 
 use axum::{
     extract::{Path, State},
@@ -18,32 +18,32 @@ use crate::routes::auth::require_device_token;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GetDeviceRelayResponse {
-    relay_url: String,
+pub struct GetDevicePdsResponse {
+    pds_url: String,
     websocket_url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     iroh_endpoint: Option<String>,
 }
 
-pub async fn get_device_relay(
+pub async fn get_device_pds(
     Path(device_id): Path<String>,
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<GetDeviceRelayResponse>, ApiError> {
+) -> Result<Json<GetDevicePdsResponse>, ApiError> {
     require_device_token(&headers, &device_id, &state.db).await?;
 
-    let relay_url = state.config.public_url.clone();
+    let pds_url = state.config.public_url.clone();
     // validate_and_build enforces public_url.starts_with("https://"), so this substitution
     // always produces a wss:// URL. The assert catches any future relaxation of that invariant.
     debug_assert!(
-        relay_url.starts_with("https://"),
-        "public_url must start with https://, got: {relay_url:?}"
+        pds_url.starts_with("https://"),
+        "public_url must start with https://, got: {pds_url:?}"
     );
-    let websocket_url = relay_url.replacen("https://", "wss://", 1);
+    let websocket_url = pds_url.replacen("https://", "wss://", 1);
     let iroh_endpoint = state.config.iroh.endpoint.clone();
 
-    Ok(Json(GetDeviceRelayResponse {
-        relay_url,
+    Ok(Json(GetDevicePdsResponse {
+        pds_url,
         websocket_url,
         iroh_endpoint,
     }))
@@ -63,19 +63,19 @@ mod tests {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    fn get_device_relay(device_id: &str, token: &str) -> Request<Body> {
+    fn get_device_pds(device_id: &str, token: &str) -> Request<Body> {
         Request::builder()
             .method("GET")
-            .uri(format!("/v1/devices/{device_id}/relay"))
+            .uri(format!("/v1/devices/{device_id}/pds"))
             .header("Authorization", format!("Bearer {token}"))
             .body(Body::empty())
             .unwrap()
     }
 
-    fn get_device_relay_no_auth(device_id: &str) -> Request<Body> {
+    fn get_device_pds_no_auth(device_id: &str) -> Request<Body> {
         Request::builder()
             .method("GET")
-            .uri(format!("/v1/devices/{device_id}/relay"))
+            .uri(format!("/v1/devices/{device_id}/pds"))
             .body(Body::empty())
             .unwrap()
     }
@@ -88,7 +88,7 @@ mod tests {
         let (device_id, token) = seed_device(&state.db).await;
 
         let response = app(state)
-            .oneshot(get_device_relay(&device_id, &token))
+            .oneshot(get_device_pds(&device_id, &token))
             .await
             .unwrap();
 
@@ -96,18 +96,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn relay_url_matches_config_public_url() {
+    async fn deprecated_relay_alias_returns_same_shape() {
+        // The legacy /v1/devices/:id/relay path is kept as a deprecated alias for one
+        // release cycle so already-deployed app builds keep working. It must route to the
+        // same handler and return the renamed `pdsUrl` field.
+        let state = test_state().await;
+        let (device_id, token) = seed_device(&state.db).await;
+        let expected = state.config.public_url.clone();
+
+        let request = Request::builder()
+            .method("GET")
+            .uri(format!("/v1/devices/{device_id}/relay"))
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app(state).oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json["pdsUrl"], expected);
+    }
+
+    #[tokio::test]
+    async fn pds_url_matches_config_public_url() {
         let state = test_state().await;
         let (device_id, token) = seed_device(&state.db).await;
         let expected = state.config.public_url.clone();
 
         let response = app(state)
-            .oneshot(get_device_relay(&device_id, &token))
+            .oneshot(get_device_pds(&device_id, &token))
             .await
             .unwrap();
 
         let json = body_json(response).await;
-        assert_eq!(json["relayUrl"], expected);
+        assert_eq!(json["pdsUrl"], expected);
     }
 
     #[tokio::test]
@@ -118,7 +141,7 @@ mod tests {
         let expected_ws = "wss://test.example.com";
 
         let response = app(state)
-            .oneshot(get_device_relay(&device_id, &token))
+            .oneshot(get_device_pds(&device_id, &token))
             .await
             .unwrap();
 
@@ -133,7 +156,7 @@ mod tests {
         let (device_id, token) = seed_device(&state.db).await;
 
         let response = app(state)
-            .oneshot(get_device_relay(&device_id, &token))
+            .oneshot(get_device_pds(&device_id, &token))
             .await
             .unwrap();
 
@@ -157,7 +180,7 @@ mod tests {
         let (device_id, token) = seed_device(&state.db).await;
 
         let response = app(state)
-            .oneshot(get_device_relay(&device_id, &token))
+            .oneshot(get_device_pds(&device_id, &token))
             .await
             .unwrap();
 
@@ -166,25 +189,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn websocket_url_is_derived_from_relay_url_by_replacing_https_scheme() {
-        // Documents the invariant: websocketUrl is always relay_url with https:// → wss://.
+    async fn websocket_url_is_derived_from_pds_url_by_replacing_https_scheme() {
+        // Documents the invariant: websocketUrl is always pds_url with https:// → wss://.
         // validate_and_build requires public_url to start with https://, so this is safe.
         let state = test_state().await;
         let (device_id, token) = seed_device(&state.db).await;
 
         let response = app(state.clone())
-            .oneshot(get_device_relay(&device_id, &token))
+            .oneshot(get_device_pds(&device_id, &token))
             .await
             .unwrap();
 
         let json = body_json(response).await;
-        let relay_url = json["relayUrl"].as_str().unwrap();
+        let pds_url = json["pdsUrl"].as_str().unwrap();
         let websocket_url = json["websocketUrl"].as_str().unwrap();
         assert!(
-            relay_url.starts_with("https://"),
-            "relayUrl must start with https://"
+            pds_url.starts_with("https://"),
+            "pdsUrl must start with https://"
         );
-        assert_eq!(websocket_url, relay_url.replacen("https://", "wss://", 1));
+        assert_eq!(websocket_url, pds_url.replacen("https://", "wss://", 1));
     }
 
     // ── Auth failures ─────────────────────────────────────────────────────────
@@ -195,7 +218,7 @@ mod tests {
         let (device_id, _) = seed_device(&state.db).await;
 
         let response = app(state)
-            .oneshot(get_device_relay_no_auth(&device_id))
+            .oneshot(get_device_pds_no_auth(&device_id))
             .await
             .unwrap();
 
@@ -209,7 +232,7 @@ mod tests {
         let wrong_token = crate::routes::token::generate_token().plaintext;
 
         let response = app(state)
-            .oneshot(get_device_relay(&device_id, &wrong_token))
+            .oneshot(get_device_pds(&device_id, &wrong_token))
             .await
             .unwrap();
 
@@ -225,7 +248,7 @@ mod tests {
         let _ = device_a_id;
 
         let response = app(state)
-            .oneshot(get_device_relay(&device_b_id, &token_a))
+            .oneshot(get_device_pds(&device_b_id, &token_a))
             .await
             .unwrap();
 

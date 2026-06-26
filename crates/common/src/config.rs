@@ -35,7 +35,7 @@ pub struct Config {
     pub iroh: IrohConfig,
     pub crawlers: CrawlersConfig,
     pub telemetry: TelemetryConfig,
-    // Operator authentication for management endpoints (e.g., POST /v1/relay/keys).
+    // Operator authentication for management endpoints (e.g., POST /v1/pds/keys).
     pub admin_token: Option<String>,
     // AES-256-GCM master key for encrypting signing key private keys at rest.
     pub signing_key_master_key: Option<Sensitive<Zeroizing<[u8; 32]>>>,

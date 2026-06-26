@@ -137,11 +137,11 @@ mod tests {
         }
     }
 
-    /// Build a POST /v1/relay/keys request with JSON body and optional Bearer token.
+    /// Build a POST /v1/pds/keys request with JSON body and optional Bearer token.
     fn post_keys(body: &str, bearer: Option<&str>) -> Request<Body> {
         let mut builder = Request::builder()
             .method("POST")
-            .uri("/v1/relay/keys")
+            .uri("/v1/pds/keys")
             .header("Content-Type", "application/json");
         if let Some(token) = bearer {
             builder = builder.header("Authorization", format!("Bearer {token}"));
@@ -311,7 +311,7 @@ mod tests {
         // Authorization header present but "Bearer " prefix missing
         let request = Request::builder()
             .method("POST")
-            .uri("/v1/relay/keys")
+            .uri("/v1/pds/keys")
             .header("Content-Type", "application/json")
             .header("Authorization", "test-admin-token") // no "Bearer " prefix
             .body(Body::from(r#"{"algorithm": "p256"}"#))
