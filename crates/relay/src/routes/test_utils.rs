@@ -92,6 +92,7 @@ pub async fn test_state_with_admin_token() -> AppState {
         dpop_nonces: base.dpop_nonces,
         failed_login_attempts: base.failed_login_attempts,
         firehose: base.firehose,
+        crawlers: base.crawlers,
     }
 }
 
@@ -119,6 +120,7 @@ pub async fn state_with_master_key() -> AppState {
         dpop_nonces: base.dpop_nonces,
         failed_login_attempts: base.failed_login_attempts,
         firehose: base.firehose,
+        crawlers: base.crawlers,
     }
 }
 

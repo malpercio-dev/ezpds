@@ -311,6 +311,10 @@ pub async fn emit_firehose_commit(
         ops,
         blocks,
     });
+
+    // New content is live: notify configured crawlers (relays/BGSes) so they pull it promptly.
+    // Fire-and-forget and rate-limited — never blocks the commit.
+    state.crawlers.notify();
 }
 
 /// Split an MST key (`<collection>/<rkey>`) into its collection and record-key halves.

@@ -33,6 +33,7 @@ pub struct Config {
     pub blobs: BlobsConfig,
     pub oauth: OAuthConfig,
     pub iroh: IrohConfig,
+    pub crawlers: CrawlersConfig,
     pub telemetry: TelemetryConfig,
     // Operator authentication for management endpoints (e.g., POST /v1/relay/keys).
     pub admin_token: Option<String>,
@@ -112,6 +113,31 @@ pub struct IrohConfig {
     pub endpoint: Option<String>,
 }
 
+/// Crawler (relay/BGS) notification configuration for `com.atproto.sync.requestCrawl`.
+///
+/// After every repo commit the relay notifies each configured crawler so newly produced
+/// content is pulled promptly into the wider network. Each entry is a service base URL
+/// (e.g. `https://bsky.network`); the relay POSTs to
+/// `<url>/xrpc/com.atproto.sync.requestCrawl`. The default is the public bsky.network BGS;
+/// set `urls = []` to disable crawl notifications entirely.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CrawlersConfig {
+    #[serde(default = "default_crawler_urls")]
+    pub urls: Vec<String>,
+}
+
+impl Default for CrawlersConfig {
+    fn default() -> Self {
+        Self {
+            urls: default_crawler_urls(),
+        }
+    }
+}
+
+fn default_crawler_urls() -> Vec<String> {
+    vec!["https://bsky.network".to_string()]
+}
+
 /// OpenTelemetry telemetry configuration.
 #[derive(Debug, Clone)]
 pub struct TelemetryConfig {
@@ -161,6 +187,8 @@ pub(crate) struct RawConfig {
     pub(crate) oauth: OAuthConfig,
     #[serde(default)]
     pub(crate) iroh: IrohConfig,
+    #[serde(default)]
+    pub(crate) crawlers: CrawlersConfig,
     #[serde(default)]
     pub(crate) telemetry: RawTelemetryConfig,
     pub(crate) admin_token: Option<String>,
@@ -288,6 +316,15 @@ pub(crate) fn apply_env_overrides(
     if let Some(v) = env.get("EZPDS_IROH_ENDPOINT") {
         raw.iroh.endpoint = Some(v.clone());
     }
+    // Comma-separated crawler base URLs; an empty value disables crawl notifications.
+    if let Some(v) = env.get("EZPDS_CRAWLERS") {
+        raw.crawlers.urls = v
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+    }
     if let Some(v) = env.get("EZPDS_ADMIN_TOKEN") {
         raw.admin_token = Some(v.clone());
     }
@@ -389,6 +426,14 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         ));
     }
 
+    for url in &raw.crawlers.urls {
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            return Err(ConfigError::Invalid(format!(
+                "crawlers.urls entries must start with http:// or https://, got: {url:?}"
+            )));
+        }
+    }
+
     Ok(Config {
         bind_address,
         port,
@@ -403,6 +448,7 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         blobs: raw.blobs,
         oauth: raw.oauth,
         iroh: raw.iroh,
+        crawlers: raw.crawlers,
         telemetry,
         admin_token: raw.admin_token,
         signing_key_master_key: raw
@@ -944,6 +990,85 @@ mod tests {
             err.to_string().contains("iroh.endpoint"),
             "error message must mention iroh.endpoint"
         );
+    }
+
+    // --- crawlers config tests ---
+
+    #[test]
+    fn crawlers_default_to_bsky_network() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert_eq!(config.crawlers.urls, vec!["https://bsky.network"]);
+    }
+
+    #[test]
+    fn crawlers_parse_from_toml() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [crawlers]
+            urls = ["https://relay1.example", "https://relay2.example"]
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(
+            config.crawlers.urls,
+            vec!["https://relay1.example", "https://relay2.example"]
+        );
+    }
+
+    #[test]
+    fn crawlers_empty_list_disables_notifications() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [crawlers]
+            urls = []
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert!(config.crawlers.urls.is_empty());
+    }
+
+    #[test]
+    fn env_override_crawlers_comma_separated() {
+        let env = HashMap::from([(
+            "EZPDS_CRAWLERS".to_string(),
+            "https://a.example, https://b.example".to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(
+            config.crawlers.urls,
+            vec!["https://a.example", "https://b.example"]
+        );
+    }
+
+    #[test]
+    fn env_override_crawlers_empty_disables() {
+        let env = HashMap::from([("EZPDS_CRAWLERS".to_string(), String::new())]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert!(config.crawlers.urls.is_empty());
+    }
+
+    #[test]
+    fn crawlers_reject_non_http_scheme() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [crawlers]
+            urls = ["ftp://relay.example"]
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("crawlers.urls"));
     }
 
     #[test]

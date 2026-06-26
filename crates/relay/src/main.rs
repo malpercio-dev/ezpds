@@ -9,6 +9,7 @@ mod app;
 mod auth;
 mod blob_gc;
 mod blob_store;
+mod crawler;
 mod db;
 mod dns;
 mod firehose;
@@ -166,6 +167,23 @@ async fn run() -> anyhow::Result<()> {
     .await
     .with_context(|| "failed to load or create JWT signing secret")?;
 
+    // Crawler notifier: after each commit, ping the configured relays/BGSes via requestCrawl.
+    // The hostname advertised to crawlers is derived from the relay's public URL.
+    let crawler_hostname = crawler::host_from_url(&config.public_url);
+    let crawlers = Arc::new(crawler::CrawlerNotifier::new(
+        http_client.clone(),
+        crawler_hostname,
+        &config.crawlers.urls,
+    ));
+    if config.crawlers.urls.is_empty() {
+        tracing::info!("crawler notifications disabled (no crawlers configured)");
+    } else {
+        tracing::info!(
+            crawlers = ?config.crawlers.urls,
+            "crawler notifications enabled"
+        );
+    }
+
     let state = app::AppState {
         config: Arc::new(config),
         db: pool,
@@ -178,6 +196,7 @@ async fn run() -> anyhow::Result<()> {
         dpop_nonces: auth::new_nonce_store(),
         failed_login_attempts: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         firehose: Arc::new(firehose::Firehose::new()),
+        crawlers,
     };
 
     let listener = tokio::net::TcpListener::bind(&addr)

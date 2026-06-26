@@ -135,6 +135,7 @@ mod tests {
             dpop_nonces: base.dpop_nonces,
             failed_login_attempts: base.failed_login_attempts,
             firehose: base.firehose,
+            crawlers: base.crawlers,
         };
 
         let response = app(state)

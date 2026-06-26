@@ -15,6 +15,7 @@ src/
   main.rs          — startup: open pool, run migrations, bind server
   app.rs           — AppState definition and construction
   firehose.rs      — in-memory subscribeRepos event pipeline (sequencer + broadcast fan-out)
+  crawler.rs       — outbound requestCrawl notifier (rate-limited, retrying, fire-and-forget)
   record_write.rs  — shared repo write flow + firehose commit emission
   auth/            — authentication primitives (no HTTP, no DB schema ownership)
   db/              — SQL query functions + migration runner (no business logic)
@@ -36,6 +37,18 @@ channel the firehose keeps a bounded replay backlog so a late subscriber that pa
 can be backfilled; `subscribe_from(cursor)` snapshots that backlog and attaches the live
 receiver under one lock, so the replay→live boundary is exact (no gap, no duplication). The
 subscriber-facing WebSocket frame encoding lives in the `sync_subscribe_repos` handler.
+
+### `crawler.rs`
+
+Outbound `com.atproto.sync.requestCrawl` notifier. `AppState.crawlers: Arc<CrawlerNotifier>`
+is shared by every handler; `record_write::emit_firehose_commit` calls `crawlers.notify()`
+once per commit, right after the firehose event is emitted. `notify` is fire-and-forget: it
+selects the crawlers outside their rate-limit window (one notification per crawler per 30s),
+then spawns a detached task per crawler that POSTs `{ "hostname": <relay-host> }` to
+`<url>/xrpc/com.atproto.sync.requestCrawl`, retrying with exponential backoff up to 3 times.
+All outcomes are logged, never propagated — a commit never blocks on or fails because of a
+crawler. Configured via `[crawlers] urls = [...]` (default `["https://bsky.network"]`; empty
+disables) or `EZPDS_CRAWLERS`.
 
 ### `auth/`
 
