@@ -101,6 +101,57 @@ where
     build_car(store, new_root, diff).await
 }
 
+/// Export a single record together with its MST inclusion proof as a CARv1 file.
+///
+/// The CAR's declared root is the signed commit. It contains the commit block, the MST node
+/// path from the tree root down to the node holding the record (the inclusion proof), and the
+/// record block itself. A consumer can verify the record is genuinely committed to the repo by
+/// walking the proof: `commit.data` → MST root → … → the record CID, checking each block hashes
+/// to the CID that references it.
+///
+/// Returns `Ok(None)` when the repo has no record at `key` — the caller maps that to a 404.
+/// `key` is the MST key (`<collection>/<rkey>`).
+pub async fn export_record_proof_car<S>(
+    store: &mut S,
+    root_cid: Cid,
+    key: &str,
+) -> Result<Option<Vec<u8>>, CarExportError>
+where
+    S: AsyncBlockStoreRead,
+{
+    let mut repo = Repository::open(&mut *store, root_cid)
+        .await
+        .map_err(|e| CarExportError::BlockStore(format!("open repo: {e}")))?;
+
+    let mut tree = repo.tree();
+
+    // The MST maps the key directly to the record block CID; `None` means no such record (404).
+    let Some(value_cid) = tree
+        .get(key)
+        .await
+        .map_err(|e| CarExportError::BlockStore(format!("tree get: {e}")))?
+    else {
+        return Ok(None);
+    };
+
+    // Proof path: every MST node CID from the tree root down to the node containing the key,
+    // plus the record block CID (`extract_path` appends the value for a present key).
+    // Collect while `tree` is still borrowed — the returned iterator captures it.
+    let mut blocks: HashSet<Cid> = tree
+        .extract_path(key)
+        .await
+        .map_err(|e| CarExportError::BlockStore(format!("extract proof path: {e}")))?
+        .collect();
+
+    // Commit block (the declared root) + proof nodes + record block, de-duplicated.
+    blocks.insert(root_cid);
+    blocks.insert(value_cid);
+
+    build_car(store, root_cid, blocks.into_iter().collect())
+        .await
+        .map(Some)
+}
+
 /// Build a CARv1 file declaring `root` as its single root and containing exactly `cids`.
 ///
 /// Shared by [`export_repo_car`] (full repo) and [`export_commit_blocks_car`] (commit diff);
@@ -278,6 +329,96 @@ mod tests {
             .read_block_into(record_cid, &mut buf)
             .await
             .expect("record block must be in the CAR");
+    }
+
+    #[tokio::test]
+    async fn record_proof_car_contains_commit_and_record() {
+        // The proof CAR's declared root is the commit, and it carries both the commit block
+        // and the target record block (plus the MST nodes between them).
+        let (mut store, root, record_cid) = repo_with_record().await;
+        let car = export_record_proof_car(&mut store, root, "app.bsky.feed.post/abc")
+            .await
+            .unwrap()
+            .expect("record is present");
+
+        let mut car_store = CarStore::open(Cursor::new(&car)).await.unwrap();
+        assert_eq!(
+            car_store.roots().collect::<Vec<_>>(),
+            vec![root],
+            "proof CAR root must be the commit CID"
+        );
+
+        let mut buf = Vec::new();
+        car_store
+            .read_block_into(root, &mut buf)
+            .await
+            .expect("commit block must be in the proof CAR");
+        car_store
+            .read_block_into(record_cid, &mut buf)
+            .await
+            .expect("record block must be in the proof CAR");
+    }
+
+    #[tokio::test]
+    async fn record_proof_car_missing_record_is_none() {
+        let (mut store, root, _record_cid) = repo_with_record().await;
+        let car = export_record_proof_car(&mut store, root, "app.bsky.feed.post/nope")
+            .await
+            .unwrap();
+        assert!(car.is_none(), "absent record must yield None (→ 404)");
+    }
+
+    #[tokio::test]
+    async fn record_proof_car_excludes_sibling_records() {
+        // The proof is a path, not the whole tree: it carries the target record block but NOT
+        // sibling record blocks, even though both exist in the full repo export.
+        let mut store = MemoryBlockStore::new();
+        let signer = test_signer();
+        let root = create_genesis_repo(&mut store, "did:plc:proofsubset", &signer)
+            .await
+            .unwrap();
+        let mut repo = Repository::open(&mut store, root).await.unwrap();
+        let mut record_cids = Vec::new();
+        for i in 0..8 {
+            let cid = crate::records::put_record(
+                &mut repo,
+                &signer,
+                &format!("app.bsky.feed.post/rec{i}"),
+                &serde_json::json!({ "text": format!("post {i}") }),
+            )
+            .await
+            .unwrap();
+            record_cids.push(cid);
+        }
+        let root = repo.root();
+
+        let proof = export_record_proof_car(&mut store, root, "app.bsky.feed.post/rec3")
+            .await
+            .unwrap()
+            .expect("record present");
+
+        // The full export holds every record block, including the sibling rec0.
+        let full = export_repo_car(&mut store, root).await.unwrap();
+        let mut full_store = CarStore::open(Cursor::new(&full)).await.unwrap();
+        let mut buf = Vec::new();
+        full_store
+            .read_block_into(record_cids[0], &mut buf)
+            .await
+            .expect("sibling record block must be in the full export");
+
+        // The proof holds the target record block but not the sibling's.
+        let mut proof_store = CarStore::open(Cursor::new(&proof)).await.unwrap();
+        proof_store
+            .read_block_into(record_cids[3], &mut buf)
+            .await
+            .expect("target record block must be in the proof CAR");
+        assert!(
+            proof_store
+                .read_block_into(record_cids[0], &mut buf)
+                .await
+                .is_err(),
+            "a sibling record block must NOT be in a single-record proof"
+        );
     }
 
     #[tokio::test]

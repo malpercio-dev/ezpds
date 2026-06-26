@@ -41,6 +41,7 @@ pub mod request_password_reset;
 pub mod reset_password;
 pub mod resolve_handle;
 pub mod static_assets;
+pub mod sync_get_record;
 pub mod upload_blob;
 
 mod code_gen;
