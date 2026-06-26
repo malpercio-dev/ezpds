@@ -91,6 +91,7 @@ pub async fn test_state_with_admin_token() -> AppState {
         oauth_signing_keypair: base.oauth_signing_keypair,
         dpop_nonces: base.dpop_nonces,
         failed_login_attempts: base.failed_login_attempts,
+        firehose: base.firehose,
     }
 }
 
@@ -117,6 +118,7 @@ pub async fn state_with_master_key() -> AppState {
         oauth_signing_keypair: base.oauth_signing_keypair,
         dpop_nonces: base.dpop_nonces,
         failed_login_attempts: base.failed_login_attempts,
+        firehose: base.firehose,
     }
 }
 

@@ -62,15 +62,61 @@ where
     S: AsyncBlockStoreRead,
 {
     let reachable = collect_reachable_cids(&mut *store, root_cid).await?;
+    build_car(store, root_cid, reachable).await
+}
 
+/// Export the blocks introduced by a single commit as a CARv1 file.
+///
+/// Computes the set difference `reachable(new_root) − reachable(prev_root)` — i.e. the
+/// commit block, any MST nodes the write rewrote, and any newly created record blocks —
+/// and packages them into a CAR whose declared root is the new commit. This is the
+/// `blocks` payload the ATProto firehose attaches to a `#commit` frame, so downstream
+/// consumers (a BGS/relay) can apply the diff without re-fetching the whole repo.
+///
+/// `prev_root` is `None` only for a repo's first commit (genesis), where every reachable
+/// block is new. Both roots' block sets must still be present in `store` — call this
+/// before any post-commit GC reclaims the superseded blocks.
+pub async fn export_commit_blocks_car<S>(
+    store: &mut S,
+    prev_root: Option<Cid>,
+    new_root: Cid,
+) -> Result<Vec<u8>, CarExportError>
+where
+    S: AsyncBlockStoreRead,
+{
+    let new_set: HashSet<Cid> = collect_reachable_cids(&mut *store, new_root)
+        .await?
+        .into_iter()
+        .collect();
+
+    let prev_set: HashSet<Cid> = match prev_root {
+        Some(prev) => collect_reachable_cids(&mut *store, prev)
+            .await?
+            .into_iter()
+            .collect(),
+        None => HashSet::new(),
+    };
+
+    let diff: Vec<Cid> = new_set.difference(&prev_set).copied().collect();
+    build_car(store, new_root, diff).await
+}
+
+/// Build a CARv1 file declaring `root` as its single root and containing exactly `cids`.
+///
+/// Shared by [`export_repo_car`] (full repo) and [`export_commit_blocks_car`] (commit diff);
+/// every CID in `cids` must be readable from `store`.
+async fn build_car<S>(store: &mut S, root: Cid, cids: Vec<Cid>) -> Result<Vec<u8>, CarExportError>
+where
+    S: AsyncBlockStoreRead,
+{
     let mut car_buf = Vec::new();
     {
         let mut car: CarStore<Cursor<&mut Vec<u8>>> =
-            CarStore::create_with_roots(Cursor::new(&mut car_buf), [root_cid])
+            CarStore::create_with_roots(Cursor::new(&mut car_buf), [root])
                 .await
                 .map_err(|e| CarExportError::BlockStore(format!("create CAR: {e}")))?;
 
-        for cid in reachable {
+        for cid in cids {
             let mut block = Vec::new();
             store
                 .read_block_into(cid, &mut block)
@@ -125,6 +171,87 @@ mod tests {
             "got {} reachable cids",
             reachable.len()
         );
+    }
+
+    #[tokio::test]
+    async fn commit_blocks_car_contains_only_the_diff() {
+        // genesis → commit A (record r1) → commit B (record r2). The diff CAR for the
+        // B commit must include B's commit block and r2, but NOT r1 (carried over from A).
+        let mut store = MemoryBlockStore::new();
+        let signer = test_signer();
+        let genesis = create_genesis_repo(&mut store, "did:plc:diff", &signer)
+            .await
+            .unwrap();
+
+        let mut repo = Repository::open(&mut store, genesis).await.unwrap();
+        let r1 = crate::records::put_record(
+            &mut repo,
+            &signer,
+            "app.bsky.feed.post/r1",
+            &serde_json::json!({ "text": "one" }),
+        )
+        .await
+        .unwrap();
+        let root_a = repo.root();
+
+        let mut repo = Repository::open(&mut store, root_a).await.unwrap();
+        let r2 = crate::records::put_record(
+            &mut repo,
+            &signer,
+            "app.bsky.feed.post/r2",
+            &serde_json::json!({ "text": "two" }),
+        )
+        .await
+        .unwrap();
+        let root_b = repo.root();
+
+        let car = export_commit_blocks_car(&mut store, Some(root_a), root_b)
+            .await
+            .unwrap();
+
+        let mut car_store = CarStore::open(Cursor::new(&car)).await.unwrap();
+        assert_eq!(
+            car_store.roots().collect::<Vec<_>>(),
+            vec![root_b],
+            "diff CAR root must be the new commit"
+        );
+
+        // New commit block and the newly added record are present...
+        let mut buf = Vec::new();
+        car_store
+            .read_block_into(root_b, &mut buf)
+            .await
+            .expect("new commit block must be in the diff CAR");
+        car_store
+            .read_block_into(r2, &mut buf)
+            .await
+            .expect("newly added record block must be in the diff CAR");
+        // ...but the record carried over from the previous commit is not.
+        assert!(
+            car_store.read_block_into(r1, &mut buf).await.is_err(),
+            "unchanged record from the prior commit must be excluded from the diff"
+        );
+    }
+
+    #[tokio::test]
+    async fn commit_blocks_car_with_no_prev_is_full_repo() {
+        // With prev_root = None (genesis emission), every reachable block is "new", so the
+        // diff CAR equals the full export: commit + MST + record block.
+        let (mut store, root, record_cid) = repo_with_record().await;
+        let car = export_commit_blocks_car(&mut store, None, root)
+            .await
+            .unwrap();
+
+        let mut car_store = CarStore::open(Cursor::new(&car)).await.unwrap();
+        let mut buf = Vec::new();
+        car_store
+            .read_block_into(root, &mut buf)
+            .await
+            .expect("commit block must be in the CAR");
+        car_store
+            .read_block_into(record_cid, &mut buf)
+            .await
+            .expect("record block must be in the CAR");
     }
 
     #[tokio::test]

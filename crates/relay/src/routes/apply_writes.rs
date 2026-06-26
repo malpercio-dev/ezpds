@@ -130,6 +130,9 @@ pub async fn apply_writes(
     // response (the AT-URI is rebuilt from the matching `WriteOutcome.key`).
     let mut kinds: Vec<Kind> = Vec::with_capacity(body.writes.len());
     let mut ops: Vec<WriteOp> = Vec::with_capacity(body.writes.len());
+    // Record values retained per write (cloned out before each value is moved into the engine
+    // op) so the firehose `#commit` event can carry the value for creates/updates.
+    let mut op_values: Vec<Option<serde_json::Value>> = Vec::with_capacity(body.writes.len());
     for item in body.writes {
         let (kind, collection, rkey, value) = match item {
             WriteItem::Create {
@@ -155,6 +158,7 @@ pub async fn apply_writes(
         })?;
 
         let key = format!("{collection}/{rkey}");
+        op_values.push(value.clone());
         let op = match (kind, value) {
             (Kind::Create, Some(value)) => WriteOp::Create { key, value },
             (Kind::Update, Some(value)) => WriteOp::Update { key, value },
@@ -201,6 +205,9 @@ pub async fn apply_writes(
         tracing::error!(error = %e, did = %did, "failed to open repo");
         ApiError::new(ErrorCode::InternalError, "failed to apply writes")
     })?;
+
+    // Capture the pre-write revision for the firehose event's `since`.
+    let prev_rev = repo.commit().rev().as_str().to_string();
 
     // Load the signing key for this account.
     let master_key: &[u8; 32] = state
@@ -258,6 +265,39 @@ pub async fn apply_writes(
             "repository was modified concurrently; retry against the current root",
         ));
     }
+
+    // Emit one firehose `#commit` event for the whole batch, before GC (the diff CAR is
+    // computed against the previous block set). Each engine outcome maps back to its write's
+    // kind and retained value to form a `#repoOp`.
+    let fh_ops: Vec<crate::firehose::RepoOp> = kinds
+        .iter()
+        .zip(outcomes.iter())
+        .zip(op_values)
+        .map(|((kind, outcome), value)| {
+            let (collection, rkey) = crate::record_write::split_record_path(&outcome.key);
+            crate::firehose::RepoOp {
+                action: match kind {
+                    Kind::Create => crate::firehose::OpAction::Create,
+                    Kind::Update => crate::firehose::OpAction::Update,
+                    Kind::Delete => crate::firehose::OpAction::Delete,
+                },
+                collection,
+                rkey,
+                cid: outcome.cid.map(|c| c.to_string()),
+                value,
+            }
+        })
+        .collect();
+    crate::record_write::emit_firehose_commit(
+        &state,
+        did,
+        root_cid,
+        repo.root(),
+        new_rev,
+        Some(prev_rev),
+        fh_ops,
+    )
+    .await;
 
     // Best-effort GC: reclaim the intermediate per-write commits and any superseded blocks.
     if let Err(e) = crate::record_write::gc_repo_blocks(&state.db, did, repo.root()).await {
@@ -507,6 +547,78 @@ mod tests {
             .unwrap();
         let r = app.oneshot(get_k2).await.unwrap();
         assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn apply_writes_emits_single_commit_event_with_all_ops() {
+        use crate::firehose::{FirehoseEvent, OpAction};
+
+        let (state, did) = setup().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+
+        // Seed k1 so the batch can update it; subscribe afterwards to isolate the batch commit.
+        let firehose = state.firehose.clone();
+        let app = crate::app::app(state);
+        let seed = serde_json::json!({ "repo": did, "writes": [create_item("k1", "orig")] });
+        let r = app
+            .clone()
+            .oneshot(apply_req(seed, Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+
+        let mut rx = firehose.subscribe();
+
+        // One batch: create k2, update k1, delete k2 — a single commit with three ops.
+        let body = serde_json::json!({
+            "repo": did,
+            "writes": [
+                create_item("k2", "second"),
+                {
+                    "$type": "com.atproto.repo.applyWrites#update",
+                    "collection": "app.bsky.feed.post",
+                    "rkey": "k1",
+                    "value": {"text": "updated"},
+                },
+                {
+                    "$type": "com.atproto.repo.applyWrites#delete",
+                    "collection": "app.bsky.feed.post",
+                    "rkey": "k2",
+                },
+            ],
+        });
+        let resp = app.oneshot(apply_req(body, Some(&token))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Exactly one commit event for the whole batch.
+        let FirehoseEvent::Commit(event) = rx.try_recv().expect("batch must emit one commit event");
+        assert!(
+            rx.try_recv().is_err(),
+            "a batch must produce a single commit event, not one per write"
+        );
+        assert_eq!(event.repo, did);
+        assert_eq!(event.ops.len(), 3);
+
+        let actions: Vec<OpAction> = event.ops.iter().map(|o| o.action).collect();
+        assert_eq!(
+            actions,
+            vec![OpAction::Create, OpAction::Update, OpAction::Delete]
+        );
+        // Create/update carry a CID + value; delete carries neither.
+        assert_eq!(event.ops[0].rkey, "k2");
+        assert!(event.ops[0].cid.is_some());
+        assert_eq!(
+            event.ops[0].value,
+            Some(serde_json::json!({"text": "second", "createdAt": "2026-06-25T00:00:00Z"}))
+        );
+        assert_eq!(event.ops[1].rkey, "k1");
+        assert_eq!(
+            event.ops[1].value,
+            Some(serde_json::json!({"text": "updated"}))
+        );
+        assert_eq!(event.ops[2].rkey, "k2");
+        assert_eq!(event.ops[2].cid, None);
+        assert!(!event.blocks.is_empty());
     }
 
     #[tokio::test]

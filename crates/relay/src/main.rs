@@ -11,6 +11,7 @@ mod blob_gc;
 mod blob_store;
 mod db;
 mod dns;
+mod firehose;
 mod record_write;
 mod routes;
 mod telemetry;
@@ -176,6 +177,7 @@ async fn run() -> anyhow::Result<()> {
         oauth_signing_keypair,
         dpop_nonces: auth::new_nonce_store(),
         failed_login_attempts: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        firehose: Arc::new(firehose::Firehose::new()),
     };
 
     let listener = tokio::net::TcpListener::bind(&addr)

@@ -160,23 +160,28 @@ pub async fn write_record(
         ApiError::new(ErrorCode::InternalError, "failed to write record")
     })?;
 
+    // Capture the pre-write revision: it becomes the firehose event's `since` (the commit
+    // this one supersedes).
+    let prev_rev = repo.commit().rev().as_str().to_string();
+
     // Enforce explicit swapCommit/swapRecord preconditions (ATProto optimistic concurrency)
     // before mutating anything, so a stale client fails with InvalidSwap rather than racing.
     enforce_swap(swap, &root_cid_str, &mut repo, mst_key).await?;
 
-    // If create_only, check that the record does not already exist.
-    if create_only {
-        let existing: Option<serde_json::Value> =
-            repo_engine::get_record_json(&mut repo, mst_key).await.map_err(|e| {
-                tracing::error!(error = %e, did = %did, key = %mst_key, "failed to check record existence");
-                ApiError::new(ErrorCode::InternalError, "failed to write record")
-            })?;
-        if existing.is_some() {
-            return Err(ApiError::new(
-                ErrorCode::Conflict,
-                "record already exists; use putRecord to update",
-            ));
-        }
+    // Determine whether the record already exists — both to enforce create-only semantics
+    // and to label the firehose op as a create (new key) vs an update (existing key).
+    let existed = repo_engine::get_record_cid(&mut repo, mst_key)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, did = %did, key = %mst_key, "failed to check record existence");
+            ApiError::new(ErrorCode::InternalError, "failed to write record")
+        })?
+        .is_some();
+    if create_only && existed {
+        return Err(ApiError::new(
+            ErrorCode::Conflict,
+            "record already exists; use putRecord to update",
+        ));
     }
 
     // Load the signing key for this account.
@@ -233,6 +238,31 @@ pub async fn write_record(
         ));
     }
 
+    // Emit the firehose `#commit` event before GC, while the previous block set still exists
+    // (the diff CAR is computed against it).
+    let (collection, rkey) = split_record_path(mst_key);
+    let op = crate::firehose::RepoOp {
+        action: if existed {
+            crate::firehose::OpAction::Update
+        } else {
+            crate::firehose::OpAction::Create
+        },
+        collection,
+        rkey,
+        cid: Some(record_cid.to_string()),
+        value: Some(record.clone()),
+    };
+    emit_firehose_commit(
+        state,
+        did,
+        root_cid,
+        repo.root(),
+        new_rev,
+        Some(prev_rev),
+        vec![op],
+    )
+    .await;
+
     // Best-effort GC: reclaim blocks superseded by this commit. A GC failure must not
     // fail the write — the commit is durable; orphaned blocks are harmless until swept.
     if let Err(e) = gc_repo_blocks(&state.db, did, repo.root()).await {
@@ -240,6 +270,59 @@ pub async fn write_record(
     }
 
     Ok((WriteRecordResult { new_root }, record_cid))
+}
+
+/// Build the commit's block diff and emit a firehose `#commit` event.
+///
+/// Best-effort: a failure to assemble the diff CAR is logged and dropped — the commit is
+/// already durable, and a subscriber that misses an event can backfill via `getRepo`.
+///
+/// **Ordering precondition:** call this *after* the root swap but *before* post-commit GC,
+/// while both the previous and new block sets are still present (the diff is computed as
+/// `reachable(new) − reachable(prev)`, which needs the old blocks to subtract them out).
+pub async fn emit_firehose_commit(
+    state: &AppState,
+    did: &str,
+    prev_root: repo_engine::Cid,
+    new_root: repo_engine::Cid,
+    new_rev: String,
+    prev_rev: Option<String>,
+    ops: Vec<crate::firehose::RepoOp>,
+) {
+    let mut store = SqliteBlockStore::new(state.db.clone(), did.to_string());
+    let blocks =
+        match repo_engine::export_commit_blocks_car(&mut store, Some(prev_root), new_root).await {
+            Ok(blocks) => blocks,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    did = %did,
+                    "failed to build firehose commit CAR; dropping event (non-fatal)"
+                );
+                return;
+            }
+        };
+
+    state.firehose.emit_commit(crate::firehose::CommitInput {
+        repo: did.to_string(),
+        commit: new_root.to_string(),
+        rev: new_rev,
+        since: prev_rev,
+        ops,
+        blocks,
+    });
+}
+
+/// Split an MST key (`<collection>/<rkey>`) into its collection and record-key halves.
+///
+/// Record paths are validated via `repo_engine::validate_record_path` before reaching the
+/// write paths, so a well-formed key always contains exactly one `/` separating an NSID
+/// collection (which may contain dots but no slashes) from a slash-free rkey.
+pub(crate) fn split_record_path(mst_key: &str) -> (String, String) {
+    match mst_key.split_once('/') {
+        Some((collection, rkey)) => (collection.to_string(), rkey.to_string()),
+        None => (mst_key.to_string(), String::new()),
+    }
 }
 
 /// Garbage-collect blocks that are no longer reachable from the given repo root.
