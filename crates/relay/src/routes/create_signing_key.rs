@@ -132,6 +132,7 @@ mod tests {
             oauth_signing_keypair: base.oauth_signing_keypair,
             dpop_nonces: base.dpop_nonces,
             failed_login_attempts: base.failed_login_attempts,
+            firehose: base.firehose,
         }
     }
 
@@ -389,6 +390,7 @@ mod tests {
             oauth_signing_keypair: base.oauth_signing_keypair,
             dpop_nonces: base.dpop_nonces,
             failed_login_attempts: base.failed_login_attempts,
+            firehose: base.firehose,
         };
 
         let response = app(state)

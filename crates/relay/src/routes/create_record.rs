@@ -442,6 +442,72 @@ mod tests {
         assert_eq!(resp["value"]["text"], "Created and retrievable");
     }
 
+    #[tokio::test]
+    async fn create_record_emits_firehose_commit_event() {
+        use crate::firehose::FirehoseEvent;
+
+        let (state, did) = setup_account_with_repo().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        // Subscribe before issuing the write so the event is captured.
+        let mut rx = state.firehose.subscribe();
+        let app = crate::app::app(state);
+
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri("/xrpc/com.atproto.repo.createRecord")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({
+                    "repo": did,
+                    "collection": "app.bsky.feed.post",
+                    "rkey": "fire1",
+                    "record": {"text": "to the firehose"}
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: CreateRecordResponse = serde_json::from_slice(&body).unwrap();
+
+        let FirehoseEvent::Commit(event) = rx.try_recv().expect("a commit event must be emitted");
+        assert_eq!(event.seq, 1, "first commit gets sequence 1");
+        assert_eq!(event.repo, did);
+        assert!(!event.commit.is_empty());
+        assert!(!event.rev.is_empty());
+        // One create op, matching the record we wrote.
+        assert_eq!(event.ops.len(), 1);
+        let op = &event.ops[0];
+        assert_eq!(op.action, crate::firehose::OpAction::Create);
+        assert_eq!(op.collection, "app.bsky.feed.post");
+        assert_eq!(op.rkey, "fire1");
+        assert_eq!(op.cid.as_deref(), Some(resp.cid.as_str()));
+        assert_eq!(
+            op.value,
+            Some(serde_json::json!({"text": "to the firehose"}))
+        );
+        assert_eq!(
+            op.at_uri(&did),
+            format!("at://{did}/app.bsky.feed.post/fire1")
+        );
+        // The CAR diff carries the new commit as its root.
+        assert!(
+            !event.blocks.is_empty(),
+            "commit event must carry CAR blocks"
+        );
+        let car = atrium_repo::blockstore::CarStore::open(std::io::Cursor::new(&event.blocks))
+            .await
+            .expect("blocks must be a valid CAR");
+        let roots: Vec<_> = car.roots().collect();
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].to_string(), event.commit);
+    }
+
     #[test]
     fn generate_tid_produces_valid_format() {
         let tid = repo_engine::generate_tid();

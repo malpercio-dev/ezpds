@@ -74,6 +74,9 @@ pub async fn delete_record(
         ApiError::new(ErrorCode::InternalError, "failed to delete record")
     })?;
 
+    // Capture the pre-delete revision for the firehose event's `since`.
+    let prev_rev = repo.commit().rev().as_str().to_string();
+
     let mst_key = format!("{collection}/{rkey}");
 
     // Enforce explicit swapCommit/swapRecord preconditions before anything else, so a stale
@@ -138,6 +141,25 @@ pub async fn delete_record(
             "repository was modified concurrently; retry against the current root",
         ));
     }
+
+    // Emit the firehose `#commit` event before GC (the diff CAR needs the prior block set).
+    let op = crate::firehose::RepoOp {
+        action: crate::firehose::OpAction::Delete,
+        collection: collection.clone(),
+        rkey: rkey.clone(),
+        cid: None,
+        value: None,
+    };
+    crate::record_write::emit_firehose_commit(
+        &state,
+        did,
+        root_cid,
+        repo.root(),
+        new_rev,
+        Some(prev_rev),
+        vec![op],
+    )
+    .await;
 
     // Best-effort GC: reclaim blocks superseded by this commit (non-fatal on error).
     if let Err(e) = crate::record_write::gc_repo_blocks(&state.db, did, repo.root()).await {
@@ -296,6 +318,39 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn delete_record_emits_firehose_delete_op() {
+        use crate::firehose::{FirehoseEvent, OpAction};
+
+        let state = state_with_master_key().await;
+        let did = "did:plc:delrec".to_string();
+        seed_account_with_repo(&state.db, &did).await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        let firehose = state.firehose.clone();
+        let app = crate::app::app(state);
+
+        seed_record(&app, &token, &did, "del1").await;
+        // Subscribe after seeding so we only observe the delete commit.
+        let mut rx = firehose.subscribe();
+
+        let resp = app
+            .oneshot(delete_req(&did, "del1", Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let FirehoseEvent::Commit(event) = rx.try_recv().expect("delete must emit a commit event");
+        assert_eq!(event.repo, did);
+        assert!(event.since.is_some(), "a delete supersedes a prior commit");
+        assert_eq!(event.ops.len(), 1);
+        let op = &event.ops[0];
+        assert_eq!(op.action, OpAction::Delete);
+        assert_eq!(op.collection, "app.bsky.feed.post");
+        assert_eq!(op.rkey, "del1");
+        assert_eq!(op.cid, None, "delete ops carry no record CID");
+        assert_eq!(op.value, None);
     }
 
     #[tokio::test]

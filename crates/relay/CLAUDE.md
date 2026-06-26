@@ -14,10 +14,25 @@ crates (`crypto`, `repo-engine`, `common`) are pure Functional Cores that the re
 src/
   main.rs          — startup: open pool, run migrations, bind server
   app.rs           — AppState definition and construction
+  firehose.rs      — in-memory subscribeRepos event pipeline (sequencer + broadcast fan-out)
+  record_write.rs  — shared repo write flow + firehose commit emission
   auth/            — authentication primitives (no HTTP, no DB schema ownership)
   db/              — SQL query functions + migration runner (no business logic)
   routes/          — HTTP handlers, one file per endpoint
 ```
+
+### `firehose.rs`
+
+The in-memory event pipeline behind `com.atproto.sync.subscribeRepos`. Holds a monotonic
+sequencer and a Tokio `broadcast` channel; `AppState.firehose: Arc<Firehose>` is shared by
+every handler. Each repo commit calls `record_write::emit_firehose_commit`, which builds the
+commit's block diff (`repo_engine::export_commit_blocks_car`, run *before* post-commit GC) and
+publishes a sequenced `CommitEvent` carrying the DID, rev, `since`, per-record `RepoOp`s
+(action + collection/rkey + cid + value), and the CARv1 diff blocks. Backpressure is by design:
+the bounded channel never blocks producers — a slow subscriber observes `Lagged` and is expected
+to disconnect. All three write paths (`create_record`/`put_record` via `record_write`,
+`delete_record`, `apply_writes`) emit exactly one event per commit. The subscriber-facing
+WebSocket frame encoding lives in the (separate) `subscribeRepos` handler.
 
 ### `auth/`
 

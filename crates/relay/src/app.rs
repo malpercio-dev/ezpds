@@ -152,6 +152,9 @@ pub struct AppState {
     /// In-memory sliding-window store for failed createSession attempts (rate limiting).
     /// Shared across all requests via Arc<Mutex<...>>.
     pub failed_login_attempts: FailedLoginStore,
+    /// In-memory firehose pipeline: every repo commit emits a sequenced event here, which
+    /// `com.atproto.sync.subscribeRepos` fans out to connected relays/BGSes. Shared via Arc.
+    pub firehose: Arc<crate::firehose::Firehose>,
 }
 
 /// Build the Axum router with middleware and routes.
@@ -326,6 +329,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
         oauth_signing_keypair: test_signing_key,
         dpop_nonces,
         failed_login_attempts: Arc::new(Mutex::new(HashMap::new())),
+        firehose: Arc::new(crate::firehose::Firehose::new()),
     }
 }
 
