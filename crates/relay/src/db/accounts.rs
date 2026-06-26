@@ -152,6 +152,44 @@ pub(crate) async fn list_repos(
         .collect())
 }
 
+/// Repo hosting status for a single account, backing `com.atproto.sync.getRepoStatus`.
+///
+/// Unlike most account lookups this row is produced even for a deactivated account —
+/// reporting that state *is* the point of `getRepoStatus`. `active` is derived from
+/// `deactivated_at`; `head`/`rev` are `None` for an account that has not created its repo.
+pub(crate) struct RepoStatusRow {
+    /// `true` when `deactivated_at` is NULL.
+    pub(crate) active: bool,
+    /// Stored repo root commit CID (the repo `head`), or `None` when the account has no repo.
+    pub(crate) head: Option<String>,
+    /// Stored commit revision (TID). `None` for an account with no repo or one created before
+    /// the `repo_rev` migration; the caller falls back to reading the rev from the commit block.
+    pub(crate) rev: Option<String>,
+}
+
+/// Fetch repo hosting status for a single DID for `getRepoStatus`.
+///
+/// Returns `None` only when no account row exists for `did` (the caller maps this to a 404).
+/// This query intentionally does **not** filter on `deactivated_at`: a deactivated account
+/// still has a reportable status.
+pub(crate) async fn get_repo_status(
+    db: &sqlx::SqlitePool,
+    did: &str,
+) -> Result<Option<RepoStatusRow>, sqlx::Error> {
+    let row: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT deactivated_at, repo_root_cid, repo_rev FROM accounts WHERE did = ?",
+    )
+    .bind(did)
+    .fetch_optional(db)
+    .await?;
+
+    Ok(row.map(|(deactivated_at, head, rev)| RepoStatusRow {
+        active: deactivated_at.is_none(),
+        head,
+        rev,
+    }))
+}
+
 /// Resolve an email address to an active (non-deactivated) account.
 ///
 /// Used by the provisioning session login endpoint (`POST /v1/accounts/sessions`).

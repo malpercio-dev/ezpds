@@ -1,0 +1,20 @@
+meta {
+  name: Get Repo Status (sync.getRepoStatus)
+  type: http
+  seq: 41
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.sync.getRepoStatus?did={{did}}
+  body: none
+  auth: none
+}
+
+params:query {
+  did: {{did}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  did: did:plc:example
+}
