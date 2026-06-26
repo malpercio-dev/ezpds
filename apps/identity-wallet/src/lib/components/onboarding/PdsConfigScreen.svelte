@@ -1,15 +1,15 @@
 <script lang="ts">
-  import { saveRelayUrl, type RelayConfigError } from '$lib/ipc';
+  import { savePdsUrl, type PdsConfigError } from '$lib/ipc';
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
   import TextField from '$lib/components/ui/TextField.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
 
-  const DEFAULT_RELAY_URL = 'https://relay.ezpds.com';
+  const DEFAULT_PDS_URL = 'https://relay.ezpds.com';
 
   let { onnext }: { onnext: () => void } = $props();
 
-  let url = $state(DEFAULT_RELAY_URL);
+  let url = $state(DEFAULT_PDS_URL);
   let loading = $state(false);
   let error = $state<string | undefined>(undefined);
 
@@ -22,16 +22,16 @@
     error = undefined;
     loading = true;
     try {
-      await saveRelayUrl(url.trim());
+      await savePdsUrl(url.trim());
       onnext();
     } catch (e) {
-      const relayError = e as RelayConfigError;
-      if (relayError.code === 'INVALID_URL') {
+      const err = e as PdsConfigError;
+      if (err.code === 'INVALID_URL') {
         error = 'Invalid URL — must start with http:// or https://';
-      } else if (relayError.code === 'KEYCHAIN_ERROR') {
-        error = 'Could not save the relay URL. Please try again.';
+      } else if (err.code === 'KEYCHAIN_ERROR') {
+        error = 'Could not save the server URL. Please try again.';
       } else {
-        error = 'Could not reach the relay. Check the URL and try again.';
+        error = 'Could not reach the server. Check the URL and try again.';
       }
     } finally {
       loading = false;
@@ -40,8 +40,8 @@
 </script>
 
 <OnboardingShell
-  title="Connect to a relay"
-  subtitle="Your wallet connects to a relay to create your identity. Use the default, or enter the address of your own."
+  title="Connect to Custos"
+  subtitle="Your wallet connects to a server to create your identity. Use the default, or enter the address of your own."
 >
   <TextField
     bind:value={url}
@@ -53,7 +53,7 @@
     autocorrect="off"
     autocapitalize="off"
     spellcheck={false}
-    aria-label="Relay URL"
+    aria-label="Server URL"
     {error}
   />
   {#if loading}

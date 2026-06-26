@@ -550,7 +550,7 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_invalid_grant_returns_invalid_grant() {
-        // Verifies: Relay returns invalid_grant → Err(InvalidGrant), not TokenRefreshFailed
+        // Verifies: PDS returns invalid_grant → Err(InvalidGrant), not TokenRefreshFailed
         let server = MockServer::start();
 
         server.mock(|when, then| {

@@ -18,7 +18,7 @@ use tauri_plugin_deep_link::DeepLinkExt;
 // ── Request / response types ────────────────────────────────────────────────
 
 /// JSON body sent to POST /v1/accounts/mobile.
-/// Field names match the relay's camelCase deserialization.
+/// Field names match the PDS's camelCase deserialization.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateMobileAccountRequest {
@@ -29,9 +29,9 @@ struct CreateMobileAccountRequest {
     claim_code: String,
 }
 
-/// Successful 201 response from the relay.
+/// Successful 201 response from the PDS.
 ///
-/// The relay returns additional fields (account_id, device_id) which are
+/// The PDS returns additional fields (account_id, device_id) which are
 /// silently ignored by serde's default behavior. This struct captures only
 /// the three fields needed by the client.
 #[derive(Deserialize)]
@@ -45,7 +45,7 @@ struct CreateMobileAccountResponse {
 /// Response from GET /v1/repo-signing-key — this account's per-account repo signing key.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct RelaySigningKey {
+struct PdsSigningKey {
     key_id: String,
 }
 
@@ -55,7 +55,7 @@ struct RelaySigningKey {
 struct CreateDidRequest {
     rotation_key_public: String,
     signed_creation_op: serde_json::Value,
-    /// Initial password stored as an argon2id PHC string by the relay.
+    /// Initial password stored as an argon2id PHC string by the PDS.
     password: String,
 }
 
@@ -70,14 +70,14 @@ struct CreateDidResponse {
     shamir_share_3: String,
 }
 
-/// Relay error envelope: { "error": { "code": "...", "message": "..." } }
+/// PDS error envelope: { "error": { "code": "...", "message": "..." } }
 #[derive(Deserialize)]
-struct RelayErrorEnvelope {
-    error: RelayErrorBody,
+struct PdsErrorEnvelope {
+    error: PdsErrorBody,
 }
 
 #[derive(Deserialize)]
-struct RelayErrorBody {
+struct PdsErrorBody {
     code: String,
 }
 
@@ -85,8 +85,8 @@ struct RelayErrorBody {
 
 /// The next step the client should take after successful account creation.
 ///
-/// If the relay returns an unrecognized value, serde deserialization fails and
-/// `create_account` returns `CreateAccountError::Unknown` — unrecognized relay
+/// If the PDS returns an unrecognized value, serde deserialization fails and
+/// `create_account` returns `CreateAccountError::Unknown` — unrecognized PDS
 /// protocol values are caught here rather than silently forwarded to the frontend.
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -136,24 +136,24 @@ pub struct DIDCeremonyResult {
 
 /// Typed error returned to the Svelte frontend as a rejected Promise.
 ///
-/// Serializes as `{ "code": "NO_RELAY_SIGNING_KEY" }` (SCREAMING_SNAKE_CASE) so
+/// Serializes as `{ "code": "NO_PDS_SIGNING_KEY" }` (SCREAMING_SNAKE_CASE) so
 /// the TypeScript catch block can switch on `error.code`.
 #[derive(Debug, Serialize, thiserror::Error)]
 #[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum DIDCeremonyError {
     #[error("failed to get or create device key")]
     KeyNotFound,
-    #[error("failed to fetch relay signing key")]
-    RelayKeyFetchFailed,
-    #[error("relay has no signing key provisioned")]
-    NoRelaySigningKey,
+    #[error("failed to fetch PDS signing key")]
+    PdsKeyFetchFailed,
+    #[error("PDS has no signing key provisioned")]
+    NoPdsSigningKey,
     #[error("device signing failed")]
     SigningFailed,
     #[error("DID creation request failed")]
     DidCreationFailed,
     #[error("keychain operation failed")]
     KeychainError,
-    /// DID was committed at the relay but Share 1 could not be stored in Keychain.
+    /// DID was committed at the PDS but Share 1 could not be stored in Keychain.
     /// The DID exists — retrying the ceremony will fail. The user can retry the share
     /// storage separately once the Keychain is available.
     #[error("DID created but recovery share storage failed")]
@@ -179,7 +179,7 @@ struct CreateHandleRequest {
 
 /// Success response from `POST /v1/handles`.
 #[derive(Deserialize)]
-struct CreateHandleRelayResponse {
+struct CreateHandlePdsResponse {
     dns_status: String,
 }
 
@@ -190,7 +190,7 @@ pub struct RegisterHandleResult {
     /// Full handle including domain, e.g. `alice.ezpds.com`.
     pub handle: String,
     /// `"propagating"` when DNS creation was requested; `"not_configured"` when no DNS provider
-    /// is configured on the relay (handle still resolves via HTTP well-known).
+    /// is configured on the PDS (handle still resolves via HTTP well-known).
     pub dns_status: String,
 }
 
@@ -206,11 +206,11 @@ pub enum RegisterHandleError {
     DnsError,
     #[error("keychain operation failed")]
     KeychainError,
-    /// The relay rejected the session token (401). The token is expired or revoked — the user
+    /// The PDS rejected the session token (401). The token is expired or revoked — the user
     /// must re-authenticate via OAuth rather than restart the app.
     #[error("session token expired or revoked")]
     SessionExpired,
-    #[error("relay has no user domains configured")]
+    #[error("PDS has no user domains configured")]
     NoDomains,
     #[error("network error: {message}")]
     NetworkError { message: String },
@@ -218,17 +218,17 @@ pub enum RegisterHandleError {
     Unknown { message: String },
 }
 
-/// Error returned by relay URL configuration commands.
+/// Error returned by PDS URL configuration commands.
 ///
 /// Serializes as `{ "code": "INVALID_URL" | "UNREACHABLE" | "KEYCHAIN_ERROR" }` for the frontend.
 #[derive(Debug, Serialize, thiserror::Error)]
 #[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum RelayConfigError {
-    #[error("invalid relay URL: must be http or https with a non-empty host")]
+pub enum PdsConfigError {
+    #[error("invalid PDS URL: must be http or https with a non-empty host")]
     InvalidUrl,
-    #[error("relay is unreachable or did not return a success response")]
+    #[error("PDS is unreachable or did not return a success response")]
     Unreachable,
-    #[error("failed to save relay URL to device storage")]
+    #[error("failed to save PDS URL to device storage")]
     KeychainError,
 }
 
@@ -240,7 +240,7 @@ struct ResolveHandleResponse {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-/// Map a relay 409 error subcode string to a typed `CreateAccountError` variant.
+/// Map a PDS 409 error subcode string to a typed `CreateAccountError` variant.
 fn map_409_subcode(code: &str) -> CreateAccountError {
     match code {
         "CLAIM_CODE_REDEEMED" => CreateAccountError::RedeemedCode,
@@ -252,20 +252,20 @@ fn map_409_subcode(code: &str) -> CreateAccountError {
     }
 }
 
-/// Validate a relay URL: must parse as http or https with a non-empty host.
+/// Validate a PDS URL: must parse as http or https with a non-empty host.
 /// Strips any trailing slash and returns the normalized URL string.
-fn normalize_relay_url(url: &str) -> Result<String, RelayConfigError> {
-    let parsed = url::Url::parse(url).map_err(|_| RelayConfigError::InvalidUrl)?;
+fn normalize_pds_url(url: &str) -> Result<String, PdsConfigError> {
+    let parsed = url::Url::parse(url).map_err(|_| PdsConfigError::InvalidUrl)?;
     match parsed.scheme() {
         "http" | "https" => {}
-        _ => return Err(RelayConfigError::InvalidUrl),
+        _ => return Err(PdsConfigError::InvalidUrl),
     }
     if parsed.host().is_none() {
-        return Err(RelayConfigError::InvalidUrl);
+        return Err(PdsConfigError::InvalidUrl);
     }
     let path = parsed.path();
     if !path.is_empty() && path != "/" {
-        return Err(RelayConfigError::InvalidUrl);
+        return Err(PdsConfigError::InvalidUrl);
     }
     Ok(url.trim_end_matches('/').to_string())
 }
@@ -278,7 +278,7 @@ fn normalize_relay_url(url: &str) -> Result<String, RelayConfigError> {
 /// and `rotationKeys[0]` (the device-key "root" badge). The document is built
 /// locally rather than fetched so the create flow does not depend on plc.directory
 /// propagation timing right after DID creation. `rotationKeys[0]` is always the
-/// device key, so the badge stays accurate even if the relay holds additional
+/// device key, so the badge stays accurate even if the PDS holds additional
 /// rotation keys not reflected here.
 fn build_create_flow_did_doc(
     did: &str,
@@ -314,7 +314,7 @@ async fn create_account(
         CreateAccountError::KeychainError
     })?;
 
-    // 2. POST to relay.
+    // 2. POST to PDS.
     let req = CreateMobileAccountRequest {
         email,
         handle,
@@ -324,7 +324,7 @@ async fn create_account(
     };
 
     let resp = state
-        .relay_client()
+        .custos_client()
         .post("/v1/accounts/mobile", &req)
         .await
         .map_err(|e| CreateAccountError::NetworkError {
@@ -358,13 +358,13 @@ async fn create_account(
             next_step: body.next_step,
         })
     } else {
-        // 5. Map relay error codes to typed variants.
+        // 5. Map PDS error codes to typed variants.
         match status.as_u16() {
-            // 404: Relay returns this for both invalid (never-existed) and expired claim codes.
+            // 404: PDS returns this for both invalid (never-existed) and expired claim codes.
             // The frontend cannot distinguish them, so we map both to ExpiredCode.
             404 => Err(CreateAccountError::ExpiredCode),
             409 => {
-                let envelope: RelayErrorEnvelope =
+                let envelope: PdsErrorEnvelope =
                     resp.json().await.map_err(|e| CreateAccountError::Unknown {
                         message: e.to_string(),
                     })?;
@@ -414,10 +414,10 @@ async fn perform_did_ceremony(
     };
 
     // Step 3: Fetch this account's per-account repo signing key (pending-session auth).
-    // The relay issues it idempotently; we publish it as the DID's #atproto verification
-    // method, and the relay signs the repo's commits with the matching private key.
+    // The PDS issues it idempotently; we publish it as the DID's #atproto verification
+    // method, and the PDS signs the repo's commits with the matching private key.
     let resp = state
-        .relay_client()
+        .custos_client()
         .get_with_bearer("/v1/repo-signing-key", &pending_token)
         .await
         .map_err(|e| DIDCeremonyError::NetworkError {
@@ -426,7 +426,7 @@ async fn perform_did_ceremony(
 
     let status = resp.status();
     if status.as_u16() == 503 {
-        return Err(DIDCeremonyError::NoRelaySigningKey);
+        return Err(DIDCeremonyError::NoPdsSigningKey);
     }
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_else(|e| {
@@ -434,24 +434,24 @@ async fn perform_did_ceremony(
             "<body read failed>".to_string()
         });
         tracing::error!(status = %status, body = %body, "GET /v1/repo-signing-key returned non-success status");
-        return Err(DIDCeremonyError::RelayKeyFetchFailed);
+        return Err(DIDCeremonyError::PdsKeyFetchFailed);
     }
 
-    let relay_key: RelaySigningKey = resp.json().await.map_err(|e| {
+    let pds_key: PdsSigningKey = resp.json().await.map_err(|e| {
         tracing::error!(error = %e, "failed to deserialize repo signing key response");
-        DIDCeremonyError::RelayKeyFetchFailed
+        DIDCeremonyError::PdsKeyFetchFailed
     })?;
 
     // Step 4: Build signed genesis op — device key as rotation key, per-account repo key as signing key.
     // On device, the private key never leaves the Secure Enclave; on Simulator and macOS, a software key is used instead.
     let rotation_key = DidKeyUri(device_key.key_id.clone());
-    let signing_key = DidKeyUri(relay_key.key_id.clone());
+    let signing_key = DidKeyUri(pds_key.key_id.clone());
 
     let genesis_op = build_did_plc_genesis_op_with_external_signer(
         &rotation_key,
         &signing_key,
         &handle,
-        state.relay_client().base_url_str(),
+        state.custos_client().base_url_str(),
         |data| {
             device_key::sign(data)
                 .map_err(|e| CryptoError::PlcOperation(format!("device signing failed: {e}")))
@@ -462,7 +462,7 @@ async fn perform_did_ceremony(
         DIDCeremonyError::SigningFailed
     })?;
 
-    // Step 6: POST the signed genesis op to the relay to promote the account to a full DID.
+    // Step 6: POST the signed genesis op to the PDS to promote the account to a full DID.
     let create_did_req = CreateDidRequest {
         rotation_key_public: device_key.key_id,
         signed_creation_op: serde_json::from_str(&genesis_op.signed_op_json).map_err(|e| {
@@ -473,7 +473,7 @@ async fn perform_did_ceremony(
     };
 
     let resp = state
-        .relay_client()
+        .custos_client()
         .post_with_bearer("/v1/dids", &create_did_req, &pending_token)
         .await
         .map_err(|e| DIDCeremonyError::NetworkError {
@@ -528,9 +528,9 @@ async fn perform_did_ceremony(
     })
 }
 
-/// Register the user's handle with the relay and set up HTTP resolution.
+/// Register the user's handle with the PDS and set up HTTP resolution.
 ///
-/// Fetches the relay's primary user domain via `GET /xrpc/com.atproto.server.describeServer`,
+/// Fetches the PDS's primary user domain via `GET /xrpc/com.atproto.server.describeServer`,
 /// constructs the full handle (`{handle_label}.{domain}`), reads the DID and session token
 /// from Keychain, then POSTs to `POST /v1/handles`.
 ///
@@ -540,9 +540,9 @@ async fn register_handle(
     handle_label: String,
     state: tauri::State<'_, oauth::AppState>,
 ) -> Result<RegisterHandleResult, RegisterHandleError> {
-    // Step 1: Fetch the relay's primary user domain.
+    // Step 1: Fetch the PDS's primary user domain.
     let resp = state
-        .relay_client()
+        .custos_client()
         .get("/xrpc/com.atproto.server.describeServer")
         .await
         .map_err(|e| RegisterHandleError::NetworkError {
@@ -597,7 +597,7 @@ async fn register_handle(
     };
 
     let resp = state
-        .relay_client()
+        .custos_client()
         .post_with_bearer("/v1/handles", &req, &session_token)
         .await
         .map_err(|e| RegisterHandleError::NetworkError {
@@ -607,7 +607,7 @@ async fn register_handle(
     let status = resp.status();
 
     if status.is_success() {
-        let body: CreateHandleRelayResponse =
+        let body: CreateHandlePdsResponse =
             resp.json()
                 .await
                 .map_err(|e| RegisterHandleError::Unknown {
@@ -620,7 +620,7 @@ async fn register_handle(
     } else {
         match status.as_u16() {
             400 => {
-                let envelope: RelayErrorEnvelope =
+                let envelope: PdsErrorEnvelope =
                     resp.json()
                         .await
                         .map_err(|e| RegisterHandleError::Unknown {
@@ -634,7 +634,7 @@ async fn register_handle(
                     })
                 }
             }
-            // 401 means the relay rejected the session token — it's expired or revoked.
+            // 401 means the PDS rejected the session token — it's expired or revoked.
             // The Keychain read already succeeded; this is an auth problem, not a Keychain problem.
             401 => Err(RegisterHandleError::SessionExpired),
             409 => Err(RegisterHandleError::HandleTaken),
@@ -646,49 +646,49 @@ async fn register_handle(
     }
 }
 
-/// Return the saved relay base URL, or `None` if not yet configured.
+/// Return the saved PDS base URL, or `None` if not yet configured.
 ///
-/// The frontend calls this on mount to decide whether to show the relay
+/// The frontend calls this on mount to decide whether to show the PDS
 /// configuration screen.
 #[tauri::command]
-fn get_relay_url() -> Option<String> {
-    keychain::load_relay_url()
+fn get_pds_url() -> Option<String> {
+    keychain::load_pds_url()
 }
 
-/// Validate `url`, confirm the relay is reachable, save to Keychain, and
-/// initialize the runtime relay client.
+/// Validate `url`, confirm the PDS is reachable, save to Keychain, and
+/// initialize the runtime PDS client.
 ///
-/// After this call succeeds, all subsequent IPC commands that use the relay
+/// After this call succeeds, all subsequent IPC commands that use the PDS
 /// will use the saved URL for the remainder of the app session and on all
 /// future launches.
 #[tauri::command]
-async fn save_relay_url(
+async fn save_pds_url(
     url: String,
     state: tauri::State<'_, oauth::AppState>,
-) -> Result<(), RelayConfigError> {
-    let normalized = normalize_relay_url(&url)?;
-    let resp = http::RelayClient::new_with_url(normalized.clone())
+) -> Result<(), PdsConfigError> {
+    let normalized = normalize_pds_url(&url)?;
+    let resp = http::CustosClient::new_with_url(normalized.clone())
         .get("/xrpc/_health")
         .await
         .map_err(|e| {
-            tracing::warn!(error = %e, url = %normalized, "relay health check failed");
-            RelayConfigError::Unreachable
+            tracing::warn!(error = %e, url = %normalized, "PDS health check failed");
+            PdsConfigError::Unreachable
         })?;
     if !resp.status().is_success() {
         tracing::warn!(
             status = %resp.status(),
             url = %normalized,
-            "relay health check returned non-success status"
+            "PDS health check returned non-success status"
         );
         // Both transport failures (DNS, TLS, timeout) and non-2xx HTTP responses
         // map to Unreachable — the frontend only needs to know "can't use this URL".
-        return Err(RelayConfigError::Unreachable);
+        return Err(PdsConfigError::Unreachable);
     }
-    keychain::store_relay_url(&normalized).map_err(|e| {
-        tracing::error!(error = %e, "failed to save relay URL to Keychain");
-        RelayConfigError::KeychainError
+    keychain::store_pds_url(&normalized).map_err(|e| {
+        tracing::error!(error = %e, "failed to save PDS URL to Keychain");
+        PdsConfigError::KeychainError
     })?;
-    state.set_relay_client(normalized);
+    state.set_custos_client(normalized);
     Ok(())
 }
 
@@ -742,11 +742,11 @@ fn get_device_key_id(did: String) -> Result<String, identity_store::IdentityStor
     Ok(device_key.key_id)
 }
 
-/// Check whether the relay can resolve `handle` to `expected_did` via the ATProto
+/// Check whether the PDS can resolve `handle` to `expected_did` via the ATProto
 /// `resolveHandle` endpoint.
 ///
-/// Returns `true` when the relay resolves the handle to the expected DID (HTTP 200 + matching
-/// `did` field). Returns `false` for any other response (handle not yet propagated, relay
+/// Returns `true` when the PDS resolves the handle to the expected DID (HTTP 200 + matching
+/// `did` field). Returns `false` for any other response (handle not yet propagated, PDS
 /// unreachable, DID mismatch). Returns `Result<bool, String>` for Tauri IPC compatibility, but
 /// never returns `Err` — callers can safely poll on an interval.
 #[tauri::command]
@@ -758,7 +758,7 @@ async fn check_handle_resolution(
     // ATProto handles are alphanumeric + hyphens + dots — all URL-safe; no percent-encoding needed.
     let path = format!("/xrpc/com.atproto.identity.resolveHandle?handle={handle}");
 
-    let resp = match state.relay_client().get(&path).await {
+    let resp = match state.custos_client().get(&path).await {
         Ok(r) => r,
         Err(e) => {
             tracing::debug!(error = %e, "check_handle_resolution: network error, returning false");
@@ -796,7 +796,7 @@ pub enum RegisterIdentityError {
 /// Register a just-created identity in `IdentityStore` so it appears in
 /// `IdentityListHome` on the home screen.
 ///
-/// The relay-OAuth create flow stores its session and DID outside `IdentityStore`
+/// The PDS-OAuth create flow stores its session and DID outside `IdentityStore`
 /// (OAuth tokens + the legacy `"did"` Keychain item), while the home screen lists
 /// identities from `IdentityStore` alone — so without this step the freshly-created
 /// identity never appears after login. This mirrors what the import flow does in
@@ -839,7 +839,7 @@ async fn register_created_identity(
             return Err(RegisterIdentityError::KeychainError);
         }
     };
-    let pds_url = state.relay_client().base_url_str().to_owned();
+    let pds_url = state.custos_client().base_url_str().to_owned();
     let did_doc_json =
         build_create_flow_did_doc(&did, &handle, &pds_url, &rotation_key_id).to_string();
 
@@ -864,9 +864,9 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            // Restore relay URL from Keychain if previously configured.
-            if let Some(url) = keychain::load_relay_url() {
-                app.state::<oauth::AppState>().set_relay_client(url);
+            // Restore PDS URL from Keychain if previously configured.
+            if let Some(url) = keychain::load_pds_url() {
+                app.state::<oauth::AppState>().set_custos_client(url);
             }
 
             let app_handle = app.app_handle().clone();
@@ -913,8 +913,8 @@ pub fn run() {
             list_identities,
             get_stored_did_doc,
             get_device_key_id,
-            get_relay_url,
-            save_relay_url,
+            get_pds_url,
+            save_pds_url,
             home::load_home_data,
             home::log_out,
             oauth::start_oauth_flow,
@@ -1051,11 +1051,11 @@ mod tests {
     #[test]
     fn error_unknown_serializes_correctly() {
         let err = CreateAccountError::Unknown {
-            message: "Unexpected relay response".into(),
+            message: "Unexpected PDS response".into(),
         };
         let json = serde_json::to_value(&err).unwrap();
         assert_eq!(json["code"], "UNKNOWN");
-        assert_eq!(json["message"], "Unexpected relay response");
+        assert_eq!(json["message"], "Unexpected PDS response");
     }
 
     // -- 409 subcode dispatch table --
@@ -1149,13 +1149,13 @@ mod tests {
     // Tests the device_key contract that create_account depends on: the returned key
     // is correctly formatted (multibase base58btc) and is idempotent (stable across calls).
     #[test]
-    fn device_key_contract_satisfies_relay_format() {
+    fn device_key_contract_satisfies_pds_format() {
         let key = crate::device_key::get_or_create()
             .expect("device_key::get_or_create must succeed — create_account depends on it");
-        // The relay expects multibase: 'z' + base58btc(33-byte compressed P-256 point).
+        // The PDS expects multibase: 'z' + base58btc(33-byte compressed P-256 point).
         assert!(
             key.multibase.starts_with('z'),
-            "device_public_key sent to relay must be multibase base58btc ('z' prefix), got: {}",
+            "device_public_key sent to PDS must be multibase base58btc ('z' prefix), got: {}",
             key.multibase
         );
         // Calling again returns the same key — create_account sends consistent device_public_key.
@@ -1200,15 +1200,15 @@ mod tests {
     }
 
     #[test]
-    fn did_ceremony_error_relay_key_fetch_failed_serializes_correctly() {
-        let json = serde_json::to_value(&DIDCeremonyError::RelayKeyFetchFailed).unwrap();
-        assert_eq!(json["code"], "RELAY_KEY_FETCH_FAILED");
+    fn did_ceremony_error_pds_key_fetch_failed_serializes_correctly() {
+        let json = serde_json::to_value(&DIDCeremonyError::PdsKeyFetchFailed).unwrap();
+        assert_eq!(json["code"], "PDS_KEY_FETCH_FAILED");
     }
 
     #[test]
-    fn did_ceremony_error_no_relay_signing_key_serializes_correctly() {
-        let json = serde_json::to_value(&DIDCeremonyError::NoRelaySigningKey).unwrap();
-        assert_eq!(json["code"], "NO_RELAY_SIGNING_KEY");
+    fn did_ceremony_error_no_pds_signing_key_serializes_correctly() {
+        let json = serde_json::to_value(&DIDCeremonyError::NoPdsSigningKey).unwrap();
+        assert_eq!(json["code"], "NO_PDS_SIGNING_KEY");
     }
 
     #[test]
@@ -1245,70 +1245,70 @@ mod tests {
         assert_eq!(json["code"], "SHARE_STORAGE_FAILED");
     }
 
-    // -- RelayConfigError serialization (one test per variant) --
+    // -- PdsConfigError serialization (one test per variant) --
     #[test]
-    fn relay_config_error_invalid_url_serializes_correctly() {
-        let json = serde_json::to_value(RelayConfigError::InvalidUrl).unwrap();
+    fn pds_config_error_invalid_url_serializes_correctly() {
+        let json = serde_json::to_value(PdsConfigError::InvalidUrl).unwrap();
         assert_eq!(json["code"], "INVALID_URL");
     }
 
     #[test]
-    fn relay_config_error_unreachable_serializes_correctly() {
-        let json = serde_json::to_value(RelayConfigError::Unreachable).unwrap();
+    fn pds_config_error_unreachable_serializes_correctly() {
+        let json = serde_json::to_value(PdsConfigError::Unreachable).unwrap();
         assert_eq!(json["code"], "UNREACHABLE");
     }
 
     #[test]
-    fn relay_config_error_keychain_error_serializes_correctly() {
-        let json = serde_json::to_value(RelayConfigError::KeychainError).unwrap();
+    fn pds_config_error_keychain_error_serializes_correctly() {
+        let json = serde_json::to_value(PdsConfigError::KeychainError).unwrap();
         assert_eq!(json["code"], "KEYCHAIN_ERROR");
     }
 
-    // -- normalize_relay_url --
+    // -- normalize_pds_url --
 
     #[test]
-    fn normalize_relay_url_strips_trailing_slash() {
+    fn normalize_pds_url_strips_trailing_slash() {
         assert_eq!(
-            normalize_relay_url("https://relay.example.com/").unwrap(),
-            "https://relay.example.com"
+            normalize_pds_url("https://PDS.example.com/").unwrap(),
+            "https://PDS.example.com"
         );
     }
 
     #[test]
-    fn normalize_relay_url_accepts_http_and_https() {
-        assert!(normalize_relay_url("https://relay.example.com").is_ok());
-        assert!(normalize_relay_url("http://localhost:8080").is_ok());
+    fn normalize_pds_url_accepts_http_and_https() {
+        assert!(normalize_pds_url("https://PDS.example.com").is_ok());
+        assert!(normalize_pds_url("http://localhost:8080").is_ok());
     }
 
     #[test]
-    fn normalize_relay_url_rejects_non_http_schemes() {
+    fn normalize_pds_url_rejects_non_http_schemes() {
         assert!(matches!(
-            normalize_relay_url("ftp://relay.example.com").unwrap_err(),
-            RelayConfigError::InvalidUrl
+            normalize_pds_url("ftp://PDS.example.com").unwrap_err(),
+            PdsConfigError::InvalidUrl
         ));
         assert!(matches!(
-            normalize_relay_url("ws://relay.example.com").unwrap_err(),
-            RelayConfigError::InvalidUrl
-        ));
-    }
-
-    #[test]
-    fn normalize_relay_url_rejects_malformed_input() {
-        assert!(matches!(
-            normalize_relay_url("not-a-url").unwrap_err(),
-            RelayConfigError::InvalidUrl
-        ));
-        assert!(matches!(
-            normalize_relay_url("").unwrap_err(),
-            RelayConfigError::InvalidUrl
+            normalize_pds_url("ws://PDS.example.com").unwrap_err(),
+            PdsConfigError::InvalidUrl
         ));
     }
 
     #[test]
-    fn normalize_relay_url_rejects_urls_with_paths() {
+    fn normalize_pds_url_rejects_malformed_input() {
         assert!(matches!(
-            normalize_relay_url("https://relay.example.com/api/v1").unwrap_err(),
-            RelayConfigError::InvalidUrl
+            normalize_pds_url("not-a-url").unwrap_err(),
+            PdsConfigError::InvalidUrl
+        ));
+        assert!(matches!(
+            normalize_pds_url("").unwrap_err(),
+            PdsConfigError::InvalidUrl
+        ));
+    }
+
+    #[test]
+    fn normalize_pds_url_rejects_urls_with_paths() {
+        assert!(matches!(
+            normalize_pds_url("https://PDS.example.com/api/v1").unwrap_err(),
+            PdsConfigError::InvalidUrl
         ));
     }
 
@@ -1343,23 +1343,23 @@ mod tests {
         assert_eq!(json["code"], "KEYCHAIN_ERROR");
     }
 
-    // -- get_relay_url / load_relay_url round-trip --
+    // -- get_pds_url / load_pds_url round-trip --
 
     #[test]
-    fn get_relay_url_returns_none_before_save() {
+    fn get_pds_url_returns_none_before_save() {
         // Relies on the keychain mock starting empty for this key. The sibling test
-        // relay_url_round_trips_through_keychain cleans up via delete_relay_url_test_only(),
+        // pds_url_round_trips_through_keychain cleans up via delete_pds_url_test_only(),
         // so ordering is not a concern as long as both tests run in the same process.
-        assert!(get_relay_url().is_none());
+        assert!(get_pds_url().is_none());
     }
 
     #[test]
-    fn relay_url_round_trips_through_keychain() {
-        let url = "https://relay.example.com";
-        keychain::store_relay_url(url).unwrap();
-        let loaded = keychain::load_relay_url().unwrap();
+    fn pds_url_round_trips_through_keychain() {
+        let url = "https://PDS.example.com";
+        keychain::store_pds_url(url).unwrap();
+        let loaded = keychain::load_pds_url().unwrap();
         assert_eq!(loaded, url);
         // Clean up so this test doesn't affect others sharing the mock store.
-        keychain::delete_relay_url_test_only();
+        keychain::delete_pds_url_test_only();
     }
 }

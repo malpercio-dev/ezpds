@@ -43,7 +43,7 @@
   async function beginCeremony() {
     phase = 'sealing';
     hold.state.progress = 1;
-    // Defense-in-depth: guard against an empty password reaching the relay.
+    // Defense-in-depth: guard against an empty password reaching the PDS.
     // The PasswordScreen enforces ≥8 chars, but this makes the ceremony self-contained.
     if (!password || password.length === 0) {
       error = { code: 'DID_CREATION_FAILED', message: 'Password is required.' };
@@ -76,9 +76,9 @@
 
   function errorMessage(err: DIDCeremonyError): string {
     switch (err.code) {
-      case 'NO_RELAY_SIGNING_KEY':
-        return "The relay hasn't been configured yet. Please try again later.";
-      case 'RELAY_KEY_FETCH_FAILED':
+      case 'NO_PDS_SIGNING_KEY':
+        return "Custos hasn't been configured yet. Please try again later.";
+      case 'PDS_KEY_FETCH_FAILED':
       case 'NETWORK_ERROR':
         return "Couldn't reach the server. Check your connection.";
       case 'SIGNING_FAILED':

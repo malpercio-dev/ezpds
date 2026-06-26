@@ -110,7 +110,7 @@
       case 'DNS_ERROR':
         return 'Handle registered, but DNS setup failed. Please contact support.';
       case 'NO_DOMAINS':
-        return 'The relay has no handle domains configured. Please contact support.';
+        return 'Custos has no handle domains configured. Please contact support.';
       case 'SESSION_EXPIRED':
         return 'Your session has expired. Please sign in again to continue.';
       case 'KEYCHAIN_ERROR':
