@@ -2,7 +2,7 @@
 
 Design Specification
 
-Desktop PDS Relay Layer
+Desktop PDS PDS Layer
 
 Version 0.3 --- Mobile-First Reconciliation
 
@@ -14,10 +14,10 @@ March 2026
 *All endpoints tagged with milestone phase.*
 
 *FIX   Ed25519 → P-256/secp256k1 throughout (ATProto requirement)*
-*FIX   DID ceremony: client sends key material, relay constructs DID doc*
+*FIX   DID ceremony: client sends key material, PDS constructs DID doc*
 *FIX   Tier model: Free/Pro/Business + BYO as deployment model*
 *NEW   POST /v1/accounts/mobile — combined mobile account creation*
-*NEW   9 endpoints from mobile spec (relay keys, device mgmt, signing)*
+*NEW   9 endpoints from mobile spec (PDS keys, device mgmt, signing)*
 *NEW   8 endpoints from migration spec (transfer, recovery, Shamir)*
 *NEW   Blob endpoints (uploadBlob, getBlob, listBlobs)*
 *NEW   Milestone tags on all endpoint groups*
@@ -26,17 +26,17 @@ March 2026
 
 1\. Overview
 
-This document specifies the provisioning API for the Desktop PDS relay layer. The API orchestrates five flows: account creation, device binding, DID ceremony, handle/domain setup, and account exit. Two client types consume the API: the web dashboard (account lifecycle, billing) and the Tauri desktop app (device binding, runtime operations).
+This document specifies the provisioning API for the Desktop PDS PDS layer. The API orchestrates five flows: account creation, device binding, DID ceremony, handle/domain setup, and account exit. Two client types consume the API: the web dashboard (account lifecycle, billing) and the Tauri desktop app (device binding, runtime operations).
 
-All endpoints are served over HTTPS at the relay's base URL. The API follows REST conventions with JSON request/response bodies. Authentication uses Bearer tokens with three scopes: account, session, and device.
+All endpoints are served over HTTPS at the PDS's base URL. The API follows REST conventions with JSON request/response bodies. Authentication uses Bearer tokens with three scopes: account, session, and device.
 
 1.1 Base URL
 
-> https://relay.{service-domain}/v1
+> https://PDS.{service-domain}/v1
 
 1.2 Identity Model
 
-The relay supports two DID methods. The choice is made during the setup wizard and cannot be changed after the DID ceremony completes.
+The PDS supports two DID methods. The choice is made during the setup wizard and cannot be changed after the DID ceremony completes.
 
   ------------ ------------- ----------------------------------- ---------------------------------------------------------------------------------------------
   **Method**   **Default**   **Requirement**                     **Exit Story**
@@ -44,7 +44,7 @@ The relay supports two DID methods. The choice is made during the setup wizard a
   did:web      No            Custom domain required (Pro tier)   User controls the domain, repoints DNS at new PDS. Zero ongoing liability.
   ------------ ------------- ----------------------------------- ---------------------------------------------------------------------------------------------
 
-> ***Design Decision:** did:web is only available to users who bring their own domain. Subdomain-based did:web is not offered because it creates exit liability --- the relay would be obligated to host the DID document indefinitely after the user leaves.*
+> ***Design Decision:** did:web is only available to users who bring their own domain. Subdomain-based did:web is not offered because it creates exit liability --- the PDS would be obligated to host the DID document indefinitely after the user leaves.*
 
 1.3 Authentication Model
 
@@ -53,7 +53,7 @@ The API uses three token types, each scoped to a specific client and lifetime:
   ---------------- --------------------- ---------------------------- --------------------------------------------
   **Token**        **Issued To**         **Lifetime**                 **Scope**
   session\_token   Web dashboard         24 hours (renewable)         Account management, billing, handle config
-  device\_token    Tauri app             Long-lived (until revoked)   Relay connection, DID ops, sync
+  device\_token    Tauri app             Long-lived (until revoked)   PDS connection, DID ops, sync
   claim\_code      Web → Tauri handoff   15 minutes (single-use)      Device registration only
   ---------------- --------------------- ---------------------------- --------------------------------------------
 
@@ -61,7 +61,7 @@ All authenticated requests must include the token in the Authorization header:
 
 > Authorization: Bearer {token}
 >
-> ***Design Decision:** All users authenticate through the web dashboard, including self-hosted relay operators. There is no static\_token bypass. One auth path means one security model to audit.*
+> ***Design Decision:** All users authenticate through the web dashboard, including self-hosted PDS operators. There is no static\_token bypass. One auth path means one security model to audit.*
 
 1.4 Rate Limiting
 
@@ -74,7 +74,7 @@ All endpoints are rate-limited per token. Free-tier accounts have stricter limit
   Business      300/min      1200/min    50 concurrent
   ------------- ------------ ----------- ---------------
 
-Note: BYO relay operators configure their own rate limits. BYO is a deployment model, not a subscription tier. See §6.3 for BYO relay configuration.
+Note: BYO PDS operators configure their own rate limits. BYO is a deployment model, not a subscription tier. See §6.3 for BYO PDS configuration.
 
 1.5 Error Envelope
 
@@ -96,7 +96,7 @@ All error responses use a consistent JSON envelope:
 
 2\. Account Lifecycle
 
-Account endpoints are consumed by the web dashboard. They handle signup, authentication, and account management. Accounts start on the free tier with usage caps enforced at the relay level.
+Account endpoints are consumed by the web dashboard. They handle signup, authentication, and account management. Accounts start on the free tier with usage caps enforced at the PDS level.
 
 **POST /v1/accounts**                                [v0.1]
 
@@ -134,7 +134,7 @@ Create a new account. Returns session credentials and a one-time claim code for 
 
 **POST /v1/accounts/mobile**                                [v0.1]
 
-Combined account creation for mobile clients. Creates the account, binds the device, generates the relay signing key, and initiates the DID ceremony in one request. Replaces the multi-step web dashboard flow for iOS users.
+Combined account creation for mobile clients. Creates the account, binds the device, generates the PDS signing key, and initiates the DID ceremony in one request. Replaces the multi-step web dashboard flow for iOS users.
 
 **Request Body**
 
@@ -161,8 +161,8 @@ Combined account creation for mobile clients. Creates the account, binds the dev
   did                     string     Fully qualified DID string
   did_document            object     The constructed DID document
   handle                  string     Assigned handle
-  relay_endpoint          object     Relay Endpoint Object (see §3.2)
-  relay_signing_key       string     Key ID of the relay's signing key
+  pds_endpoint          object     PDS Endpoint Object (see §3.2)
+  pds_signing_key       string     Key ID of the PDS's signing key
   tier                    string     Always "free" on creation
   shamir_share_1          string     Encrypted share for iCloud Keychain storage
   shamir_share_3_options  array      Available storage methods for Share 3
@@ -179,7 +179,7 @@ Combined account creation for mobile clients. Creates the account, binds the dev
   429          RATE_LIMITED            Too many signup attempts
   ------------ ----------------------- -------------------------------------------------------
 
-Note: This endpoint performs Shamir share generation as part of account creation. Share 1 is returned in the response for the client to store in iCloud Keychain. Share 2 is escrowed at the relay. Share 3 handling depends on user choice (communicated in a follow-up call or during onboarding flow).
+Note: This endpoint performs Shamir share generation as part of account creation. Share 1 is returned in the response for the client to store in iCloud Keychain. Share 2 is escrowed at the PDS. Share 3 handling depends on user choice (communicated in a follow-up call or during onboarding flow).
 
 **POST /v1/accounts/sessions**                        [v0.1]
 
@@ -246,7 +246,7 @@ Returns current usage metrics for the account. Consumed by both the web dashboar
   period\_start      string     ISO 8601, start of current billing period
   storage\_bytes     integer    Repo storage consumed
   storage\_limit     integer    Tier limit in bytes
-  bandwidth\_bytes   integer    Relay bandwidth this period
+  bandwidth\_bytes   integer    PDS bandwidth this period
   bandwidth\_limit   integer    Tier limit in bytes
   requests\_count    integer    XRPC requests proxied this period
   requests\_limit    integer    Tier limit
@@ -264,15 +264,15 @@ Returns current usage metrics for the account. Consumed by both the web dashboar
 
 3\. Device Registration
 
-Device endpoints are consumed by the Tauri app. The claim code handoff binds a specific device to an account, and the device\_token becomes the app's long-lived credential for all relay interactions.
+Device endpoints are consumed by the Tauri app. The claim code handoff binds a specific device to an account, and the device\_token becomes the app's long-lived credential for all PDS interactions.
 
 3.1 Multi-Device Model
 
-Pro accounts support up to 5 devices. To maintain a linear commit chain on the ATProto repo (required for federation), the relay enforces a primary-device model with lease-based write ownership.
+Pro accounts support up to 5 devices. To maintain a linear commit chain on the ATProto repo (required for federation), the PDS enforces a primary-device model with lease-based write ownership.
 
--   **Primary device:** Holds the write lease. Can commit to the repo, push to the relay, and trigger federation events.
+-   **Primary device:** Holds the write lease. Can commit to the repo, push to the PDS, and trigger federation events.
 
--   **Secondary devices:** Read-only replicas that sync from the relay. They see the full repo but cannot commit. A secondary can request promotion to primary.
+-   **Secondary devices:** Read-only replicas that sync from the PDS. They see the full repo but cannot commit. A secondary can request promotion to primary.
 
 -   **Lease transfer:** Explicit via the web dashboard or Tauri app. The current primary relinquishes the lease, the requesting device acquires it. If the primary is offline for longer than the lease TTL (configurable, default 24 hours), the lease expires and any device can claim it.
 
@@ -280,7 +280,7 @@ Pro accounts support up to 5 devices. To maintain a linear commit chain on the A
 
 **POST /v1/devices**                                   [v0.1]
 
-Register a device by redeeming a claim code. The Tauri app generates a keypair locally and sends the public key. The relay binds the device and returns a device token. The first device registered to an account automatically receives the primary write lease.
+Register a device by redeeming a claim code. The Tauri app generates a keypair locally and sends the public key. The PDS binds the device and returns a device token. The first device registered to an account automatically receives the primary write lease.
 
 **Request Body**
 
@@ -301,7 +301,7 @@ Register a device by redeeming a claim code. The Tauri app generates a keypair l
   device\_token     string     Long-lived opaque token
   account\_id       string     Bound account UUID
   is\_primary       boolean    Whether this device holds the write lease
-  relay\_endpoint   object     See Relay Endpoint Object below
+  PDS\_endpoint   object     See PDS Endpoint Object below
   ----------------- ---------- -------------------------------------------
 
 **Error Responses**
@@ -313,31 +313,31 @@ Register a device by redeeming a claim code. The Tauri app generates a keypair l
   422          INVALID\_KEY     Public key is malformed or unsupported curve
   ------------ ---------------- ---------------------------------------------------
 
-> ***Note:** The device private key never leaves the Tauri app. The relay stores only the public key for challenge-response verification during reconnection.*
+> ***Note:** The device private key never leaves the Tauri app. The PDS stores only the public key for challenge-response verification during reconnection.*
 
-3.2 Relay Endpoint Object
+3.2 PDS Endpoint Object
 
-Returned by device registration and the relay info endpoint:
+Returned by device registration and the PDS info endpoint:
 
   ---------------- ---------- --------------------------------------------
   **Field**        **Type**   **Description**
-  host             string     Relay hostname
-  port             integer    Relay port (typically 443)
+  host             string     PDS hostname
+  port             integer    PDS port (typically 443)
   iroh\_node\_id   string     Iroh node identifier for direct connection
-  region           string     Relay region code, e.g. \"us-east-1\"
+  region           string     PDS region code, e.g. \"us-east-1\"
   protocol         string     Connection protocol: \"iroh\" \| \"wss\"
   ---------------- ---------- --------------------------------------------
 
-**GET /v1/devices/:id/relay**                         [v0.1]
+**GET /v1/devices/:id/pds**                         [v0.1]
 
-Retrieve the assigned relay endpoint for a device. Used by the Tauri app on startup to discover where to connect.
+Retrieve the assigned PDS endpoint for a device. Used by the Tauri app on startup to discover where to connect.
 
 **Response (200 OK)**
 
   ----------------- ---------- ---------------------------------------------------------
   **Field**         **Type**   **Description**
-  relay\_endpoint   object     Relay Endpoint Object (see 3.2)
-  status            string     Relay status: \"online\" \| \"degraded\" \| \"offline\"
+  PDS\_endpoint   object     PDS Endpoint Object (see 3.2)
+  status            string     PDS status: \"online\" \| \"degraded\" \| \"offline\"
   buffer\_depth     integer    Messages buffered while device was offline
   ----------------- ---------- ---------------------------------------------------------
 
@@ -381,7 +381,7 @@ Request or release the primary write lease for a device.
 
 **DELETE /v1/devices/:id**                              [v1.0]
 
-Revoke a device. Invalidates its device\_token and disconnects it from the relay. If the revoked device was primary, the lease is released. Buffered messages are held for 72 hours before purging.
+Revoke a device. Invalidates its device\_token and disconnects it from the PDS. If the revoked device was primary, the lease is released. Buffered messages are held for 72 hours before purging.
 
 **Response (200 OK)**
 
@@ -404,11 +404,11 @@ Revoke a device. Invalidates its device\_token and disconnects it from the relay
 
 4\. DID Ceremony
 
-The DID ceremony binds a decentralized identifier to the user's device and relay. The Tauri app generates the DID document locally (the private key never leaves the device) and submits it to the relay for registration. The DID is the user's identity --- the follow graph, repo, and all social connections reference it. There is no such thing as migrating from one DID to another; that would be creating a new account.
+The DID ceremony binds a decentralized identifier to the user's device and PDS. The Tauri app generates the DID document locally (the private key never leaves the device) and submits it to the PDS for registration. The DID is the user's identity --- the follow graph, repo, and all social connections reference it. There is no such thing as migrating from one DID to another; that would be creating a new account.
 
 4.1 PLC Mirror
 
-The relay operates a PLC directory mirror to improve resolution speed and provide resilience against upstream outages. The mirror starts as read-only (caching and serving existing PLC documents) and may graduate to a read-write authority in a future version.
+The PDS operates a PLC directory mirror to improve resolution speed and provide resilience against upstream outages. The mirror starts as read-only (caching and serving existing PLC documents) and may graduate to a read-write authority in a future version.
 
   ----------- ---------------------- -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
   **Phase**   **Mode**               **Behavior**
@@ -416,15 +416,15 @@ The relay operates a PLC directory mirror to improve resolution speed and provid
   Future      Read-write authority   Can accept and validate new PLC operations independently. Participates in the PLC directory network as a peer.
   ----------- ---------------------- -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-> ***Note:** New DID operations (creation, rotation) are submitted to plc.directory via the relay as a proxy in v1.0. The mirror is purely for read-side performance and resilience.*
+> ***Note:** New DID operations (creation, rotation) are submitted to plc.directory via the PDS as a proxy in v1.0. The mirror is purely for read-side performance and resilience.*
 
 **POST /v1/dids**                                      [v0.1]
 
-Initiate a DID ceremony. The client submits key material (public keys only — private keys never leave the device). The relay constructs the DID document, including verification methods from submitted keys, service endpoint pointing to the relay, and handle (atproto_handle alias).
+Initiate a DID ceremony. The client submits key material (public keys only — private keys never leave the device). The PDS constructs the DID document, including verification methods from submitted keys, service endpoint pointing to the PDS, and handle (atproto_handle alias).
 
-For did:plc, the relay constructs and signs the genesis operation, then submits it to plc.directory. For did:web, the relay begins serving /.well-known/did.json through the user's custom domain.
+For did:plc, the PDS constructs and signs the genesis operation, then submits it to plc.directory. For did:web, the PDS begins serving /.well-known/did.json through the user's custom domain.
 
-The relay holds the signing key and uses it for all commit signing. The rotation key stays on the device (Secure Enclave on iOS, Keychain on macOS) and is only needed for DID recovery/rotation.
+The PDS holds the signing key and uses it for all commit signing. The rotation key stays on the device (Secure Enclave on iOS, Keychain on macOS) and is only needed for DID recovery/rotation.
 
 **Request Body**
 
@@ -443,7 +443,7 @@ The relay holds the signing key and uses it for all commit signing. The rotation
   **Field**               **Type**   **Description**
   did                     string     Fully qualified DID string
   did_document            object     W3C DID Document
-  relay_signing_key_id    string     Identifier of the relay-generated signing key
+  pds_signing_key_id    string     Identifier of the PDS-generated signing key
   ----------------------- ---------- -------------------------------------------------------
 
 **Error Responses**
@@ -456,7 +456,7 @@ The relay holds the signing key and uses it for all commit signing. The rotation
   429          RATE_LIMITED                     Too many DID ceremonies initiated
   ------------ -------------------------------- -------------------------------------------------------
 
-> ***Note:** For did:plc, the relay submits the signed genesis operation to plc.directory and status will be "pending_propagation" until confirmed. For did:web, the relay begins serving /.well-known/did.json through the user's custom domain.*
+> ***Note:** For did:plc, the PDS submits the signed genesis operation to plc.directory and status will be "pending_propagation" until confirmed. For did:web, the PDS begins serving /.well-known/did.json through the user's custom domain.*
 
 **GET /v1/dids/:did**                                  [v0.1]
 
@@ -479,7 +479,7 @@ Retrieve the current DID document and resolution status. For did:plc, resolution
 
   ------------ ----------------- ---------------------------------
   **Status**   **Code**          **Description**
-  404          DID\_NOT\_FOUND   DID doesn't exist in this relay
+  404          DID\_NOT\_FOUND   DID doesn't exist in this PDS
   ------------ ----------------- ---------------------------------
 
 **POST /v1/dids/:did/rotate**                        [v1.0]
@@ -511,17 +511,17 @@ Rotate the signing key for a DID. The Tauri app generates a new keypair, signs t
   409          ROTATION\_IN\_PROGRESS   A rotation is already pending
   ------------ ------------------------ -------------------------------------
 
-> ***Note:** Key rotation also updates the device's registered public key at the relay. For did:plc, the signed rotation operation is submitted to plc.directory. The old key remains valid for challenge-response for a 24-hour grace period to handle in-flight requests.*
+> ***Note:** Key rotation also updates the device's registered public key at the PDS. For did:plc, the signed rotation operation is submitted to plc.directory. The old key remains valid for challenge-response for a 24-hour grace period to handle in-flight requests.*
 
 5\. Handle & Domain Management
 
-Handle endpoints manage the user's ATProto handle (e.g., alice.yourservice.net or alice.com). Free-tier users get a subdomain on the service domain. Pro users can bring their own domain. The relay automates DNS record provisioning via Cloudflare or Route53.
+Handle endpoints manage the user's ATProto handle (e.g., alice.yourservice.net or alice.com). Free-tier users get a subdomain on the service domain. Pro users can bring their own domain. The PDS automates DNS record provisioning via Cloudflare or Route53.
 
 > ***Note:** Custom domains serve double duty: they are required for both custom handles AND did:web identity. When a Pro user verifies a custom domain, both the handle and the did:web option become available in the setup wizard.*
 
 **POST /v1/handles**                                   [v0.1]
 
-Request a handle. For subdomain handles, the relay provisions DNS immediately. For custom domains, the relay returns required DNS records for the user to configure.
+Request a handle. For subdomain handles, the PDS provisions DNS immediately. For custom domains, the PDS returns required DNS records for the user to configure.
 
 **Request Body**
 
@@ -535,7 +535,7 @@ Request a handle. For subdomain handles, the relay provisions DNS immediately. F
 
   --------------------- ---------- -------------------------------------------------------------
   **Field**             **Type**   **Description**
-  handle                string     Full handle (e.g., \"alice.relay.example.net\")
+  handle                string     Full handle (e.g., \"alice.PDS.example.net\")
   type                  string     \"subdomain\" \| \"custom\"
   status                string     \"active\" \| \"pending\_dns\" \| \"pending\_verification\"
   dns\_records          array      Required DNS records (for custom domains)
@@ -586,11 +586,11 @@ Poll DNS propagation and verification status for a handle. The Tauri app and web
   404          HANDLE\_NOT\_FOUND   Handle doesn't exist for this account
   ------------ -------------------- ---------------------------------------
 
-> ***Note:** For subdomain handles, status transitions directly to \"active\". For custom domains, expect 5--30 minutes for DNS propagation. The relay checks every 60 seconds.*
+> ***Note:** For subdomain handles, status transitions directly to \"active\". For custom domains, expect 5--30 minutes for DNS propagation. The PDS checks every 60 seconds.*
 
 **DELETE /v1/handles/:handle**                       [v0.1]
 
-Release a handle. For subdomain handles, the DNS record is removed immediately. For custom domains, the relay stops serving resolution but does not modify the user's DNS.
+Release a handle. For subdomain handles, the DNS record is removed immediately. For custom domains, the PDS stops serving resolution but does not modify the user's DNS.
 
 **Response (200 OK)**
 
@@ -622,7 +622,7 @@ The Tauri app includes a first-run setup wizard that guides the user through the
 
 4.  **Wait for propagation** --- Wizard polls GET /v1/dids/:did and GET /v1/handles/:handle/status until both are active. Shows a progress indicator with estimated time.
 
-5.  **Federation handshake** --- Relay calls requestCrawl to the BGS. Wizard confirms the PDS is discoverable on the ATProto network. Displays a \"You're live\" confirmation.
+5.  **Federation handshake** --- PDS calls requestCrawl to the BGS. Wizard confirms the PDS is discoverable on the ATProto network. Displays a \"You're live\" confirmation.
 
 6.2 Failure Recovery
 
@@ -635,36 +635,36 @@ Each wizard step is independently retryable. If the Tauri app loses connection o
   Handle taken                 Wizard prompts for an alternative handle
   DID propagation timeout      Wizard continues polling; user can skip and check later
   DNS verification timeout     Wizard shows manual DNS instructions; polling continues in background
-  Relay unreachable            Tauri retries with exponential backoff; wizard shows connection status
+  PDS unreachable            Tauri retries with exponential backoff; wizard shows connection status
   ---------------------------- ------------------------------------------------------------------------
 
-6.3 BYO Relay Configuration
+6.3 BYO PDS Configuration
 
-Self-hosted users who run their own relay can point the Tauri app at their relay before entering the setup wizard. The wizard writes a config file that the app reads on subsequent launches.
+Self-hosted users who run their own PDS can point the Tauri app at their PDS before entering the setup wizard. The wizard writes a config file that the app reads on subsequent launches.
 
 6.3.1 Config File
 
   --------------- ----------------------------
   **Platform**    **Path**
-  macOS / Linux   \~/.config/pds/relay.toml
-  Windows         %APPDATA%\\pds\\relay.toml
+  macOS / Linux   \~/.config/pds/pds.toml
+  Windows         %APPDATA%\\pds\\pds.toml
   --------------- ----------------------------
 
 Minimal config shape:
 
-> \[relay\]
+> \[PDS\]
 >
-> url = \"https://my-relay.example.com\"
+> url = \"https://my-PDS.example.com\"
 >
 > iroh\_node\_id = \"abc123\...\" \# optional, discovered via API
 >
 > \# Auth method is always claim\_code (web dashboard flow)
 
-If the config file exists when the Tauri app launches for the first time, the wizard uses the configured relay URL instead of the default managed service. All subsequent wizard steps (claim code, device binding, DID ceremony) proceed identically.
+If the config file exists when the Tauri app launches for the first time, the wizard uses the configured PDS URL instead of the default managed service. All subsequent wizard steps (claim code, device binding, DID ceremony) proceed identically.
 
 7\. Exit Ceremony
 
-The exit ceremony allows a user to leave the relay and take their identity and data with them. The DID is the user's identity --- what moves is the PDS hosting, not the identity itself. The follow graph, followers, and all social connections remain intact because the DID never changes.
+The exit ceremony allows a user to leave the PDS and take their identity and data with them. The DID is the user's identity --- what moves is the PDS hosting, not the identity itself. The follow graph, followers, and all social connections remain intact because the DID never changes.
 
 > ***Design Decision:** The exit story is a sovereignty requirement, not an afterthought. If users can't leave cleanly, the product's sovereignty promise is hollow.*
 
@@ -674,15 +674,15 @@ The exit ceremony allows a user to leave the relay and take their identity and d
 
 7.  **Prepare new PDS** --- User imports the CAR file into their new PDS host (outside the scope of this API, but the export format follows the ATProto spec for com.atproto.sync.getRepo).
 
-8.  **Repoint DID** --- For did:plc: user signs a PLC operation updating the service endpoint to their new PDS. The relay submits this to plc.directory. For did:web: user updates their domain's DNS / .well-known/did.json to point to the new PDS. No relay involvement needed.
+8.  **Repoint DID** --- For did:plc: user signs a PLC operation updating the service endpoint to their new PDS. The PDS submits this to plc.directory. For did:web: user updates their domain's DNS / .well-known/did.json to point to the new PDS. No PDS involvement needed.
 
-9.  **Grace period** --- The relay continues serving the repo and forwarding requests for 30 days after the DID repoints. This gives the network time to update resolution caches and ensures no dropped interactions during transition.
+9.  **Grace period** --- The PDS continues serving the repo and forwarding requests for 30 days after the DID repoints. This gives the network time to update resolution caches and ensures no dropped interactions during transition.
 
-10. **Account teardown** --- After the grace period (or immediately if the user confirms), the relay purges the repo data, revokes all device tokens, and marks the account as closed.
+10. **Account teardown** --- After the grace period (or immediately if the user confirms), the PDS purges the repo data, revokes all device tokens, and marks the account as closed.
 
 **GET /v1/export/repo**                                [v1.0]
 
-Export the full ATProto repo as a CAR (Content Addressable aRchive) file. This is a potentially large download --- the relay streams the response.
+Export the full ATProto repo as a CAR (Content Addressable aRchive) file. This is a potentially large download --- the PDS streams the response.
 
 **Response (200 OK)**
 
@@ -723,7 +723,7 @@ Construct and submit a signed DID operation that repoints the service endpoint t
   new\_service\_endpoint   string     The endpoint now in the DID document
   operation\_id            string     PLC operation ID (for did:plc)
   status                   string     \"pending\_propagation\" \| \"active\"
-  grace\_period\_ends      string     ISO 8601, when the relay stops serving the old repo
+  grace\_period\_ends      string     ISO 8601, when the PDS stops serving the old repo
   ------------------------ ---------- -----------------------------------------------------
 
 **Error Responses**
@@ -733,14 +733,14 @@ Construct and submit a signed DID operation that repoints the service endpoint t
   400          INVALID\_PROOF            Signing proof is invalid
   400          INVALID\_ENDPOINT         New service endpoint is unreachable or malformed
   409          MIGRATION\_IN\_PROGRESS   A migration is already pending for this DID
-  422          DIDWEB\_SELF\_SERVICE     did:web migration is handled via user's own DNS; no relay action needed
+  422          DIDWEB\_SELF\_SERVICE     did:web migration is handled via user's own DNS; no PDS action needed
   ------------ ------------------------- -------------------------------------------------------------------------
 
-> ***Note:** The relay validates that the new service endpoint is reachable and responds to basic ATProto XRPC calls before submitting the PLC operation. This prevents accidental lockout from typos.*
+> ***Note:** The PDS validates that the new service endpoint is reachable and responds to basic ATProto XRPC calls before submitting the PLC operation. This prevents accidental lockout from typos.*
 
 **DELETE /v1/accounts/:id**                            [v1.0]
 
-Initiate account teardown. By default, enters a 30-day grace period during which the relay continues serving the repo. The user can force immediate deletion by passing force=true.
+Initiate account teardown. By default, enters a 30-day grace period during which the PDS continues serving the repo. The user can force immediate deletion by passing force=true.
 
 **Request Body**
 
@@ -769,7 +769,7 @@ Initiate account teardown. By default, enters a 30-day grace period during which
   409          ACTIVE\_MIGRATION       Cannot delete while a DID migration is in progress
   ------------ ----------------------- ----------------------------------------------------
 
-> ***Note:** Requires session\_token. During the grace period, the account is read-only: the relay serves existing repo data and DID resolution but rejects new commits. The user can cancel the deletion during this period via POST /v1/accounts/:id/restore.*
+> ***Note:** Requires session\_token. During the grace period, the account is read-only: the PDS serves existing repo data and DID resolution but rejects new commits. The user can cancel the deletion during this period via POST /v1/accounts/:id/restore.*
 
 **POST /v1/accounts/:id/restore**                     [v1.0]
 
@@ -794,12 +794,12 @@ Cancel a pending account deletion during the grace period. Restores full write a
 
 8\. Free Tier Enforcement
 
-Usage is tracked at the relay level and enforced per-account. When a cap is reached, the relay returns 429 on write operations but continues serving reads (eventually consistent). This ensures the PDS remains visible on the network even when the account is over quota.
+Usage is tracked at the PDS level and enforced per-account. When a cap is reached, the PDS returns 429 on write operations but continues serving reads (eventually consistent). This ensures the PDS remains visible on the network even when the account is over quota.
 
   ----------------------- --------------- --------------- -----------------------------------------
   **Resource**            **Free Tier**   **Pro Tier**    **Enforcement**
   Repo storage            500 MB          50 GB           Reject commits over limit
-  Relay bandwidth         2 GB/month      100 GB/month    Throttle to 128 kbps over limit
+  PDS bandwidth         2 GB/month      100 GB/month    Throttle to 128 kbps over limit
   XRPC proxied requests   10,000/month    500,000/month   429 on writes, reads continue
   Devices per account     1               5               Reject new device registrations
   Custom domains          0               3               Reject handle creation with type=custom
@@ -813,7 +813,7 @@ Critical account events (usage at 90%, device revoked, DID rotation) trigger ema
 
 9.1 Token Security
 
--   Session tokens are JWTs signed with RS256. The relay's public key is published at /.well-known/jwks.json.
+-   Session tokens are JWTs signed with RS256. The PDS's public key is published at /.well-known/jwks.json.
 
 -   Device tokens are opaque (server-side lookup), not JWTs, to allow instant revocation without token refresh lag.
 
@@ -823,7 +823,7 @@ Critical account events (usage at 90%, device revoked, DID rotation) trigger ema
 
 -   Device private keys are generated and stored in the OS keychain (macOS Keychain, Windows Credential Manager) via Tauri's secure storage API.
 
--   The relay never sees, transmits, or stores private keys. All cryptographic proofs are generated device-side.
+-   The PDS never sees, transmits, or stores private keys. All cryptographic proofs are generated device-side.
 
 -   Key rotation invalidates the previous key after a 24-hour grace period. Rotation events are logged immutably.
 
@@ -831,15 +831,15 @@ Critical account events (usage at 90%, device revoked, DID rotation) trigger ema
 
 9.3 Transport
 
--   All API traffic is TLS 1.3 only. The relay does not support TLS 1.2 fallback.
+-   All API traffic is TLS 1.3 only. The PDS does not support TLS 1.2 fallback.
 
--   Device-to-relay data sync uses Iroh's encrypted transport (QUIC-based, end-to-end encrypted).
+-   Device-to-PDS data sync uses Iroh's encrypted transport (QUIC-based, end-to-end encrypted).
 
 -   CORS is restricted to the service's web dashboard origin. The Tauri app uses direct HTTPS, not browser fetch.
 
 10\. Internal Observability
 
-The relay exposes internal metrics for operating the SaaS product. These endpoints are not public-facing --- they are served on a separate internal port (default: 9090) accessible only from the ops network.
+The PDS exposes internal metrics for operating the SaaS product. These endpoints are not public-facing --- they are served on a separate internal port (default: 9090) accessible only from the ops network.
 
 > ***Design Decision:** User-facing event streams (webhooks, SSE) are deferred. Device-side notifications use the existing Iroh channel. Email handles critical account events. A public event API will be added if self-hosted operators request it.*
 
@@ -851,11 +851,11 @@ Prometheus-compatible metrics endpoint for standard monitoring infrastructure (G
 
   ----------------------------------- ----------- ------------------------------------------------
   **Metric**                          **Type**    **Description**
-  relay\_active\_connections          gauge       Currently connected Iroh tunnels
-  relay\_request\_duration\_seconds   histogram   XRPC request latency distribution
-  relay\_error\_total                 counter     Errors by type and status code
-  relay\_buffer\_depth                gauge       Messages buffered per device (offline devices)
-  relay\_bandwidth\_bytes\_total      counter     Bytes proxied, labeled by account tier
+  PDS\_active\_connections          gauge       Currently connected Iroh tunnels
+  PDS\_request\_duration\_seconds   histogram   XRPC request latency distribution
+  PDS\_error\_total                 counter     Errors by type and status code
+  PDS\_buffer\_depth                gauge       Messages buffered per device (offline devices)
+  PDS\_bandwidth\_bytes\_total      counter     Bytes proxied, labeled by account tier
   plc\_mirror\_resolution\_ms         histogram   DID resolution latency from PLC mirror
   plc\_mirror\_cache\_hit\_ratio      gauge       PLC mirror cache hit rate
   iroh\_tunnel\_health                gauge       Per-tunnel health score (0--1)
@@ -880,13 +880,13 @@ Higher-level metrics for product health monitoring. Served as JSON on the intern
 
 > ***Note:** Business metrics power internal dashboards and customer support tooling. They are not exposed to users. The /internal/stats endpoint requires a separate ops-scoped token and is never routed through the public load balancer.*
 
-## 11. Relay Key Management                                    [v0.1]
+## 11. PDS Key Management                                    [v0.1]
 
-The relay holds the ATProto signing key. These endpoints manage the relay's key lifecycle.
+The PDS holds the ATProto signing key. These endpoints manage the PDS's key lifecycle.
 
-**POST /v1/relay/keys**                                         [v0.1]
+**POST /v1/pds/keys**                                         [v0.1]
 
-Generate a new relay signing key. Called during account creation or key rotation. The relay generates the key internally — the private key is never exposed.
+Generate a new PDS signing key. Called during account creation or key rotation. The PDS generates the key internally — the private key is never exposed.
 
 **Response (200 OK)**
 
@@ -898,9 +898,9 @@ Generate a new relay signing key. Called during account creation or key rotation
   created_at              string     ISO 8601
   ----------------------- ---------- -------------------------------------------------------
 
-**DELETE /v1/relay/keys/:keyId**                                [v1.0]
+**DELETE /v1/pds/keys/:keyId**                                [v1.0]
 
-Revoke a relay signing key. Triggers DID rotation to update the signing key in the DID document.
+Revoke a PDS signing key. Triggers DID rotation to update the signing key in the DID document.
 
 **Response (200 OK)**
 
@@ -910,7 +910,7 @@ Revoke a relay signing key. Triggers DID rotation to update the signing key in t
   rotation_status         string     "pending" | "complete"
   ----------------------- ---------- -------------------------------------------------------
 
-**POST /v1/relay/commits/sign**                                 [v0.2]
+**POST /v1/pds/commits/sign**                                 [v0.2]
 
 Sign an unsigned commit constructed by the desktop PDS. Desktop-enrolled mode only.
 
@@ -930,15 +930,15 @@ Sign an unsigned commit constructed by the desktop PDS. Desktop-enrolled mode on
   commit_cid              string     CID of the signed commit
   ----------------------- ---------- -------------------------------------------------------
 
-**GET /v1/relay/repo/snapshot**                                 [v0.2]
+**GET /v1/pds/repo/snapshot**                                 [v0.2]
 
 Full repo export as CAR file. Used by desktop during initial sync after enrollment.
 
 **Response:** streaming CAR file (same format as com.atproto.sync.getRepo)
 
-**GET /v1/relay/mode**                                          [v0.2]
+**GET /v1/pds/mode**                                          [v0.2]
 
-Current relay operating mode for this account.
+Current PDS operating mode for this account.
 
 **Response (200 OK)**
 
@@ -976,7 +976,7 @@ Initiate device pairing via QR code. The phone generates a pairing session, the 
 
 **POST /v1/devices/:id/promote**                                [v0.2]
 
-Promote a paired desktop to repo host. Transitions the relay from mobile-only to desktop-enrolled mode. The relay transfers the repo to the desktop via Iroh.
+Promote a paired desktop to repo host. Transitions the PDS from mobile-only to desktop-enrolled mode. The PDS transfers the repo to the desktop via Iroh.
 
 **Response (200 OK)**
 
@@ -1073,7 +1073,7 @@ Begin a recovery ceremony. User must present 2 of 3 Shamir shares to reconstruct
   **Field**               **Type**   **Required**   **Description**
   email                   string     yes            Account email for verification
   share_1                 string     yes            First Shamir share (e.g., from iCloud)
-  share_source_1          string     yes            "icloud" | "relay" | "device" | "paper"
+  share_source_1          string     yes            "icloud" | "PDS" | "device" | "paper"
   ----------------------- ---------- -------------- -------------------------------------------------------
 
 **Response (200 OK)**
@@ -1108,13 +1108,13 @@ Submit reconstructed key material to prove DID ownership.
 
 **GET /v1/recovery/restore**                                    [v1.0]
 
-Stream the repo and blobs from the relay to the new device after successful key verification.
+Stream the repo and blobs from the PDS to the new device after successful key verification.
 
 **Response:** streaming CAR file + blob manifest
 
 **PUT /v1/keys/shares/:id**                                     [v1.0]
 
-Update the relay-held Shamir share (Share 2). Used after key rotation to re-split with new shares.
+Update the PDS-held Shamir share (Share 2). Used after key rotation to re-split with new shares.
 
 **Request Body**
 
@@ -1188,13 +1188,13 @@ This appendix collects all design decisions made during the specification proces
 
   ------------------------------------------------ --------------------------------------------------------------------------------------------------------------------------------------------------------------
   **Decision**                                     **Rationale**
-  did:plc is the default DID method                Decouples identity from relay domain. Clean exit path: user signs a PLC operation to repoint service endpoint. No ongoing liability for the relay operator.
-  did:web requires a user-owned custom domain      Eliminates exit liability. If did:web were offered on service subdomains, the relay would be obligated to host DID documents indefinitely after users leave.
+  did:plc is the default DID method                Decouples identity from PDS domain. Clean exit path: user signs a PLC operation to repoint service endpoint. No ongoing liability for the PDS operator.
+  did:web requires a user-owned custom domain      Eliminates exit liability. If did:web were offered on service subdomains, the PDS would be obligated to host DID documents indefinitely after users leave.
   Primary-device write lease for multi-device      ATProto repos require a linear commit chain. LWW risks lost writes; conflict queues have poor UX. Primary-device matches actual desktop usage patterns.
   Single auth path (web dashboard for all users)   One security model to audit. Self-hosted static\_token bypass can be added later if operators request it.
   No public event API in v1.0                      Iroh channel handles device notifications. Email handles critical alerts. A webhook/SSE surface adds complexity without clear demand.
   PLC mirror starts read-only                      Reduces operational risk. Read-write authority requires consensus participation with the PLC network --- deferred until the product matures.
   Setup wizard handles DID ceremony                Users get a single \"setup complete\" moment. Splitting device binding and DID ceremony into separate sessions creates drop-off risk.
-  30-day grace period on account deletion          Prevents accidental data loss. The relay continues serving the repo during transition, ensuring zero dropped interactions for the user's followers.
-  Relay constructs DID document                   Client sends raw key material, not a pre-built DID document. Ensures relay controls document structure, service endpoints, and signing key binding. Client only needs public keys — no DID assembly logic required. Simplifies mobile clients significantly.
+  30-day grace period on account deletion          Prevents accidental data loss. The PDS continues serving the repo during transition, ensuring zero dropped interactions for the user's followers.
+  PDS constructs DID document                   Client sends raw key material, not a pre-built DID document. Ensures PDS controls document structure, service endpoints, and signing key binding. Client only needs public keys — no DID assembly logic required. Simplifies mobile clients significantly.
   ------------------------------------------------ --------------------------------------------------------------------------------------------------------------------------------------------------------------

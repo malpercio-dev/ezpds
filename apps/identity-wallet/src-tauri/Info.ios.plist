@@ -24,7 +24,7 @@
     NOT register pure custom schemes for iOS — its mobile config only emits CFBundleURLTypes
     for app-link (https + host) entries and otherwise REMOVES the key — so we declare it here.
     Tauri merges this Info.ios.plist after the plugin's build.rs runs, so it wins.
-    Must match tauri.conf.json `identifier`, the relay's registered redirect_uri (V013),
+    Must match tauri.conf.json `identifier`, the PDS's registered redirect_uri (V013),
     and the OAuth client_id. Runtime delivery is wired in lib.rs
     (deep_link().on_open_url -> oauth::handle_deep_link).
   -->

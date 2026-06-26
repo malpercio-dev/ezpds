@@ -5196,6 +5196,54 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3"
 
 [[package]]
+name = "pds"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "atrium-repo",
+ "axum",
+ "base64 0.21.7",
+ "chrono",
+ "clap",
+ "common",
+ "crypto",
+ "data-encoding",
+ "futures-util",
+ "hickory-resolver",
+ "infer",
+ "ipld-core",
+ "iroh",
+ "jsonwebtoken",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "p256",
+ "rand_core 0.6.4",
+ "repo-engine",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_bytes",
+ "serde_ipld_dagcbor",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "subtle",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite",
+ "tower 0.5.3",
+ "tower-http 0.5.2",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "uuid",
+ "wiremock",
+ "zeroize",
+]
+
+[[package]]
 name = "pem"
 version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6133,54 +6181,6 @@ name = "regex-syntax"
 version = "0.8.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
-
-[[package]]
-name = "relay"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "argon2",
- "atrium-repo",
- "axum",
- "base64 0.21.7",
- "chrono",
- "clap",
- "common",
- "crypto",
- "data-encoding",
- "futures-util",
- "hickory-resolver",
- "infer",
- "ipld-core",
- "iroh",
- "jsonwebtoken",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
- "p256",
- "rand_core 0.6.4",
- "repo-engine",
- "reqwest 0.12.28",
- "serde",
- "serde_bytes",
- "serde_ipld_dagcbor",
- "serde_json",
- "sha2 0.10.9",
- "sqlx",
- "subtle",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-tungstenite",
- "tower 0.5.3",
- "tower-http 0.5.2",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
- "uuid",
- "wiremock",
- "zeroize",
-]
 
 [[package]]
 name = "rend"

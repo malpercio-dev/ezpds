@@ -1,6 +1,6 @@
 # ezpds
 
-Last verified: 2026-06-24
+Last verified: 2026-06-26
 
 ## Tech Stack
 - Language: Rust (stable channel via rust-toolchain.toml)
@@ -11,7 +11,7 @@ Last verified: 2026-06-24
 
 ## Commands
 - `nix develop --impure --accept-flake-config` - Enter dev shell (flags required; --impure for devenv CWD detection, --accept-flake-config activates the Cachix binary cache in nixConfig — without it, a cold build takes 20+ minutes)
-- `docker build -t relay .` / `just docker-build` - Build relay OCI image
+- `docker build -t pds .` / `just docker-build` - Build PDS OCI image
 - `just nix-check` / `nix flake check --impure --accept-flake-config` - Validate NixOS module evaluation and flake structure
 - `cargo build` - Build all crates
 - `cargo test` - Run all tests
@@ -20,9 +20,9 @@ Last verified: 2026-06-24
 - `just ci` - Full local gate (fmt-check, clippy, test, audit) — the same checks CI runs
 
 ## CI/CD
-CI is split by platform: the **relay** builds and deploys on **tangled spindles** (`.tangled/workflows/`, Linux); the **iOS app** builds and ships on **GitHub Actions** (a public mirror, macOS), because `cargo tauri ios build` needs macOS + Xcode that Linux spindles lack.
+CI is split by platform: the **PDS** builds and deploys on **tangled spindles** (`.tangled/workflows/`, Linux); the **iOS app** builds and ships on **GitHub Actions** (a public mirror, macOS), because `cargo tauri ios build` needs macOS + Xcode that Linux spindles lack.
 
-**Relay (tangled spindles).** Three workflows, each running `just ci-relay` first (the Linux gate — like `just ci` but `--exclude identity-wallet`, since the iOS app needs the Apple/GTK toolchain absent in CI):
+**PDS (tangled spindles).** Three workflows, each running `just ci-pds` first (the Linux gate — like `just ci` but `--exclude identity-wallet`, since the iOS app needs the Apple/GTK toolchain absent in CI):
 - `pr.yaml` — test gate on PRs to `main` (no deploy, no Railway token)
 - `staging.yaml` — push to `main` → deploy to the Railway **staging** environment
 - `release.yaml` — push a `v*` tag → promote to **production**
@@ -38,13 +38,13 @@ Deploys use the Railway CLI (nixpkgs dep) with environment-scoped tokens held as
 - Rust toolchain managed by **rustup** (not Nix's `rust-default`); pinned in `rust-toolchain.toml` (stable, with rustfmt + clippy + rust-analyzer + iOS targets). On first shell entry, `enterShell` runs `rustup toolchain install` automatically.
 - Shell provides: just, cargo-audit, sqlite (runtime binary + dev headers/library for sqlx's libsqlite3-sys), pkg-config, cargo-tauri, node (22.x), pnpm, rustup, shellcheck
 - `LIBSQLITE3_SYS_USE_PKG_CONFIG=1` is set automatically by devenv (links sqlx against Nix-provided SQLite instead of bundled)
-- `DEVELOPER_DIR` and the Apple iOS toolchain are resolved dynamically (no hardcoded Xcode paths): `enterShell` sources `apps/identity-wallet/scripts/ios-env.sh`, which runs `/usr/bin/xcode-select -p` to point `DEVELOPER_DIR` at the active Xcode (Nix's Darwin hooks otherwise clobber it to a stub SDK). The same script is sourced by the patched Xcode Run Script phase, so CLI and Xcode builds resolve the toolchain identically. iOS-host `CC`/`AR`/linker overrides are gated on `EZPDS_IOS_BUILD=1` (set only by the `just ios-*` recipes and the Xcode Run Script), so a plain `cargo build --workspace` / `cargo run -p relay` is unaffected.
+- `DEVELOPER_DIR` and the Apple iOS toolchain are resolved dynamically (no hardcoded Xcode paths): `enterShell` sources `apps/identity-wallet/scripts/ios-env.sh`, which runs `/usr/bin/xcode-select -p` to point `DEVELOPER_DIR` at the active Xcode (Nix's Darwin hooks otherwise clobber it to a stub SDK). The same script is sourced by the patched Xcode Run Script phase, so CLI and Xcode builds resolve the toolchain identically. iOS-host `CC`/`AR`/linker overrides are gated on `EZPDS_IOS_BUILD=1` (set only by the `just ios-*` recipes and the Xcode Run Script), so a plain `cargo build --workspace` / `cargo run -p pds` is unaffected.
 - Binary cache: devenv.cachix.org (activated by `--accept-flake-config`); speeds up cold shell builds significantly
 - nixpkgs pin: `cachix/devenv-nixpkgs/rolling` (devenv's own nixpkgs fork — package versions may differ from upstream nixpkgs.search.dev)
 
 ## Project Structure
 - `apps/identity-wallet/` - Tauri v2 mobile app (iOS)
-- `crates/relay/` - Web relay (axum-based)
+- `crates/pds/` - PDS / Custos server (axum-based)
 - `crates/repo-engine/` - ATProto repo engine
 - `crates/crypto/` - Cryptographic operations (P-256 key generation, did:key derivation, AES-256-GCM encryption, did:plc genesis ops and verification)
 - `crates/common/` - Shared types and utilities
@@ -58,22 +58,34 @@ Deploys use the Railway CLI (nixpkgs dep) with environment-scoped tokens held as
 - iOS build commands: `just ios-dev` / `just ios-build` (run from repo root; macOS + Xcode required). Toolchain resolved by `apps/identity-wallet/scripts/ios-env.sh`; patches re-applied via `just ios-postinit` after `cargo tauri ios init`.
 
 ## Design Context
-The `identity-wallet` app is the only UI surface in the repo. **[PRODUCT.md](PRODUCT.md)** (repo root) is the design source-of-truth — read it before any frontend design/UX work; **[DESIGN.md](DESIGN.md)** carries the visual system (palette, type, components).
+The repo has **two UI surfaces, each with its own scoped design brief.** Read the brief for the app you're working on before any frontend design/UX work, and target `/impeccable` at that app's path so it loads the right brief:
+- **identity-wallet** (Obsign) → root **[PRODUCT.md](PRODUCT.md)** + **[DESIGN.md](DESIGN.md)**.
+- **admin-companion** → **[apps/admin-companion/PRODUCT.md](apps/admin-companion/PRODUCT.md)** + **[apps/admin-companion/DESIGN.md](apps/admin-companion/DESIGN.md)**.
+
+The two are **siblings** — shared security rigor (practice-what-you-preach, WCAG 2.2 AAA, status never by color alone) — but **deliberately different registers**. Do not cross-apply one app's visual system to the other.
+
+### identity-wallet (Obsign) — *humane security instrument* (Proton / 1Password lane)
 - **Register:** product — design serves the task of holding and defending an identity.
 - **Personality:** a *serious security instrument* in the humane **Proton / 1Password** lane — sovereign, precise, trustworthy. Gravitas comes from precision and restraint, not chrome.
 - **Principles:** clarity is the security feature · calm under alarm · progressive disclosure of the cryptographic machinery · practice the assurance you preach · honest, never hype.
 - **Anti-references (hard "don'ts"):** crypto/web3 hype · enterprise dashboard · playful/gamified · generic stock-iOS · Ledger-style dark-technical heaviness.
 - **Accessibility:** target WCAG 2.2 AAA; urgency/status is never signalled by color alone (always paired with text + icon + position).
 - **Token layer (code):** `apps/identity-wallet/src/lib/styles/{tokens,fonts,base}.css` is the live design system — global OKLCH color/type/space/radius/motion tokens, self-hosted fonts (bundled in `static/fonts/`, no runtime CDN), and base styles. Imported once in `src/routes/+layout.svelte`. Components reference `var(--color-*)`, `var(--font-*)`, `var(--space-*)`, etc.; **never hardcode hex or px**. Every screen has been migrated — the `src/lib/components` + `src/routes` tree is hex-free. Shared UI primitives live in `src/lib/components/ui/` (`Button`, `TextField`, `Spinner`, `SealEmblem`, `OnboardingShell`, `UrgencyBadge`, `DiffRow`); reuse them rather than re-styling.
-- **Tooling:** design work runs through the `/impeccable` skill (PRODUCT.md/DESIGN.md are its inputs); live-iteration mode is pre-configured in `.impeccable/live/config.json`.
+- **Tooling:** design work runs through the `/impeccable` skill (it reads the targeted app's PRODUCT.md/DESIGN.md — pass the app path so it loads the right brief, e.g. `apps/admin-companion`); live-iteration mode is pre-configured for the wallet in `.impeccable/live/config.json`.
+
+### admin-companion — *terminal-native operator console* ("The Brass Console")
+- **What:** a separate iOS app for the relay **operator** (generate/share claim codes, pair/revoke admin devices via per-device Secure-Enclave signed requests). Distinct audience: technical operators, not end users. See [docs/design-plans/2026-06-26-admin-companion-app.md](docs/design-plans/2026-06-26-admin-companion-app.md) (Wave 7).
+- **Register:** product, but the inverse of Obsign's lane — cool-slate dark ground, sealing-wax gold accent carried from Obsign, monospace-forward; reports the literal truth rather than hiding the machinery.
+- **Anti-references (hard "don'ts"):** hacker cosplay / terminal kitsch · consumer-app friendliness (Obsign's lane) · crypto/web3 hype · enterprise dashboard / chart-soup · low-contrast dark-theme mush.
+- **Status:** `DESIGN.md` is a **SEED** (anchors only) until the Tauri app is scaffolded (Phase 6 / [MM-190](https://linear.app/atbb/issue/MM-190/phase-6-companion-app-scaffold-admin-device-key-app)); re-run `/impeccable document` in scan mode against `apps/admin-companion/` then to extract real tokens + the `.impeccable/design.json` sidecar. No token-layer code or live config exists yet.
 
 ## Flake Outputs
-- `nixosModules.default` - NixOS module for relay OCI container deployment (see `nix/CLAUDE.md`)
+- `nixosModules.default` - NixOS module for PDS OCI container deployment (see `nix/CLAUDE.md`)
 - `devShells.<system>.default` - Development shell via devenv
 
 ## Bruno API Collection
-- `bruno/` - Bruno HTTP client collection for all relay endpoints
-- Open in Bruno desktop app; select the `local` environment and set `adminToken` to your relay admin token
+- `bruno/` - Bruno HTTP client collection for all PDS endpoints
+- Open in Bruno desktop app; select the `local` environment and set `adminToken` to your PDS admin token
 - **Mandatory:** When adding, removing, or changing any route (path, method, request body, response shape, auth), update the corresponding `.bru` file in `bruno/`. New routes get a new `.bru` file with the next `seq` number.
 
 ## Project Status / Planning
@@ -82,8 +94,8 @@ The `identity-wallet` app is the only UI surface in the repo. **[PRODUCT.md](PRO
 - **Static plan:** [`docs/v01-issue-plan.md`](docs/v01-issue-plan.md) is the original wave breakdown (does not track live Done/Backlog state — use Linear for that). [`docs/unified-milestone-map.md`](docs/unified-milestone-map.md) is the phase model (v0.1–v2.0+).
 - Wave labels: Wave 2 (Auth), Wave 3 (Key Sovereignty), Wave 4 (Repo + Blobs), Wave 5 (Federation), Wave 7 (Hardening), Wave 8 (auth.md). Tag new issues with their wave on creation.
 
-## Relay Architecture
-See [`crates/relay/CLAUDE.md`](crates/relay/CLAUDE.md) for relay-specific module structure,
+## PDS Architecture
+See [`crates/pds/CLAUDE.md`](crates/pds/CLAUDE.md) for PDS-specific module structure,
 hard rules (route isolation, pattern comments, DB ownership), and step-by-step guides for
 adding routes and DB queries.
 
@@ -96,4 +108,4 @@ adding routes and DB queries.
 ## Boundaries
 - Never edit: `flake.lock` by hand (managed by `nix flake update`)
 - Never edit: `devenv.local.nix` is gitignored for local overrides only
-- `flake.nix` is intentionally minimal: it exposes only the devenv `devShells.<system>.default` and `nixosModules.default` (no crane/rust-overlay inputs, no `packages.<system>.*` build outputs). The relay binary is built via the root `Dockerfile` (`cargo build --release --locked -p relay`), not by Nix — deploy as an OCI image, not a Nix-built binary. See `docs/deploy.md`.
+- `flake.nix` is intentionally minimal: it exposes only the devenv `devShells.<system>.default` and `nixosModules.default` (no crane/rust-overlay inputs, no `packages.<system>.*` build outputs). The PDS binary is built via the root `Dockerfile` (`cargo build --release --locked -p pds`), not by Nix — deploy as an OCI image, not a Nix-built binary. See `docs/deploy.md`.

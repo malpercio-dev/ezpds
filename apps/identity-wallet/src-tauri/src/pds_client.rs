@@ -10,25 +10,21 @@ use std::time::Duration;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-/// OAuth client metadata path, appended to the relay's public URL to form the `client_id`.
+/// OAuth client metadata path, appended to the PDS's public URL to form the `client_id`.
 ///
-/// External auth servers (e.g. bsky.social) GET `{relay_url}/oauth/client-metadata.json`
+/// External auth servers (e.g. bsky.social) GET `{pds_url}/oauth/client-metadata.json`
 /// to discover redirect_uris, grant_types, etc.
 const CLIENT_METADATA_PATH: &str = "/oauth/client-metadata.json";
 
 /// OAuth redirect URI for external PDS authentication.
 const REDIRECT_URI: &str = "dev.malpercio.identitywallet:/oauth/callback";
 
-/// Build the OAuth client_id URL from a relay base URL.
+/// Build the OAuth client_id URL from a PDS base URL.
 ///
-/// The client_id is the relay's public URL + `/oauth/client-metadata.json`.
-/// This must match what the relay serves at that path.
-pub fn client_id_for_relay(relay_url: &str) -> String {
-    format!(
-        "{}{}",
-        relay_url.trim_end_matches('/'),
-        CLIENT_METADATA_PATH
-    )
+/// The client_id is the PDS's public URL + `/oauth/client-metadata.json`.
+/// This must match what the PDS serves at that path.
+pub fn client_id_for_pds(pds_url: &str) -> String {
+    format!("{}{}", pds_url.trim_end_matches('/'), CLIENT_METADATA_PATH)
 }
 
 /// Error type for PDS client operations.
@@ -723,7 +719,7 @@ async fn try_resolve_dns(handle: &str) -> Result<Option<String>, PdsClientError>
     let dns_name = format!("_atproto.{}", handle);
     tracing::debug!(dns_name = %dns_name, "attempting DNS TXT lookup");
 
-    // Create a resolver using system DNS config (matches relay pattern in dns.rs:49)
+    // Create a resolver using system DNS config (matches PDS pattern in dns.rs:49)
     let resolver = hickory_resolver::Resolver::builder_tokio()
         .map_err(|e| PdsClientError::NetworkError {
             message: format!("failed to create DNS resolver: {}", e),

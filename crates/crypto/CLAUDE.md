@@ -52,10 +52,10 @@ pub fn combine_shares(&ShamirShare, &ShamirShare) -> Result<Zeroizing<[u8; 32]>,
 ```rust
 pub fn build_did_plc_genesis_op(
     rotation_key: &DidKeyUri,       // user's root rotation key (rotationKeys[0])
-    signing_key: &DidKeyUri,        // relay's signing key (rotationKeys[1] + verificationMethods.atproto)
+    signing_key: &DidKeyUri,        // PDS's signing key (rotationKeys[1] + verificationMethods.atproto)
     signing_private_key: &[u8; 32], // raw P-256 private key scalar for signing_key
     handle: &str,                   // e.g. "alice.example.com"
-    service_endpoint: &str,         // e.g. "https://relay.example.com"
+    service_endpoint: &str,         // e.g. "https://PDS.example.com"
 ) -> Result<PlcGenesisOp, CryptoError>
 ```
 - Constructs a signed did:plc genesis operation
@@ -70,9 +70,9 @@ pub fn build_did_plc_genesis_op(
 ```rust
 pub fn build_did_plc_genesis_op_with_external_signer<F>(
     rotation_key: &DidKeyUri,       // user's device key (rotationKeys[0])
-    signing_key: &DidKeyUri,        // relay's signing key (rotationKeys[1] + verificationMethods.atproto)
+    signing_key: &DidKeyUri,        // PDS's signing key (rotationKeys[1] + verificationMethods.atproto)
     handle: &str,                   // e.g. "alice.example.com"
-    service_endpoint: &str,         // e.g. "https://relay.example.com"
+    service_endpoint: &str,         // e.g. "https://PDS.example.com"
     sign: F,                        // callback: &[u8] -> Result<Vec<u8>, CryptoError>
 ) -> Result<PlcGenesisOp, CryptoError>
 where F: FnOnce(&[u8]) -> Result<Vec<u8>, CryptoError>
@@ -128,7 +128,7 @@ pub fn verify_genesis_op(
 
 ## Dependencies
 - **Uses**: p256 (ECDSA/key generation), aes-gcm (AES-256-GCM), multibase (base58btc encoding), rand_core (OS RNG), base64 (storage encoding), zeroize (secret cleanup), ciborium (CBOR serialization for did:plc), data-encoding (base32-lowercase), sha2 (SHA-256), serde/serde_json (struct serialization)
-- **Used by**: `crates/relay/` (key generation, did:plc genesis building and verification in POST /v1/dids), `apps/identity-wallet/` (external signer genesis op building in DID ceremony)
+- **Used by**: `crates/PDS/` (key generation, did:plc genesis building and verification in POST /v1/dids), `apps/identity-wallet/` (external signer genesis op building in DID ceremony)
 
 ## Invariants
 - Private key bytes are always wrapped in `Zeroizing` -- callers must not copy them into non-zeroizing storage

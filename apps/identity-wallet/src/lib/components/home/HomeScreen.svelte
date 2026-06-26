@@ -105,10 +105,10 @@
 
     <div class="status-section">
       <div class="status-row">
-        <span class="status-dot" class:ok={homeData?.relayHealthy} class:err={!homeData?.relayHealthy} aria-hidden="true"></span>
+        <span class="status-dot" class:ok={homeData?.pdsHealthy} class:err={!homeData?.pdsHealthy} aria-hidden="true"></span>
         <div>
-          <p class="status-label">Relay</p>
-          <p class="status-value">{homeData?.relayHealthy ? 'Connected' : 'Error'}</p>
+          <p class="status-label">Custos</p>
+          <p class="status-value">{homeData?.pdsHealthy ? 'Connected' : 'Error'}</p>
         </div>
       </div>
       <div class="status-row">

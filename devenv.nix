@@ -21,8 +21,8 @@
   env.RUSTUP_HOME = "${config.devenv.root}/.devenv/state/rustup";
   env.CARGO_HOME  = "${config.devenv.root}/.devenv/state/cargo";
 
-  # Relay dev configuration — override any of these in devenv.local.nix.
-  env.EZPDS_CONFIG = "${config.devenv.root}/relay.dev.toml";
+  # PDS dev configuration — override any of these in devenv.local.nix.
+  env.EZPDS_CONFIG = "${config.devenv.root}/pds.dev.toml";
   env.EZPDS_DATA_DIR = "${config.devenv.root}/.devenv/state/relay";
   env.EZPDS_PUBLIC_URL = "http://localhost:8080";
   env.RUST_LOG = "info";
@@ -48,10 +48,10 @@
     fi
   '';
 
-  processes.relay = {
+  processes.pds = {
     exec = ''
       export PATH="$CARGO_HOME/bin:$PATH"
-      exec cargo run --package relay
+      exec cargo run --package pds
     '';
   };
 }

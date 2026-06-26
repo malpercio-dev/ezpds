@@ -4,11 +4,11 @@ let cfg = config.services.ezpds;
 in
 {
   options.services.ezpds = {
-    enable = lib.mkEnableOption "ezpds relay (OCI container)";
+    enable = lib.mkEnableOption "ezpds PDS (OCI container)";
 
     image = lib.mkOption {
       type = lib.types.str;
-      description = "Relay OCI image reference, ideally digest-pinned (ghcr.io/<owner>/relay@sha256:...).";
+      description = "PDS OCI image reference, ideally digest-pinned (ghcr.io/<owner>/pds@sha256:...).";
     };
 
     port = lib.mkOption {
@@ -25,7 +25,7 @@ in
 
     publicUrl = lib.mkOption {
       type = lib.types.str;
-      description = "Public https URL of the relay.";
+      description = "Public https URL of the PDS.";
     };
 
     availableUserDomains = lib.mkOption {

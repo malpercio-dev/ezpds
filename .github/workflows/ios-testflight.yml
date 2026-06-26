@@ -13,7 +13,7 @@ name: iOS · TestFlight
 on:
   push:
     branches: [main]
-    # Skip iOS rebuilds for changes that cannot affect the app (e.g. relay-only
+    # Skip iOS rebuilds for changes that cannot affect the app (e.g. pds-only
     # docs). crates/** is included because the app links shared workspace crates.
     paths:
       - "apps/identity-wallet/**"

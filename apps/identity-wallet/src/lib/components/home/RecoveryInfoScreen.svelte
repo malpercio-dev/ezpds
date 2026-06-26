@@ -43,7 +43,7 @@
     </span>
     <div class="share-info">
       <p class="share-label">Share 2 of 3</p>
-      <p class="share-desc">Held by the relay — stored during account setup</p>
+      <p class="share-desc">Held by Custos — stored during account setup</p>
     </div>
   </div>
 

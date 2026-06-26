@@ -2,7 +2,7 @@
 
 > Scope: this file describes the **identity-wallet** mobile app (`apps/identity-wallet/`),
 > the only frontend surface in the ezpds repo. It is the design source-of-truth that every
-> `/impeccable` command reads. The rest of the repo is the Rust backend (relay, crypto, repo-engine).
+> `/impeccable` command reads. The rest of the repo is the Rust backend (pds, crypto, repo-engine).
 
 ## Register
 

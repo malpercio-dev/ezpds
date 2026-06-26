@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 //
-// Gathers: AppState (oauth_session), RelayClient, OAuthClient
+// Gathers: AppState (oauth_session), CustosClient, OAuthClient
 // Processes: concurrent _health + getSession + Keychain check
 // Returns: HomeData (always Ok — partial failures encoded as fields)
 
@@ -38,12 +38,12 @@ pub struct SessionInfo {
 }
 
 /// Home screen data payload. Always returned as Ok — partial failures
-/// (relay unreachable, session expired) are encoded as fields so the UI
+/// (PDS unreachable, session expired) are encoded as fields so the UI
 /// can render whatever is available.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HomeData {
-    pub relay_healthy: bool,
+    pub pds_healthy: bool,
     /// null when getSession failed or no session exists in AppState
     pub session: Option<SessionInfo>,
     /// SCREAMING_SNAKE_CASE error code when session is null
@@ -53,7 +53,7 @@ pub struct HomeData {
 
 // ── Commands ──────────────────────────────────────────────────────────────
 
-/// Load home screen data: relay health, session info, and Keychain share status.
+/// Load home screen data: PDS health, session info, and Keychain share status.
 ///
 /// Fires GET /xrpc/_health and GET /xrpc/com.atproto.server.getSession
 /// concurrently via tokio::join!. Always succeeds — partial failures are
@@ -69,9 +69,9 @@ pub async fn load_home_data(state: tauri::State<'_, AppState>) -> Result<HomeDat
     };
 
     let Some(session) = session_opt else {
-        let relay_healthy = ping_relay_health(state.relay_client()).await;
+        let pds_healthy = ping_pds_health(state.custos_client()).await;
         return Ok(HomeData {
-            relay_healthy,
+            pds_healthy,
             session: None,
             session_error: Some("NOT_AUTHENTICATED".to_string()),
             share1_in_keychain,
@@ -82,13 +82,13 @@ pub async fn load_home_data(state: tauri::State<'_, AppState>) -> Result<HomeDat
 
     let oauth_client = match crate::oauth_client::OAuthClient::new(
         session_arc.clone(),
-        state.relay_client().base_url_str().to_owned(),
+        state.custos_client().base_url_str().to_owned(),
     ) {
         Ok(c) => c,
         Err(e) => {
             tracing::error!(error = %e, "OAuthClient construction failed");
             return Ok(HomeData {
-                relay_healthy: ping_relay_health(state.relay_client()).await,
+                pds_healthy: ping_pds_health(state.custos_client()).await,
                 session: None,
                 session_error: Some(oauth_error_code(&e)),
                 share1_in_keychain,
@@ -96,8 +96,8 @@ pub async fn load_home_data(state: tauri::State<'_, AppState>) -> Result<HomeDat
         }
     };
 
-    let (relay_healthy, session_result) = tokio::join!(
-        ping_relay_health(state.relay_client()),
+    let (pds_healthy, session_result) = tokio::join!(
+        ping_pds_health(state.custos_client()),
         oauth_client.get("/xrpc/com.atproto.server.getSession"),
     );
 
@@ -136,7 +136,7 @@ pub async fn load_home_data(state: tauri::State<'_, AppState>) -> Result<HomeDat
     };
 
     Ok(HomeData {
-        relay_healthy,
+        pds_healthy,
         session: session_info,
         session_error,
         share1_in_keychain,
@@ -162,10 +162,10 @@ pub async fn log_out(state: tauri::State<'_, AppState>) -> Result<(), String> {
 
 // ── Private helpers ───────────────────────────────────────────────────────
 
-/// Ping the relay health endpoint. Named to avoid ambiguity with any future
+/// Ping the PDS health endpoint. Named to avoid ambiguity with any future
 /// public IPC commands.
-async fn ping_relay_health(relay_client: &crate::http::RelayClient) -> bool {
-    relay_client
+async fn ping_pds_health(custos_client: &crate::http::CustosClient) -> bool {
+    custos_client
         .get("/xrpc/_health")
         .await
         .map(|r| r.status().is_success())
@@ -186,7 +186,7 @@ fn oauth_error_code(e: &OAuthError) -> String {
 
 #[cfg(test)]
 async fn load_home_data_with_urls(
-    relay_base: &str,
+    pds_base: &str,
     oauth_base: &str,
     session: Option<crate::oauth::OAuthSession>,
     app_state: &AppState,
@@ -194,14 +194,14 @@ async fn load_home_data_with_urls(
     let share1_in_keychain = crate::keychain::get_item("recovery-share-1").is_ok();
 
     let Some(s) = session else {
-        let relay_healthy = reqwest::Client::new()
-            .get(format!("{}/xrpc/_health", relay_base))
+        let pds_healthy = reqwest::Client::new()
+            .get(format!("{}/xrpc/_health", pds_base))
             .send()
             .await
             .map(|r| r.status().is_success())
             .unwrap_or(false);
         return HomeData {
-            relay_healthy,
+            pds_healthy,
             session: None,
             session_error: Some("NOT_AUTHENTICATED".to_string()),
             share1_in_keychain,
@@ -217,15 +217,15 @@ async fn load_home_data_with_urls(
         oauth_base.to_string(),
     );
 
-    let relay_client = reqwest::Client::new();
+    let custos_client = reqwest::Client::new();
     let (health_result, session_result) = tokio::join!(
-        relay_client
-            .get(format!("{}/xrpc/_health", relay_base))
+        custos_client
+            .get(format!("{}/xrpc/_health", pds_base))
             .send(),
         oauth_client.get("/xrpc/com.atproto.server.getSession"),
     );
 
-    let relay_healthy = health_result
+    let pds_healthy = health_result
         .map(|r| r.status().is_success())
         .unwrap_or(false);
 
@@ -255,7 +255,7 @@ async fn load_home_data_with_urls(
     };
 
     HomeData {
-        relay_healthy,
+        pds_healthy,
         session: session_info,
         session_error,
         share1_in_keychain,
@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn home_data_serializes_camel_case() {
         let data = HomeData {
-            relay_healthy: true,
+            pds_healthy: true,
             session: Some(SessionInfo {
                 did: "did:plc:abc".into(),
                 handle: "alice.test".into(),
@@ -294,7 +294,7 @@ mod tests {
             share1_in_keychain: true,
         };
         let json = serde_json::to_value(&data).unwrap();
-        assert_eq!(json["relayHealthy"], true);
+        assert_eq!(json["pdsHealthy"], true);
         assert_eq!(json["session"]["did"], "did:plc:abc");
         assert_eq!(json["session"]["handle"], "alice.test");
         assert_eq!(json["session"]["emailConfirmed"], true);
@@ -305,7 +305,7 @@ mod tests {
     #[test]
     fn home_data_session_null_serializes_error_code() {
         let data = HomeData {
-            relay_healthy: false,
+            pds_healthy: false,
             session: None,
             session_error: Some("NOT_AUTHENTICATED".to_string()),
             share1_in_keychain: false,
@@ -313,7 +313,7 @@ mod tests {
         let json = serde_json::to_value(&data).unwrap();
         assert_eq!(json["session"], serde_json::Value::Null);
         assert_eq!(json["sessionError"], "NOT_AUTHENTICATED");
-        assert_eq!(json["relayHealthy"], false);
+        assert_eq!(json["pdsHealthy"], false);
     }
 
     // ── log_out Keychain behavior ──────────────────────────────────────────
@@ -394,15 +394,15 @@ mod tests {
         let data =
             load_home_data_with_urls(&server.base_url(), &server.base_url(), None, &state).await;
 
-        assert!(data.relay_healthy);
+        assert!(data.pds_healthy);
         assert!(data.session.is_none());
         assert_eq!(data.session_error.as_deref(), Some("NOT_AUTHENTICATED"));
     }
 
-    // ── load_home_data: relay health ──────────────────────────────────────
+    // ── load_home_data: PDS health ──────────────────────────────────────
 
     #[tokio::test]
-    async fn load_home_data_relay_healthy_true_when_health_returns_200() {
+    async fn load_home_data_pds_healthy_true_when_health_returns_200() {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET).path("/xrpc/_health");
@@ -429,13 +429,13 @@ mod tests {
         .await;
 
         assert!(
-            data.relay_healthy,
-            "relay_healthy must be true when _health returns 200"
+            data.pds_healthy,
+            "pds_healthy must be true when _health returns 200"
         );
     }
 
     #[tokio::test]
-    async fn load_home_data_relay_healthy_false_when_health_fails() {
+    async fn load_home_data_pds_healthy_false_when_health_fails() {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET).path("/xrpc/_health");
@@ -462,13 +462,13 @@ mod tests {
         .await;
 
         assert!(
-            !data.relay_healthy,
-            "relay_healthy must be false when _health returns 503"
+            !data.pds_healthy,
+            "pds_healthy must be false when _health returns 503"
         );
-        // Session can still be populated when relay fails; statuses are independent.
+        // Session can still be populated when PDS fails; statuses are independent.
         assert!(
             data.session.is_some(),
-            "session should still be populated when relay fails"
+            "session should still be populated when PDS fails"
         );
     }
 
@@ -535,7 +535,7 @@ mod tests {
             data.session_error.is_some(),
             "sessionError must be set when getSession fails"
         );
-        // relay is still healthy; statuses are independent
-        assert!(data.relay_healthy);
+        // PDS is still healthy; statuses are independent
+        assert!(data.pds_healthy);
     }
 }

@@ -46,7 +46,7 @@ _ezpds_ar="$(/usr/bin/xcrun -f ar 2>/dev/null || true)"
 
 if [ -n "${_ezpds_clang}" ]; then
   # iOS TARGET overrides — always safe to export: no server crate targets iOS, so
-  # these never affect a relay / `cargo build --workspace` host build.
+  # these never affect a pds / `cargo build --workspace` host build.
   export CC_aarch64_apple_ios_sim="${_ezpds_clang}"
   export CC_aarch64_apple_ios="${_ezpds_clang}"
   export CARGO_TARGET_AARCH64_APPLE_IOS_SIM_LINKER="${_ezpds_clang}"
@@ -61,7 +61,7 @@ fi
 # app — its host-side proc-macros and security-framework C build otherwise hit the Nix
 # cc-wrapper (-mmacos-version-min) and the Nix apple-sdk stub (missing /usr/lib stubs
 # like libiconv.tbd). They are GATED on EZPDS_IOS_BUILD so ordinary in-shell builds
-# (`cargo build --workspace`, `cargo run -p relay`) keep using the Nix toolchain exactly
+# (`cargo build --workspace`, `cargo run -p pds`) keep using the Nix toolchain exactly
 # as before — this is what makes AC2 (server build intact) true BY CONSTRUCTION. The iOS
 # build entry points set EZPDS_IOS_BUILD=1: the `just ios-dev`/`ios-build` recipes and
 # the injected Xcode "Build Rust Code" Run Script block (both in Phase 2).

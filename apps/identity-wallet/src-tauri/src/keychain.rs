@@ -78,7 +78,7 @@ pub fn is_not_found(err: &KeychainError) -> bool {
 const DPOP_KEY_PRIV_ACCOUNT: &str = "oauth-dpop-key-priv";
 const OAUTH_ACCESS_TOKEN_ACCOUNT: &str = "oauth-access-token";
 const OAUTH_REFRESH_TOKEN_ACCOUNT: &str = "oauth-refresh-token";
-const RELAY_URL_ACCOUNT: &str = "relay-base-url";
+const PDS_URL_ACCOUNT: &str = "relay-base-url";
 
 /// Store the DPoP private key scalar (32 bytes) in the Keychain.
 pub fn store_dpop_key(private_bytes: &[u8]) -> Result<(), KeychainError> {
@@ -150,36 +150,36 @@ pub fn load_oauth_tokens() -> Option<(String, String)> {
     Some((access, refresh))
 }
 
-/// Persist the user-configured relay base URL to the Keychain.
+/// Persist the user-configured PDS base URL to the Keychain.
 ///
 /// Overwrites any previously stored URL.
-pub fn store_relay_url(url: &str) -> Result<(), KeychainError> {
-    store_item(RELAY_URL_ACCOUNT, url.as_bytes())
+pub fn store_pds_url(url: &str) -> Result<(), KeychainError> {
+    store_item(PDS_URL_ACCOUNT, url.as_bytes())
 }
 
-/// Retrieve the user-configured relay base URL from the Keychain.
+/// Retrieve the user-configured PDS base URL from the Keychain.
 ///
 /// Returns `None` if no URL has been saved yet (first run or after logout).
-pub fn load_relay_url() -> Option<String> {
-    match get_item(RELAY_URL_ACCOUNT) {
+pub fn load_pds_url() -> Option<String> {
+    match get_item(PDS_URL_ACCOUNT) {
         Ok(bytes) => String::from_utf8(bytes)
             .map_err(|e| {
-                tracing::error!(error = ?e, "relay URL in Keychain is not valid UTF-8; treating as absent");
+                tracing::error!(error = ?e, "PDS URL in Keychain is not valid UTF-8; treating as absent");
             })
             .ok(),
         Err(e) if is_not_found(&e) => None,
         Err(e) => {
-            tracing::error!(error = ?e, "Keychain error loading relay URL");
+            tracing::error!(error = ?e, "Keychain error loading PDS URL");
             None
         }
     }
 }
 
-/// Remove the relay URL from the Keychain. Test-only; used to reset state
+/// Remove the PDS URL from the Keychain. Test-only; used to reset state
 /// between tests that share the Keychain mock store.
 #[cfg(test)]
-pub fn delete_relay_url_test_only() {
-    let _ = delete_item(RELAY_URL_ACCOUNT);
+pub fn delete_pds_url_test_only() {
+    let _ = delete_item(PDS_URL_ACCOUNT);
 }
 
 /// Reset the in-memory Keychain to a clean state.
