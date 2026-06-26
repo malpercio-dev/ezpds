@@ -109,7 +109,13 @@ pub struct OAuthConfig {}
 /// Iroh networking configuration.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct IrohConfig {
-    /// Iroh node endpoint for NAT traversal. `None` when not configured.
+    /// Whether to run the Iroh QUIC endpoint alongside the HTTP server. Off by default, so
+    /// a relay (and the test suite) behaves exactly as before unless explicitly enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Optional manual override for the advertised node id. When `None` (the default), the
+    /// relay advertises its live endpoint's node id; when set, this exact string is advertised
+    /// instead. Has no effect when `enabled` is false.
     pub endpoint: Option<String>,
 }
 
@@ -312,6 +318,13 @@ pub(crate) fn apply_env_overrides(
     }
     if let Some(v) = env.get("OTEL_SERVICE_NAME") {
         raw.telemetry.service_name = Some(v.clone());
+    }
+    if let Some(v) = env.get("EZPDS_IROH_ENABLED") {
+        raw.iroh.enabled = v.parse::<bool>().map_err(|e| {
+            ConfigError::Invalid(format!(
+                "EZPDS_IROH_ENABLED is not a valid boolean: '{v}': {e}"
+            ))
+        })?;
     }
     if let Some(v) = env.get("EZPDS_IROH_ENDPOINT") {
         raw.iroh.endpoint = Some(v.clone());

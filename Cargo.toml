@@ -84,6 +84,9 @@ argon2 = { version = "0.5", features = ["password-hash"] }
 # ATProto handle resolution — DNS TXT fallback (relay)
 hickory-resolver = { version = "0.26", features = ["tokio", "system-config"] }
 
+# Iroh QUIC tunnel — NAT-traversing device↔relay endpoint (relay)
+iroh = "1"
+
 # Blob MIME detection (relay)
 infer = "0.19"
 
