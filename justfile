@@ -70,8 +70,12 @@ sync-tangled-main:
       exit 1
     fi
 
+    # Fetch each SHA from its resolved push URL, NOT from `origin` — `git fetch origin`
+    # uses origin's *fetch* URL, which may be GitHub. Reading the "tangled" SHA from there
+    # would make it equal the GitHub SHA, so the equality check below would falsely report
+    # "already in sync" and never push.
     echo "→ fetching tangled main…"
-    git fetch origin main
+    git fetch "$tangled_url" main
     tangled="$(git rev-parse FETCH_HEAD)"
     echo "→ fetching github main…"
     git fetch "$github_url" main
@@ -98,17 +102,29 @@ sync-tangled-main:
       exit 1
     fi
 
-    # Fast-forward local main, push the tangled URL ONLY (origin would also push to
-    # GitHub — harmless but redundant), then restore the branch you started on.
+    # Fast-forward local main, then push the tangled URL ONLY (origin would also push to
+    # GitHub — harmless but redundant). An EXIT trap restores the branch you started on for
+    # EVERY exit path: if the ff merge or push fails, `set -e` aborts mid-flight and would
+    # otherwise strand you on `main`. A failed restore warns loudly rather than silently
+    # swallowing the error, so a wrong-branch end state is never hidden.
     start_branch="$(git rev-parse --abbrev-ref HEAD)"
+    restore_branch() {
+      if [ "$start_branch" != "main" ] && [ "$(git rev-parse --abbrev-ref HEAD)" != "$start_branch" ]; then
+        git checkout "$start_branch" \
+          || echo "⚠ could not restore branch '$start_branch' — you are on $(git rev-parse --abbrev-ref HEAD)" >&2
+      fi
+    }
+    trap restore_branch EXIT
+
     git checkout main
     git merge --ff-only "$github"
     echo
     echo "→ pushing main → tangled (this triggers the staging deploy)…"
     git push "$tangled_url" main
-    [ "$start_branch" != "main" ] && git checkout "$start_branch" || true
 
-    git fetch origin main
+    # Verify against the tangled URL directly (same reason as the fetch above).
+    echo "→ verifying tangled main…"
+    git fetch "$tangled_url" main
     if [ "$(git rev-parse FETCH_HEAD)" = "$github" ]; then
       echo "✓ tangled main == github main ($(git rev-parse --short "$github"))"
     else
