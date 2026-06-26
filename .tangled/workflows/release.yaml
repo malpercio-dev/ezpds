@@ -22,6 +22,6 @@ dependencies:
 
 steps:
   - name: CI (fmt, clippy, test, audit)
-    command: just ci-relay
+    command: just ci-pds
   - name: Promote to production (deploy + health, with retries)
     command: RAILWAY_TOKEN="$RAILWAY_TOKEN_PRODUCTION" sh scripts/ci/railway-deploy.sh production

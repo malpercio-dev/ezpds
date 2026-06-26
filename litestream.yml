@@ -1,6 +1,6 @@
 # Litestream replication config. Active only when the entrypoint detects
 # LITESTREAM_S3_BUCKET (production); staging/local leave it unset and run the
-# relay directly.
+# pds directly.
 #
 # Bucket + endpoint come from the production environment; credentials come from
 # LITESTREAM_ACCESS_KEY_ID / LITESTREAM_SECRET_ACCESS_KEY (never committed here).

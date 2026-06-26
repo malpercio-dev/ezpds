@@ -1,6 +1,6 @@
 #!/bin/sh
 set -eu
-# Deploy the relay to a Railway environment and wait for the deployment to reach a
+# Deploy the pds to a Railway environment and wait for the deployment to reach a
 # terminal status.
 #
 # Usage: RAILWAY_TOKEN=<env-scoped token> sh scripts/ci/railway-deploy.sh <environment>

@@ -1,10 +1,10 @@
 # copy .env.local.example → .env.local before running
 services:
-  relay:
+  pds:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: ezpds-relay
+    container_name: ezpds-pds
     ports:
       - "8080:8080"
     volumes:

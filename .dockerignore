@@ -6,7 +6,7 @@ result
 .git
 .direnv
 
-# Frontend + node (the relay build needs none of this)
+# Frontend + node (the pds build needs none of this)
 **/node_modules
 apps/identity-wallet/.svelte-kit
 apps/identity-wallet/build
@@ -16,10 +16,10 @@ apps/identity-wallet/dist
 # Generated iOS project
 apps/identity-wallet/src-tauri/gen
 
-# Docs / tooling not needed to compile the relay
+# Docs / tooling not needed to compile the pds
 docs
 bruno
 
 # IMPORTANT: do NOT ignore Cargo manifests, crates/, rust-toolchain.toml, or
 # apps/identity-wallet/{src-tauri,swift-rs-patch} — cargo resolves the whole
-# workspace (incl. the swift-rs [patch.crates-io] path) even for `-p relay`.
+# workspace (incl. the swift-rs [patch.crates-io] path) even for `-p pds`.

@@ -22,6 +22,6 @@ dependencies:
 
 steps:
   - name: CI (fmt, clippy, test, audit)
-    command: just ci-relay
+    command: just ci-pds
   - name: Deploy to staging (deploy + health, with retries)
     command: RAILWAY_TOKEN="$RAILWAY_TOKEN_STAGING" sh scripts/ci/railway-deploy.sh staging
