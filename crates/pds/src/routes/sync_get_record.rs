@@ -241,7 +241,7 @@ mod tests {
 
         // End-to-end: re-open the returned CAR as the *only* blockstore and walk commit → MST root
         // → … → covering node, confirming the absent key resolves to `None`. The shape checks above
-        // would miss a relay-layer regression that drops MST node blocks before sending; this walk
+        // would miss a pds-layer regression that drops MST node blocks before sending; this walk
         // fails if any covering node is missing. Mirrors the engine-level exclusion proof test.
         use atrium_repo::repo::Repository;
         let car_store = CarStore::open(std::io::Cursor::new(body.as_ref()))
