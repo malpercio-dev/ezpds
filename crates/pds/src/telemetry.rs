@@ -74,7 +74,7 @@ pub fn init_subscriber(telemetry: &TelemetryConfig) -> anyhow::Result<Option<Ote
     );
     opentelemetry::global::set_tracer_provider(provider.clone());
 
-    let tracer = provider.tracer("relay");
+    let tracer = provider.tracer("pds");
     let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
     tracing_subscriber::registry()

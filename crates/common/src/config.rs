@@ -154,7 +154,7 @@ impl Default for TelemetryConfig {
         Self {
             enabled: false,
             otlp_endpoint: "http://localhost:4317".to_string(),
-            service_name: "ezpds-relay".to_string(),
+            service_name: "ezpds-pds".to_string(),
         }
     }
 }
@@ -343,7 +343,7 @@ pub(crate) fn apply_env_overrides(
 /// Defaults: `bind_address = "0.0.0.0"`, `port = 8080`, `invite_code_required = true`,
 /// `database_url = "{data_dir}/relay.db"` (derived; fails if `data_dir` is non-UTF-8),
 /// `telemetry.enabled = false`, `telemetry.otlp_endpoint = "http://localhost:4317"`,
-/// `telemetry.service_name = "ezpds-relay"`.
+/// `telemetry.service_name = "ezpds-pds"`.
 /// When provided, `telemetry.otlp_endpoint` must be non-empty and start with `http://` or
 /// `https://`.
 pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> {
@@ -801,7 +801,7 @@ mod tests {
         let config = validate_and_build(minimal_raw()).unwrap();
         assert!(!config.telemetry.enabled);
         assert_eq!(config.telemetry.otlp_endpoint, "http://localhost:4317");
-        assert_eq!(config.telemetry.service_name, "ezpds-relay");
+        assert_eq!(config.telemetry.service_name, "ezpds-pds");
     }
 
     #[test]
