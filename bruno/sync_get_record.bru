@@ -1,0 +1,24 @@
+meta {
+  name: Sync Get Record (CAR proof)
+  type: http
+  seq: 39
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.sync.getRecord?did={{did}}&collection={{collection}}&rkey={{rkey}}
+  body: none
+  auth: none
+}
+
+params:query {
+  did: {{did}}
+  collection: {{collection}}
+  rkey: {{rkey}}
+}
+
+docs {
+  Returns a CARv1 file (Content-Type: application/vnd.ipld.car) containing the signed commit
+  block, the MST node path from the tree root down to the record (the inclusion proof), and the
+  record block itself. The CAR's declared root is the commit CID. Unauthenticated. A missing
+  record or unknown account returns 404.
+}
