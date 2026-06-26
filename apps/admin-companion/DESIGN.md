@@ -1,7 +1,9 @@
-<!-- SEED: re-run /impeccable document (scan mode) once the Tauri app has code, to extract the real tokens, finalize fonts, and generate the .impeccable/design.json sidecar. Component tokens and exact ramps below are starting points, not final. -->
 ---
 name: Admin Companion
 description: A precision operator console for an ezpds relay — brass on cool steel, dark-first, monospace-forward.
+# SEED: re-run /impeccable document (scan mode) once the Tauri app has code, to extract the
+# real tokens, finalize fonts, and generate the .impeccable/design.json sidecar. Component
+# tokens and exact ramps below are starting points, not final.
 # Colors are OKLCH-canonical (forked from the Obsign token architecture). Exact ramps and
 # component tokens land on the scan-mode re-run once there's code. Seed frontmatter is name +
 # description only by design; the anchor values live in the Colors section below.
