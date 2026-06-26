@@ -2,7 +2,7 @@
   import { listen } from '@tauri-apps/api/event';
   import { onMount, onDestroy } from 'svelte';
   import ModeSelectScreen from '$lib/components/onboarding/ModeSelectScreen.svelte';
-  import RelayConfigScreen from '$lib/components/onboarding/RelayConfigScreen.svelte';
+  import PdsConfigScreen from '$lib/components/onboarding/PdsConfigScreen.svelte';
   import WelcomeScreen from '$lib/components/onboarding/WelcomeScreen.svelte';
   import ClaimCodeScreen from '$lib/components/onboarding/ClaimCodeScreen.svelte';
   import EmailScreen from '$lib/components/onboarding/EmailScreen.svelte';
@@ -42,7 +42,7 @@
 
   type OnboardingStep =
     | 'mode_select'
-    | 'relay_config'
+    | 'pds_config'
     | 'welcome'
     | 'claim_code'
     | 'email'
@@ -105,7 +105,7 @@
     step = next;
   }
 
-  // ── Relay configuration and OAuth event listener ──────────────────────
+  // ── PDS configuration and OAuth event listener ──────────────────────
 
   function handleVisibilityChange() {
     if (document.visibilityState === 'visible' && step === 'home') {
@@ -127,11 +127,11 @@
       // First launch (empty Keychain) or Keychain error — continue to mode_select
     }
 
-    // Legacy users (relay URL configured but no managed-dids) stay at mode_select.
-    // RelayConfigScreen internally checks for saved relay URL, so the "Create new
+    // Legacy users (PDS URL configured but no managed-dids) stay at mode_select.
+    // PdsConfigScreen internally checks for saved PDS URL, so the "Create new
     // identity" path handles them correctly without additional logic here.
 
-    // Listen for auth_ready from relay OAuth (existing onboarding flow).
+    // Listen for auth_ready from PDS OAuth (existing onboarding flow).
     listen('auth_ready', () => {
       goTo('home');
     });
@@ -163,7 +163,7 @@
       });
 
       // Rust guarantees nextStep is 'did_creation' on success; unrecognized
-      // relay values fail deserialization and surface as CreateAccountError::Unknown.
+      // PDS values fail deserialization and surface as CreateAccountError::Unknown.
       step = 'did_ceremony';
     } catch (raw: unknown) {
       // Guard against non-CreateAccountError shapes (e.g. JS runtime errors).
@@ -219,7 +219,7 @@
   //
   // Called once the new identity's DID (form.did) and full handle both exist.
   // Registering here is what makes the identity appear on the home screen:
-  // IdentityListHome lists identities from IdentityStore alone, and the relay
+  // IdentityListHome lists identities from IdentityStore alone, and the PDS
   // OAuth flow never writes to it — so without this call the home screen shows
   // "No identities yet" after login. This is the fix for that bug.
   //
@@ -242,7 +242,7 @@
 <div class="app">
   {#if step === 'mode_select'}
     <ModeSelectScreen
-      oncreate={() => goTo('relay_config')}
+      oncreate={() => goTo('pds_config')}
       onimport={() => goTo('identity_input')}
     />
   {:else if step === 'identity_input'}
@@ -284,8 +284,8 @@
       claimResult={claimResult!}
       ondone={() => goTo('home')}
     />
-  {:else if step === 'relay_config'}
-    <RelayConfigScreen onnext={() => goTo('welcome')} />
+  {:else if step === 'pds_config'}
+    <PdsConfigScreen onnext={() => goTo('welcome')} />
   {:else if step === 'welcome'}
     <WelcomeScreen onstart={() => goTo('claim_code')} />
   {:else if step === 'claim_code'}

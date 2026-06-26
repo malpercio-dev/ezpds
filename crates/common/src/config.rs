@@ -17,7 +17,7 @@ impl<T> std::fmt::Debug for Sensitive<T> {
     }
 }
 
-/// Validated, fully-resolved relay configuration.
+/// Validated, fully-resolved pds configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind_address: String,
@@ -35,7 +35,7 @@ pub struct Config {
     pub iroh: IrohConfig,
     pub crawlers: CrawlersConfig,
     pub telemetry: TelemetryConfig,
-    // Operator authentication for management endpoints (e.g., POST /v1/relay/keys).
+    // Operator authentication for management endpoints (e.g., POST /v1/pds/keys).
     pub admin_token: Option<String>,
     // AES-256-GCM master key for encrypting signing key private keys at rest.
     pub signing_key_master_key: Option<Sensitive<Zeroizing<[u8; 32]>>>,
@@ -115,9 +115,9 @@ pub struct IrohConfig {
 
 /// Crawler (relay/BGS) notification configuration for `com.atproto.sync.requestCrawl`.
 ///
-/// After every repo commit the relay notifies each configured crawler so newly produced
+/// After every repo commit the pds notifies each configured crawler so newly produced
 /// content is pulled promptly into the wider network. Each entry is a service base URL
-/// (e.g. `https://bsky.network`); the relay POSTs to
+/// (e.g. `https://bsky.network`); the pds POSTs to
 /// `<url>/xrpc/com.atproto.sync.requestCrawl`. The default is the public bsky.network BGS;
 /// set `urls = []` to disable crawl notifications entirely.
 #[derive(Debug, Clone, Deserialize)]
@@ -154,7 +154,7 @@ impl Default for TelemetryConfig {
         Self {
             enabled: false,
             otlp_endpoint: "http://localhost:4317".to_string(),
-            service_name: "ezpds-relay".to_string(),
+            service_name: "ezpds-pds".to_string(),
         }
     }
 }
@@ -343,14 +343,14 @@ pub(crate) fn apply_env_overrides(
 /// Defaults: `bind_address = "0.0.0.0"`, `port = 8080`, `invite_code_required = true`,
 /// `database_url = "{data_dir}/relay.db"` (derived; fails if `data_dir` is non-UTF-8),
 /// `telemetry.enabled = false`, `telemetry.otlp_endpoint = "http://localhost:4317"`,
-/// `telemetry.service_name = "ezpds-relay"`.
+/// `telemetry.service_name = "ezpds-pds"`.
 /// When provided, `telemetry.otlp_endpoint` must be non-empty and start with `http://` or
 /// `https://`.
 pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> {
     // Reject signing_key_master_key if it appears in TOML (must be env var only).
     if raw.signing_key_master_key_toml_sentinel.is_some() {
         return Err(ConfigError::Invalid(
-            "signing_key_master_key must be set via env var EZPDS_SIGNING_KEY_MASTER_KEY, not relay.toml (security-sensitive field)".to_string()
+            "signing_key_master_key must be set via env var EZPDS_SIGNING_KEY_MASTER_KEY, not pds.toml (security-sensitive field)".to_string()
         ));
     }
 
@@ -801,7 +801,7 @@ mod tests {
         let config = validate_and_build(minimal_raw()).unwrap();
         assert!(!config.telemetry.enabled);
         assert_eq!(config.telemetry.otlp_endpoint, "http://localhost:4317");
-        assert_eq!(config.telemetry.service_name, "ezpds-relay");
+        assert_eq!(config.telemetry.service_name, "ezpds-pds");
     }
 
     #[test]
@@ -1073,7 +1073,7 @@ mod tests {
 
     #[test]
     fn signing_key_master_key_in_toml_returns_error() {
-        // Operator mistakenly puts signing_key_master_key in relay.toml instead of env var.
+        // Operator mistakenly puts signing_key_master_key in pds.toml instead of env var.
         // The sentinel field must catch this and reject the configuration.
         let toml = r#"
             data_dir = "/var/pds"

@@ -36,7 +36,7 @@ export type CreateAccountError = {
 };
 
 /**
- * Create a new account via the relay.
+ * Create a new account via the PDS.
  *
  * On success, tokens are stored in the iOS Keychain by the Rust backend.
  * On failure, the Promise rejects with a `CreateAccountError`.
@@ -124,19 +124,19 @@ export type DIDCeremonyResult = {
 /**
  * Error returned by the `perform_did_ceremony` Rust command.
  *
- * Serialized as `{ code: "NO_RELAY_SIGNING_KEY" }` etc. by the Rust backend.
+ * Serialized as `{ code: "NO_PDS_SIGNING_KEY" }` etc. by the Rust backend.
  * The `message` field is present only on the NETWORK_ERROR variant.
  * This is a pure data shape used for error handling.
  */
 export type DIDCeremonyError = {
   code:
     | 'KEY_NOT_FOUND'
-    | 'RELAY_KEY_FETCH_FAILED'
-    | 'NO_RELAY_SIGNING_KEY'
+    | 'PDS_KEY_FETCH_FAILED'
+    | 'NO_PDS_SIGNING_KEY'
     | 'SIGNING_FAILED'
     | 'DID_CREATION_FAILED'
     | 'KEYCHAIN_ERROR'
-    /** DID was committed at the relay but Share 1 Keychain write failed. Retrying the
+    /** DID was committed at the PDS but Share 1 Keychain write failed. Retrying the
      *  ceremony will fail (DID already exists). Share storage can be retried separately. */
     | 'SHARE_STORAGE_FAILED'
     | 'NETWORK_ERROR';
@@ -144,7 +144,7 @@ export type DIDCeremonyError = {
 };
 
 /**
- * Perform the DID ceremony: fetch relay key, build signed genesis op, post to relay,
+ * Perform the DID ceremony: fetch PDS key, build signed genesis op, post to PDS,
  * persist DID and upgraded session token in Keychain.
  *
  * On success, the DID and new session token are stored in Keychain by the Rust backend.
@@ -162,7 +162,7 @@ export const performDIDCeremony = (
  * Successful result from the `register_handle` Rust command.
  * `handle` is the full `alice.your-domain.com` form.
  * `dnsStatus` is `"propagating"` when a DNS record was created, or `"not_configured"` when
- * the relay has no DNS provider (handle still resolves via HTTP well-known).
+ * the PDS has no DNS provider (handle still resolves via HTTP well-known).
  */
 export type RegisterHandleResult = {
   handle: string;
@@ -185,10 +185,10 @@ export type RegisterHandleError =
   | { code: 'UNKNOWN'; message: string };
 
 /**
- * Register the user's handle with the relay.
+ * Register the user's handle with the PDS.
  *
  * `handleLabel` is the label portion only (e.g. `"alice"`).
- * The Rust backend fetches the relay's primary domain from `describeServer`,
+ * The Rust backend fetches the PDS's primary domain from `describeServer`,
  * reads the DID and session token from Keychain, and POSTs to `/v1/handles`.
  *
  * On failure, the Promise rejects with a `RegisterHandleError`.
@@ -215,10 +215,10 @@ export const registerCreatedIdentity = (did: string, handle: string): Promise<vo
   invoke('register_created_identity', { did, handle });
 
 /**
- * Check whether `handle` resolves to `expectedDid` via the relay's `resolveHandle` endpoint.
+ * Check whether `handle` resolves to `expectedDid` via the PDS's `resolveHandle` endpoint.
  *
- * Returns `true` when the relay resolves the handle to the expected DID.
- * Returns `false` for any other outcome (not yet propagated, relay unreachable, DID mismatch).
+ * Returns `true` when the PDS resolves the handle to the expected DID.
+ * Returns `false` for any other outcome (not yet propagated, PDS unreachable, DID mismatch).
  * Never rejects — safe to call on a polling interval.
  */
 export const checkHandleResolution = (handle: string, expectedDid: string): Promise<boolean> =>
@@ -253,14 +253,14 @@ export const startOAuthFlow = (): Promise<void> => invoke('start_oauth_flow');
 /**
  * Session info returned by com.atproto.server.getSession.
  * null fields (email, emailConfirmed) default to empty string / false
- * when the relay omits them.
+ * when the PDS omits them.
  */
 export type SessionInfo = {
   did: string;
   handle: string;
   email: string;
   emailConfirmed: boolean;
-  /** Full DID document object, or null when the relay has none for this DID. */
+  /** Full DID document object, or null when the PDS has none for this DID. */
   didDoc: Record<string, unknown> | null;
 };
 
@@ -271,7 +271,7 @@ export type SessionInfo = {
  * so the UI can render whatever is available.
  */
 export type HomeData = {
-  relayHealthy: boolean;
+  pdsHealthy: boolean;
   /** null when getSession failed or no session exists */
   session: SessionInfo | null;
   /** SCREAMING_SNAKE_CASE error code when session is null */
@@ -280,13 +280,13 @@ export type HomeData = {
 };
 
 /**
- * Load relay health, session info, and Keychain share status concurrently.
+ * Load PDS health, session info, and Keychain share status concurrently.
  *
  * Always resolves — never rejects. Partial failures encoded in HomeData fields.
  */
 export const loadHomeData = (): Promise<HomeData> =>
   invoke<HomeData>('load_home_data').catch(
-    (): HomeData => ({ relayHealthy: false, session: null, sessionError: 'UNKNOWN', share1InKeychain: false })
+    (): HomeData => ({ pdsHealthy: false, session: null, sessionError: 'UNKNOWN', share1InKeychain: false })
   );
 
 /**
@@ -297,31 +297,31 @@ export const loadHomeData = (): Promise<HomeData> =>
  */
 export const logOut = (): Promise<void> => invoke('log_out').then(() => undefined);
 
-// ── Relay URL Configuration ──────────────────────────────────────────────
+// ── PDS URL Configuration ──────────────────────────────────────────────
 
 /**
- * Error from relay URL configuration commands.
+ * Error from PDS URL configuration commands.
  * Serialized as `{ code: "INVALID_URL" }` etc. by the Rust backend.
  */
-export type RelayConfigError =
+export type PdsConfigError =
   | { code: 'INVALID_URL' }
   | { code: 'UNREACHABLE' }
   | { code: 'KEYCHAIN_ERROR' };
 
 /**
- * Returns the saved relay base URL, or null if not yet configured.
- * Call this on app mount to decide whether to show the relay config screen.
+ * Returns the saved PDS base URL, or null if not yet configured.
+ * Call this on app mount to decide whether to show the PDS config screen.
  */
-export const getRelayUrl = (): Promise<string | null> =>
-  invoke('get_relay_url');
+export const getPdsUrl = (): Promise<string | null> =>
+  invoke('get_pds_url');
 
 /**
  * Validates url, pings /xrpc/_health, saves to Keychain, and initializes the
- * runtime relay client. After this resolves, all relay IPC commands use url.
- * Throws RelayConfigError on failure.
+ * runtime PDS client. After this resolves, all PDS IPC commands use url.
+ * Throws PdsConfigError on failure.
  */
-export const saveRelayUrl = (url: string): Promise<void> =>
-  invoke('save_relay_url', { url });
+export const savePdsUrl = (url: string): Promise<void> =>
+  invoke('save_pds_url', { url });
 
 // ── Claim flow types ──────────────────────────────────────────────────────
 

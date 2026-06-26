@@ -25,9 +25,9 @@ pub struct AppState {
     /// The active authenticated session after a successful token exchange.
     /// Set by `start_oauth_flow` on success; read by `OAuthClient` for every request.
     pub oauth_session: Mutex<Option<OAuthSession>>,
-    /// Runtime relay client. Populated from Keychain on startup or by
-    /// `save_relay_url` on first launch. Falls back to the compile-time default if unset.
-    relay_client: OnceLock<crate::http::RelayClient>,
+    /// Runtime custos client. Populated from Keychain on startup or by
+    /// `save_pds_url` on first launch. Falls back to the compile-time default if unset.
+    custos_client: OnceLock<crate::http::CustosClient>,
     /// PDS client for discovery and XRPC operations against arbitrary PDS endpoints.
     /// Stateless and cheap to construct; available to Phase 4 Tauri commands.
     pds_client: crate::pds_client::PdsClient,
@@ -47,28 +47,29 @@ impl AppState {
         Self {
             pending_auth: Mutex::new(None),
             oauth_session: Mutex::new(None),
-            relay_client: OnceLock::new(),
+            custos_client: OnceLock::new(),
             pds_client: crate::pds_client::PdsClient::new(),
             claim_state: tokio::sync::Mutex::new(None),
             recovery_state: tokio::sync::Mutex::new(None),
         }
     }
 
-    /// Returns the configured relay client, or initializes with the compile-time
+    /// Returns the configured custos client, or initializes with the compile-time
     /// default URL if none has been set yet.
-    pub fn relay_client(&self) -> &crate::http::RelayClient {
-        self.relay_client.get_or_init(crate::http::RelayClient::new)
+    pub fn custos_client(&self) -> &crate::http::CustosClient {
+        self.custos_client
+            .get_or_init(crate::http::CustosClient::new)
     }
 
-    /// Set the relay client from a runtime URL. Silently ignored if already set
+    /// Set the custos client from a runtime URL. Silently ignored if already set
     /// (OnceLock::set semantics — this is only called once on first launch).
-    pub fn set_relay_client(&self, url: String) {
+    pub fn set_custos_client(&self, url: String) {
         if self
-            .relay_client
-            .set(crate::http::RelayClient::new_with_url(url.clone()))
+            .custos_client
+            .set(crate::http::CustosClient::new_with_url(url.clone()))
             .is_err()
         {
-            tracing::warn!(url = %url, "set_relay_client: relay_client already initialized; ignoring");
+            tracing::warn!(url = %url, "set_custos_client: custos_client already initialized; ignoring");
         }
     }
 
@@ -153,7 +154,7 @@ impl DPoPKeypair {
 
     /// Build the public JWK for this keypair (EC, P-256, kty/crv/x/y only — no private fields).
     ///
-    /// The relay's validator expects exactly: `{"kty":"EC","crv":"P-256","x":"<b64url>","y":"<b64url>"}`.
+    /// The custos's validator expects exactly: `{"kty":"EC","crv":"P-256","x":"<b64url>","y":"<b64url>"}`.
     pub fn public_jwk(&self) -> serde_json::Value {
         let verifying_key = self.signing_key.verifying_key();
         let point = verifying_key.to_encoded_point(false); // false = uncompressed: 04 || x || y
@@ -170,7 +171,7 @@ impl DPoPKeypair {
     /// Compute the RFC 7638 JWK thumbprint: `base64url(SHA-256(canonical_jwk_json))`.
     ///
     /// The canonical JSON uses lexicographically-sorted keys (crv, kty, x, y) per RFC 7638 §3.2.
-    /// This matches the relay's `jwk_thumbprint()` function in `crates/relay/src/auth/dpop.rs`.
+    /// This matches the custos's `jwk_thumbprint()` function in `crates/custos/src/auth/dpop.rs`.
     pub fn public_jwk_thumbprint(&self) -> String {
         let jwk = self.public_jwk();
         // Canonical member set per RFC 7638 §3.2 — lexicographic order for EC keys.
@@ -243,7 +244,7 @@ impl DPoPKeypair {
         let signing_input = format!("{header_b64}.{claims_b64}");
         let signature: Signature = self.signing_key.sign(signing_input.as_bytes());
         // Normalize to low-S (consistent with the rest of the codebase, even though
-        // the relay's DPoP validator does not require it — low-S is harmless and keeps
+        // the custos's DPoP validator does not require it — low-S is harmless and keeps
         // key usage consistent with ATProto expectations).
         let signature = signature.normalize_s().unwrap_or(signature);
         let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes().as_slice());
@@ -423,7 +424,7 @@ pub async fn start_oauth_flow(
     // OpenerExt adds the `.opener()` method to AppHandle.
     use tauri_plugin_opener::OpenerExt;
 
-    let relay = state.relay_client();
+    let custos = state.custos_client();
 
     // 1. Generate PKCE and CSRF state.
     let (pkce_verifier, pkce_challenge) = pkce::generate();
@@ -433,11 +434,11 @@ pub async fn start_oauth_flow(
     let dpop = DPoPKeypair::get_or_create()?;
     let dpop_jkt = dpop.public_jwk_thumbprint();
 
-    let par_htu = format!("{}/oauth/par", state.relay_client().base_url_str());
+    let par_htu = format!("{}/oauth/par", state.custos_client().base_url_str());
     let par_proof = dpop.make_proof("POST", &par_htu, None, None)?;
 
     // 3. PAR call.
-    let par_resp = relay
+    let par_resp = custos
         .par(
             &pkce_challenge,
             &csrf_state,
@@ -460,7 +461,7 @@ pub async fn start_oauth_flow(
 
     // 5. Open Safari to the authorization endpoint.
     let auth_url = {
-        let base = state.relay_client().base_url_str();
+        let base = state.custos_client().base_url_str();
         let request_uri_encoded =
             url::form_urlencoded::byte_serialize(par_resp.request_uri.as_bytes())
                 .collect::<String>();
@@ -488,9 +489,9 @@ pub async fn start_oauth_flow(
     let callback = rx.await.map_err(|_| OAuthError::CallbackAbandoned)??;
 
     // 7. Token exchange.
-    let token_htu = format!("{}/oauth/token", state.relay_client().base_url_str());
+    let token_htu = format!("{}/oauth/token", state.custos_client().base_url_str());
     let (token_resp, initial_nonce) =
-        exchange_code_with_retry(relay, &dpop, &callback.code, &pkce_verifier, &token_htu).await?;
+        exchange_code_with_retry(custos, &dpop, &callback.code, &pkce_verifier, &token_htu).await?;
 
     // 8. Store tokens in Keychain.
     crate::keychain::store_oauth_tokens(&token_resp.access_token, &token_resp.refresh_token)
@@ -523,18 +524,18 @@ pub async fn start_oauth_flow(
 /// response (if present). Storing this nonce in the session avoids a guaranteed
 /// `use_dpop_nonce` retry on the very first `OAuthClient` request after login.
 ///
-/// The relay always requires a DPoP nonce at the token endpoint (RFC 9449 §8).
-/// On the first attempt, the nonce is absent; the relay returns 400 with `use_dpop_nonce`
+/// The custos always requires a DPoP nonce at the token endpoint (RFC 9449 §8).
+/// On the first attempt, the nonce is absent; the custos returns 400 with `use_dpop_nonce`
 /// and a `DPoP-Nonce` response header. We retry exactly once with that nonce.
 async fn exchange_code_with_retry(
-    relay: &crate::http::RelayClient,
+    custos: &crate::http::CustosClient,
     dpop: &DPoPKeypair,
     code: &str,
     pkce_verifier: &str,
     token_htu: &str,
 ) -> Result<(crate::http::TokenResponse, Option<String>), OAuthError> {
     let proof = dpop.make_proof("POST", token_htu, None, None)?;
-    let resp = relay.token_exchange(code, pkce_verifier, &proof).await?;
+    let resp = custos.token_exchange(code, pkce_verifier, &proof).await?;
 
     if resp.status().as_u16() == 200 {
         // Capture DPoP-Nonce before consuming the body.
@@ -572,7 +573,7 @@ async fn exchange_code_with_retry(
         if let Some(nonce_val) = nonce {
             tracing::debug!(nonce = %nonce_val, "retrying token exchange with server nonce");
             let proof_with_nonce = dpop.make_proof("POST", token_htu, Some(&nonce_val), None)?;
-            let retry_resp = relay
+            let retry_resp = custos
                 .token_exchange(code, pkce_verifier, &proof_with_nonce)
                 .await?;
             if retry_resp.status().as_u16() == 200 {
@@ -812,20 +813,20 @@ mod tests {
         );
     }
 
-    /// Integration test: PAR call against a running relay.
+    /// Integration test: PAR call against a running custos.
     ///
-    /// Requires the relay to be running at http://localhost:8080 with the V013
+    /// Requires the custos to be running at http://localhost:8080 with the V013
     /// migration applied (identity-wallet client registered).
     ///
     /// Run with: cargo test -p identity-wallet par_integration -- --include-ignored --nocapture
     #[tokio::test]
-    #[ignore = "requires running relay at localhost:8080"]
+    #[ignore = "requires running custos at localhost:8080"]
     async fn par_integration_returns_201_with_request_uri() {
-        let relay = crate::http::RelayClient::new();
+        let custos = crate::http::CustosClient::new();
         let keypair = DPoPKeypair::get_or_create().expect("keypair must generate");
         // `htu` is embedded in the DPoP proof JWT claims (the `htu` claim per RFC 9449 §4.2),
-        // not used for the HTTP request itself — `relay.par()` constructs the URL internally.
-        let htu = format!("{}/oauth/par", crate::http::default_relay_url());
+        // not used for the HTTP request itself — `custos.par()` constructs the URL internally.
+        let htu = format!("{}/oauth/par", crate::http::default_pds_url());
         let dpop_proof = keypair
             .make_proof("POST", &htu, None, None)
             .expect("DPoP proof must build");
@@ -833,7 +834,7 @@ mod tests {
         let (_, challenge) = pkce::generate();
         let state = generate_state_param();
 
-        let resp = relay
+        let resp = custos
             .par(&challenge, &state, &dpop_proof, &dpop_jkt, None)
             .await
             .expect("PAR must succeed");
@@ -847,17 +848,17 @@ mod tests {
         assert_eq!(resp.expires_in, 60);
     }
 
-    /// Integration test: PAR call missing code_challenge is rejected by relay.
+    /// Integration test: PAR call missing code_challenge is rejected by custos.
     ///
-    /// The relay returns a client error (400) when code_challenge is absent
+    /// The custos returns a client error (400) when code_challenge is absent
     /// from the PAR request.
     ///
     /// Run with: cargo test -p identity-wallet par_missing_challenge -- --include-ignored --nocapture
     #[tokio::test]
-    #[ignore = "requires running relay at localhost:8080"]
+    #[ignore = "requires running custos at localhost:8080"]
     async fn par_missing_code_challenge_returns_client_error() {
         // Build a minimal PAR form body with no code_challenge field.
-        let base_url = crate::http::default_relay_url();
+        let base_url = crate::http::default_pds_url();
         let url = format!("{base_url}/oauth/par");
         let keypair = DPoPKeypair::get_or_create().expect("keypair must generate");
         let dpop_proof = keypair
@@ -882,11 +883,11 @@ mod tests {
             ])
             .send()
             .await
-            .expect("request must reach relay");
+            .expect("request must reach custos");
 
         assert!(
             resp.status().is_client_error(),
-            "relay must reject PAR without code_challenge with 4xx, got: {}",
+            "custos must reject PAR without code_challenge with 4xx, got: {}",
             resp.status()
         );
     }
@@ -909,7 +910,7 @@ mod tests {
                 csrf_state: "correct-state".to_string(),
             })),
             oauth_session: std::sync::Mutex::new(None),
-            relay_client: OnceLock::new(),
+            custos_client: OnceLock::new(),
             pds_client: crate::pds_client::PdsClient::new(),
             claim_state: tokio::sync::Mutex::new(None),
             recovery_state: tokio::sync::Mutex::new(None),
@@ -940,7 +941,7 @@ mod tests {
                 csrf_state: "good-state".to_string(),
             })),
             oauth_session: std::sync::Mutex::new(None),
-            relay_client: OnceLock::new(),
+            custos_client: OnceLock::new(),
             pds_client: crate::pds_client::PdsClient::new(),
             claim_state: tokio::sync::Mutex::new(None),
             recovery_state: tokio::sync::Mutex::new(None),
@@ -973,7 +974,7 @@ mod tests {
                 csrf_state: "expected-state".to_string(),
             })),
             oauth_session: std::sync::Mutex::new(None),
-            relay_client: OnceLock::new(),
+            custos_client: OnceLock::new(),
             pds_client: crate::pds_client::PdsClient::new(),
             claim_state: tokio::sync::Mutex::new(None),
             recovery_state: tokio::sync::Mutex::new(None),

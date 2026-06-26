@@ -400,8 +400,8 @@ pub async fn start_pds_auth(
         .cloned()
         .unwrap_or_else(|| format!("{}/oauth/par", metadata.issuer));
 
-    let relay_url = state.relay_client().base_url_str().to_string();
-    let client_id = crate::pds_client::client_id_for_relay(&relay_url);
+    let pds_url = state.custos_client().base_url_str().to_string();
+    let client_id = crate::pds_client::client_id_for_pds(&pds_url);
 
     let par_resp = pds_par_with_retry(PdsParWithRetryParams {
         pds_client,

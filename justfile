@@ -17,15 +17,15 @@ fmt-check:
 clippy:
     cargo clippy --workspace --all-targets -- -D warnings
 
-run-relay:
-    cargo run -p relay
+run-pds:
+    cargo run -p pds
 
 # Build the Docker image locally (requires Docker)
 docker-build:
-    docker build -t relay:latest .
+    docker build -t pds:latest .
 
 # Security audit. RUSTSEC-2023-0071 (rsa Marvin attack) has no fixed release and is
-# pulled only transitively by sqlx-macros' compile-time MySQL backend; the relay is
+# pulled only transitively by sqlx-macros' compile-time MySQL backend; the pds is
 # sqlite-only, so rsa is never exercised at runtime. Revisit when a fix ships.
 audit:
     cargo audit --ignore RUSTSEC-2023-0071
@@ -33,10 +33,10 @@ audit:
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
 ci: fmt-check clippy test audit
 
-# CI gate for the Linux relay pipeline (tangled spindles). Excludes the iOS app
+# CI gate for the Linux pds pipeline (tangled spindles). Excludes the iOS app
 # (identity-wallet), which needs the Apple/GTK toolchain absent in CI; the mobile
 # app is built and checked via `just ios-*` on macOS.
-ci-relay: fmt-check
+ci-pds: fmt-check
     cargo clippy --workspace --exclude identity-wallet --all-targets -- -D warnings
     cargo test --workspace --exclude identity-wallet
     just audit
@@ -48,8 +48,8 @@ nix-check:
 # Sync GitHub `main` (canonical) -> tangled `main`. PRs are merged on GitHub; tangled
 # `main` does not auto-update, so it drifts and needs periodic syncing. This refuses
 # anything that is not a clean fast-forward, so it can never clobber tangled history.
-# NOTE: pushing tangled `main` triggers the staging deploy (just ci-relay -> Railway).
-# Pre-validate first with `just ci-relay` if the relay changed.
+# NOTE: pushing tangled `main` triggers the staging deploy (just ci-pds -> Railway).
+# Pre-validate first with `just ci-pds` if the pds changed.
 sync-tangled-main:
     #!/usr/bin/env bash
     set -euo pipefail

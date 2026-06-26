@@ -1,6 +1,6 @@
-//! Relay HTTP client for identity-wallet.
+//! PDS HTTP client for identity-wallet.
 //!
-//! All relay API calls go through `RelayClient`. The base URL starts
+//! All PDS API calls go through `CustosClient`. The base URL starts
 //! as compile-time configured (`http://localhost:8080` in debug builds,
 //! `https://relay.ezpds.com` in release builds) and can be overridden
 //! at runtime via AppState.
@@ -11,17 +11,17 @@ use serde::Serialize;
 use crate::oauth::OAuthError;
 
 #[cfg(debug_assertions)]
-const RELAY_BASE_URL: &str = "http://localhost:8080";
+const CUSTOS_BASE_URL: &str = "http://localhost:8080";
 #[cfg(not(debug_assertions))]
-const RELAY_BASE_URL: &str = "https://relay.ezpds.com";
+const CUSTOS_BASE_URL: &str = "https://relay.ezpds.com";
 
-/// Returns the compile-time default relay base URL.
+/// Returns the compile-time default PDS base URL.
 ///
 /// Used by integration tests that need the default URL to construct expected
-/// endpoint strings. The relay configuration UI hardcodes the same constant
+/// endpoint strings. The PDS configuration UI hardcodes the same constant
 /// independently so the UI does not take a Rust→TS IPC round-trip on mount.
-pub fn default_relay_url() -> &'static str {
-    RELAY_BASE_URL
+pub fn default_pds_url() -> &'static str {
+    CUSTOS_BASE_URL
 }
 
 /// Successful response from `POST /oauth/par` (RFC 9126 §2.2).
@@ -48,24 +48,24 @@ pub struct TokenErrorResponse {
     pub error_description: Option<String>,
 }
 
-/// HTTP client for relay API requests.
-pub struct RelayClient {
+/// HTTP client for PDS API requests.
+pub struct CustosClient {
     client: Client,
     base_url: String,
 }
 
-impl RelayClient {
-    /// Create a new `RelayClient` with the compile-time base URL.
+impl CustosClient {
+    /// Create a new `CustosClient` with the compile-time base URL.
     pub fn new() -> Self {
         Self {
             client: Client::new(),
-            base_url: RELAY_BASE_URL.to_string(),
+            base_url: CUSTOS_BASE_URL.to_string(),
         }
     }
 
-    /// Create a new `RelayClient` with a runtime-provided base URL.
+    /// Create a new `CustosClient` with a runtime-provided base URL.
     ///
-    /// The URL must not have a trailing slash. Used when the relay URL is
+    /// The URL must not have a trailing slash. Used when the PDS URL is
     /// configured at runtime rather than baked in at compile time.
     pub fn new_with_url(url: String) -> Self {
         Self {
@@ -83,7 +83,7 @@ impl RelayClient {
         self.client.post(&url).json(body).send().await
     }
 
-    /// GET `path` (relative, e.g. `"/v1/relay/keys"`).
+    /// GET `path` (relative, e.g. `"/v1/PDS/keys"`).
     ///
     /// Returns the raw `Response` so callers can inspect the status code
     /// before attempting to deserialize the body.
@@ -94,7 +94,7 @@ impl RelayClient {
 
     /// GET `path` with a Bearer token in the Authorization header.
     ///
-    /// Used for authenticated relay GETs (e.g. `GET /v1/repo-signing-key`, which is
+    /// Used for authenticated PDS GETs (e.g. `GET /v1/repo-signing-key`, which is
     /// scoped to the caller's pending session).
     pub async fn get_with_bearer(
         &self,
@@ -107,7 +107,7 @@ impl RelayClient {
 
     /// POST JSON to `path` with a Bearer token in the Authorization header.
     ///
-    /// Used for authenticated relay endpoints (e.g. `POST /v1/dids` which
+    /// Used for authenticated PDS endpoints (e.g. `POST /v1/dids` which
     /// requires the pending session token).
     pub async fn post_with_bearer<T: Serialize>(
         &self,
@@ -124,13 +124,13 @@ impl RelayClient {
             .await
     }
 
-    /// POST `/oauth/par` — push the authorization request parameters to the relay.
+    /// POST `/oauth/par` — push the authorization request parameters to the PDS.
     ///
     /// Sends the required PKCE and OAuth parameters as `application/x-www-form-urlencoded`.
     /// Includes a `DPoP` proof header per RFC 9449 §6.
     ///
     /// `dpop_jkt` is the JWK thumbprint of the DPoP key; included as a form field for
-    /// servers that support PAR-level DPoP key binding (the relay currently ignores it,
+    /// servers that support PAR-level DPoP key binding (the PDS currently ignores it,
     /// but it is spec-correct to send it).
     pub async fn par(
         &self,
@@ -223,13 +223,13 @@ impl RelayClient {
         Ok(resp)
     }
 
-    /// Returns the base URL for this relay client instance.
+    /// Returns the base URL for this PDS client instance.
     pub fn base_url_str(&self) -> &str {
         &self.base_url
     }
 }
 
-impl Default for RelayClient {
+impl Default for CustosClient {
     fn default() -> Self {
         Self::new()
     }

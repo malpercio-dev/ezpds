@@ -4,10 +4,10 @@
 
 ## Overview
 
-The relay ships through **tangled spindles** (`.tangled/workflows/`), which run on
+The PDS ships through **tangled spindles** (`.tangled/workflows/`), which run on
 Linux. The `identity-wallet` Tauri iOS app cannot build there — `cargo tauri ios
 build` needs macOS + Xcode + the Apple toolchain, which Linux CI does not have
-(this is exactly why `just ci-relay` builds the workspace with `--exclude
+(this is exactly why `just ci-pds` builds the workspace with `--exclude
 identity-wallet`).
 
 So the iOS build lives in **GitHub Actions** on a **public mirror** of this repo.
@@ -17,11 +17,11 @@ uploads it to **TestFlight**; you install/update the app from the TestFlight app
 your device.
 
 ```
-  git push  ──►  tangled (knot.malpercio.dev)  ──►  spindles: relay → Railway   (Linux)
+  git push  ──►  tangled (knot.malpercio.dev)  ──►  spindles: PDS → Railway   (Linux)
             └─►  github mirror (public)         ──►  Actions: iOS → TestFlight   (macOS)
 ```
 
-The two pipelines never overlap: tangled owns the relay, GitHub owns iOS. The
+The two pipelines never overlap: tangled owns the PDS, GitHub owns iOS. The
 tangled pipeline already proves the shared Rust core is correct on Linux; the GitHub
 lane only proves the iOS-specific surface (cross-compile → sign → package → ship).
 
@@ -179,7 +179,7 @@ for the first time inside a CI log.
 
 ## Coexistence with tangled
 
-Nothing about this changes the relay pipeline. `git push` still drives tangled
+Nothing about this changes the PDS pipeline. `git push` still drives tangled
 spindles (`pr.yaml` / `staging.yaml` / `release.yaml`) exactly as before; the mirror
 push simply also lands on GitHub and fires the iOS lane. See
-[`docs/deploy.md`](deploy.md) for the relay side.
+[`docs/deploy.md`](deploy.md) for the PDS side.

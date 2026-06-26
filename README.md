@@ -6,7 +6,7 @@ An easy-to-host [ATProto](https://atproto.com) Personal Data Server (PDS) — de
 
 ezpds is a self-hosted PDS implementation for the AT Protocol (the protocol behind Bluesky and the ATmosphere). It provides:
 
-- **A relay server** ([`crates/relay`](crates/relay/)) — an Axum-based HTTP server that implements the ATProto provisioning API, XRPC endpoints, and OAuth 2.0 flows. It stores accounts, DIDs, handles, and signing keys in SQLite.
+- **A PDS server** ([`crates/pds`](crates/pds/)) — an Axum-based HTTP server that implements the ATProto provisioning API, XRPC endpoints, and OAuth 2.0 flows. It stores accounts, DIDs, handles, and signing keys in SQLite.
 - **A crypto library** ([`crates/crypto`](crates/crypto/)) — P-256 key generation, `did:key` derivation, AES-256-GCM encryption, and full `did:plc` lifecycle support (genesis ops, rotation ops, audit log verification, CID computation).
 - **Obsign**, an iOS identity wallet ([`apps/identity-wallet`](apps/identity-wallet/)) — a Tauri v2 app (SvelteKit 2 + Svelte 5 frontend, Rust backend) that walks users through account creation, DID ceremony, handle registration, and identity recovery. Keys are backed by the device Secure Enclave.
 
@@ -25,7 +25,7 @@ ezpds is a self-hosted PDS implementation for the AT Protocol (the protocol behi
           │                │                  │
           ▼                ▼                  ▼
 ┌─────────────────────────────────────────────────────────┐
-│  Relay Server (crates/relay)                            │
+│  PDS Server (crates/pds)                            │
 │  Axum · SQLite · sqlx                                   │
 │                                                         │
 │  Provisioning API    XRPC Endpoints    OAuth 2.0        │
@@ -41,13 +41,13 @@ ezpds is a self-hosted PDS implementation for the AT Protocol (the protocol behi
 
 | Crate | Purpose | Status |
 |-------|---------|--------|
-| `crates/relay` | ATProto relay server — provisioning API, XRPC, OAuth, auth | **Active** — primary development focus |
+| `crates/pds` | ATProto PDS server — provisioning API, XRPC, OAuth, auth | **Active** — primary development focus |
 | `crates/crypto` | P-256 keys, did:key, did:plc genesis/rotation, Shamir secret sharing, AES-256-GCM | **Complete** — well-tested |
 | `crates/common` | Shared config, error types, serde utilities | **Complete** |
 | `crates/repo-engine` | MST construction, CAR file storage, commit construction | **Stub** — not yet implemented |
 | `apps/identity-wallet` | Tauri v2 iOS app (SvelteKit 2 + Svelte 5) | **Active** — account creation, DID ceremony, handle registration, OAuth, PLC monitoring, recovery |
 
-### Relay endpoints
+### PDS endpoints
 
 **Provisioning API** (`/v1/...`):
 - `POST /v1/accounts` — Create account
@@ -59,8 +59,8 @@ ezpds is a self-hosted PDS implementation for the AT Protocol (the protocol behi
 - `POST /v1/handles` — Register handle
 - `DELETE /v1/handles/:handle` — Delete handle
 - `POST /v1/devices` — Register device
-- `GET /v1/devices/:id/relay` — Get device relay
-- `GET/POST /v1/relay/keys` — Manage relay signing keys
+- `GET /v1/devices/:id/pds` — Get device PDS
+- `GET/POST /v1/pds/keys` — Manage PDS signing keys
 
 **XRPC** (ATProto standard):
 - `com.atproto.server.createSession` / `getSession` / `refreshSession` / `deleteSession`
@@ -84,11 +84,11 @@ ezpds is a self-hosted PDS implementation for the AT Protocol (the protocol behi
 
 The mobile app guides users through:
 
-1. **Relay configuration** — Connect to an ezpds relay instance
+1. **PDS configuration** — Connect to an ezpds PDS instance
 2. **Account creation** — Claim code → email + handle → device key registration
-3. **DID ceremony** — Build and sign a `did:plc` genesis op using the device Secure Enclave, submit to relay, receive Shamir recovery shares
-4. **Handle registration** — Register a handle on the relay's domain
-5. **OAuth login** — Authenticate with the relay via OAuth 2.0 + DPoP
+3. **DID ceremony** — Build and sign a `did:plc` genesis op using the device Secure Enclave, submit to PDS, receive Shamir recovery shares
+4. **Handle registration** — Register a handle on the PDS's domain
+5. **OAuth login** — Authenticate with the PDS via OAuth 2.0 + DPoP
 6. **Identity management** — Multi-identity home, DID document display, rotation key status
 7. **PLC monitoring** — Periodic audit log checks for unauthorized DID changes
 8. **Recovery** — Shamir secret sharing (3 shares, 2-of-3 threshold) with iCloud Keychain backup
@@ -115,15 +115,15 @@ On first shell entry, `rustup toolchain install` runs automatically.
 
 ```bash
 cargo build                   # Build all crates
-cargo build -p relay          # Build just the relay binary
-nix build .#relay --accept-flake-config  # Build via Nix (output: ./result/bin/relay)
+cargo build -p pds          # Build just the PDS binary
+nix build .#pds --accept-flake-config  # Build via Nix (output: ./result/bin/pds)
 ```
 
-### Run the relay
+### Run the PDS
 
 ```bash
-# Create a config file (see relay.dev.toml for an example)
-cargo run -p relay -- --config relay.toml
+# Create a config file (see pds.dev.toml for an example)
+cargo run -p pds -- --config pds.toml
 ```
 
 ### Run checks
@@ -147,12 +147,12 @@ On macOS, use a remote Linux builder or CI.
 
 ## Configuration
 
-The relay is configured via a TOML file (default: `relay.toml`). See [`relay.dev.toml`](relay.dev.toml) for a full example.
+The PDS is configured via a TOML file (default: `pds.toml`). See [`pds.dev.toml`](pds.dev.toml) for a full example.
 
 Key settings:
 - `bind_address` / `port` — Listen address
 - `database_url` — SQLite path (default: `./relay.db`)
-- `public_url` — The relay's public-facing URL
+- `public_url` — The PDS's public-facing URL
 - `available_user_domains` — Handle domains users can register (e.g. `["ezpds.com"]`)
 - `invite_code_required` — Whether claim codes are required for account creation
 - `admin_token` — Token for management endpoints
@@ -161,7 +161,7 @@ Key settings:
 
 ## Project status
 
-ezpds is under active development. The relay server and crypto library are functional; the iOS identity wallet is in development. Key capabilities:
+ezpds is under active development. The PDS server and crypto library are functional; the iOS identity wallet is in development. Key capabilities:
 
 **Working now:**
 - Account creation (desktop + mobile flows)
@@ -170,7 +170,7 @@ ezpds is under active development. The relay server and crypto library are funct
 - Session management (JWT + refresh tokens)
 - OAuth 2.0 with DPoP
 - Password reset flow
-- Relay signing key management
+- PDS signing key management
 - Shamir secret sharing for recovery
 - OpenTelemetry observability
 

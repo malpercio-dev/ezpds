@@ -1,21 +1,21 @@
 # Nix Packaging and Deployment
 
-Last verified: 2026-06-21
+Last verified: 2026-06-26
 
 ## Purpose
-Provides a NixOS module (`module.nix`) for declarative relay deployment via OCI containers
-(podman/Docker). The relay image is built externally (via `docker build` or CI/CD)
+Provides a NixOS module (`module.nix`) for declarative PDS deployment via OCI containers
+(podman/Docker). The PDS image is built externally (via `docker build` or CI/CD)
 and referenced by digest in the module.
 
 ## Contracts
 
 ### module.nix (NixOS module)
 - **Exposes**: `services.ezpds` option namespace
-  - `enable` - Enable/disable the relay service
-  - `image` (required) - OCI image reference, ideally digest-pinned (e.g., `ghcr.io/owner/relay@sha256:...`)
+  - `enable` - Enable/disable the PDS service
+  - `image` (required) - OCI image reference, ideally digest-pinned (e.g., `ghcr.io/owner/pds@sha256:...`)
   - `port` (default 8080) - Host port to publish
   - `dataDir` (default `/var/lib/ezpds`) - Host directory bind-mounted to container's `/data`
-  - `publicUrl` (required) - Public https URL of the relay
+  - `publicUrl` (required) - Public https URL of the PDS
   - `availableUserDomains` (required) - Allowed handle domains (list of strings)
   - `environmentFile` (optional) - Path to env file from agenix/sops-nix holding secrets (e.g., EZPDS_SIGNING_KEY_MASTER_KEY, EZPDS_ADMIN_TOKEN)
 
@@ -50,4 +50,4 @@ and referenced by digest in the module.
 - Container image is built and distributed externally (not via `nix build`)
 
 ## Key Files
-- `module.nix` - NixOS module for relay OCI container deployment
+- `module.nix` - NixOS module for PDS OCI container deployment

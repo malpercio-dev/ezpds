@@ -555,11 +555,11 @@ mod tests {
         let device_key = crypto::generate_p256_keypair().expect("device key generation");
         let device_key_uri = device_key.key_id;
 
-        let relay_key = crypto::generate_p256_keypair().expect("relay key generation");
+        let pds_key = crypto::generate_p256_keypair().expect("PDS key generation");
         let genesis_op = crypto::build_did_plc_genesis_op(
             &device_key_uri,
-            &relay_key.key_id,
-            &relay_key.private_key_bytes,
+            &pds_key.key_id,
+            &pds_key.private_key_bytes,
             "alice.test",
             "https://pds.test",
         )
