@@ -3,6 +3,7 @@
 Last verified: 2026-03-25
 
 ## Latest Updates
+- **V022**: Adds `iroh_identity` table (WITHOUT ROWID, single-row, keyed by UUID id) storing the relay's Iroh node Ed25519 secret key, AES-256-GCM encrypted with the signing-key master key (same scheme as `oauth_signing_key` (V012) and `jwt_signing_secret` (V015)). Keeps the relay's Iroh node id stable across restarts.
 - **V014**: Adds `password_reset_tokens` table: `token_hash` TEXT PK (SHA-256 hex digest — plaintext never stored), `did` TEXT (FK→accounts), `expires_at` TEXT (1-hour TTL, SQLite datetime), `used_at` TEXT nullable (set on consumption), `created_at` TEXT; index on `did`
 - **V013**: Seeds the identity-wallet as a registered OAuth client (`dev.malpercio.identitywallet`) with native application type, DPoP-bound tokens, and custom URL scheme redirect URI (`dev.malpercio.identitywallet:/oauth/callback`); uses INSERT OR IGNORE for idempotency
 - **V012**: Adds nullable `jkt` TEXT column to `oauth_tokens` (DPoP key thumbprint for DPoP-bound refresh tokens); creates `oauth_signing_key` table (WITHOUT ROWID, single-row, stores the server's persistent ES256 keypair with AES-256-GCM-encrypted private key)
@@ -55,3 +56,4 @@ that can later serve per-user SQLite databases (Wave 3/4).
 - `migrations/V012__oauth_token_endpoint.sql` - Adds `jkt` TEXT column to oauth_tokens (DPoP thumbprint); creates `oauth_signing_key` table (WITHOUT ROWID, keyed by UUID id) for persistent ES256 keypair storage (public JWK + AES-256-GCM encrypted private key)
 - `migrations/V013__identity_wallet_oauth_client.sql` - Seeds identity-wallet OAuth client row (INSERT OR IGNORE): client_id `dev.malpercio.identitywallet`, native app type, DPoP required, custom scheme redirect URI
 - `migrations/V014__password_reset_tokens.sql` - Adds `password_reset_tokens` table for `requestPasswordReset`/`resetPassword` flows; token stored as SHA-256 hex hash; 1-hour TTL; `used_at` nullable (status derived: valid = used_at IS NULL AND expires_at > now)
+- `migrations/V022__iroh_identity.sql` - Adds `iroh_identity` table (WITHOUT ROWID, single-row, keyed by UUID id): the relay's Iroh node Ed25519 secret key, AES-256-GCM encrypted with the signing-key master key. Persisted so the published node id (GET /v1/devices/:id/relay) stays stable across restarts

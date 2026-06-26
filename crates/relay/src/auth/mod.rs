@@ -20,7 +20,8 @@ pub use extractors::AuthenticatedUser;
 #[allow(unused_imports)]
 pub use jwt::AuthScope;
 pub use signing_key::{
-    load_or_create_jwt_secret, load_or_create_oauth_signing_key, OAuthSigningKey,
+    load_or_create_iroh_secret_key, load_or_create_jwt_secret, load_or_create_oauth_signing_key,
+    OAuthSigningKey,
 };
 
 // Test-only: make private helpers visible to the test module below (which uses `use super::*`).

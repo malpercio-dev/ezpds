@@ -150,6 +150,62 @@ pub async fn load_or_create_jwt_secret(
     Ok(secret)
 }
 
+/// Load the relay's persistent Iroh node secret key (32-byte Ed25519 seed) from the
+/// database, or generate one on first boot.
+///
+/// Mirrors [`load_or_create_jwt_secret`]: the 32-byte secret is AES-256-GCM encrypted with
+/// `master_key` before storage and decrypted on load. If `master_key` is `None`, a fresh
+/// ephemeral secret is returned and a warning logged — the relay's Iroh node id then rotates
+/// on every restart, invalidating any node id a device cached from
+/// `GET /v1/devices/:id/relay`.
+///
+/// Returns the raw secret-key bytes; the caller (the `iroh` module) builds an
+/// `iroh::SecretKey` from them. Keeping this helper free of iroh types mirrors how the JWT
+/// and OAuth key loaders stay decoupled from their consuming layers.
+pub async fn load_or_create_iroh_secret_key(
+    pool: &SqlitePool,
+    master_key: Option<&[u8; 32]>,
+) -> anyhow::Result<[u8; 32]> {
+    use crate::db::iroh_identity::{get_iroh_identity, store_iroh_identity};
+
+    // Load and decrypt an existing secret key.
+    if let Some(row) = get_iroh_identity(pool).await? {
+        let master_key = master_key.ok_or_else(|| {
+            anyhow::anyhow!(
+                "signing_key_master_key not configured but an Iroh node identity exists in the \
+                 DB; cannot decrypt it — set signing_key_master_key in config"
+            )
+        })?;
+        let decrypted = crypto::decrypt_private_key(&row.secret_key_encrypted, master_key)
+            .map_err(|e| anyhow::anyhow!("failed to decrypt Iroh node secret key: {e}"))?;
+        let mut secret = [0u8; 32];
+        secret.copy_from_slice(decrypted.as_ref());
+        tracing::info!(key_id = %row.id, "Iroh node identity loaded from database");
+        return Ok(secret);
+    }
+
+    // No identity stored yet — generate 32 fresh random bytes.
+    let mut secret = [0u8; 32];
+    OsRng.fill_bytes(&mut secret);
+
+    match master_key {
+        Some(key) => {
+            let encrypted = crypto::encrypt_private_key(&secret, key)
+                .map_err(|e| anyhow::anyhow!("Iroh node secret key encryption failed: {e}"))?;
+            let key_id = Uuid::new_v4().to_string();
+            store_iroh_identity(pool, &key_id, &encrypted).await?;
+            tracing::info!(key_id = %key_id, "Iroh node identity generated and persisted");
+        }
+        None => {
+            tracing::warn!(
+                "signing_key_master_key not configured; Iroh node identity is ephemeral — \
+                 the relay's node id will change on every restart"
+            );
+        }
+    }
+    Ok(secret)
+}
+
 /// Decode a stored OAuth signing key row into an `OAuthSigningKey`.
 fn decode_oauth_signing_key(
     key_id: &str,
@@ -227,7 +283,9 @@ pub async fn load_repo_signer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{jwt_secret::get_jwt_secret, open_pool, run_migrations};
+    use crate::db::{
+        iroh_identity::get_iroh_identity, jwt_secret::get_jwt_secret, open_pool, run_migrations,
+    };
 
     async fn test_pool() -> SqlitePool {
         let pool = open_pool("sqlite::memory:").await.unwrap();
@@ -268,6 +326,48 @@ mod tests {
             .unwrap();
         assert!(
             load_or_create_jwt_secret(&pool, Some(&[2u8; 32]))
+                .await
+                .is_err(),
+            "decrypt with the wrong master key must fail"
+        );
+    }
+
+    #[tokio::test]
+    async fn iroh_secret_key_persists_across_loads_with_master_key() {
+        let pool = test_pool().await;
+        let master_key = [9u8; 32];
+        let first = load_or_create_iroh_secret_key(&pool, Some(&master_key))
+            .await
+            .unwrap();
+        let second = load_or_create_iroh_secret_key(&pool, Some(&master_key))
+            .await
+            .unwrap();
+        assert_eq!(
+            first, second,
+            "Iroh node identity must survive restarts (stable node id)"
+        );
+        assert!(get_iroh_identity(&pool).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn iroh_secret_key_ephemeral_without_master_key_is_not_persisted() {
+        let pool = test_pool().await;
+        let secret = load_or_create_iroh_secret_key(&pool, None).await.unwrap();
+        assert_eq!(secret.len(), 32);
+        assert!(
+            get_iroh_identity(&pool).await.unwrap().is_none(),
+            "ephemeral Iroh identity must not be stored"
+        );
+    }
+
+    #[tokio::test]
+    async fn iroh_secret_key_wrong_master_key_fails_to_decrypt() {
+        let pool = test_pool().await;
+        load_or_create_iroh_secret_key(&pool, Some(&[1u8; 32]))
+            .await
+            .unwrap();
+        assert!(
+            load_or_create_iroh_secret_key(&pool, Some(&[2u8; 32]))
                 .await
                 .is_err(),
             "decrypt with the wrong master key must fail"

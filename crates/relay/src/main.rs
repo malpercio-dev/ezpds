@@ -167,6 +167,22 @@ async fn run() -> anyhow::Result<()> {
     .await
     .with_context(|| "failed to load or create JWT signing secret")?;
 
+    // Iroh node identity: when the Iroh endpoint is enabled, load (or generate on first boot)
+    // the persistent Ed25519 secret key so the relay advertises a stable node id across
+    // restarts. The endpoint itself is bound in a later step; here we establish the identity
+    // and surface the node id in the logs so operators can see it. Disabled by default, so a
+    // plain relay does no Iroh work at all.
+    if config.iroh.enabled {
+        let secret = auth::load_or_create_iroh_secret_key(
+            &pool,
+            config.signing_key_master_key.as_ref().map(|s| &*s.0),
+        )
+        .await
+        .with_context(|| "failed to load or create Iroh node identity")?;
+        let node_id = iroh::SecretKey::from_bytes(&secret).public();
+        tracing::info!(%node_id, "Iroh node identity ready");
+    }
+
     // Crawler notifier: after each commit, ping the configured relays/BGSes via requestCrawl.
     // The hostname advertised to crawlers is derived from the relay's public URL.
     let crawler_hostname = crawler::host_from_url(&config.public_url);
