@@ -1,6 +1,6 @@
 # ezpds
 
-Last verified: 2026-06-24
+Last verified: 2026-06-26
 
 ## Tech Stack
 - Language: Rust (stable channel via rust-toolchain.toml)
@@ -58,14 +58,26 @@ Deploys use the Railway CLI (nixpkgs dep) with environment-scoped tokens held as
 - iOS build commands: `just ios-dev` / `just ios-build` (run from repo root; macOS + Xcode required). Toolchain resolved by `apps/identity-wallet/scripts/ios-env.sh`; patches re-applied via `just ios-postinit` after `cargo tauri ios init`.
 
 ## Design Context
-The `identity-wallet` app is the only UI surface in the repo. **[PRODUCT.md](PRODUCT.md)** (repo root) is the design source-of-truth — read it before any frontend design/UX work; **[DESIGN.md](DESIGN.md)** carries the visual system (palette, type, components).
+The repo has **two UI surfaces, each with its own scoped design brief.** Read the brief for the app you're working on before any frontend design/UX work, and target `/impeccable` at that app's path so it loads the right brief:
+- **identity-wallet** (Obsign) → root **[PRODUCT.md](PRODUCT.md)** + **[DESIGN.md](DESIGN.md)**.
+- **admin-companion** → **[apps/admin-companion/PRODUCT.md](apps/admin-companion/PRODUCT.md)** + **[apps/admin-companion/DESIGN.md](apps/admin-companion/DESIGN.md)**.
+
+The two are **siblings** — shared security rigor (practice-what-you-preach, WCAG 2.2 AAA, status never by color alone) — but **deliberately different registers**. Do not cross-apply one app's visual system to the other.
+
+### identity-wallet (Obsign) — *humane security instrument* (Proton / 1Password lane)
 - **Register:** product — design serves the task of holding and defending an identity.
 - **Personality:** a *serious security instrument* in the humane **Proton / 1Password** lane — sovereign, precise, trustworthy. Gravitas comes from precision and restraint, not chrome.
 - **Principles:** clarity is the security feature · calm under alarm · progressive disclosure of the cryptographic machinery · practice the assurance you preach · honest, never hype.
 - **Anti-references (hard "don'ts"):** crypto/web3 hype · enterprise dashboard · playful/gamified · generic stock-iOS · Ledger-style dark-technical heaviness.
 - **Accessibility:** target WCAG 2.2 AAA; urgency/status is never signalled by color alone (always paired with text + icon + position).
 - **Token layer (code):** `apps/identity-wallet/src/lib/styles/{tokens,fonts,base}.css` is the live design system — global OKLCH color/type/space/radius/motion tokens, self-hosted fonts (bundled in `static/fonts/`, no runtime CDN), and base styles. Imported once in `src/routes/+layout.svelte`. Components reference `var(--color-*)`, `var(--font-*)`, `var(--space-*)`, etc.; **never hardcode hex or px**. Every screen has been migrated — the `src/lib/components` + `src/routes` tree is hex-free. Shared UI primitives live in `src/lib/components/ui/` (`Button`, `TextField`, `Spinner`, `SealEmblem`, `OnboardingShell`, `UrgencyBadge`, `DiffRow`); reuse them rather than re-styling.
-- **Tooling:** design work runs through the `/impeccable` skill (PRODUCT.md/DESIGN.md are its inputs); live-iteration mode is pre-configured in `.impeccable/live/config.json`.
+- **Tooling:** design work runs through the `/impeccable` skill (it reads the targeted app's PRODUCT.md/DESIGN.md — pass the app path so it loads the right brief, e.g. `apps/admin-companion`); live-iteration mode is pre-configured for the wallet in `.impeccable/live/config.json`.
+
+### admin-companion — *terminal-native operator console* ("The Brass Console")
+- **What:** a separate iOS app for the relay **operator** (generate/share claim codes, pair/revoke admin devices via per-device Secure-Enclave signed requests). Distinct audience: technical operators, not end users. See [docs/design-plans/2026-06-26-admin-companion-app.md](docs/design-plans/2026-06-26-admin-companion-app.md) (Wave 7).
+- **Register:** product, but the inverse of Obsign's lane — cool-slate dark ground, sealing-wax gold accent carried from Obsign, monospace-forward; reports the literal truth rather than hiding the machinery.
+- **Anti-references (hard "don'ts"):** hacker cosplay / terminal kitsch · consumer-app friendliness (Obsign's lane) · crypto/web3 hype · enterprise dashboard / chart-soup · low-contrast dark-theme mush.
+- **Status:** `DESIGN.md` is a **SEED** (anchors only) until the Tauri app is scaffolded (Phase 6 / [MM-190](https://linear.app/atbb/issue/MM-190/phase-6-companion-app-scaffold-admin-device-key-app)); re-run `/impeccable document` in scan mode against `apps/admin-companion/` then to extract real tokens + the `.impeccable/design.json` sidecar. No token-layer code or live config exists yet.
 
 ## Flake Outputs
 - `nixosModules.default` - NixOS module for relay OCI container deployment (see `nix/CLAUDE.md`)
