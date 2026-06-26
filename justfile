@@ -45,6 +45,93 @@ ci-relay: fmt-check
 nix-check:
     nix flake check --impure --accept-flake-config
 
+# Sync GitHub `main` (canonical) -> tangled `main`. PRs are merged on GitHub; tangled
+# `main` does not auto-update, so it drifts and needs periodic syncing. This refuses
+# anything that is not a clean fast-forward, so it can never clobber tangled history.
+# NOTE: pushing tangled `main` triggers the staging deploy (just ci-relay -> Railway).
+# Pre-validate first with `just ci-relay` if the relay changed.
+sync-tangled-main:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    # Derive both push URLs from origin (no hardcoded SSH aliases): origin push-mirrors
+    # to BOTH the GitHub mirror (URL contains "github") and the tangled knot (does not).
+    github_url="$(git remote get-url --push --all origin | grep -i github | head -n1 || true)"
+    tangled_url="$(git remote get-url --push --all origin | grep -iv github | head -n1 || true)"
+    if [ -z "$github_url" ] || [ -z "$tangled_url" ]; then
+      echo "✗ origin must push-mirror to both GitHub and tangled; found:" >&2
+      git remote get-url --push --all origin >&2
+      exit 1
+    fi
+
+    # Fast-forwarding local main touches the working tree — require it clean.
+    if [ -n "$(git status --porcelain)" ]; then
+      echo "✗ working tree not clean — commit or stash before syncing" >&2
+      exit 1
+    fi
+
+    # Fetch each SHA from its resolved push URL, NOT from `origin` — `git fetch origin`
+    # uses origin's *fetch* URL, which may be GitHub. Reading the "tangled" SHA from there
+    # would make it equal the GitHub SHA, so the equality check below would falsely report
+    # "already in sync" and never push.
+    echo "→ fetching tangled main…"
+    git fetch "$tangled_url" main
+    tangled="$(git rev-parse FETCH_HEAD)"
+    echo "→ fetching github main…"
+    git fetch "$github_url" main
+    github="$(git rev-parse FETCH_HEAD)"
+
+    echo
+    echo "tangled main: $(git rev-parse --short "$tangled")"
+    echo "github  main: $(git rev-parse --short "$github")"
+
+    if [ "$tangled" = "$github" ]; then
+      echo "✓ already in sync — nothing to push"
+      exit 0
+    fi
+
+    echo
+    echo "incoming (on GitHub, not yet on tangled):"
+    git log --oneline --graph "$tangled".."$github"
+
+    # Refuse a non-fast-forward: tangled must hold no commits GitHub lacks.
+    if ! git merge-base --is-ancestor "$tangled" "$github"; then
+      echo >&2
+      echo "✗ tangled main has commits not on GitHub main — NOT a clean fast-forward." >&2
+      echo "  Refusing to push; reconcile the divergence manually." >&2
+      exit 1
+    fi
+
+    # Fast-forward local main, then push the tangled URL ONLY (origin would also push to
+    # GitHub — harmless but redundant). An EXIT trap restores the branch you started on for
+    # EVERY exit path: if the ff merge or push fails, `set -e` aborts mid-flight and would
+    # otherwise strand you on `main`. A failed restore warns loudly rather than silently
+    # swallowing the error, so a wrong-branch end state is never hidden.
+    start_branch="$(git rev-parse --abbrev-ref HEAD)"
+    restore_branch() {
+      if [ "$start_branch" != "main" ] && [ "$(git rev-parse --abbrev-ref HEAD)" != "$start_branch" ]; then
+        git checkout "$start_branch" \
+          || echo "⚠ could not restore branch '$start_branch' — you are on $(git rev-parse --abbrev-ref HEAD)" >&2
+      fi
+    }
+    trap restore_branch EXIT
+
+    git checkout main
+    git merge --ff-only "$github"
+    echo
+    echo "→ pushing main → tangled (this triggers the staging deploy)…"
+    git push "$tangled_url" main
+
+    # Verify against the tangled URL directly (same reason as the fetch above).
+    echo "→ verifying tangled main…"
+    git fetch "$tangled_url" main
+    if [ "$(git rev-parse FETCH_HEAD)" = "$github" ]; then
+      echo "✓ tangled main == github main ($(git rev-parse --short "$github"))"
+    else
+      echo "✗ post-push verification failed — tangled does not match GitHub" >&2
+      exit 1
+    fi
+
 # --- iOS (identity-wallet) — run from repo root; requires macOS + Xcode ---
 
 # Re-apply the surviving Tauri/macOS patches to the generated Xcode project.
