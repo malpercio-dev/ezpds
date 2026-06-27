@@ -19,6 +19,7 @@ pub mod get_blob;
 pub mod get_device_pds;
 pub mod get_did;
 pub mod get_pds_signing_key;
+pub mod get_preferences;
 pub mod get_record;
 pub mod get_repo;
 pub mod get_repo_signing_key;

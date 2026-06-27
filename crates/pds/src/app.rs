@@ -36,6 +36,7 @@ use crate::routes::get_blob::get_blob;
 use crate::routes::get_device_pds::get_device_pds;
 use crate::routes::get_did::get_did_handler;
 use crate::routes::get_pds_signing_key::get_pds_signing_key;
+use crate::routes::get_preferences::get_preferences_handler;
 use crate::routes::get_record::get_record;
 use crate::routes::get_repo::get_repo;
 use crate::routes::get_repo_signing_key::get_repo_signing_key;
@@ -237,6 +238,12 @@ pub fn app(state: AppState) -> Router {
         .route("/xrpc/com.atproto.repo.putRecord", post(put_record))
         .route("/xrpc/com.atproto.repo.deleteRecord", post(delete_record))
         .route("/xrpc/com.atproto.repo.describeRepo", get(describe_repo))
+        // Stored locally for user data sovereignty rather than proxied to the AppView, so it
+        // must be registered explicitly ahead of the `app.bsky.*` catch-all below.
+        .route(
+            "/xrpc/app.bsky.actor.getPreferences",
+            get(get_preferences_handler),
+        )
         .route("/xrpc/:method", get(xrpc_handler).post(xrpc_handler))
         .route("/v1/accounts", post(create_account))
         .route("/v1/accounts/claim-codes", post(claim_codes))

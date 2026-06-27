@@ -63,6 +63,26 @@ pub(crate) async fn get_session_account(
     ))
 }
 
+/// Return `true` when an active (non-deactivated) account exists for `did`.
+///
+/// Used by handlers that authenticate via JWT but still need to reject tokens whose
+/// underlying account has since been deactivated or removed — e.g. `getPreferences`,
+/// which otherwise has no reason to read the `accounts` table. Mirrors the
+/// `deactivated_at IS NULL` guard that `get_session_account` applies.
+pub(crate) async fn account_is_active(db: &sqlx::SqlitePool, did: &str) -> Result<bool, ApiError> {
+    let row: Option<(i64,)> =
+        sqlx::query_as("SELECT 1 FROM accounts WHERE did = ? AND deactivated_at IS NULL LIMIT 1")
+            .bind(did)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| {
+                tracing::error!(did = %did, error = %e, "DB error checking account active state");
+                ApiError::new(ErrorCode::InternalError, "failed to load account")
+            })?;
+
+    Ok(row.is_some())
+}
+
 /// Classification of a `pending_accounts` UNIQUE constraint violation.
 ///
 /// Produced by [`classify_pending_account_conflict`] so callers don't repeat the
