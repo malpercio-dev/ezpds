@@ -559,6 +559,22 @@ async fn genesis_commit_has_canonical_structure() {
         other => panic!("commit must be a dag-cbor map, got {other:?}"),
     };
 
+    // Pin the *exact* canonical field set, not just presence, so a stray extra key
+    // can't slip through. A genesis commit is {did, version, data, rev, prev, sig}
+    // with `prev` present and null (first commit has no predecessor).
+    let mut keys: Vec<&str> = map.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        ["data", "did", "prev", "rev", "sig", "version"],
+        "commit must contain exactly did, version, data, rev, prev, sig",
+    );
+    assert_eq!(
+        map.get("prev"),
+        Some(&Ipld::Null),
+        "a genesis commit's prev must be null",
+    );
+
     assert_eq!(
         map.get("version"),
         Some(&Ipld::Integer(3)),
