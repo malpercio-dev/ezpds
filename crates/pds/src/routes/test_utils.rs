@@ -93,6 +93,7 @@ pub async fn test_state_with_admin_token() -> AppState {
         failed_login_attempts: base.failed_login_attempts,
         firehose: base.firehose,
         crawlers: base.crawlers,
+        iroh: base.iroh,
     }
 }
 
@@ -121,6 +122,7 @@ pub async fn state_with_master_key() -> AppState {
         failed_login_attempts: base.failed_login_attempts,
         firehose: base.firehose,
         crawlers: base.crawlers,
+        iroh: base.iroh,
     }
 }
 

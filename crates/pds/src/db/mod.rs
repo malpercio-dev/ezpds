@@ -2,6 +2,7 @@ pub mod accounts;
 pub mod blobs;
 pub mod blocks;
 pub mod dids;
+pub mod iroh_identity;
 pub mod jwt_secret;
 pub mod oauth;
 pub mod password_reset;
@@ -120,6 +121,10 @@ static MIGRATIONS: &[Migration] = &[
     Migration {
         version: 21,
         sql: include_str!("migrations/V021__blocks_rev.sql"),
+    },
+    Migration {
+        version: 22,
+        sql: include_str!("migrations/V022__iroh_identity.sql"),
     },
 ];
 

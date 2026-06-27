@@ -161,6 +161,9 @@ pub struct AppState {
     /// Outbound `requestCrawl` notifier: after each commit, pings the configured relays/BGSes
     /// so newly produced content is crawled promptly. Shared via Arc.
     pub crawlers: Arc<crate::crawler::CrawlerNotifier>,
+    /// Bound Iroh QUIC endpoint, when `[iroh] enabled`. `None` when the tunnel is disabled.
+    /// Handlers read `iroh.node_id` to advertise the pds's node id. Shared via Arc.
+    pub iroh: Option<Arc<crate::iroh_tunnel::IrohState>>,
 }
 
 /// Build the Axum router with middleware and routes.
@@ -359,6 +362,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
             "test.example.com".to_string(),
             &[],
         )),
+        iroh: None,
     }
 }
 

@@ -16,6 +16,7 @@ src/
   app.rs           — AppState definition and construction
   firehose.rs      — in-memory subscribeRepos event pipeline (sequencer + broadcast fan-out)
   crawler.rs       — outbound requestCrawl notifier (rate-limited, retrying, fire-and-forget)
+  iroh_tunnel.rs   — Iroh QUIC endpoint: NAT-traversing device↔pds tunnel (opt-in)
   record_write.rs  — shared repo write flow + firehose commit emission
   auth/            — authentication primitives (no HTTP, no DB schema ownership)
   db/              — SQL query functions + migration runner (no business logic)
@@ -49,6 +50,19 @@ then spawns a detached task per crawler that POSTs `{ "hostname": <PDS-host> }` 
 All outcomes are logged, never propagated — a commit never blocks on or fails because of a
 crawler. Configured via `[crawlers] urls = [...]` (default `["https://bsky.network"]`; empty
 disables) or `EZPDS_CRAWLERS`.
+
+### `iroh_tunnel.rs`
+
+The Iroh QUIC tunnel — a NAT-traversing endpoint devices dial by node id instead of by a
+routable address. Opt-in via `[iroh] enabled` (default off); when enabled, `main.rs` loads the
+persistent node identity (`auth::load_or_create_iroh_secret_key`, backed by the `iroh_identity`
+table so the node id is stable across restarts), binds the endpoint with the `N0` preset (n0
+discovery + relays), and spawns a detached accept loop. `AppState.iroh: Option<Arc<IrohState>>`
+holds the bound endpoint and its node-id string; `get_device_pds` advertises that node id.
+The accept loop speaks a minimal v0.1 echo protocol on the `ezpds/iroh/0` ALPN — enough to
+prove the bidirectional channel and serve as a liveness probe; the real repo-sync / push
+protocols register here later. Errors are logged, never propagated (one bad peer never stops
+the loop). The endpoint is closed on graceful shutdown, which ends the accept loop.
 
 ### `auth/`
 
