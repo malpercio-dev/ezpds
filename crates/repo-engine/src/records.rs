@@ -413,6 +413,30 @@ where
     Ok(collections)
 }
 
+/// Count the total number of records across all collections in a repository.
+///
+/// Walks every MST key (`<collection>/<rkey>`) and counts those that name a record (i.e.
+/// contain a `/`, the collection/rkey separator). Keys without a slash are not valid records
+/// and are skipped, mirroring [`list_collections`]. An empty repo (genesis, no records)
+/// yields 0. Used by the operator usage endpoint to report a repo's record count.
+pub async fn count_records<S>(repo: &mut Repository<S>) -> Result<usize, RecordError>
+where
+    S: atrium_repo::blockstore::AsyncBlockStoreRead + atrium_repo::blockstore::AsyncBlockStoreWrite,
+{
+    use futures::StreamExt;
+
+    let mut count = 0usize;
+    let mut tree = repo.tree();
+    let mut stream = Box::pin(tree.keys());
+    while let Some(res) = stream.next().await {
+        let key = res.map_err(|e| RecordError::Repo(format!("count keys: {e}")))?;
+        if key.contains('/') {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
 /// Validate that `collection` is a syntactically valid NSID per the ATProto spec:
 /// at least three dot-separated segments, each non-empty and `[A-Za-z0-9-]`, with a
 /// total length of 1..=317 and no slashes.
@@ -902,6 +926,27 @@ mod tests {
             ],
             "collections must be distinct and lexicographically sorted"
         );
+    }
+
+    #[tokio::test]
+    async fn count_records_counts_across_collections() {
+        let (mut repo, signer) = create_test_repo("did:plc:countrecords").await;
+
+        // Empty repo: zero records.
+        assert_eq!(count_records(&mut repo).await.unwrap(), 0);
+
+        for key in [
+            "app.bsky.feed.post/b",
+            "app.bsky.feed.like/x",
+            "app.bsky.feed.post/a",
+        ] {
+            put_record_json(&mut repo, &signer, key, &serde_json::json!({ "t": 1 }))
+                .await
+                .unwrap();
+        }
+
+        // Three records total, spanning two collections.
+        assert_eq!(count_records(&mut repo).await.unwrap(), 3);
     }
 
     #[tokio::test]

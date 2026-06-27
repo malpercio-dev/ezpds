@@ -17,6 +17,8 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::auth::{DpopNonceStore, OAuthSigningKey};
 use crate::dns::{DnsProvider, TxtResolver};
+use crate::routes::account_storage::account_storage;
+use crate::routes::account_usage::account_usage;
 use crate::routes::activate_account::activate_account_handler;
 use crate::routes::apply_writes::apply_writes;
 use crate::routes::atproto_did::atproto_did_handler;
@@ -264,6 +266,8 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/accounts/claim-codes", post(claim_codes))
         .route("/v1/accounts/mobile", post(create_mobile_account))
         .route("/v1/accounts/sessions", post(create_provisioning_session))
+        .route("/v1/accounts/:id/usage", get(account_usage))
+        .route("/v1/accounts/:id/storage", get(account_storage))
         .route("/v1/devices", post(register_device))
         .route("/v1/devices/:id/pds", get(get_device_pds))
         .route("/v1/dids", post(create_did_handler))
