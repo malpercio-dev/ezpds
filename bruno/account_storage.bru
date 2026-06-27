@@ -1,0 +1,36 @@
+meta {
+  name: Account Storage
+  type: http
+  seq: 50
+}
+
+get {
+  url: {{baseUrl}}/v1/accounts/{{did}}/storage
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+docs {
+  # GET /v1/accounts/:id/storage
+
+  Operator blob-storage metrics for an account, for the provisioning dashboard.
+  `:id` is the account DID. Reports on the account regardless of activation
+  state. Requires the admin bearer token.
+
+  Response (camelCase, matching the rest of the /v1 API):
+  - `blobCount` — number of blobs stored for the account.
+  - `totalBytes` — total bytes occupied by those blobs.
+  - `quotaBytes` — the per-account storage quota (`[blobs] max_storage_per_account`).
+    Tiers are not yet differentiated in v0.1, so every account reports the same
+    configured quota.
+  - `quotaUsedPct` — `totalBytes` as a percentage of `quotaBytes` (0 when the
+    quota is 0).
+  - `largestBlob` — the account's largest blob as `{ cid, size }`, or `null`
+    when it has none.
+
+  An unknown DID returns 404.
+}

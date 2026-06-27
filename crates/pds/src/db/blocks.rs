@@ -165,6 +165,45 @@ pub async fn list_block_cids_since(
         .await
 }
 
+/// Aggregate repo-block storage stats for a single account.
+///
+/// Backs the operator usage endpoint. `commit_count` counts the distinct non-NULL `rev`
+/// values still represented among the account's blocks: because GC reclaims superseded
+/// blocks (old MST nodes, replaced records), this is a lower bound on the repo's full
+/// commit history, not an exact total — there is no separate commit log to count.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockStats {
+    /// Number of blocks stored for the account.
+    pub block_count: i64,
+    /// Total size of those blocks' raw bytes.
+    pub total_bytes: i64,
+    /// Distinct non-NULL commit revisions among the account's blocks (see struct docs).
+    pub commit_count: i64,
+}
+
+/// Compute [`BlockStats`] for an account in a single query.
+///
+/// An account with no blocks yields all-zero stats (the aggregates COALESCE to 0 and
+/// `COUNT(DISTINCT rev)` of an empty set is 0).
+pub async fn account_block_stats(
+    pool: &SqlitePool,
+    account_did: &str,
+) -> Result<BlockStats, sqlx::Error> {
+    let row: (i64, i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), COALESCE(SUM(LENGTH(bytes)), 0), COUNT(DISTINCT rev) \
+         FROM blocks WHERE account_did = ?",
+    )
+    .bind(account_did)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(BlockStats {
+        block_count: row.0,
+        total_bytes: row.1,
+        commit_count: row.2,
+    })
+}
+
 // ── SqliteBlockStore adapter ─────────────────────────────────────────────────────
 
 /// Adapter that implements atrium-repo's blockstore traits over SQLite.
@@ -385,6 +424,74 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(removed, 0);
+    }
+
+    #[tokio::test]
+    async fn account_block_stats_empty_account_is_all_zero() {
+        let pool = test_pool().await;
+        let stats = account_block_stats(&pool, "did:plc:nostats").await.unwrap();
+        assert_eq!(
+            stats,
+            BlockStats {
+                block_count: 0,
+                total_bytes: 0,
+                commit_count: 0,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn account_block_stats_counts_bytes_and_distinct_revs() {
+        let pool = test_pool().await;
+        insert_test_account(&pool, "did:plc:stats").await;
+
+        // Two blocks tagged with one rev, one block with another, one still NULL.
+        put_block(&pool, "bafs1", "did:plc:stats", b"\xa1aa")
+            .await
+            .unwrap(); // 3 bytes
+        put_block(&pool, "bafs2", "did:plc:stats", b"\xa1bbbb")
+            .await
+            .unwrap(); // 5 bytes
+        tag_blocks_rev(
+            &pool,
+            "did:plc:stats",
+            &["bafs1".to_string(), "bafs2".to_string()],
+            "3aaa",
+        )
+        .await
+        .unwrap();
+        put_block(&pool, "bafs3", "did:plc:stats", b"\xa1c")
+            .await
+            .unwrap(); // 2 bytes
+        tag_blocks_rev(&pool, "did:plc:stats", &["bafs3".to_string()], "3bbb")
+            .await
+            .unwrap();
+        put_block(&pool, "bafs4", "did:plc:stats", b"\xa1dddddd")
+            .await
+            .unwrap(); // 7 bytes, NULL rev
+
+        let stats = account_block_stats(&pool, "did:plc:stats").await.unwrap();
+        assert_eq!(stats.block_count, 4);
+        assert_eq!(stats.total_bytes, 3 + 5 + 2 + 7);
+        // Two distinct non-NULL revs; the NULL-rev block is not counted as a commit.
+        assert_eq!(stats.commit_count, 2);
+    }
+
+    #[tokio::test]
+    async fn account_block_stats_scoped_per_account() {
+        let pool = test_pool().await;
+        insert_test_account(&pool, "did:plc:mine").await;
+        insert_test_account(&pool, "did:plc:theirs").await;
+        put_block(&pool, "bafmine", "did:plc:mine", b"\xa1x")
+            .await
+            .unwrap();
+        put_block(&pool, "baftheirs", "did:plc:theirs", b"\xa1yyyy")
+            .await
+            .unwrap();
+
+        let stats = account_block_stats(&pool, "did:plc:mine").await.unwrap();
+        assert_eq!(stats.block_count, 1);
+        assert_eq!(stats.total_bytes, 2);
     }
 
     #[tokio::test]

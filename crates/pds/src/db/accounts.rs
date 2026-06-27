@@ -244,6 +244,63 @@ pub(crate) async fn get_repo_root_cid(
         .await
 }
 
+/// Operator-facing account overview, fetched without the `deactivated_at IS NULL` guard that
+/// the user-facing lookups apply: the provisioning/usage endpoints report on an account
+/// regardless of its activation state.
+pub(crate) struct AccountOverview {
+    /// When the account row was created (`accounts.created_at`).
+    pub(crate) created_at: String,
+    /// Stored repo root commit CID, or `None` when the account has no repo yet.
+    pub(crate) repo_root_cid: Option<String>,
+}
+
+/// Fetch an [`AccountOverview`] by DID for the operator usage/storage endpoints.
+///
+/// Returns `None` only when no account row exists for `did` (the caller maps this to a 404).
+/// Unlike `resolve_identifier`/`account_is_active`, this does **not** filter deactivated
+/// accounts — an operator still needs their usage figures.
+pub(crate) async fn get_account_overview(
+    db: &sqlx::SqlitePool,
+    did: &str,
+) -> Result<Option<AccountOverview>, sqlx::Error> {
+    let row: Option<(String, Option<String>)> =
+        sqlx::query_as("SELECT created_at, repo_root_cid FROM accounts WHERE did = ?")
+            .bind(did)
+            .fetch_optional(db)
+            .await?;
+
+    Ok(row.map(|(created_at, repo_root_cid)| AccountOverview {
+        created_at,
+        repo_root_cid,
+    }))
+}
+
+/// The timestamp of an account's most recent repo-block write or blob upload, or `None` when
+/// it has neither.
+///
+/// `blocks.created_at` and `blobs.created_at` share the same `strftime('%Y-%m-%dT%H:%M:%fZ')`
+/// format, so the cross-table `MAX` is a valid lexicographic comparison. Callers fall back to
+/// the account's `created_at` when this is `None` (a freshly provisioned account with no repo
+/// and no blobs).
+pub(crate) async fn account_last_active(
+    db: &sqlx::SqlitePool,
+    did: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let row: (Option<String>,) = sqlx::query_as(
+        "SELECT MAX(ts) FROM ( \
+            SELECT created_at AS ts FROM blocks WHERE account_did = ? \
+            UNION ALL \
+            SELECT created_at AS ts FROM blobs WHERE account_did = ? \
+         )",
+    )
+    .bind(did)
+    .bind(did)
+    .fetch_one(db)
+    .await?;
+
+    Ok(row.0)
+}
+
 /// Repo write preconditions for an account: its repo root CID and active status, fetched in one
 /// query. Backs the create/put/delete/applyWrites paths, which need both the CAS root and the
 /// deactivation gate — reading them together avoids a second round-trip against `accounts` and
@@ -781,6 +838,80 @@ mod tests {
             account_is_active(&db, "did:plc:l").await.unwrap(),
             "account_is_active must be true after activation"
         );
+    }
+
+    // ── get_account_overview / account_last_active ────────────────────────────
+
+    #[tokio::test]
+    async fn get_account_overview_missing_did_returns_none() {
+        let db = test_pool().await;
+        assert!(get_account_overview(&db, "did:plc:none")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn get_account_overview_returns_created_at_and_repo_root() {
+        let db = test_pool().await;
+        let cid = "bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uwrf3e2o6cw3djmprrm";
+        insert_account_with_repo(&db, "did:plc:ov", cid).await;
+
+        let overview = get_account_overview(&db, "did:plc:ov")
+            .await
+            .unwrap()
+            .expect("account exists");
+        assert!(!overview.created_at.is_empty());
+        assert_eq!(overview.repo_root_cid.as_deref(), Some(cid));
+    }
+
+    #[tokio::test]
+    async fn get_account_overview_includes_deactivated_accounts() {
+        // Unlike the user-facing lookups, the operator overview must still find a
+        // deactivated account.
+        let db = test_pool().await;
+        insert_account(&db, "did:plc:ovde").await;
+        deactivate_account(&db, "did:plc:ovde", None).await.unwrap();
+
+        assert!(get_account_overview(&db, "did:plc:ovde")
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn account_last_active_none_without_blocks_or_blobs() {
+        let db = test_pool().await;
+        insert_account(&db, "did:plc:la").await;
+        assert!(account_last_active(&db, "did:plc:la")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn account_last_active_returns_latest_of_blocks_and_blobs() {
+        let db = test_pool().await;
+        insert_account(&db, "did:plc:la2").await;
+
+        // A block at an earlier instant, a blob at a later one. MAX must pick the blob.
+        sqlx::query(
+            "INSERT INTO blocks (cid, account_did, bytes, created_at) \
+             VALUES ('bafblk', 'did:plc:la2', x'a100', '2026-01-01T00:00:00.000Z')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO blobs (cid, account_did, mime_type, size_bytes, storage_path, created_at) \
+             VALUES ('bafblb', 'did:plc:la2', 'image/png', 1, 'p', '2026-02-02T00:00:00.000Z')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let last = account_last_active(&db, "did:plc:la2").await.unwrap();
+        assert_eq!(last.as_deref(), Some("2026-02-02T00:00:00.000Z"));
     }
 
     // ── get_repo_write_state ──────────────────────────────────────────────────

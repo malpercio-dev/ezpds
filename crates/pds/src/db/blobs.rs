@@ -68,6 +68,34 @@ pub async fn account_storage_bytes(
     Ok(row.0)
 }
 
+/// Count the blobs owned by a specific account.
+///
+/// Counts every blob row for the account regardless of `ref_count`/`temp_until`: an
+/// operator's view of "blobs stored" includes still-temporary uploads that occupy disk.
+pub async fn account_blob_count(pool: &SqlitePool, account_did: &str) -> Result<i64, sqlx::Error> {
+    let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM blobs WHERE account_did = ?")
+        .bind(account_did)
+        .fetch_one(pool)
+        .await?;
+    Ok(row.0)
+}
+
+/// Return the account's largest blob as `(cid, size_bytes)`, or `None` when it has none.
+///
+/// Ties on size are broken by CID (lexicographic) so the result is deterministic.
+pub async fn account_largest_blob(
+    pool: &SqlitePool,
+    account_did: &str,
+) -> Result<Option<(String, i64)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT cid, size_bytes FROM blobs WHERE account_did = ? \
+         ORDER BY size_bytes DESC, cid ASC LIMIT 1",
+    )
+    .bind(account_did)
+    .fetch_optional(pool)
+    .await
+}
+
 /// Look up a blob by its CID.
 pub async fn get_blob_by_cid(pool: &SqlitePool, cid: &str) -> Result<Option<BlobRow>, sqlx::Error> {
     sqlx::query_as::<_, BlobRow>("SELECT * FROM blobs WHERE cid = ?")
@@ -449,6 +477,119 @@ mod tests {
         let pool = test_pool().await;
         let total = account_storage_bytes(&pool, "did:plc:empty").await.unwrap();
         assert_eq!(total, 0);
+    }
+
+    #[tokio::test]
+    async fn account_blob_count_counts_all_owned_blobs() {
+        let pool = test_pool().await;
+        let account_did = insert_test_account(&pool).await;
+
+        assert_eq!(account_blob_count(&pool, &account_did).await.unwrap(), 0);
+
+        for i in 0..3 {
+            insert_blob(
+                &pool,
+                &format!("bafkricount{i}"),
+                &account_did,
+                "image/jpeg",
+                100,
+                &format!("blobs/ba/bafkricount{i}"),
+                "2026-01-01T12:00:00Z",
+            )
+            .await
+            .unwrap();
+        }
+
+        assert_eq!(account_blob_count(&pool, &account_did).await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn account_largest_blob_returns_biggest_by_size() {
+        let pool = test_pool().await;
+        let account_did = insert_test_account(&pool).await;
+
+        // No blobs → None.
+        assert!(account_largest_blob(&pool, &account_did)
+            .await
+            .unwrap()
+            .is_none());
+
+        insert_blob(
+            &pool,
+            "bafsmall",
+            &account_did,
+            "image/jpeg",
+            100,
+            "p1",
+            "2026-01-01T12:00:00Z",
+        )
+        .await
+        .unwrap();
+        insert_blob(
+            &pool,
+            "bafbig",
+            &account_did,
+            "image/jpeg",
+            9000,
+            "p2",
+            "2026-01-01T12:00:00Z",
+        )
+        .await
+        .unwrap();
+        insert_blob(
+            &pool,
+            "bafmid",
+            &account_did,
+            "image/jpeg",
+            500,
+            "p3",
+            "2026-01-01T12:00:00Z",
+        )
+        .await
+        .unwrap();
+
+        let (cid, size) = account_largest_blob(&pool, &account_did)
+            .await
+            .unwrap()
+            .expect("a largest blob");
+        assert_eq!(cid, "bafbig");
+        assert_eq!(size, 9000);
+    }
+
+    #[tokio::test]
+    async fn account_largest_blob_breaks_ties_by_cid() {
+        let pool = test_pool().await;
+        let account_did = insert_test_account(&pool).await;
+
+        // Two equal-size blobs: the lexicographically smaller CID wins (deterministic).
+        insert_blob(
+            &pool,
+            "bafbbb",
+            &account_did,
+            "image/jpeg",
+            200,
+            "p1",
+            "2026-01-01T12:00:00Z",
+        )
+        .await
+        .unwrap();
+        insert_blob(
+            &pool,
+            "bafaaa",
+            &account_did,
+            "image/jpeg",
+            200,
+            "p2",
+            "2026-01-01T12:00:00Z",
+        )
+        .await
+        .unwrap();
+
+        let (cid, _) = account_largest_blob(&pool, &account_did)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(cid, "bafaaa");
     }
 
     #[tokio::test]

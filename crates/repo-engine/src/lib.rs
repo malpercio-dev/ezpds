@@ -23,10 +23,10 @@ pub use car_export::{
 };
 pub use genesis::{build_genesis_repo, create_genesis_repo, CapturingBlockStore, GenesisError};
 pub use records::{
-    apply_writes, delete_record, generate_tid, get_record, get_record_cid, get_record_json,
-    json_to_record_value, list_collections, list_records_json, put_record, put_record_json,
-    record_value_to_json, validate_collection, validate_record_path, ListRecordsPage, ListedRecord,
-    RecordError, WriteOp, WriteOutcome,
+    apply_writes, count_records, delete_record, generate_tid, get_record, get_record_cid,
+    get_record_json, json_to_record_value, list_collections, list_records_json, put_record,
+    put_record_json, record_value_to_json, validate_collection, validate_record_path,
+    ListRecordsPage, ListedRecord, RecordError, WriteOp, WriteOutcome,
 };
 pub use signer::{CommitSigner, CommitSignerError};
 
