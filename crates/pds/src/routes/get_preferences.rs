@@ -15,6 +15,7 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
+use crate::db::accounts::account_is_active;
 use crate::db::preferences::get_preferences;
 
 #[derive(Serialize)]
@@ -27,7 +28,9 @@ pub struct GetPreferencesResponse {
 /// Preferences are stored locally on the PDS for user data sovereignty rather than proxied
 /// to the AppView (unlike most `app.bsky.*` methods, which the catch-all forwards). A new
 /// account with nothing stored returns an empty array. Like `getSession`, only full
-/// access-scope tokens are accepted — app passwords cannot read preferences.
+/// access-scope tokens are accepted — app passwords cannot read preferences — and a token
+/// whose account has since been deactivated or removed is rejected even though the JWT is
+/// still cryptographically valid.
 pub async fn get_preferences_handler(
     user: AuthenticatedUser,
     State(state): State<AppState>,
@@ -37,6 +40,14 @@ pub async fn get_preferences_handler(
             ErrorCode::InvalidToken,
             "access token required",
         ));
+    }
+
+    // A valid JWT is not enough: reject tokens whose account has been deactivated or removed,
+    // mirroring `getSession`. Without this an unexpired token would keep reading preferences
+    // after the account is gone.
+    if !account_is_active(&state.db, &user.did).await? {
+        tracing::warn!(did = %user.did, "getPreferences: account not found or deactivated");
+        return Err(ApiError::new(ErrorCode::InvalidToken, "account not found"));
     }
 
     let preferences: Vec<Value> = match get_preferences(&state.db, &user.did).await? {
@@ -84,8 +95,8 @@ mod tests {
         .unwrap()
     }
 
-    /// Issue an app-password-scope JWT (must be rejected by getPreferences).
-    fn app_pass_jwt(secret: &[u8; 32], sub: &str) -> String {
+    /// Issue a scoped HS256 JWT (used to exercise wrong-scope rejection paths).
+    fn scoped_jwt(secret: &[u8; 32], sub: &str, scope: &str) -> String {
         use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
         use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -96,7 +107,7 @@ mod tests {
         encode(
             &Header::new(Algorithm::HS256),
             &serde_json::json!({
-                "scope": "com.atproto.appPass",
+                "scope": scope,
                 "sub": sub,
                 "iat": now,
                 "exp": now + 7200_u64,
@@ -233,7 +244,60 @@ mod tests {
     async fn app_pass_token_returns_401() {
         let state = test_state().await;
         insert_account(&state.db, "did:plc:apppass", "apppass@example.com").await;
-        let token = app_pass_jwt(&state.jwt_secret, "did:plc:apppass");
+        let token = scoped_jwt(&state.jwt_secret, "did:plc:apppass", "com.atproto.appPass");
+
+        let response = app(state)
+            .oneshot(get_preferences_request(&token))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+    }
+
+    #[tokio::test]
+    async fn refresh_token_returns_401() {
+        let state = test_state().await;
+        insert_account(&state.db, "did:plc:refresh", "refresh@example.com").await;
+        let token = scoped_jwt(&state.jwt_secret, "did:plc:refresh", "com.atproto.refresh");
+
+        let response = app(state)
+            .oneshot(get_preferences_request(&token))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+    }
+
+    #[tokio::test]
+    async fn deactivated_account_returns_401() {
+        let state = test_state().await;
+        insert_account(&state.db, "did:plc:deact", "deact@example.com").await;
+        sqlx::query("UPDATE accounts SET deactivated_at = datetime('now') WHERE did = ?")
+            .bind("did:plc:deact")
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let token = access_jwt(&state.jwt_secret, "did:plc:deact");
+
+        let response = app(state)
+            .oneshot(get_preferences_request(&token))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+    }
+
+    #[tokio::test]
+    async fn token_for_nonexistent_account_returns_401() {
+        let state = test_state().await;
+        // No account inserted — the DID exists only inside the JWT.
+        let token = access_jwt(&state.jwt_secret, "did:plc:ghost");
 
         let response = app(state)
             .oneshot(get_preferences_request(&token))
