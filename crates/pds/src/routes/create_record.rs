@@ -211,6 +211,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_record_on_deactivated_account_without_repo_returns_403() {
+        // A deactivated account that never created a repo (repo_root_cid NULL) must report the
+        // deactivation (403), not be misclassified as a missing account (404).
+        let state = state_with_master_key().await;
+        let did = "did:plc:deactnorepo".to_string();
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at, deactivated_at) \
+             VALUES (?, ?, NULL, datetime('now'), datetime('now'), '2026-01-01T00:00:00Z')",
+        )
+        .bind(&did)
+        .bind("deactnorepo@example.com")
+        .execute(&state.db)
+        .await
+        .unwrap();
+        let token = access_jwt(&state.jwt_secret, &did);
+        let app = crate::app::app(state);
+
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri("/xrpc/com.atproto.repo.createRecord")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({
+                    "repo": did,
+                    "collection": "app.bsky.feed.post",
+                    "record": {"text": "should be rejected"}
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "a deactivated account with no repo must be 403, not 404"
+        );
+    }
+
+    #[tokio::test]
     async fn create_record_auto_generates_tid() {
         let (state, did) = setup_account_with_repo().await;
         let token = access_jwt(&state.jwt_secret, &did);

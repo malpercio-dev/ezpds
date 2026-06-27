@@ -61,19 +61,21 @@ pub async fn delete_record(
             ApiError::new(ErrorCode::InternalError, "failed to delete record")
         })?
         .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
-    let root_cid_str = write_state
-        .repo_root_cid
-        .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
 
-    // A deactivated account is read-only: no writes until reactivated. Checked after the existence
-    // lookup so a missing account is still a 404 rather than a deactivation error; the CAS below
-    // also carries `deactivated_at IS NULL` to close the gap between this check and commit.
+    // A deactivated account is read-only: no writes until reactivated. Checked right after account
+    // existence — before the repo-root lookup — so a deactivated account is a 403 even if it never
+    // created a repo; only a truly missing account (handled above) is a 404. The CAS below also
+    // carries `deactivated_at IS NULL` to close the gap between this check and commit.
     if !write_state.active {
         return Err(ApiError::new(
             ErrorCode::Forbidden,
             "account is deactivated",
         ));
     }
+
+    let root_cid_str = write_state
+        .repo_root_cid
+        .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
 
     let root_cid = repo_engine::Cid::try_from(root_cid_str.as_str()).map_err(|e| {
         tracing::error!(error = %e, did = %did, "invalid repo root CID in database");
