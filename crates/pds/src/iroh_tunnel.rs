@@ -18,10 +18,11 @@ pub const ALPN: &[u8] = b"ezpds/iroh/0";
 /// force unbounded allocation on the pds.
 const MAX_MESSAGE_LEN: usize = 64 * 1024;
 
-/// Maximum time to wait for a peer to finish sending one echo message. Without it, a peer
-/// that opens a stream but never closes its send side would park `read_to_end` forever,
-/// stalling every subsequent stream on that connection.
-const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Maximum time for one echo stream exchange (read request → write reply). Bounds exposure to
+/// a peer that stalls either side: never closing its send half (parking `read_to_end`) or
+/// never draining its receive window (parking `write_all` on QUIC flow control). Without it
+/// such a peer would hold the connection task open indefinitely.
+const STREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Process-level Iroh endpoint state, shared via `AppState` behind an `Arc`.
 pub struct IrohState {
@@ -81,11 +82,17 @@ async fn handle_connection(incoming: Incoming) -> anyhow::Result<()> {
             Ok(streams) => streams,
             Err(_) => break,
         };
-        let msg = tokio::time::timeout(READ_TIMEOUT, recv.read_to_end(MAX_MESSAGE_LEN))
+        // Bound the whole exchange under one deadline so a peer cannot stall the read (never
+        // closing its send half) or the write (never draining our reply) to pin this task.
+        let exchange = async {
+            let msg = recv.read_to_end(MAX_MESSAGE_LEN).await?;
+            send.write_all(&msg).await?;
+            send.finish()?;
+            Ok::<(), anyhow::Error>(())
+        };
+        tokio::time::timeout(STREAM_TIMEOUT, exchange)
             .await
-            .map_err(|_| anyhow::anyhow!("iroh stream read timed out"))??;
-        send.write_all(&msg).await?;
-        send.finish()?;
+            .map_err(|_| anyhow::anyhow!("iroh stream exchange timed out"))??;
     }
     Ok(())
 }

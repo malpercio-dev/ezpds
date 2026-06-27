@@ -114,8 +114,10 @@ pub struct IrohConfig {
     #[serde(default)]
     pub enabled: bool,
     /// Optional manual override for the advertised node id. When `None` (the default), the
-    /// relay advertises its live endpoint's node id; when set, this exact string is advertised
-    /// instead. Has no effect when `enabled` is false.
+    /// pds advertises its live endpoint's node id (present only while the tunnel is enabled);
+    /// when set, this exact string is advertised instead. The override is read straight from
+    /// config by the handler, so it applies even when `enabled` is false (i.e. with no live
+    /// endpoint running).
     pub endpoint: Option<String>,
 }
 
