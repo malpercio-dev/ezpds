@@ -134,7 +134,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `get_device_pds.rs` | `GET /v1/devices/:id/pds` |
 | `describe_server.rs` | `GET /xrpc/com.atproto.server.describeServer` |
 | `describe_repo.rs` | `GET /xrpc/com.atproto.repo.describeRepo` |
-| `appview_proxy.rs` | `GET/POST /xrpc/app.bsky.*` — catch-all proxy forwarding unhandled `app.bsky.*` NSIDs to the configured AppView |
+| `service_proxy.rs` | `GET/POST /xrpc/app.bsky.*` and `GET/POST /xrpc/chat.bsky.*` — catch-all proxy forwarding unhandled `app.bsky.*` NSIDs to the configured AppView and `chat.bsky.*` NSIDs (direct messages) to the configured chat service |
 | `get_preferences.rs` | `GET /xrpc/app.bsky.actor.getPreferences` — local preference read (stored on the PDS, not proxied; registered ahead of the catch-all) |
 | `put_preferences.rs` | `POST /xrpc/app.bsky.actor.putPreferences` — local preference write (overwrites the stored blob entirely; registered ahead of the catch-all) |
 | `resolve_handle.rs` | `GET /xrpc/com.atproto.identity.resolveHandle` |

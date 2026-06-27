@@ -291,24 +291,47 @@ pub fn app(state: AppState) -> Router {
 /// Catch-all XRPC handler.
 ///
 /// `app.bsky.*` NSIDs with no local handler are forwarded to the configured AppView (feeds,
-/// notifications, search) via [`appview_proxy`]. Any other unrecognised NSID returns
+/// notifications, search); `chat.bsky.*` NSIDs are forwarded to the configured chat service
+/// (direct messages) — both via [`service_proxy`]. Any other unrecognised NSID returns
 /// `MethodNotImplemented`.
+///
+/// Both proxied namespaces are forwarded *on behalf of an authenticated user*, so the caller's
+/// session is validated locally (the `AuthenticatedUser` extractor) before anything leaves the
+/// PDS; the upstream then re-validates the passed-through token. Unauthenticated callers are
+/// rejected here rather than at the upstream. The auth check is scoped to the proxy branches:
+/// an unrecognised NSID still returns `501` without an auth challenge, so probing for supported
+/// methods does not require credentials.
 ///
 /// Axum gives static path segments priority over parameterised ones, so specific routes
 /// registered for individual NSIDs will match before this catch-all.
 async fn xrpc_handler(
     State(state): State<AppState>,
     Path(method): Path<String>,
+    auth: Result<crate::auth::extractors::AuthenticatedUser, ApiError>,
     req: axum::extract::Request,
 ) -> Response {
-    if method.starts_with("app.bsky.") {
-        crate::routes::appview_proxy::proxy_to_appview(&state, &method, req).await
+    use crate::routes::service_proxy::proxy_xrpc;
+
+    let upstream = if method.starts_with("app.bsky.") {
+        Some((&state.config.appview.url, &state.config.appview.did))
+    } else if method.starts_with("chat.bsky.") {
+        Some((&state.config.chat.url, &state.config.chat.did))
     } else {
-        ApiError::new(
+        None
+    };
+
+    match upstream {
+        Some((url, did)) => {
+            if let Err(rejection) = auth {
+                return rejection.into_response();
+            }
+            proxy_xrpc(&state, url, did, &method, req).await
+        }
+        None => ApiError::new(
             ErrorCode::MethodNotImplemented,
             format!("XRPC method {method:?} is not implemented"),
         )
-        .into_response()
+        .into_response(),
     }
 }
 
@@ -322,7 +345,8 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
     use crate::auth::new_nonce_store;
     use crate::db::{open_pool, run_migrations};
     use common::{
-        AppViewConfig, BlobsConfig, CrawlersConfig, IrohConfig, OAuthConfig, TelemetryConfig,
+        AppViewConfig, BlobsConfig, ChatConfig, CrawlersConfig, IrohConfig, OAuthConfig,
+        TelemetryConfig,
     };
     use p256::pkcs8::EncodePrivateKey;
     use rand_core::OsRng;
@@ -378,6 +402,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
             oauth: OAuthConfig::default(),
             iroh: IrohConfig::default(),
             appview: AppViewConfig::default(),
+            chat: ChatConfig::default(),
             // Tests must never make outbound crawl notifications.
             crawlers: CrawlersConfig { urls: vec![] },
             telemetry: TelemetryConfig::default(),

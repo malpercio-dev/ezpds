@@ -34,6 +34,7 @@ pub struct Config {
     pub oauth: OAuthConfig,
     pub iroh: IrohConfig,
     pub appview: AppViewConfig,
+    pub chat: ChatConfig,
     pub crawlers: CrawlersConfig,
     pub telemetry: TelemetryConfig,
     // Operator authentication for management endpoints (e.g., POST /v1/pds/keys).
@@ -155,6 +156,70 @@ fn default_appview_did() -> String {
     "did:web:api.bsky.app#bsky_appview".to_string()
 }
 
+/// Bluesky chat (DM) service proxy configuration.
+///
+/// `chat.bsky.*` XRPC methods are not served locally — direct messages live on a dedicated
+/// chat service rather than the AppView — so the catch-all proxy forwards them here. The
+/// default targets the public Bluesky chat service; `did` is the value sent as the
+/// `atproto-proxy` header so the chat service knows the request is proxied on the user's behalf.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChatConfig {
+    /// Base URL of the chat service (scheme + authority, no trailing slash).
+    #[serde(default = "default_chat_url")]
+    pub url: String,
+    /// Service DID (with `#fragment`) of the chat service, sent as `atproto-proxy`.
+    #[serde(default = "default_chat_did")]
+    pub did: String,
+}
+
+impl Default for ChatConfig {
+    fn default() -> Self {
+        Self {
+            url: default_chat_url(),
+            did: default_chat_did(),
+        }
+    }
+}
+
+fn default_chat_url() -> String {
+    "https://api.bsky.chat".to_string()
+}
+
+fn default_chat_did() -> String {
+    "did:web:api.bsky.chat#bsky_chat".to_string()
+}
+
+/// Validate a service-proxy base URL (AppView or chat service): it must use an `http(s)` scheme
+/// and carry a non-empty authority. The authority check rejects hostless values like `https://`
+/// or `http:///path` that pass a bare scheme-prefix test but normalize to a useless base and
+/// turn every proxied request into a runtime failure instead of a startup error.
+fn validate_proxy_url(field: &str, url: &str) -> Result<(), ConfigError> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .ok_or_else(|| {
+            ConfigError::Invalid(format!(
+                "{field} must start with http:// or https://, got: {url:?}"
+            ))
+        })?;
+    // A base URL is scheme + authority (+ optional path). A query or fragment is meaningless on
+    // a base the proxy only ever appends `/xrpc/{nsid}` to, and would silently corrupt the target,
+    // so reject it at load time rather than emit malformed upstream requests.
+    if rest.contains('?') || rest.contains('#') {
+        return Err(ConfigError::Invalid(format!(
+            "{field} must not contain a query or fragment, got: {url:?}"
+        )));
+    }
+    // The authority runs up to the first '/'; everything after is an (optional) path.
+    let authority = rest.split('/').next().unwrap_or("");
+    if authority.is_empty() {
+        return Err(ConfigError::Invalid(format!(
+            "{field} must include a host, got: {url:?}"
+        )));
+    }
+    Ok(())
+}
+
 /// Crawler (relay/BGS) notification configuration for `com.atproto.sync.requestCrawl`.
 ///
 /// After every repo commit the pds notifies each configured crawler so newly produced
@@ -231,6 +296,8 @@ pub(crate) struct RawConfig {
     pub(crate) iroh: IrohConfig,
     #[serde(default)]
     pub(crate) appview: AppViewConfig,
+    #[serde(default)]
+    pub(crate) chat: ChatConfig,
     #[serde(default)]
     pub(crate) crawlers: CrawlersConfig,
     #[serde(default)]
@@ -373,6 +440,12 @@ pub(crate) fn apply_env_overrides(
     if let Some(v) = env.get("EZPDS_APPVIEW_DID") {
         raw.appview.did = v.clone();
     }
+    if let Some(v) = env.get("EZPDS_CHAT_URL") {
+        raw.chat.url = v.clone();
+    }
+    if let Some(v) = env.get("EZPDS_CHAT_DID") {
+        raw.chat.did = v.clone();
+    }
     // Comma-separated crawler base URLs; an empty value disables crawl notifications.
     if let Some(v) = env.get("EZPDS_CRAWLERS") {
         raw.crawlers.urls = v
@@ -491,16 +564,18 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         }
     }
 
-    if !raw.appview.url.starts_with("http://") && !raw.appview.url.starts_with("https://") {
-        return Err(ConfigError::Invalid(format!(
-            "appview.url must start with http:// or https://, got: {:?}",
-            raw.appview.url
-        )));
-    }
+    validate_proxy_url("appview.url", &raw.appview.url)?;
     // Trim a trailing slash so the proxy can join paths as `{url}/xrpc/...` unambiguously.
     let appview = AppViewConfig {
         url: raw.appview.url.trim_end_matches('/').to_string(),
         did: raw.appview.did,
+    };
+
+    validate_proxy_url("chat.url", &raw.chat.url)?;
+    // Trim a trailing slash so the proxy can join paths as `{url}/xrpc/...` unambiguously.
+    let chat = ChatConfig {
+        url: raw.chat.url.trim_end_matches('/').to_string(),
+        did: raw.chat.did,
     };
 
     Ok(Config {
@@ -518,6 +593,7 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         oauth: raw.oauth,
         iroh: raw.iroh,
         appview,
+        chat,
         crawlers: raw.crawlers,
         telemetry,
         admin_token: raw.admin_token,
@@ -1198,6 +1274,142 @@ mod tests {
         let config = validate_and_build(raw).unwrap();
         assert_eq!(config.appview.url, "https://appview.test");
         assert_eq!(config.appview.did, "did:web:appview.test#bsky_appview");
+    }
+
+    // --- chat config tests ---
+
+    #[test]
+    fn chat_defaults_to_public_bsky_chat() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert_eq!(config.chat.url, "https://api.bsky.chat");
+        assert_eq!(config.chat.did, "did:web:api.bsky.chat#bsky_chat");
+    }
+
+    #[test]
+    fn chat_parses_from_toml() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [chat]
+            url = "https://chat.example"
+            did = "did:web:chat.example#bsky_chat"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.chat.url, "https://chat.example");
+        assert_eq!(config.chat.did, "did:web:chat.example#bsky_chat");
+    }
+
+    #[test]
+    fn chat_url_trailing_slash_is_trimmed() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [chat]
+            url = "https://chat.example/"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.chat.url, "https://chat.example");
+    }
+
+    #[test]
+    fn chat_rejects_non_http_scheme() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [chat]
+            url = "ftp://chat.example"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("chat.url"));
+    }
+
+    #[test]
+    fn proxy_urls_reject_missing_authority() {
+        // Hostless values pass a bare scheme-prefix test but normalize to a useless base, so they
+        // must be rejected at startup rather than 503ing every proxied request. Covers both the
+        // AppView and chat proxy URLs, which share one validator.
+        for (section, url) in [
+            ("appview", "https://"),
+            ("appview", "http:///feed"),
+            ("chat", "https://"),
+            ("chat", "http:///convo"),
+        ] {
+            let toml = format!(
+                r#"
+                data_dir = "/var/pds"
+                public_url = "https://pds.example.com"
+                available_user_domains = ["example.com"]
+
+                [{section}]
+                url = "{url}"
+                "#
+            );
+            let raw: RawConfig = toml::from_str(&toml).unwrap();
+            let err = validate_and_build(raw).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::Invalid(_)),
+                "{url:?} should be rejected"
+            );
+            assert!(err.to_string().contains(&format!("{section}.url")));
+        }
+    }
+
+    #[test]
+    fn proxy_urls_reject_query_or_fragment() {
+        // A base URL only ever has `/xrpc/{nsid}` appended, so a query/fragment would corrupt the
+        // target; reject it at startup rather than send malformed upstream requests.
+        for (section, url) in [
+            ("appview", "https://api.bsky.app?foo=bar"),
+            ("appview", "https://api.bsky.app#frag"),
+            ("chat", "https://api.bsky.chat?foo=bar"),
+            ("chat", "https://api.bsky.chat#frag"),
+        ] {
+            let toml = format!(
+                r#"
+                data_dir = "/var/pds"
+                public_url = "https://pds.example.com"
+                available_user_domains = ["example.com"]
+
+                [{section}]
+                url = "{url}"
+                "#
+            );
+            let raw: RawConfig = toml::from_str(&toml).unwrap();
+            let err = validate_and_build(raw).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::Invalid(_)),
+                "{url:?} should be rejected"
+            );
+            assert!(err.to_string().contains(&format!("{section}.url")));
+        }
+    }
+
+    #[test]
+    fn env_override_chat_url_and_did() {
+        let env = HashMap::from([
+            (
+                "EZPDS_CHAT_URL".to_string(),
+                "https://chat.test".to_string(),
+            ),
+            (
+                "EZPDS_CHAT_DID".to_string(),
+                "did:web:chat.test#bsky_chat".to_string(),
+            ),
+        ]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.chat.url, "https://chat.test");
+        assert_eq!(config.chat.did, "did:web:chat.test#bsky_chat");
     }
 
     #[test]

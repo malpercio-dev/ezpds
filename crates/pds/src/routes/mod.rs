@@ -1,6 +1,5 @@
 pub mod activate_account;
 pub mod apply_writes;
-pub mod appview_proxy;
 pub mod atproto_did;
 pub(crate) mod auth;
 pub mod claim_codes;
@@ -45,6 +44,7 @@ pub mod register_device;
 pub mod request_password_reset;
 pub mod reset_password;
 pub mod resolve_handle;
+pub mod service_proxy;
 pub mod static_assets;
 pub mod sync_get_record;
 pub mod sync_get_repo_status;
