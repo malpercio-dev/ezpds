@@ -236,31 +236,28 @@ Generate a new device claim code. Invalidates any previously active claim code f
 
 **GET /v1/accounts/:id/usage**                        [v0.1]
 
-Returns current usage metrics for the account. Consumed by both the web dashboard (billing page) and the Tauri app (status bar indicator).
+Returns usage metrics for the account. `:id` is the account DID. Operator-only: requires the admin token. Reports on the account regardless of activation state (a deactivated account still has usage figures).
 
-**Response (200 OK)**
+**Response (200 OK)** — fields are camelCase, matching the rest of the /v1 API.
 
-  ------------------ ---------- -------------------------------------------------------
-  **Field**          **Type**   **Description**
-  tier               string     Current tier: \"free\" \| \"pro\" \| \"self\_hosted\"
-  period\_start      string     ISO 8601, start of current billing period
-  storage\_bytes     integer    Repo storage consumed
-  storage\_limit     integer    Tier limit in bytes
-  bandwidth\_bytes   integer    PDS bandwidth this period
-  bandwidth\_limit   integer    Tier limit in bytes
-  requests\_count    integer    XRPC requests proxied this period
-  requests\_limit    integer    Tier limit
-  ------------------ ---------- -------------------------------------------------------
+  ---------------- ---------- -------------------------------------------------------
+  **Field**        **Type**   **Description**
+  recordsCount     integer    Total records across every collection in the repo (0 when empty or no repo)
+  commitsCount     integer    Distinct commit revisions still represented among the account\'s blocks. GC reclaims superseded blocks, so this is a lower bound on the full commit history, not an exact total.
+  blobsCount       integer    Number of blobs stored for the account
+  storageBytes     integer    Total bytes stored: repo block bytes plus blob bytes
+  lastActive       string     ISO 8601 of the most recent repo-block write or blob upload; falls back to the account\'s creation time when it has neither
+  ---------------- ---------- -------------------------------------------------------
 
 **Error Responses**
 
   ------------ -------------- --------------------------------
   **Status**   **Code**       **Description**
-  401          UNAUTHORIZED   Invalid token
-  403          FORBIDDEN      Token doesn't own this account
+  401          UNAUTHORIZED   Missing or invalid admin token
+  404          NOT\_FOUND     No account exists for the DID
   ------------ -------------- --------------------------------
 
-> ***Note:** Both session\_token and device\_token can access this endpoint, but only for their own account.*
+> ***Note:** Richer billing/tier metrics (tier, billing period, bandwidth, proxied request counts) are future work and not part of the v0.1 contract.*
 
 3\. Device Registration
 
@@ -1153,17 +1150,26 @@ Note: This is the same endpoint as the XRPC uploadBlob — listed here for compl
 
 **GET /v1/accounts/:id/storage**                                [v0.1]
 
-Blob storage usage for an account. Extends the existing usage endpoint with blob-specific metrics.
+Blob storage metrics for an account. `:id` is the account DID. Operator-only: requires the admin token. Reports on the account regardless of activation state.
 
-**Response (200 OK)**
+**Response (200 OK)** — fields are camelCase, matching the rest of the /v1 API.
 
   ----------------------- ---------- -------------------------------------------------------
   **Field**               **Type**   **Description**
-  blob_count              integer    Total blobs stored
-  blob_bytes              integer    Total blob storage consumed
-  blob_limit              integer    Tier storage limit for blobs
-  largest_blob            integer    Size of largest blob (bytes)
+  blobCount               integer    Total blobs stored for the account
+  totalBytes              integer    Total bytes occupied by those blobs
+  quotaBytes              integer    Per-account storage quota (`[blobs] max_storage_per_account`). Tiers are not yet differentiated in v0.1, so every account reports the same configured quota.
+  quotaUsedPct            number     totalBytes as a percentage of quotaBytes (0 when the quota is 0)
+  largestBlob             object     The account\'s largest blob as `{ cid, size }`, or null when it has none
   ----------------------- ---------- -------------------------------------------------------
+
+**Error Responses**
+
+  ------------ -------------- --------------------------------
+  **Status**   **Code**       **Description**
+  401          UNAUTHORIZED   Missing or invalid admin token
+  404          NOT\_FOUND     No account exists for the DID
+  ------------ -------------- --------------------------------
 
 
 Appendix A: Status Codes Reference
