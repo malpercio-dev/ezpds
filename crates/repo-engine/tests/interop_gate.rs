@@ -12,8 +12,12 @@ use atrium_repo::blockstore::{
     AsyncBlockStoreRead, AsyncBlockStoreWrite, CarStore, MemoryBlockStore, DAG_CBOR, SHA2_256,
 };
 use atrium_repo::mst::Tree;
+use atrium_repo::repo::Repository;
 use atrium_repo::Cid;
 use futures::StreamExt;
+use ipld_core::ipld::Ipld;
+use p256::ecdsa::{signature::Verifier, Signature, SigningKey, VerifyingKey};
+use repo_engine::{build_genesis_repo, generate_tid, CommitSigner};
 use std::io::Cursor;
 
 /// A test value CID used as the leaf value for MST entries.
@@ -293,4 +297,284 @@ async fn memory_blockstore_parity() {
     }
 
     assert_eq!(tree1.root(), tree2.root());
+}
+
+// ── TID syntax (atproto interop: syntax/tid_syntax.json) ────────────────────────
+//
+// A TID is exactly 13 chars from the base32-sortable alphabet
+// `234567abcdefghijklmnopqrstuvwxyz`, with the leading character restricted to the
+// first 16 of that alphabet (`234567abcdefghij`) because a TID's high bit is always
+// zero. Reference: https://atproto.com/specs/tid
+
+const TID_ALPHABET: &[u8; 32] = b"234567abcdefghijklmnopqrstuvwxyz";
+
+/// Validate a TID string against the atproto syntax rules. Kept local to the test
+/// so the production `generate_tid` stays a pure generator with no parsing surface.
+fn tid_is_valid(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.len() != 13 {
+        return false;
+    }
+    if !bytes.iter().all(|c| TID_ALPHABET.contains(c)) {
+        return false;
+    }
+    // Leading char must fall in the first 16 alphabet positions (high bit clear).
+    match TID_ALPHABET.iter().position(|c| *c == bytes[0]) {
+        Some(idx) => idx < 16,
+        None => false,
+    }
+}
+
+#[test]
+fn tid_syntax_matches_interop_fixture() {
+    // (input, expected_valid) — mirrors bluesky-social/atproto-interop-tests tid_syntax.
+    let fixtures: &[(&str, bool)] = &[
+        // Valid: 13 chars, in-alphabet, legal leading char.
+        ("3jzfcijpj2z2a", true),
+        ("7777777777777", true),
+        ("3zzzzzzzzzzzz", true),
+        ("234567abcdefg", true),
+        // Invalid: wrong length.
+        ("", false),
+        ("3jzfcijpj2z2", false),   // 12 — too short
+        ("3jzfcijpj2z2aa", false), // 14 — too long
+        // Invalid: characters outside the base32-sortable alphabet.
+        ("0000000000000", false), // '0' not in alphabet
+        ("1111111111111", false), // '1' not in alphabet
+        ("3jzfcijpj2z2!", false), // punctuation
+        ("3JZFCIJPJ2Z2A", false), // uppercase
+        // Invalid: legal alphabet but illegal leading char (high bit would be set).
+        ("zzzzzzzzzzzzz", false), // 'z' is alphabet index 31
+        ("kjzfcijpj2z2a", false), // 'k' is alphabet index 16 — just past the legal range
+    ];
+
+    for (input, expected) in fixtures {
+        assert_eq!(
+            tid_is_valid(input),
+            *expected,
+            "tid_is_valid({input:?}) should be {expected}",
+        );
+    }
+}
+
+#[test]
+fn generated_tids_conform_to_syntax() {
+    // Every TID the engine mints must satisfy the interop syntax rules.
+    for _ in 0..1000 {
+        let tid = generate_tid();
+        assert!(
+            tid_is_valid(&tid),
+            "generate_tid produced a syntactically invalid TID: {tid:?}",
+        );
+    }
+}
+
+#[test]
+fn generated_tids_advance_with_the_clock() {
+    // The base32-sortable encoding preserves chronological order across distinct
+    // timestamps. Within a single microsecond the low 10 bits are a *random* clock
+    // identifier (collision resistance) and span the final two characters, so order
+    // there is not defined — we compare only the leading 11-character timestamp
+    // prefix to assert the clock-driven portion never regresses.
+    let prefix = |t: &str| t[..11].to_string();
+    let mut prev = generate_tid();
+    for _ in 0..1000 {
+        let next = generate_tid();
+        assert!(
+            prefix(&next) >= prefix(&prev),
+            "TID timestamp prefix regressed: {next:?} precedes {prev:?}",
+        );
+        prev = next;
+    }
+}
+
+#[test]
+#[should_panic(expected = "should be true")]
+fn corrupted_tid_fixture_is_detected() {
+    // A clearly invalid TID asserted as valid must trip the gate.
+    assert!(tid_is_valid("not-a-tid"), "tid should be true");
+}
+
+// ── Repo commit: structure + signing (atproto interop: repo commit object) ──────
+//
+// A genesis commit is a dag-cbor object {did, version: 3, data, rev, sig}. The
+// signature is a P-256 ECDSA signature over the *unsigned* commit bytes (the same
+// object without `sig`). Reference: https://atproto.com/specs/repository
+
+/// A fixed, non-zero 32-byte P-256 scalar so the commit test is fully deterministic
+/// (no OsRng). Valid because it is well below the curve order.
+const FIXED_PRIV_KEY: [u8; 32] = [
+    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+    0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+];
+
+#[tokio::test]
+async fn genesis_commit_has_canonical_structure() {
+    let signer = CommitSigner::from_bytes(&FIXED_PRIV_KEY).expect("valid key");
+    let did = "did:plc:interopcommitstructure";
+
+    let (root, _rev, blocks) = build_genesis_repo(did, &signer)
+        .await
+        .expect("build genesis");
+
+    // Decode the root commit block and assert the canonical field set + values.
+    let root_block = blocks
+        .iter()
+        .find(|(c, _)| *c == root)
+        .map(|(_, b)| b.clone())
+        .expect("blocks must contain the root commit");
+    let decoded: Ipld =
+        serde_ipld_dagcbor::from_slice(&root_block).expect("root block must be dag-cbor");
+
+    let map = match decoded {
+        Ipld::Map(m) => m,
+        other => panic!("commit must be a dag-cbor map, got {other:?}"),
+    };
+
+    assert_eq!(
+        map.get("version"),
+        Some(&Ipld::Integer(3)),
+        "commit version must be the fixed value 3",
+    );
+    assert_eq!(
+        map.get("did"),
+        Some(&Ipld::String(did.to_string())),
+        "commit did must match the account DID",
+    );
+    assert!(
+        matches!(map.get("data"), Some(Ipld::Link(_))),
+        "commit data must be a CID link to the MST root",
+    );
+    assert!(
+        matches!(map.get("rev"), Some(Ipld::String(_))),
+        "commit rev must be a TID string",
+    );
+    assert!(
+        matches!(map.get("sig"), Some(Ipld::Bytes(_))),
+        "signed commit must carry a sig byte string",
+    );
+}
+
+#[tokio::test]
+async fn genesis_commit_signature_verifies() {
+    let signer = CommitSigner::from_bytes(&FIXED_PRIV_KEY).expect("valid key");
+    let verifying_key =
+        VerifyingKey::from(&SigningKey::from_bytes(&FIXED_PRIV_KEY.into()).expect("valid key"));
+    let did = "did:plc:interopcommitsigning";
+
+    let (root, _rev, blocks) = build_genesis_repo(did, &signer)
+        .await
+        .expect("build genesis");
+
+    // Re-import the captured blocks and re-open the repo to read the signed commit
+    // back exactly as a remote consumer would.
+    let mut store = MemoryBlockStore::new();
+    for (_cid, bytes) in &blocks {
+        store
+            .write_block(DAG_CBOR, SHA2_256, bytes)
+            .await
+            .expect("re-import block");
+    }
+    let repo = Repository::open(store, root).await.expect("reopen repo");
+    let commit = repo.commit();
+
+    // The signature must be 64-byte r‖s and verify over the unsigned commit bytes.
+    assert_eq!(commit.sig().len(), 64, "P-256 sig must be 64 bytes (r‖s)");
+    let signature = Signature::from_slice(commit.sig()).expect("sig must parse as P-256 r‖s");
+    assert!(
+        signature.normalize_s().is_none(),
+        "commit signature must be canonical low-S",
+    );
+    verifying_key
+        .verify(&commit.bytes(), &signature)
+        .expect("commit signature must verify over the unsigned commit bytes");
+
+    // The committed `data` pointer is the MST root and is itself a CIDv1/dag-cbor CID.
+    let data_cid = commit.data();
+    assert_eq!(data_cid.codec(), DAG_CBOR, "MST root must be dag-cbor");
+
+    // A tampered message must NOT verify — guards against an accidentally permissive check.
+    let mut tampered = commit.bytes();
+    tampered[0] ^= 0xff;
+    assert!(
+        verifying_key.verify(&tampered, &signature).is_err(),
+        "a tampered commit must fail signature verification",
+    );
+}
+
+// ── CID content addressing (atproto interop: CIDv1 / dag-cbor / sha2-256) ────────
+//
+// ATProto CIDs are CIDv1, dag-cbor codec (0x71), sha2-256 multihash (0x12). The
+// reference strings below were derived independently of this codebase (raw dag-cbor
+// bytes → sha2-256 → CIDv1 → base32) and pin the block store's CID computation to a
+// byte-exact, reproducible answer. Reference: https://atproto.com/specs/data-model
+
+/// SHA2-256 multihash code, per the multiformats table.
+const SHA2_256_CODE: u64 = 0x12;
+
+/// (raw dag-cbor block bytes, expected CIDv1 string). The bytes are the canonical
+/// dag-cbor encodings of, in order: empty map `{}`, integer `1`, string `"abc"`,
+/// boolean `true`, and `null`.
+const CID_FIXTURES: &[(&[u8], &str)] = &[
+    (
+        &[0xa0],
+        "bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua",
+    ),
+    (
+        &[0x01],
+        "bafyreicl6ujc6ncfktctxxroxognfn7d2fqavvrryoc2lv6m4i6hpbkfti",
+    ),
+    (
+        b"\x63abc",
+        "bafyreifg3cn26anmajrx3ieygwzijbns3nufo2bu2amgt7av4nvretdbpq",
+    ),
+    (
+        &[0xf5],
+        "bafyreibhvppn37ufanewvxvwendgzksh3jpwhk6sxrx2dh3m7s3t5t7noa",
+    ),
+    (
+        &[0xf6],
+        "bafyreifqwkmiw256ojf2zws6tzjeonw6bpd5vza4i22ccpcq4hjv2ts7cm",
+    ),
+];
+
+#[tokio::test]
+async fn cid_computation_matches_interop_fixtures() {
+    let mut bs = MemoryBlockStore::new();
+    for (raw, expected) in CID_FIXTURES {
+        let cid = bs
+            .write_block(DAG_CBOR, SHA2_256, raw)
+            .await
+            .expect("write block");
+
+        assert_eq!(
+            cid.to_string(),
+            *expected,
+            "CID for dag-cbor block {raw:02x?} must match the reference",
+        );
+        // Structural invariants of every ATProto CID. (The full string match above
+        // already pins the CIDv1 prefix; these assert the codec/hash explicitly.)
+        assert_eq!(cid.codec(), DAG_CBOR, "codec must be dag-cbor (0x71)");
+        assert_eq!(
+            cid.hash().code(),
+            SHA2_256_CODE,
+            "multihash must be sha2-256 (0x12)",
+        );
+        assert_eq!(cid.hash().size(), 32, "sha2-256 digest is 32 bytes");
+
+        // Parsing the expected string back must round-trip to the same CID.
+        assert_eq!(*expected, cid.to_string());
+        assert_eq!(cid, expected.parse::<Cid>().expect("parse reference CID"));
+    }
+}
+
+#[tokio::test]
+#[should_panic(expected = "must match the reference")]
+async fn corrupted_cid_fixture_is_detected() {
+    let mut bs = MemoryBlockStore::new();
+    // dag-cbor `{}` paired with the wrong reference CID (the one for integer `1`).
+    let raw: &[u8] = &[0xa0];
+    let wrong = "bafyreicl6ujc6ncfktctxxroxognfn7d2fqavvrryoc2lv6m4i6hpbkfti";
+    let cid = bs.write_block(DAG_CBOR, SHA2_256, raw).await.unwrap();
+    assert_eq!(cid.to_string(), wrong, "CID must match the reference");
 }
