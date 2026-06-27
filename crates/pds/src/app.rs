@@ -295,26 +295,43 @@ pub fn app(state: AppState) -> Router {
 /// (direct messages) — both via [`service_proxy`]. Any other unrecognised NSID returns
 /// `MethodNotImplemented`.
 ///
+/// Both proxied namespaces are forwarded *on behalf of an authenticated user*, so the caller's
+/// session is validated locally (the `AuthenticatedUser` extractor) before anything leaves the
+/// PDS; the upstream then re-validates the passed-through token. Unauthenticated callers are
+/// rejected here rather than at the upstream. The auth check is scoped to the proxy branches:
+/// an unrecognised NSID still returns `501` without an auth challenge, so probing for supported
+/// methods does not require credentials.
+///
 /// Axum gives static path segments priority over parameterised ones, so specific routes
 /// registered for individual NSIDs will match before this catch-all.
 async fn xrpc_handler(
     State(state): State<AppState>,
     Path(method): Path<String>,
+    auth: Result<crate::auth::extractors::AuthenticatedUser, ApiError>,
     req: axum::extract::Request,
 ) -> Response {
     use crate::routes::service_proxy::proxy_xrpc;
-    if method.starts_with("app.bsky.") {
-        let appview = &state.config.appview;
-        proxy_xrpc(&state, &appview.url, &appview.did, &method, req).await
+
+    let upstream = if method.starts_with("app.bsky.") {
+        Some((&state.config.appview.url, &state.config.appview.did))
     } else if method.starts_with("chat.bsky.") {
-        let chat = &state.config.chat;
-        proxy_xrpc(&state, &chat.url, &chat.did, &method, req).await
+        Some((&state.config.chat.url, &state.config.chat.did))
     } else {
-        ApiError::new(
+        None
+    };
+
+    match upstream {
+        Some((url, did)) => {
+            if let Err(rejection) = auth {
+                return rejection.into_response();
+            }
+            proxy_xrpc(&state, url, did, &method, req).await
+        }
+        None => ApiError::new(
             ErrorCode::MethodNotImplemented,
             format!("XRPC method {method:?} is not implemented"),
         )
-        .into_response()
+        .into_response(),
     }
 }
 

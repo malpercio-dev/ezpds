@@ -189,6 +189,29 @@ fn default_chat_did() -> String {
     "did:web:api.bsky.chat#bsky_chat".to_string()
 }
 
+/// Validate a service-proxy base URL (AppView or chat service): it must use an `http(s)` scheme
+/// and carry a non-empty authority. The authority check rejects hostless values like `https://`
+/// or `http:///path` that pass a bare scheme-prefix test but normalize to a useless base and
+/// turn every proxied request into a runtime failure instead of a startup error.
+fn validate_proxy_url(field: &str, url: &str) -> Result<(), ConfigError> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .ok_or_else(|| {
+            ConfigError::Invalid(format!(
+                "{field} must start with http:// or https://, got: {url:?}"
+            ))
+        })?;
+    // The authority runs up to the first '/', '?', or '#'; everything after is path/query/fragment.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() {
+        return Err(ConfigError::Invalid(format!(
+            "{field} must include a host, got: {url:?}"
+        )));
+    }
+    Ok(())
+}
+
 /// Crawler (relay/BGS) notification configuration for `com.atproto.sync.requestCrawl`.
 ///
 /// After every repo commit the pds notifies each configured crawler so newly produced
@@ -533,24 +556,14 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         }
     }
 
-    if !raw.appview.url.starts_with("http://") && !raw.appview.url.starts_with("https://") {
-        return Err(ConfigError::Invalid(format!(
-            "appview.url must start with http:// or https://, got: {:?}",
-            raw.appview.url
-        )));
-    }
+    validate_proxy_url("appview.url", &raw.appview.url)?;
     // Trim a trailing slash so the proxy can join paths as `{url}/xrpc/...` unambiguously.
     let appview = AppViewConfig {
         url: raw.appview.url.trim_end_matches('/').to_string(),
         did: raw.appview.did,
     };
 
-    if !raw.chat.url.starts_with("http://") && !raw.chat.url.starts_with("https://") {
-        return Err(ConfigError::Invalid(format!(
-            "chat.url must start with http:// or https://, got: {:?}",
-            raw.chat.url
-        )));
-    }
+    validate_proxy_url("chat.url", &raw.chat.url)?;
     // Trim a trailing slash so the proxy can join paths as `{url}/xrpc/...` unambiguously.
     let chat = ChatConfig {
         url: raw.chat.url.trim_end_matches('/').to_string(),
@@ -1310,6 +1323,37 @@ mod tests {
         let err = validate_and_build(raw).unwrap_err();
         assert!(matches!(err, ConfigError::Invalid(_)));
         assert!(err.to_string().contains("chat.url"));
+    }
+
+    #[test]
+    fn proxy_urls_reject_missing_authority() {
+        // Hostless values pass a bare scheme-prefix test but normalize to a useless base, so they
+        // must be rejected at startup rather than 503ing every proxied request. Covers both the
+        // AppView and chat proxy URLs, which share one validator.
+        for (section, url) in [
+            ("appview", "https://"),
+            ("appview", "http:///feed"),
+            ("chat", "https://"),
+            ("chat", "http:///convo"),
+        ] {
+            let toml = format!(
+                r#"
+                data_dir = "/var/pds"
+                public_url = "https://pds.example.com"
+                available_user_domains = ["example.com"]
+
+                [{section}]
+                url = "{url}"
+                "#
+            );
+            let raw: RawConfig = toml::from_str(&toml).unwrap();
+            let err = validate_and_build(raw).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::Invalid(_)),
+                "{url:?} should be rejected"
+            );
+            assert!(err.to_string().contains(&format!("{section}.url")));
+        }
     }
 
     #[test]

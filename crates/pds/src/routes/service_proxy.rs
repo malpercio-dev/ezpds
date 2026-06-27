@@ -140,6 +140,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use crate::app::{app, test_state, AppState};
+    use crate::routes::test_utils::access_jwt;
 
     /// Build router state whose AppView points at the given mock server URI.
     async fn state_with_appview(uri: &str) -> AppState {
@@ -163,6 +164,13 @@ mod tests {
         }
     }
 
+    /// A valid `Bearer` access token (`com.atproto.access` scope) for the given state's signing
+    /// secret. The proxy sits behind the `AuthenticatedUser` gate, so every proxied request must
+    /// present one of these or be rejected with `401` before reaching the upstream.
+    fn bearer(state: &AppState) -> String {
+        format!("Bearer {}", access_jwt(&state.jwt_secret, "did:plc:tester"))
+    }
+
     #[tokio::test]
     async fn proxies_get_query_to_appview() {
         let server = MockServer::start().await;
@@ -175,10 +183,13 @@ mod tests {
             .mount(&server)
             .await;
 
-        let response = app(state_with_appview(&server.uri()).await)
+        let state = state_with_appview(&server.uri()).await;
+        let auth = bearer(&state);
+        let response = app(state)
             .oneshot(
                 Request::builder()
                     .uri("/xrpc/app.bsky.feed.getTimeline")
+                    .header("authorization", auth)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -196,9 +207,13 @@ mod tests {
     #[tokio::test]
     async fn forwards_authorization_header() {
         let server = MockServer::start().await;
+        let state = state_with_appview(&server.uri()).await;
+        let auth = bearer(&state);
+
+        // The exact bearer that passed the local auth gate must reach the AppView unchanged.
         Mock::given(method("GET"))
             .and(path("/xrpc/app.bsky.notification.listNotifications"))
-            .and(header("authorization", "Bearer test-token"))
+            .and(header("authorization", auth.as_str()))
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_body_json(serde_json::json!({ "notifications": [] })),
@@ -207,11 +222,11 @@ mod tests {
             .mount(&server)
             .await;
 
-        let response = app(state_with_appview(&server.uri()).await)
+        let response = app(state)
             .oneshot(
                 Request::builder()
                     .uri("/xrpc/app.bsky.notification.listNotifications")
-                    .header("authorization", "Bearer test-token")
+                    .header("authorization", auth)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -233,10 +248,13 @@ mod tests {
             .mount(&server)
             .await;
 
-        let response = app(state_with_appview(&server.uri()).await)
+        let state = state_with_appview(&server.uri()).await;
+        let auth = bearer(&state);
+        let response = app(state)
             .oneshot(
                 Request::builder()
                     .uri("/xrpc/app.bsky.feed.getTimeline")
+                    .header("authorization", auth)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -264,11 +282,14 @@ mod tests {
             .mount(&server)
             .await;
 
-        let response = app(state_with_appview(&server.uri()).await)
+        let state = state_with_appview(&server.uri()).await;
+        let auth = bearer(&state);
+        let response = app(state)
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/xrpc/app.bsky.graph.muteActor")
+                    .header("authorization", auth)
                     .header("content-type", "application/json")
                     .body(Body::from(r#"{"actor":"did:plc:abc123"}"#))
                     .unwrap(),
@@ -290,11 +311,13 @@ mod tests {
             config: Arc::new(config),
             ..base
         };
+        let auth = bearer(&state);
 
         let response = app(state)
             .oneshot(
                 Request::builder()
                     .uri("/xrpc/app.bsky.feed.getTimeline")
+                    .header("authorization", auth)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -317,11 +340,14 @@ mod tests {
         let server = MockServer::start().await;
         let oversized = "x".repeat(super::MAX_PROXY_BODY + 1);
 
-        let response = app(state_with_appview(&server.uri()).await)
+        let state = state_with_appview(&server.uri()).await;
+        let auth = bearer(&state);
+        let response = app(state)
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/xrpc/app.bsky.graph.muteActor")
+                    .header("authorization", auth)
                     .header("content-type", "application/json")
                     .body(Body::from(oversized))
                     .unwrap(),
@@ -351,10 +377,13 @@ mod tests {
             .mount(&server)
             .await;
 
-        let response = app(state_with_appview(&server.uri()).await)
+        let state = state_with_appview(&server.uri()).await;
+        let auth = bearer(&state);
+        let response = app(state)
             .oneshot(
                 Request::builder()
                     .uri("/xrpc/app.bsky.feed.getAuthorFeed?actor=did:plc:abc123&limit=10")
+                    .header("authorization", auth)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -364,15 +393,74 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
+    // --- auth gate (both proxied namespaces) ---
+
+    // The proxy forwards on behalf of an authenticated user, so an unauthenticated `app.bsky.*`
+    // request is rejected locally with `401` and never reaches the upstream. No mock is mounted:
+    // a clean `401` proves nothing escaped the PDS.
+    #[tokio::test]
+    async fn appview_request_without_auth_is_rejected() {
+        let server = MockServer::start().await;
+        let response = app(state_with_appview(&server.uri()).await)
+            .oneshot(
+                Request::builder()
+                    .uri("/xrpc/app.bsky.feed.getTimeline")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn chat_request_without_auth_is_rejected() {
+        let server = MockServer::start().await;
+        let response = app(state_with_chat(&server.uri()).await)
+            .oneshot(
+                Request::builder()
+                    .uri("/xrpc/chat.bsky.convo.listConvos")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // An arbitrary, unverifiable bearer token must be rejected at the gate just like a missing
+    // one — the proxy must not become an open relay for forged credentials.
+    #[tokio::test]
+    async fn chat_request_with_invalid_token_is_rejected() {
+        let server = MockServer::start().await;
+        let response = app(state_with_chat(&server.uri()).await)
+            .oneshot(
+                Request::builder()
+                    .uri("/xrpc/chat.bsky.convo.listConvos")
+                    .header("authorization", "Bearer not-a-real-jwt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
     // --- chat.bsky.* proxy (direct messages) ---
 
     #[tokio::test]
     async fn proxies_chat_list_convos_to_chat_service() {
         let server = MockServer::start().await;
+        let state = state_with_chat(&server.uri()).await;
+        let auth = bearer(&state);
+
         Mock::given(method("GET"))
             .and(path("/xrpc/chat.bsky.convo.listConvos"))
             .and(query_param("limit", "50"))
-            .and(header("authorization", "Bearer chat-token"))
+            .and(header("authorization", auth.as_str()))
             .and(header("atproto-proxy", "did:web:api.bsky.chat#bsky_chat"))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({ "convos": [] })),
@@ -381,11 +469,11 @@ mod tests {
             .mount(&server)
             .await;
 
-        let response = app(state_with_chat(&server.uri()).await)
+        let response = app(state)
             .oneshot(
                 Request::builder()
                     .uri("/xrpc/chat.bsky.convo.listConvos?limit=50")
-                    .header("authorization", "Bearer chat-token")
+                    .header("authorization", auth)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -413,10 +501,13 @@ mod tests {
             .mount(&server)
             .await;
 
-        let response = app(state_with_chat(&server.uri()).await)
+        let state = state_with_chat(&server.uri()).await;
+        let auth = bearer(&state);
+        let response = app(state)
             .oneshot(
                 Request::builder()
                     .uri("/xrpc/chat.bsky.convo.getLog?cursor=abc123")
+                    .header("authorization", auth)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -437,10 +528,13 @@ mod tests {
             .mount(&server)
             .await;
 
-        let response = app(state_with_chat(&server.uri()).await)
+        let state = state_with_chat(&server.uri()).await;
+        let auth = bearer(&state);
+        let response = app(state)
             .oneshot(
                 Request::builder()
                     .uri("/xrpc/chat.bsky.convo.getLog")
+                    .header("authorization", auth)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -479,11 +573,13 @@ mod tests {
             config: Arc::new(config),
             ..base
         };
+        let auth = bearer(&state);
 
         let response = app(state)
             .oneshot(
                 Request::builder()
                     .uri("/xrpc/chat.bsky.convo.listConvos")
+                    .header("authorization", auth)
                     .body(Body::empty())
                     .unwrap(),
             )
