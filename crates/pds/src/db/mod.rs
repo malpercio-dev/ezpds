@@ -6,6 +6,7 @@ pub mod iroh_identity;
 pub mod jwt_secret;
 pub mod oauth;
 pub mod password_reset;
+pub mod preferences;
 pub mod repo_keys;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
@@ -125,6 +126,10 @@ static MIGRATIONS: &[Migration] = &[
     Migration {
         version: 22,
         sql: include_str!("migrations/V022__iroh_identity.sql"),
+    },
+    Migration {
+        version: 23,
+        sql: include_str!("migrations/V023__account_preferences.sql"),
     },
 ];
 

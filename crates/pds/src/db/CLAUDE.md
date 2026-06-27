@@ -3,6 +3,7 @@
 Last verified: 2026-03-25
 
 ## Latest Updates
+- **V023**: Adds `account_preferences` table (WITHOUT ROWID, keyed by `did`): a single JSON blob per account holding the user's `app.bsky` preferences array, stored locally on the PDS (user data sovereignty) instead of being proxied to the AppView. `updated_at` tracks the last write; FK→`accounts(did)`.
 - **V022**: Adds `iroh_identity` table (WITHOUT ROWID, single-row, keyed by UUID id) storing the PDS's Iroh node Ed25519 secret key, AES-256-GCM encrypted with the signing-key master key (same scheme as `oauth_signing_key` (V012) and `jwt_signing_secret` (V015)). Keeps the PDS's Iroh node id stable across restarts.
 - **V014**: Adds `password_reset_tokens` table: `token_hash` TEXT PK (SHA-256 hex digest — plaintext never stored), `did` TEXT (FK→accounts), `expires_at` TEXT (1-hour TTL, SQLite datetime), `used_at` TEXT nullable (set on consumption), `created_at` TEXT; index on `did`
 - **V013**: Seeds the identity-wallet as a registered OAuth client (`dev.malpercio.identitywallet`) with native application type, DPoP-bound tokens, and custom URL scheme redirect URI (`dev.malpercio.identitywallet:/oauth/callback`); uses INSERT OR IGNORE for idempotency
@@ -57,3 +58,4 @@ that can later serve per-user SQLite databases (Wave 3/4).
 - `migrations/V013__identity_wallet_oauth_client.sql` - Seeds identity-wallet OAuth client row (INSERT OR IGNORE): client_id `dev.malpercio.identitywallet`, native app type, DPoP required, custom scheme redirect URI
 - `migrations/V014__password_reset_tokens.sql` - Adds `password_reset_tokens` table for `requestPasswordReset`/`resetPassword` flows; token stored as SHA-256 hex hash; 1-hour TTL; `used_at` nullable (status derived: valid = used_at IS NULL AND expires_at > now)
 - `migrations/V022__iroh_identity.sql` - Adds `iroh_identity` table (WITHOUT ROWID, single-row, keyed by UUID id): the PDS's Iroh node Ed25519 secret key, AES-256-GCM encrypted with the signing-key master key. Persisted so the published node id (GET /v1/devices/:id/pds) stays stable across restarts
+- `migrations/V023__account_preferences.sql` - Adds `account_preferences` table (WITHOUT ROWID, keyed by `did`, FK→accounts): one JSON blob per account storing the `app.bsky.actor.getPreferences`/`putPreferences` array locally on the PDS rather than proxying to the AppView; `updated_at` records the last write
