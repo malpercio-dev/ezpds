@@ -574,4 +574,165 @@ mod tests {
             &Ipld::String("FutureCursor".into())
         );
     }
+
+    // ── encode_account_frame tests ─────────────────────────────────────────────
+
+    fn sample_deactivation_event() -> AccountEvent {
+        AccountEvent {
+            seq: 5,
+            time: "2026-06-27T00:00:00.000Z".to_string(),
+            did: "did:plc:alice".to_string(),
+            active: false,
+            status: Some("deactivated".to_string()),
+        }
+    }
+
+    fn sample_activation_event() -> AccountEvent {
+        AccountEvent {
+            seq: 6,
+            time: "2026-06-27T01:00:00.000Z".to_string(),
+            did: "did:plc:alice".to_string(),
+            active: true,
+            status: None,
+        }
+    }
+
+    #[test]
+    fn account_frame_header_is_op1_account() {
+        let frame = encode_account_frame(&sample_deactivation_event());
+        let (header, _) = decode_frame(&frame);
+        assert_eq!(map_get(&header, "op"), &Ipld::Integer(1));
+        assert_eq!(map_get(&header, "t"), &Ipld::String("#account".to_string()));
+    }
+
+    #[test]
+    fn deactivation_frame_body_carries_all_fields() {
+        let event = sample_deactivation_event();
+        let frame = encode_account_frame(&event);
+        let (_, body) = decode_frame(&frame);
+
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(5));
+        assert_eq!(
+            map_get(&body, "did"),
+            &Ipld::String("did:plc:alice".to_string())
+        );
+        assert_eq!(
+            map_get(&body, "time"),
+            &Ipld::String("2026-06-27T00:00:00.000Z".to_string())
+        );
+        assert_eq!(map_get(&body, "active"), &Ipld::Bool(false));
+        assert_eq!(
+            map_get(&body, "status"),
+            &Ipld::String("deactivated".to_string())
+        );
+    }
+
+    #[test]
+    fn activation_frame_body_omits_status_field() {
+        let event = sample_activation_event();
+        let frame = encode_account_frame(&event);
+        let (_, body) = decode_frame(&frame);
+
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(6));
+        assert_eq!(map_get(&body, "active"), &Ipld::Bool(true));
+
+        // `status` must be absent from the map when the account is active.
+        let Ipld::Map(ref map) = body else {
+            panic!("body must be a map");
+        };
+        assert!(
+            !map.contains_key("status"),
+            "status must be absent when active=true (skip_serializing_if)"
+        );
+    }
+
+    #[test]
+    fn account_frame_did_and_time_are_strings_not_links() {
+        // Regression: ensure `did` and `time` are plain strings, not CID links.
+        let frame = encode_account_frame(&sample_deactivation_event());
+        let (_, body) = decode_frame(&frame);
+
+        match map_get(&body, "did") {
+            Ipld::String(_) => {}
+            other => panic!("did must be a plain string, got {other:?}"),
+        }
+        match map_get(&body, "time") {
+            Ipld::String(_) => {}
+            other => panic!("time must be a plain string, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn websocket_streams_account_event_with_correct_wire_format() {
+        let (url, firehose) = spawn_server().await;
+        let (mut ws, _resp) = connect_async(&url).await.expect("ws connect");
+        await_subscribers(&firehose, 1).await;
+
+        let seq = firehose.emit_account(
+            "did:plc:bob".to_string(),
+            false,
+            Some("deactivated".to_string()),
+        );
+
+        let (header, body) = decode_frame(&next_binary(&mut ws).await);
+        assert_eq!(map_get(&header, "op"), &Ipld::Integer(1));
+        assert_eq!(map_get(&header, "t"), &Ipld::String("#account".to_string()));
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(seq as i128));
+        assert_eq!(
+            map_get(&body, "did"),
+            &Ipld::String("did:plc:bob".to_string())
+        );
+        assert_eq!(map_get(&body, "active"), &Ipld::Bool(false));
+        assert_eq!(
+            map_get(&body, "status"),
+            &Ipld::String("deactivated".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_streams_activation_event_without_status() {
+        let (url, firehose) = spawn_server().await;
+        let (mut ws, _resp) = connect_async(&url).await.expect("ws connect");
+        await_subscribers(&firehose, 1).await;
+
+        let seq = firehose.emit_account("did:plc:carol".to_string(), true, None);
+
+        let (header, body) = decode_frame(&next_binary(&mut ws).await);
+        assert_eq!(map_get(&header, "t"), &Ipld::String("#account".to_string()));
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(seq as i128));
+        assert_eq!(map_get(&body, "active"), &Ipld::Bool(true));
+
+        let Ipld::Map(ref map) = body else {
+            panic!("body must be a map");
+        };
+        assert!(
+            !map.contains_key("status"),
+            "status must be absent for an active account over the wire"
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_account_event_is_replayed_by_cursor() {
+        let (url, firehose) = spawn_server().await;
+
+        // Emit an account event before subscribing.
+        let seq = firehose.emit_account(
+            "did:plc:dave".to_string(),
+            false,
+            Some("deactivated".to_string()),
+        );
+
+        // Subscribe from cursor 0 (before seq 1): the account event must be replayed.
+        let (mut ws, _resp) = connect_async(format!("{url}?cursor=0"))
+            .await
+            .expect("ws connect");
+
+        let (header, body) = decode_frame(&next_binary(&mut ws).await);
+        assert_eq!(map_get(&header, "t"), &Ipld::String("#account".to_string()));
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(seq as i128));
+        assert_eq!(
+            map_get(&body, "did"),
+            &Ipld::String("did:plc:dave".to_string())
+        );
+    }
 }
