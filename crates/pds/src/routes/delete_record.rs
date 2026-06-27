@@ -54,14 +54,28 @@ pub async fn delete_record(
     repo_engine::validate_record_path(collection, rkey)
         .map_err(|_| ApiError::new(ErrorCode::InvalidClaim, "invalid collection or record key"))?;
 
-    let root_cid_str = crate::db::accounts::get_repo_root_cid(&state.db, did)
+    let write_state = crate::db::accounts::get_repo_write_state(&state.db, did)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, did = %did, "failed to query repo root CID");
+            tracing::error!(error = %e, did = %did, "failed to query repo write state");
             ApiError::new(ErrorCode::InternalError, "failed to delete record")
-        })?;
-    let root_cid_str =
-        root_cid_str.ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
+        })?
+        .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
+
+    // A deactivated account is read-only: no writes until reactivated. Checked right after account
+    // existence — before the repo-root lookup — so a deactivated account is a 403 even if it never
+    // created a repo; only a truly missing account (handled above) is a 404. The CAS below also
+    // carries `deactivated_at IS NULL` to close the gap between this check and commit.
+    if !write_state.active {
+        return Err(ApiError::new(
+            ErrorCode::Forbidden,
+            "account is deactivated",
+        ));
+    }
+
+    let root_cid_str = write_state
+        .repo_root_cid
+        .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
 
     let root_cid = repo_engine::Cid::try_from(root_cid_str.as_str()).map_err(|e| {
         tracing::error!(error = %e, did = %did, "invalid repo root CID in database");
@@ -119,23 +133,24 @@ pub async fn delete_record(
             ApiError::new(ErrorCode::InternalError, "failed to delete record")
         })?;
 
-    // Advance the root with optimistic concurrency (see putRecord for rationale).
+    // Advance the root with optimistic concurrency (see putRecord for rationale). The shared
+    // helper folds the deactivation guard into the CAS so an account deactivated after the
+    // `get_repo_write_state` check above cannot have this delete land.
     let new_root = repo.root().to_string();
     let new_rev = repo.commit().rev().as_str().to_string();
-    let updated = sqlx::query(
-        "UPDATE accounts SET repo_root_cid = ?, repo_rev = ? WHERE did = ? AND repo_root_cid = ?",
+    let advanced = crate::db::accounts::advance_repo_root_if_active(
+        &state.db,
+        did,
+        &new_root,
+        &new_rev,
+        &root_cid_str,
     )
-    .bind(&new_root)
-    .bind(&new_rev)
-    .bind(did)
-    .bind(&root_cid_str)
-    .execute(&state.db)
     .await
     .map_err(|e| {
         tracing::error!(error = %e, did = %did, "failed to update repo root CID");
         ApiError::new(ErrorCode::InternalError, "failed to delete record")
     })?;
-    if updated.rows_affected() != 1 {
+    if !advanced {
         return Err(ApiError::new(
             ErrorCode::Conflict,
             "repository was modified concurrently; retry against the current root",
@@ -197,6 +212,29 @@ mod tests {
         let app = crate::app::app(state);
         let resp = app.oneshot(delete_req(&did, "t1", None)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn delete_record_on_deactivated_account_returns_403() {
+        let state = state_with_master_key().await;
+        let did = "did:plc:delrec".to_string();
+        seed_account_with_repo(&state.db, &did).await;
+        sqlx::query("UPDATE accounts SET deactivated_at = datetime('now') WHERE did = ?")
+            .bind(&did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let token = access_jwt(&state.jwt_secret, &did);
+        let app = crate::app::app(state);
+        let resp = app
+            .oneshot(delete_req(&did, "t1", Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "a deactivated account must not be able to delete records"
+        );
     }
 
     /// Helper: create a record via putRecord and return its CID.
@@ -342,7 +380,10 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let FirehoseEvent::Commit(event) = rx.try_recv().expect("delete must emit a commit event");
+        let FirehoseEvent::Commit(event) = rx.try_recv().expect("delete must emit a commit event")
+        else {
+            panic!("expected a #commit event");
+        };
         assert_eq!(event.repo, did);
         assert!(event.since.is_some(), "a delete supersedes a prior commit");
         assert_eq!(event.ops.len(), 1);

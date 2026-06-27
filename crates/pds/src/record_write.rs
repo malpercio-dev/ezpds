@@ -137,16 +137,30 @@ pub async fn write_record(
         ));
     }
 
-    // Look up the repo root CID.
-    let root_cid_str = crate::db::accounts::get_repo_root_cid(&state.db, did)
+    // Look up the repo root CID and active status in one query.
+    let write_state = crate::db::accounts::get_repo_write_state(&state.db, did)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, did = %did, "failed to query repo root CID");
+            tracing::error!(error = %e, did = %did, "failed to query repo write state");
             ApiError::new(ErrorCode::InternalError, "failed to write record")
-        })?;
+        })?
+        .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
 
-    let root_cid_str =
-        root_cid_str.ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
+    // A deactivated account is read-only: its repo reports a deactivated status and accepts no
+    // writes until reactivated (com.atproto.server.activateAccount). Checked right after account
+    // existence — before the repo-root lookup — so a deactivated account is a 403 even if it never
+    // created a repo; only a truly missing account (handled above) is a 404. The CAS below also
+    // carries `deactivated_at IS NULL` to close the gap between this check and commit.
+    if !write_state.active {
+        return Err(ApiError::new(
+            ErrorCode::Forbidden,
+            "account is deactivated",
+        ));
+    }
+
+    let root_cid_str = write_state
+        .repo_root_cid
+        .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
 
     let root_cid = repo_engine::Cid::try_from(root_cid_str.as_str()).map_err(|e| {
         tracing::error!(error = %e, did = %did, "invalid repo root CID in database");
@@ -218,20 +232,24 @@ pub async fn write_record(
     // clobbering the other commit). The new blocks we wrote are orphaned and GC-able.
     let new_root = repo.root().to_string();
     let new_rev = repo.commit().rev().as_str().to_string();
-    let updated = sqlx::query(
-        "UPDATE accounts SET repo_root_cid = ?, repo_rev = ? WHERE did = ? AND repo_root_cid = ?",
+    // `deactivated_at IS NULL` folds the deactivation guard into the commit CAS: the
+    // `account_is_active` check above and this swap are not atomic, so an account deactivated in
+    // between would otherwise still commit (deactivation leaves `repo_root_cid` untouched, so the
+    // CAS would match). Requiring the account to still be active here blocks that write — it
+    // surfaces as a concurrent-modification conflict rather than landing on a deactivated repo.
+    let advanced = crate::db::accounts::advance_repo_root_if_active(
+        &state.db,
+        did,
+        &new_root,
+        &new_rev,
+        &root_cid_str,
     )
-    .bind(&new_root)
-    .bind(&new_rev)
-    .bind(did)
-    .bind(&root_cid_str)
-    .execute(&state.db)
     .await
     .map_err(|e| {
         tracing::error!(error = %e, did = %did, "failed to update repo root CID");
         ApiError::new(ErrorCode::InternalError, "failed to write record")
     })?;
-    if updated.rows_affected() != 1 {
+    if !advanced {
         return Err(ApiError::new(
             ErrorCode::Conflict,
             "repository was modified concurrently; retry against the current root",

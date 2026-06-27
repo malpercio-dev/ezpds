@@ -1,0 +1,30 @@
+meta {
+  name: Activate Account (activateAccount)
+  type: http
+  seq: 46
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.server.activateAccount
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  Reactivates a previously deactivated account: clears the deactivation (and any pending
+  `deleteAfter`), making the repo accessible again. A `#account` firehose event (active=true) is
+  emitted only on a real transition (deactivated → active) so relays resume serving the repo.
+  Takes no body; a non-empty payload is rejected with 400.
+
+  Idempotent — activating an already-active account returns 200 without emitting another
+  `#account` frame. Requires a full access-scope token; app-password tokens are rejected. Returns
+  200 with an empty body.
+}
