@@ -1,0 +1,38 @@
+meta {
+  name: Put Preferences (putPreferences)
+  type: http
+  seq: 44
+}
+
+post {
+  url: {{baseUrl}}/xrpc/app.bsky.actor.putPreferences
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+body:json {
+  {
+    "preferences": [
+      { "$type": "app.bsky.actor.defs#adultContentPref", "enabled": true },
+      { "$type": "app.bsky.actor.defs#savedFeedsPrefV2", "items": [] }
+    ]
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  Overwrites the authenticated account's `app.bsky` preferences in their entirety — the write
+  companion to getPreferences. Like getPreferences, preferences are stored locally on the PDS
+  (user data sovereignty) rather than proxied to the AppView, so this route is handled by the
+  PDS itself and registered ahead of the catch-all proxy. The body must be
+  `{ "preferences": [...] }`; a malformed body (not an object, missing the field, or a
+  non-object entry) returns 400. Requires a full access-scope token; app-password tokens are
+  rejected. Returns 200 with an empty body on success.
+}

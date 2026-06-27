@@ -36,6 +36,7 @@ pub mod oauth_server_metadata;
 pub(super) mod oauth_templates;
 pub mod oauth_token;
 pub mod provisioning_session;
+pub mod put_preferences;
 pub mod put_record;
 pub mod refresh_session;
 pub mod register_device;
