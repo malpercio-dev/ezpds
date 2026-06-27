@@ -1,8 +1,9 @@
 // pattern: Imperative Shell
 //
-// Gathers: an incoming `app.bsky.*` XRPC request (method, query, headers, body)
-// Processes: forwards it to the configured AppView, passing the caller's auth through
-// Returns: the AppView's status, content-type, and streamed response body
+// Gathers: an incoming XRPC request (method, query, headers, body) bound for an upstream
+//          atproto service — the AppView for `app.bsky.*`, the chat service for `chat.bsky.*`
+// Processes: forwards it to the given upstream, passing the caller's auth through
+// Returns: the upstream's status, content-type, and streamed response body
 
 use axum::{
     body::Body,
@@ -14,9 +15,9 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 
-/// Maximum buffered request body when proxying to the AppView. `app.bsky.*` procedures carry
-/// small JSON payloads (preferences, mutes, follows); anything larger is almost certainly a
-/// mistake, so it is rejected rather than buffered.
+/// Maximum buffered request body when proxying to an upstream service. `app.bsky.*` and
+/// `chat.bsky.*` procedures carry small JSON payloads (preferences, mutes, message sends);
+/// anything larger is almost certainly a mistake, so it is rejected rather than buffered.
 const MAX_PROXY_BODY: usize = 1024 * 1024; // 1 MiB
 
 /// Returns true when an [`axum::body::to_bytes`] error was caused by the body exceeding the
@@ -28,24 +29,28 @@ fn is_length_limit_error(err: &axum::Error) -> bool {
         .unwrap_or(false)
 }
 
-/// Forward an `app.bsky.*` XRPC request to the configured AppView.
+/// Forward an XRPC request to an upstream atproto service (the AppView or the chat service).
 ///
-/// The caller's `Authorization` header is passed through unchanged — the AppView trusts the
-/// user's PDS to have authenticated them. The `atproto-proxy` header carries the AppView's
-/// service DID so it knows the request arrives on the user's behalf via their PDS. The upstream
-/// status, content type, and body are streamed straight back to the client; a failure to reach
-/// the AppView maps to `503`, while AppView error *responses* (4xx/5xx) are passed through
-/// verbatim.
-pub async fn proxy_to_appview(state: &AppState, nsid: &str, req: Request) -> Response {
-    let appview = &state.config.appview;
-
-    // Preserve the original query string verbatim so AppView query params survive the hop.
+/// `upstream_url` is the service base URL (no trailing slash) and `proxy_did` is its service
+/// DID, sent as the `atproto-proxy` header so the upstream knows the request arrives on the
+/// user's behalf via their PDS. The caller's `Authorization` header is passed through unchanged
+/// — the upstream trusts the user's PDS to have authenticated them. The upstream status, content
+/// type, and body are streamed straight back to the client; a failure to reach the upstream maps
+/// to `503`, while upstream error *responses* (4xx/5xx) are passed through verbatim.
+pub async fn proxy_xrpc(
+    state: &AppState,
+    upstream_url: &str,
+    proxy_did: &str,
+    nsid: &str,
+    req: Request,
+) -> Response {
+    // Preserve the original query string verbatim so upstream query params survive the hop.
     let query = req
         .uri()
         .query()
         .map(|q| format!("?{q}"))
         .unwrap_or_default();
-    let target = format!("{}/xrpc/{nsid}{query}", appview.url);
+    let target = format!("{upstream_url}/xrpc/{nsid}{query}");
 
     let (parts, body) = req.into_parts();
 
@@ -59,11 +64,11 @@ pub async fn proxy_to_appview(state: &AppState, nsid: &str, req: Request) -> Res
             if is_length_limit_error(&err) {
                 return ApiError::new(
                     ErrorCode::PayloadTooLarge,
-                    "request body exceeds the AppView proxy limit",
+                    "request body exceeds the proxy limit",
                 )
                 .into_response();
             }
-            tracing::warn!(error = %err, nsid, "failed to read request body while proxying to AppView");
+            tracing::warn!(error = %err, nsid, "failed to read request body while proxying XRPC");
             return ApiError::new(ErrorCode::InvalidRequest, "failed to read request body")
                 .into_response();
         }
@@ -85,7 +90,7 @@ pub async fn proxy_to_appview(state: &AppState, nsid: &str, req: Request) -> Res
     if let Some(accept) = parts.headers.get(header::ACCEPT) {
         outbound = outbound.header(header::ACCEPT, accept);
     }
-    outbound = outbound.header("atproto-proxy", appview.did.as_str());
+    outbound = outbound.header("atproto-proxy", proxy_did);
 
     if !body_bytes.is_empty() {
         outbound = outbound.body(body_bytes);
@@ -94,9 +99,12 @@ pub async fn proxy_to_appview(state: &AppState, nsid: &str, req: Request) -> Res
     let upstream = match outbound.send().await {
         Ok(resp) => resp,
         Err(err) => {
-            tracing::warn!(error = %err, nsid, "AppView proxy request failed");
-            return ApiError::new(ErrorCode::ServiceUnavailable, "failed to reach the AppView")
-                .into_response();
+            tracing::warn!(error = %err, nsid, "upstream proxy request failed");
+            return ApiError::new(
+                ErrorCode::ServiceUnavailable,
+                "failed to reach the upstream service",
+            )
+            .into_response();
         }
     };
 
@@ -113,7 +121,7 @@ pub async fn proxy_to_appview(state: &AppState, nsid: &str, req: Request) -> Res
     match builder.body(Body::from_stream(upstream.bytes_stream())) {
         Ok(resp) => resp,
         Err(err) => {
-            tracing::error!(error = %err, nsid, "failed to build AppView proxy response");
+            tracing::error!(error = %err, nsid, "failed to build proxy response");
             ApiError::new(ErrorCode::InternalError, "proxy response build failed").into_response()
         }
     }
@@ -138,6 +146,17 @@ mod tests {
         let base = test_state().await;
         let mut config = (*base.config).clone();
         config.appview.url = uri.to_string();
+        AppState {
+            config: Arc::new(config),
+            ..base
+        }
+    }
+
+    /// Build router state whose chat service points at the given mock server URI.
+    async fn state_with_chat(uri: &str) -> AppState {
+        let base = test_state().await;
+        let mut config = (*base.config).clone();
+        config.chat.url = uri.to_string();
         AppState {
             config: Arc::new(config),
             ..base
@@ -234,10 +253,12 @@ mod tests {
 
     #[tokio::test]
     async fn proxies_post_body_to_appview() {
+        // Use a procedure with no local handler so it reaches the proxy. `app.bsky.actor.*`
+        // preferences are served locally and would never proxy; `graph.muteActor` proxies.
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/xrpc/app.bsky.actor.putPreferences"))
-            .and(body_json(serde_json::json!({ "preferences": [] })))
+            .and(path("/xrpc/app.bsky.graph.muteActor"))
+            .and(body_json(serde_json::json!({ "actor": "did:plc:abc123" })))
             .respond_with(ResponseTemplate::new(200))
             .expect(1)
             .mount(&server)
@@ -247,9 +268,9 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/xrpc/app.bsky.actor.putPreferences")
+                    .uri("/xrpc/app.bsky.graph.muteActor")
                     .header("content-type", "application/json")
-                    .body(Body::from(r#"{"preferences":[]}"#))
+                    .body(Body::from(r#"{"actor":"did:plc:abc123"}"#))
                     .unwrap(),
             )
             .await
@@ -300,7 +321,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/xrpc/app.bsky.actor.putPreferences")
+                    .uri("/xrpc/app.bsky.graph.muteActor")
                     .header("content-type", "application/json")
                     .body(Body::from(oversized))
                     .unwrap(),
@@ -334,6 +355,135 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/xrpc/app.bsky.feed.getAuthorFeed?actor=did:plc:abc123&limit=10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // --- chat.bsky.* proxy (direct messages) ---
+
+    #[tokio::test]
+    async fn proxies_chat_list_convos_to_chat_service() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/xrpc/chat.bsky.convo.listConvos"))
+            .and(query_param("limit", "50"))
+            .and(header("authorization", "Bearer chat-token"))
+            .and(header("atproto-proxy", "did:web:api.bsky.chat#bsky_chat"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "convos": [] })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let response = app(state_with_chat(&server.uri()).await)
+            .oneshot(
+                Request::builder()
+                    .uri("/xrpc/chat.bsky.convo.listConvos?limit=50")
+                    .header("authorization", "Bearer chat-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["convos"].is_array());
+    }
+
+    #[tokio::test]
+    async fn proxies_chat_get_log_with_cursor_to_chat_service() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/xrpc/chat.bsky.convo.getLog"))
+            .and(query_param("cursor", "abc123"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "logs": [] })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let response = app(state_with_chat(&server.uri()).await)
+            .oneshot(
+                Request::builder()
+                    .uri("/xrpc/chat.bsky.convo.getLog?cursor=abc123")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn passes_through_chat_service_error_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/xrpc/chat.bsky.convo.getLog"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(
+                serde_json::json!({ "error": "InvalidRequest", "message": "bad cursor" }),
+            ))
+            .mount(&server)
+            .await;
+
+        let response = app(state_with_chat(&server.uri()).await)
+            .oneshot(
+                Request::builder()
+                    .uri("/xrpc/chat.bsky.convo.getLog")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "InvalidRequest");
+    }
+
+    // The chat service is a distinct upstream from the AppView: a `chat.bsky.*` request must
+    // reach the configured chat URL, never the AppView. Pointing the AppView at a dead port and
+    // the chat service at a live mock proves the router keys on the NSID prefix, not a shared
+    // proxy target.
+    #[tokio::test]
+    async fn chat_request_does_not_hit_appview() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/xrpc/chat.bsky.convo.listConvos"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "convos": [] })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let base = test_state().await;
+        let mut config = (*base.config).clone();
+        config.chat.url = server.uri();
+        config.appview.url = "http://127.0.0.1:1".to_string();
+        let state = AppState {
+            config: Arc::new(config),
+            ..base
+        };
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/xrpc/chat.bsky.convo.listConvos")
                     .body(Body::empty())
                     .unwrap(),
             )

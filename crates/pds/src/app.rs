@@ -291,7 +291,8 @@ pub fn app(state: AppState) -> Router {
 /// Catch-all XRPC handler.
 ///
 /// `app.bsky.*` NSIDs with no local handler are forwarded to the configured AppView (feeds,
-/// notifications, search) via [`appview_proxy`]. Any other unrecognised NSID returns
+/// notifications, search); `chat.bsky.*` NSIDs are forwarded to the configured chat service
+/// (direct messages) — both via [`service_proxy`]. Any other unrecognised NSID returns
 /// `MethodNotImplemented`.
 ///
 /// Axum gives static path segments priority over parameterised ones, so specific routes
@@ -301,8 +302,13 @@ async fn xrpc_handler(
     Path(method): Path<String>,
     req: axum::extract::Request,
 ) -> Response {
+    use crate::routes::service_proxy::proxy_xrpc;
     if method.starts_with("app.bsky.") {
-        crate::routes::appview_proxy::proxy_to_appview(&state, &method, req).await
+        let appview = &state.config.appview;
+        proxy_xrpc(&state, &appview.url, &appview.did, &method, req).await
+    } else if method.starts_with("chat.bsky.") {
+        let chat = &state.config.chat;
+        proxy_xrpc(&state, &chat.url, &chat.did, &method, req).await
     } else {
         ApiError::new(
             ErrorCode::MethodNotImplemented,
@@ -322,7 +328,8 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
     use crate::auth::new_nonce_store;
     use crate::db::{open_pool, run_migrations};
     use common::{
-        AppViewConfig, BlobsConfig, CrawlersConfig, IrohConfig, OAuthConfig, TelemetryConfig,
+        AppViewConfig, BlobsConfig, ChatConfig, CrawlersConfig, IrohConfig, OAuthConfig,
+        TelemetryConfig,
     };
     use p256::pkcs8::EncodePrivateKey;
     use rand_core::OsRng;
@@ -378,6 +385,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
             oauth: OAuthConfig::default(),
             iroh: IrohConfig::default(),
             appview: AppViewConfig::default(),
+            chat: ChatConfig::default(),
             // Tests must never make outbound crawl notifications.
             crawlers: CrawlersConfig { urls: vec![] },
             telemetry: TelemetryConfig::default(),
