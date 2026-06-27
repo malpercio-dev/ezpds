@@ -73,10 +73,9 @@ pub async fn put_preferences_handler(
         ));
     }
 
-    let blob = serde_json::to_string(&request.preferences).map_err(|e| {
-        tracing::error!(did = %user.did, error = %e, "failed to serialize preferences");
-        ApiError::new(ErrorCode::InternalError, "failed to store preferences")
-    })?;
+    // `Value`'s Display impl is infallible, so serializing the array cannot fail here —
+    // unlike the generic `serde_json::to_string`, which would force a dead error branch.
+    let blob = Value::Array(request.preferences).to_string();
 
     put_preferences(&state.db, &user.did, &blob).await?;
 
@@ -357,6 +356,25 @@ mod tests {
         let state = test_state().await;
         insert_account(&state.db, "did:plc:apppass", "apppass@example.com").await;
         let token = scoped_jwt(&state.jwt_secret, "did:plc:apppass", "com.atproto.appPass");
+
+        let response = app(state)
+            .oneshot(put_request(
+                &token,
+                serde_json::json!({ "preferences": [] }),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+    }
+
+    #[tokio::test]
+    async fn refresh_token_returns_401() {
+        let state = test_state().await;
+        insert_account(&state.db, "did:plc:refresh", "refresh@example.com").await;
+        let token = scoped_jwt(&state.jwt_secret, "did:plc:refresh", "com.atproto.refresh");
 
         let response = app(state)
             .oneshot(put_request(
