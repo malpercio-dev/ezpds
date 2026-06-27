@@ -232,6 +232,134 @@ async fn car_round_trip_preserves_root_cid() {
     );
 }
 
+// ── CAR byte-compatibility (atproto interop: CARv1 wire format) ──────────────────
+//
+// The round-trip test above proves we can read what we write. These pin the *exact
+// bytes* of our CARv1 output against an independently derived reference so we stay
+// byte-compatible with go-car / js-car (the implementations every other ATProto peer
+// uses). The reference encodes a one-block CAR whose single root/block is the
+// dag-cbor empty map `{}` (0xa0):
+//
+//   header = uvarint(len) || dag-cbor({roots: [cid], version: 1})   (keys canonically
+//            ordered: "roots" before "version")
+//   frame  = uvarint(len(cid) + len(data)) || cid_bytes || data
+//
+// Reference: https://ipld.io/specs/transport/car/carv1/
+
+/// CIDv1 / dag-cbor / sha2-256 CID of the dag-cbor block `0xa0` (`{}`).
+const CAR_BLOCK: &[u8] = &[0xa0];
+const CAR_BLOCK_CID: &str = "bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua";
+
+/// Canonical CARv1 header for `roots = [CAR_BLOCK_CID], version = 1`.
+const REF_CAR_HEADER_HEX: &str = "3aa265726f6f747381d82a58250001711220c19a797fa1fd590cd2e5b42d1cf5f246e29b91684e2f87404b81dc345c7a56a06776657273696f6e01";
+
+/// Canonical CARv1 block frame for `CAR_BLOCK` under `CAR_BLOCK_CID`.
+const REF_CAR_FRAME_HEX: &str =
+    "2501711220c19a797fa1fd590cd2e5b42d1cf5f246e29b91684e2f87404b81dc345c7a56a0a0";
+
+/// Decode a lowercase hex string into bytes. Local helper — no hex crate dependency.
+fn from_hex(s: &str) -> Vec<u8> {
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("valid hex"))
+        .collect()
+}
+
+#[test]
+fn car_header_is_byte_compatible_with_reference() {
+    let cid = parse_cid(CAR_BLOCK_CID);
+    let header = repo_engine::car_v1_header(cid);
+    assert_eq!(
+        header,
+        from_hex(REF_CAR_HEADER_HEX),
+        "CARv1 header bytes must match the canonical reference encoding",
+    );
+}
+
+#[test]
+fn car_block_frame_is_byte_compatible_with_reference() {
+    let cid = parse_cid(CAR_BLOCK_CID);
+    let frame = repo_engine::car_v1_block_frame(cid, CAR_BLOCK);
+    assert_eq!(
+        frame,
+        from_hex(REF_CAR_FRAME_HEX),
+        "CARv1 block frame bytes must match the canonical reference encoding",
+    );
+}
+
+#[tokio::test]
+async fn single_block_car_is_byte_exact_against_reference() {
+    let mut bs = MemoryBlockStore::new();
+    let cid = bs
+        .write_block(DAG_CBOR, SHA2_256, CAR_BLOCK)
+        .await
+        .expect("write block");
+    assert_eq!(cid.to_string(), CAR_BLOCK_CID, "sanity: known block CID");
+
+    let car = repo_engine::build_car_from_cids(&mut bs, cid, vec![cid])
+        .await
+        .expect("build car");
+
+    let reference: Vec<u8> = from_hex(REF_CAR_HEADER_HEX)
+        .into_iter()
+        .chain(from_hex(REF_CAR_FRAME_HEX))
+        .collect();
+    assert_eq!(
+        car, reference,
+        "full one-block CAR must be byte-identical to the reference (header || frame)",
+    );
+}
+
+#[tokio::test]
+async fn reference_car_bytes_parse_and_verify() {
+    // Read direction: open the independently-derived reference CAR and confirm a real
+    // CARv1 reader resolves its root, and that the carried block is content-addressed
+    // (its bytes hash to the declared CID).
+    let reference: Vec<u8> = from_hex(REF_CAR_HEADER_HEX)
+        .into_iter()
+        .chain(from_hex(REF_CAR_FRAME_HEX))
+        .collect();
+    let expected_cid = parse_cid(CAR_BLOCK_CID);
+
+    let mut car_store = CarStore::open(Cursor::new(&reference))
+        .await
+        .expect("reference CAR must parse");
+    assert_eq!(
+        car_store.roots().collect::<Vec<_>>(),
+        vec![expected_cid],
+        "reference CAR must declare the known block as its root",
+    );
+
+    let mut block = Vec::new();
+    car_store
+        .read_block_into(expected_cid, &mut block)
+        .await
+        .expect("root block must be readable from the reference CAR");
+    assert_eq!(block, CAR_BLOCK, "carried block bytes must round-trip");
+
+    // Content addressing: the block bytes must hash to the digest embedded in the CID.
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(&block);
+    assert_eq!(
+        expected_cid.hash().digest(),
+        digest.as_slice(),
+        "carried block must hash to its declared CID",
+    );
+}
+
+#[test]
+#[should_panic(expected = "must match the canonical reference")]
+fn corrupted_car_header_fixture_is_detected() {
+    let cid = parse_cid(CAR_BLOCK_CID);
+    let header = repo_engine::car_v1_header(cid);
+    // Compare against the frame bytes (wrong) — the gate must catch the mismatch.
+    assert_eq!(
+        header,
+        from_hex(REF_CAR_FRAME_HEX),
+        "CARv1 header bytes must match the canonical reference",
+    );
+}
+
 // ── Corrupted fixture detection ──────────────────────────────────────────────────
 
 /// Deliberately corrupt the expected root CID — the test must fail.
