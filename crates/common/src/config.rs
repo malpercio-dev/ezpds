@@ -33,6 +33,7 @@ pub struct Config {
     pub blobs: BlobsConfig,
     pub oauth: OAuthConfig,
     pub iroh: IrohConfig,
+    pub appview: AppViewConfig,
     pub crawlers: CrawlersConfig,
     pub telemetry: TelemetryConfig,
     // Operator authentication for management endpoints (e.g., POST /v1/pds/keys).
@@ -121,6 +122,39 @@ pub struct IrohConfig {
     pub endpoint: Option<String>,
 }
 
+/// Bluesky AppView proxy configuration.
+///
+/// `app.bsky.*` XRPC methods that the PDS does not handle locally are forwarded to this
+/// AppView (the catch-all proxy behind `GET/POST /xrpc/:method`). The default targets the
+/// public Bluesky AppView; `did` is the value sent as the `atproto-proxy` header so the
+/// AppView knows the request is proxied on the user's behalf.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AppViewConfig {
+    /// Base URL of the AppView (scheme + authority, no trailing slash).
+    #[serde(default = "default_appview_url")]
+    pub url: String,
+    /// Service DID (with `#fragment`) of the AppView, sent as `atproto-proxy`.
+    #[serde(default = "default_appview_did")]
+    pub did: String,
+}
+
+impl Default for AppViewConfig {
+    fn default() -> Self {
+        Self {
+            url: default_appview_url(),
+            did: default_appview_did(),
+        }
+    }
+}
+
+fn default_appview_url() -> String {
+    "https://api.bsky.app".to_string()
+}
+
+fn default_appview_did() -> String {
+    "did:web:api.bsky.app#bsky_appview".to_string()
+}
+
 /// Crawler (relay/BGS) notification configuration for `com.atproto.sync.requestCrawl`.
 ///
 /// After every repo commit the pds notifies each configured crawler so newly produced
@@ -195,6 +229,8 @@ pub(crate) struct RawConfig {
     pub(crate) oauth: OAuthConfig,
     #[serde(default)]
     pub(crate) iroh: IrohConfig,
+    #[serde(default)]
+    pub(crate) appview: AppViewConfig,
     #[serde(default)]
     pub(crate) crawlers: CrawlersConfig,
     #[serde(default)]
@@ -331,6 +367,12 @@ pub(crate) fn apply_env_overrides(
     if let Some(v) = env.get("EZPDS_IROH_ENDPOINT") {
         raw.iroh.endpoint = Some(v.clone());
     }
+    if let Some(v) = env.get("EZPDS_APPVIEW_URL") {
+        raw.appview.url = v.clone();
+    }
+    if let Some(v) = env.get("EZPDS_APPVIEW_DID") {
+        raw.appview.did = v.clone();
+    }
     // Comma-separated crawler base URLs; an empty value disables crawl notifications.
     if let Some(v) = env.get("EZPDS_CRAWLERS") {
         raw.crawlers.urls = v
@@ -449,6 +491,18 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         }
     }
 
+    if !raw.appview.url.starts_with("http://") && !raw.appview.url.starts_with("https://") {
+        return Err(ConfigError::Invalid(format!(
+            "appview.url must start with http:// or https://, got: {:?}",
+            raw.appview.url
+        )));
+    }
+    // Trim a trailing slash so the proxy can join paths as `{url}/xrpc/...` unambiguously.
+    let appview = AppViewConfig {
+        url: raw.appview.url.trim_end_matches('/').to_string(),
+        did: raw.appview.did,
+    };
+
     Ok(Config {
         bind_address,
         port,
@@ -463,6 +517,7 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         blobs: raw.blobs,
         oauth: raw.oauth,
         iroh: raw.iroh,
+        appview,
         crawlers: raw.crawlers,
         telemetry,
         admin_token: raw.admin_token,
@@ -1068,6 +1123,81 @@ mod tests {
         let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
         let config = validate_and_build(raw).unwrap();
         assert!(config.crawlers.urls.is_empty());
+    }
+
+    // --- appview config tests ---
+
+    #[test]
+    fn appview_defaults_to_public_bsky() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert_eq!(config.appview.url, "https://api.bsky.app");
+        assert_eq!(config.appview.did, "did:web:api.bsky.app#bsky_appview");
+    }
+
+    #[test]
+    fn appview_parses_from_toml() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [appview]
+            url = "https://appview.example"
+            did = "did:web:appview.example#bsky_appview"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.appview.url, "https://appview.example");
+        assert_eq!(config.appview.did, "did:web:appview.example#bsky_appview");
+    }
+
+    #[test]
+    fn appview_url_trailing_slash_is_trimmed() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [appview]
+            url = "https://appview.example/"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.appview.url, "https://appview.example");
+    }
+
+    #[test]
+    fn appview_rejects_non_http_scheme() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [appview]
+            url = "ftp://appview.example"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("appview.url"));
+    }
+
+    #[test]
+    fn env_override_appview_url_and_did() {
+        let env = HashMap::from([
+            (
+                "EZPDS_APPVIEW_URL".to_string(),
+                "https://appview.test".to_string(),
+            ),
+            (
+                "EZPDS_APPVIEW_DID".to_string(),
+                "did:web:appview.test#bsky_appview".to_string(),
+            ),
+        ]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.appview.url, "https://appview.test");
+        assert_eq!(config.appview.did, "did:web:appview.test#bsky_appview");
     }
 
     #[test]

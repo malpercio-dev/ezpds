@@ -34,6 +34,13 @@ invite_code_required = true
 # [contact]
 # email = "admin@example.com"
 
+# AppView proxy for app.bsky.* methods the PDS doesn't handle locally (feeds, notifications,
+# search). Defaults to the public Bluesky AppView, so local dev gets real feed data out of the
+# box. Override with EZPDS_APPVIEW_URL / EZPDS_APPVIEW_DID to point at your own AppView.
+# [appview]
+# url = "https://api.bsky.app"
+# did = "did:web:api.bsky.app#bsky_appview"
+
 # Crawler (relay/BGS) notifications via com.atproto.sync.requestCrawl.
 # After each repo commit the relay POSTs to each <url>/xrpc/com.atproto.sync.requestCrawl
 # so the crawler pulls new content promptly. Defaults to ["https://bsky.network"] in

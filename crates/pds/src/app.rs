@@ -3,8 +3,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use axum::{
-    extract::Path,
+    extract::{Path, State},
     http::Request,
+    response::{IntoResponse, Response},
     routing::{delete, get, post},
     Router,
 };
@@ -265,15 +266,28 @@ pub fn app(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// Catch-all XRPC handler — returns `MethodNotImplemented` for any unrecognised NSID.
+/// Catch-all XRPC handler.
+///
+/// `app.bsky.*` NSIDs with no local handler are forwarded to the configured AppView (feeds,
+/// notifications, search) via [`appview_proxy`]. Any other unrecognised NSID returns
+/// `MethodNotImplemented`.
 ///
 /// Axum gives static path segments priority over parameterised ones, so specific routes
 /// registered for individual NSIDs will match before this catch-all.
-async fn xrpc_handler(Path(method): Path<String>) -> ApiError {
-    ApiError::new(
-        ErrorCode::MethodNotImplemented,
-        format!("XRPC method {method:?} is not implemented"),
-    )
+async fn xrpc_handler(
+    State(state): State<AppState>,
+    Path(method): Path<String>,
+    req: axum::extract::Request,
+) -> Response {
+    if method.starts_with("app.bsky.") {
+        crate::routes::appview_proxy::proxy_to_appview(&state, &method, req).await
+    } else {
+        ApiError::new(
+            ErrorCode::MethodNotImplemented,
+            format!("XRPC method {method:?} is not implemented"),
+        )
+        .into_response()
+    }
 }
 
 #[cfg(test)]
@@ -285,7 +299,9 @@ pub(crate) async fn test_state() -> AppState {
 pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
     use crate::auth::new_nonce_store;
     use crate::db::{open_pool, run_migrations};
-    use common::{BlobsConfig, CrawlersConfig, IrohConfig, OAuthConfig, TelemetryConfig};
+    use common::{
+        AppViewConfig, BlobsConfig, CrawlersConfig, IrohConfig, OAuthConfig, TelemetryConfig,
+    };
     use p256::pkcs8::EncodePrivateKey;
     use rand_core::OsRng;
     use std::path::PathBuf;
@@ -339,6 +355,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
             blobs: BlobsConfig::default(),
             oauth: OAuthConfig::default(),
             iroh: IrohConfig::default(),
+            appview: AppViewConfig::default(),
             // Tests must never make outbound crawl notifications.
             crawlers: CrawlersConfig { urls: vec![] },
             telemetry: TelemetryConfig::default(),
