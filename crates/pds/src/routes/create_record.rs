@@ -177,6 +177,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_record_on_deactivated_account_returns_403() {
+        let (state, did) = setup_account_with_repo().await;
+        sqlx::query("UPDATE accounts SET deactivated_at = datetime('now') WHERE did = ?")
+            .bind(&did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let token = access_jwt(&state.jwt_secret, &did);
+        let app = crate::app::app(state);
+
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri("/xrpc/com.atproto.repo.createRecord")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({
+                    "repo": did,
+                    "collection": "app.bsky.feed.post",
+                    "record": {"text": "should be rejected"}
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "a deactivated account must not be able to write records"
+        );
+    }
+
+    #[tokio::test]
     async fn create_record_auto_generates_tid() {
         let (state, did) = setup_account_with_repo().await;
         let token = access_jwt(&state.jwt_secret, &did);
@@ -475,7 +509,10 @@ mod tests {
             .unwrap();
         let resp: CreateRecordResponse = serde_json::from_slice(&body).unwrap();
 
-        let FirehoseEvent::Commit(event) = rx.try_recv().expect("a commit event must be emitted");
+        let FirehoseEvent::Commit(event) = rx.try_recv().expect("a commit event must be emitted")
+        else {
+            panic!("expected a #commit event");
+        };
         assert_eq!(event.seq, 1, "first commit gets sequence 1");
         assert_eq!(event.repo, did);
         assert!(!event.commit.is_empty());

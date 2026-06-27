@@ -1,0 +1,38 @@
+meta {
+  name: Deactivate Account (deactivateAccount)
+  type: http
+  seq: 45
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.server.deactivateAccount
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+body:json {
+  {
+    "deleteAfter": "2030-01-01T00:00:00Z"
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  Temporarily deactivates the authenticated account. Repo reads report a deactivated status
+  (getRepoStatus) and all repo writes (createRecord/putRecord/deleteRecord/applyWrites) are
+  rejected with 403 until the account is reactivated. A `#account` firehose event (active=false,
+  status="deactivated") is emitted so relays stop serving the repo.
+
+  The body is optional: omit it for an immediate deactivation, or pass
+  `{ "deleteAfter": "<RFC 3339 datetime>" }` to record a requested permanent-deletion time (the
+  reaper that acts on it is not yet implemented). A present but malformed `deleteAfter` returns
+  400. Idempotent — re-deactivating an already-deactivated account returns 200. Requires a full
+  access-scope token; app-password tokens are rejected. Returns 200 with an empty body.
+}

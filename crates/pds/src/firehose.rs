@@ -102,11 +102,30 @@ pub struct CommitEvent {
     pub blocks: Vec<u8>,
 }
 
-/// A frame broadcast to firehose subscribers. Modelled as an enum so future frame types
-/// (`#identity`, `#account`) can be added without changing the channel item type.
+/// An `#account` firehose event: a change to an account's hosting status — activation,
+/// deactivation, or takedown. Unlike a `#commit` it carries no repo blocks, only the new
+/// status, so a relay can stop or resume serving the repo accordingly.
+#[derive(Debug, Clone)]
+pub struct AccountEvent {
+    /// Monotonic sequence number assigned by the [`Firehose`] sequencer.
+    pub seq: u64,
+    /// RFC 3339 timestamp of emission.
+    pub time: String,
+    /// The account's DID.
+    pub did: String,
+    /// Whether the account is now active (repo readable, commits emitted).
+    pub active: bool,
+    /// The non-active status when `active` is false — one of `deactivated`, `takendown`,
+    /// `suspended`, `deleted` per the lexicon. `None` when the account is active.
+    pub status: Option<String>,
+}
+
+/// A frame broadcast to firehose subscribers. Modelled as an enum so further frame types
+/// (e.g. `#identity`) can be added without changing the channel item type.
 #[derive(Debug, Clone)]
 pub enum FirehoseEvent {
     Commit(Arc<CommitEvent>),
+    Account(Arc<AccountEvent>),
 }
 
 impl FirehoseEvent {
@@ -114,6 +133,7 @@ impl FirehoseEvent {
     pub fn seq(&self) -> u64 {
         match self {
             FirehoseEvent::Commit(c) => c.seq,
+            FirehoseEvent::Account(a) => a.seq,
         }
     }
 }
@@ -283,6 +303,35 @@ impl Firehose {
         let _ = self.tx.send(event);
         assigned
     }
+
+    /// Assign the next sequence number, build an [`AccountEvent`], retain it for replay, and
+    /// broadcast it.
+    ///
+    /// The account analogue of [`emit_commit`]: emitted when an account is deactivated
+    /// (`active = false`, `status = Some("deactivated")`) or reactivated (`active = true`,
+    /// `status = None`). Shares the same sequencer and backlog so account-status frames are
+    /// ordered relative to commits exactly as a relay expects. Returns the assigned sequence
+    /// number; never blocks and never fails.
+    pub fn emit_account(&self, did: String, active: bool, status: Option<String>) -> u64 {
+        let mut inner = self.inner.lock().expect("firehose inner mutex poisoned");
+        inner.seq += 1;
+        let assigned = inner.seq;
+        let event = FirehoseEvent::Account(Arc::new(AccountEvent {
+            seq: assigned,
+            time: now_rfc3339(),
+            did,
+            active,
+            status,
+        }));
+        // Retain for cursor replay, evicting the oldest once the buffer is full.
+        if inner.backlog.len() == self.capacity {
+            inner.backlog.pop_front();
+        }
+        inner.backlog.push_back(event.clone());
+        // A send error means "no subscribers"; that is expected, not a failure.
+        let _ = self.tx.send(event);
+        assigned
+    }
 }
 
 impl Default for Firehose {
@@ -349,6 +398,7 @@ mod tests {
         for expected in 1..=3 {
             match rx.recv().await.unwrap() {
                 FirehoseEvent::Commit(c) => assert_eq!(c.seq, expected),
+                FirehoseEvent::Account(_) => panic!("expected a #commit event"),
             }
         }
     }
@@ -364,10 +414,14 @@ mod tests {
         fh.emit_commit(commit_input("did:plc:b"));
 
         for rx in [&mut rx1, &mut rx2] {
-            let FirehoseEvent::Commit(first) = rx.recv().await.unwrap();
+            let FirehoseEvent::Commit(first) = rx.recv().await.unwrap() else {
+                panic!("expected a #commit event");
+            };
             assert_eq!(first.seq, 1);
             assert_eq!(first.repo, "did:plc:a");
-            let FirehoseEvent::Commit(second) = rx.recv().await.unwrap();
+            let FirehoseEvent::Commit(second) = rx.recv().await.unwrap() else {
+                panic!("expected a #commit event");
+            };
             assert_eq!(second.seq, 2);
             assert_eq!(second.repo, "did:plc:b");
         }
@@ -379,7 +433,9 @@ mod tests {
         let mut rx = fh.subscribe();
         fh.emit_commit(commit_input("did:plc:a"));
 
-        let FirehoseEvent::Commit(c) = rx.recv().await.unwrap();
+        let FirehoseEvent::Commit(c) = rx.recv().await.unwrap() else {
+            panic!("expected a #commit event");
+        };
         assert_eq!(c.blocks, vec![1, 2, 3]);
         assert_eq!(c.ops.len(), 1);
         assert_eq!(c.ops[0].action, OpAction::Create);
@@ -452,7 +508,9 @@ mod tests {
 
         fh.emit_commit(commit_input("did:plc:a")); // seq 3, after subscribe
 
-        let FirehoseEvent::Commit(live) = sub.rx.recv().await.unwrap();
+        let FirehoseEvent::Commit(live) = sub.rx.recv().await.unwrap() else {
+            panic!("expected a #commit event");
+        };
         assert_eq!(
             live.seq, 3,
             "live stream resumes exactly after the replay tail"
@@ -470,6 +528,63 @@ mod tests {
         assert_eq!(
             sub.replay.iter().map(|e| e.seq()).collect::<Vec<_>>(),
             vec![4, 5, 6]
+        );
+    }
+
+    #[tokio::test]
+    async fn emit_account_shares_sequencer_and_carries_status() {
+        let fh = Firehose::new();
+        let mut rx = fh.subscribe();
+
+        // A commit, then a deactivation, then a reactivation — all share one sequence space.
+        assert_eq!(fh.emit_commit(commit_input("did:plc:a")), 1);
+        assert_eq!(
+            fh.emit_account(
+                "did:plc:a".to_string(),
+                false,
+                Some("deactivated".to_string())
+            ),
+            2
+        );
+        assert_eq!(fh.emit_account("did:plc:a".to_string(), true, None), 3);
+
+        let FirehoseEvent::Commit(c) = rx.recv().await.unwrap() else {
+            panic!("expected a commit first");
+        };
+        assert_eq!(c.seq, 1);
+
+        let FirehoseEvent::Account(deact) = rx.recv().await.unwrap() else {
+            panic!("expected an account event");
+        };
+        assert_eq!(deact.seq, 2);
+        assert_eq!(deact.did, "did:plc:a");
+        assert!(!deact.active);
+        assert_eq!(deact.status.as_deref(), Some("deactivated"));
+        assert!(!deact.time.is_empty());
+
+        let FirehoseEvent::Account(react) = rx.recv().await.unwrap() else {
+            panic!("expected an account event");
+        };
+        assert_eq!(react.seq, 3);
+        assert!(react.active);
+        assert_eq!(react.status, None);
+    }
+
+    #[tokio::test]
+    async fn account_events_are_replayed_by_cursor() {
+        let fh = Firehose::new();
+        fh.emit_commit(commit_input("did:plc:a")); // seq 1
+        fh.emit_account(
+            "did:plc:a".to_string(),
+            false,
+            Some("deactivated".to_string()),
+        ); // seq 2
+
+        let sub = subscribed(fh.subscribe_from(Some(1)));
+        assert_eq!(
+            sub.replay.iter().map(|e| e.seq()).collect::<Vec<_>>(),
+            vec![2],
+            "an account event after the cursor must be replayed like any other"
         );
     }
 
@@ -507,13 +622,17 @@ mod tests {
 
         // After the lag is reported, it resumes from the oldest still-buffered event and
         // continues to see the most recent ones.
-        let FirehoseEvent::Commit(next) = slow.recv().await.unwrap();
+        let FirehoseEvent::Commit(next) = slow.recv().await.unwrap() else {
+            panic!("expected a #commit event");
+        };
         assert!(
             next.seq >= 9,
             "should resume near the head, got seq {}",
             next.seq
         );
-        let FirehoseEvent::Commit(last) = slow.recv().await.unwrap();
+        let FirehoseEvent::Commit(last) = slow.recv().await.unwrap() else {
+            panic!("expected a #commit event");
+        };
         assert_eq!(last.seq, 10);
         assert_eq!(slow.try_recv().unwrap_err(), TryRecvError::Empty);
     }

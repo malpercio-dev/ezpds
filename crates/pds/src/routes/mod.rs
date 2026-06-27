@@ -1,3 +1,4 @@
+pub mod activate_account;
 pub mod apply_writes;
 pub mod appview_proxy;
 pub mod atproto_did;
@@ -10,6 +11,7 @@ pub mod create_mobile_account;
 pub mod create_record;
 pub mod create_session;
 pub mod create_signing_key;
+pub mod deactivate_account;
 pub mod delete_handle;
 pub mod delete_record;
 pub mod delete_session;

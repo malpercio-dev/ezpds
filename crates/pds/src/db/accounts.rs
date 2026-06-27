@@ -83,6 +83,57 @@ pub(crate) async fn account_is_active(db: &sqlx::SqlitePool, did: &str) -> Resul
     Ok(row.is_some())
 }
 
+/// Mark an account deactivated, recording an optional requested deletion time.
+///
+/// Sets `deactivated_at` to the current time and stores `delete_after` verbatim (the caller is
+/// responsible for validating it is an RFC 3339 datetime). Re-deactivating an already-deactivated
+/// account is allowed and simply refreshes both fields — `deactivateAccount` is idempotent.
+/// Returns `true` when an account row matched `did`, `false` when no such account exists; the
+/// caller maps `false` to its own 404 / invalid-token response.
+pub(crate) async fn deactivate_account(
+    db: &sqlx::SqlitePool,
+    did: &str,
+    delete_after: Option<&str>,
+) -> Result<bool, ApiError> {
+    let result = sqlx::query(
+        "UPDATE accounts \
+         SET deactivated_at = datetime('now'), delete_after = ?, updated_at = datetime('now') \
+         WHERE did = ?",
+    )
+    .bind(delete_after)
+    .bind(did)
+    .execute(db)
+    .await
+    .map_err(|e| {
+        tracing::error!(did = %did, error = %e, "DB error deactivating account");
+        ApiError::new(ErrorCode::InternalError, "failed to deactivate account")
+    })?;
+
+    Ok(result.rows_affected() > 0)
+}
+
+/// Clear an account's deactivation, returning it to active status.
+///
+/// Sets both `deactivated_at` and `delete_after` back to NULL. Reactivating an already-active
+/// account is a harmless no-op that still matches the row, so `activateAccount` is idempotent.
+/// Returns `true` when an account row matched `did`, `false` when no such account exists.
+pub(crate) async fn activate_account(db: &sqlx::SqlitePool, did: &str) -> Result<bool, ApiError> {
+    let result = sqlx::query(
+        "UPDATE accounts \
+         SET deactivated_at = NULL, delete_after = NULL, updated_at = datetime('now') \
+         WHERE did = ?",
+    )
+    .bind(did)
+    .execute(db)
+    .await
+    .map_err(|e| {
+        tracing::error!(did = %did, error = %e, "DB error activating account");
+        ApiError::new(ErrorCode::InternalError, "failed to activate account")
+    })?;
+
+    Ok(result.rows_affected() > 0)
+}
+
 /// Classification of a `pending_accounts` UNIQUE constraint violation.
 ///
 /// Produced by [`classify_pending_account_conflict`] so callers don't repeat the

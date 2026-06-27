@@ -33,7 +33,11 @@ publishes a sequenced `CommitEvent` carrying the DID, rev, `since`, per-record `
 (action + collection/rkey + cid + value), and the CARv1 diff blocks. Backpressure is by design:
 the bounded channel never blocks producers — a slow subscriber observes `Lagged` and is expected
 to disconnect. All three write paths (`create_record`/`put_record` via `record_write`,
-`delete_record`, `apply_writes`) emit exactly one event per commit. Alongside the broadcast
+`delete_record`, `apply_writes`) emit exactly one event per commit. (Those same write paths
+reject a deactivated account with 403 before committing.) Account-status changes emit a
+separate `#account` frame instead of a `#commit`: `deactivate_account`/`activate_account` call
+`Firehose::emit_account` (active=false/`deactivated` or active=true), which shares the same
+sequencer and replay backlog so account frames are ordered relative to commits. Alongside the broadcast
 channel the firehose keeps a bounded replay backlog so a late subscriber that passes a `cursor`
 can be backfilled; `subscribe_from(cursor)` snapshots that backlog and attaches the live
 receiver under one lock, so the replay→live boundary is exact (no gap, no duplication). The
@@ -88,7 +92,7 @@ and async query functions; no business logic lives here.
 | File | Contents |
 |---|---|
 | `mod.rs` | `open_pool`, `run_migrations`, `DbError`, `is_unique_violation` |
-| `accounts.rs` | `AccountRow` + `resolve_identifier` (handle/DID→account); `SessionAccountRow` + `get_session_account` (DID→account+handle+DID doc); `resolve_by_email` (email→account) |
+| `accounts.rs` | `AccountRow` + `resolve_identifier` (handle/DID→account); `SessionAccountRow` + `get_session_account` (DID→account+handle+DID doc); `resolve_by_email` (email→account); `account_is_active`, `deactivate_account`/`activate_account` (flip `deactivated_at`) |
 | `oauth.rs` | OAuth client lookup, auth code storage, token management |
 | `password_reset.rs` | `insert_reset_token`, `get_reset_token`, `mark_reset_token_used`, `update_password_hash` |
 | `preferences.rs` | `get_preferences` (DID→stored `app.bsky` preferences JSON blob); `put_preferences` (upsert the blob, overwriting any previous value) |
@@ -138,6 +142,8 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `get_pds_signing_key.rs` | `GET /v1/signing-keys` |
 | `health.rs` | `GET /xrpc/_health` |
 | `delete_session.rs` | `POST /xrpc/com.atproto.server.deleteSession` (session revocation) |
+| `deactivate_account.rs` | `POST /xrpc/com.atproto.server.deactivateAccount` (flip account to deactivated, store optional `deleteAfter`, emit `#account` firehose event) |
+| `activate_account.rs` | `POST /xrpc/com.atproto.server.activateAccount` (clear deactivation, emit `#account` firehose event) |
 | `oauth_client_metadata.rs` | `GET /oauth/client-metadata.json` (OAuth client metadata per ATProto spec) |
 | `provisioning_session.rs` | Provisioning session creation (email + password → session token) |
 | `code_gen.rs` | Claim code generation (random alphanumeric codes) |

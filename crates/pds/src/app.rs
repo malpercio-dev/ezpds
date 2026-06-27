@@ -17,6 +17,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::auth::{DpopNonceStore, OAuthSigningKey};
 use crate::dns::{DnsProvider, TxtResolver};
+use crate::routes::activate_account::activate_account_handler;
 use crate::routes::apply_writes::apply_writes;
 use crate::routes::atproto_did::atproto_did_handler;
 use crate::routes::claim_codes::claim_codes;
@@ -27,6 +28,7 @@ use crate::routes::create_mobile_account::create_mobile_account;
 use crate::routes::create_record::create_record;
 use crate::routes::create_session::create_session;
 use crate::routes::create_signing_key::create_signing_key;
+use crate::routes::deactivate_account::deactivate_account_handler;
 use crate::routes::delete_handle::delete_handle_handler;
 use crate::routes::delete_record::delete_record;
 use crate::routes::delete_session::delete_session;
@@ -205,6 +207,14 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/xrpc/com.atproto.server.deleteSession",
             post(delete_session),
+        )
+        .route(
+            "/xrpc/com.atproto.server.activateAccount",
+            post(activate_account_handler),
+        )
+        .route(
+            "/xrpc/com.atproto.server.deactivateAccount",
+            post(deactivate_account_handler),
         )
         .route(
             "/xrpc/com.atproto.server.requestPasswordReset",

@@ -148,6 +148,16 @@ pub async fn write_record(
     let root_cid_str =
         root_cid_str.ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
 
+    // A deactivated account is read-only: its repo reports a deactivated status and accepts no
+    // writes until reactivated (com.atproto.server.activateAccount). Checked after the existence
+    // lookup above so a missing account is still a 404 rather than a deactivation error.
+    if !crate::db::accounts::account_is_active(&state.db, did).await? {
+        return Err(ApiError::new(
+            ErrorCode::Forbidden,
+            "account is deactivated",
+        ));
+    }
+
     let root_cid = repo_engine::Cid::try_from(root_cid_str.as_str()).map_err(|e| {
         tracing::error!(error = %e, did = %did, "invalid repo root CID in database");
         ApiError::new(ErrorCode::InternalError, "failed to write record")

@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::app::AppState;
-use crate::firehose::{CommitEvent, FirehoseEvent, SubscribeOutcome, Subscription};
+use crate::firehose::{AccountEvent, CommitEvent, FirehoseEvent, SubscribeOutcome, Subscription};
 use repo_engine::Cid;
 
 /// How often to send a keepalive Ping to detect dead connections.
@@ -142,6 +142,8 @@ async fn send_event(sender: &mut SplitSink<WebSocket, Message>, event: &Firehose
                 return true;
             }
         },
+        // `#account` frames are fixed-shape (no CIDs or CAR blocks), so encoding cannot fail.
+        FirehoseEvent::Account(account) => encode_account_frame(account),
     };
     sender.send(Message::Binary(frame)).await.is_ok()
 }
@@ -234,6 +236,42 @@ fn encode_commit_frame(commit: &CommitEvent) -> Result<Vec<u8>, String> {
     let body_bytes = serde_ipld_dagcbor::to_vec(&body).map_err(|e| e.to_string())?;
     frame.extend_from_slice(&body_bytes);
     Ok(frame)
+}
+
+/// The `#account` message body, encoded as DAG-CBOR per com.atproto.sync.subscribeRepos.
+///
+/// Carries no CIDs or CAR blocks — just the account's new hosting status. `status` is omitted
+/// from the wire when the account is active (the field is optional in the lexicon).
+#[derive(Serialize)]
+struct AccountBody<'a> {
+    seq: u64,
+    did: &'a str,
+    time: &'a str,
+    active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<&'a str>,
+}
+
+/// Encode an [`AccountEvent`] into a complete firehose frame: the `#account` header
+/// concatenated with the DAG-CBOR body. Unlike `#commit`, every field is a plain scalar, so
+/// encoding is infallible (matching how [`encode_error_frame`] treats its fixed-shape structs).
+fn encode_account_frame(account: &AccountEvent) -> Vec<u8> {
+    let header = MessageHeader {
+        op: 1,
+        t: "#account",
+    };
+    let body = AccountBody {
+        seq: account.seq,
+        did: &account.did,
+        time: &account.time,
+        active: account.active,
+        status: account.status.as_deref(),
+    };
+
+    let mut frame = serde_ipld_dagcbor::to_vec(&header).expect("#account header must encode");
+    let body_bytes = serde_ipld_dagcbor::to_vec(&body).expect("#account body must encode");
+    frame.extend_from_slice(&body_bytes);
+    frame
 }
 
 /// Encode an error frame: the `{op: -1}` header concatenated with `{error, message}`.

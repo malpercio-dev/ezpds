@@ -185,6 +185,15 @@ pub async fn apply_writes(
     let root_cid_str =
         root_cid_str.ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
 
+    // A deactivated account is read-only: no writes until reactivated. Checked after the
+    // existence lookup so a missing account is still a 404 rather than a deactivation error.
+    if !crate::db::accounts::account_is_active(&state.db, did).await? {
+        return Err(ApiError::new(
+            ErrorCode::Forbidden,
+            "account is deactivated",
+        ));
+    }
+
     // swapCommit: reject up front if the caller's expected commit no longer matches.
     if let Some(expected) = &body.swap_commit {
         if expected != &root_cid_str {
@@ -407,6 +416,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn apply_writes_on_deactivated_account_returns_403() {
+        let (state, did) = setup().await;
+        sqlx::query("UPDATE accounts SET deactivated_at = datetime('now') WHERE did = ?")
+            .bind(&did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let token = access_jwt(&state.jwt_secret, &did);
+        let app = crate::app::app(state);
+        let body = serde_json::json!({ "repo": did, "writes": [create_item("k1", "hi")] });
+        let resp = app.oneshot(apply_req(body, Some(&token))).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "a deactivated account must not be able to apply writes"
+        );
+    }
+
+    #[tokio::test]
     async fn apply_writes_empty_writes_returns_400() {
         let (state, did) = setup().await;
         let token = access_jwt(&state.jwt_secret, &did);
@@ -591,7 +619,10 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
 
         // Exactly one commit event for the whole batch.
-        let FirehoseEvent::Commit(event) = rx.try_recv().expect("batch must emit one commit event");
+        let FirehoseEvent::Commit(event) = rx.try_recv().expect("batch must emit one commit event")
+        else {
+            panic!("expected a #commit event");
+        };
         assert!(
             rx.try_recv().is_err(),
             "a batch must produce a single commit event, not one per write"

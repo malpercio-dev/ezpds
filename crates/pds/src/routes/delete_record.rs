@@ -63,6 +63,15 @@ pub async fn delete_record(
     let root_cid_str =
         root_cid_str.ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
 
+    // A deactivated account is read-only: no writes until reactivated. Checked after the
+    // existence lookup so a missing account is still a 404 rather than a deactivation error.
+    if !crate::db::accounts::account_is_active(&state.db, did).await? {
+        return Err(ApiError::new(
+            ErrorCode::Forbidden,
+            "account is deactivated",
+        ));
+    }
+
     let root_cid = repo_engine::Cid::try_from(root_cid_str.as_str()).map_err(|e| {
         tracing::error!(error = %e, did = %did, "invalid repo root CID in database");
         ApiError::new(ErrorCode::InternalError, "failed to delete record")
@@ -197,6 +206,29 @@ mod tests {
         let app = crate::app::app(state);
         let resp = app.oneshot(delete_req(&did, "t1", None)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn delete_record_on_deactivated_account_returns_403() {
+        let state = state_with_master_key().await;
+        let did = "did:plc:delrec".to_string();
+        seed_account_with_repo(&state.db, &did).await;
+        sqlx::query("UPDATE accounts SET deactivated_at = datetime('now') WHERE did = ?")
+            .bind(&did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let token = access_jwt(&state.jwt_secret, &did);
+        let app = crate::app::app(state);
+        let resp = app
+            .oneshot(delete_req(&did, "t1", Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "a deactivated account must not be able to delete records"
+        );
     }
 
     /// Helper: create a record via putRecord and return its CID.
@@ -342,7 +374,10 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let FirehoseEvent::Commit(event) = rx.try_recv().expect("delete must emit a commit event");
+        let FirehoseEvent::Commit(event) = rx.try_recv().expect("delete must emit a commit event")
+        else {
+            panic!("expected a #commit event");
+        };
         assert_eq!(event.repo, did);
         assert!(event.since.is_some(), "a delete supersedes a prior commit");
         assert_eq!(event.ops.len(), 1);
