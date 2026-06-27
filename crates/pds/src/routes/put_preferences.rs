@@ -31,7 +31,10 @@ struct PutPreferencesRequest {
 /// bare namespace or any NSID/union member beneath it (`app.bsky.actor.defs#adultContentPref`,
 /// etc.). The reference PDS only stores preferences in this namespace and rejects the rest.
 fn is_app_bsky_namespace(ty: &str) -> bool {
-    ty == "app.bsky" || ty.starts_with("app.bsky.")
+    ty == "app.bsky"
+        || ty
+            .strip_prefix("app.bsky.")
+            .is_some_and(|suffix| !suffix.is_empty())
 }
 
 /// POST /xrpc/app.bsky.actor.putPreferences
@@ -384,6 +387,27 @@ mod tests {
             .oneshot(put_request(
                 &token,
                 serde_json::json!({ "preferences": [{ "$type": "app.bskything.pref" }] }),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "InvalidRequest");
+    }
+
+    #[tokio::test]
+    async fn type_bare_app_bsky_prefix_is_rejected() {
+        let state = test_state().await;
+        insert_account(&state.db, "did:plc:bareprefix", "bareprefix@example.com").await;
+        let token = access_jwt(&state.jwt_secret, "did:plc:bareprefix");
+
+        // `app.bsky.` has the namespace prefix but no member after the dot — neither the bare
+        // namespace nor a real type, so it must not be persisted.
+        let response = app(state)
+            .oneshot(put_request(
+                &token,
+                serde_json::json!({ "preferences": [{ "$type": "app.bsky." }] }),
             ))
             .await
             .unwrap();

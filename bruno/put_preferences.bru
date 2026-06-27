@@ -33,7 +33,8 @@ docs {
   (user data sovereignty) rather than proxied to the AppView, so this route is handled by the
   PDS itself and registered ahead of the catch-all proxy. The body must be
   `{ "preferences": [...] }`; a malformed body (not an object, missing the field, a non-object
-  entry, or an entry whose `$type` is missing or outside the `app.bsky` namespace) returns 400.
+  entry, or an entry whose `$type` is missing, not a string, or outside the `app.bsky`
+  namespace) returns 400.
   Requires a full access-scope token; app-password tokens are rejected. Returns 200 with an
   empty body on success.
 }
