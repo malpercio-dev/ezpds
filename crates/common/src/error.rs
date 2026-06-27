@@ -69,6 +69,12 @@ pub enum ErrorCode {
     /// for `com.atproto.repo.{put,delete}Record`.
     #[serde(rename = "InvalidSwap")]
     InvalidSwap,
+    /// A request was malformed in a way no more specific code covers — e.g. a request body that
+    /// could not be read (client disconnect, read timeout, framing error).
+    ///
+    /// Serialized as `"InvalidRequest"` (PascalCase) to match the AT Protocol XRPC error format.
+    #[serde(rename = "InvalidRequest")]
+    InvalidRequest,
     // TODO: add remaining codes from Appendix A as endpoints are implemented:
     // 400: INVALID_DOCUMENT, INVALID_PROOF, INVALID_ENDPOINT, INVALID_CONFIRMATION
     // 401: INVALID_CREDENTIALS
@@ -110,6 +116,7 @@ impl ErrorCode {
             ErrorCode::PayloadTooLarge => 413,
             ErrorCode::Conflict => 409,
             ErrorCode::InvalidSwap => 409,
+            ErrorCode::InvalidRequest => 400,
         }
     }
 }
@@ -284,6 +291,7 @@ mod tests {
             (ErrorCode::InvalidToken, 401),
             (ErrorCode::ExpiredToken, 400),
             (ErrorCode::PayloadTooLarge, 413),
+            (ErrorCode::InvalidRequest, 400),
         ];
         for (code, expected) in cases {
             assert_eq!(code.status_code(), expected, "wrong status for {code:?}");

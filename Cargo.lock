@@ -4298,6 +4298,7 @@ dependencies = [
  "data-encoding",
  "futures-util",
  "hickory-resolver",
+ "http-body-util",
  "infer",
  "ipld-core",
  "jsonwebtoken",

@@ -19,6 +19,15 @@ use crate::app::AppState;
 /// mistake, so it is rejected rather than buffered.
 const MAX_PROXY_BODY: usize = 1024 * 1024; // 1 MiB
 
+/// Returns true when an [`axum::body::to_bytes`] error was caused by the body exceeding the
+/// length limit (rather than the body stream failing). `to_bytes` wraps the over-limit case as
+/// an [`http_body_util::LengthLimitError`] in the error's source chain.
+fn is_length_limit_error(err: &axum::Error) -> bool {
+    std::error::Error::source(err)
+        .map(|src| src.is::<http_body_util::LengthLimitError>())
+        .unwrap_or(false)
+}
+
 /// Forward an `app.bsky.*` XRPC request to the configured AppView.
 ///
 /// The caller's `Authorization` header is passed through unchanged — the AppView trusts the
@@ -42,12 +51,21 @@ pub async fn proxy_to_appview(state: &AppState, nsid: &str, req: Request) -> Res
 
     let body_bytes = match axum::body::to_bytes(body, MAX_PROXY_BODY).await {
         Ok(bytes) => bytes,
-        Err(_) => {
-            return ApiError::new(
-                ErrorCode::PayloadTooLarge,
-                "request body exceeds the AppView proxy limit",
-            )
-            .into_response();
+        Err(err) => {
+            // `to_bytes` fails for two distinct reasons: the body exceeded `MAX_PROXY_BODY`, or
+            // the body stream itself errored (client disconnect, read timeout, framing error).
+            // Only the former is a genuine 413; a broken stream is a 400 so the client isn't
+            // misled into thinking its payload was too large.
+            if is_length_limit_error(&err) {
+                return ApiError::new(
+                    ErrorCode::PayloadTooLarge,
+                    "request body exceeds the AppView proxy limit",
+                )
+                .into_response();
+            }
+            tracing::warn!(error = %err, nsid, "failed to read request body while proxying to AppView");
+            return ApiError::new(ErrorCode::InvalidRequest, "failed to read request body")
+                .into_response();
         }
     };
 
@@ -55,13 +73,17 @@ pub async fn proxy_to_appview(state: &AppState, nsid: &str, req: Request) -> Res
     // identical types and move across the boundary without conversion.
     let mut outbound = state.http_client.request(parts.method, &target);
 
-    // Pass auth and content-type through; host, content-length, and connection are hop-by-hop
-    // or recomputed by reqwest, so they are intentionally dropped.
+    // Pass auth, content-type, and the client's content-negotiation preference through; host,
+    // content-length, and connection are hop-by-hop or recomputed by reqwest, so they are
+    // intentionally dropped.
     if let Some(authz) = parts.headers.get(header::AUTHORIZATION) {
         outbound = outbound.header(header::AUTHORIZATION, authz);
     }
     if let Some(content_type) = parts.headers.get(header::CONTENT_TYPE) {
         outbound = outbound.header(header::CONTENT_TYPE, content_type);
+    }
+    if let Some(accept) = parts.headers.get(header::ACCEPT) {
+        outbound = outbound.header(header::ACCEPT, accept);
     }
     outbound = outbound.header("atproto-proxy", appview.did.as_str());
 
@@ -234,6 +256,64 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn transport_failure_maps_to_503() {
+        // Point the AppView at a port nothing is listening on so the outbound request fails at
+        // the transport layer rather than returning an HTTP status.
+        let base = test_state().await;
+        let mut config = (*base.config).clone();
+        config.appview.url = "http://127.0.0.1:1".to_string();
+        let state = AppState {
+            config: Arc::new(config),
+            ..base
+        };
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/xrpc/app.bsky.feed.getTimeline")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "SERVICE_UNAVAILABLE");
+    }
+
+    #[tokio::test]
+    async fn oversized_body_maps_to_413() {
+        // A body larger than MAX_PROXY_BODY must be rejected as 413 before any AppView call.
+        // No mock is mounted: if the request escaped to the AppView the connection would fail,
+        // so a clean 413 also proves the body cap short-circuits the proxy.
+        let server = MockServer::start().await;
+        let oversized = "x".repeat(super::MAX_PROXY_BODY + 1);
+
+        let response = app(state_with_appview(&server.uri()).await)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/app.bsky.actor.putPreferences")
+                    .header("content-type", "application/json")
+                    .body(Body::from(oversized))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "PAYLOAD_TOO_LARGE");
     }
 
     #[tokio::test]

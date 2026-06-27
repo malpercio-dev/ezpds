@@ -21,6 +21,8 @@ tokio = { version = "1", features = ["full"] }
 
 # Web framework (pds)
 axum = "0.7"
+# Body utilities (pds) — used to classify axum::body::to_bytes errors (length-limit vs stream).
+http-body-util = "0.1"
 
 # HTTP client (pds)
 # default-features = false: no OpenSSL; future crates must opt in to rustls-tls explicitly.

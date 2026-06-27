@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 axum = { workspace = true, features = ["ws"] }
+http-body-util = { workspace = true }
 common = { workspace = true, features = ["axum"] }
 clap = { workspace = true }
 anyhow = { workspace = true }
