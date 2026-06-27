@@ -52,6 +52,7 @@ use crate::routes::oauth_par::post_par;
 use crate::routes::oauth_server_metadata::oauth_server_metadata;
 use crate::routes::oauth_token::post_token;
 use crate::routes::provisioning_session::create_provisioning_session;
+use crate::routes::put_preferences::put_preferences_handler;
 use crate::routes::put_record::put_record;
 use crate::routes::refresh_session::refresh_session;
 use crate::routes::register_device::register_device;
@@ -238,11 +239,15 @@ pub fn app(state: AppState) -> Router {
         .route("/xrpc/com.atproto.repo.putRecord", post(put_record))
         .route("/xrpc/com.atproto.repo.deleteRecord", post(delete_record))
         .route("/xrpc/com.atproto.repo.describeRepo", get(describe_repo))
-        // Stored locally for user data sovereignty rather than proxied to the AppView, so it
+        // Stored locally for user data sovereignty rather than proxied to the AppView, so they
         // must be registered explicitly ahead of the `app.bsky.*` catch-all below.
         .route(
             "/xrpc/app.bsky.actor.getPreferences",
             get(get_preferences_handler),
+        )
+        .route(
+            "/xrpc/app.bsky.actor.putPreferences",
+            post(put_preferences_handler),
         )
         .route("/xrpc/:method", get(xrpc_handler).post(xrpc_handler))
         .route("/v1/accounts", post(create_account))
