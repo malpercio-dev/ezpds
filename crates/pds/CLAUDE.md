@@ -114,6 +114,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `get_device_pds.rs` | `GET /v1/devices/:id/pds` |
 | `describe_server.rs` | `GET /xrpc/com.atproto.server.describeServer` |
 | `describe_repo.rs` | `GET /xrpc/com.atproto.repo.describeRepo` |
+| `appview_proxy.rs` | `GET/POST /xrpc/app.bsky.*` — catch-all proxy forwarding unhandled `app.bsky.*` NSIDs to the configured AppView |
 | `resolve_handle.rs` | `GET /xrpc/com.atproto.identity.resolveHandle` |
 | `sync_subscribe_repos.rs` | `GET /xrpc/com.atproto.sync.subscribeRepos` (WebSocket firehose) |
 | `claim_codes.rs` | Claim code management |

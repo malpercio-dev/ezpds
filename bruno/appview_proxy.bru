@@ -1,0 +1,32 @@
+meta {
+  name: AppView Proxy (app.bsky.*)
+  type: http
+  seq: 42
+}
+
+get {
+  url: {{baseUrl}}/xrpc/app.bsky.feed.getTimeline?limit={{limit}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+params:query {
+  limit: {{limit}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  limit: 30
+}
+
+docs {
+  Catch-all AppView proxy. Any `app.bsky.*` XRPC method without a local handler is forwarded
+  to the configured AppView (default https://api.bsky.app; override via [appview] in pds.toml
+  or EZPDS_APPVIEW_URL). The caller's Bearer token is passed through unchanged and the AppView's
+  status/body are streamed back. This example fetches the home timeline; swap the NSID for any
+  app.bsky.* method, e.g. app.bsky.notification.listNotifications.
+}

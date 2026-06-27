@@ -1,4 +1,5 @@
 pub mod apply_writes;
+pub mod appview_proxy;
 pub mod atproto_did;
 pub(crate) mod auth;
 pub mod claim_codes;
