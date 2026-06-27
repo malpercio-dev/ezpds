@@ -81,14 +81,10 @@ pub async fn proxy_xrpc(
     // Pass auth, content-type, and the client's content-negotiation preference through; host,
     // content-length, and connection are hop-by-hop or recomputed by reqwest, so they are
     // intentionally dropped.
-    if let Some(authz) = parts.headers.get(header::AUTHORIZATION) {
-        outbound = outbound.header(header::AUTHORIZATION, authz);
-    }
-    if let Some(content_type) = parts.headers.get(header::CONTENT_TYPE) {
-        outbound = outbound.header(header::CONTENT_TYPE, content_type);
-    }
-    if let Some(accept) = parts.headers.get(header::ACCEPT) {
-        outbound = outbound.header(header::ACCEPT, accept);
+    for name in [header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT] {
+        if let Some(val) = parts.headers.get(&name) {
+            outbound = outbound.header(name, val);
+        }
     }
     outbound = outbound.header("atproto-proxy", proxy_did);
 
