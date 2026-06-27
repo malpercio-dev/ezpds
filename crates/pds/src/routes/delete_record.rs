@@ -54,18 +54,21 @@ pub async fn delete_record(
     repo_engine::validate_record_path(collection, rkey)
         .map_err(|_| ApiError::new(ErrorCode::InvalidClaim, "invalid collection or record key"))?;
 
-    let root_cid_str = crate::db::accounts::get_repo_root_cid(&state.db, did)
+    let write_state = crate::db::accounts::get_repo_write_state(&state.db, did)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, did = %did, "failed to query repo root CID");
+            tracing::error!(error = %e, did = %did, "failed to query repo write state");
             ApiError::new(ErrorCode::InternalError, "failed to delete record")
-        })?;
-    let root_cid_str =
-        root_cid_str.ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
+        })?
+        .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
+    let root_cid_str = write_state
+        .repo_root_cid
+        .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
 
-    // A deactivated account is read-only: no writes until reactivated. Checked after the
-    // existence lookup so a missing account is still a 404 rather than a deactivation error.
-    if !crate::db::accounts::account_is_active(&state.db, did).await? {
+    // A deactivated account is read-only: no writes until reactivated. Checked after the existence
+    // lookup so a missing account is still a 404 rather than a deactivation error; the CAS below
+    // also carries `deactivated_at IS NULL` to close the gap between this check and commit.
+    if !write_state.active {
         return Err(ApiError::new(
             ErrorCode::Forbidden,
             "account is deactivated",

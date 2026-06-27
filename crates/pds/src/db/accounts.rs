@@ -231,6 +231,37 @@ pub(crate) async fn get_repo_root_cid(
         .await
 }
 
+/// Repo write preconditions for an account: its repo root CID and active status, fetched in one
+/// query. Backs the create/put/delete/applyWrites paths, which need both the CAS root and the
+/// deactivation gate — reading them together avoids a second round-trip against `accounts` and
+/// narrows the window between the active check and the commit CAS.
+pub(crate) struct RepoWriteState {
+    /// Stored repo root commit CID, or `None` when the account exists but has no repo yet.
+    pub(crate) repo_root_cid: Option<String>,
+    /// `true` when `deactivated_at` is NULL.
+    pub(crate) active: bool,
+}
+
+/// Fetch the repo root CID and active status for `did` in a single query.
+///
+/// Returns `None` when no account row exists for `did` (the caller maps this to a 404, the same
+/// as a `None` `repo_root_cid`). `active` is derived from `deactivated_at`.
+pub(crate) async fn get_repo_write_state(
+    db: &sqlx::SqlitePool,
+    did: &str,
+) -> Result<Option<RepoWriteState>, sqlx::Error> {
+    let row: Option<(Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT repo_root_cid, deactivated_at FROM accounts WHERE did = ?")
+            .bind(did)
+            .fetch_optional(db)
+            .await?;
+
+    Ok(row.map(|(repo_root_cid, deactivated_at)| RepoWriteState {
+        repo_root_cid,
+        active: deactivated_at.is_none(),
+    }))
+}
+
 /// A single repo entry for `com.atproto.sync.listRepos`.
 ///
 /// Only accounts that have created their repo (non-NULL `repo_root_cid`) produce a row —
