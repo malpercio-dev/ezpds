@@ -202,8 +202,16 @@ fn validate_proxy_url(field: &str, url: &str) -> Result<(), ConfigError> {
                 "{field} must start with http:// or https://, got: {url:?}"
             ))
         })?;
-    // The authority runs up to the first '/', '?', or '#'; everything after is path/query/fragment.
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    // A base URL is scheme + authority (+ optional path). A query or fragment is meaningless on
+    // a base the proxy only ever appends `/xrpc/{nsid}` to, and would silently corrupt the target,
+    // so reject it at load time rather than emit malformed upstream requests.
+    if rest.contains('?') || rest.contains('#') {
+        return Err(ConfigError::Invalid(format!(
+            "{field} must not contain a query or fragment, got: {url:?}"
+        )));
+    }
+    // The authority runs up to the first '/'; everything after is an (optional) path.
+    let authority = rest.split('/').next().unwrap_or("");
     if authority.is_empty() {
         return Err(ConfigError::Invalid(format!(
             "{field} must include a host, got: {url:?}"
@@ -1335,6 +1343,36 @@ mod tests {
             ("appview", "http:///feed"),
             ("chat", "https://"),
             ("chat", "http:///convo"),
+        ] {
+            let toml = format!(
+                r#"
+                data_dir = "/var/pds"
+                public_url = "https://pds.example.com"
+                available_user_domains = ["example.com"]
+
+                [{section}]
+                url = "{url}"
+                "#
+            );
+            let raw: RawConfig = toml::from_str(&toml).unwrap();
+            let err = validate_and_build(raw).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::Invalid(_)),
+                "{url:?} should be rejected"
+            );
+            assert!(err.to_string().contains(&format!("{section}.url")));
+        }
+    }
+
+    #[test]
+    fn proxy_urls_reject_query_or_fragment() {
+        // A base URL only ever has `/xrpc/{nsid}` appended, so a query/fragment would corrupt the
+        // target; reject it at startup rather than send malformed upstream requests.
+        for (section, url) in [
+            ("appview", "https://api.bsky.app?foo=bar"),
+            ("appview", "https://api.bsky.app#frag"),
+            ("chat", "https://api.bsky.chat?foo=bar"),
+            ("chat", "https://api.bsky.chat#frag"),
         ] {
             let toml = format!(
                 r#"

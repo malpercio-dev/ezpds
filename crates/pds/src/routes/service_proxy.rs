@@ -140,7 +140,6 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use crate::app::{app, test_state, AppState};
-    use crate::routes::test_utils::access_jwt;
 
     /// Build router state whose AppView points at the given mock server URI.
     async fn state_with_appview(uri: &str) -> AppState {
@@ -162,6 +161,28 @@ mod tests {
             config: Arc::new(config),
             ..base
         }
+    }
+
+    /// Mint a short-lived HS256 access JWT (`com.atproto.access` scope) for `sub`, signed with
+    /// `secret`. Defined locally so this route module stays free of cross-route imports.
+    fn access_jwt(secret: &[u8; 32], sub: &str) -> String {
+        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        encode(
+            &Header::new(Algorithm::HS256),
+            &serde_json::json!({
+                "scope": "com.atproto.access",
+                "sub": sub,
+                "iat": now,
+                "exp": now + 7200_u64,
+            }),
+            &EncodingKey::from_secret(secret),
+        )
+        .unwrap()
     }
 
     /// A valid `Bearer` access token (`com.atproto.access` scope) for the given state's signing
