@@ -150,14 +150,14 @@ pub async fn load_or_create_jwt_secret(
     Ok(secret)
 }
 
-/// Load the relay's persistent Iroh node secret key (32-byte Ed25519 seed) from the
+/// Load the pds's persistent Iroh node secret key (32-byte Ed25519 seed) from the
 /// database, or generate one on first boot.
 ///
 /// Mirrors [`load_or_create_jwt_secret`]: the 32-byte secret is AES-256-GCM encrypted with
 /// `master_key` before storage and decrypted on load. If `master_key` is `None`, a fresh
-/// ephemeral secret is returned and a warning logged — the relay's Iroh node id then rotates
+/// ephemeral secret is returned and a warning logged — the pds's Iroh node id then rotates
 /// on every restart, invalidating any node id a device cached from
-/// `GET /v1/devices/:id/relay`.
+/// `GET /v1/devices/:id/pds`.
 ///
 /// Returns the raw secret-key bytes; the caller (the `iroh` module) builds an
 /// `iroh::SecretKey` from them. Keeping this helper free of iroh types mirrors how the JWT
@@ -199,7 +199,7 @@ pub async fn load_or_create_iroh_secret_key(
         None => {
             tracing::warn!(
                 "signing_key_master_key not configured; Iroh node identity is ephemeral — \
-                 the relay's node id will change on every restart"
+                 the pds's node id will change on every restart"
             );
         }
     }

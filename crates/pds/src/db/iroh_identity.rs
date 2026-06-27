@@ -13,10 +13,12 @@ pub struct IrohIdentityRow {
 ///
 /// Returns `None` if no identity has been generated yet (first boot).
 pub async fn get_iroh_identity(pool: &SqlitePool) -> Result<Option<IrohIdentityRow>, sqlx::Error> {
-    let row: Option<(String, String)> =
-        sqlx::query_as("SELECT id, secret_key_encrypted FROM iroh_identity LIMIT 1")
-            .fetch_optional(pool)
-            .await?;
+    let row: Option<(String, String)> = sqlx::query_as(
+        "SELECT id, secret_key_encrypted FROM iroh_identity \
+             ORDER BY created_at ASC, id ASC LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?;
 
     Ok(row.map(|(id, secret_key_encrypted)| IrohIdentityRow {
         id,

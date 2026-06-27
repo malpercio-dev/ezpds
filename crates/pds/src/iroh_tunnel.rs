@@ -18,6 +18,11 @@ pub const ALPN: &[u8] = b"ezpds/iroh/0";
 /// force unbounded allocation on the pds.
 const MAX_MESSAGE_LEN: usize = 64 * 1024;
 
+/// Maximum time to wait for a peer to finish sending one echo message. Without it, a peer
+/// that opens a stream but never closes its send side would park `read_to_end` forever,
+/// stalling every subsequent stream on that connection.
+const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Process-level Iroh endpoint state, shared via `AppState` behind an `Arc`.
 pub struct IrohState {
     /// The bound endpoint. Cheaply cloneable (internally reference-counted); the accept loop
@@ -76,7 +81,9 @@ async fn handle_connection(incoming: Incoming) -> anyhow::Result<()> {
             Ok(streams) => streams,
             Err(_) => break,
         };
-        let msg = recv.read_to_end(MAX_MESSAGE_LEN).await?;
+        let msg = tokio::time::timeout(READ_TIMEOUT, recv.read_to_end(MAX_MESSAGE_LEN))
+            .await
+            .map_err(|_| anyhow::anyhow!("iroh stream read timed out"))??;
         send.write_all(&msg).await?;
         send.finish()?;
     }

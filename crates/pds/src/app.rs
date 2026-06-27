@@ -162,7 +162,7 @@ pub struct AppState {
     /// so newly produced content is crawled promptly. Shared via Arc.
     pub crawlers: Arc<crate::crawler::CrawlerNotifier>,
     /// Bound Iroh QUIC endpoint, when `[iroh] enabled`. `None` when the tunnel is disabled.
-    /// Handlers read `iroh.node_id` to advertise the relay's node id. Shared via Arc.
+    /// Handlers read `iroh.node_id` to advertise the pds's node id. Shared via Arc.
     pub iroh: Option<Arc<crate::iroh_tunnel::IrohState>>,
 }
 
