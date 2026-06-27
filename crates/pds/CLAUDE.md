@@ -95,7 +95,7 @@ and async query functions; no business logic lives here.
 | `mod.rs` | `open_pool`, `run_migrations`, `DbError`, `is_unique_violation` |
 | `accounts.rs` | `AccountRow` + `resolve_identifier` (handle/DID→account); `SessionAccountRow` + `get_session_account` (DID→account+handle+DID doc); `resolve_by_email` (email→account); `account_is_active`, `deactivate_account`/`activate_account` (flip `deactivated_at`, report the transition); `get_repo_write_state` + `advance_repo_root_if_active` (repo-write preconditions and the commit CAS); `get_account_overview` + `account_last_active` (operator usage/storage lookups — unfiltered by deactivation) |
 | `blocks.rs` | content-addressed repo-block store + `SqliteBlockStore` adapter; `account_block_stats` (block count, total bytes, distinct-rev commit count for the usage endpoint) |
-| `blobs.rs` | blob metadata store; `account_storage_bytes`, `account_blob_count`, `account_largest_blob` (blob-storage metrics) |
+| `blobs.rs` | blob metadata store; `account_storage_bytes`, `account_blob_metrics`, `account_largest_blob` (blob-storage metrics) |
 | `oauth.rs` | OAuth client lookup, auth code storage, token management |
 | `password_reset.rs` | `insert_reset_token`, `get_reset_token`, `mark_reset_token_used`, `update_password_hash` |
 | `preferences.rs` | `get_preferences` (DID→stored `app.bsky` preferences JSON blob); `put_preferences` (upsert the blob, overwriting any previous value) |

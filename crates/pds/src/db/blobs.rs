@@ -68,16 +68,21 @@ pub async fn account_storage_bytes(
     Ok(row.0)
 }
 
-/// Count the blobs owned by a specific account.
+/// Blob count and total bytes for a specific account, in a single query.
 ///
-/// Counts every blob row for the account regardless of `ref_count`/`temp_until`: an
-/// operator's view of "blobs stored" includes still-temporary uploads that occupy disk.
-pub async fn account_blob_count(pool: &SqlitePool, account_did: &str) -> Result<i64, sqlx::Error> {
-    let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM blobs WHERE account_did = ?")
-        .bind(account_did)
-        .fetch_one(pool)
-        .await?;
-    Ok(row.0)
+/// Counts every blob row regardless of `ref_count`/`temp_until`: an operator's view of
+/// "blobs stored" includes still-temporary uploads that occupy disk. Returns `(count, bytes)`.
+pub async fn account_blob_metrics(
+    pool: &SqlitePool,
+    account_did: &str,
+) -> Result<(i64, i64), sqlx::Error> {
+    let row: (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM blobs WHERE account_did = ?",
+    )
+    .bind(account_did)
+    .fetch_one(pool)
+    .await?;
+    Ok(row)
 }
 
 /// Return the account's largest blob as `(cid, size_bytes)`, or `None` when it has none.
@@ -480,11 +485,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn account_blob_count_counts_all_owned_blobs() {
+    async fn account_blob_metrics_counts_and_sums() {
         let pool = test_pool().await;
         let account_did = insert_test_account(&pool).await;
 
-        assert_eq!(account_blob_count(&pool, &account_did).await.unwrap(), 0);
+        assert_eq!(
+            account_blob_metrics(&pool, &account_did).await.unwrap(),
+            (0, 0)
+        );
 
         for i in 0..3 {
             insert_blob(
@@ -500,7 +508,10 @@ mod tests {
             .unwrap();
         }
 
-        assert_eq!(account_blob_count(&pool, &account_did).await.unwrap(), 3);
+        assert_eq!(
+            account_blob_metrics(&pool, &account_did).await.unwrap(),
+            (3, 300)
+        );
     }
 
     #[tokio::test]

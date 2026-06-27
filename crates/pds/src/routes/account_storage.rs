@@ -52,28 +52,18 @@ pub async fn account_storage(
     require_admin_token(&headers, &state)?;
 
     // Existence check (operator view: deactivated accounts still report storage).
-    let exists = crate::db::accounts::get_account_overview(&state.db, &did)
+    crate::db::accounts::get_account_overview(&state.db, &did)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, "failed to load account overview");
             ApiError::new(ErrorCode::InternalError, "failed to load account storage")
         })?
-        .is_some();
-    if !exists {
-        return Err(ApiError::new(ErrorCode::NotFound, "account not found"));
-    }
+        .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
 
-    let blob_count = crate::db::blobs::account_blob_count(&state.db, &did)
+    let (blob_count, total_bytes) = crate::db::blobs::account_blob_metrics(&state.db, &did)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, did = %did, "failed to load blob count");
-            ApiError::new(ErrorCode::InternalError, "failed to load account storage")
-        })?;
-
-    let total_bytes = crate::db::blobs::account_storage_bytes(&state.db, &did)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, did = %did, "failed to load blob bytes");
+            tracing::error!(error = %e, did = %did, "failed to load blob metrics");
             ApiError::new(ErrorCode::InternalError, "failed to load account storage")
         })?;
 

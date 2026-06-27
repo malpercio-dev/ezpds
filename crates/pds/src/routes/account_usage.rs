@@ -64,17 +64,10 @@ pub async fn account_usage(
             ApiError::new(ErrorCode::InternalError, "failed to load account usage")
         })?;
 
-    let blob_bytes = crate::db::blobs::account_storage_bytes(&state.db, &did)
+    let (blobs_count, blob_bytes) = crate::db::blobs::account_blob_metrics(&state.db, &did)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, did = %did, "failed to load blob bytes");
-            ApiError::new(ErrorCode::InternalError, "failed to load account usage")
-        })?;
-
-    let blobs_count = crate::db::blobs::account_blob_count(&state.db, &did)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, did = %did, "failed to load blob count");
+            tracing::error!(error = %e, did = %did, "failed to load blob metrics");
             ApiError::new(ErrorCode::InternalError, "failed to load account usage")
         })?;
 
