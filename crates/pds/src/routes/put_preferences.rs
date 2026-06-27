@@ -2,7 +2,8 @@
 //
 // Gathers: AuthenticatedUser (JWT extractor), DB pool via AppState, raw JSON body
 // Processes: scope validation → account-active check → parse + validate the preferences
-//            array → overwrite the account's locally-stored blob
+//            array (each entry an object with an `app.bsky`-namespaced `$type`) → overwrite
+//            the account's locally-stored blob
 // Returns: 200 (empty body) on success; 400 for a malformed request; 401 for a bad token
 //
 // Implements: POST /xrpc/app.bsky.actor.putPreferences
@@ -26,6 +27,13 @@ struct PutPreferencesRequest {
     preferences: Vec<Value>,
 }
 
+/// Whether a preference `$type` falls within the `app.bsky` lexicon namespace — either the
+/// bare namespace or any NSID/union member beneath it (`app.bsky.actor.defs#adultContentPref`,
+/// etc.). The reference PDS only stores preferences in this namespace and rejects the rest.
+fn is_app_bsky_namespace(ty: &str) -> bool {
+    ty == "app.bsky" || ty.starts_with("app.bsky.")
+}
+
 /// POST /xrpc/app.bsky.actor.putPreferences
 ///
 /// Overwrites the account's locally-stored `app.bsky` preferences in their entirety — the
@@ -35,7 +43,8 @@ struct PutPreferencesRequest {
 /// accepted (app passwords cannot write preferences), and a token whose account has since
 /// been deactivated or removed is rejected even though the JWT is still cryptographically
 /// valid. The body must be `{ "preferences": [ {…}, … ] }`; a malformed body — not an
-/// object, missing the field, or a non-object entry — returns 400.
+/// object, missing the field, a non-object entry, or an entry whose `$type` is missing or
+/// outside the `app.bsky` namespace — returns 400.
 pub async fn put_preferences_handler(
     user: AuthenticatedUser,
     State(state): State<AppState>,
@@ -63,14 +72,31 @@ pub async fn put_preferences_handler(
         ApiError::new(ErrorCode::InvalidRequest, "invalid preferences format")
     })?;
 
-    // Each preference is a typed union member in the lexicon, so every entry must be a JSON
-    // object. Rejecting scalars/arrays here keeps a malformed write from corrupting later
-    // reads (an empty array is valid and clears the stored preferences).
-    if !request.preferences.iter().all(Value::is_object) {
-        return Err(ApiError::new(
-            ErrorCode::InvalidRequest,
-            "each preference must be an object",
-        ));
+    // Each preference is a typed union member in the `app.bsky` lexicon, so every entry must
+    // be a JSON object carrying a string `$type` within the `app.bsky` namespace. The
+    // reference PDS rejects anything else with InvalidRequest; matching it keeps a malformed
+    // or out-of-namespace write from corrupting later reads (an empty array is valid and
+    // clears the stored preferences).
+    for pref in &request.preferences {
+        let ty = pref
+            .as_object()
+            .and_then(|obj| obj.get("$type"))
+            .and_then(Value::as_str);
+        match ty {
+            Some(ty) if is_app_bsky_namespace(ty) => {}
+            Some(_) => {
+                return Err(ApiError::new(
+                    ErrorCode::InvalidRequest,
+                    "preference $type must be in the app.bsky namespace",
+                ));
+            }
+            None => {
+                return Err(ApiError::new(
+                    ErrorCode::InvalidRequest,
+                    "each preference must be an object with a string $type",
+                ));
+            }
+        }
     }
 
     // `Value`'s Display impl is infallible, so serializing the array cannot fail here —
@@ -194,8 +220,12 @@ mod tests {
         let token = access_jwt(&state.jwt_secret, "did:plc:bob");
         let router = app(state);
 
-        let first = serde_json::json!([{ "$type": "a", "v": 1 }, { "$type": "b" }]);
-        let second = serde_json::json!([{ "$type": "c", "v": 2 }]);
+        let first = serde_json::json!([
+            { "$type": "app.bsky.actor.defs#adultContentPref", "enabled": true },
+            { "$type": "app.bsky.actor.defs#savedFeedsPrefV2" }
+        ]);
+        let second =
+            serde_json::json!([{ "$type": "app.bsky.actor.defs#hiddenPostsPref", "items": [] }]);
 
         for prefs in [&first, &second] {
             let response = router
@@ -229,7 +259,7 @@ mod tests {
             .clone()
             .oneshot(put_request(
                 &token,
-                serde_json::json!({ "preferences": [{ "$type": "x" }] }),
+                serde_json::json!({ "preferences": [{ "$type": "app.bsky.actor.defs#adultContentPref" }] }),
             ))
             .await
             .unwrap();
@@ -273,7 +303,87 @@ mod tests {
         let response = app(state)
             .oneshot(put_request(
                 &token,
-                serde_json::json!({ "preferences": [{ "$type": "ok" }, "not-an-object"] }),
+                serde_json::json!({ "preferences": [{ "$type": "app.bsky.actor.defs#adultContentPref" }, "not-an-object"] }),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "InvalidRequest");
+    }
+
+    #[tokio::test]
+    async fn preference_missing_type_returns_400() {
+        let state = test_state().await;
+        insert_account(&state.db, "did:plc:notype", "notype@example.com").await;
+        let token = access_jwt(&state.jwt_secret, "did:plc:notype");
+
+        let response = app(state)
+            .oneshot(put_request(
+                &token,
+                serde_json::json!({ "preferences": [{ "enabled": true }] }),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "InvalidRequest");
+    }
+
+    #[tokio::test]
+    async fn preference_non_string_type_returns_400() {
+        let state = test_state().await;
+        insert_account(&state.db, "did:plc:numtype", "numtype@example.com").await;
+        let token = access_jwt(&state.jwt_secret, "did:plc:numtype");
+
+        let response = app(state)
+            .oneshot(put_request(
+                &token,
+                serde_json::json!({ "preferences": [{ "$type": 42 }] }),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "InvalidRequest");
+    }
+
+    #[tokio::test]
+    async fn preference_outside_app_bsky_namespace_returns_400() {
+        let state = test_state().await;
+        insert_account(&state.db, "did:plc:wrongns", "wrongns@example.com").await;
+        let token = access_jwt(&state.jwt_secret, "did:plc:wrongns");
+
+        // A well-formed object whose $type lives outside the app.bsky namespace must be
+        // rejected — a foreign-namespace preference cannot be stored here.
+        let response = app(state)
+            .oneshot(put_request(
+                &token,
+                serde_json::json!({ "preferences": [{ "$type": "com.example.actor.pref" }] }),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "InvalidRequest");
+    }
+
+    #[tokio::test]
+    async fn type_named_app_bsky_lookalike_is_rejected() {
+        let state = test_state().await;
+        insert_account(&state.db, "did:plc:lookalike", "lookalike@example.com").await;
+        let token = access_jwt(&state.jwt_secret, "did:plc:lookalike");
+
+        // `app.bskything` shares the `app.bsky` prefix but is a different namespace; the
+        // dot-boundary check must not treat it as in-namespace.
+        let response = app(state)
+            .oneshot(put_request(
+                &token,
+                serde_json::json!({ "preferences": [{ "$type": "app.bskything.pref" }] }),
             ))
             .await
             .unwrap();
