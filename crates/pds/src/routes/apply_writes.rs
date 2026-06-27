@@ -253,10 +253,13 @@ pub async fn apply_writes(
 
     // Atomic commit: advance the persisted root only if it hasn't moved since we read it.
     // A concurrent write losing this race returns 409 rather than clobbering the other commit.
+    // `deactivated_at IS NULL` folds the deactivation guard into the CAS so an account
+    // deactivated after the `account_is_active` check above cannot have this batch land.
     let new_root = repo.root().to_string();
     let new_rev = repo.commit().rev().as_str().to_string();
     let updated = sqlx::query(
-        "UPDATE accounts SET repo_root_cid = ?, repo_rev = ? WHERE did = ? AND repo_root_cid = ?",
+        "UPDATE accounts SET repo_root_cid = ?, repo_rev = ? \
+         WHERE did = ? AND repo_root_cid = ? AND deactivated_at IS NULL",
     )
     .bind(&new_root)
     .bind(&new_rev)

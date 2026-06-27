@@ -228,8 +228,14 @@ pub async fn write_record(
     // clobbering the other commit). The new blocks we wrote are orphaned and GC-able.
     let new_root = repo.root().to_string();
     let new_rev = repo.commit().rev().as_str().to_string();
+    // `deactivated_at IS NULL` folds the deactivation guard into the commit CAS: the
+    // `account_is_active` check above and this swap are not atomic, so an account deactivated in
+    // between would otherwise still commit (deactivation leaves `repo_root_cid` untouched, so the
+    // CAS would match). Requiring the account to still be active here blocks that write — it
+    // surfaces as a concurrent-modification conflict rather than landing on a deactivated repo.
     let updated = sqlx::query(
-        "UPDATE accounts SET repo_root_cid = ?, repo_rev = ? WHERE did = ? AND repo_root_cid = ?",
+        "UPDATE accounts SET repo_root_cid = ?, repo_rev = ? \
+         WHERE did = ? AND repo_root_cid = ? AND deactivated_at IS NULL",
     )
     .bind(&new_root)
     .bind(&new_rev)

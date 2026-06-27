@@ -128,11 +128,14 @@ pub async fn delete_record(
             ApiError::new(ErrorCode::InternalError, "failed to delete record")
         })?;
 
-    // Advance the root with optimistic concurrency (see putRecord for rationale).
+    // Advance the root with optimistic concurrency (see putRecord for rationale). The
+    // `deactivated_at IS NULL` clause folds the deactivation guard into the CAS so an account
+    // deactivated after the `account_is_active` check above cannot have this delete land.
     let new_root = repo.root().to_string();
     let new_rev = repo.commit().rev().as_str().to_string();
     let updated = sqlx::query(
-        "UPDATE accounts SET repo_root_cid = ?, repo_rev = ? WHERE did = ? AND repo_root_cid = ?",
+        "UPDATE accounts SET repo_root_cid = ?, repo_rev = ? \
+         WHERE did = ? AND repo_root_cid = ? AND deactivated_at IS NULL",
     )
     .bind(&new_root)
     .bind(&new_rev)

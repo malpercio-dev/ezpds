@@ -14,7 +14,7 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
-use crate::db::accounts::activate_account;
+use crate::db::accounts::{activate_account, AccountStateChange};
 
 /// POST /xrpc/com.atproto.server.activateAccount
 ///
@@ -33,17 +33,23 @@ pub async fn activate_account_handler(
         ));
     }
 
-    // `false` means no account row matched the token's DID — the account was removed out from
-    // under an otherwise-valid token, mirroring `getPreferences`/`deactivateAccount`.
-    if !activate_account(&state.db, &user.did).await? {
-        tracing::warn!(did = %user.did, "activateAccount: account not found");
-        return Err(ApiError::new(ErrorCode::InvalidToken, "account not found"));
+    match activate_account(&state.db, &user.did).await? {
+        // `NotFound` means no account row matched the token's DID — the account was removed out
+        // from under an otherwise-valid token, mirroring `getPreferences`/`deactivateAccount`.
+        AccountStateChange::NotFound => {
+            tracing::warn!(did = %user.did, "activateAccount: account not found");
+            return Err(ApiError::new(ErrorCode::InvalidToken, "account not found"));
+        }
+        // Already active: idempotent no-op. Don't re-emit a status-quo `#account` event.
+        AccountStateChange::Unchanged => {
+            tracing::debug!(did = %user.did, "activateAccount: already active; no event emitted");
+        }
+        // Real transition: tell subscribers the repo is active again so they resume serving it.
+        AccountStateChange::Changed => {
+            state.firehose.emit_account(user.did.clone(), true, None);
+            tracing::info!(did = %user.did, "account activated");
+        }
     }
-
-    // Tell subscribers the repo is active again so they resume serving it.
-    state.firehose.emit_account(user.did.clone(), true, None);
-
-    tracing::info!(did = %user.did, "account activated");
 
     Ok(StatusCode::OK)
 }
@@ -137,16 +143,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn already_active_account_is_a_noop_200() {
+    async fn already_active_account_is_a_noop_200_without_event() {
         let state = test_state().await;
         insert_account(&state.db, "did:plc:act2", "act2@example.com", false).await;
         let token = access_jwt(&state.jwt_secret, "did:plc:act2");
+        let mut rx = state.firehose.subscribe();
 
         let response = app(state).oneshot(activate_request(&token)).await.unwrap();
         assert_eq!(
             response.status(),
             StatusCode::OK,
             "activating an already-active account is a 200 no-op"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "activating an already-active account must not emit a status-quo #account event"
         );
     }
 

@@ -83,21 +83,52 @@ pub(crate) async fn account_is_active(db: &sqlx::SqlitePool, did: &str) -> Resul
     Ok(row.is_some())
 }
 
+/// Whether an `activate_account` / `deactivate_account` call actually changed the account status.
+///
+/// Lets the route handler emit a firehose `#account` event only on a real transition and skip the
+/// redundant status-quo event when the account was already in the target state (an idempotent
+/// no-op call), while still distinguishing a missing account for the not-found response.
+pub(crate) enum AccountStateChange {
+    /// No account row matched the DID.
+    NotFound,
+    /// The account was already in the target status; nothing meaningful changed.
+    Unchanged,
+    /// The account transitioned into the target status.
+    Changed,
+}
+
 /// Mark an account deactivated, recording an optional requested deletion time.
 ///
-/// Sets `deactivated_at` to the current time and stores `delete_after` verbatim (the caller is
-/// responsible for validating it is an RFC 3339 datetime). Re-deactivating an already-deactivated
-/// account is allowed and simply refreshes both fields — `deactivateAccount` is idempotent.
-/// Returns `true` when an account row matched `did`, `false` when no such account exists; the
-/// caller maps `false` to its own 404 / invalid-token response.
+/// Stores `delete_after` verbatim (the caller validates it is an RFC 3339 datetime). Re-deactivating
+/// an already-deactivated account is allowed and refreshes `delete_after`, but preserves the
+/// original `deactivated_at` instant (via `COALESCE`) and reports [`AccountStateChange::Unchanged`]
+/// so the caller skips a redundant firehose event. Reports `NotFound` when no account row matches.
 pub(crate) async fn deactivate_account(
     db: &sqlx::SqlitePool,
     did: &str,
     delete_after: Option<&str>,
-) -> Result<bool, ApiError> {
-    let result = sqlx::query(
+) -> Result<AccountStateChange, ApiError> {
+    // Read the current status first so we can report whether this call is a real transition.
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT deactivated_at FROM accounts WHERE did = ?")
+            .bind(did)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| {
+                tracing::error!(did = %did, error = %e, "DB error reading account state");
+                ApiError::new(ErrorCode::InternalError, "failed to deactivate account")
+            })?;
+    let Some((deactivated_at,)) = row else {
+        return Ok(AccountStateChange::NotFound);
+    };
+    let was_active = deactivated_at.is_none();
+
+    // Run the UPDATE even when already deactivated so a revised `delete_after` is recorded.
+    // `COALESCE` keeps the original deactivation instant rather than resetting it on re-calls.
+    sqlx::query(
         "UPDATE accounts \
-         SET deactivated_at = datetime('now'), delete_after = ?, updated_at = datetime('now') \
+         SET deactivated_at = COALESCE(deactivated_at, datetime('now')), delete_after = ?, \
+             updated_at = datetime('now') \
          WHERE did = ?",
     )
     .bind(delete_after)
@@ -109,16 +140,40 @@ pub(crate) async fn deactivate_account(
         ApiError::new(ErrorCode::InternalError, "failed to deactivate account")
     })?;
 
-    Ok(result.rows_affected() > 0)
+    Ok(if was_active {
+        AccountStateChange::Changed
+    } else {
+        AccountStateChange::Unchanged
+    })
 }
 
 /// Clear an account's deactivation, returning it to active status.
 ///
 /// Sets both `deactivated_at` and `delete_after` back to NULL. Reactivating an already-active
-/// account is a harmless no-op that still matches the row, so `activateAccount` is idempotent.
-/// Returns `true` when an account row matched `did`, `false` when no such account exists.
-pub(crate) async fn activate_account(db: &sqlx::SqlitePool, did: &str) -> Result<bool, ApiError> {
-    let result = sqlx::query(
+/// account is a no-op that reports [`AccountStateChange::Unchanged`] so the caller skips a
+/// redundant firehose event; an actual reactivation reports `Changed`. Reports `NotFound` when no
+/// account row matches.
+pub(crate) async fn activate_account(
+    db: &sqlx::SqlitePool,
+    did: &str,
+) -> Result<AccountStateChange, ApiError> {
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT deactivated_at FROM accounts WHERE did = ?")
+            .bind(did)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| {
+                tracing::error!(did = %did, error = %e, "DB error reading account state");
+                ApiError::new(ErrorCode::InternalError, "failed to activate account")
+            })?;
+    let Some((deactivated_at,)) = row else {
+        return Ok(AccountStateChange::NotFound);
+    };
+    if deactivated_at.is_none() {
+        return Ok(AccountStateChange::Unchanged);
+    }
+
+    sqlx::query(
         "UPDATE accounts \
          SET deactivated_at = NULL, delete_after = NULL, updated_at = datetime('now') \
          WHERE did = ?",
@@ -131,7 +186,7 @@ pub(crate) async fn activate_account(db: &sqlx::SqlitePool, did: &str) -> Result
         ApiError::new(ErrorCode::InternalError, "failed to activate account")
     })?;
 
-    Ok(result.rows_affected() > 0)
+    Ok(AccountStateChange::Changed)
 }
 
 /// Classification of a `pending_accounts` UNIQUE constraint violation.

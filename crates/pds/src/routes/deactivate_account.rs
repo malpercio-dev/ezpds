@@ -15,7 +15,7 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
-use crate::db::accounts::deactivate_account;
+use crate::db::accounts::{deactivate_account, AccountStateChange};
 
 /// The non-active status reported on the firehose `#account` event for a deactivation.
 const STATUS_DEACTIVATED: &str = "deactivated";
@@ -79,25 +79,31 @@ pub async fn deactivate_account_handler(
 
     let delete_after = parse_optional_delete_after(&body)?;
 
-    // A valid JWT is not enough: the account row must still exist. `false` means the account was
-    // removed out from under an otherwise-valid token, mirroring `getPreferences`.
-    if !deactivate_account(&state.db, &user.did, delete_after.as_deref()).await? {
-        tracing::warn!(did = %user.did, "deactivateAccount: account not found");
-        return Err(ApiError::new(ErrorCode::InvalidToken, "account not found"));
+    match deactivate_account(&state.db, &user.did, delete_after.as_deref()).await? {
+        // A valid JWT is not enough: the account row must still exist. `NotFound` means it was
+        // removed out from under an otherwise-valid token, mirroring `getPreferences`.
+        AccountStateChange::NotFound => {
+            tracing::warn!(did = %user.did, "deactivateAccount: account not found");
+            return Err(ApiError::new(ErrorCode::InvalidToken, "account not found"));
+        }
+        // Already deactivated: idempotent no-op. Don't re-emit a status-quo `#account` event.
+        AccountStateChange::Unchanged => {
+            tracing::debug!(did = %user.did, "deactivateAccount: already deactivated; no event emitted");
+        }
+        // Real transition: tell subscribers the repo is no longer active so they stop serving it.
+        AccountStateChange::Changed => {
+            state.firehose.emit_account(
+                user.did.clone(),
+                false,
+                Some(STATUS_DEACTIVATED.to_string()),
+            );
+            tracing::info!(
+                did = %user.did,
+                scheduled_deletion = delete_after.is_some(),
+                "account deactivated"
+            );
+        }
     }
-
-    // Tell subscribers the repo is no longer active so they stop serving it.
-    state.firehose.emit_account(
-        user.did.clone(),
-        false,
-        Some(STATUS_DEACTIVATED.to_string()),
-    );
-
-    tracing::info!(
-        did = %user.did,
-        scheduled_deletion = delete_after.is_some(),
-        "account deactivated"
-    );
 
     Ok(StatusCode::OK)
 }
@@ -250,6 +256,36 @@ mod tests {
             second.status(),
             StatusCode::OK,
             "re-deactivating an already-deactivated account is a 200 no-op"
+        );
+    }
+
+    #[tokio::test]
+    async fn re_deactivating_does_not_emit_a_second_event() {
+        let state = test_state().await;
+        insert_account(&state.db, "did:plc:deact6", "deact6@example.com").await;
+        let token = access_jwt(&state.jwt_secret, "did:plc:deact6");
+        let mut rx = state.firehose.subscribe();
+
+        // First call transitions active → deactivated and emits one event.
+        let first = app(state.clone())
+            .oneshot(deactivate_request(&token, Body::empty()))
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        assert!(
+            matches!(rx.try_recv(), Ok(FirehoseEvent::Account(_))),
+            "the first deactivation must emit one #account event"
+        );
+
+        // Second call is a status-quo no-op and must not emit again.
+        let second = app(state)
+            .oneshot(deactivate_request(&token, Body::empty()))
+            .await
+            .unwrap();
+        assert_eq!(second.status(), StatusCode::OK);
+        assert!(
+            rx.try_recv().is_err(),
+            "re-deactivating an already-deactivated account must not emit a second event"
         );
     }
 
