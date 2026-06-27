@@ -99,94 +99,107 @@ pub(crate) enum AccountStateChange {
 
 /// Mark an account deactivated, recording an optional requested deletion time.
 ///
-/// Stores `delete_after` verbatim (the caller validates it is an RFC 3339 datetime). Re-deactivating
-/// an already-deactivated account is allowed and refreshes `delete_after`, but preserves the
-/// original `deactivated_at` instant (via `COALESCE`) and reports [`AccountStateChange::Unchanged`]
-/// so the caller skips a redundant firehose event. Reports `NotFound` when no account row matches.
+/// Stores `delete_after` verbatim (the caller validates it is an RFC 3339 datetime). The result is
+/// derived from the writes themselves, not a pre-read: a conditional UPDATE flips an *active*
+/// account and reports [`AccountStateChange::Changed`]; if nothing flipped, a second UPDATE
+/// refreshes `delete_after` on an already-deactivated account (preserving the original
+/// `deactivated_at`) and reports `Unchanged`, or matches nothing and reports `NotFound`. The two
+/// statements run in one transaction so the outcome is atomic. `accounts` is the only table
+/// touched, so opening a transaction here is within the single-table allowance.
 pub(crate) async fn deactivate_account(
     db: &sqlx::SqlitePool,
     did: &str,
     delete_after: Option<&str>,
 ) -> Result<AccountStateChange, ApiError> {
-    // Read the current status first so we can report whether this call is a real transition.
-    let row: Option<(Option<String>,)> =
-        sqlx::query_as("SELECT deactivated_at FROM accounts WHERE did = ?")
-            .bind(did)
-            .fetch_optional(db)
-            .await
-            .map_err(|e| {
-                tracing::error!(did = %did, error = %e, "DB error reading account state");
-                ApiError::new(ErrorCode::InternalError, "failed to deactivate account")
-            })?;
-    let Some((deactivated_at,)) = row else {
-        return Ok(AccountStateChange::NotFound);
+    let map_err = |e: sqlx::Error| {
+        tracing::error!(did = %did, error = %e, "DB error deactivating account");
+        ApiError::new(ErrorCode::InternalError, "failed to deactivate account")
     };
-    let was_active = deactivated_at.is_none();
 
-    // Run the UPDATE even when already deactivated so a revised `delete_after` is recorded.
-    // `COALESCE` keeps the original deactivation instant rather than resetting it on re-calls.
-    sqlx::query(
+    let mut tx = db.begin().await.map_err(&map_err)?;
+
+    // Transition: only an active account (deactivated_at IS NULL) flips here, so rows_affected == 1
+    // means this call performed the real active → deactivated transition.
+    let transitioned = sqlx::query(
         "UPDATE accounts \
-         SET deactivated_at = COALESCE(deactivated_at, datetime('now')), delete_after = ?, \
-             updated_at = datetime('now') \
-         WHERE did = ?",
+         SET deactivated_at = datetime('now'), delete_after = ?, updated_at = datetime('now') \
+         WHERE did = ? AND deactivated_at IS NULL",
     )
     .bind(delete_after)
     .bind(did)
-    .execute(db)
+    .execute(&mut *tx)
     .await
-    .map_err(|e| {
-        tracing::error!(did = %did, error = %e, "DB error deactivating account");
-        ApiError::new(ErrorCode::InternalError, "failed to deactivate account")
-    })?;
+    .map_err(&map_err)?;
 
-    Ok(if was_active {
-        AccountStateChange::Changed
-    } else {
+    if transitioned.rows_affected() == 1 {
+        tx.commit().await.map_err(&map_err)?;
+        return Ok(AccountStateChange::Changed);
+    }
+
+    // No transition: either already deactivated (refresh delete_after, leaving deactivated_at
+    // untouched) or no such account. rows_affected distinguishes the two.
+    let refreshed = sqlx::query(
+        "UPDATE accounts SET delete_after = ?, updated_at = datetime('now') WHERE did = ?",
+    )
+    .bind(delete_after)
+    .bind(did)
+    .execute(&mut *tx)
+    .await
+    .map_err(&map_err)?;
+
+    tx.commit().await.map_err(&map_err)?;
+
+    Ok(if refreshed.rows_affected() == 1 {
         AccountStateChange::Unchanged
+    } else {
+        AccountStateChange::NotFound
     })
 }
 
 /// Clear an account's deactivation, returning it to active status.
 ///
-/// Sets both `deactivated_at` and `delete_after` back to NULL. Reactivating an already-active
-/// account is a no-op that reports [`AccountStateChange::Unchanged`] so the caller skips a
-/// redundant firehose event; an actual reactivation reports `Changed`. Reports `NotFound` when no
-/// account row matches.
+/// Sets both `deactivated_at` and `delete_after` back to NULL. The result is derived from the
+/// write itself: a conditional UPDATE flips a *deactivated* account and reports
+/// [`AccountStateChange::Changed`]; if nothing flipped, a single existence read distinguishes an
+/// already-active account (`Unchanged`, no firehose event) from a missing one (`NotFound`). A
+/// stale read there can only yield `Unchanged`/`NotFound` — both no-emit outcomes — so it cannot
+/// cause a spurious `#account` event.
 pub(crate) async fn activate_account(
     db: &sqlx::SqlitePool,
     did: &str,
 ) -> Result<AccountStateChange, ApiError> {
-    let row: Option<(Option<String>,)> =
-        sqlx::query_as("SELECT deactivated_at FROM accounts WHERE did = ?")
-            .bind(did)
-            .fetch_optional(db)
-            .await
-            .map_err(|e| {
-                tracing::error!(did = %did, error = %e, "DB error reading account state");
-                ApiError::new(ErrorCode::InternalError, "failed to activate account")
-            })?;
-    let Some((deactivated_at,)) = row else {
-        return Ok(AccountStateChange::NotFound);
+    let map_err = |e: sqlx::Error| {
+        tracing::error!(did = %did, error = %e, "DB error activating account");
+        ApiError::new(ErrorCode::InternalError, "failed to activate account")
     };
-    if deactivated_at.is_none() {
-        return Ok(AccountStateChange::Unchanged);
-    }
 
-    sqlx::query(
+    // Transition: only a deactivated account flips here, so rows_affected == 1 means this call
+    // performed the real deactivated → active transition.
+    let transitioned = sqlx::query(
         "UPDATE accounts \
          SET deactivated_at = NULL, delete_after = NULL, updated_at = datetime('now') \
-         WHERE did = ?",
+         WHERE did = ? AND deactivated_at IS NOT NULL",
     )
     .bind(did)
     .execute(db)
     .await
-    .map_err(|e| {
-        tracing::error!(did = %did, error = %e, "DB error activating account");
-        ApiError::new(ErrorCode::InternalError, "failed to activate account")
-    })?;
+    .map_err(&map_err)?;
 
-    Ok(AccountStateChange::Changed)
+    if transitioned.rows_affected() == 1 {
+        return Ok(AccountStateChange::Changed);
+    }
+
+    let exists: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM accounts WHERE did = ? LIMIT 1")
+        .bind(did)
+        .fetch_optional(db)
+        .await
+        .map_err(&map_err)?;
+
+    Ok(if exists.is_some() {
+        AccountStateChange::Unchanged
+    } else {
+        AccountStateChange::NotFound
+    })
 }
 
 /// Classification of a `pending_accounts` UNIQUE constraint violation.
@@ -260,6 +273,36 @@ pub(crate) async fn get_repo_write_state(
         repo_root_cid,
         active: deactivated_at.is_none(),
     }))
+}
+
+/// Advance an account's repo root with optimistic concurrency, only while it is still active.
+///
+/// The commit compare-and-swap shared by every write path (`createRecord`/`putRecord` via
+/// `record_write`, `deleteRecord`, `applyWrites`): set `repo_root_cid`/`repo_rev` to the new
+/// values, but only if the persisted root still equals `expected_root` *and* the account is not
+/// deactivated. Returns `true` when the swap landed (exactly one row updated) and `false` when it
+/// did not — a concurrent write moved the root, or the account was deactivated between the
+/// caller's active check and this commit. Callers map `false` to a 409 conflict. Single-table, so
+/// no transaction is opened here.
+pub(crate) async fn advance_repo_root_if_active(
+    db: &sqlx::SqlitePool,
+    did: &str,
+    new_root: &str,
+    new_rev: &str,
+    expected_root: &str,
+) -> Result<bool, sqlx::Error> {
+    let updated = sqlx::query(
+        "UPDATE accounts SET repo_root_cid = ?, repo_rev = ? \
+         WHERE did = ? AND repo_root_cid = ? AND deactivated_at IS NULL",
+    )
+    .bind(new_root)
+    .bind(new_rev)
+    .bind(did)
+    .bind(expected_root)
+    .execute(db)
+    .await?;
+
+    Ok(updated.rows_affected() == 1)
 }
 
 /// A single repo entry for `com.atproto.sync.listRepos`.
@@ -568,23 +611,24 @@ mod tests {
         let db = test_pool().await;
         insert_account(&db, "did:plc:f").await;
 
-        // First deactivation.
         deactivate_account(&db, "did:plc:f", None).await.unwrap();
-        let first_deactivated_at: Option<String> =
-            sqlx::query_scalar("SELECT deactivated_at FROM accounts WHERE did = ?")
-                .bind("did:plc:f")
-                .fetch_one(&db)
-                .await
-                .unwrap();
 
-        // Brief pause to ensure any clock-based timestamp would differ.
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        // Pin the deactivation instant to a known sentinel so the assertion does not depend on
+        // `datetime('now')`'s one-second granularity (which a short sleep could not outrun).
+        const SENTINEL: &str = "2020-01-01 00:00:00";
+        sqlx::query("UPDATE accounts SET deactivated_at = ? WHERE did = ?")
+            .bind(SENTINEL)
+            .bind("did:plc:f")
+            .execute(&db)
+            .await
+            .unwrap();
 
-        // Second deactivation with a new delete_after.
+        // Re-deactivate with a new delete_after: the transition path must not fire, so the
+        // original deactivated_at sentinel must survive untouched.
         deactivate_account(&db, "did:plc:f", Some("2031-06-01T00:00:00Z"))
             .await
             .unwrap();
-        let second_deactivated_at: Option<String> =
+        let deactivated_at: Option<String> =
             sqlx::query_scalar("SELECT deactivated_at FROM accounts WHERE did = ?")
                 .bind("did:plc:f")
                 .fetch_one(&db)
@@ -592,8 +636,9 @@ mod tests {
                 .unwrap();
 
         assert_eq!(
-            first_deactivated_at, second_deactivated_at,
-            "COALESCE must preserve the original deactivated_at on re-calls"
+            deactivated_at.as_deref(),
+            Some(SENTINEL),
+            "re-deactivation must preserve the original deactivated_at"
         );
     }
 

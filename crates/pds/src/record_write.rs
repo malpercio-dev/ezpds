@@ -236,21 +236,19 @@ pub async fn write_record(
     // between would otherwise still commit (deactivation leaves `repo_root_cid` untouched, so the
     // CAS would match). Requiring the account to still be active here blocks that write — it
     // surfaces as a concurrent-modification conflict rather than landing on a deactivated repo.
-    let updated = sqlx::query(
-        "UPDATE accounts SET repo_root_cid = ?, repo_rev = ? \
-         WHERE did = ? AND repo_root_cid = ? AND deactivated_at IS NULL",
+    let advanced = crate::db::accounts::advance_repo_root_if_active(
+        &state.db,
+        did,
+        &new_root,
+        &new_rev,
+        &root_cid_str,
     )
-    .bind(&new_root)
-    .bind(&new_rev)
-    .bind(did)
-    .bind(&root_cid_str)
-    .execute(&state.db)
     .await
     .map_err(|e| {
         tracing::error!(error = %e, did = %did, "failed to update repo root CID");
         ApiError::new(ErrorCode::InternalError, "failed to write record")
     })?;
-    if updated.rows_affected() != 1 {
+    if !advanced {
         return Err(ApiError::new(
             ErrorCode::Conflict,
             "repository was modified concurrently; retry against the current root",

@@ -61,10 +61,11 @@ fn parse_optional_delete_after(body: &[u8]) -> Result<Option<String>, ApiError> 
 ///
 /// Temporarily deactivates the authenticated account: repo reads report a deactivated status
 /// (`getRepoStatus`), write operations are rejected, and an `#account` firehose event is emitted
-/// so relays stop serving the repo. An optional `deleteAfter` records a requested permanent-
-/// deletion time. Idempotent — re-deactivating an already-deactivated account refreshes the
-/// fields and returns 200. Only full access-scope tokens are accepted, like `getSession`; app
-/// passwords cannot deactivate an account.
+/// so relays stop serving the repo — but only on a real transition. An optional `deleteAfter`
+/// records a requested permanent-deletion time. Idempotent — re-deactivating an already-
+/// deactivated account refreshes `deleteAfter` and returns 200 without emitting another event.
+/// Only full access-scope tokens are accepted, like `getSession`; app passwords cannot deactivate
+/// an account.
 pub async fn deactivate_account_handler(
     user: AuthenticatedUser,
     State(state): State<AppState>,

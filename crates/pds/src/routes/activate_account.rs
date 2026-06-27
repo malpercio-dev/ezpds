@@ -7,7 +7,7 @@
 //
 // Implements: POST /xrpc/com.atproto.server.activateAccount
 
-use axum::{extract::State, http::StatusCode};
+use axum::{body::Bytes, extract::State, http::StatusCode};
 
 use common::{ApiError, ErrorCode};
 
@@ -20,16 +20,27 @@ use crate::db::accounts::{activate_account, AccountStateChange};
 ///
 /// Reactivates the authenticated account: clears `deactivated_at` (and any pending
 /// `deleteAfter`), making the repo accessible again, and emits an active `#account` firehose
-/// event so relays resume serving it. Takes no body. Idempotent — activating an already-active
-/// account is a 200 no-op. Only full access-scope tokens are accepted, like `deactivateAccount`.
+/// event so relays resume serving it — but only on a real transition; activating an already-active
+/// account is a 200 no-op that emits nothing. The endpoint takes no body, so a non-empty payload
+/// is rejected with 400. Only full access-scope tokens are accepted, like `deactivateAccount`.
 pub async fn activate_account_handler(
     user: AuthenticatedUser,
     State(state): State<AppState>,
+    body: Bytes,
 ) -> Result<StatusCode, ApiError> {
     if user.scope != AuthScope::Access {
         return Err(ApiError::new(
             ErrorCode::InvalidToken,
             "access token required",
+        ));
+    }
+
+    // The lexicon defines no input for activateAccount. Accept an empty (or whitespace-only) body,
+    // but reject any actual payload so a malformed request is not silently treated as valid.
+    if !body.iter().all(u8::is_ascii_whitespace) {
+        return Err(ApiError::new(
+            ErrorCode::InvalidRequest,
+            "activateAccount does not accept a request body",
         ));
     }
 
@@ -69,17 +80,20 @@ mod tests {
     use crate::routes::test_utils::{access_jwt, body_json};
 
     async fn insert_account(db: &sqlx::SqlitePool, did: &str, email: &str, deactivated: bool) {
-        let deactivated_at = if deactivated {
-            "datetime('now')"
+        // Bind the deactivation timestamp as a value (a fixed instant suffices for tests) rather
+        // than splicing a SQL fragment, so the query stays fully parameterized.
+        let deactivated_at: Option<&str> = if deactivated {
+            Some("2026-01-01T00:00:00Z")
         } else {
-            "NULL"
+            None
         };
-        sqlx::query(&format!(
+        sqlx::query(
             "INSERT INTO accounts (did, email, password_hash, created_at, updated_at, deactivated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'), {deactivated_at})"
-        ))
+             VALUES (?, ?, NULL, datetime('now'), datetime('now'), ?)",
+        )
         .bind(did)
         .bind(email)
+        .bind(deactivated_at)
         .execute(db)
         .await
         .unwrap();
@@ -207,6 +221,28 @@ mod tests {
 
         let response = app(state).oneshot(activate_request(&token)).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn non_empty_body_returns_400() {
+        let state = test_state().await;
+        insert_account(&state.db, "did:plc:act5", "act5@example.com", true).await;
+        let token = access_jwt(&state.jwt_secret, "did:plc:act5");
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/xrpc/com.atproto.server.activateAccount")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(r#"{"unexpected":"payload"}"#))
+            .unwrap();
+
+        let response = app(state).oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "activateAccount must reject a non-empty body"
+        );
     }
 
     #[tokio::test]

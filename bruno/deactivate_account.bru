@@ -28,11 +28,13 @@ docs {
   Temporarily deactivates the authenticated account. Repo reads report a deactivated status
   (getRepoStatus) and all repo writes (createRecord/putRecord/deleteRecord/applyWrites) are
   rejected with 403 until the account is reactivated. A `#account` firehose event (active=false,
-  status="deactivated") is emitted so relays stop serving the repo.
+  status="deactivated") is emitted only on a real transition (active → deactivated) so relays stop
+  serving the repo.
 
   The body is optional: omit it for an immediate deactivation, or pass
   `{ "deleteAfter": "<RFC 3339 datetime>" }` to record a requested permanent-deletion time (the
   reaper that acts on it is not yet implemented). A present but malformed `deleteAfter` returns
-  400. Idempotent — re-deactivating an already-deactivated account returns 200. Requires a full
-  access-scope token; app-password tokens are rejected. Returns 200 with an empty body.
+  400. Idempotent — re-deactivating an already-deactivated account returns 200 (refreshing
+  `deleteAfter`) without emitting another `#account` frame. Requires a full access-scope token;
+  app-password tokens are rejected. Returns 200 with an empty body.
 }
