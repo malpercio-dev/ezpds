@@ -140,6 +140,10 @@ static MIGRATIONS: &[Migration] = &[
         version: 25,
         sql: include_str!("migrations/V025__admin_devices.sql"),
     },
+    Migration {
+        version: 26,
+        sql: include_str!("migrations/V026__account_lifecycle_status.sql"),
+    },
 ];
 
 /// Open a WAL-mode SQLite connection pool with a maximum of 1 connection.
@@ -1240,6 +1244,73 @@ mod tests {
         assert!(
             result.is_err(),
             "FK violation on admin_nonces.device_id must be rejected"
+        );
+    }
+
+    // ── V026 tests ───────────────────────────────────────────────────────────
+
+    /// V026 adds nullable `suspended_at` and `taken_down_at` columns to `accounts`.
+    #[tokio::test]
+    async fn v026_accounts_has_lifecycle_columns() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        // PRAGMA table_info returns: (cid, name, type, notnull, dflt_value, pk)
+        let columns: Vec<(i32, String, String, i32, Option<String>, i32)> =
+            sqlx::query_as("PRAGMA table_info(accounts)")
+                .fetch_all(&pool)
+                .await
+                .expect("PRAGMA table_info must succeed");
+
+        for name in ["suspended_at", "taken_down_at"] {
+            let col = columns
+                .iter()
+                .find(|(_, col_name, _, _, _, _)| col_name == name)
+                .unwrap_or_else(|| panic!("{name} column must exist after V026"));
+            assert_eq!(col.3, 0, "{name} must be nullable (notnull=0)");
+        }
+    }
+
+    /// The new lifecycle columns accept timestamp writes and default to NULL.
+    #[tokio::test]
+    async fn v026_lifecycle_columns_nullable_and_writable() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES ('did:plc:v026', 'v026@example.com', NULL, datetime('now'), datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Default NULL.
+        let (susp, td): (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT suspended_at, taken_down_at FROM accounts WHERE did = 'did:plc:v026'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(susp.is_none() && td.is_none(), "columns default to NULL");
+
+        // Writable.
+        sqlx::query(
+            "UPDATE accounts SET suspended_at = datetime('now'), taken_down_at = datetime('now') \
+             WHERE did = 'did:plc:v026'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let (susp, td): (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT suspended_at, taken_down_at FROM accounts WHERE did = 'did:plc:v026'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            susp.is_some() && td.is_some(),
+            "columns accept timestamp writes"
         );
     }
 

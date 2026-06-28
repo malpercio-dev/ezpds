@@ -93,7 +93,7 @@ and async query functions; no business logic lives here.
 | File | Contents |
 |---|---|
 | `mod.rs` | `open_pool`, `run_migrations`, `DbError`, `is_unique_violation` |
-| `accounts.rs` | `AccountRow` + `resolve_identifier` (handle/DID→account); `SessionAccountRow` + `get_session_account` (DID→account+handle+DID doc); `resolve_by_email` (email→account); `account_is_active`, `deactivate_account`/`activate_account` (flip `deactivated_at`, report the transition); `get_repo_write_state` + `advance_repo_root_if_active` (repo-write preconditions and the commit CAS); `get_account_overview` + `account_last_active` (operator usage/storage lookups — unfiltered by deactivation) |
+| `accounts.rs` | `AccountRow` + `resolve_identifier` (handle/DID→account); `SessionAccountRow` + `get_session_account` (DID→account+handle+DID doc); `resolve_by_email` (email→account); `account_is_active`, `deactivate_account`/`activate_account` (flip `deactivated_at`, report the transition); `get_repo_write_state` + `advance_repo_root_if_active` (repo-write preconditions and the commit CAS); `get_account_overview` + `account_last_active` (operator usage/storage lookups — unfiltered by deactivation); `AccountLifecycle` + `get_repo_status`/`list_repos` (derive `active`/`status` from the `deactivated_at`/`suspended_at`/`taken_down_at` columns for the public sync endpoints) |
 | `blocks.rs` | content-addressed repo-block store + `SqliteBlockStore` adapter; `account_block_stats` (block count, total bytes, distinct-rev commit count for the usage endpoint) |
 | `blobs.rs` | blob metadata store; `account_storage_bytes`, `account_blob_metrics`, `account_largest_blob` (blob-storage metrics) |
 | `oauth.rs` | OAuth client lookup, auth code storage, token management |

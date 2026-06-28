@@ -28,7 +28,7 @@ pub struct RepoEntry {
     pub head: String,
     /// The commit revision (TID), read from the signed commit block.
     pub rev: String,
-    /// `false` when the account is deactivated.
+    /// `false` when the account is deactivated, suspended, or taken down.
     pub active: bool,
 }
 
@@ -201,6 +201,43 @@ mod tests {
         assert_eq!(repos.len(), 1);
         assert_eq!(repos[0]["did"], did);
         assert_eq!(repos[0]["active"], false);
+    }
+
+    #[tokio::test]
+    async fn taken_down_or_suspended_account_reports_active_false() {
+        // A moderation takedown or suspension must drop `active` to false in listRepos just as a
+        // deactivation does — relays key on this to stop serving the repo.
+        let state = state_with_master_key().await;
+        for (did, column) in [
+            ("did:plc:listrepostakendown", "taken_down_at"),
+            ("did:plc:listrepossuspended", "suspended_at"),
+        ] {
+            seed_account_with_repo(&state.db, did).await;
+            // Fixed SQL per column (never interpolated) so the query stays static.
+            let sql = match column {
+                "taken_down_at" => {
+                    "UPDATE accounts SET taken_down_at = datetime('now') WHERE did = ?"
+                }
+                "suspended_at" => {
+                    "UPDATE accounts SET suspended_at = datetime('now') WHERE did = ?"
+                }
+                other => panic!("unsupported lifecycle column: {other}"),
+            };
+            sqlx::query(sql).bind(did).execute(&state.db).await.unwrap();
+        }
+        let app = crate::app::app(state);
+
+        let (status, body) = list(&app, "").await;
+        assert_eq!(status, StatusCode::OK);
+        let repos = body["repos"].as_array().unwrap();
+        assert_eq!(repos.len(), 2);
+        for repo in repos {
+            assert_eq!(
+                repo["active"], false,
+                "taken-down/suspended repo {} must report active=false",
+                repo["did"]
+            );
+        }
     }
 
     #[tokio::test]

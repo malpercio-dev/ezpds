@@ -19,12 +19,13 @@ pub struct GetRepoStatusParams {
 #[derive(Serialize)]
 pub struct GetRepoStatusResponse {
     pub did: String,
-    /// `true` when the account is not deactivated.
+    /// `true` when the repo is actively hosted (not deactivated, suspended, or taken down).
     pub active: bool,
-    /// Why the repo is not `active`. Omitted when `active` is true, per the lexicon
-    /// (the `status` field carries a *reason* and is meaningless for a live repo). Only
-    /// `"deactivated"` is currently producible: the account schema models no other lifecycle
-    /// state, so `suspended`/`takendown`/`deleted` await an account-lifecycle column.
+    /// Why the repo is not `active`. Omitted when `active` is true, per the lexicon (the `status`
+    /// field carries a *reason* and is meaningless for a live repo). Maps from the account's
+    /// lifecycle to a lexicon `status` knownValue: `"deactivated"` (user-initiated), `"suspended"`
+    /// or `"takendown"` (operator moderation). The remaining knownValues (`deleted`,
+    /// `desynchronized`, `throttled`) are not modelled.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     /// The repo's current commit revision (TID). Omitted when the account has no repo.
@@ -35,8 +36,9 @@ pub struct GetRepoStatusResponse {
 /// GET /xrpc/com.atproto.sync.getRepoStatus?did=<did>
 ///
 /// Report whether the repo is actively hosted, the reason if not, and its current `rev`.
-/// A non-existent DID is a 404; a deactivated account is reported (not hidden) with
-/// `active: false` and `status: "deactivated"`. No authentication required (public data).
+/// A non-existent DID is a 404; a non-active account (deactivated, suspended, or taken down) is
+/// reported (not hidden) with `active: false` and the matching lexicon `status`. No
+/// authentication required (public data).
 pub async fn sync_get_repo_status(
     State(state): State<AppState>,
     Query(params): Query<GetRepoStatusParams>,
@@ -56,8 +58,9 @@ pub async fn sync_get_repo_status(
         })?
         .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "repo not found"))?;
 
-    // `status` reports *why* a repo is not active; an active repo omits it.
-    let status = (!row.active).then(|| "deactivated".to_string());
+    let active = row.lifecycle.is_active();
+    // `status` reports *why* a repo is not active; omitted entirely for a live repo.
+    let status = row.lifecycle.as_status_str().map(str::to_string);
 
     // Prefer the rev stored on the account row (written at every commit) — the common path is
     // a pure column read. A pre-migration account has a repo root but no stored rev: read it
@@ -70,7 +73,7 @@ pub async fn sync_get_repo_status(
 
     Ok(Json(GetRepoStatusResponse {
         did: did.clone(),
-        active: row.active,
+        active,
         status,
         rev,
     }))
@@ -182,6 +185,67 @@ mod tests {
         assert_eq!(body["status"], "deactivated");
         // A deactivated repo still reports its exact last-known rev.
         assert_eq!(body["rev"], expected_rev);
+    }
+
+    #[tokio::test]
+    async fn suspended_repo_reports_inactive_with_status() {
+        let state = state_with_master_key().await;
+        let did = "did:plc:repostatussuspended";
+        seed_account_with_repo(&state.db, did).await;
+        sqlx::query("UPDATE accounts SET suspended_at = datetime('now') WHERE did = ?")
+            .bind(did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let app = crate::app::app(state);
+
+        let (status, body) = get_status(&app, did).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["active"], false);
+        assert_eq!(body["status"], "suspended");
+    }
+
+    #[tokio::test]
+    async fn takendown_repo_reports_inactive_with_status() {
+        let state = state_with_master_key().await;
+        let did = "did:plc:repostatustakendown";
+        seed_account_with_repo(&state.db, did).await;
+        sqlx::query("UPDATE accounts SET taken_down_at = datetime('now') WHERE did = ?")
+            .bind(did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let app = crate::app::app(state);
+
+        let (status, body) = get_status(&app, did).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["active"], false);
+        assert_eq!(body["status"], "takendown");
+    }
+
+    #[tokio::test]
+    async fn takedown_supersedes_suspension_and_deactivation() {
+        // An account flagged with all three lifecycle timestamps must report the most severe
+        // state — `takendown` — not whichever column happens to be read first.
+        let state = state_with_master_key().await;
+        let did = "did:plc:repostatusallthree";
+        seed_account_with_repo(&state.db, did).await;
+        sqlx::query(
+            "UPDATE accounts \
+             SET deactivated_at = datetime('now'), suspended_at = datetime('now'), \
+                 taken_down_at = datetime('now') \
+             WHERE did = ?",
+        )
+        .bind(did)
+        .execute(&state.db)
+        .await
+        .unwrap();
+        let app = crate::app::app(state);
+
+        let (status, body) = get_status(&app, did).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["active"], false);
+        assert_eq!(body["status"], "takendown");
     }
 
     #[tokio::test]
