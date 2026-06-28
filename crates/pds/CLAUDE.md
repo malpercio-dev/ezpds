@@ -99,7 +99,7 @@ and async query functions; no business logic lives here.
 | `oauth.rs` | OAuth client lookup, auth code storage, token management |
 | `password_reset.rs` | `insert_reset_token`, `get_reset_token`, `mark_reset_token_used`, `update_password_hash` |
 | `preferences.rs` | `get_preferences` (DID→stored `app.bsky` preferences JSON blob); `put_preferences` (upsert the blob, overwriting any previous value) |
-| `admin_devices.rs` | Operator companion app admin-device model (V025): pairing-code mint/consume (single-use), device insert/list/revoke (derived active status), nonce insert-if-absent + stale-nonce sweep (anti-replay). No route wires these yet (Phase 3+) |
+| `admin_devices.rs` | Operator companion app admin-device model (V025): pairing-code mint/consume (single-use), device insert/list/revoke (derived active status), nonce insert-if-absent + stale-nonce sweep (anti-replay). Pairing/register wired by `routes/admin_devices.rs` (Phase 3); list/revoke + request-auth guard land in Phase 4+ |
 
 See [`src/db/CLAUDE.md`](src/db/CLAUDE.md) for migration history and invariants.
 
@@ -134,6 +134,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `create_mobile_account.rs` | `POST /v1/accounts/mobile` |
 | `account_usage.rs` | `GET /v1/accounts/:id/usage` — operator usage metrics (records/commits/blobs counts, total storage bytes, last-active); admin token; reports on deactivated accounts too |
 | `account_storage.rs` | `GET /v1/accounts/:id/storage` — operator blob-storage metrics (blob count, total bytes, configured quota + used %, largest blob); admin token |
+| `admin_devices.rs` | `POST /v1/admin/pairing-codes` (master token; mint single-use pairing code) and `POST /v1/admin/devices` (pairing code + self-signature; register a companion-app device public key). Verifies the self-signature before consuming the code; rejection paths return a generic 401 |
 | `create_signing_key.rs` | `POST /v1/signing-keys` |
 | `register_device.rs` | `POST /v1/devices` |
 | `get_device_pds.rs` | `GET /v1/devices/:id/pds` |

@@ -1,0 +1,53 @@
+meta {
+  name: Admin Register Device
+  type: http
+  seq: 52
+}
+
+post {
+  url: {{baseUrl}}/v1/admin/devices
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "pairingCode": "{{pairingCode}}",
+    "label": "Operator iPhone",
+    "publicKey": "did:key:zDnae...",
+    "platform": "ios",
+    "timestamp": 1700000000,
+    "signature": "base64url-r-concat-s"
+  }
+}
+
+docs {
+  # POST /v1/admin/devices
+
+  Register a companion-app device by claiming a pairing code. Not master-token
+  authed: the request is authenticated by the pairing code (a bearer secret) plus a
+  self-signature proving the caller holds the private key for `publicKey`.
+
+  Request (camelCase):
+  - `pairingCode` — the code minted by `POST /v1/admin/pairing-codes`.
+  - `label` — human-readable device label.
+  - `publicKey` — the device's P-256 public key as a `did:key:` URI.
+  - `platform` — platform tag (e.g. `ios`).
+  - `timestamp` — Unix-seconds timestamp included in the signed message.
+  - `signature` — base64url-no-pad raw 64-byte `r‖s` P-256 signature over the
+    canonical registration message:
+    `pairingCode ‖ "\n" ‖ publicKey ‖ "\n" ‖ timestamp`.
+
+  Response:
+  - `deviceId` — the server-assigned id the phone stores and later sends as the
+    `X-Admin-Device` header on signed requests.
+
+  The relay verifies the self-signature *before* consuming the code (so a bad
+  signature never burns a code), then consumes the code and inserts the device in
+  one transaction. All rejection paths (unknown/expired/consumed code, signature
+  mismatch) return a generic 401. A pairing code is single-use — a second claim
+  fails.
+
+  Note: `signature` and `publicKey` above are placeholders; a real request is
+  produced by the companion app's signing client (Phase 7).
+}

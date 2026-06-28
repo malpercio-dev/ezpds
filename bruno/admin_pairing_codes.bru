@@ -1,0 +1,40 @@
+meta {
+  name: Admin Pairing Codes
+  type: http
+  seq: 51
+}
+
+post {
+  url: {{baseUrl}}/v1/admin/pairing-codes
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+body:json {
+  {
+    "expiresInMinutes": 5
+  }
+}
+
+docs {
+  # POST /v1/admin/pairing-codes
+
+  Mint a single-use pairing code for enrolling an operator companion-app device.
+  Master-token only (break-glass / root of trust): pairing-code minting stays the
+  master-token path so a compromised device cannot enroll accomplices.
+
+  Request (camelCase):
+  - `expiresInMinutes` — optional code lifetime (1–60, default 5).
+
+  Response:
+  - `pairingCode` — the single-use bearer code (128-bit, base64url). The operator
+    renders this as a QR for the new phone to scan.
+  - `expiresAt` — ISO-8601 expiry the relay computed.
+
+  The phone claims the code via `POST /v1/admin/devices`. A code is single-use and
+  short-lived; status (pending/consumed/expired) is derived from timestamps.
+}
