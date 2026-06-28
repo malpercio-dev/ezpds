@@ -5,7 +5,10 @@
 # ignored via .devenv/). These root-level dirs appear when cargo runs outside the
 # dev shell, or under a sandbox that redirects CARGO_HOME to the repo root. Pure
 # regenerable registry cache (see registry/CACHEDIR.TAG), never source.
-/.cargo/
+# Ignore the contents (not the dir itself, so the one tracked file below can be
+# re-included) and keep the committed cargo-audit policy.
+/.cargo/*
+!/.cargo/audit.toml
 /.cargo-home-probe/
 
 # IDE and editor files
