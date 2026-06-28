@@ -84,8 +84,8 @@ fn invalid_registration_credentials() -> ApiError {
 ///
 /// Format: `pairing_code ‖ "\n" ‖ public_key ‖ "\n" ‖ timestamp` — newline-separated
 /// to match the per-request `sign_string` envelope convention. The companion app's
-/// signing client (Phase 7) must produce the identical bytes for verification to pass;
-/// this function is the single source of truth for that format.
+/// signing client must produce the identical bytes for verification to pass; this
+/// function is the single source of truth for that format.
 pub fn device_registration_sign_string(
     pairing_code: &str,
     public_key: &str,
@@ -779,7 +779,7 @@ mod device_registration_tests {
 
     #[test]
     fn sign_string_is_newline_separated() {
-        // Pins the wire format so the Phase 7 signing client stays in lockstep.
+        // Pins the wire format so the signing client stays in lockstep.
         assert_eq!(
             device_registration_sign_string("CODE", "did:key:zABC", 1700),
             "CODE\ndid:key:zABC\n1700"
