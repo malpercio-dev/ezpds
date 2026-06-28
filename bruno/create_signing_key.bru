@@ -19,3 +19,11 @@ body:json {
     "algorithm": "p256"
   }
 }
+
+docs {
+  Admin-only. Authenticates via the master admin token (shown here, the
+  break-glass / CI path) **or** a companion-app device signature: the request
+  carries X-Admin-Device / X-Admin-Timestamp / X-Admin-Nonce / X-Admin-Signature,
+  a P-256 signature over `method\npath\ntimestamp\nnonce\nsha256_hex(body)`
+  verified by `require_admin`. Both paths produce identical behaviour.
+}

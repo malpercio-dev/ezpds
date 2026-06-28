@@ -4,13 +4,18 @@
 // Processes: auth check → algorithm check → master key check → key generation → encryption → DB insert
 // Returns: JSON { key_id, public_key, algorithm } on success; ApiError on all failure paths
 
-use axum::{extract::State, http::HeaderMap, response::Json};
+use axum::{
+    body::Bytes,
+    extract::State,
+    http::{HeaderMap, Method, Uri},
+    response::{IntoResponse, Json, Response},
+};
 use serde::{Deserialize, Serialize};
 
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::routes::auth::require_admin_token;
+use crate::routes::auth::require_admin;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -36,15 +41,36 @@ pub struct CreateSigningKeyResponse {
     algorithm: String,
 }
 
+/// `POST /v1/pds/keys` — admin-only operator signing-key creation.
+///
+/// Auth runs first, over the raw body, so a device signature can bind the exact
+/// request bytes; the body is then parsed via `Json::from_bytes` to preserve the
+/// same 400/422 statuses the `Json` extractor produced before this route accepted
+/// device signatures.
 pub async fn create_signing_key(
     State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
     headers: HeaderMap,
-    Json(_payload): Json<CreateSigningKeyRequest>,
-) -> Result<Json<CreateSigningKeyResponse>, ApiError> {
-    // --- Auth: require matching Bearer token ---
-    // Check this first so unauthenticated callers cannot probe server configuration.
-    require_admin_token(&headers, &state)?;
+    body: Bytes,
+) -> Result<Json<CreateSigningKeyResponse>, Response> {
+    require_admin(method.as_str(), uri.path(), &headers, &body, &state)
+        .await
+        .map_err(IntoResponse::into_response)?;
 
+    // Validate the body shape (algorithm enum) using the same rejection semantics as
+    // the former `Json` extractor: unknown variant / missing field → 422, null → 400.
+    let _ =
+        Json::<CreateSigningKeyRequest>::from_bytes(&body).map_err(IntoResponse::into_response)?;
+
+    create_signing_key_inner(&state)
+        .await
+        .map_err(IntoResponse::into_response)
+}
+
+async fn create_signing_key_inner(
+    state: &AppState,
+) -> Result<Json<CreateSigningKeyResponse>, ApiError> {
     // --- Master key: return 503 if not configured ---
     let master_key: &[u8; 32] = state
         .config

@@ -227,6 +227,17 @@ pub async fn revoke_device(pool: &SqlitePool, id: &str) -> Result<bool, sqlx::Er
     Ok(result.rows_affected() == 1)
 }
 
+/// Bump a device's `last_seen_at` to now — liveness bookkeeping run after a device
+/// signed request authenticates. Touches the row by id unconditionally; a missing
+/// device simply affects no rows (the caller has already verified the device exists).
+pub async fn touch_last_seen(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE admin_devices SET last_seen_at = datetime('now') WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 fn into_device_row(
     row: (
         String,
@@ -499,6 +510,35 @@ mod tests {
     async fn revoke_missing_device_returns_false() {
         let pool = test_pool().await;
         assert!(!revoke_device(&pool, "ghost").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn touch_last_seen_stamps_timestamp() {
+        let pool = test_pool().await;
+        insert_device(&pool, &sample_device("dev-seen"))
+            .await
+            .unwrap();
+        assert!(
+            get_device(&pool, "dev-seen")
+                .await
+                .unwrap()
+                .unwrap()
+                .last_seen_at
+                .is_none(),
+            "a fresh device has no last_seen_at"
+        );
+
+        touch_last_seen(&pool, "dev-seen").await.unwrap();
+
+        assert!(
+            get_device(&pool, "dev-seen")
+                .await
+                .unwrap()
+                .unwrap()
+                .last_seen_at
+                .is_some(),
+            "last_seen_at is stamped after touch"
+        );
     }
 
     // ── Nonces ─────────────────────────────────────────────────────────────
