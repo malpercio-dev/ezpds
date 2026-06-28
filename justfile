@@ -24,19 +24,27 @@ run-pds:
 docker-build:
     docker build -t pds:latest .
 
-# Security audit. RUSTSEC-2023-0071 (rsa Marvin attack) has no fixed release and is
-# pulled only transitively by sqlx-macros' compile-time MySQL backend; the pds is
-# sqlite-only, so rsa is never exercised at runtime. Revisit when a fix ships.
+# Security audit against the RustSec advisory database. Accepted/ignored advisories
+# and their rationale live in .cargo/audit.toml (read automatically by cargo audit).
 audit:
-    cargo audit --ignore RUSTSEC-2023-0071
+    cargo audit
+
+# Verify Cargo.lock is in sync with the Cargo.toml manifests. `--locked` makes cargo
+# error instead of silently regenerating the lockfile, so accidental dependency drift
+# (an edited manifest with a stale lock) fails CI instead of being merged. `metadata`
+# resolves the whole workspace — including the iOS app that the Linux ci-pds build
+# excludes — so the lockfile is verified end-to-end even where it cannot be compiled.
+lock-check:
+    cargo metadata --locked --format-version 1 > /dev/null
 
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
-ci: fmt-check clippy test audit
+ci: fmt-check lock-check clippy test audit
 
 # CI gate for the Linux pds pipeline (tangled spindles). Excludes the iOS apps
 # (identity-wallet, admin-companion), which need the Apple toolchain (security-framework)
 # absent in CI; the mobile apps are built and checked via `just ios-*` / `just admin-*` on macOS.
 ci-pds: fmt-check
+    just lock-check
     cargo clippy --workspace --exclude identity-wallet --exclude admin-companion --all-targets -- -D warnings
     cargo test --workspace --exclude identity-wallet --exclude admin-companion
     just audit

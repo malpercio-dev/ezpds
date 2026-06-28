@@ -17,7 +17,7 @@ Last verified: 2026-06-26
 - `cargo test` - Run all tests
 - `cargo clippy --workspace -- -D warnings` - Lint (warnings as errors)
 - `cargo fmt --all --check` - Check formatting
-- `just ci` - Full local gate (fmt-check, clippy, test, audit) — the same checks CI runs
+- `just ci` - Full local gate (fmt-check, lock-check, clippy, test, audit) — the same checks CI runs
 
 ## CI/CD
 CI is split by platform: the **PDS** builds and deploys on **tangled spindles** (`.tangled/workflows/`, Linux); the **iOS app** builds and ships on **GitHub Actions** (a public mirror, macOS), because `cargo tauri ios build` needs macOS + Xcode that Linux spindles lack.
@@ -103,6 +103,7 @@ adding routes and DB queries.
 - Workspace-level dependency versions in root Cargo.toml; crates use `{ workspace = true }`
 - All crates share version (0.1.0) and edition (2021) via workspace.package
 - publish = false (not intended for crates.io)
+- **Dependency hygiene (CI-gated).** `just lock-check` (`cargo metadata --locked`) fails if `Cargo.lock` drifts from the manifests, so every dependency change surfaces as a reviewable `Cargo.lock` diff; `just audit` (`cargo audit`) scans the lockfile against the RustSec advisory DB on every CI run. Accepted/ignored advisories and their rationale live in [`.cargo/audit.toml`](.cargo/audit.toml) — never pass `--ignore` on the command line. When a PR adds or bumps a dependency, explain why in the PR description.
 - **No ticket or AC references in source code.** Do not add comments like `// MM-123`, `// AC2.1:`, or `// MM-84.AC3: description` to `.rs` files or CLAUDE.md files. Design plans and test plans in `docs/` are the right home for ticket traceability. Source code comments should describe *why* in terms of the system, not which ticket required it.
 
 ## Boundaries
