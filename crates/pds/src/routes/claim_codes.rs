@@ -599,4 +599,66 @@ mod tests {
         let response = app(state).oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
+
+    #[tokio::test]
+    async fn wrong_content_type_does_not_consume_signed_request_nonce() {
+        // The media-type guard runs before signature verification, so a wrong
+        // Content-Type returns 415 without burning the nonce — the corrected retry
+        // with the same signed request (same nonce) must still succeed.
+        use crate::db::admin_devices::{insert_device, NewAdminDevice};
+        use crate::routes::auth::{
+            admin_request_sign_string, ADMIN_DEVICE_HEADER, ADMIN_NONCE_HEADER,
+            ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
+        };
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let state = test_state().await;
+        let keypair = crypto::generate_p256_keypair().unwrap();
+        let device_id = uuid::Uuid::new_v4().to_string();
+        insert_device(
+            &state.db,
+            &NewAdminDevice {
+                id: &device_id,
+                label: "Operator iPhone",
+                public_key: &keypair.key_id.0,
+                platform: "ios",
+            },
+        )
+        .await
+        .unwrap();
+
+        let body = r#"{"count":1}"#;
+        let path = "/v1/accounts/claim-codes";
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let nonce = "ct-order-nonce";
+        let sign_string = admin_request_sign_string("POST", path, ts, nonce, body.as_bytes());
+        let signature = crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes());
+
+        let build = |content_type: &str| {
+            Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("Content-Type", content_type)
+                .header(ADMIN_DEVICE_HEADER, device_id.as_str())
+                .header(ADMIN_TIMESTAMP_HEADER, ts.to_string())
+                .header(ADMIN_NONCE_HEADER, nonce)
+                .header(ADMIN_SIGNATURE_HEADER, signature.as_str())
+                .body(Body::from(body))
+                .unwrap()
+        };
+
+        // Wrong media type → 415, and the nonce must not be consumed.
+        let r1 = app(state.clone())
+            .oneshot(build("text/plain"))
+            .await
+            .unwrap();
+        assert_eq!(r1.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+        // The corrected retry reusing the same nonce succeeds (nonce was not burned).
+        let r2 = app(state).oneshot(build("application/json")).await.unwrap();
+        assert_eq!(r2.status(), StatusCode::OK);
+    }
 }

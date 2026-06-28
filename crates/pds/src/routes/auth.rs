@@ -1,3 +1,8 @@
+// pattern: Imperative Shell
+//
+// Route-level auth middleware: token/session/signature checks that read request
+// headers and query the database. Pure helpers it builds on live in `auth/`.
+
 use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
@@ -200,9 +205,11 @@ pub async fn require_admin_json(
     body: &[u8],
     state: &AppState,
 ) -> Result<(), Response> {
-    require_admin(method, path, headers, body, state)
-        .await
-        .map_err(IntoResponse::into_response)?;
+    // The media-type guard runs first: it is cheap and side-effect-free, whereas
+    // `require_admin` may consume a nonce and bump `last_seen_at`. Checking it first
+    // means a wrong `Content-Type` returns 415 without burning a nonce (which would
+    // otherwise make the corrected retry fail as a replay) and matches the original
+    // ordering where axum's `Json` extractor rejected the media type before the handler.
     if !is_json_content_type(headers) {
         return Err((
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -210,6 +217,9 @@ pub async fn require_admin_json(
         )
             .into_response());
     }
+    require_admin(method, path, headers, body, state)
+        .await
+        .map_err(IntoResponse::into_response)?;
     Ok(())
 }
 
