@@ -180,26 +180,18 @@ pub async fn register_admin_device(
         ));
     }
 
+    // --- Pairing code must be pending (unknown/expired/consumed all reject) ---
     // One generic 401 for every registration auth failure (bad signature, and
     // unknown/expired/consumed code alike) so the response never reveals which
     // check failed. Internal/DB errors keep their own distinct 500s below.
-    let unauthorized = || {
-        ApiError::new(
-            ErrorCode::Unauthorized,
-            auth::INVALID_REGISTRATION_CREDENTIALS,
-        )
-    };
-
-    // --- Pairing code must be pending (unknown/expired/consumed all reject) ---
     let code_row = get_pairing_code(&state.db, &payload.pairing_code)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to look up pairing code");
             ApiError::new(ErrorCode::InternalError, "pairing lookup failed")
         })?;
-    let is_pending = code_row.as_ref().is_some_and(|c| c.is_pending());
-    if !is_pending {
-        return Err(unauthorized());
+    if !code_row.as_ref().is_some_and(|c| c.is_pending()) {
+        return Err(auth::invalid_registration_credentials());
     }
 
     // --- Self-signature must verify against the supplied public key ---
@@ -228,7 +220,7 @@ pub async fn register_admin_device(
             ApiError::new(ErrorCode::InternalError, "registration failed")
         })?;
     if !consumed {
-        return Err(unauthorized());
+        return Err(auth::invalid_registration_credentials());
     }
 
     insert_device(
@@ -265,7 +257,7 @@ mod tests {
 
     use crate::app::{app, test_state};
     use crate::routes::auth::device_registration_sign_string;
-    use crate::routes::test_utils::test_state_with_admin_token;
+    use crate::routes::test_utils::{body_json, test_state_with_admin_token};
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -278,13 +270,6 @@ mod tests {
             builder = builder.header("Authorization", format!("Bearer {token}"));
         }
         builder.body(Body::from(body.to_string())).unwrap()
-    }
-
-    async fn body_json(response: axum::response::Response) -> serde_json::Value {
-        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
-            .await
-            .unwrap();
-        serde_json::from_slice(&body).unwrap()
     }
 
     /// Assert a registration auth failure: 401 *and* the single generic body. The

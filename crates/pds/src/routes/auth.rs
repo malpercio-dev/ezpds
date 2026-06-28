@@ -76,7 +76,7 @@ pub fn require_admin_token(headers: &HeaderMap, state: &AppState) -> Result<(), 
 /// handler reuses it for the pairing-code state checks it owns.
 pub const INVALID_REGISTRATION_CREDENTIALS: &str = "invalid registration credentials";
 
-fn invalid_registration_credentials() -> ApiError {
+pub(crate) fn invalid_registration_credentials() -> ApiError {
     ApiError::new(ErrorCode::Unauthorized, INVALID_REGISTRATION_CREDENTIALS)
 }
 
