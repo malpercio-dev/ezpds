@@ -17,7 +17,7 @@ Last verified: 2026-06-26
 - `cargo test` - Run all tests
 - `cargo clippy --workspace -- -D warnings` - Lint (warnings as errors)
 - `cargo fmt --all --check` - Check formatting
-- `just ci` - Full local gate (fmt-check, clippy, test, audit) — the same checks CI runs
+- `just ci` - Full local gate (fmt-check, lock-check, clippy, test, audit) — the same checks CI runs
 
 ## CI/CD
 CI is split by platform: the **PDS** builds and deploys on **tangled spindles** (`.tangled/workflows/`, Linux); the **iOS app** builds and ships on **GitHub Actions** (a public mirror, macOS), because `cargo tauri ios build` needs macOS + Xcode that Linux spindles lack.
