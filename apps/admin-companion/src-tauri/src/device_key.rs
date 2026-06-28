@@ -111,8 +111,10 @@ pub fn get_or_create() -> Result<DevicePublicKey, DeviceKeyError> {
     // Try to load existing private key bytes from Keychain.
     let private_bytes: Vec<u8> = match crate::keychain::get_item(ACCOUNT) {
         Ok(bytes) => bytes,
-        Err(_) => {
-            // No key yet — generate a new P-256 keypair via the crypto crate.
+        // Only a genuine "item not found" means we should mint a key. A transient or
+        // permission error must NOT silently generate a new one — that would orphan the
+        // device's real admin key and re-enroll this device as a stranger to the relay.
+        Err(e) if crate::keychain::is_not_found(&e) => {
             let keypair =
                 crypto::generate_p256_keypair().map_err(|_| DeviceKeyError::KeyGenerationFailed)?;
             let bytes = keypair.private_key_bytes.to_vec();
@@ -122,6 +124,11 @@ pub fn get_or_create() -> Result<DevicePublicKey, DeviceKeyError> {
                 }
             })?;
             bytes
+        }
+        Err(e) => {
+            return Err(DeviceKeyError::KeychainError {
+                message: e.to_string(),
+            })
         }
     };
 
@@ -274,9 +281,18 @@ pub fn get_or_create() -> Result<DevicePublicKey, DeviceKeyError> {
 pub fn sign(data: &[u8]) -> Result<Vec<u8>, DeviceKeyError> {
     use p256::ecdsa::Signature;
 
-    // Load the application_label to look up the SE private key.
-    let app_label = crate::keychain::get_item(DEVICE_KEY_APP_LABEL_ACCOUNT)
-        .map_err(|_| DeviceKeyError::KeyNotFound)?;
+    // Load the application_label to look up the SE private key. Distinguish a genuine
+    // not-found (key was never created) from a transient/permission error, so a flaky
+    // Keychain read does not masquerade as "no key" and trip the caller into re-pairing.
+    let app_label = crate::keychain::get_item(DEVICE_KEY_APP_LABEL_ACCOUNT).map_err(|e| {
+        if crate::keychain::is_not_found(&e) {
+            DeviceKeyError::KeyNotFound
+        } else {
+            DeviceKeyError::KeychainError {
+                message: e.to_string(),
+            }
+        }
+    })?;
 
     // Find the SE private key in the Keychain by its application_label.
     // load_refs(true) returns SearchResult::Ref(CFType) containing the SecKeyRef.

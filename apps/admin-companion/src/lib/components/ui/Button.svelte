@@ -46,7 +46,7 @@
     width: 100%;
     min-height: var(--control-min-height);
     padding: var(--space-sm) var(--space-md);
-    border: 1px solid transparent;
+    border: var(--border-hairline) solid transparent;
     border-radius: var(--control-radius);
     font-family: var(--font-sans);
     font-size: var(--text-body);

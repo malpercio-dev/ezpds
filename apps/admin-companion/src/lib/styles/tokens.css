@@ -53,7 +53,7 @@
      and prose is PROVISIONAL: the system technical grotesk (SF Pro on iOS) until a
      face is chosen on the /impeccable pass — DESIGN.md rejects Inter/Space Grotesk/
      IBM Plex/DM Sans, and the native system face is none of those. */
-  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace; /* the literal truth */
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Menlo', monospace; /* the literal truth */
   --font-display: var(--font-mono);            /* the "prompt" — mono is the signet in this system */
   --font-sans: system-ui, -apple-system, 'Helvetica Neue', sans-serif;     /* the working voice (provisional) */
 
@@ -70,6 +70,7 @@
   --weight-bold: 700;
 
   /* ── Spacing (4px base) ───────────────────────────────────────────────── */
+  --space-2xs: 2px;
   --space-xs: 4px;
   --space-sm: 8px;
   --space-md: 16px;
@@ -109,9 +110,11 @@
      Kept deliberately small — tokens earn their place by meaning, not by counting
      every value. Components reference these so the precise "instrument" radius and
      the touch-target floor stay consistent across the whole console. */
-  --control-radius: var(--radius-md);   /* buttons, inputs, chips — the precise 6px, tighter than stock-iOS */
-  --control-min-height: 44px;           /* iOS HIG minimum touch target — density is of information, not tap targets */
-  --chip-radius: var(--radius-sm);      /* status chips sit a touch tighter than controls */
+  --control-radius: var(--radius-md);       /* buttons, inputs, chips — the precise 6px, tighter than stock-iOS */
+  --control-min-height: 44px;               /* iOS HIG minimum touch target — density is of information, not tap targets */
+  --control-height-compact: 32px;           /* secondary affordances (the copy button) below the 44px primary floor */
+  --border-hairline: 1px;                   /* the Steel Line hairline width — borders and dividers */
+  --chip-radius: var(--radius-sm);          /* status chips sit a touch tighter than controls */
   --ring-width: 2px;                    /* the gold focus ring — never removed (a security feature) */
   --ring-offset: 2px;
 }

@@ -26,7 +26,6 @@ body {
   font-weight: var(--weight-regular);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  text-rendering: optimizeLegibility;
 }
 
 a {
@@ -40,8 +39,8 @@ a:hover {
 /* AAA focus: a visible 2px gold ring on every interactive element, never removed.
    Visible focus is a security feature here, not a nicety. */
 :where(a, button, input, select, textarea, summary, [role='button'], [tabindex]):focus-visible {
-  outline: 2px solid var(--color-primary);
-  outline-offset: 2px;
+  outline: var(--ring-width) solid var(--color-primary);
+  outline-offset: var(--ring-offset);
 }
 
 ::selection {

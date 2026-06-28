@@ -13,10 +13,10 @@ path = "src/lib.rs"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
-# Tauri-specific — declared locally (not in workspace.dependencies), matching identity-wallet.
-tauri = { version = "2", features = [] }
-tauri-plugin-log = "2"
-log = "0.4"
+# Tauri + shared mobile deps live in [workspace.dependencies] (two apps consume them now).
+tauri = { workspace = true, features = [] }
+tauri-plugin-log = { workspace = true }
+log = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -27,8 +27,7 @@ multibase = { workspace = true }
 tracing = { workspace = true }
 # Secure Enclave + Keychain access (real-device and macOS/simulator software paths both
 # touch the Keychain via this crate). OSX_10_12 enables the SE access-control APIs.
-security-framework = { version = "3", features = ["OSX_10_12"] }
+security-framework = { workspace = true, features = ["OSX_10_12"] }
 
 [build-dependencies]
-# Tauri-specific — declared locally
-tauri-build = { version = "2", features = [] }
+tauri-build = { workspace = true, features = [] }

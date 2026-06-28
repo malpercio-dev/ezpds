@@ -39,16 +39,16 @@ else
   DEVENV_BIN="${REPO_ROOT}/.devenv/profile/bin"
   ENVSH="${APP_DIR}/scripts/ios-env.sh"
   export CARGO_BIN DEVENV_BIN ENVSH SENTINEL
-  # The injected lines are QUOTE-FREE on purpose: in pbxproj the shellScript is itself a
-  # double-quoted string, so a literal " would terminate it early and corrupt the file.
-  # The paths here contain no spaces (repo root + CARGO_HOME under $HOME). `\$PATH` stays
+  # The PATH/source values are wrapped in ESCAPED quotes (\") so a repo or CARGO_HOME path
+  # containing a space survives — \" is a valid escape INSIDE the pbxproj double-quoted
+  # shellScript string and does not terminate it (a *literal* " would). `\$PATH` stays
   # literal (the shell expands it at build time); `.` is the POSIX form of `source`.
   /usr/bin/perl -0pi -e '
     my $inject =
       "$ENV{SENTINEL}\n" .
       "export EZPDS_IOS_BUILD=1\n" .
-      "export PATH=$ENV{CARGO_BIN}:$ENV{DEVENV_BIN}:\$PATH\n" .
-      "[ -f $ENV{ENVSH} ] && . $ENV{ENVSH}\n" .
+      "export PATH=\\\"$ENV{CARGO_BIN}:$ENV{DEVENV_BIN}:\$PATH\\\"\n" .
+      "[ -f \\\"$ENV{ENVSH}\\\" ] && . \\\"$ENV{ENVSH}\\\"\n" .
       "# <<< ezpds-ios-env <<<\n";
     $inject =~ s/\n/\\n/g;   # encode newlines the way pbxproj stores them (\n in-quote)
     s/(shellScript = ")((?:[^"\\]|\\.)*?tauri(?:[^"\\]|\\.)*?xcode-script(?:[^"\\]|\\.)*?")/$1$inject$2/s;

@@ -70,7 +70,7 @@
     padding: var(--space-sm) var(--space-md);
     background: var(--color-surface-raised);
     color: var(--color-ink);
-    border: 1px solid var(--color-border-strong);
+    border: var(--border-hairline) solid var(--color-border-strong);
     border-radius: var(--control-radius);
     font-family: var(--font-sans);
     font-size: var(--text-body);

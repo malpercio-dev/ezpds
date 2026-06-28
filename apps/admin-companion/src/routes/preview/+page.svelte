@@ -112,7 +112,7 @@
   }
   section {
     padding-bottom: var(--space-sm);
-    border-bottom: 1px solid var(--color-line);
+    border-bottom: var(--border-hairline) solid var(--color-line);
   }
   .stack {
     display: flex;
@@ -126,12 +126,12 @@
   }
   .panel {
     background: var(--color-surface);
-    border: 1px solid var(--color-line);
+    border: var(--border-hairline) solid var(--color-line);
     border-radius: var(--radius-lg);
     padding: 0 var(--space-md);
   }
   .divider {
-    height: 1px;
+    height: var(--border-hairline);
     background: var(--color-line);
   }
 </style>

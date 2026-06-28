@@ -42,7 +42,7 @@
       {#if prompt}<span class="prompt" aria-hidden="true">▸</span>{/if}{value}
     </code>
     {#if copyable}
-      <button class="copy" class:is-copied={copied} onclick={copy} aria-label={copied ? 'Copied' : 'Copy to clipboard'}>
+      <button type="button" class="copy" class:is-copied={copied} onclick={copy} aria-label={copied ? 'Copied' : 'Copy to clipboard'}>
         {#if copied}
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5" /></svg>
           <span class="copy-text">copied</span>
@@ -73,7 +73,7 @@
     align-items: flex-start;
     gap: var(--space-sm);
     background: var(--color-surface-raised);
-    border: 1px solid var(--color-line);
+    border: var(--border-hairline) solid var(--color-line);
     border-radius: var(--control-radius);
     padding: var(--space-sm) var(--space-md);
   }
@@ -98,10 +98,10 @@
     display: inline-flex;
     align-items: center;
     gap: var(--space-xs);
-    min-height: 32px;
+    min-height: var(--control-height-compact);
     padding: var(--space-xs) var(--space-sm);
     background: transparent;
-    border: 1px solid var(--color-border-strong);
+    border: var(--border-hairline) solid var(--color-border-strong);
     border-radius: var(--radius-sm);
     color: var(--color-ink-soft);
     font-family: var(--font-mono);

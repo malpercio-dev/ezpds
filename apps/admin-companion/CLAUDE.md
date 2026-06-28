@@ -17,15 +17,20 @@ app is built across Phases 6–8.
 
 ## Current status (Phase 6 — scaffold)
 
-Buildable skeleton only. Wired so far:
+Scaffold + design-system foundation. Wired so far:
 - **Device admin key** — `src-tauri/src/device_key.rs` (`#[cfg]` dispatch: Secure
   Enclave on a real device, software P-256 on macOS/simulator), backed by
   `src-tauri/src/keychain.rs` (service `"ezpds-admin-companion"`).
 - Two IPC commands: `get_or_create_device_key`, `sign_with_device_key`.
 - The terminal-native token layer (`src/lib/styles/{tokens,fonts,base}.css`).
+- **Brass Console UI primitives** in `src/lib/components/ui/` — `Button`,
+  `StatusChip`, `CodeOutput`, `DeviceRow`, `TextField`, `ScreenShell` — every state
+  exercised at the `/preview` route; documented in `DESIGN.md` §5. The home screen
+  (`src/routes/+page.svelte`) consumes them.
 
 Not yet built (later phases): QR pairing + request-signing envelope (Phase 7);
-claim-code / settings screens + error states (Phase 8).
+the operator screens that assemble these primitives — claim-code / Settings + error
+states (Phase 8).
 
 ## Contracts
 
