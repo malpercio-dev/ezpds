@@ -401,6 +401,21 @@ impl AccountLifecycle {
     pub(crate) fn is_active(self) -> bool {
         matches!(self, Self::Active)
     }
+
+    /// The lexicon `status` knownValue for this lifecycle state, or `None` when `Active`.
+    ///
+    /// Maps each non-active state to its AT Protocol wire string. `Active` returns `None`
+    /// because the `status` field is omitted entirely for a live repo (it carries a *reason*
+    /// for being inactive, and is meaningless otherwise). The route handler calls this instead
+    /// of duplicating the match.
+    pub(crate) fn as_status_str(self) -> Option<&'static str> {
+        match self {
+            Self::Active => None,
+            Self::Deactivated => Some("deactivated"),
+            Self::Suspended => Some("suspended"),
+            Self::TakenDown => Some("takendown"),
+        }
+    }
 }
 
 /// A single repo entry for `com.atproto.sync.listRepos`.

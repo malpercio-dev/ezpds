@@ -7,7 +7,6 @@ use axum::response::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::db::accounts::AccountLifecycle;
 use crate::db::blocks::SqliteBlockStore;
 use common::{ApiError, ErrorCode};
 use repo_engine::Repository;
@@ -59,16 +58,9 @@ pub async fn sync_get_repo_status(
         })?
         .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "repo not found"))?;
 
-    // `status` reports *why* a repo is not active; an active repo omits it. Each lifecycle state
-    // maps to its lexicon `status` knownValue.
     let active = row.lifecycle.is_active();
-    let status = match row.lifecycle {
-        AccountLifecycle::Active => None,
-        AccountLifecycle::Deactivated => Some("deactivated"),
-        AccountLifecycle::Suspended => Some("suspended"),
-        AccountLifecycle::TakenDown => Some("takendown"),
-    }
-    .map(str::to_string);
+    // `status` reports *why* a repo is not active; omitted entirely for a live repo.
+    let status = row.lifecycle.as_status_str().map(str::to_string);
 
     // Prefer the rev stored on the account row (written at every commit) — the common path is
     // a pure column read. A pre-migration account has a repo root but no stored rev: read it
