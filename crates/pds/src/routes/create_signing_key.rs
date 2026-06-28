@@ -7,7 +7,7 @@
 use axum::{
     body::Bytes,
     extract::State,
-    http::{HeaderMap, Method, Uri},
+    http::{HeaderMap, Method, StatusCode, Uri},
     response::{IntoResponse, Json, Response},
 };
 use serde::{Deserialize, Serialize};
@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::routes::auth::require_admin;
+use crate::routes::auth::{is_json_content_type, require_admin};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -57,6 +57,16 @@ pub async fn create_signing_key(
     require_admin(method.as_str(), uri.path(), &headers, &body, &state)
         .await
         .map_err(IntoResponse::into_response)?;
+
+    // Preserve the former `Json` extractor's media-type guard: a non-JSON content type
+    // is rejected with 415 before the body is parsed.
+    if !is_json_content_type(&headers) {
+        return Err((
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "expected application/json",
+        )
+            .into_response());
+    }
 
     // Validate the body shape (algorithm enum) using the same rejection semantics as
     // the former `Json` extractor: unknown variant / missing field → 422, null → 400.
@@ -431,6 +441,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn non_json_content_type_returns_415() {
+        // Valid JSON body + valid token, but a non-JSON media type: matches the former
+        // `Json` extractor's 415 rejection.
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/pds/keys")
+            .header("Content-Type", "text/plain")
+            .header("Authorization", "Bearer test-admin-token")
+            .body(Body::from(r#"{"algorithm": "p256"}"#))
+            .unwrap();
+        let response = app(test_state_with_keys().await)
+            .oneshot(request)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
 
     #[tokio::test]

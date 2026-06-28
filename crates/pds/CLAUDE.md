@@ -135,7 +135,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `account_usage.rs` | `GET /v1/accounts/:id/usage` — operator usage metrics (records/commits/blobs counts, total storage bytes, last-active); admin token; reports on deactivated accounts too |
 | `account_storage.rs` | `GET /v1/accounts/:id/storage` — operator blob-storage metrics (blob count, total bytes, configured quota + used %, largest blob); admin token |
 | `admin_devices.rs` | `POST /v1/admin/pairing-codes` (master token; mint single-use pairing code) and `POST /v1/admin/devices` (pairing code + self-signature; register a companion-app device public key). Verifies the self-signature before consuming the code; rejection paths return a generic 401 |
-| `create_signing_key.rs` | `POST /v1/signing-keys` |
+| `create_signing_key.rs` | `POST /v1/pds/keys` (deprecated alias: `POST /v1/relay/keys`) |
 | `register_device.rs` | `POST /v1/devices` |
 | `get_device_pds.rs` | `GET /v1/devices/:id/pds` |
 | `describe_server.rs` | `GET /xrpc/com.atproto.server.describeServer` |
@@ -146,7 +146,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `resolve_handle.rs` | `GET /xrpc/com.atproto.identity.resolveHandle` |
 | `sync_subscribe_repos.rs` | `GET /xrpc/com.atproto.sync.subscribeRepos` (WebSocket firehose) |
 | `claim_codes.rs` | Claim code management |
-| `get_pds_signing_key.rs` | `GET /v1/signing-keys` |
+| `get_pds_signing_key.rs` | `GET /v1/pds/keys` (deprecated alias: `GET /v1/relay/keys`) |
 | `health.rs` | `GET /xrpc/_health` |
 | `delete_session.rs` | `POST /xrpc/com.atproto.server.deleteSession` (session revocation) |
 | `deactivate_account.rs` | `POST /xrpc/com.atproto.server.deactivateAccount` (flip account to deactivated, store optional `deleteAfter`, emit `#account` firehose event on transition) |

@@ -21,9 +21,12 @@ body:json {
 }
 
 docs {
-  Admin-only. Authenticates via the master admin token (shown here, the
-  break-glass / CI path) **or** a companion-app device signature: the request
-  carries X-Admin-Device / X-Admin-Timestamp / X-Admin-Nonce / X-Admin-Signature,
-  a P-256 signature over `method\npath\ntimestamp\nnonce\nsha256_hex(body)`
-  verified by `require_admin`. Both paths produce identical behaviour.
+  Admin-only via `require_admin`, which accepts either credential:
+  - Master admin token (shown here) — the break-glass / CI path, unchanged.
+  - A companion-app device signature: the request carries X-Admin-Device /
+    X-Admin-Timestamp / X-Admin-Nonce / X-Admin-Signature, a P-256 signature over
+    `method\npath\ntimestamp\nnonce\nsha256_hex(body)`. The device path also
+    enforces a +/-60s timestamp window, single-use nonces (replay -> 401), and
+    rejects a revoked device with 403. The master-token path applies none of
+    these extra constraints.
 }

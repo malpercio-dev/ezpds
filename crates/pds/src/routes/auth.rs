@@ -117,6 +117,26 @@ fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers.get(name).and_then(|v| v.to_str().ok())
 }
 
+/// Whether the request's `Content-Type` is JSON — `application/json` (optionally with
+/// parameters like `; charset=utf-8`) or any `application/*+json` — matching what
+/// axum's `Json` extractor accepts. The admin routes parse the body via
+/// `Json::from_bytes` (after consuming it as `Bytes` for signature verification), which
+/// skips the extractor's media-type guard; they call this to preserve the prior 415
+/// rejection for non-JSON (or absent) content types.
+pub fn is_json_content_type(headers: &HeaderMap) -> bool {
+    let Some(value) = header_str(headers, axum::http::header::CONTENT_TYPE.as_str()) else {
+        return false;
+    };
+    let essence = value
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    essence == "application/json"
+        || (essence.starts_with("application/") && essence.ends_with("+json"))
+}
+
 /// Current Unix time in seconds. Clamps a pre-epoch clock to 0 rather than panicking;
 /// such a request fails the timestamp-window check anyway.
 fn unix_now_secs() -> i64 {
@@ -143,10 +163,20 @@ pub async fn require_admin(
     body: &[u8],
     state: &AppState,
 ) -> Result<(), ApiError> {
+    // The master token is the root of trust / break-glass path: accept it whenever it
+    // is valid, regardless of any (possibly malformed) device headers, so the
+    // "master token OR device signature" contract holds even if both are present.
+    let token_result = require_admin_token(headers, state);
+    if token_result.is_ok() {
+        return Ok(());
+    }
+
+    // Otherwise a request carrying the device header is verified as a device signed
+    // request; a request with neither credential surfaces the master-token error.
     if headers.contains_key(ADMIN_DEVICE_HEADER) {
         verify_admin_device_request(method, path, headers, body, &state.db).await
     } else {
-        require_admin_token(headers, state)
+        token_result
     }
 }
 
@@ -191,7 +221,12 @@ async fn verify_admin_device_request(
 
     // Reject stale or future-dated requests (clock skew beyond the window). This bounds
     // how long a captured request stays replayable alongside the nonce check below.
-    if (unix_now_secs() - timestamp).abs() > ADMIN_TIMESTAMP_WINDOW_SECS {
+    // Saturating bounds avoid i64 overflow on an extreme attacker-supplied timestamp
+    // (a direct `now - timestamp` could panic in debug or wrap in release).
+    let now = unix_now_secs();
+    if timestamp < now.saturating_sub(ADMIN_TIMESTAMP_WINDOW_SECS)
+        || timestamp > now.saturating_add(ADMIN_TIMESTAMP_WINDOW_SECS)
+    {
         return Err(invalid_admin_signature());
     }
 
@@ -1079,6 +1114,47 @@ mod require_admin_tests {
         require_admin(METHOD, PATH, &headers, BODY, &state)
             .await
             .expect("master token must authorize");
+    }
+
+    #[tokio::test]
+    async fn master_token_accepted_even_with_device_header_present() {
+        // A valid master token authorizes regardless of a (here malformed) device
+        // header — preserving the "master token OR device signature" contract.
+        let mut state = test_state().await;
+        let config = std::sync::Arc::make_mut(&mut state.config);
+        config.admin_token = Some("secret".to_string());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Bearer secret".parse().unwrap(),
+        );
+        headers.insert(ADMIN_DEVICE_HEADER, "garbage-device".parse().unwrap());
+
+        require_admin(METHOD, PATH, &headers, BODY, &state)
+            .await
+            .expect("master token must authorize even with a device header present");
+    }
+
+    #[tokio::test]
+    async fn extreme_timestamp_is_rejected_without_panicking() {
+        // An i64::MIN timestamp would overflow a naive `now - timestamp`; the saturating
+        // bounds must reject it cleanly with a 401 rather than panic.
+        let state = test_state().await;
+        let (device_id, keypair) = seed_admin_device(&state).await;
+        let headers = signed_headers(
+            &device_id,
+            &keypair,
+            METHOD,
+            PATH,
+            i64::MIN,
+            "nonce-extreme",
+            BODY,
+        );
+        let err = require_admin(METHOD, PATH, &headers, BODY, &state)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code(), 401);
     }
 
     #[tokio::test]
