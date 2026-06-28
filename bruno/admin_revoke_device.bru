@@ -1,0 +1,36 @@
+meta {
+  name: Admin Revoke Device
+  type: http
+  seq: 54
+}
+
+post {
+  url: {{baseUrl}}/v1/admin/devices/{{deviceId}}/revoke
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+docs {
+  # POST /v1/admin/devices/:id/revoke
+
+  Revoke an operator companion-app device, cutting off its signed-request access.
+  Admin-authed: the master token (shown here) **or** an active device's signed request.
+  A revoked device cannot reach this route — its own signed requests are already denied
+  with 403 — so the caller is always the master token or another active device. A device
+  may revoke itself (the companion app's "unpair").
+
+  Path:
+  - `:id` — the device id returned by `POST /v1/admin/devices`.
+
+  Response:
+  - `device` — the device's post-revoke state (`status: "revoked"`, `revokedAt` stamped),
+    with the same shape as a `GET /v1/admin/devices` entry.
+
+  Idempotent: revoking an already-revoked device is a 200 no-op returning its current
+  state. An unknown id is a 404. Once revoked, the device's signed requests are denied
+  with 403 by the `require_admin` guard.
+}

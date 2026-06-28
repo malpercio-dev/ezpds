@@ -12,7 +12,12 @@
 // self-signature proving the caller holds the private key for the supplied public
 // key — not the master token, so a paired phone cannot enroll accomplices.
 
-use axum::{extract::State, http::HeaderMap, response::Json};
+use axum::{
+    body::Bytes,
+    extract::{Path, State},
+    http::{HeaderMap, Method, Uri},
+    response::{IntoResponse, Json, Response},
+};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -21,7 +26,8 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::db::admin_devices::{
-    consume_pairing_code, get_pairing_code, insert_device, insert_pairing_code, NewAdminDevice,
+    consume_pairing_code, get_device, get_pairing_code, insert_device, insert_pairing_code,
+    list_devices, revoke_device, AdminDeviceRow, NewAdminDevice,
 };
 use crate::db::is_unique_violation;
 use crate::routes::auth;
@@ -244,6 +250,139 @@ pub async fn register_admin_device(
     })?;
 
     Ok(Json(RegisterDeviceResponse { device_id }))
+}
+
+// ── Device management (list / revoke) ────────────────────────────────────────
+
+/// A registered device as the operator sees it, with a `status` string derived from
+/// the device's revoked state. Backs both the list and revoke responses.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminDeviceView {
+    /// Server-assigned id the phone sends as `X-Admin-Device`.
+    id: String,
+    /// Human-readable device label.
+    label: String,
+    /// The device's P-256 public key as a `did:key:` URI.
+    public_key: String,
+    /// Platform tag (e.g. "ios").
+    platform: String,
+    /// Granted scopes (currently always "full").
+    scopes: String,
+    /// Derived lifecycle status, never signalled by a flag alone: `"active"` while
+    /// `revokedAt` is null, `"revoked"` once it is stamped.
+    status: &'static str,
+    /// When the device was registered (SQLite UTC datetime).
+    created_at: String,
+    /// Last successful signed-request auth, or null if it has never authenticated.
+    last_seen_at: Option<String>,
+    /// When the device was revoked, or null while active.
+    revoked_at: Option<String>,
+}
+
+impl From<AdminDeviceRow> for AdminDeviceView {
+    fn from(row: AdminDeviceRow) -> Self {
+        AdminDeviceView {
+            status: if row.is_active { "active" } else { "revoked" },
+            id: row.id,
+            label: row.label,
+            public_key: row.public_key,
+            platform: row.platform,
+            scopes: row.scopes,
+            created_at: row.created_at,
+            last_seen_at: row.last_seen_at,
+            revoked_at: row.revoked_at,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListDevicesResponse {
+    /// All registered devices, active and revoked, newest first.
+    devices: Vec<AdminDeviceView>,
+}
+
+/// `GET /v1/admin/devices` — list every registered companion-app device.
+///
+/// Admin-authed: the master token **or** an active device's signed request
+/// ([`auth::require_admin`]). The signature binds the method, path, and (empty) body,
+/// so this read is gated by the same envelope as the write endpoints. Returns both
+/// active and revoked devices with a derived `status`, so the operator can audit and
+/// re-authorize devices that were cut off server-side.
+pub async fn list_admin_devices(
+    State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<ListDevicesResponse>, Response> {
+    auth::require_admin(method.as_str(), uri.path(), &headers, &body, &state)
+        .await
+        .map_err(IntoResponse::into_response)?;
+
+    let devices = list_devices(&state.db).await.map_err(|e| {
+        tracing::error!(error = %e, "failed to list admin devices");
+        ApiError::new(ErrorCode::InternalError, "failed to list admin devices").into_response()
+    })?;
+
+    Ok(Json(ListDevicesResponse {
+        devices: devices.into_iter().map(AdminDeviceView::from).collect(),
+    }))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeDeviceResponse {
+    /// The device's state after the call, with `status: "revoked"`.
+    device: AdminDeviceView,
+}
+
+/// `POST /v1/admin/devices/:id/revoke` — revoke a companion-app device.
+///
+/// Admin-authed: the master token **or** an active device's signed request
+/// ([`auth::require_admin`]) — a revoked device cannot reach this route (its own
+/// signed requests are already denied with 403), so the caller is always the master
+/// token or another active device. The concrete `:id` is part of the signed path, so
+/// a signature minted to revoke one device cannot revoke another. A device may revoke
+/// itself (the companion app's "unpair").
+///
+/// Idempotent: stamping `revoked_at` only transitions a still-active device, so
+/// revoking an already-revoked device is a 200 no-op returning its current state.
+/// An unknown id is a 404.
+pub async fn revoke_admin_device(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<RevokeDeviceResponse>, Response> {
+    auth::require_admin(method.as_str(), uri.path(), &headers, &body, &state)
+        .await
+        .map_err(IntoResponse::into_response)?;
+
+    // Stamp revoked_at (no-op if already revoked or unknown), then read back the row.
+    // Reading after the update returns the authoritative post-revoke state and lets an
+    // unknown id surface as a 404 rather than a silently-successful no-op.
+    revoke_device(&state.db, &id).await.map_err(|e| {
+        tracing::error!(error = %e, device_id = %id, "failed to revoke admin device");
+        ApiError::new(ErrorCode::InternalError, "failed to revoke admin device").into_response()
+    })?;
+
+    let device = get_device(&state.db, &id)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, device_id = %id, "failed to load admin device after revoke");
+            ApiError::new(ErrorCode::InternalError, "failed to revoke admin device").into_response()
+        })?
+        .ok_or_else(|| {
+            ApiError::new(ErrorCode::NotFound, "admin device not found").into_response()
+        })?;
+
+    Ok(Json(RevokeDeviceResponse {
+        device: device.into(),
+    }))
 }
 
 #[cfg(test)]
@@ -646,5 +785,271 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // ── Device management: list / revoke ─────────────────────────────────────
+    // `get_device`, `insert_device`, `revoke_device`, and `NewAdminDevice` are already
+    // in scope via `use super::*`; only the per-request signing helpers are pulled in.
+
+    use crate::routes::auth::{
+        admin_request_sign_string, ADMIN_DEVICE_HEADER, ADMIN_NONCE_HEADER, ADMIN_SIGNATURE_HEADER,
+        ADMIN_TIMESTAMP_HEADER,
+    };
+
+    fn unix_now() -> i64 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    }
+
+    fn get(uri: &str, bearer: Option<&str>) -> Request<Body> {
+        let mut builder = Request::builder().method("GET").uri(uri);
+        if let Some(token) = bearer {
+            builder = builder.header("Authorization", format!("Bearer {token}"));
+        }
+        builder.body(Body::empty()).unwrap()
+    }
+
+    /// Insert an active admin device directly, returning its id and signing keypair.
+    async fn seed_device(state: &AppState) -> (String, crypto::P256Keypair) {
+        let keypair = crypto::generate_p256_keypair().unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        insert_device(
+            &state.db,
+            &NewAdminDevice {
+                id: &id,
+                label: "Operator iPhone",
+                public_key: &keypair.key_id.0,
+                platform: "ios",
+            },
+        )
+        .await
+        .unwrap();
+        (id, keypair)
+    }
+
+    /// Build a request carrying signed `X-Admin-*` headers for the given envelope.
+    fn signed_request(
+        method: &str,
+        path: &str,
+        body: &str,
+        device_id: &str,
+        keypair: &crypto::P256Keypair,
+        nonce: &str,
+    ) -> Request<Body> {
+        let ts = unix_now();
+        let sign_string = admin_request_sign_string(method, path, ts, nonce, body.as_bytes());
+        let signature = sign_with(keypair, sign_string.as_bytes());
+        Request::builder()
+            .method(method)
+            .uri(path)
+            .header(ADMIN_DEVICE_HEADER, device_id)
+            .header(ADMIN_TIMESTAMP_HEADER, ts.to_string())
+            .header(ADMIN_NONCE_HEADER, nonce)
+            .header(ADMIN_SIGNATURE_HEADER, signature)
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn list_returns_devices_with_derived_status() {
+        let state = test_state_with_admin_token().await;
+        let (active_id, _) = seed_device(&state).await;
+        let (revoked_id, _) = seed_device(&state).await;
+        revoke_device(&state.db, &revoked_id).await.unwrap();
+
+        let response = app(state)
+            .oneshot(get("/v1/admin/devices", Some("test-admin-token")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let json = body_json(response).await;
+        let devices = json["devices"].as_array().unwrap();
+        assert_eq!(devices.len(), 2);
+
+        let active = devices.iter().find(|d| d["id"] == active_id).unwrap();
+        assert_eq!(active["status"], "active");
+        assert!(active["revokedAt"].is_null());
+        assert_eq!(active["label"], "Operator iPhone");
+
+        let revoked = devices.iter().find(|d| d["id"] == revoked_id).unwrap();
+        assert_eq!(revoked["status"], "revoked");
+        assert!(!revoked["revokedAt"].is_null());
+    }
+
+    #[tokio::test]
+    async fn list_without_auth_returns_401() {
+        let response = app(test_state_with_admin_token().await)
+            .oneshot(get("/v1/admin/devices", None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn list_via_signed_device_request_succeeds() {
+        // No master token configured: proves the device-signature path gates the read.
+        let state = test_state().await;
+        let (device_id, keypair) = seed_device(&state).await;
+
+        let request = signed_request(
+            "GET",
+            "/v1/admin/devices",
+            "",
+            &device_id,
+            &keypair,
+            "list-nonce",
+        );
+        let response = app(state).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let json = body_json(response).await;
+        assert_eq!(json["devices"].as_array().unwrap().len(), 1);
+        assert_eq!(json["devices"][0]["id"], device_id);
+    }
+
+    #[tokio::test]
+    async fn revoke_with_master_token_marks_revoked() {
+        let state = test_state_with_admin_token().await;
+        let db = state.db.clone();
+        let (device_id, _) = seed_device(&state).await;
+
+        let response = app(state)
+            .oneshot(post(
+                &format!("/v1/admin/devices/{device_id}/revoke"),
+                "",
+                Some("test-admin-token"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let json = body_json(response).await;
+        assert_eq!(json["device"]["id"], device_id);
+        assert_eq!(json["device"]["status"], "revoked");
+        assert!(!json["device"]["revokedAt"].is_null());
+
+        // The stored row reflects the revocation.
+        let row = get_device(&db, &device_id).await.unwrap().unwrap();
+        assert!(!row.is_active);
+        assert!(row.revoked_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn revoke_is_idempotent() {
+        let state = test_state_with_admin_token().await;
+        let (device_id, _) = seed_device(&state).await;
+        let uri = format!("/v1/admin/devices/{device_id}/revoke");
+
+        let first = app(state.clone())
+            .oneshot(post(&uri, "", Some("test-admin-token")))
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_revoked_at = body_json(first).await["device"]["revokedAt"]
+            .as_str()
+            .expect("revokedAt is stamped on the first revoke")
+            .to_string();
+
+        // A second revoke of the already-revoked device is a 200 no-op: status stays
+        // revoked and revokedAt is unchanged — the handler must not re-stamp it.
+        let second = app(state)
+            .oneshot(post(&uri, "", Some("test-admin-token")))
+            .await
+            .unwrap();
+        assert_eq!(second.status(), StatusCode::OK);
+        let second_json = body_json(second).await;
+        assert_eq!(second_json["device"]["status"], "revoked");
+        assert_eq!(
+            second_json["device"]["revokedAt"].as_str().unwrap(),
+            first_revoked_at,
+            "revokedAt must not change on a repeat revoke"
+        );
+    }
+
+    #[tokio::test]
+    async fn revoke_unknown_device_returns_404() {
+        let response = app(test_state_with_admin_token().await)
+            .oneshot(post(
+                "/v1/admin/devices/no-such-device/revoke",
+                "",
+                Some("test-admin-token"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn revoke_without_auth_returns_401() {
+        let state = test_state_with_admin_token().await;
+        let (device_id, _) = seed_device(&state).await;
+        let response = app(state)
+            .oneshot(post(
+                &format!("/v1/admin/devices/{device_id}/revoke"),
+                "",
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn revoked_device_signed_request_is_then_denied() {
+        // End-to-end of the Phase 4 integration: once revoked, the device's own signed
+        // requests are denied with 403.
+        let state = test_state_with_admin_token().await;
+        let (device_id, keypair) = seed_device(&state).await;
+
+        // Revoke it with the master token.
+        let revoke = app(state.clone())
+            .oneshot(post(
+                &format!("/v1/admin/devices/{device_id}/revoke"),
+                "",
+                Some("test-admin-token"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(revoke.status(), StatusCode::OK);
+
+        // Its own signed list request is now rejected with 403 (revoked, not generic 401).
+        let request = signed_request(
+            "GET",
+            "/v1/admin/devices",
+            "",
+            &device_id,
+            &keypair,
+            "post-revoke-nonce",
+        );
+        let response = app(state).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn device_can_be_revoked_by_another_active_device() {
+        // No master token: device B (active) revokes device A via a signed request.
+        let state = test_state().await;
+        let db = state.db.clone();
+        let (target_id, _) = seed_device(&state).await;
+        let (caller_id, caller_keypair) = seed_device(&state).await;
+
+        let path = format!("/v1/admin/devices/{target_id}/revoke");
+        let request = signed_request(
+            "POST",
+            &path,
+            "",
+            &caller_id,
+            &caller_keypair,
+            "caller-nonce",
+        );
+        let response = app(state).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let row = get_device(&db, &target_id).await.unwrap().unwrap();
+        assert!(!row.is_active, "the target device is revoked");
     }
 }
