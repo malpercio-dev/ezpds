@@ -99,6 +99,7 @@ and async query functions; no business logic lives here.
 | `oauth.rs` | OAuth client lookup, auth code storage, token management |
 | `password_reset.rs` | `insert_reset_token`, `get_reset_token`, `mark_reset_token_used`, `update_password_hash` |
 | `preferences.rs` | `get_preferences` (DID→stored `app.bsky` preferences JSON blob); `put_preferences` (upsert the blob, overwriting any previous value) |
+| `admin_devices.rs` | Operator companion app admin-device model (V025): pairing-code mint/consume (single-use), device insert/list/revoke (derived active status), nonce insert-if-absent + stale-nonce sweep (anti-replay). No route wires these yet (Phase 3+) |
 
 See [`src/db/CLAUDE.md`](src/db/CLAUDE.md) for migration history and invariants.
 

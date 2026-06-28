@@ -149,7 +149,8 @@ admin_devices(
   created_at TEXT NOT NULL, last_seen_at TEXT, revoked_at TEXT)
 
 admin_nonces(
-  nonce TEXT PRIMARY KEY, device_id TEXT NOT NULL, seen_at TEXT NOT NULL)
+  device_id TEXT NOT NULL, nonce TEXT NOT NULL, seen_at TEXT NOT NULL,
+  PRIMARY KEY (device_id, nonce))   -- per-device scope; FK device_id → admin_devices
 ```
 
 A device is *active* when `revoked_at IS NULL`; a pairing code is *pending* when `consumed_at IS NULL AND expires_at > now`. The `admin_nonces` table is swept of rows older than the timestamp window. `scopes` defaults to `full` for v1 and is the hook for narrowing device authority later.
