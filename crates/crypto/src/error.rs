@@ -12,4 +12,6 @@ pub enum CryptoError {
     SecretReconstruction(String),
     #[error("plc operation failed: {0}")]
     PlcOperation(String),
+    #[error("signature verification failed: {0}")]
+    SignatureVerification(String),
 }
