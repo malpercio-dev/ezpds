@@ -20,6 +20,7 @@ use crate::dns::{DnsProvider, TxtResolver};
 use crate::routes::account_storage::account_storage;
 use crate::routes::account_usage::account_usage;
 use crate::routes::activate_account::activate_account_handler;
+use crate::routes::admin_devices::{mint_pairing_code, register_admin_device};
 use crate::routes::apply_writes::apply_writes;
 use crate::routes::atproto_did::atproto_did_handler;
 use crate::routes::claim_codes::claim_codes;
@@ -268,6 +269,8 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/accounts/sessions", post(create_provisioning_session))
         .route("/v1/accounts/:id/usage", get(account_usage))
         .route("/v1/accounts/:id/storage", get(account_storage))
+        .route("/v1/admin/pairing-codes", post(mint_pairing_code))
+        .route("/v1/admin/devices", post(register_admin_device))
         .route("/v1/devices", post(register_device))
         .route("/v1/devices/:id/pds", get(get_device_pds))
         .route("/v1/dids", post(create_did_handler))

@@ -1,4 +1,6 @@
 use axum::http::HeaderMap;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use crypto::{verify_p256_signature, DidKeyUri};
 use subtle::ConstantTimeEq;
 
 use common::{ApiError, ErrorCode};
@@ -64,6 +66,62 @@ pub fn require_admin_token(headers: &HeaderMap, state: &AppState) -> Result<(), 
     }
 
     Ok(())
+}
+
+/// The single generic 401 message for every admin-device registration auth failure.
+///
+/// A malformed signature, an unknown/expired/consumed pairing code, and a
+/// signature that does not verify all surface this identical message so the
+/// response never reveals which check failed (non-enumeration). The registration
+/// handler reuses it for the pairing-code state checks it owns.
+pub const INVALID_REGISTRATION_CREDENTIALS: &str = "invalid registration credentials";
+
+pub(crate) fn invalid_registration_credentials() -> ApiError {
+    ApiError::new(ErrorCode::Unauthorized, INVALID_REGISTRATION_CREDENTIALS)
+}
+
+/// The canonical message a device self-signs during admin-device registration.
+///
+/// Format: `pairing_code ‖ "\n" ‖ public_key ‖ "\n" ‖ timestamp` — newline-separated
+/// to match the per-request `sign_string` envelope convention. The companion app's
+/// signing client must produce the identical bytes for verification to pass; this
+/// function is the single source of truth for that format.
+pub fn device_registration_sign_string(
+    pairing_code: &str,
+    public_key: &str,
+    timestamp: i64,
+) -> String {
+    format!("{pairing_code}\n{public_key}\n{timestamp}")
+}
+
+/// Decode a base64url-no-pad signature into the raw 64-byte `r‖s` form, or `None`
+/// if it is not valid base64url or not exactly 64 bytes.
+fn decode_signature(encoded: &str) -> Option<[u8; 64]> {
+    let bytes = URL_SAFE_NO_PAD.decode(encoded).ok()?;
+    bytes.try_into().ok()
+}
+
+/// Verify a device's self-signature during admin-device registration.
+///
+/// Decodes the base64url signature, reconstructs the canonical registration
+/// message, and checks the P-256 signature against the supplied `did:key`. Proves
+/// the caller holds the private key (not just a copied public key). Any failure —
+/// malformed signature or a verification mismatch — returns the generic
+/// [`INVALID_REGISTRATION_CREDENTIALS`] 401 so callers cannot enumerate the cause.
+pub fn verify_device_self_signature(
+    pairing_code: &str,
+    public_key: &str,
+    timestamp: i64,
+    signature_b64: &str,
+) -> Result<(), ApiError> {
+    let signature = decode_signature(signature_b64).ok_or_else(invalid_registration_credentials)?;
+    let message = device_registration_sign_string(pairing_code, public_key, timestamp);
+    verify_p256_signature(
+        &DidKeyUri(public_key.to_string()),
+        message.as_bytes(),
+        &signature,
+    )
+    .map_err(|_| invalid_registration_credentials())
 }
 
 /// Authenticate a `pending_session` Bearer token.
@@ -702,5 +760,75 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status_code(), 401);
+    }
+}
+
+#[cfg(test)]
+mod device_registration_tests {
+    use super::*;
+
+    /// Sign `message` with the keypair's private bytes, returning base64url r‖s.
+    fn sign_with(keypair: &crypto::P256Keypair, message: &[u8]) -> String {
+        use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+        let sk = SigningKey::from_bytes(keypair.private_key_bytes.as_slice().into())
+            .expect("valid scalar");
+        let sig: Signature = sk.sign(message);
+        let normalized = sig.normalize_s().unwrap_or(sig);
+        URL_SAFE_NO_PAD.encode(normalized.to_bytes())
+    }
+
+    #[test]
+    fn sign_string_is_newline_separated() {
+        // Pins the wire format so the signing client stays in lockstep.
+        assert_eq!(
+            device_registration_sign_string("CODE", "did:key:zABC", 1700),
+            "CODE\ndid:key:zABC\n1700"
+        );
+    }
+
+    #[test]
+    fn verify_accepts_matching_self_signature() {
+        let keypair = crypto::generate_p256_keypair().unwrap();
+        let message = device_registration_sign_string("PAIR", &keypair.key_id.0, 1700);
+        let signature = sign_with(&keypair, message.as_bytes());
+        assert!(verify_device_self_signature("PAIR", &keypair.key_id.0, 1700, &signature).is_ok());
+    }
+
+    #[test]
+    fn verify_rejects_wrong_signing_key_with_generic_401() {
+        let advertised = crypto::generate_p256_keypair().unwrap();
+        let attacker = crypto::generate_p256_keypair().unwrap();
+        let message = device_registration_sign_string("PAIR", &advertised.key_id.0, 1700);
+        let signature = sign_with(&attacker, message.as_bytes());
+        let err = verify_device_self_signature("PAIR", &advertised.key_id.0, 1700, &signature)
+            .unwrap_err();
+        assert_eq!(err.status_code(), 401);
+        assert_eq!(
+            err.to_string(),
+            format!("Unauthorized: {INVALID_REGISTRATION_CREDENTIALS}")
+        );
+    }
+
+    #[test]
+    fn verify_rejects_tampered_field_with_generic_401() {
+        // Signature covers timestamp 1700; verifying against 1701 must fail.
+        let keypair = crypto::generate_p256_keypair().unwrap();
+        let message = device_registration_sign_string("PAIR", &keypair.key_id.0, 1700);
+        let signature = sign_with(&keypair, message.as_bytes());
+        let err =
+            verify_device_self_signature("PAIR", &keypair.key_id.0, 1701, &signature).unwrap_err();
+        assert_eq!(err.status_code(), 401);
+    }
+
+    #[test]
+    fn verify_rejects_malformed_signature_with_generic_401() {
+        let keypair = crypto::generate_p256_keypair().unwrap();
+        let err = verify_device_self_signature("PAIR", &keypair.key_id.0, 1700, "not-base64url!!!")
+            .unwrap_err();
+        assert_eq!(err.status_code(), 401);
+        assert_eq!(
+            err.to_string(),
+            format!("Unauthorized: {INVALID_REGISTRATION_CREDENTIALS}")
+        );
     }
 }
