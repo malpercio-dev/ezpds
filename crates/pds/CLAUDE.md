@@ -99,7 +99,7 @@ and async query functions; no business logic lives here.
 | `oauth.rs` | OAuth client lookup, auth code storage, token management |
 | `password_reset.rs` | `insert_reset_token`, `get_reset_token`, `mark_reset_token_used`, `update_password_hash` |
 | `preferences.rs` | `get_preferences` (DID→stored `app.bsky` preferences JSON blob); `put_preferences` (upsert the blob, overwriting any previous value) |
-| `admin_devices.rs` | Operator companion app admin-device model (V025): pairing-code mint/consume (single-use), device insert/list/revoke (derived active status), nonce insert-if-absent + stale-nonce sweep (anti-replay). Pairing/register wired by `routes/admin_devices.rs` (Phase 3); list/revoke + request-auth guard land in Phase 4+ |
+| `admin_devices.rs` | Operator companion app admin-device model (V025): pairing-code mint/consume (single-use), device insert/get/list/revoke (derived active status) + `touch_last_seen` (liveness bump on auth), nonce insert-if-absent + stale-nonce sweep (anti-replay). Pairing/register wired by `routes/admin_devices.rs` (Phase 3); the `require_admin` signed-request guard (`routes/auth.rs`, Phase 4) consumes `get_device`/`insert_nonce_if_absent`/`touch_last_seen`; list/revoke routes land in Phase 5 |
 
 See [`src/db/CLAUDE.md`](src/db/CLAUDE.md) for migration history and invariants.
 
@@ -135,7 +135,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `account_usage.rs` | `GET /v1/accounts/:id/usage` — operator usage metrics (records/commits/blobs counts, total storage bytes, last-active); admin token; reports on deactivated accounts too |
 | `account_storage.rs` | `GET /v1/accounts/:id/storage` — operator blob-storage metrics (blob count, total bytes, configured quota + used %, largest blob); admin token |
 | `admin_devices.rs` | `POST /v1/admin/pairing-codes` (master token; mint single-use pairing code) and `POST /v1/admin/devices` (pairing code + self-signature; register a companion-app device public key). Verifies the self-signature before consuming the code; rejection paths return a generic 401 |
-| `create_signing_key.rs` | `POST /v1/signing-keys` |
+| `create_signing_key.rs` | `POST /v1/pds/keys` (deprecated alias: `POST /v1/relay/keys`) |
 | `register_device.rs` | `POST /v1/devices` |
 | `get_device_pds.rs` | `GET /v1/devices/:id/pds` |
 | `describe_server.rs` | `GET /xrpc/com.atproto.server.describeServer` |
@@ -146,7 +146,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `resolve_handle.rs` | `GET /xrpc/com.atproto.identity.resolveHandle` |
 | `sync_subscribe_repos.rs` | `GET /xrpc/com.atproto.sync.subscribeRepos` (WebSocket firehose) |
 | `claim_codes.rs` | Claim code management |
-| `get_pds_signing_key.rs` | `GET /v1/signing-keys` |
+| `get_pds_signing_key.rs` | `GET /v1/pds/keys` (deprecated alias: `GET /v1/relay/keys`) |
 | `health.rs` | `GET /xrpc/_health` |
 | `delete_session.rs` | `POST /xrpc/com.atproto.server.deleteSession` (session revocation) |
 | `deactivate_account.rs` | `POST /xrpc/com.atproto.server.deactivateAccount` (flip account to deactivated, store optional `deleteAfter`, emit `#account` firehose event on transition) |
@@ -155,7 +155,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `provisioning_session.rs` | Provisioning session creation (email + password → session token) |
 | `code_gen.rs` | Claim code generation (random alphanumeric codes) |
 | `uniqueness.rs` | Pre-flight uniqueness checks for email and handle (Functional Core) |
-| `auth.rs` | Route-level auth middleware (`require_admin_token`, `require_pending_session`, `require_session`, `require_device_token`) |
+| `auth.rs` | Route-level auth middleware (`require_admin` [master token OR device signature], `require_admin_token`, `require_pending_session`, `require_session`, `require_device_token`) |
 | `token.rs` | Bearer token generation helpers |
 | `test_utils.rs` | Test helpers (excluded from production builds) |
 

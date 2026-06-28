@@ -4,14 +4,19 @@
 // Processes: auth check → input validation → code generation → DB batch insert (transaction)
 // Returns: JSON { codes: [...] } on success; ApiError on all failure paths
 
-use axum::{extract::State, http::HeaderMap, response::Json};
+use axum::{
+    body::Bytes,
+    extract::State,
+    http::{HeaderMap, Method, Uri},
+    response::{IntoResponse, Json, Response},
+};
 use serde::{Deserialize, Serialize};
 
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::db::is_unique_violation;
-use crate::routes::auth::require_admin_token;
+use crate::routes::auth::require_admin_json;
 use crate::routes::code_gen::generate_code;
 
 const MAX_COUNT: u32 = 10;
@@ -34,15 +39,34 @@ pub struct ClaimCodesResponse {
     codes: Vec<String>,
 }
 
+/// `POST /v1/accounts/claim-codes` — admin-only claim-code minting.
+///
+/// Auth runs first, over the raw body, so the canonical signature envelope can bind
+/// the exact request bytes (and so unauthenticated callers learn nothing about the
+/// body schema). Only after auth passes is the body parsed as JSON — using
+/// `Json::from_bytes` so malformed/invalid bodies return the same 400/422 statuses
+/// the `Json` extractor produced before this route accepted device signatures.
 pub async fn claim_codes(
     State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
     headers: HeaderMap,
-    Json(payload): Json<ClaimCodesRequest>,
-) -> Result<Json<ClaimCodesResponse>, ApiError> {
-    // --- Auth: require matching Bearer token ---
-    // Check this first so unauthenticated callers cannot probe server configuration.
-    require_admin_token(&headers, &state)?;
+    body: Bytes,
+) -> Result<Json<ClaimCodesResponse>, Response> {
+    require_admin_json(method.as_str(), uri.path(), &headers, &body, &state).await?;
 
+    let Json(payload) =
+        Json::<ClaimCodesRequest>::from_bytes(&body).map_err(IntoResponse::into_response)?;
+
+    claim_codes_inner(&state, payload)
+        .await
+        .map_err(IntoResponse::into_response)
+}
+
+async fn claim_codes_inner(
+    state: &AppState,
+    payload: ClaimCodesRequest,
+) -> Result<Json<ClaimCodesResponse>, ApiError> {
     // --- Validate input ---
     if payload.count == 0 || payload.count > MAX_COUNT {
         return Err(ApiError::new(
@@ -440,6 +464,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn non_json_content_type_returns_415() {
+        // Valid JSON body + valid token, but a non-JSON media type: matches the former
+        // `Json` extractor's 415 rejection.
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/accounts/claim-codes")
+            .header("Content-Type", "text/plain")
+            .header("Authorization", "Bearer test-admin-token")
+            .body(Body::from(r#"{"count": 1}"#))
+            .unwrap();
+        let response = app(test_state_with_admin_token().await)
+            .oneshot(request)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    #[tokio::test]
     async fn admin_token_not_configured_returns_401() {
         // test_state() leaves admin_token as None
         let response = app(test_state().await)
@@ -450,5 +492,173 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ── Device signed-request auth (end-to-end) ────────────────────────────────
+
+    #[tokio::test]
+    async fn signed_device_request_mints_a_code() {
+        use crate::db::admin_devices::{insert_device, NewAdminDevice};
+        use crate::routes::auth::{
+            admin_request_sign_string, ADMIN_DEVICE_HEADER, ADMIN_NONCE_HEADER,
+            ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
+        };
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        // A state with NO master token: proves the device path is independent of it.
+        let state = test_state().await;
+        let keypair = crypto::generate_p256_keypair().unwrap();
+        let device_id = uuid::Uuid::new_v4().to_string();
+        insert_device(
+            &state.db,
+            &NewAdminDevice {
+                id: &device_id,
+                label: "Operator iPhone",
+                public_key: &keypair.key_id.0,
+                platform: "ios",
+            },
+        )
+        .await
+        .unwrap();
+
+        let body = r#"{"count":2,"expiresInHours":24}"#;
+        let path = "/v1/accounts/claim-codes";
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let nonce = "e2e-nonce-1";
+        let sign_string = admin_request_sign_string("POST", path, ts, nonce, body.as_bytes());
+        let signature = crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes());
+
+        let request = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("Content-Type", "application/json")
+            .header(ADMIN_DEVICE_HEADER, &device_id)
+            .header(ADMIN_TIMESTAMP_HEADER, ts.to_string())
+            .header(ADMIN_NONCE_HEADER, nonce)
+            .header(ADMIN_SIGNATURE_HEADER, signature)
+            .body(Body::from(body))
+            .unwrap();
+
+        let response = app(state).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .map(|b| serde_json::from_slice::<serde_json::Value>(&b).unwrap())
+            .unwrap();
+        assert_eq!(json["codes"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn signed_device_request_with_tampered_body_is_rejected() {
+        use crate::db::admin_devices::{insert_device, NewAdminDevice};
+        use crate::routes::auth::{
+            admin_request_sign_string, ADMIN_DEVICE_HEADER, ADMIN_NONCE_HEADER,
+            ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
+        };
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let state = test_state().await;
+        let keypair = crypto::generate_p256_keypair().unwrap();
+        let device_id = uuid::Uuid::new_v4().to_string();
+        insert_device(
+            &state.db,
+            &NewAdminDevice {
+                id: &device_id,
+                label: "Operator iPhone",
+                public_key: &keypair.key_id.0,
+                platform: "ios",
+            },
+        )
+        .await
+        .unwrap();
+
+        let path = "/v1/accounts/claim-codes";
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let nonce = "e2e-nonce-2";
+        // Sign over count:1 but send count:9 — the body hash will not match.
+        let sign_string = admin_request_sign_string("POST", path, ts, nonce, br#"{"count":1}"#);
+        let signature = crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes());
+
+        let request = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("Content-Type", "application/json")
+            .header(ADMIN_DEVICE_HEADER, &device_id)
+            .header(ADMIN_TIMESTAMP_HEADER, ts.to_string())
+            .header(ADMIN_NONCE_HEADER, nonce)
+            .header(ADMIN_SIGNATURE_HEADER, signature)
+            .body(Body::from(r#"{"count":9}"#))
+            .unwrap();
+
+        let response = app(state).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn wrong_content_type_does_not_consume_signed_request_nonce() {
+        // The media-type guard runs before signature verification, so a wrong
+        // Content-Type returns 415 without burning the nonce — the corrected retry
+        // with the same signed request (same nonce) must still succeed.
+        use crate::db::admin_devices::{insert_device, NewAdminDevice};
+        use crate::routes::auth::{
+            admin_request_sign_string, ADMIN_DEVICE_HEADER, ADMIN_NONCE_HEADER,
+            ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
+        };
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let state = test_state().await;
+        let keypair = crypto::generate_p256_keypair().unwrap();
+        let device_id = uuid::Uuid::new_v4().to_string();
+        insert_device(
+            &state.db,
+            &NewAdminDevice {
+                id: &device_id,
+                label: "Operator iPhone",
+                public_key: &keypair.key_id.0,
+                platform: "ios",
+            },
+        )
+        .await
+        .unwrap();
+
+        let body = r#"{"count":1}"#;
+        let path = "/v1/accounts/claim-codes";
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let nonce = "ct-order-nonce";
+        let sign_string = admin_request_sign_string("POST", path, ts, nonce, body.as_bytes());
+        let signature = crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes());
+
+        let build = |content_type: &str| {
+            Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("Content-Type", content_type)
+                .header(ADMIN_DEVICE_HEADER, device_id.as_str())
+                .header(ADMIN_TIMESTAMP_HEADER, ts.to_string())
+                .header(ADMIN_NONCE_HEADER, nonce)
+                .header(ADMIN_SIGNATURE_HEADER, signature.as_str())
+                .body(Body::from(body))
+                .unwrap()
+        };
+
+        // Wrong media type → 415, and the nonce must not be consumed.
+        let r1 = app(state.clone())
+            .oneshot(build("text/plain"))
+            .await
+            .unwrap();
+        assert_eq!(r1.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+        // The corrected retry reusing the same nonce succeeds (nonce was not burned).
+        let r2 = app(state).oneshot(build("application/json")).await.unwrap();
+        assert_eq!(r2.status(), StatusCode::OK);
     }
 }

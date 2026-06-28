@@ -1,4 +1,12 @@
-use axum::http::HeaderMap;
+// pattern: Imperative Shell
+//
+// Route-level auth middleware: token/session/signature checks that read request
+// headers and query the database. Pure helpers it builds on live in `auth/`.
+
+use axum::{
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use crypto::{verify_p256_signature, DidKeyUri};
 use subtle::ConstantTimeEq;
@@ -63,6 +71,233 @@ pub fn require_admin_token(headers: &HeaderMap, state: &AppState) -> Result<(), 
             ErrorCode::Unauthorized,
             "invalid admin token",
         ));
+    }
+
+    Ok(())
+}
+
+// ── Per-device signed-request admin auth (companion app) ─────────────────────
+
+/// Headers a companion-app device attaches to every admin request. Names are
+/// stored lowercase because `HeaderMap` normalises on lookup and `from_static`
+/// rejects uppercase; the canonical display form is `X-Admin-*`.
+pub const ADMIN_DEVICE_HEADER: &str = "x-admin-device";
+pub const ADMIN_TIMESTAMP_HEADER: &str = "x-admin-timestamp";
+pub const ADMIN_NONCE_HEADER: &str = "x-admin-nonce";
+pub const ADMIN_SIGNATURE_HEADER: &str = "x-admin-signature";
+
+/// Maximum clock skew tolerated between a device's signed timestamp and the relay,
+/// in seconds. A request stamped outside `now ± window` is rejected as stale.
+const ADMIN_TIMESTAMP_WINDOW_SECS: i64 = 60;
+
+/// The single generic 401 for every device signed-request auth failure — a missing
+/// header, an unknown device, a stale timestamp, a bad signature, or a replayed
+/// nonce all surface this identical message so the response never reveals which
+/// check failed. A *revoked* device is the one deliberate exception: it returns 403
+/// so an operator can confirm a device was cut off server-side.
+pub const INVALID_ADMIN_SIGNATURE: &str = "invalid admin request signature";
+
+fn invalid_admin_signature() -> ApiError {
+    ApiError::new(ErrorCode::Unauthorized, INVALID_ADMIN_SIGNATURE)
+}
+
+/// The canonical envelope a device signs for each admin request, and that
+/// `require_admin` reconstructs to verify it.
+///
+/// Format: `method ‖ "\n" ‖ path ‖ "\n" ‖ timestamp ‖ "\n" ‖ nonce ‖ "\n" ‖ sha256_hex(body)`
+/// — newline-separated to match the registration envelope convention. The body is
+/// committed to as the lowercase hex SHA-256 digest of the exact request bytes (empty
+/// string hashed for a bodiless request). This function is the single source of truth
+/// for that format; the companion app's signing client must produce identical bytes.
+pub fn admin_request_sign_string(
+    method: &str,
+    path: &str,
+    timestamp: i64,
+    nonce: &str,
+    body: &[u8],
+) -> String {
+    let body_hash = crate::routes::token::sha256_hex(body);
+    format!("{method}\n{path}\n{timestamp}\n{nonce}\n{body_hash}")
+}
+
+/// Read a header as a UTF-8 string, treating non-UTF-8 values as absent.
+fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers.get(name).and_then(|v| v.to_str().ok())
+}
+
+/// Whether the request's `Content-Type` is JSON — `application/json` (optionally with
+/// parameters like `; charset=utf-8`) or any `application/*+json` — matching what
+/// axum's `Json` extractor accepts. The admin routes parse the body via
+/// `Json::from_bytes` (after consuming it as `Bytes` for signature verification), which
+/// skips the extractor's media-type guard; they call this to preserve the prior 415
+/// rejection for non-JSON (or absent) content types.
+fn is_json_content_type(headers: &HeaderMap) -> bool {
+    let Some(value) = header_str(headers, axum::http::header::CONTENT_TYPE.as_str()) else {
+        return false;
+    };
+    let essence = value
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    essence == "application/json"
+        || (essence.starts_with("application/") && essence.ends_with("+json"))
+}
+
+/// Current Unix time in seconds. Clamps a pre-epoch clock to 0 rather than panicking;
+/// such a request fails the timestamp-window check anyway.
+fn unix_now_secs() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Gate an admin endpoint: accept the master Bearer token **or** a verified,
+/// non-replayed device signature.
+///
+/// A request carrying the `X-Admin-Device` header is treated as a device signed
+/// request and verified via [`verify_admin_device_request`]; any other request
+/// falls back to the master token ([`require_admin_token`]), preserving the existing
+/// break-glass / CI path unchanged. `method` and `path` are the request's HTTP method
+/// and path (no query) — they are bound into the signature so a signature minted for
+/// one route cannot authorize another. `body` is the exact request body bytes.
+pub async fn require_admin(
+    method: &str,
+    path: &str,
+    headers: &HeaderMap,
+    body: &[u8],
+    state: &AppState,
+) -> Result<(), ApiError> {
+    // The master token is the root of trust / break-glass path: accept it whenever it
+    // is valid, regardless of any (possibly malformed) device headers, so the
+    // "master token OR device signature" contract holds even if both are present.
+    let token_result = require_admin_token(headers, state);
+    if token_result.is_ok() {
+        return Ok(());
+    }
+
+    // Otherwise a request carrying the device header is verified as a device signed
+    // request; a request with neither credential surfaces the master-token error.
+    if headers.contains_key(ADMIN_DEVICE_HEADER) {
+        verify_admin_device_request(method, path, headers, body, &state.db).await
+    } else {
+        token_result
+    }
+}
+
+/// Gate an admin endpoint and enforce JSON content type in one step.
+///
+/// Combines [`require_admin`] with the 415 media-type guard that axum's `Json`
+/// extractor previously provided. Admin handlers that consume the body as raw
+/// [`axum::body::Bytes`] for signature verification call this before parsing the
+/// body with `Json::from_bytes`, so they preserve the same rejection statuses as
+/// before device-signature support was added.
+///
+/// Returns `Err(Response)` on auth failure (401/403) or a non-JSON content type
+/// (415); `Ok(())` to proceed with body parsing.
+pub async fn require_admin_json(
+    method: &str,
+    path: &str,
+    headers: &HeaderMap,
+    body: &[u8],
+    state: &AppState,
+) -> Result<(), Response> {
+    // The media-type guard runs first: it is cheap and side-effect-free, whereas
+    // `require_admin` may consume a nonce and bump `last_seen_at`. Checking it first
+    // means a wrong `Content-Type` returns 415 without burning a nonce (which would
+    // otherwise make the corrected retry fail as a replay) and matches the original
+    // ordering where axum's `Json` extractor rejected the media type before the handler.
+    if !is_json_content_type(headers) {
+        return Err((
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "expected application/json",
+        )
+            .into_response());
+    }
+    require_admin(method, path, headers, body, state)
+        .await
+        .map_err(IntoResponse::into_response)?;
+    Ok(())
+}
+
+/// Verify a device signed admin request against its stored public key.
+///
+/// Steps: parse the `X-Admin-*` headers; load the device (unknown ⇒ 401, revoked ⇒
+/// 403); reject a timestamp outside the ±[`ADMIN_TIMESTAMP_WINDOW_SECS`] window;
+/// verify the P-256 signature over the canonical [`admin_request_sign_string`];
+/// record the nonce (a previously-seen nonce ⇒ replay ⇒ 401); then bump
+/// `last_seen_at` (best effort). Every failure but the revoked case returns the
+/// single generic [`INVALID_ADMIN_SIGNATURE`] 401 (non-enumeration).
+async fn verify_admin_device_request(
+    method: &str,
+    path: &str,
+    headers: &HeaderMap,
+    body: &[u8],
+    db: &sqlx::SqlitePool,
+) -> Result<(), ApiError> {
+    use crate::db::admin_devices::{get_device, insert_nonce_if_absent, touch_last_seen};
+
+    let device_id = header_str(headers, ADMIN_DEVICE_HEADER).ok_or_else(invalid_admin_signature)?;
+    let timestamp = header_str(headers, ADMIN_TIMESTAMP_HEADER)
+        .and_then(|s| s.parse::<i64>().ok())
+        .ok_or_else(invalid_admin_signature)?;
+    let nonce = header_str(headers, ADMIN_NONCE_HEADER).ok_or_else(invalid_admin_signature)?;
+    let signature = header_str(headers, ADMIN_SIGNATURE_HEADER)
+        .and_then(decode_signature)
+        .ok_or_else(invalid_admin_signature)?;
+
+    // Device must be known and active. A revoked device is rejected with 403 so it can
+    // be cut off server-side without the phone; all other failures are a generic 401.
+    let device = get_device(db, device_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to look up admin device");
+            ApiError::new(ErrorCode::InternalError, "admin auth failed")
+        })?
+        .ok_or_else(invalid_admin_signature)?;
+    if !device.is_active {
+        return Err(ApiError::new(ErrorCode::Forbidden, "admin device revoked"));
+    }
+
+    // Reject stale or future-dated requests (clock skew beyond the window). This bounds
+    // how long a captured request stays replayable alongside the nonce check below.
+    // Saturating bounds avoid i64 overflow on an extreme attacker-supplied timestamp
+    // (a direct `now - timestamp` could panic in debug or wrap in release).
+    let now = unix_now_secs();
+    if timestamp < now.saturating_sub(ADMIN_TIMESTAMP_WINDOW_SECS)
+        || timestamp > now.saturating_add(ADMIN_TIMESTAMP_WINDOW_SECS)
+    {
+        return Err(invalid_admin_signature());
+    }
+
+    // The signature must verify against the stored key over the canonical envelope —
+    // binding method, path, timestamp, nonce, and a hash of the body.
+    let sign_string = admin_request_sign_string(method, path, timestamp, nonce, body);
+    verify_p256_signature(
+        &DidKeyUri(device.public_key.clone()),
+        sign_string.as_bytes(),
+        &signature,
+    )
+    .map_err(|_| invalid_admin_signature())?;
+
+    // Record the nonce; a value this device has already used is a replay. INSERT OR
+    // IGNORE makes the seen-once check atomic, so concurrent replays cannot both win.
+    let fresh = insert_nonce_if_absent(db, nonce, device_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to record admin nonce");
+            ApiError::new(ErrorCode::InternalError, "admin auth failed")
+        })?;
+    if !fresh {
+        return Err(invalid_admin_signature());
+    }
+
+    // Liveness bookkeeping only — a failure here must not deny an authenticated request.
+    if let Err(e) = touch_last_seen(db, device_id).await {
+        tracing::warn!(error = %e, device_id, "failed to bump admin device last_seen_at");
     }
 
     Ok(())
@@ -766,16 +1001,7 @@ mod tests {
 #[cfg(test)]
 mod device_registration_tests {
     use super::*;
-
-    /// Sign `message` with the keypair's private bytes, returning base64url r‖s.
-    fn sign_with(keypair: &crypto::P256Keypair, message: &[u8]) -> String {
-        use p256::ecdsa::{signature::Signer, Signature, SigningKey};
-        let sk = SigningKey::from_bytes(keypair.private_key_bytes.as_slice().into())
-            .expect("valid scalar");
-        let sig: Signature = sk.sign(message);
-        let normalized = sig.normalize_s().unwrap_or(sig);
-        URL_SAFE_NO_PAD.encode(normalized.to_bytes())
-    }
+    use crate::routes::test_utils::sign_p256;
 
     #[test]
     fn sign_string_is_newline_separated() {
@@ -790,7 +1016,7 @@ mod device_registration_tests {
     fn verify_accepts_matching_self_signature() {
         let keypair = crypto::generate_p256_keypair().unwrap();
         let message = device_registration_sign_string("PAIR", &keypair.key_id.0, 1700);
-        let signature = sign_with(&keypair, message.as_bytes());
+        let signature = sign_p256(&keypair, message.as_bytes());
         assert!(verify_device_self_signature("PAIR", &keypair.key_id.0, 1700, &signature).is_ok());
     }
 
@@ -799,7 +1025,7 @@ mod device_registration_tests {
         let advertised = crypto::generate_p256_keypair().unwrap();
         let attacker = crypto::generate_p256_keypair().unwrap();
         let message = device_registration_sign_string("PAIR", &advertised.key_id.0, 1700);
-        let signature = sign_with(&attacker, message.as_bytes());
+        let signature = sign_p256(&attacker, message.as_bytes());
         let err = verify_device_self_signature("PAIR", &advertised.key_id.0, 1700, &signature)
             .unwrap_err();
         assert_eq!(err.status_code(), 401);
@@ -814,7 +1040,7 @@ mod device_registration_tests {
         // Signature covers timestamp 1700; verifying against 1701 must fail.
         let keypair = crypto::generate_p256_keypair().unwrap();
         let message = device_registration_sign_string("PAIR", &keypair.key_id.0, 1700);
-        let signature = sign_with(&keypair, message.as_bytes());
+        let signature = sign_p256(&keypair, message.as_bytes());
         let err =
             verify_device_self_signature("PAIR", &keypair.key_id.0, 1701, &signature).unwrap_err();
         assert_eq!(err.status_code(), 401);
@@ -829,6 +1055,329 @@ mod device_registration_tests {
         assert_eq!(
             err.to_string(),
             format!("Unauthorized: {INVALID_REGISTRATION_CREDENTIALS}")
+        );
+    }
+}
+
+#[cfg(test)]
+mod require_admin_tests {
+    use super::*;
+
+    use crate::app::{test_state, AppState};
+    use crate::db::admin_devices::{insert_device, revoke_device, NewAdminDevice};
+    use crate::routes::test_utils::sign_p256;
+
+    const METHOD: &str = "POST";
+    const PATH: &str = "/v1/accounts/claim-codes";
+    const BODY: &[u8] = br#"{"count":1}"#;
+
+    /// Seed an active admin device, returning its id and the keypair that signs for it.
+    async fn seed_admin_device(state: &AppState) -> (String, crypto::P256Keypair) {
+        let keypair = crypto::generate_p256_keypair().expect("keypair");
+        let device_id = uuid::Uuid::new_v4().to_string();
+        insert_device(
+            &state.db,
+            &NewAdminDevice {
+                id: &device_id,
+                label: "Operator iPhone",
+                public_key: &keypair.key_id.0,
+                platform: "ios",
+            },
+        )
+        .await
+        .expect("insert device");
+        (device_id, keypair)
+    }
+
+    /// Build a fully-signed set of `X-Admin-*` headers for the given envelope inputs.
+    fn signed_headers(
+        device_id: &str,
+        keypair: &crypto::P256Keypair,
+        method: &str,
+        path: &str,
+        timestamp: i64,
+        nonce: &str,
+        body: &[u8],
+    ) -> HeaderMap {
+        let sign_string = admin_request_sign_string(method, path, timestamp, nonce, body);
+        let signature = sign_p256(keypair, sign_string.as_bytes());
+        let mut h = HeaderMap::new();
+        h.insert(ADMIN_DEVICE_HEADER, device_id.parse().unwrap());
+        h.insert(
+            ADMIN_TIMESTAMP_HEADER,
+            timestamp.to_string().parse().unwrap(),
+        );
+        h.insert(ADMIN_NONCE_HEADER, nonce.parse().unwrap());
+        h.insert(ADMIN_SIGNATURE_HEADER, signature.parse().unwrap());
+        h
+    }
+
+    #[test]
+    fn sign_string_is_newline_separated_with_body_hash() {
+        // Pins the wire format so the signing client stays in lockstep. The final
+        // field is the lowercase hex SHA-256 of the body (empty body shown here).
+        let empty_hash = crate::routes::token::sha256_hex(b"");
+        assert_eq!(
+            admin_request_sign_string("POST", "/x", 1700, "abc", b""),
+            format!("POST\n/x\n1700\nabc\n{empty_hash}")
+        );
+    }
+
+    #[tokio::test]
+    async fn master_token_still_authorizes() {
+        // No X-Admin-* headers → master-token path is taken, unchanged.
+        let mut state = test_state().await;
+        let config = std::sync::Arc::make_mut(&mut state.config);
+        config.admin_token = Some("secret".to_string());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Bearer secret".parse().unwrap(),
+        );
+        require_admin(METHOD, PATH, &headers, BODY, &state)
+            .await
+            .expect("master token must authorize");
+    }
+
+    #[tokio::test]
+    async fn master_token_accepted_even_with_device_header_present() {
+        // A valid master token authorizes regardless of a (here malformed) device
+        // header — preserving the "master token OR device signature" contract.
+        let mut state = test_state().await;
+        let config = std::sync::Arc::make_mut(&mut state.config);
+        config.admin_token = Some("secret".to_string());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Bearer secret".parse().unwrap(),
+        );
+        headers.insert(ADMIN_DEVICE_HEADER, "garbage-device".parse().unwrap());
+
+        require_admin(METHOD, PATH, &headers, BODY, &state)
+            .await
+            .expect("master token must authorize even with a device header present");
+    }
+
+    #[tokio::test]
+    async fn extreme_timestamp_is_rejected_without_panicking() {
+        // An i64::MIN timestamp would overflow a naive `now - timestamp`; the saturating
+        // bounds must reject it cleanly with a 401 rather than panic.
+        let state = test_state().await;
+        let (device_id, keypair) = seed_admin_device(&state).await;
+        let headers = signed_headers(
+            &device_id,
+            &keypair,
+            METHOD,
+            PATH,
+            i64::MIN,
+            "nonce-extreme",
+            BODY,
+        );
+        let err = require_admin(METHOD, PATH, &headers, BODY, &state)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code(), 401);
+    }
+
+    #[tokio::test]
+    async fn correctly_signed_device_request_authorizes() {
+        let state = test_state().await;
+        let (device_id, keypair) = seed_admin_device(&state).await;
+        let headers = signed_headers(
+            &device_id,
+            &keypair,
+            METHOD,
+            PATH,
+            unix_now_secs(),
+            "nonce-ok",
+            BODY,
+        );
+        require_admin(METHOD, PATH, &headers, BODY, &state)
+            .await
+            .expect("a valid device signature must authorize");
+    }
+
+    #[tokio::test]
+    async fn signature_over_different_method_is_rejected() {
+        let state = test_state().await;
+        let (device_id, keypair) = seed_admin_device(&state).await;
+        // Sign for GET, present as POST.
+        let headers = signed_headers(
+            &device_id,
+            &keypair,
+            "GET",
+            PATH,
+            unix_now_secs(),
+            "nonce-m",
+            BODY,
+        );
+        let err = require_admin(METHOD, PATH, &headers, BODY, &state)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code(), 401);
+    }
+
+    #[tokio::test]
+    async fn signature_over_different_path_is_rejected() {
+        let state = test_state().await;
+        let (device_id, keypair) = seed_admin_device(&state).await;
+        let headers = signed_headers(
+            &device_id,
+            &keypair,
+            METHOD,
+            "/v1/pds/keys",
+            unix_now_secs(),
+            "nonce-p",
+            BODY,
+        );
+        let err = require_admin(METHOD, PATH, &headers, BODY, &state)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code(), 401);
+    }
+
+    #[tokio::test]
+    async fn signature_over_different_body_is_rejected() {
+        let state = test_state().await;
+        let (device_id, keypair) = seed_admin_device(&state).await;
+        // Sign over a different body than the one presented for verification.
+        let headers = signed_headers(
+            &device_id,
+            &keypair,
+            METHOD,
+            PATH,
+            unix_now_secs(),
+            "nonce-b",
+            br#"{"count":10}"#,
+        );
+        let err = require_admin(METHOD, PATH, &headers, BODY, &state)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code(), 401);
+    }
+
+    #[tokio::test]
+    async fn timestamp_outside_window_is_rejected() {
+        let state = test_state().await;
+        let (device_id, keypair) = seed_admin_device(&state).await;
+        // 120s in the past — beyond the ±60s window. Signature is otherwise valid.
+        let stale = unix_now_secs() - 120;
+        let headers = signed_headers(&device_id, &keypair, METHOD, PATH, stale, "nonce-t", BODY);
+        let err = require_admin(METHOD, PATH, &headers, BODY, &state)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code(), 401);
+    }
+
+    #[tokio::test]
+    async fn reused_nonce_is_rejected_second_time() {
+        let state = test_state().await;
+        let (device_id, keypair) = seed_admin_device(&state).await;
+        let ts = unix_now_secs();
+        let headers = signed_headers(&device_id, &keypair, METHOD, PATH, ts, "nonce-dup", BODY);
+
+        // First use within the window is accepted exactly once...
+        require_admin(METHOD, PATH, &headers, BODY, &state)
+            .await
+            .expect("first use of a fresh nonce is accepted");
+        // ...a second presentation of the same nonce is a replay.
+        let err = require_admin(METHOD, PATH, &headers, BODY, &state)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code(), 401);
+    }
+
+    #[tokio::test]
+    async fn distinct_nonces_within_window_each_accepted() {
+        let state = test_state().await;
+        let (device_id, keypair) = seed_admin_device(&state).await;
+        let ts = unix_now_secs();
+        for nonce in ["n-1", "n-2"] {
+            let headers = signed_headers(&device_id, &keypair, METHOD, PATH, ts, nonce, BODY);
+            require_admin(METHOD, PATH, &headers, BODY, &state)
+                .await
+                .unwrap_or_else(|_| panic!("distinct nonce {nonce} must be accepted"));
+        }
+    }
+
+    #[tokio::test]
+    async fn revoked_device_is_rejected_with_403() {
+        let state = test_state().await;
+        let (device_id, keypair) = seed_admin_device(&state).await;
+        revoke_device(&state.db, &device_id).await.unwrap();
+
+        let headers = signed_headers(
+            &device_id,
+            &keypair,
+            METHOD,
+            PATH,
+            unix_now_secs(),
+            "nonce-rev",
+            BODY,
+        );
+        let err = require_admin(METHOD, PATH, &headers, BODY, &state)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.status_code(),
+            403,
+            "a revoked device is denied with 403, not the generic 401"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_device_is_rejected_with_401() {
+        let state = test_state().await;
+        let keypair = crypto::generate_p256_keypair().unwrap();
+        let headers = signed_headers(
+            "no-such-device",
+            &keypair,
+            METHOD,
+            PATH,
+            unix_now_secs(),
+            "nonce-u",
+            BODY,
+        );
+        let err = require_admin(METHOD, PATH, &headers, BODY, &state)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code(), 401);
+    }
+
+    #[tokio::test]
+    async fn last_seen_at_is_bumped_after_auth() {
+        let state = test_state().await;
+        let (device_id, keypair) = seed_admin_device(&state).await;
+        assert!(crate::db::admin_devices::get_device(&state.db, &device_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .last_seen_at
+            .is_none());
+
+        let headers = signed_headers(
+            &device_id,
+            &keypair,
+            METHOD,
+            PATH,
+            unix_now_secs(),
+            "nonce-seen",
+            BODY,
+        );
+        require_admin(METHOD, PATH, &headers, BODY, &state)
+            .await
+            .unwrap();
+
+        assert!(
+            crate::db::admin_devices::get_device(&state.db, &device_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .last_seen_at
+                .is_some(),
+            "authenticating bumps last_seen_at"
         );
     }
 }

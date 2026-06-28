@@ -4,13 +4,18 @@
 // Processes: auth check → algorithm check → master key check → key generation → encryption → DB insert
 // Returns: JSON { key_id, public_key, algorithm } on success; ApiError on all failure paths
 
-use axum::{extract::State, http::HeaderMap, response::Json};
+use axum::{
+    body::Bytes,
+    extract::State,
+    http::{HeaderMap, Method, Uri},
+    response::{IntoResponse, Json, Response},
+};
 use serde::{Deserialize, Serialize};
 
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::routes::auth::require_admin_token;
+use crate::routes::auth::require_admin_json;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -36,15 +41,34 @@ pub struct CreateSigningKeyResponse {
     algorithm: String,
 }
 
+/// `POST /v1/pds/keys` — admin-only operator signing-key creation.
+///
+/// Auth runs first, over the raw body, so a device signature can bind the exact
+/// request bytes; the body is then parsed via `Json::from_bytes` to preserve the
+/// same 400/422 statuses the `Json` extractor produced before this route accepted
+/// device signatures.
 pub async fn create_signing_key(
     State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
     headers: HeaderMap,
-    Json(_payload): Json<CreateSigningKeyRequest>,
-) -> Result<Json<CreateSigningKeyResponse>, ApiError> {
-    // --- Auth: require matching Bearer token ---
-    // Check this first so unauthenticated callers cannot probe server configuration.
-    require_admin_token(&headers, &state)?;
+    body: Bytes,
+) -> Result<Json<CreateSigningKeyResponse>, Response> {
+    require_admin_json(method.as_str(), uri.path(), &headers, &body, &state).await?;
 
+    // Validate the body shape (algorithm enum) using the same rejection semantics as
+    // the former `Json` extractor: unknown variant / missing field → 422, null → 400.
+    let _ =
+        Json::<CreateSigningKeyRequest>::from_bytes(&body).map_err(IntoResponse::into_response)?;
+
+    create_signing_key_inner(&state)
+        .await
+        .map_err(IntoResponse::into_response)
+}
+
+async fn create_signing_key_inner(
+    state: &AppState,
+) -> Result<Json<CreateSigningKeyResponse>, ApiError> {
     // --- Master key: return 503 if not configured ---
     let master_key: &[u8; 32] = state
         .config
@@ -405,6 +429,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn non_json_content_type_returns_415() {
+        // Valid JSON body + valid token, but a non-JSON media type: matches the former
+        // `Json` extractor's 415 rejection.
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/pds/keys")
+            .header("Content-Type", "text/plain")
+            .header("Authorization", "Bearer test-admin-token")
+            .body(Body::from(r#"{"algorithm": "p256"}"#))
+            .unwrap();
+        let response = app(test_state_with_keys().await)
+            .oneshot(request)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
 
     #[tokio::test]
