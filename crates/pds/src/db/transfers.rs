@@ -77,12 +77,15 @@ pub async fn insert_transfer(
         }
         // A partial unique index rejected the row. Dropping `tx` rolls back the
         // (harmless) sweep too; no row was created. Which index fired decides the
-        // outcome: a `code` clash with another account's active transfer is a
-        // regenerate-and-retry; a `did` clash means this account already has an
-        // active transfer (the 409 path).
+        // outcome: a `did` clash means this account already has an active transfer
+        // (the 409 path); a `code` clash with another account's active transfer is a
+        // regenerate-and-retry. Any other uniqueness failure (e.g. a `id` PK clash, or
+        // a column we couldn't classify) is an unexpected insert bug — bubble it rather
+        // than masking it as a misleading 409.
         Err(e) if is_unique_violation(&e) => match unique_violation_column(&e, "transfers") {
+            Some("did") => Ok(InitiateOutcome::DuplicateActive),
             Some("code") => Ok(InitiateOutcome::CodeCollision),
-            _ => Ok(InitiateOutcome::DuplicateActive),
+            _ => Err(e),
         },
         Err(e) => Err(e),
     }
