@@ -949,14 +949,25 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(first.status(), StatusCode::OK);
+        let first_revoked_at = body_json(first).await["device"]["revokedAt"]
+            .as_str()
+            .expect("revokedAt is stamped on the first revoke")
+            .to_string();
 
-        // A second revoke of the already-revoked device is a 200 no-op.
+        // A second revoke of the already-revoked device is a 200 no-op: status stays
+        // revoked and revokedAt is unchanged — the handler must not re-stamp it.
         let second = app(state)
             .oneshot(post(&uri, "", Some("test-admin-token")))
             .await
             .unwrap();
         assert_eq!(second.status(), StatusCode::OK);
-        assert_eq!(body_json(second).await["device"]["status"], "revoked");
+        let second_json = body_json(second).await;
+        assert_eq!(second_json["device"]["status"], "revoked");
+        assert_eq!(
+            second_json["device"]["revokedAt"].as_str().unwrap(),
+            first_revoked_at,
+            "revokedAt must not change on a repeat revoke"
+        );
     }
 
     #[tokio::test]

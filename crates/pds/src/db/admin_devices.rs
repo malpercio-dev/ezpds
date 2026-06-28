@@ -189,6 +189,10 @@ pub async fn get_device(
 }
 
 /// List all devices (active and revoked) newest first, with derived status.
+///
+/// `created_at` is only second-granularity, so the `rowid` tie-breaker decides order
+/// among devices registered in the same second. `rowid` tracks insertion order on this
+/// (rowid) table, so it is a true recency tie-breaker — unlike the random-UUID `id`.
 pub async fn list_devices(pool: &SqlitePool) -> Result<Vec<AdminDeviceRow>, sqlx::Error> {
     let rows = sqlx::query_as::<
         _,
@@ -206,7 +210,7 @@ pub async fn list_devices(pool: &SqlitePool) -> Result<Vec<AdminDeviceRow>, sqlx
     >(
         "SELECT id, label, public_key, platform, scopes, created_at, last_seen_at, revoked_at, \
                 revoked_at IS NULL AS is_active \
-         FROM admin_devices ORDER BY created_at DESC, id DESC",
+         FROM admin_devices ORDER BY created_at DESC, rowid DESC",
     )
     .fetch_all(pool)
     .await?;
@@ -485,6 +489,31 @@ mod tests {
         assert!(!a.is_active, "revoked device reports inactive");
         assert!(a.revoked_at.is_some());
         assert!(b.is_active, "untouched device reports active");
+    }
+
+    #[tokio::test]
+    async fn list_devices_breaks_same_second_ties_by_insertion_order() {
+        // Two devices sharing a created_at must still list newest-insertion-first. The
+        // random-UUID id is no recency signal, so the order rides on rowid (insertion
+        // order). `zzz` < `aaa` lexically, proving the tie-break is not id-based.
+        let pool = test_pool().await;
+        for id in ["zzz-first", "aaa-second"] {
+            sqlx::query(
+                "INSERT INTO admin_devices (id, label, public_key, platform, created_at) \
+                 VALUES (?, 'L', 'did:key:z', 'ios', '2026-06-28 12:00:00')",
+            )
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let devices = list_devices(&pool).await.unwrap();
+        assert_eq!(
+            devices.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(),
+            ["aaa-second", "zzz-first"],
+            "the later insertion lists first despite an alphabetically smaller id"
+        );
     }
 
     #[tokio::test]
