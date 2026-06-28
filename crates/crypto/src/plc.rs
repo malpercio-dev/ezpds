@@ -547,11 +547,11 @@ fn verify_signature_with_key(
     let key_str = key
         .0
         .strip_prefix("did:key:")
-        .ok_or_else(|| "rotation key missing did:key: prefix".to_string())?;
+        .ok_or_else(|| "public key missing did:key: prefix".to_string())?;
     let (_, multikey_bytes) =
-        multibase::decode(key_str).map_err(|e| format!("decode rotation key multibase: {e}"))?;
+        multibase::decode(key_str).map_err(|e| format!("decode public key multibase: {e}"))?;
     if multikey_bytes.get(..2) != Some(P256_MULTICODEC_PREFIX) {
-        return Err("rotation key is not a P-256 key (wrong multicodec prefix)".to_string());
+        return Err("public key is not a P-256 key (wrong multicodec prefix)".to_string());
     }
     let verifying_key = VerifyingKey::from_sec1_bytes(&multikey_bytes[2..])
         .map_err(|e| format!("invalid P-256 public key: {e}"))?;

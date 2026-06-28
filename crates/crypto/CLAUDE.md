@@ -96,6 +96,7 @@ pub fn verify_genesis_op(
 - Errors: `CryptoError::PlcOperation` for any parse, format, or signature failure
 
 **`verify_p256_signature`**
+
 ```rust
 pub fn verify_p256_signature(
     public_key: &DidKeyUri,         // signer's P-256 did:key URI
@@ -103,6 +104,7 @@ pub fn verify_p256_signature(
     signature: &[u8; 64],           // raw r||s ECDSA signature, big-endian
 ) -> Result<(), CryptoError>
 ```
+
 - General-purpose P-256 ECDSA-SHA256 verification, decoupled from did:plc operation JSON
 - Thin public wrapper over the internal `verify_signature_with_key`; the relay uses it to authenticate signed admin requests
 - Message is hashed with SHA-256 internally — pass the bytes exactly as signed, do not pre-hash
