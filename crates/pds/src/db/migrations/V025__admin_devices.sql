@@ -37,10 +37,12 @@ CREATE TABLE admin_devices (
 );
 
 CREATE TABLE admin_nonces (
-    nonce     TEXT NOT NULL,
     device_id TEXT NOT NULL,
+    nonce     TEXT NOT NULL,
     seen_at   TEXT NOT NULL,
-    PRIMARY KEY (nonce),
+    -- Scoped per device: replay detection asks "has THIS device seen this nonce?",
+    -- so two devices may independently use the same nonce value without collision.
+    PRIMARY KEY (device_id, nonce),
     FOREIGN KEY (device_id) REFERENCES admin_devices (id)
 );
 

@@ -73,6 +73,11 @@ pub async fn insert_pairing_code(
     code: &str,
     ttl_minutes: i64,
 ) -> Result<String, sqlx::Error> {
+    if ttl_minutes < 0 {
+        return Err(sqlx::Error::Protocol(
+            "ttl_minutes must be non-negative".to_string(),
+        ));
+    }
     let modifier = format!("+{ttl_minutes} minutes");
     sqlx::query(
         "INSERT INTO admin_pairing_codes (code, expires_at, created_at) \
@@ -281,6 +286,11 @@ pub async fn sweep_stale_nonces(
     pool: &SqlitePool,
     max_age_seconds: i64,
 ) -> Result<u64, sqlx::Error> {
+    if max_age_seconds < 0 {
+        return Err(sqlx::Error::Protocol(
+            "max_age_seconds must be non-negative".to_string(),
+        ));
+    }
     let modifier = format!("-{max_age_seconds} seconds");
     let result = sqlx::query("DELETE FROM admin_nonces WHERE seen_at <= datetime('now', ?)")
         .bind(&modifier)
@@ -528,6 +538,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn same_nonce_accepted_once_per_device() {
+        // Nonce uniqueness is scoped per device: the same value may be used once by
+        // each device without colliding (replay detection asks "has THIS device seen
+        // this nonce?"). A 128-bit random nonce makes cross-device collisions
+        // negligible anyway, but the schema must not falsely reject them.
+        let pool = test_pool().await;
+        insert_device(&pool, &sample_device("dev-x")).await.unwrap();
+        insert_device(&pool, &sample_device("dev-y")).await.unwrap();
+
+        assert!(
+            insert_nonce_if_absent(&pool, "shared", "dev-x")
+                .await
+                .unwrap(),
+            "device x records the nonce"
+        );
+        assert!(
+            insert_nonce_if_absent(&pool, "shared", "dev-y")
+                .await
+                .unwrap(),
+            "device y may use the same nonce value independently"
+        );
+        assert!(
+            !insert_nonce_if_absent(&pool, "shared", "dev-x")
+                .await
+                .unwrap(),
+            "device x reusing its own nonce is still a replay"
+        );
+    }
+
+    #[tokio::test]
     async fn nonce_requires_existing_device() {
         let pool = test_pool().await;
         // FK violations are reported regardless of OR IGNORE.
@@ -565,5 +605,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 1, "the fresh nonce survives");
+    }
+
+    #[tokio::test]
+    async fn negative_durations_rejected() {
+        // A negative interval would format into an invalid SQLite modifier
+        // ("+-5 minutes" / "--5 seconds"); reject it up front instead of letting it
+        // become a NULL datetime (NOT NULL error) or a silent no-op sweep.
+        let pool = test_pool().await;
+        assert!(insert_pairing_code(&pool, "NEG", -5).await.is_err());
+        assert!(sweep_stale_nonces(&pool, -1).await.is_err());
+
+        // The rejected insert wrote nothing.
+        assert_eq!(get_pairing_code(&pool, "NEG").await.unwrap(), None);
     }
 }
