@@ -99,6 +99,7 @@ and async query functions; no business logic lives here.
 | `oauth.rs` | OAuth client lookup, auth code storage, token management |
 | `password_reset.rs` | `insert_reset_token`, `get_reset_token`, `mark_reset_token_used`, `update_password_hash` |
 | `preferences.rs` | `get_preferences` (DID→stored `app.bsky` preferences JSON blob); `put_preferences` (upsert the blob, overwriting any previous value) |
+| `transfers.rs` | Planned device-swap sessions (V027): `insert_transfer` opens a `pending` transfer for a DID, sweeping any expired active row first then letting the partial unique index reject a still-active duplicate (→ `InitiateOutcome::DuplicateActive`, the 409 path). Wired by `routes/transfer_initiate.rs` |
 | `admin_devices.rs` | Operator companion app admin-device model (V025): pairing-code mint/consume (single-use), device insert/get/list/revoke (derived active status) + `touch_last_seen` (liveness bump on auth), nonce insert-if-absent + stale-nonce sweep (anti-replay). Pairing/register wired by `routes/admin_devices.rs`; the `require_admin` signed-request guard (`routes/auth.rs`) consumes `get_device`/`insert_nonce_if_absent`/`touch_last_seen`; the list/revoke routes (`routes/admin_devices.rs`) consume `list_devices`/`revoke_device`/`get_device` |
 
 See [`src/db/CLAUDE.md`](src/db/CLAUDE.md) for migration history and invariants.
@@ -137,6 +138,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `admin_devices.rs` | `POST /v1/admin/pairing-codes` (master token; mint single-use pairing code), `POST /v1/admin/devices` (pairing code + self-signature; register a companion-app device public key), `GET /v1/admin/devices` (list devices with derived status), and `POST /v1/admin/devices/:id/revoke` (revoke a device; idempotent, 404 on unknown). List/revoke are admin-authed via `require_admin` (master token OR active device signature). Registration verifies the self-signature before consuming the code; rejection paths return a generic 401 |
 | `create_signing_key.rs` | `POST /v1/pds/keys` (deprecated alias: `POST /v1/relay/keys`) |
 | `register_device.rs` | `POST /v1/devices` |
+| `transfer_initiate.rs` | `POST /v1/transfer/initiate` — open a planned device-swap session (source-device session token → DID); mints a 6-char code + `pending` transfer, one active per account (409 otherwise) |
 | `get_device_pds.rs` | `GET /v1/devices/:id/pds` |
 | `describe_server.rs` | `GET /xrpc/com.atproto.server.describeServer` |
 | `describe_repo.rs` | `GET /xrpc/com.atproto.repo.describeRepo` |

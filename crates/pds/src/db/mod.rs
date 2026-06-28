@@ -9,6 +9,7 @@ pub mod oauth;
 pub mod password_reset;
 pub mod preferences;
 pub mod repo_keys;
+pub mod transfers;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::SqlitePool;
@@ -143,6 +144,10 @@ static MIGRATIONS: &[Migration] = &[
     Migration {
         version: 26,
         sql: include_str!("migrations/V026__account_lifecycle_status.sql"),
+    },
+    Migration {
+        version: 27,
+        sql: include_str!("migrations/V027__transfers.sql"),
     },
 ];
 
