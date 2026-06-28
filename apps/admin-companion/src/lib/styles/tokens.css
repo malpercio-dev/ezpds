@@ -104,4 +104,14 @@
   --z-modal: 400;
   --z-toast: 500;
   --z-tooltip: 600;
+
+  /* ── Component tokens (semantic; compose the primitives in components/ui/) ──
+     Kept deliberately small — tokens earn their place by meaning, not by counting
+     every value. Components reference these so the precise "instrument" radius and
+     the touch-target floor stay consistent across the whole console. */
+  --control-radius: var(--radius-md);   /* buttons, inputs, chips — the precise 6px, tighter than stock-iOS */
+  --control-min-height: 44px;           /* iOS HIG minimum touch target — density is of information, not tap targets */
+  --chip-radius: var(--radius-sm);      /* status chips sit a touch tighter than controls */
+  --ring-width: 2px;                    /* the gold focus ring — never removed (a security feature) */
+  --ring-offset: 2px;
 }

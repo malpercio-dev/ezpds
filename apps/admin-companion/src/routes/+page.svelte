@@ -1,11 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { getOrCreateDeviceKey, type DevicePublicKey, type DeviceKeyError } from '$lib/ipc';
+  import ScreenShell from '$lib/components/ui/ScreenShell.svelte';
+  import StatusChip from '$lib/components/ui/StatusChip.svelte';
+  import CodeOutput from '$lib/components/ui/CodeOutput.svelte';
 
   // Phase 6 is a scaffold: the only wired capability is the device's admin key.
-  // This screen proves it round-trips through the IPC bridge and shows the forked
-  // terminal-native tokens in their intended register. The Pair / Home / Settings
-  // screens land in Phases 7–8.
+  // This screen proves it round-trips through IPC and now sits on the extracted
+  // Brass Console primitives (ScreenShell + StatusChip + CodeOutput). The Pair /
+  // Home / Settings screens land in Phases 7–8.
   type State =
     | { kind: 'loading' }
     | { kind: 'ready'; key: DevicePublicKey }
@@ -24,77 +27,37 @@
   });
 </script>
 
-<main>
-  <header>
-    <p class="prompt">ezpds<span class="caret">▸</span> admin console</p>
-    <h1>Operator</h1>
-  </header>
-
+<ScreenShell prompt="admin console" title="Operator">
   <section class="panel" aria-labelledby="device-key-label">
     <div class="panel-head">
       <span id="device-key-label" class="label">This device's admin key</span>
       {#if state.kind === 'ready'}
-        <span class="chip chip--safe"><span aria-hidden="true">●</span> ready</span>
+        <StatusChip status="ready" />
       {:else if state.kind === 'loading'}
-        <span class="chip chip--info"><span aria-hidden="true">○</span> generating</span>
+        <StatusChip status="info" label="generating" />
       {:else}
-        <span class="chip chip--critical"><span aria-hidden="true">!</span> error</span>
+        <StatusChip status="error" />
       {/if}
     </div>
 
     {#if state.kind === 'ready'}
-      <code class="data">{state.key.keyId}</code>
+      <CodeOutput value={state.key.keyId} prompt={false} />
       <p class="note">
         Held in the Secure Enclave on device. The relay stores only this public key
         and verifies a signature on every request — no replayable secret lives here.
       </p>
     {:else if state.kind === 'loading'}
-      <code class="data data--dim">resolving did:key…</code>
+      <p class="resolving">resolving did:key…</p>
     {:else}
-      <code class="data data--alarm">{state.code}</code>
+      <CodeOutput value={state.code} prompt={false} copyable={false} />
       <p class="note">Could not access the device key. Check the device and retry.</p>
     {/if}
   </section>
 
   <p class="footnote">Pairing &amp; claim codes — Phase 7+.</p>
-</main>
+</ScreenShell>
 
 <style>
-  main {
-    min-height: 100dvh;
-    padding: var(--space-xl) var(--space-lg);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-lg);
-  }
-
-  header {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xs);
-  }
-
-  .prompt {
-    margin: 0;
-    font-family: var(--font-display);
-    font-size: var(--text-data);
-    color: var(--color-primary);
-    letter-spacing: 0.02em;
-  }
-  .caret {
-    margin: 0 var(--space-xs);
-    color: var(--color-muted);
-  }
-
-  h1 {
-    margin: 0;
-    font-family: var(--font-sans);
-    font-size: var(--text-headline);
-    line-height: var(--leading-headline);
-    font-weight: var(--weight-semibold);
-    color: var(--color-ink);
-  }
-
   .panel {
     background: var(--color-surface);
     border: 1px solid var(--color-line);
@@ -104,70 +67,30 @@
     flex-direction: column;
     gap: var(--space-sm);
   }
-
   .panel-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: var(--space-sm);
   }
-
   .label {
     font-family: var(--font-sans);
     font-size: var(--text-label);
     font-weight: var(--weight-medium);
     color: var(--color-muted);
   }
-
-  /* Status chip: color + glyph + text, never color alone (DESIGN.md §2). */
-  .chip {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-xs);
-    padding: var(--space-xs) var(--space-sm);
-    border-radius: var(--radius-sm);
-    font-family: var(--font-mono);
-    font-size: var(--text-label);
-  }
-  .chip--safe {
-    color: var(--color-safe);
-    background: var(--color-safe-surface);
-  }
-  .chip--info {
-    color: var(--color-info);
-    background: var(--color-info-surface);
-  }
-  .chip--critical {
-    color: var(--color-critical);
-    background: var(--color-critical-surface);
-  }
-
-  /* Literal-Truth rule: every did:key is mono and wraps break-all, never truncates. */
-  .data {
-    font-family: var(--font-mono);
-    font-size: var(--text-data);
-    line-height: var(--leading-data);
-    color: var(--color-ink);
-    background: var(--color-surface-raised);
-    border-radius: var(--radius-sm);
-    padding: var(--space-sm);
-    overflow-wrap: anywhere;
-    word-break: break-all;
-  }
-  .data--dim {
-    color: var(--color-ink-soft);
-  }
-  .data--alarm {
-    color: var(--color-critical);
-  }
-
   .note {
     margin: 0;
     font-size: var(--text-label);
     line-height: var(--leading-body);
     color: var(--color-ink-soft);
   }
-
+  .resolving {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: var(--text-data);
+    color: var(--color-ink-soft);
+  }
   .footnote {
     margin: 0;
     font-family: var(--font-mono);
