@@ -1,4 +1,5 @@
 pub mod accounts;
+pub mod admin_devices;
 pub mod blobs;
 pub mod blocks;
 pub mod dids;
@@ -134,6 +135,10 @@ static MIGRATIONS: &[Migration] = &[
     Migration {
         version: 24,
         sql: include_str!("migrations/V024__account_delete_after.sql"),
+    },
+    Migration {
+        version: 25,
+        sql: include_str!("migrations/V025__admin_devices.sql"),
     },
 ];
 
@@ -1140,6 +1145,125 @@ mod tests {
             metadata["dpop_bound_access_tokens"].as_bool(),
             Some(true),
             "DPoP must be required for this client"
+        );
+    }
+
+    // ── V025 tests ───────────────────────────────────────────────────────────
+
+    /// All three admin-device tables exist after V025.
+    #[tokio::test]
+    async fn v025_admin_tables_exist() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        for table in ["admin_pairing_codes", "admin_devices", "admin_nonces"] {
+            let rows: Vec<(i64,)> = sqlx::query_as(&format!("PRAGMA table_info({table})"))
+                .fetch_all(&pool)
+                .await
+                .unwrap_or_else(|e| panic!("PRAGMA table_info({table}) failed: {e}"));
+            assert!(!rows.is_empty(), "table '{table}' must exist after V025");
+        }
+    }
+
+    /// admin_devices.scopes defaults to 'full' when omitted on insert.
+    #[tokio::test]
+    async fn v025_admin_devices_scopes_defaults_to_full() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO admin_devices (id, label, public_key, platform, created_at) \
+             VALUES ('d1', 'phone', 'did:key:z1', 'ios', datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let (scopes,): (String,) =
+            sqlx::query_as("SELECT scopes FROM admin_devices WHERE id = 'd1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(scopes, "full");
+    }
+
+    /// admin_pairing_codes PRIMARY KEY rejects a duplicate code.
+    #[tokio::test]
+    async fn v025_admin_pairing_codes_pk_enforced() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        let insert = "INSERT INTO admin_pairing_codes (code, expires_at, created_at) \
+                      VALUES ('CODE', datetime('now', '+5 minutes'), datetime('now'))";
+        sqlx::query(insert).execute(&pool).await.unwrap();
+        assert!(
+            sqlx::query(insert).execute(&pool).await.is_err(),
+            "duplicate pairing code must be rejected by the PRIMARY KEY"
+        );
+    }
+
+    /// admin_nonces PRIMARY KEY rejects a duplicate nonce.
+    #[tokio::test]
+    async fn v025_admin_nonces_pk_enforced() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO admin_devices (id, label, public_key, platform, created_at) \
+             VALUES ('d1', 'phone', 'did:key:z1', 'ios', datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let insert = "INSERT INTO admin_nonces (nonce, device_id, seen_at) \
+                      VALUES ('N1', 'd1', datetime('now'))";
+        sqlx::query(insert).execute(&pool).await.unwrap();
+        assert!(
+            sqlx::query(insert).execute(&pool).await.is_err(),
+            "duplicate nonce must be rejected by the PRIMARY KEY"
+        );
+    }
+
+    /// admin_nonces.device_id → admin_devices.id FK must be enforced.
+    #[tokio::test]
+    async fn v025_admin_nonces_fk_device_id_rejected() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        let result = sqlx::query(
+            "INSERT INTO admin_nonces (nonce, device_id, seen_at) \
+             VALUES ('N1', 'no-such-device', datetime('now'))",
+        )
+        .execute(&pool)
+        .await;
+        assert!(
+            result.is_err(),
+            "FK violation on admin_nonces.device_id must be rejected"
+        );
+    }
+
+    /// EXPLAIN QUERY PLAN must show idx_admin_nonces_seen_at for the sweep query.
+    #[tokio::test]
+    async fn v025_index_admin_nonces_seen_at_used() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+            "EXPLAIN QUERY PLAN SELECT * FROM admin_nonces WHERE seen_at <= datetime('now')",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+
+        let detail = plan
+            .iter()
+            .map(|r| r.3.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            detail.contains("idx_admin_nonces_seen_at"),
+            "admin_nonces WHERE seen_at query must use idx_admin_nonces_seen_at; got: {detail}"
         );
     }
 }
