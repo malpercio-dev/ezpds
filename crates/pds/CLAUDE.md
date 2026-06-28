@@ -99,7 +99,7 @@ and async query functions; no business logic lives here.
 | `oauth.rs` | OAuth client lookup, auth code storage, token management |
 | `password_reset.rs` | `insert_reset_token`, `get_reset_token`, `mark_reset_token_used`, `update_password_hash` |
 | `preferences.rs` | `get_preferences` (DID→stored `app.bsky` preferences JSON blob); `put_preferences` (upsert the blob, overwriting any previous value) |
-| `transfers.rs` | Planned device-swap sessions (V027): `insert_transfer` opens a `pending` transfer for a DID, sweeping any expired active row first then letting the partial unique index reject a still-active duplicate (→ `InitiateOutcome::DuplicateActive`, the 409 path). Wired by `routes/transfer_initiate.rs` |
+| `transfers.rs` | Planned device-swap sessions (V027): `insert_transfer` opens a `pending` transfer for a DID, sweeping any expired active row first then letting the partial unique indexes reject a still-active duplicate (→ `DuplicateActive`, the 409 path) or an already-taken active code (→ `CodeCollision`, caller regenerates and retries). Wired by `routes/transfer_initiate.rs` |
 | `admin_devices.rs` | Operator companion app admin-device model (V025): pairing-code mint/consume (single-use), device insert/get/list/revoke (derived active status) + `touch_last_seen` (liveness bump on auth), nonce insert-if-absent + stale-nonce sweep (anti-replay). Pairing/register wired by `routes/admin_devices.rs`; the `require_admin` signed-request guard (`routes/auth.rs`) consumes `get_device`/`insert_nonce_if_absent`/`touch_last_seen`; the list/revoke routes (`routes/admin_devices.rs`) consume `list_devices`/`revoke_device`/`get_device` |
 
 See [`src/db/CLAUDE.md`](src/db/CLAUDE.md) for migration history and invariants.

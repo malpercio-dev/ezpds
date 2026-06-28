@@ -33,5 +33,12 @@ CREATE UNIQUE INDEX idx_transfers_active_did
     ON transfers (did)
     WHERE status IN ('pending', 'accepted', 'completing');
 
--- Supports code lookup at accept time and expiry sweeps.
-CREATE INDEX idx_transfers_code ON transfers (code);
+-- At most one *active* transfer may hold a given code. The code is the lookup key the
+-- new device presents at `/accept`, so an active-code collision across accounts would
+-- make that lookup ambiguous. Restricted to the same active states as the per-DID index
+-- (terminal `complete`/`expired` rows may freely share a recycled code), this both
+-- enforces uniqueness and serves as the accept-time lookup index for active codes.
+-- `insert_transfer` regenerates the code and retries when an INSERT trips this index.
+CREATE UNIQUE INDEX idx_transfers_active_code
+    ON transfers (code)
+    WHERE status IN ('pending', 'accepted', 'completing');

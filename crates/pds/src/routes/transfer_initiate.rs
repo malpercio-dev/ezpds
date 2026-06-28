@@ -23,11 +23,14 @@ use crate::db::transfers::{insert_transfer, InitiateOutcome};
 use crate::routes::auth::require_session;
 use crate::routes::code_gen::generate_code;
 
-/// Lifetime of a transfer code, in minutes.
-///
-/// The canonical provisioning spec (`docs/provisioning-api-spec.md` §13) specifies 15
-/// minutes; the older MM-129 summary said 10. We follow the spec.
+/// Lifetime of a transfer code, in minutes. The canonical provisioning spec
+/// (`docs/provisioning-api-spec.md` §13) specifies 15 minutes; we follow the spec.
 const TRANSFER_TTL_MINUTES: i64 = 15;
+
+/// How many times to regenerate a colliding transfer code before giving up. A clash with
+/// another account's active code is astronomically rare (36^6 space, short TTL), so a
+/// small bound is plenty.
+const MAX_CODE_ATTEMPTS: u32 = 5;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,36 +55,58 @@ pub async fn transfer_initiate(
     let session = require_session(&headers, &state.db).await?;
 
     let transfer_id = Uuid::new_v4().to_string();
-    let code = generate_code();
 
-    let outcome = insert_transfer(
-        &state.db,
-        &transfer_id,
-        &session.did,
-        &code,
-        TRANSFER_TTL_MINUTES,
-    )
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to insert transfer session");
-        ApiError::new(ErrorCode::InternalError, "failed to initiate transfer")
-    })?;
+    // The 6-char code is the accept-time lookup key, so it must be unique among active
+    // transfers. On the rare collision with another account's active code we regenerate
+    // and retry a bounded number of times rather than fail the request.
+    for _ in 0..MAX_CODE_ATTEMPTS {
+        let code = generate_code();
+        let outcome = insert_transfer(
+            &state.db,
+            &transfer_id,
+            &session.did,
+            &code,
+            TRANSFER_TTL_MINUTES,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to insert transfer session");
+            ApiError::new(ErrorCode::InternalError, "failed to initiate transfer")
+        })?;
 
-    match outcome {
-        InitiateOutcome::Created { expires_at } => Ok((
-            StatusCode::OK,
-            Json(InitiateTransferResponse {
-                transfer_id,
-                transfer_code: code,
-                expires_at,
-                status: "pending".to_string(),
-            }),
-        )),
-        InitiateOutcome::DuplicateActive => Err(ApiError::new(
-            ErrorCode::Conflict,
-            "an active transfer already exists for this account",
-        )),
+        match outcome {
+            InitiateOutcome::Created { expires_at } => {
+                return Ok((
+                    StatusCode::OK,
+                    Json(InitiateTransferResponse {
+                        transfer_id,
+                        transfer_code: code,
+                        expires_at,
+                        status: "pending".to_string(),
+                    }),
+                ));
+            }
+            InitiateOutcome::DuplicateActive => {
+                return Err(ApiError::new(
+                    ErrorCode::Conflict,
+                    "an active transfer already exists for this account",
+                ));
+            }
+            // Code clashed with another account's active transfer — try a new one.
+            InitiateOutcome::CodeCollision => continue,
+        }
     }
+
+    // Exhausted every attempt without a free code — implausible at 36^6 with a short
+    // TTL, but surface a clean 500 rather than loop forever.
+    tracing::error!(
+        attempts = MAX_CODE_ATTEMPTS,
+        "exhausted transfer-code generation attempts"
+    );
+    Err(ApiError::new(
+        ErrorCode::InternalError,
+        "failed to allocate a unique transfer code",
+    ))
 }
 
 #[cfg(test)]

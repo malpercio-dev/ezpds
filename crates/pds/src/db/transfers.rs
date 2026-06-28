@@ -6,7 +6,7 @@
 
 use sqlx::SqlitePool;
 
-use crate::db::is_unique_violation;
+use crate::db::{is_unique_violation, unique_violation_column};
 
 /// Outcome of attempting to open a transfer session for an account.
 ///
@@ -19,6 +19,9 @@ pub enum InitiateOutcome {
     Created { expires_at: String },
     /// An unexpired active transfer already exists for this DID; none was created.
     DuplicateActive,
+    /// The supplied `code` collides with another account's active transfer. None was
+    /// created; the caller should regenerate the code and retry.
+    CodeCollision,
 }
 
 /// Open a new transfer session for `did`, enforcing one active transfer per account.
@@ -27,7 +30,9 @@ pub enum InitiateOutcome {
 /// any expired-but-still-active row for this DID to `expired` (clearing the partial
 /// unique index slot), then inserts the new `pending` row with an `expires_at` of
 /// `now + ttl_minutes`. A surviving *unexpired* active row makes the INSERT violate
-/// `idx_transfers_active_did`, which is reported as [`InitiateOutcome::DuplicateActive`].
+/// `idx_transfers_active_did`, reported as [`InitiateOutcome::DuplicateActive`]; a `code`
+/// already held by another account's active transfer violates `idx_transfers_active_code`,
+/// reported as [`InitiateOutcome::CodeCollision`] so the caller can regenerate and retry.
 ///
 /// `id` and `code` are caller-generated (a UUID and a 6-char code, respectively).
 pub async fn insert_transfer(
@@ -70,9 +75,15 @@ pub async fn insert_transfer(
             tx.commit().await?;
             Ok(InitiateOutcome::Created { expires_at })
         }
-        // The partial unique index rejected a still-active duplicate. Dropping `tx`
-        // rolls back the (harmless) sweep too; no row was created.
-        Err(e) if is_unique_violation(&e) => Ok(InitiateOutcome::DuplicateActive),
+        // A partial unique index rejected the row. Dropping `tx` rolls back the
+        // (harmless) sweep too; no row was created. Which index fired decides the
+        // outcome: a `code` clash with another account's active transfer is a
+        // regenerate-and-retry; a `did` clash means this account already has an
+        // active transfer (the 409 path).
+        Err(e) if is_unique_violation(&e) => match unique_violation_column(&e, "transfers") {
+            Some("code") => Ok(InitiateOutcome::CodeCollision),
+            _ => Ok(InitiateOutcome::DuplicateActive),
+        },
         Err(e) => Err(e),
     }
 }
@@ -154,5 +165,25 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(active, 1);
+    }
+
+    #[tokio::test]
+    async fn duplicate_active_code_reports_collision() {
+        let state = test_state().await;
+        seed_account(&state.db, "did:plc:codea").await;
+        seed_account(&state.db, "did:plc:codeb").await;
+
+        // Account A holds an active transfer with a known code.
+        let a = insert_transfer(&state.db, "ta", "did:plc:codea", "DUP123", 15)
+            .await
+            .unwrap();
+        assert!(matches!(a, InitiateOutcome::Created { .. }));
+
+        // A *different* account taking the same active code is a collision (caller
+        // retries with a new code), distinct from the per-account DuplicateActive 409.
+        let b = insert_transfer(&state.db, "tb", "did:plc:codeb", "DUP123", 15)
+            .await
+            .unwrap();
+        assert_eq!(b, InitiateOutcome::CodeCollision);
     }
 }
