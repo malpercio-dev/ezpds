@@ -54,7 +54,7 @@ pub struct PairingCodeRequest {
 pub struct PairingCodeResponse {
     /// The single-use bearer code; rendered as a QR for the operator's new phone.
     pairing_code: String,
-    /// ISO-8601 expiry the relay computed, echoed for display.
+    /// RFC 3339 / ISO-8601 UTC expiry the relay computed (e.g. `2026-06-28T03:34:00Z`).
     expires_at: String,
 }
 
@@ -82,7 +82,7 @@ pub async fn mint_pairing_code(
             Ok(expires_at) => {
                 return Ok(Json(PairingCodeResponse {
                     pairing_code: code,
-                    expires_at,
+                    expires_at: to_rfc3339_utc(&expires_at),
                 }))
             }
             Err(e) if is_unique_violation(&e) => {
@@ -111,6 +111,14 @@ fn generate_pairing_code() -> String {
     let mut bytes = [0u8; 16];
     OsRng.fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// Render a SQLite `datetime('now', …)` value (`YYYY-MM-DD HH:MM:SS`, UTC, no zone)
+/// as an unambiguous RFC 3339 / ISO-8601 UTC instant. Unlike most timestamps the API
+/// returns informationally, `expiresAt` drives client-side validity math, so it must
+/// carry an explicit zone designator rather than relying on an implied UTC convention.
+fn to_rfc3339_utc(sqlite_datetime: &str) -> String {
+    format!("{}Z", sqlite_datetime.replace(' ', "T"))
 }
 
 // ── POST /v1/admin/devices ───────────────────────────────────────────────────
@@ -173,9 +181,14 @@ pub async fn register_admin_device(
         ));
     }
 
+    // One generic 401 for every registration auth failure (bad signature, and
+    // unknown/expired/consumed code alike) so the response never reveals which
+    // check failed. Internal/DB errors keep their own distinct 500s below.
+    let unauthorized =
+        || ApiError::new(ErrorCode::Unauthorized, "invalid registration credentials");
+
     // The raw signature must decode to exactly 64 bytes (r‖s); anything else can't verify.
-    let signature = decode_signature(&payload.signature)
-        .ok_or_else(|| ApiError::new(ErrorCode::Unauthorized, "invalid self-signature"))?;
+    let signature = decode_signature(&payload.signature).ok_or_else(unauthorized)?;
 
     // --- Pairing code must be pending (unknown/expired/consumed all reject) ---
     let code_row = get_pairing_code(&state.db, &payload.pairing_code)
@@ -186,10 +199,7 @@ pub async fn register_admin_device(
         })?;
     let is_pending = code_row.as_ref().is_some_and(|c| c.is_pending());
     if !is_pending {
-        return Err(ApiError::new(
-            ErrorCode::Unauthorized,
-            "invalid or expired pairing code",
-        ));
+        return Err(unauthorized());
     }
 
     // --- Self-signature must verify against the supplied public key ---
@@ -204,12 +214,7 @@ pub async fn register_admin_device(
         message.as_bytes(),
         &signature,
     )
-    .map_err(|_| {
-        ApiError::new(
-            ErrorCode::Unauthorized,
-            "self-signature verification failed",
-        )
-    })?;
+    .map_err(|_| unauthorized())?;
 
     // --- Consume the code and insert the device atomically ---
     // consume_pairing_code only touches a still-pending row, so it is the
@@ -228,10 +233,7 @@ pub async fn register_admin_device(
             ApiError::new(ErrorCode::InternalError, "registration failed")
         })?;
     if !consumed {
-        return Err(ApiError::new(
-            ErrorCode::Unauthorized,
-            "invalid or expired pairing code",
-        ));
+        return Err(unauthorized());
     }
 
     insert_device(
@@ -356,7 +358,7 @@ mod tests {
         URL_SAFE_NO_PAD.encode(normalized.to_bytes())
     }
 
-    // ── Pairing-code minting (AC4.1, AC4.3) ──────────────────────────────────
+    // ── Pairing-code minting ────────────────────────────────────────────────
 
     #[tokio::test]
     async fn mint_returns_code_and_expiry() {
@@ -371,7 +373,11 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let json = body_json(response).await;
         assert!(!json["pairingCode"].as_str().unwrap().is_empty());
-        assert_eq!(json["expiresAt"].as_str().unwrap().len(), 19);
+        // expiresAt is unambiguous RFC 3339 / ISO-8601 UTC, e.g. "2026-06-28T03:34:00Z".
+        let expires_at = json["expiresAt"].as_str().unwrap();
+        assert_eq!(expires_at.len(), 20);
+        assert!(expires_at.ends_with('Z'));
+        assert_eq!(expires_at.as_bytes()[10], b'T');
     }
 
     #[tokio::test]
@@ -389,7 +395,6 @@ mod tests {
 
     #[tokio::test]
     async fn mint_without_master_token_returns_401() {
-        // admin-companion-app.AC4.3
         let response = app(test_state_with_admin_token().await)
             .oneshot(post("/v1/admin/pairing-codes", r#"{}"#, None))
             .await
@@ -432,11 +437,10 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
-    // ── Device registration (AC4.2, AC4.4–AC4.7) ─────────────────────────────
+    // ── Device registration ─────────────────────────────────────────────────
 
     #[tokio::test]
     async fn register_with_valid_code_and_signature_succeeds() {
-        // admin-companion-app.AC4.2
         let state = test_state_with_admin_token().await;
         let db = state.db.clone();
         let code = mint_code(&state).await;
@@ -479,7 +483,6 @@ mod tests {
 
     #[tokio::test]
     async fn register_with_expired_code_returns_401() {
-        // admin-companion-app.AC4.4
         let state = test_state_with_admin_token().await;
         // Insert an already-expired code directly.
         sqlx::query(
@@ -500,7 +503,7 @@ mod tests {
 
     #[tokio::test]
     async fn register_with_bad_self_signature_returns_401() {
-        // admin-companion-app.AC4.6 — signature does not verify against the supplied key.
+        // Signature does not verify against the supplied key.
         let state = test_state_with_admin_token().await;
         let code = mint_code(&state).await;
         let keypair = crypto::generate_p256_keypair().unwrap();
@@ -525,8 +528,7 @@ mod tests {
 
     #[tokio::test]
     async fn register_with_signature_from_other_key_returns_401() {
-        // admin-companion-app.AC4.6 — correct message, but signed by a different key
-        // than the supplied public key.
+        // Correct message, but signed by a different key than the supplied public key.
         let state = test_state_with_admin_token().await;
         let code = mint_code(&state).await;
         let advertised = crypto::generate_p256_keypair().unwrap();
@@ -574,7 +576,7 @@ mod tests {
 
     #[tokio::test]
     async fn second_claim_of_same_code_fails() {
-        // admin-companion-app.AC4.5 / AC4.7 — single-use.
+        // Single-use.
         let state = test_state_with_admin_token().await;
         let code = mint_code(&state).await;
 
@@ -640,6 +642,15 @@ mod tests {
         assert_eq!(
             device_registration_sign_string("CODE", "did:key:zABC", 1700),
             "CODE\ndid:key:zABC\n1700"
+        );
+    }
+
+    #[test]
+    fn rfc3339_utc_adds_t_and_z() {
+        // SQLite's space-separated, zoneless datetime becomes an unambiguous UTC instant.
+        assert_eq!(
+            to_rfc3339_utc("2026-06-28 03:34:00"),
+            "2026-06-28T03:34:00Z"
         );
     }
 
