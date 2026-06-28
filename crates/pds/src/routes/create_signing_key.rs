@@ -7,7 +7,7 @@
 use axum::{
     body::Bytes,
     extract::State,
-    http::{HeaderMap, Method, StatusCode, Uri},
+    http::{HeaderMap, Method, Uri},
     response::{IntoResponse, Json, Response},
 };
 use serde::{Deserialize, Serialize};
@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::routes::auth::{is_json_content_type, require_admin};
+use crate::routes::auth::require_admin_json;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -54,19 +54,8 @@ pub async fn create_signing_key(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<CreateSigningKeyResponse>, Response> {
-    require_admin(method.as_str(), uri.path(), &headers, &body, &state)
-        .await
-        .map_err(IntoResponse::into_response)?;
-
-    // Preserve the former `Json` extractor's media-type guard: a non-JSON content type
-    // is rejected with 415 before the body is parsed.
-    if !is_json_content_type(&headers) {
-        return Err((
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "expected application/json",
-        )
-            .into_response());
-    }
+    require_admin_json(method.as_str(), uri.path(), &headers, &body, &state)
+        .await?;
 
     // Validate the body shape (algorithm enum) using the same rejection semantics as
     // the former `Json` extractor: unknown variant / missing field → 422, null → 400.

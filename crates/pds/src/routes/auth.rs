@@ -1,4 +1,7 @@
-use axum::http::HeaderMap;
+use axum::{
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use crypto::{verify_p256_signature, DidKeyUri};
 use subtle::ConstantTimeEq;
@@ -123,7 +126,7 @@ fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 /// `Json::from_bytes` (after consuming it as `Bytes` for signature verification), which
 /// skips the extractor's media-type guard; they call this to preserve the prior 415
 /// rejection for non-JSON (or absent) content types.
-pub fn is_json_content_type(headers: &HeaderMap) -> bool {
+fn is_json_content_type(headers: &HeaderMap) -> bool {
     let Some(value) = header_str(headers, axum::http::header::CONTENT_TYPE.as_str()) else {
         return false;
     };
@@ -178,6 +181,34 @@ pub async fn require_admin(
     } else {
         token_result
     }
+}
+
+/// Gate an admin endpoint and enforce JSON content type in one step.
+///
+/// Combines [`require_admin`] with the 415 media-type guard that axum's `Json`
+/// extractor previously provided. Admin handlers that consume the body as raw
+/// [`axum::body::Bytes`] for signature verification call this before parsing the
+/// body with `Json::from_bytes`, so they preserve the same rejection statuses as
+/// before device-signature support was added.
+///
+/// Returns `Err(Response)` on auth failure (401/403) or a non-JSON content type
+/// (415); `Ok(())` to proceed with body parsing.
+pub async fn require_admin_json(
+    method: &str,
+    path: &str,
+    headers: &HeaderMap,
+    body: &[u8],
+    state: &AppState,
+) -> Result<(), Response> {
+    require_admin(method, path, headers, body, state)
+        .await
+        .map_err(IntoResponse::into_response)?;
+    if !is_json_content_type(headers) {
+        return Err(
+            (StatusCode::UNSUPPORTED_MEDIA_TYPE, "expected application/json").into_response(),
+        );
+    }
+    Ok(())
 }
 
 /// Verify a device signed admin request against its stored public key.
@@ -958,16 +989,7 @@ mod tests {
 #[cfg(test)]
 mod device_registration_tests {
     use super::*;
-
-    /// Sign `message` with the keypair's private bytes, returning base64url r‖s.
-    fn sign_with(keypair: &crypto::P256Keypair, message: &[u8]) -> String {
-        use p256::ecdsa::{signature::Signer, Signature, SigningKey};
-        let sk = SigningKey::from_bytes(keypair.private_key_bytes.as_slice().into())
-            .expect("valid scalar");
-        let sig: Signature = sk.sign(message);
-        let normalized = sig.normalize_s().unwrap_or(sig);
-        URL_SAFE_NO_PAD.encode(normalized.to_bytes())
-    }
+    use crate::routes::test_utils::sign_p256;
 
     #[test]
     fn sign_string_is_newline_separated() {
@@ -982,7 +1004,7 @@ mod device_registration_tests {
     fn verify_accepts_matching_self_signature() {
         let keypair = crypto::generate_p256_keypair().unwrap();
         let message = device_registration_sign_string("PAIR", &keypair.key_id.0, 1700);
-        let signature = sign_with(&keypair, message.as_bytes());
+        let signature = sign_p256(&keypair, message.as_bytes());
         assert!(verify_device_self_signature("PAIR", &keypair.key_id.0, 1700, &signature).is_ok());
     }
 
@@ -991,7 +1013,7 @@ mod device_registration_tests {
         let advertised = crypto::generate_p256_keypair().unwrap();
         let attacker = crypto::generate_p256_keypair().unwrap();
         let message = device_registration_sign_string("PAIR", &advertised.key_id.0, 1700);
-        let signature = sign_with(&attacker, message.as_bytes());
+        let signature = sign_p256(&attacker, message.as_bytes());
         let err = verify_device_self_signature("PAIR", &advertised.key_id.0, 1700, &signature)
             .unwrap_err();
         assert_eq!(err.status_code(), 401);
@@ -1006,7 +1028,7 @@ mod device_registration_tests {
         // Signature covers timestamp 1700; verifying against 1701 must fail.
         let keypair = crypto::generate_p256_keypair().unwrap();
         let message = device_registration_sign_string("PAIR", &keypair.key_id.0, 1700);
-        let signature = sign_with(&keypair, message.as_bytes());
+        let signature = sign_p256(&keypair, message.as_bytes());
         let err =
             verify_device_self_signature("PAIR", &keypair.key_id.0, 1701, &signature).unwrap_err();
         assert_eq!(err.status_code(), 401);
@@ -1028,24 +1050,14 @@ mod device_registration_tests {
 #[cfg(test)]
 mod require_admin_tests {
     use super::*;
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
     use crate::app::{test_state, AppState};
     use crate::db::admin_devices::{insert_device, revoke_device, NewAdminDevice};
+    use crate::routes::test_utils::sign_p256;
 
     const METHOD: &str = "POST";
     const PATH: &str = "/v1/accounts/claim-codes";
     const BODY: &[u8] = br#"{"count":1}"#;
-
-    /// Sign `message` with the keypair's private bytes, returning base64url r‖s (low-S).
-    fn sign_with(keypair: &crypto::P256Keypair, message: &[u8]) -> String {
-        use p256::ecdsa::{signature::Signer, Signature, SigningKey};
-        let sk = SigningKey::from_bytes(keypair.private_key_bytes.as_slice().into())
-            .expect("valid scalar");
-        let sig: Signature = sk.sign(message);
-        let normalized = sig.normalize_s().unwrap_or(sig);
-        URL_SAFE_NO_PAD.encode(normalized.to_bytes())
-    }
 
     /// Seed an active admin device, returning its id and the keypair that signs for it.
     async fn seed_admin_device(state: &AppState) -> (String, crypto::P256Keypair) {
@@ -1076,7 +1088,7 @@ mod require_admin_tests {
         body: &[u8],
     ) -> HeaderMap {
         let sign_string = admin_request_sign_string(method, path, timestamp, nonce, body);
-        let signature = sign_with(keypair, sign_string.as_bytes());
+        let signature = sign_p256(keypair, sign_string.as_bytes());
         let mut h = HeaderMap::new();
         h.insert(ADMIN_DEVICE_HEADER, device_id.parse().unwrap());
         h.insert(

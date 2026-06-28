@@ -345,3 +345,14 @@ pub async fn body_json(response: axum::response::Response) -> serde_json::Value 
         .unwrap();
     serde_json::from_slice(&bytes).unwrap()
 }
+
+/// Sign `message` with a P-256 keypair's private bytes, returning the base64url-encoded
+/// r‖s (low-S normalised) signature. Shared by tests that exercise device signed-request auth.
+pub fn sign_p256(keypair: &crypto::P256Keypair, message: &[u8]) -> String {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+    let sk = SigningKey::from_bytes(keypair.private_key_bytes.as_slice().into())
+        .expect("valid scalar");
+    let sig: Signature = sk.sign(message);
+    URL_SAFE_NO_PAD.encode(sig.normalize_s().unwrap_or(sig).to_bytes())
+}

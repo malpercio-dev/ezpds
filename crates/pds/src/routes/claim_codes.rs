@@ -7,7 +7,7 @@
 use axum::{
     body::Bytes,
     extract::State,
-    http::{HeaderMap, Method, StatusCode, Uri},
+    http::{HeaderMap, Method, Uri},
     response::{IntoResponse, Json, Response},
 };
 use serde::{Deserialize, Serialize};
@@ -16,7 +16,7 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::db::is_unique_violation;
-use crate::routes::auth::{is_json_content_type, require_admin};
+use crate::routes::auth::require_admin_json;
 use crate::routes::code_gen::generate_code;
 
 const MAX_COUNT: u32 = 10;
@@ -53,19 +53,8 @@ pub async fn claim_codes(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<ClaimCodesResponse>, Response> {
-    require_admin(method.as_str(), uri.path(), &headers, &body, &state)
-        .await
-        .map_err(IntoResponse::into_response)?;
-
-    // Preserve the former `Json` extractor's media-type guard: a non-JSON content type
-    // is rejected with 415 before the body is parsed.
-    if !is_json_content_type(&headers) {
-        return Err((
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "expected application/json",
-        )
-            .into_response());
-    }
+    require_admin_json(method.as_str(), uri.path(), &headers, &body, &state)
+        .await?;
 
     let Json(payload) =
         Json::<ClaimCodesRequest>::from_bytes(&body).map_err(IntoResponse::into_response)?;
@@ -508,17 +497,6 @@ mod tests {
 
     // ── Device signed-request auth (end-to-end) ────────────────────────────────
 
-    /// Sign `message` with the keypair's private bytes, returning base64url r‖s.
-    fn sign_with(keypair: &crypto::P256Keypair, message: &[u8]) -> String {
-        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-        use p256::ecdsa::{signature::Signer, Signature, SigningKey};
-        let sk = SigningKey::from_bytes(keypair.private_key_bytes.as_slice().into())
-            .expect("valid scalar");
-        let sig: Signature = sk.sign(message);
-        let normalized = sig.normalize_s().unwrap_or(sig);
-        URL_SAFE_NO_PAD.encode(normalized.to_bytes())
-    }
-
     #[tokio::test]
     async fn signed_device_request_mints_a_code() {
         use crate::db::admin_devices::{insert_device, NewAdminDevice};
@@ -552,7 +530,7 @@ mod tests {
             .as_secs() as i64;
         let nonce = "e2e-nonce-1";
         let sign_string = admin_request_sign_string("POST", path, ts, nonce, body.as_bytes());
-        let signature = sign_with(&keypair, sign_string.as_bytes());
+        let signature = crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes());
 
         let request = Request::builder()
             .method("POST")
@@ -606,7 +584,7 @@ mod tests {
         let nonce = "e2e-nonce-2";
         // Sign over count:1 but send count:9 — the body hash will not match.
         let sign_string = admin_request_sign_string("POST", path, ts, nonce, br#"{"count":1}"#);
-        let signature = sign_with(&keypair, sign_string.as_bytes());
+        let signature = crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes());
 
         let request = Request::builder()
             .method("POST")
