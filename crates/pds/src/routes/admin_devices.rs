@@ -18,14 +18,13 @@ use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 
 use common::{ApiError, ErrorCode};
-use crypto::{verify_p256_signature, DidKeyUri};
 
 use crate::app::AppState;
 use crate::db::admin_devices::{
     consume_pairing_code, get_pairing_code, insert_device, insert_pairing_code, NewAdminDevice,
 };
 use crate::db::is_unique_violation;
-use crate::routes::auth::require_admin_token;
+use crate::routes::auth;
 
 /// Default pairing-code lifetime: long enough to scan a QR, short enough that an
 /// unclaimed code's exposure window stays small. Mirrors the design's "~5 minutes".
@@ -66,7 +65,7 @@ pub async fn mint_pairing_code(
     Json(payload): Json<PairingCodeRequest>,
 ) -> Result<Json<PairingCodeResponse>, ApiError> {
     // Auth first, before validation, so unauthenticated callers learn nothing.
-    require_admin_token(&headers, &state)?;
+    auth::require_admin_token(&headers, &state)?;
 
     if payload.expires_in_minutes < 1 || payload.expires_in_minutes > MAX_PAIRING_TTL_MINUTES {
         return Err(ApiError::new(
@@ -184,11 +183,12 @@ pub async fn register_admin_device(
     // One generic 401 for every registration auth failure (bad signature, and
     // unknown/expired/consumed code alike) so the response never reveals which
     // check failed. Internal/DB errors keep their own distinct 500s below.
-    let unauthorized =
-        || ApiError::new(ErrorCode::Unauthorized, "invalid registration credentials");
-
-    // The raw signature must decode to exactly 64 bytes (r‖s); anything else can't verify.
-    let signature = decode_signature(&payload.signature).ok_or_else(unauthorized)?;
+    let unauthorized = || {
+        ApiError::new(
+            ErrorCode::Unauthorized,
+            auth::INVALID_REGISTRATION_CREDENTIALS,
+        )
+    };
 
     // --- Pairing code must be pending (unknown/expired/consumed all reject) ---
     let code_row = get_pairing_code(&state.db, &payload.pairing_code)
@@ -204,17 +204,12 @@ pub async fn register_admin_device(
 
     // --- Self-signature must verify against the supplied public key ---
     // Proves the caller holds the private key, not just a copied public key.
-    let message = device_registration_sign_string(
+    auth::verify_device_self_signature(
         &payload.pairing_code,
         &payload.public_key,
         payload.timestamp,
-    );
-    verify_p256_signature(
-        &DidKeyUri(payload.public_key.clone()),
-        message.as_bytes(),
-        &signature,
-    )
-    .map_err(|_| unauthorized())?;
+        &payload.signature,
+    )?;
 
     // --- Consume the code and insert the device atomically ---
     // consume_pairing_code only touches a still-pending row, so it is the
@@ -259,27 +254,6 @@ pub async fn register_admin_device(
     Ok(Json(RegisterDeviceResponse { device_id }))
 }
 
-/// The canonical message a device self-signs during registration.
-///
-/// Format: `pairing_code ‖ "\n" ‖ public_key ‖ "\n" ‖ timestamp` — newline-separated
-/// to match the per-request `sign_string` envelope convention. The companion app's
-/// signing client (Phase 7) must produce the identical bytes for verification to pass;
-/// this function is the single source of truth for that format.
-pub fn device_registration_sign_string(
-    pairing_code: &str,
-    public_key: &str,
-    timestamp: i64,
-) -> String {
-    format!("{pairing_code}\n{public_key}\n{timestamp}")
-}
-
-/// Decode a base64url-no-pad signature into the raw 64-byte `r‖s` form, or `None`
-/// if it is not valid base64url or not exactly 64 bytes.
-fn decode_signature(encoded: &str) -> Option<[u8; 64]> {
-    let bytes = URL_SAFE_NO_PAD.decode(encoded).ok()?;
-    bytes.try_into().ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,6 +264,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
+    use crate::routes::auth::device_registration_sign_string;
     use crate::routes::test_utils::test_state_with_admin_token;
 
     // ── Helpers ──────────────────────────────────────────────────────────────
@@ -310,6 +285,18 @@ mod tests {
             .await
             .unwrap();
         serde_json::from_slice(&body).unwrap()
+    }
+
+    /// Assert a registration auth failure: 401 *and* the single generic body. The
+    /// body check guards the non-enumeration contract — distinct per-step messages
+    /// would still return 401 and pass a status-only assertion.
+    async fn assert_generic_unauthorized(response: axum::response::Response) {
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let json = body_json(response).await;
+        assert_eq!(
+            json["error"]["message"].as_str().unwrap(),
+            auth::INVALID_REGISTRATION_CREDENTIALS,
+        );
     }
 
     /// Mint a pairing code via the live endpoint and return it.
@@ -478,7 +465,7 @@ mod tests {
             .oneshot(post("/v1/admin/devices", &body, None))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_generic_unauthorized(response).await;
     }
 
     #[tokio::test]
@@ -498,7 +485,7 @@ mod tests {
             .oneshot(post("/v1/admin/devices", &body, None))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_generic_unauthorized(response).await;
     }
 
     #[tokio::test]
@@ -523,7 +510,7 @@ mod tests {
             .oneshot(post("/v1/admin/devices", &body, None))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_generic_unauthorized(response).await;
     }
 
     #[tokio::test]
@@ -549,7 +536,7 @@ mod tests {
             .oneshot(post("/v1/admin/devices", &body, None))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_generic_unauthorized(response).await;
     }
 
     #[tokio::test]
@@ -571,7 +558,7 @@ mod tests {
             .oneshot(post("/v1/admin/devices", &body, None))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_generic_unauthorized(response).await;
     }
 
     #[tokio::test]
@@ -593,7 +580,7 @@ mod tests {
             .oneshot(post("/v1/admin/devices", &body2, None))
             .await
             .unwrap();
-        assert_eq!(second.status(), StatusCode::UNAUTHORIZED);
+        assert_generic_unauthorized(second).await;
     }
 
     #[tokio::test]
@@ -632,17 +619,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    }
-
-    // ── Canonical sign-string contract ───────────────────────────────────────
-
-    #[tokio::test]
-    async fn sign_string_is_newline_separated() {
-        // Pins the wire format so the Phase 7 client stays in lockstep.
-        assert_eq!(
-            device_registration_sign_string("CODE", "did:key:zABC", 1700),
-            "CODE\ndid:key:zABC\n1700"
-        );
     }
 
     #[test]
