@@ -28,7 +28,7 @@ pub struct RepoEntry {
     pub head: String,
     /// The commit revision (TID), read from the signed commit block.
     pub rev: String,
-    /// `false` when the account is deactivated.
+    /// `false` when the account is deactivated, suspended, or taken down.
     pub active: bool,
 }
 
@@ -213,13 +213,17 @@ mod tests {
             ("did:plc:listrepossuspended", "suspended_at"),
         ] {
             seed_account_with_repo(&state.db, did).await;
-            sqlx::query(&format!(
-                "UPDATE accounts SET {column} = datetime('now') WHERE did = ?"
-            ))
-            .bind(did)
-            .execute(&state.db)
-            .await
-            .unwrap();
+            // Fixed SQL per column (never interpolated) so the query stays static.
+            let sql = match column {
+                "taken_down_at" => {
+                    "UPDATE accounts SET taken_down_at = datetime('now') WHERE did = ?"
+                }
+                "suspended_at" => {
+                    "UPDATE accounts SET suspended_at = datetime('now') WHERE did = ?"
+                }
+                other => panic!("unsupported lifecycle column: {other}"),
+            };
+            sqlx::query(sql).bind(did).execute(&state.db).await.unwrap();
         }
         let app = crate::app::app(state);
 

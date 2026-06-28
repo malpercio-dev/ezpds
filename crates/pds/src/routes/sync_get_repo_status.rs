@@ -20,13 +20,13 @@ pub struct GetRepoStatusParams {
 #[derive(Serialize)]
 pub struct GetRepoStatusResponse {
     pub did: String,
-    /// `true` when the account is not deactivated.
+    /// `true` when the repo is actively hosted (not deactivated, suspended, or taken down).
     pub active: bool,
     /// Why the repo is not `active`. Omitted when `active` is true, per the lexicon (the `status`
     /// field carries a *reason* and is meaningless for a live repo). Maps from the account's
     /// lifecycle to a lexicon `status` knownValue: `"deactivated"` (user-initiated), `"suspended"`
-    /// or `"takendown"` (operator moderation). The remaining knownValues (`desynchronized`,
-    /// `throttled`) are not modelled.
+    /// or `"takendown"` (operator moderation). The remaining knownValues (`deleted`,
+    /// `desynchronized`, `throttled`) are not modelled.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     /// The repo's current commit revision (TID). Omitted when the account has no repo.

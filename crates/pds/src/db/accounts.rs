@@ -1062,15 +1062,18 @@ mod tests {
 
     // ── get_repo_status lifecycle derivation ──────────────────────────────────
 
-    /// Set a single nullable lifecycle column on an account to `datetime('now')`.
+    /// Set a single nullable lifecycle column on an account to `datetime('now')`. The column is
+    /// matched to a fixed SQL statement (never interpolated) so the query stays static.
     async fn set_lifecycle_column(db: &sqlx::SqlitePool, did: &str, column: &str) {
-        sqlx::query(&format!(
-            "UPDATE accounts SET {column} = datetime('now') WHERE did = ?"
-        ))
-        .bind(did)
-        .execute(db)
-        .await
-        .unwrap();
+        let sql = match column {
+            "deactivated_at" => {
+                "UPDATE accounts SET deactivated_at = datetime('now') WHERE did = ?"
+            }
+            "suspended_at" => "UPDATE accounts SET suspended_at = datetime('now') WHERE did = ?",
+            "taken_down_at" => "UPDATE accounts SET taken_down_at = datetime('now') WHERE did = ?",
+            other => panic!("unsupported lifecycle column: {other}"),
+        };
+        sqlx::query(sql).bind(did).execute(db).await.unwrap();
     }
 
     #[tokio::test]
