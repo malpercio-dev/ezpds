@@ -204,9 +204,11 @@ pub async fn require_admin_json(
         .await
         .map_err(IntoResponse::into_response)?;
     if !is_json_content_type(headers) {
-        return Err(
-            (StatusCode::UNSUPPORTED_MEDIA_TYPE, "expected application/json").into_response(),
-        );
+        return Err((
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "expected application/json",
+        )
+            .into_response());
     }
     Ok(())
 }

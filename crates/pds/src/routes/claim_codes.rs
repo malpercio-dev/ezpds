@@ -53,8 +53,7 @@ pub async fn claim_codes(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<ClaimCodesResponse>, Response> {
-    require_admin_json(method.as_str(), uri.path(), &headers, &body, &state)
-        .await?;
+    require_admin_json(method.as_str(), uri.path(), &headers, &body, &state).await?;
 
     let Json(payload) =
         Json::<ClaimCodesRequest>::from_bytes(&body).map_err(IntoResponse::into_response)?;

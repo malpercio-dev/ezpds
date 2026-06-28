@@ -54,8 +54,7 @@ pub async fn create_signing_key(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<CreateSigningKeyResponse>, Response> {
-    require_admin_json(method.as_str(), uri.path(), &headers, &body, &state)
-        .await?;
+    require_admin_json(method.as_str(), uri.path(), &headers, &body, &state).await?;
 
     // Validate the body shape (algorithm enum) using the same rejection semantics as
     // the former `Json` extractor: unknown variant / missing field → 422, null → 400.
