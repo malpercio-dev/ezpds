@@ -95,6 +95,21 @@ pub fn verify_genesis_op(
 - Returns extracted op fields for semantic validation by the caller
 - Errors: `CryptoError::PlcOperation` for any parse, format, or signature failure
 
+**`verify_p256_signature`**
+
+```rust
+pub fn verify_p256_signature(
+    public_key: &DidKeyUri,         // signer's P-256 did:key URI
+    message: &[u8],                 // exact bytes that were signed (not pre-hashed)
+    signature: &[u8; 64],           // raw r||s ECDSA signature, big-endian
+) -> Result<(), CryptoError>
+```
+
+- General-purpose P-256 ECDSA-SHA256 verification, decoupled from did:plc operation JSON
+- Thin public wrapper over the internal `verify_signature_with_key`; the relay uses it to authenticate signed admin requests
+- Message is hashed with SHA-256 internally — pass the bytes exactly as signed, do not pre-hash
+- Errors: `CryptoError::SignatureVerification` for a malformed public key, an unparseable signature, or a verification mismatch
+
 ### Public types
 
 **`P256Keypair`**
@@ -118,7 +133,7 @@ pub fn verify_genesis_op(
 - `data`: `Zeroizing<[u8; 32]>` (zeroized on drop)
 
 **`CryptoError`** variants:
-- `KeyGeneration`, `Encryption`, `Decryption`, `SecretSharing`, `SecretReconstruction`, `PlcOperation`
+- `KeyGeneration`, `Encryption`, `Decryption`, `SecretSharing`, `SecretReconstruction`, `PlcOperation`, `SignatureVerification`
 
 ### Format guarantees
 

@@ -547,17 +547,50 @@ fn verify_signature_with_key(
     let key_str = key
         .0
         .strip_prefix("did:key:")
-        .ok_or_else(|| "rotation key missing did:key: prefix".to_string())?;
+        .ok_or_else(|| "public key missing did:key: prefix".to_string())?;
     let (_, multikey_bytes) =
-        multibase::decode(key_str).map_err(|e| format!("decode rotation key multibase: {e}"))?;
+        multibase::decode(key_str).map_err(|e| format!("decode public key multibase: {e}"))?;
     if multikey_bytes.get(..2) != Some(P256_MULTICODEC_PREFIX) {
-        return Err("rotation key is not a P-256 key (wrong multicodec prefix)".to_string());
+        return Err("public key is not a P-256 key (wrong multicodec prefix)".to_string());
     }
     let verifying_key = VerifyingKey::from_sec1_bytes(&multikey_bytes[2..])
         .map_err(|e| format!("invalid P-256 public key: {e}"))?;
     verifying_key
         .verify(message, signature)
         .map_err(|e| format!("signature verification failed: {e}"))
+}
+
+/// Verify a raw P-256 ECDSA signature over an arbitrary message.
+///
+/// A general-purpose verification entry point, decoupled from did:plc
+/// operations: the caller supplies the signer's public key, the exact message
+/// bytes that were signed, and the raw 64-byte `r‖s` signature. This is the
+/// primitive the relay uses to authenticate signed admin requests.
+///
+/// The message is hashed with SHA-256 internally (ECDSA-SHA256), matching the
+/// signing convention used elsewhere in this crate. Pass the message bytes
+/// exactly as they were signed — do not pre-hash.
+///
+/// # Parameters
+/// - `public_key`: the signer's P-256 `did:key:` URI (multibase base58btc with
+///   the P-256 multicodec prefix).
+/// - `message`: the exact bytes that were signed (not pre-hashed).
+/// - `signature`: the raw 64-byte `r‖s` ECDSA signature (big-endian).
+///
+/// # Errors
+/// Returns `CryptoError::SignatureVerification` if `public_key` is not a valid
+/// P-256 `did:key:` URI, if `signature` is not a parseable `r‖s` ECDSA
+/// signature, or if the signature does not verify against the key and message.
+pub fn verify_p256_signature(
+    public_key: &DidKeyUri,
+    message: &[u8],
+    signature: &[u8; 64],
+) -> Result<(), CryptoError> {
+    let signature = Signature::try_from(signature.as_slice()).map_err(|e| {
+        CryptoError::SignatureVerification(format!("invalid ECDSA signature bytes: {e}"))
+    })?;
+    verify_signature_with_key(public_key, message, &signature)
+        .map_err(CryptoError::SignatureVerification)
 }
 
 // ── Audit log types ─────────────────────────────────────────────────────────
@@ -1600,5 +1633,83 @@ mod tests {
             }
             other => panic!("expected CryptoError::PlcOperation, got: {other:?}"),
         }
+    }
+
+    // ── verify_p256_signature tests ────────────────────────────────────────
+
+    /// Sign `message` with a fresh keypair and return (public_key, raw 64-byte sig).
+    fn sign_message(message: &[u8]) -> (DidKeyUri, [u8; 64]) {
+        let kp = generate_p256_keypair().expect("keypair");
+        let field_bytes: FieldBytes = (*kp.private_key_bytes).into();
+        let sk = SigningKey::from_bytes(&field_bytes).expect("valid signing key");
+        let sig: Signature = Signer::sign(&sk, message);
+        let sig_bytes: [u8; 64] = sig.to_bytes().into();
+        (kp.key_id, sig_bytes)
+    }
+
+    /// A valid r‖s signature over the message verifies.
+    #[test]
+    fn verify_p256_signature_accepts_valid_signature() {
+        let message = b"admin request canonical string";
+        let (public_key, sig) = sign_message(message);
+        assert!(
+            verify_p256_signature(&public_key, message, &sig).is_ok(),
+            "valid signature should verify"
+        );
+    }
+
+    /// A signature from a different key is rejected.
+    #[test]
+    fn verify_p256_signature_rejects_wrong_key() {
+        let message = b"admin request canonical string";
+        let (_signer, sig) = sign_message(message);
+        let other = generate_p256_keypair().expect("other keypair");
+
+        let result = verify_p256_signature(&other.key_id, message, &sig);
+        assert!(
+            matches!(result, Err(CryptoError::SignatureVerification(_))),
+            "signature from a different key must be rejected, got: {result:?}"
+        );
+    }
+
+    /// A tampered message is rejected.
+    #[test]
+    fn verify_p256_signature_rejects_tampered_message() {
+        let message = b"admin request canonical string";
+        let (public_key, sig) = sign_message(message);
+
+        let result = verify_p256_signature(&public_key, b"tampered message", &sig);
+        assert!(
+            matches!(result, Err(CryptoError::SignatureVerification(_))),
+            "signature over a different message must be rejected, got: {result:?}"
+        );
+    }
+
+    /// A malformed signature (all-zero scalars are out of range) is rejected at parse time.
+    #[test]
+    fn verify_p256_signature_rejects_malformed_signature() {
+        let message = b"admin request canonical string";
+        let (public_key, _sig) = sign_message(message);
+
+        let zero_sig = [0u8; 64];
+        let result = verify_p256_signature(&public_key, message, &zero_sig);
+        assert!(
+            matches!(result, Err(CryptoError::SignatureVerification(_))),
+            "all-zero (unparseable) signature must be rejected, got: {result:?}"
+        );
+    }
+
+    /// A non-P-256 / malformed did:key public key is rejected.
+    #[test]
+    fn verify_p256_signature_rejects_invalid_public_key() {
+        let message = b"admin request canonical string";
+        let (_signer, sig) = sign_message(message);
+
+        let bad_key = DidKeyUri("not-a-did-key".to_string());
+        let result = verify_p256_signature(&bad_key, message, &sig);
+        assert!(
+            matches!(result, Err(CryptoError::SignatureVerification(_))),
+            "malformed public key must be rejected, got: {result:?}"
+        );
     }
 }

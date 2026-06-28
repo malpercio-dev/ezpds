@@ -12,7 +12,7 @@ pub use keys::{
 pub use plc::{
     build_did_plc_genesis_op, build_did_plc_genesis_op_with_external_signer,
     build_did_plc_rotation_op, compute_cid, diff_audit_logs, parse_audit_log, verify_genesis_op,
-    verify_plc_operation, AuditEntry, PlcGenesisOp, PlcService, SignedPlcOperation,
-    VerifiedGenesisOp, VerifiedPlcOp,
+    verify_p256_signature, verify_plc_operation, AuditEntry, PlcGenesisOp, PlcService,
+    SignedPlcOperation, VerifiedGenesisOp, VerifiedPlcOp,
 };
 pub use shamir::{combine_shares, split_secret, ShamirShare};
