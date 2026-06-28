@@ -362,11 +362,52 @@ pub(crate) async fn advance_repo_root_if_active(
     Ok(updated.rows_affected() == 1)
 }
 
+/// The moderation/lifecycle state of an account, derived from its nullable timestamp columns.
+///
+/// Backs the `active` flag (and, for `getRepoStatus`, the `status` reason) of the public sync
+/// endpoints. Precedence runs from most to least severe — taken down → suspended → deactivated →
+/// active — so an account with several timestamps set reports only its strongest restriction (a
+/// moderation takedown supersedes the user's own deactivation). Only `Active` means the repo is
+/// actively hosted; every other state reports `active: false`. The lexicon `status` string is a
+/// wire concern owned by the route handler, not this enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AccountLifecycle {
+    Active,
+    Deactivated,
+    Suspended,
+    TakenDown,
+}
+
+impl AccountLifecycle {
+    /// Derive the lifecycle from the three nullable lifecycle timestamps; any non-NULL value
+    /// means that state is set. Applies the takendown > suspended > deactivated precedence.
+    fn from_timestamps(
+        deactivated_at: Option<&str>,
+        suspended_at: Option<&str>,
+        taken_down_at: Option<&str>,
+    ) -> Self {
+        if taken_down_at.is_some() {
+            Self::TakenDown
+        } else if suspended_at.is_some() {
+            Self::Suspended
+        } else if deactivated_at.is_some() {
+            Self::Deactivated
+        } else {
+            Self::Active
+        }
+    }
+
+    /// `true` only when the repo is actively hosted (no lifecycle restriction in force).
+    pub(crate) fn is_active(self) -> bool {
+        matches!(self, Self::Active)
+    }
+}
+
 /// A single repo entry for `com.atproto.sync.listRepos`.
 ///
 /// Only accounts that have created their repo (non-NULL `repo_root_cid`) produce a row —
 /// the lexicon requires `head` and `rev`, so an account without a repo root has nothing
-/// to list. `active` is derived from `deactivated_at`.
+/// to list. `active` is derived from the account lifecycle (deactivated/suspended/takendown).
 pub(crate) struct RepoListRow {
     pub(crate) did: String,
     /// Raw stored repo root commit CID string (the repo `head`).
@@ -374,7 +415,7 @@ pub(crate) struct RepoListRow {
     /// Stored commit revision (TID). `None` for pre-`repo_rev`-migration accounts; the
     /// caller falls back to reading the rev from the commit block in that case.
     pub(crate) rev: Option<String>,
-    /// `true` when `deactivated_at` is NULL.
+    /// `true` when the account is actively hosted (no deactivation, suspension, or takedown).
     pub(crate) active: bool,
 }
 
@@ -388,8 +429,18 @@ pub(crate) async fn list_repos(
     cursor: &str,
     limit: i64,
 ) -> Result<Vec<RepoListRow>, sqlx::Error> {
-    let rows: Vec<(String, String, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT did, repo_root_cid, repo_rev, deactivated_at FROM accounts \
+    // (did, repo_root_cid, repo_rev, deactivated_at, suspended_at, taken_down_at)
+    type Row = (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT did, repo_root_cid, repo_rev, deactivated_at, suspended_at, taken_down_at \
+         FROM accounts \
          WHERE repo_root_cid IS NOT NULL AND did > ? \
          ORDER BY did ASC LIMIT ?",
     )
@@ -400,23 +451,31 @@ pub(crate) async fn list_repos(
 
     Ok(rows
         .into_iter()
-        .map(|(did, head, rev, deactivated_at)| RepoListRow {
-            did,
-            head,
-            rev,
-            active: deactivated_at.is_none(),
-        })
+        .map(
+            |(did, head, rev, deactivated_at, suspended_at, taken_down_at)| RepoListRow {
+                did,
+                head,
+                rev,
+                active: AccountLifecycle::from_timestamps(
+                    deactivated_at.as_deref(),
+                    suspended_at.as_deref(),
+                    taken_down_at.as_deref(),
+                )
+                .is_active(),
+            },
+        )
         .collect())
 }
 
 /// Repo hosting status for a single account, backing `com.atproto.sync.getRepoStatus`.
 ///
-/// Unlike most account lookups this row is produced even for a deactivated account —
-/// reporting that state *is* the point of `getRepoStatus`. `active` is derived from
-/// `deactivated_at`; `head`/`rev` are `None` for an account that has not created its repo.
+/// Unlike most account lookups this row is produced even for a non-active account — reporting
+/// that state *is* the point of `getRepoStatus`. `lifecycle` carries the derived account state
+/// (the handler maps it to the lexicon `active`/`status` fields); `head`/`rev` are `None` for an
+/// account that has not created its repo.
 pub(crate) struct RepoStatusRow {
-    /// `true` when `deactivated_at` is NULL.
-    pub(crate) active: bool,
+    /// The account's lifecycle state, derived from its deactivation/suspension/takedown columns.
+    pub(crate) lifecycle: AccountLifecycle,
     /// Stored repo root commit CID (the repo `head`), or `None` when the account has no repo.
     pub(crate) head: Option<String>,
     /// Stored commit revision (TID). `None` for an account with no repo or one created before
@@ -427,24 +486,39 @@ pub(crate) struct RepoStatusRow {
 /// Fetch repo hosting status for a single DID for `getRepoStatus`.
 ///
 /// Returns `None` only when no account row exists for `did` (the caller maps this to a 404).
-/// This query intentionally does **not** filter on `deactivated_at`: a deactivated account
-/// still has a reportable status.
+/// This query intentionally does **not** filter on any lifecycle column: a deactivated,
+/// suspended, or taken-down account still has a reportable status.
 pub(crate) async fn get_repo_status(
     db: &sqlx::SqlitePool,
     did: &str,
 ) -> Result<Option<RepoStatusRow>, sqlx::Error> {
-    let row: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT deactivated_at, repo_root_cid, repo_rev FROM accounts WHERE did = ?",
+    // (deactivated_at, suspended_at, taken_down_at, repo_root_cid, repo_rev)
+    type Row = (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+    let row: Option<Row> = sqlx::query_as(
+        "SELECT deactivated_at, suspended_at, taken_down_at, repo_root_cid, repo_rev \
+         FROM accounts WHERE did = ?",
     )
     .bind(did)
     .fetch_optional(db)
     .await?;
 
-    Ok(row.map(|(deactivated_at, head, rev)| RepoStatusRow {
-        active: deactivated_at.is_none(),
-        head,
-        rev,
-    }))
+    Ok(row.map(
+        |(deactivated_at, suspended_at, taken_down_at, head, rev)| RepoStatusRow {
+            lifecycle: AccountLifecycle::from_timestamps(
+                deactivated_at.as_deref(),
+                suspended_at.as_deref(),
+                taken_down_at.as_deref(),
+            ),
+            head,
+            rev,
+        },
+    ))
 }
 
 /// Resolve an email address to an active (non-deactivated) account.
@@ -984,6 +1058,114 @@ mod tests {
             state.repo_root_cid, None,
             "an account without a repo must have repo_root_cid=None"
         );
+    }
+
+    // ── get_repo_status lifecycle derivation ──────────────────────────────────
+
+    /// Set a single nullable lifecycle column on an account to `datetime('now')`.
+    async fn set_lifecycle_column(db: &sqlx::SqlitePool, did: &str, column: &str) {
+        sqlx::query(&format!(
+            "UPDATE accounts SET {column} = datetime('now') WHERE did = ?"
+        ))
+        .bind(did)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn get_repo_status_active_account_is_active() {
+        let db = test_pool().await;
+        insert_account(&db, "did:plc:rs_active").await;
+
+        let row = get_repo_status(&db, "did:plc:rs_active")
+            .await
+            .unwrap()
+            .expect("account exists");
+        assert_eq!(row.lifecycle, AccountLifecycle::Active);
+        assert!(row.lifecycle.is_active());
+    }
+
+    #[tokio::test]
+    async fn get_repo_status_deactivated_account_reports_deactivated() {
+        let db = test_pool().await;
+        insert_account(&db, "did:plc:rs_deact").await;
+        set_lifecycle_column(&db, "did:plc:rs_deact", "deactivated_at").await;
+
+        let row = get_repo_status(&db, "did:plc:rs_deact")
+            .await
+            .unwrap()
+            .expect("account exists");
+        assert_eq!(row.lifecycle, AccountLifecycle::Deactivated);
+        assert!(!row.lifecycle.is_active());
+    }
+
+    #[tokio::test]
+    async fn get_repo_status_suspended_account_reports_suspended() {
+        let db = test_pool().await;
+        insert_account(&db, "did:plc:rs_susp").await;
+        set_lifecycle_column(&db, "did:plc:rs_susp", "suspended_at").await;
+
+        let row = get_repo_status(&db, "did:plc:rs_susp")
+            .await
+            .unwrap()
+            .expect("account exists");
+        assert_eq!(row.lifecycle, AccountLifecycle::Suspended);
+    }
+
+    #[tokio::test]
+    async fn get_repo_status_takendown_account_reports_takendown() {
+        let db = test_pool().await;
+        insert_account(&db, "did:plc:rs_td").await;
+        set_lifecycle_column(&db, "did:plc:rs_td", "taken_down_at").await;
+
+        let row = get_repo_status(&db, "did:plc:rs_td")
+            .await
+            .unwrap()
+            .expect("account exists");
+        assert_eq!(row.lifecycle, AccountLifecycle::TakenDown);
+    }
+
+    #[tokio::test]
+    async fn get_repo_status_takendown_supersedes_suspended_and_deactivated() {
+        let db = test_pool().await;
+        insert_account(&db, "did:plc:rs_all").await;
+        for column in ["deactivated_at", "suspended_at", "taken_down_at"] {
+            set_lifecycle_column(&db, "did:plc:rs_all", column).await;
+        }
+
+        let row = get_repo_status(&db, "did:plc:rs_all")
+            .await
+            .unwrap()
+            .expect("account exists");
+        assert_eq!(
+            row.lifecycle,
+            AccountLifecycle::TakenDown,
+            "takedown must win the lifecycle precedence"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_repo_status_suspended_supersedes_deactivated() {
+        let db = test_pool().await;
+        insert_account(&db, "did:plc:rs_sd").await;
+        set_lifecycle_column(&db, "did:plc:rs_sd", "deactivated_at").await;
+        set_lifecycle_column(&db, "did:plc:rs_sd", "suspended_at").await;
+
+        let row = get_repo_status(&db, "did:plc:rs_sd")
+            .await
+            .unwrap()
+            .expect("account exists");
+        assert_eq!(row.lifecycle, AccountLifecycle::Suspended);
+    }
+
+    #[tokio::test]
+    async fn get_repo_status_missing_did_returns_none() {
+        let db = test_pool().await;
+        assert!(get_repo_status(&db, "did:plc:rs_ghost")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

@@ -204,6 +204,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn taken_down_or_suspended_account_reports_active_false() {
+        // A moderation takedown or suspension must drop `active` to false in listRepos just as a
+        // deactivation does — relays key on this to stop serving the repo.
+        let state = state_with_master_key().await;
+        for (did, column) in [
+            ("did:plc:listrepostakendown", "taken_down_at"),
+            ("did:plc:listrepossuspended", "suspended_at"),
+        ] {
+            seed_account_with_repo(&state.db, did).await;
+            sqlx::query(&format!(
+                "UPDATE accounts SET {column} = datetime('now') WHERE did = ?"
+            ))
+            .bind(did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        }
+        let app = crate::app::app(state);
+
+        let (status, body) = list(&app, "").await;
+        assert_eq!(status, StatusCode::OK);
+        let repos = body["repos"].as_array().unwrap();
+        assert_eq!(repos.len(), 2);
+        for repo in repos {
+            assert_eq!(
+                repo["active"], false,
+                "taken-down/suspended repo {} must report active=false",
+                repo["did"]
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn account_without_repo_is_excluded() {
         let state = state_with_master_key().await;
         // Account row with no repo_root_cid (genesis never created) must not appear —
