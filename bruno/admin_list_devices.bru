@@ -1,0 +1,39 @@
+meta {
+  name: Admin List Devices
+  type: http
+  seq: 53
+}
+
+get {
+  url: {{baseUrl}}/v1/admin/devices
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+docs {
+  # GET /v1/admin/devices
+
+  List every registered operator companion-app device, active and revoked, newest
+  first. Admin-authed: the master token (shown here) **or** an active device's signed
+  request (the `X-Admin-*` envelope produced by the companion app's signing client).
+
+  Response:
+  - `devices` — array of devices, each:
+    - `id` — server-assigned id the phone sends as `X-Admin-Device`.
+    - `label` — human-readable device label.
+    - `publicKey` — the device's P-256 public key as a `did:key:` URI.
+    - `platform` — platform tag (e.g. `ios`).
+    - `scopes` — granted scopes (currently always `full`).
+    - `status` — `active` while unrevoked, `revoked` once cut off. Lifecycle is never
+      signalled by a flag alone — pair the status string with `revokedAt`.
+    - `createdAt` — registration time (UTC).
+    - `lastSeenAt` — last successful signed-request auth, or null if never.
+    - `revokedAt` — revocation time, or null while active.
+
+  Listing returns revoked devices too, so the operator can audit history and confirm a
+  device was cut off server-side.
+}
