@@ -5,6 +5,7 @@ members = [
     "crates/crypto",
     "crates/common",
     "apps/identity-wallet/src-tauri",
+    "apps/admin-companion/src-tauri",
 ]
 resolver = "2"
 

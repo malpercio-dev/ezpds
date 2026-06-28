@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    Tauri merges this into the generated iOS Info.plist on every build (local + CI), so
+    App Store Connect's "Missing Compliance" gate is answered automatically.
+
+    ITSAppUsesNonExemptEncryption = false  =>  the app's encryption is EXEMPT from US export
+    licensing. The admin companion uses only standard, *published* algorithms (TLS via rustls,
+    P-256/ECDSA for request signing) for its own security, which qualifies for the standard/
+    mass-market exemption.
+
+    This is a LEGAL self-declaration. If an export-compliance review concludes otherwise, set
+    this to <true/> and supply export documentation in App Store Connect.
+    https://developer.apple.com/documentation/bundleresources/information-property-list/itsappusesnonexemptencryption
+  -->
+  <key>ITSAppUsesNonExemptEncryption</key>
+  <false/>
+</dict>
+</plist>

@@ -1,0 +1,2 @@
+# All toolchain overrides moved to scripts/ios-env.sh — this file intentionally
+# contains NO hardcoded Xcode paths. Mirrors apps/identity-wallet/src-tauri/.cargo/config.toml.

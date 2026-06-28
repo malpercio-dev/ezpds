@@ -1,0 +1,107 @@
+/*
+ * Admin Companion — design tokens ("The Brass Console")
+ * The single source of truth for color, type, space, and motion in the app.
+ * Forks the OKLCH token *architecture* of identity-wallet (Obsign) but inverts the
+ * register: dark-first cool slate, sealing-wax gold accent, monospace-forward.
+ * Mirrors apps/admin-companion/DESIGN.md. Components reference these custom
+ * properties via var(); never hardcode raw values.
+ *
+ * Colors are OKLCH. Every text pair below is verified to clear WCAG 2.2 AAA (>=7:1)
+ * against its intended ground — the design's "practice the assurance you preach"
+ * bar held against a dark ground, where it is hardest. See DESIGN.md §2. The SEED
+ * anchors were tuned upward in lightness to actually clear AAA (the raw seed values
+ * landed at AA); re-derive on the /impeccable scan-mode pass if the palette changes.
+ */
+:root {
+  /* ── Brand: the brass (the One Lamp — action & identity, never status) ── */
+  --color-primary: oklch(0.72 0.12 80);       /* Sealing-Wax Gold, lifted for the dark ground */
+  --color-primary-hover: oklch(0.78 0.13 82); /* Lit Brass */
+  --color-primary-deep: oklch(0.70 0.13 78);  /* pressed — deeper hue/chroma, still AAA with on-primary */
+  --color-on-primary: oklch(0.16 0.012 250);  /* deep-slate ink on a gold fill (7.7:1, AAA) */
+  --color-on-color: oklch(0.96 0.006 250);    /* near-white text on saturated/solid fills */
+
+  /* ── Neutral: cool steel & filament (the warmth lives only in the brass) ── */
+  --color-bg: oklch(0.18 0.012 250);          /* Console Slate — the ground, a cool near-black */
+  --color-surface: oklch(0.22 0.014 250);     /* Panel Slate — cards, panels */
+  --color-surface-raised: oklch(0.26 0.015 250); /* Raised Slate — input wells, nested panels, hover rows */
+  --color-line: oklch(0.34 0.012 250);        /* Steel Line — 1px hairline dividers (decorative structure) */
+  --color-border-strong: oklch(0.52 0.012 250); /* control outlines that must clear 3:1 (inputs, ghost buttons) */
+  --color-ink: oklch(0.95 0.006 250);         /* Filament — primary text & headings (16:1 on bg, AAA) */
+  --color-ink-soft: oklch(0.82 0.008 250);    /* Filament Soft — secondary prose (10.8:1, AAA) */
+  --color-muted: oklch(0.73 0.010 250);       /* Filament Dim — labels & metadata (7.9:1 on bg / 7.2:1 on panel) */
+  /* Rule: --color-muted is rated for --color-bg and --color-surface. Inside a
+     --color-surface-raised well, use --color-ink-soft for metadata to stay AAA. */
+
+  /* ── Status (security / operational signal ONLY — never the brand) ──────
+     Each state is a tonal pair: a bright signal tone (icon + text) over a subtle
+     deep same-hue surface. Always paired with a glyph + text label, never color
+     alone. Hues sit clear of the brass accent (hue 80). All clear AAA. */
+  --color-safe: oklch(0.82 0.10 150);          /* Verified Green — authorized, live & good */
+  --color-safe-surface: oklch(0.26 0.04 150);
+  --color-warning: oklch(0.82 0.10 50);        /* Caution Amber — pushed to hue 50, clear of the brass */
+  --color-warning-surface: oklch(0.26 0.04 50);
+  --color-critical: oklch(0.82 0.10 25);       /* Alarm Red — text/icon tone */
+  --color-critical-surface: oklch(0.26 0.04 25);
+  --color-critical-solid: oklch(0.44 0.16 25); /* solid destructive fill (takes --color-on-color, 7.5:1 AAA) */
+  --color-info: oklch(0.82 0.10 240);          /* Calm Slate — neutral information */
+  --color-info-surface: oklch(0.26 0.04 240);
+
+  /* ── Type families ──────────────────────────────────────────────────────
+     Mono is the SIGNATURE VOICE here (the prompt, the wordmark, every literal
+     value) — the inverse of Obsign, where the serif signet leads. JetBrains Mono
+     is bundled (static/fonts/, no runtime CDN). The grotesk that carries dense UI
+     and prose is PROVISIONAL: the system technical grotesk (SF Pro on iOS) until a
+     face is chosen on the /impeccable pass — DESIGN.md rejects Inter/Space Grotesk/
+     IBM Plex/DM Sans, and the native system face is none of those. */
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace; /* the literal truth */
+  --font-display: var(--font-mono);            /* the "prompt" — mono is the signet in this system */
+  --font-sans: system-ui, -apple-system, 'Helvetica Neue', sans-serif;     /* the working voice (provisional) */
+
+  /* ── Type scale (fixed rem, ~1.2 ratio — never fluid clamp) ────────────── */
+  --text-display: 1.625rem;  --leading-display: 1.2;   /* mono — wordmark / screen header, once per screen */
+  --text-headline: 1.375rem; --leading-headline: 1.25; /* grotesk 600 */
+  --text-title: 1.125rem;    --leading-title: 1.35;    /* grotesk 600 */
+  --text-body: 1rem;         --leading-body: 1.6;       /* grotesk 400 (looser than Obsign — light-on-dark) */
+  --text-label: 0.8125rem;   --leading-label: 1.3;      /* grotesk 500, +0.01em */
+  --text-data: 0.875rem;     --leading-data: 1.55;      /* mono — codes, did:keys, IDs, timestamps */
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* ── Spacing (4px base) ───────────────────────────────────────────────── */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-2xl: 48px;
+
+  /* ── Radii (tight — a precision instrument, tighter than stock-iOS) ────── */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+  --radius-full: 9999px;
+
+  /* ── Elevation (flat at rest; shadows only for floating surfaces) ───────
+     On a dark ground a shadow nearly vanishes; depth is built from tonal layers
+     + Steel Line hairlines. These two soft, never-colored shadows are reserved
+     for genuinely floating, temporary surfaces. */
+  --shadow-sheet: 0 -8px 32px oklch(0.10 0.01 250 / 0.5);
+  --shadow-toast: 0 4px 20px oklch(0.10 0.01 250 / 0.5);
+
+  /* ── Motion (state, not decoration; honor prefers-reduced-motion) ─────── */
+  --ease-standard: cubic-bezier(0.22, 1, 0.36, 1);
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --duration-slow: 240ms;
+
+  /* ── Z-index scale (semantic — never arbitrary 999s) ──────────────────── */
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-modal-backdrop: 300;
+  --z-modal: 400;
+  --z-toast: 500;
+  --z-tooltip: 600;
+}
