@@ -40,13 +40,13 @@ lock-check:
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
 ci: fmt-check lock-check clippy test audit
 
-# CI gate for the Linux pds pipeline (tangled spindles). Excludes the iOS app
-# (identity-wallet), which needs the Apple/GTK toolchain absent in CI; the mobile
-# app is built and checked via `just ios-*` on macOS.
+# CI gate for the Linux pds pipeline (tangled spindles). Excludes the iOS apps
+# (identity-wallet, admin-companion), which need the Apple toolchain (security-framework)
+# absent in CI; the mobile apps are built and checked via `just ios-*` / `just admin-*` on macOS.
 ci-pds: fmt-check
     just lock-check
-    cargo clippy --workspace --exclude identity-wallet --all-targets -- -D warnings
-    cargo test --workspace --exclude identity-wallet
+    cargo clippy --workspace --exclude identity-wallet --exclude admin-companion --all-targets -- -D warnings
+    cargo test --workspace --exclude identity-wallet --exclude admin-companion
     just audit
 
 # Validate that the flake evaluates correctly (devShells + nixosModules).
@@ -204,3 +204,25 @@ ios-upload:
 
 # Full local release lane: build the signed IPA, then upload to TestFlight.
 ios-release: ios-ipa ios-upload
+
+# --- iOS (admin-companion) — run from repo root; requires macOS + Xcode ---
+# The operator console, a second iOS app. Same toolchain seam as identity-wallet;
+# the scripts are path-relative so they patch this app's own generated Xcode project.
+
+# Re-apply the surviving Tauri/macOS patches to admin-companion's generated Xcode
+# project. Run once after every `cargo tauri ios init`. Idempotent.
+admin-postinit:
+    apps/admin-companion/scripts/ios-postinit.sh
+
+# Fail if admin-companion's generated Xcode project is missing any required patch.
+admin-check:
+    apps/admin-companion/scripts/ios-check.sh
+
+# Launch the admin console on the iOS Simulator (verifies patches first).
+# Pass a simulator name to force the Simulator, e.g. `just admin-dev "iPhone 17 Pro Max"`.
+admin-dev device="": admin-check
+    cd apps/admin-companion && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && if [ -n "{{device}}" ]; then cargo tauri ios dev "{{device}}"; else cargo tauri ios dev; fi
+
+# Build the admin console for the Simulator (verifies patches first).
+admin-build: admin-check
+    cd apps/admin-companion && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && cargo tauri ios build --debug

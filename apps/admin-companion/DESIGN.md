@@ -94,15 +94,23 @@ Elevation appears only when an element genuinely floats and must read as *tempor
 
 ## 5. Components
 
-<!-- SEED: no components exist yet (the Tauri app is a later implementation phase). The intended canonical vocabulary is sketched below; real tokens, states, and the design.json sidecar land on the scan-mode re-run. -->
+The canonical primitives live in `src/lib/components/ui/` as Svelte 5 components and
+compose the tokens in `src/lib/styles/tokens.css` (control radius `--control-radius`,
+touch floor `--control-min-height: 44px`, focus ring `--ring-width`). They are exercised
+in every state at the `/preview` route. No hardcoded hex/px — every value is a `var(--*)`.
 
-Intended primitives, in this register's character:
-- **Buttons** — precise, tight radius (≈6px, tighter than stock-iOS); **Primary** is a Sealing-Wax Gold fill with deep-slate text (the One-Lamp action); **Secondary/Ghost** is Panel Slate with a Steel Line border; **Destructive** is Alarm Solid, reserved for the irreversible revoke/confirm. Full state set required (default/hover/focus-visible/active/disabled/loading).
-- **Code Output** *(signature component)* — a claim code or `did:key` rendered as copyable terminal-style output in mono on Raised Slate, with a leading prompt glyph and a copy affordance; never truncated, wraps `break-all`. This is the demo-lifesaver surface.
-- **Device Row** — a dense, aligned list row (`ls -l` legibility): label, mono device-ID, last-seen, and a status chip; full-size tap targets despite density.
-- **Status Chip** — the tonal-pair badge; color + glyph (`● active` / `⊘ revoked` / `! error`) + label, never color alone.
-- **Inputs** — Raised Slate well, Steel Line border, gold focus ring; mono for fields that take a code or URL.
-- **Focus-visible** — a 2px gold ring with offset on every interactive element; never removed (visible focus is a security feature here).
+- **`Button`** — precise tight radius (`--control-radius`, 6px, tighter than stock-iOS), 44px min height. `primary` is a Sealing-Wax Gold fill with deep-slate ink (the One-Lamp action, at most once per screen); `secondary` is Panel Slate with a Steel Line hairline (the quiet default); `destructive` is Alarm Solid with light text, reserved for the irreversible revoke/unpair. Full state set: default / hover / active / disabled / `loading` (an inline spinner, held still under reduced motion).
+- **`CodeOutput`** *(signature component)* — a claim code, `did:key`, or device ID as copyable terminal output: mono on Raised Slate, optional leading `▸` prompt glyph, a copy affordance that confirms with a check + the word "copied" + the safe tone (never color alone) and announces to VoiceOver via `aria-live`. Wraps `break-all`; **never truncates a literal silently** (Literal-Truth rule). The demo-lifesaver surface.
+- **`DeviceRow`** — a dense, aligned `ls -l` row: label + shortened mono `did:key` (head…tail with a **visible** ellipsis — explicit, not silent — the full value one tap away) + last-seen, with a `StatusChip` on the right. The operator's current device is marked by a gold "this device" label, **not** a side-stripe. Renders as a real `<button>` when tappable, a `<div>` otherwise (no dynamic-element a11y ambiguity).
+- **`StatusChip`** — the tonal-pair badge: signal tone on a deep same-hue surface, a terminal glyph (`●` active/ready · `◌` pending · `⊘` revoked · `!` error · `○` info), **and** a text label. The glyph is `aria-hidden`; the label is the screen-reader truth. Color + glyph + text + position — never color alone.
+- **`TextField`** — Raised Slate well, Steel Line (`--color-border-strong`) border, 2px gold focus ring; `mono` variant for fields that take a literal value (relay URL, pairing code). Error state is a red border + a leading `!` glyph + a message, never color alone.
+- **`ScreenShell`** — the screen scaffold: the `ezpds ▸ <prompt>` line (mono, the one display moment per screen) over a working-voice headline, an optional back affordance, the body, and an optional pinned actions row. Keeps every operator screen structurally identical.
+- **Focus-visible** — a 2px gold ring with offset on every interactive element (global, in `base.css`); never removed (visible focus is a security feature here).
+
+Every text-on-surface and text-on-color pairing these compose is verified WCAG 2.2 AAA
+(see the contrast note in `tokens.css`). Next design step: assemble these into the Phase 8
+operator screens (Pair, Home, Settings, error/recovery states); then re-run
+`/impeccable document` in scan mode to emit the `.impeccable/design.json` sidecar.
 
 ## 6. Do's and Don'ts
 

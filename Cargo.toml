@@ -5,6 +5,7 @@ members = [
     "crates/crypto",
     "crates/common",
     "apps/identity-wallet/src-tauri",
+    "apps/admin-companion/src-tauri",
 ]
 resolver = "2"
 
@@ -91,6 +92,15 @@ iroh = "1"
 
 # Blob MIME detection (pds)
 infer = "0.19"
+
+# Mobile apps (Tauri v2 — shared by identity-wallet + admin-companion).
+# Now that two crates consume these, their versions live here per the workspace policy;
+# members opt in with `{ workspace = true }` (and add crate-specific features locally).
+tauri = { version = "2" }
+tauri-build = { version = "2" }
+tauri-plugin-log = "2"
+log = "0.4"
+security-framework = { version = "3" }
 
 # Testing
 tempfile = "3"

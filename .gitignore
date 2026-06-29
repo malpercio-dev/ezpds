@@ -46,7 +46,12 @@ apps/identity-wallet/.svelte-kit/
 apps/identity-wallet/dist/
 apps/identity-wallet/node_modules/
 apps/identity-wallet/package-lock.json
+apps/admin-companion/.svelte-kit/
+apps/admin-companion/dist/
+apps/admin-companion/node_modules/
+apps/admin-companion/package-lock.json
 
 # Tauri-generated Xcode project (machine-specific; regenerated per developer via `cargo tauri ios init`)
 apps/identity-wallet/src-tauri/gen/
+apps/admin-companion/src-tauri/gen/
 .pi/extensions/*/node_modules/

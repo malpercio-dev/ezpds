@@ -1,0 +1,33 @@
+[package]
+name = "admin-companion"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+name = "admin_companion"
+path = "src/lib.rs"
+# staticlib  → iOS static binary
+# cdylib     → Android shared library
+# rlib       → normal `cargo build` + integration tests
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+# Tauri + shared mobile deps live in [workspace.dependencies] (two apps consume them now).
+tauri = { workspace = true, features = [] }
+tauri-plugin-log = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# Device-key crypto (software path uses the crypto crate; both paths use p256 + multibase).
+crypto = { workspace = true }
+p256 = { workspace = true }
+multibase = { workspace = true }
+tracing = { workspace = true }
+# Secure Enclave + Keychain access (real-device and macOS/simulator software paths both
+# touch the Keychain via this crate). OSX_10_12 enables the SE access-control APIs.
+security-framework = { workspace = true, features = ["OSX_10_12"] }
+
+[build-dependencies]
+tauri-build = { workspace = true, features = [] }
