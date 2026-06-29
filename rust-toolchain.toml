@@ -1,5 +1,11 @@
 [toolchain]
-channel = "stable"
+# Pinned to an exact version, NOT "stable": a moving "stable" channel resolves to whatever each
+# machine last installed, so local dev and CI silently drift apart and `cargo fmt --check` fails
+# in CI on rustfmt heuristic changes the local toolchain hasn't caught up to (see PR #46). The
+# whole repo reads this pin (devenv.nix `enterShell` and CI both `rustup toolchain install` from
+# this file), so everyone uses the same toolchain. To bump: change this line, run `just ci-pds`,
+# and reformat if rustfmt changed.
+channel = "1.96.0"
 components = ["rustfmt", "clippy", "rust-analyzer"]
 targets = [
     "aarch64-apple-darwin",
