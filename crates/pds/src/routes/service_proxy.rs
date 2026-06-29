@@ -2,7 +2,8 @@
 //
 // Gathers: an incoming XRPC request (method, query, headers, body) bound for an upstream
 //          atproto service — the AppView for `app.bsky.*`, the chat service for `chat.bsky.*`
-// Processes: forwards it to the given upstream, passing the caller's auth through
+// Processes: mints a fresh ES256 service-auth JWT (signed by the account's repo key) and
+//            forwards the request to the given upstream under that token
 // Returns: the upstream's status, content-type, and streamed response body
 
 use axum::{
@@ -33,15 +34,18 @@ fn is_length_limit_error(err: &axum::Error) -> bool {
 ///
 /// `upstream_url` is the service base URL (no trailing slash) and `proxy_did` is its service
 /// DID, sent as the `atproto-proxy` header so the upstream knows the request arrives on the
-/// user's behalf via their PDS. The caller's `Authorization` header is passed through unchanged
-/// — the upstream trusts the user's PDS to have authenticated them. The upstream status, content
-/// type, and body are streamed straight back to the client; a failure to reach the upstream maps
-/// to `503`, while upstream error *responses* (4xx/5xx) are passed through verbatim.
+/// user's behalf via their PDS. `did` is the authenticated account DID. A fresh ES256
+/// service-auth JWT (signed by the account's `#atproto` repo key, `iss`=account DID,
+/// `aud`=service DID, `lxm`=method, 60s TTL) is minted and attached as the `Authorization`; the
+/// caller's own PDS session token is **not** forwarded (the AppView can't verify it). The
+/// upstream status, content type, and body are streamed straight back; a failure to reach the
+/// upstream maps to `503`, while upstream error *responses* (4xx/5xx) are passed through verbatim.
 pub async fn proxy_xrpc(
     state: &AppState,
     upstream_url: &str,
     proxy_did: &str,
     nsid: &str,
+    did: &str,
     req: Request,
 ) -> Response {
     // Preserve the original query string verbatim so upstream query params survive the hop.
@@ -74,19 +78,30 @@ pub async fn proxy_xrpc(
         }
     };
 
+    // Mint a fresh ES256 service-auth JWT signed by the account's `#atproto` repo key. The
+    // upstream verifies it against the user's DID; forwarding the user's PDS session token
+    // instead is rejected with "poorly formatted jwt" (HS256, no `iss`, signed by a secret no
+    // third party holds).
+    let service_jwt = match mint_service_auth(state, did, proxy_did, nsid).await {
+        Ok(jwt) => jwt,
+        Err(resp) => return resp,
+    };
+
     // reqwest 0.12 and axum 0.7 share the same `http` crate, so `Method` and `HeaderValue` are
     // identical types and move across the boundary without conversion.
     let mut outbound = state.http_client.request(parts.method, &target);
 
-    // Pass auth, content-type, and the client's content-negotiation preference through; host,
-    // content-length, and connection are hop-by-hop or recomputed by reqwest, so they are
-    // intentionally dropped.
-    for name in [header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT] {
+    // Pass content-type and the client's content-negotiation preference through; the inbound
+    // Authorization is intentionally DROPPED and replaced with the minted service-auth JWT. Host,
+    // content-length, and connection are hop-by-hop or recomputed by reqwest.
+    for name in [header::CONTENT_TYPE, header::ACCEPT] {
         if let Some(val) = parts.headers.get(&name) {
             outbound = outbound.header(name, val);
         }
     }
-    outbound = outbound.header("atproto-proxy", proxy_did);
+    outbound = outbound
+        .header(header::AUTHORIZATION, format!("Bearer {service_jwt}"))
+        .header("atproto-proxy", proxy_did);
 
     if !body_bytes.is_empty() {
         outbound = outbound.body(body_bytes);
@@ -123,6 +138,59 @@ pub async fn proxy_xrpc(
     }
 }
 
+/// Mint a fresh ES256 service-auth JWT for proxying `nsid` to `proxy_did` on behalf of `did`.
+///
+/// Loads the account's `#atproto` repo signing key (decrypting it with the configured master
+/// key) and signs a short-lived token: `iss` = the account DID, `aud` = the service DID with any
+/// `#fragment` stripped (the AppView keys verification on the bare DID), `lxm` = the proxied
+/// method, 60s TTL. Returns the built error response on the unhappy paths (master key missing →
+/// 503, key load/decrypt failure → 500) so the caller can early-return it.
+async fn mint_service_auth(
+    state: &AppState,
+    did: &str,
+    proxy_did: &str,
+    nsid: &str,
+) -> Result<String, Response> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let master_key: &[u8; 32] = state
+        .config
+        .signing_key_master_key
+        .as_ref()
+        .map(|s| &*s.0)
+        .ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::ServiceUnavailable,
+                "signing key master key not configured",
+            )
+            .into_response()
+        })?;
+
+    let signer = crate::auth::signing_key::load_repo_signer(&state.db, did, master_key)
+        .await
+        .map_err(IntoResponse::into_response)?;
+
+    // The audience is the bare service DID — a `#fragment` (e.g. `#bsky_chat`) belongs in the
+    // `atproto-proxy` header, not the JWT `aud`, which the AppView matches against its own DID.
+    let aud = proxy_did.split('#').next().unwrap_or(proxy_did);
+
+    // A failure to read the wall clock is unrecoverable here; fall back to 0 so the token is
+    // simply already-expired (rejected upstream) rather than panicking the request.
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    Ok(crate::auth::jwt::mint_service_auth_jwt(
+        |bytes| signer.sign(bytes),
+        did,
+        aud,
+        Some(nsid),
+        now,
+        now + 60,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -136,23 +204,73 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use crate::app::{app, test_state, AppState};
+    use crate::routes::test_utils::test_master_key;
 
-    /// Build router state whose AppView points at the given mock server URI.
+    /// The account DID baked into every proxied request's bearer token (see [`bearer`]). The
+    /// proxy mints the service-auth JWT for whichever DID the inbound session authenticates as,
+    /// so this is the DID we must seed a repo signing key for.
+    const TEST_DID: &str = "did:plc:tester";
+
+    /// Seed `TEST_DID` with an account row and a per-account repo signing key, encrypted under
+    /// [`test_master_key`]. The proxy needs only the *decryptable signing key* to mint the
+    /// service-auth JWT — not a full repo — so this is leaner than `seed_account_with_repo`.
+    async fn seed_repo_key(db: &sqlx::SqlitePool) {
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES (?, ?, 'hash', datetime('now'), datetime('now'))",
+        )
+        .bind(TEST_DID)
+        .bind(format!("{TEST_DID}@example.com"))
+        .execute(db)
+        .await
+        .unwrap();
+
+        let kp = crypto::generate_p256_keypair().unwrap();
+        let private_key_encrypted =
+            crypto::encrypt_private_key(&kp.private_key_bytes, &test_master_key()).unwrap();
+        crate::db::repo_keys::insert_did_signing_key(
+            db,
+            TEST_DID,
+            &crate::db::repo_keys::RepoSigningKey {
+                key_id: kp.key_id.to_string(),
+                public_key: kp.public_key.clone(),
+                private_key_encrypted,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Configure `config` so the proxy can mint a service-auth JWT: install the master key the
+    /// seeded repo key was encrypted under.
+    fn with_master_key(config: &mut common::Config) {
+        config.signing_key_master_key = Some(common::Sensitive(zeroize::Zeroizing::new(
+            test_master_key(),
+        )));
+    }
+
+    /// Build router state whose AppView points at the given mock server URI, with `TEST_DID`'s
+    /// repo signing key seeded so proxied requests can mint a service-auth JWT.
     async fn state_with_appview(uri: &str) -> AppState {
         let base = test_state().await;
         let mut config = (*base.config).clone();
         config.appview.url = uri.to_string();
+        with_master_key(&mut config);
+        seed_repo_key(&base.db).await;
         AppState {
             config: Arc::new(config),
             ..base
         }
     }
 
-    /// Build router state whose chat service points at the given mock server URI.
+    /// Build router state whose chat service points at the given mock server URI, with
+    /// `TEST_DID`'s repo signing key seeded so proxied requests can mint a service-auth JWT.
     async fn state_with_chat(uri: &str) -> AppState {
         let base = test_state().await;
         let mut config = (*base.config).clone();
         config.chat.url = uri.to_string();
+        with_master_key(&mut config);
+        seed_repo_key(&base.db).await;
         AppState {
             config: Arc::new(config),
             ..base
@@ -222,15 +340,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forwards_authorization_header() {
+    async fn mints_service_auth_jwt_instead_of_forwarding_session_token() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
         let server = MockServer::start().await;
         let state = state_with_appview(&server.uri()).await;
         let auth = bearer(&state);
+        // The AppView keys verification on its *bare* DID; `mint_service_auth` strips the
+        // `#fragment` that lives on the configured service DID.
+        let expected_aud = state
+            .config
+            .appview
+            .did
+            .split('#')
+            .next()
+            .unwrap()
+            .to_string();
 
-        // The exact bearer that passed the local auth gate must reach the AppView unchanged.
         Mock::given(method("GET"))
             .and(path("/xrpc/app.bsky.notification.listNotifications"))
-            .and(header("authorization", auth.as_str()))
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_body_json(serde_json::json!({ "notifications": [] })),
@@ -243,15 +371,50 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/xrpc/app.bsky.notification.listNotifications")
-                    .header("authorization", auth)
+                    .header("authorization", &auth)
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
 
-        // `expect(1)` plus the header matcher verify the auth header reached the AppView.
         assert_eq!(response.status(), StatusCode::OK);
+
+        // Inspect what actually reached the AppView: it must be a freshly-minted ES256
+        // service-auth JWT, NOT the inbound HS256 PDS session token (which the AppView rejects
+        // as "poorly formatted jwt").
+        let requests = server.received_requests().await.unwrap();
+        let forwarded = requests
+            .iter()
+            .find(|r| r.url.path() == "/xrpc/app.bsky.notification.listNotifications")
+            .expect("AppView received the proxied request");
+        let forwarded_auth = forwarded
+            .headers
+            .get("authorization")
+            .expect("proxied request carries an Authorization header")
+            .to_str()
+            .unwrap();
+
+        assert_ne!(
+            forwarded_auth, auth,
+            "the inbound PDS session token must not be forwarded verbatim"
+        );
+
+        let token = forwarded_auth
+            .strip_prefix("Bearer ")
+            .expect("Bearer scheme");
+        let mut parts = token.split('.');
+        let decode = |seg: &str| -> serde_json::Value {
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(seg).unwrap()).unwrap()
+        };
+        let jwt_header = decode(parts.next().unwrap());
+        let claims = decode(parts.next().unwrap());
+        assert!(parts.next().is_some(), "JWT carries a signature segment");
+
+        assert_eq!(jwt_header["alg"], "ES256");
+        assert_eq!(claims["iss"], TEST_DID);
+        assert_eq!(claims["aud"], expected_aud);
+        assert_eq!(claims["lxm"], "app.bsky.notification.listNotifications");
     }
 
     #[tokio::test]
@@ -320,10 +483,13 @@ mod tests {
     #[tokio::test]
     async fn transport_failure_maps_to_503() {
         // Point the AppView at a port nothing is listening on so the outbound request fails at
-        // the transport layer rather than returning an HTTP status.
+        // the transport layer rather than returning an HTTP status. The proxy still mints a
+        // service-auth JWT first, so the master key + seeded repo key must be present.
         let base = test_state().await;
         let mut config = (*base.config).clone();
         config.appview.url = "http://127.0.0.1:1".to_string();
+        with_master_key(&mut config);
+        seed_repo_key(&base.db).await;
         let state = AppState {
             config: Arc::new(config),
             ..base
@@ -474,10 +640,12 @@ mod tests {
         let state = state_with_chat(&server.uri()).await;
         let auth = bearer(&state);
 
+        // The forwarded Authorization is now a minted service-auth JWT, not the inbound token,
+        // so we no longer match on its value; the `atproto-proxy` header still carries the full
+        // service DID (fragment included) so the chat service routes the request.
         Mock::given(method("GET"))
             .and(path("/xrpc/chat.bsky.convo.listConvos"))
             .and(query_param("limit", "50"))
-            .and(header("authorization", auth.as_str()))
             .and(header("atproto-proxy", "did:web:api.bsky.chat#bsky_chat"))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({ "convos": [] })),
@@ -586,6 +754,8 @@ mod tests {
         let mut config = (*base.config).clone();
         config.chat.url = server.uri();
         config.appview.url = "http://127.0.0.1:1".to_string();
+        with_master_key(&mut config);
+        seed_repo_key(&base.db).await;
         let state = AppState {
             config: Arc::new(config),
             ..base
