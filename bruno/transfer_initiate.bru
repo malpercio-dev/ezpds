@@ -1,0 +1,30 @@
+meta {
+  name: Transfer Initiate
+  type: http
+  seq: 55
+}
+
+post {
+  url: {{baseUrl}}/v1/transfer/initiate
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sessionToken}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  Begin a planned device swap. The source device authenticates with its session
+  bearer token (the `sessionToken` from `POST /v1/accounts/sessions`); the
+  authenticated DID is the account being transferred, so no request body is needed.
+
+  Returns `{ transferId, transferCode, expiresAt, status: "pending" }`. The 6-char
+  code (15-minute TTL) is what the new device enters at `POST /v1/transfer/accept`.
+  Only one active transfer per account is allowed — a second concurrent attempt
+  returns 409.
+}

@@ -70,6 +70,7 @@ use crate::routes::static_assets::static_handler;
 use crate::routes::sync_get_record::sync_get_record;
 use crate::routes::sync_get_repo_status::sync_get_repo_status;
 use crate::routes::sync_subscribe_repos::subscribe_repos;
+use crate::routes::transfer_initiate::transfer_initiate;
 use crate::routes::upload_blob::upload_blob;
 use crate::well_known::WellKnownResolver;
 
@@ -279,6 +280,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/admin/devices/:id/revoke", post(revoke_admin_device))
         .route("/v1/devices", post(register_device))
         .route("/v1/devices/:id/pds", get(get_device_pds))
+        .route("/v1/transfer/initiate", post(transfer_initiate))
         .route("/v1/dids", post(create_did_handler))
         .route("/v1/dids/:did", get(get_did_handler))
         .route("/v1/handles", post(create_handle_handler))
