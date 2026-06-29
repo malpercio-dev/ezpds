@@ -18,13 +18,18 @@
   // actually active, instead of always seeing the built-in default. The active URL is restored
   // from the Keychain at launch and is otherwise invisible — which made a stale/wrong host
   // (e.g. a previous staging URL) impossible to notice.
-  onMount(async () => {
-    try {
-      const saved = await getPdsUrl();
-      if (saved) url = saved;
-    } catch (e) {
-      console.warn('[PdsConfigScreen] failed to load saved PDS URL:', e);
-    }
+  onMount(() => {
+    const initialUrl = url;
+    void (async () => {
+      try {
+        const saved = await getPdsUrl();
+        // Only hydrate if the user hasn't started editing while the IPC call was in flight,
+        // otherwise a late resolve would clobber their input.
+        if (saved && url === initialUrl) url = saved;
+      } catch (e) {
+        console.warn('[PdsConfigScreen] failed to load saved PDS URL:', e);
+      }
+    })();
   });
 
   let isValidFormat = $derived(
