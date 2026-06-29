@@ -486,14 +486,32 @@ export const resolveIdentity = (handleOrDid: string): Promise<IdentityInfo> =>
   invoke('resolve_identity', { handleOrDid });
 
 /**
- * Authenticate with the old PDS via OAuth 2.0 PKCE + DPoP.
+ * Authenticate with the identity's existing PDS via OAuth 2.0 PKCE + DPoP, using the native
+ * in-app auth session (ASWebAuthenticationSession) — same three-step shape as `startOAuthFlow`:
+ * `prepare_pds_auth` (Rust) discovers the auth server + PAR and returns the authorize URL; the
+ * auth-session plugin opens the in-app session and returns the callback URL; `complete_pds_auth`
+ * (Rust) validates it, exchanges the code, and stores the OAuth client in claim state. Resolves
+ * when complete.
  *
- * Opens Safari for user authentication and handles the OAuth callback via deep-link.
- * On success, stores the OAuth client in claim state for use by subsequent commands.
- * Resolves the returned Promise when complete.
+ * Replaces the old external-Safari + deep-link flow (iOS blocks the custom-scheme redirect).
  */
-export const startPdsAuth = (pdsUrl: string): Promise<void> =>
-  invoke('start_pds_auth', { pdsUrl });
+export const startPdsAuth = async (pdsUrl: string): Promise<void> => {
+  const prepared = await invoke<{ authUrl: string; callbackScheme: string }>('prepare_pds_auth', {
+    pdsUrl,
+  });
+  let callbackUrl: string;
+  try {
+    callbackUrl = await invoke<string>('plugin:auth-session|start', {
+      authUrl: prepared.authUrl,
+      callbackUrlScheme: prepared.callbackScheme,
+    });
+  } catch {
+    // The auth-session plugin rejects with a plain string (e.g. "user_cancelled"); map to the
+    // ClaimError shape the UI expects (a dismissed sheet reads as unauthorized).
+    throw { code: 'UNAUTHORIZED' } as ClaimError;
+  }
+  await invoke('complete_pds_auth', { callbackUrl });
+};
 
 /**
  * Request email verification for the PLC operation.

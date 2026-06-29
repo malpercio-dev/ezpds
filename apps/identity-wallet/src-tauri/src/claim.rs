@@ -126,6 +126,23 @@ pub struct ClaimState {
     pub verified_signed_op: Option<serde_json::Value>,
 }
 
+/// State parked in `AppState.pending_pds_login` between `prepare_pds_auth` and
+/// `complete_pds_auth` while the ASWebAuthenticationSession runs. Holds the discovered
+/// auth-server metadata plus the secrets the token exchange needs — none of it is serialized to
+/// the webview.
+pub struct PendingPdsLogin {
+    /// PKCE code_verifier for the token exchange.
+    pub pkce_verifier: String,
+    /// CSRF state — validated against the callback URL's `state` param.
+    pub csrf_state: String,
+    /// Auth-server metadata discovered from the PDS (needed for the token exchange).
+    pub metadata: crate::pds_client::AuthServerMetadata,
+    /// OAuth `client_id` for this PDS.
+    pub client_id: String,
+    /// PDS base URL the resulting `OAuthClient` targets.
+    pub oauth_client_pds_url: String,
+}
+
 // ── Error types ────────────────────────────────────────────────────────────
 
 /// Error returned by `resolve_identity` command.
@@ -309,65 +326,44 @@ fn map_pds_error_to_resolve(err: PdsClientError) -> ResolveError {
     }
 }
 
-/// Authenticate with the old PDS via OAuth 2.0 PKCE + DPoP.
+/// Phase 1 of the claim-flow PDS login: discover + PAR → the PDS's authorize URL.
 ///
-/// This command performs OAuth authentication against an arbitrary PDS discovered
-/// via `PdsClient`. It reuses the existing deep-link callback mechanism and stores
-/// the resulting `OAuthClient` in `ClaimState.pds_oauth_client` for use by
-/// subsequent commands like `request_claim_verification`.
+/// Validates `ClaimState` (must match `resolve_identity`'s `pds_url`), discovers the PDS's auth
+/// server, generates PKCE/CSRF + the DPoP proof, runs PAR (with the DID as `login_hint`), builds
+/// the authorize URL, and parks the verifier + CSRF + discovered metadata in
+/// `AppState.pending_pds_login` — none of which reaches the webview. The frontend feeds the
+/// returned URL into the auth-session plugin's `start()`, then calls `complete_pds_auth`.
 ///
-/// **Prerequisites:** `resolve_identity` must have been called first to populate
-/// `ClaimState.did` and `ClaimState.pds_url`.
+/// Replaces the old single `start_pds_auth` (external Safari + deep-link) for the same iOS reason
+/// as the create flow — see `oauth::prepare_oauth_flow`.
 ///
-/// **Flow:**
-/// 1. Read `ClaimState` — validate it contains `did` and `pds_url`
-/// 2. Discover auth server metadata via `PdsClient::discover_auth_server()`
-/// 3. Generate PKCE verifier/challenge and CSRF state
-/// 4. Get-or-create DPoP keypair and compute JWK thumbprint
-/// 5. Build DPoP proof for PAR
-/// 6. Call PDS PAR with the DID as login_hint
-/// 7. Park a oneshot channel in `AppState.pending_auth`
-/// 8. Build authorize URL and open Safari
-/// 9. Await the deep-link callback (which delivers the authorization code)
-/// 10. Exchange code for tokens (with nonce retry if needed)
-/// 11. Create `OAuthClient` pointing to the PDS
-/// 12. Store client in `ClaimState.pds_oauth_client`
-/// 13. Emit `"pds_auth_ready"` event to the frontend
+/// **Prerequisite:** `resolve_identity` must have run first to populate `ClaimState`.
 #[tauri::command]
-pub async fn start_pds_auth(
-    app: tauri::AppHandle,
+pub async fn prepare_pds_auth(
     state: tauri::State<'_, crate::oauth::AppState>,
     pds_url: String,
-) -> Result<(), ClaimError> {
-    tracing::info!("start_pds_auth command: authenticating with {}", pds_url);
-    use tauri_plugin_opener::OpenerExt;
+) -> Result<crate::oauth::OAuthPrepared, ClaimError> {
+    tracing::info!("prepare_pds_auth: authenticating with {}", pds_url);
 
-    // 1. Validate ClaimState is populated and pds_url matches
+    // 1. Validate ClaimState is populated and pds_url matches (defense-in-depth).
     let did = {
         let claim_state = state.claim_state.lock().await;
         let Some(claim) = claim_state.as_ref() else {
-            tracing::warn!("start_pds_auth: ClaimState not found");
+            tracing::warn!("prepare_pds_auth: ClaimState not found");
             return Err(ClaimError::Unauthorized);
         };
-
-        // Validate that pds_url matches ClaimState.pds_url (defense-in-depth)
         if claim.pds_url != pds_url {
             let expected = claim.pds_url.clone();
             drop(claim_state);
-            tracing::warn!(
-                expected = %expected,
-                received = %pds_url,
-                "start_pds_auth: pds_url mismatch"
-            );
+            tracing::warn!(expected = %expected, received = %pds_url, "prepare_pds_auth: pds_url mismatch");
             return Err(ClaimError::Unauthorized);
         }
-
         claim.did.clone()
-    }; // claim_state lock released here
+    };
 
     let pds_client = state.pds_client();
 
-    // 2. Discover auth server metadata from the PDS
+    // 2. Discover auth server metadata from the PDS.
     tracing::debug!(pds_url = %pds_url, "discovering auth server metadata");
     let metadata = pds_client
         .discover_auth_server(&pds_url)
@@ -380,11 +376,11 @@ pub async fn start_pds_auth(
         })?;
     tracing::debug!(issuer = %metadata.issuer, "auth server metadata discovered");
 
-    // 3. Generate PKCE and CSRF state
+    // 3. PKCE + CSRF state.
     let (pkce_verifier, pkce_challenge) = crate::oauth::pkce::generate();
     let csrf_state = crate::oauth::generate_state_param();
 
-    // 4. Get DPoP keypair and compute thumbprint
+    // 4. DPoP keypair + thumbprint.
     let dpop = crate::oauth::DPoPKeypair::get_or_create().map_err(|e| {
         tracing::error!(error = %e, "DPoP keypair creation failed");
         ClaimError::NetworkError {
@@ -393,15 +389,14 @@ pub async fn start_pds_auth(
     })?;
     let dpop_jkt = dpop.public_jwk_thumbprint();
 
-    // 5-6. PAR with DPoP nonce retry
+    // 5-6. PAR with DPoP nonce retry.
     let par_htu = metadata
         .pushed_authorization_request_endpoint
         .as_ref()
         .cloned()
         .unwrap_or_else(|| format!("{}/oauth/par", metadata.issuer));
-
-    let pds_url = state.custos_client().base_url_str().to_string();
-    let client_id = crate::pds_client::client_id_for_pds(&pds_url);
+    let oauth_client_pds_url = state.custos_client().base_url_str().to_string();
+    let client_id = crate::pds_client::client_id_for_pds(&oauth_client_pds_url);
 
     let par_resp = pds_par_with_retry(PdsParWithRetryParams {
         pds_client,
@@ -415,22 +410,8 @@ pub async fn start_pds_auth(
         client_id: &client_id,
     })
     .await?;
-    tracing::debug!("PAR succeeded, opening browser");
 
-    // 7. Set up oneshot channel and park pending_auth
-    let (tx, rx) = tokio::sync::oneshot::channel::<
-        Result<crate::oauth::CallbackParams, crate::oauth::OAuthError>,
-    >();
-    {
-        let mut pending = state.pending_auth.lock().unwrap();
-        *pending = Some(crate::oauth::PendingOAuthFlow {
-            tx,
-            pkce_verifier: pkce_verifier.clone(),
-            csrf_state: csrf_state.clone(),
-        });
-    }
-
-    // 8. Build authorize URL and open Safari
+    // 7. Build the authorize URL.
     let auth_url = crate::pds_client::PdsClient::build_pds_authorize_url(
         &metadata,
         &par_resp.request_uri,
@@ -438,35 +419,64 @@ pub async fn start_pds_auth(
         &client_id,
     );
 
-    app.opener()
-        .open_url(&auth_url, None::<&str>)
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to open system browser");
-            ClaimError::Unauthorized
-        })?;
+    // 8. Park the secrets + discovered metadata for `complete_pds_auth`.
+    *state.pending_pds_login.lock().unwrap() = Some(PendingPdsLogin {
+        pkce_verifier,
+        csrf_state,
+        metadata,
+        client_id,
+        oauth_client_pds_url,
+    });
 
-    // 9. Await the deep-link callback
-    tracing::debug!("waiting for deep-link callback");
-    let callback = rx
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "deep-link callback channel closed");
-            ClaimError::Unauthorized
-        })?
-        .map_err(|e| {
-            tracing::error!(error = %e, "deep-link callback returned OAuth error");
-            ClaimError::Unauthorized
-        })?;
-    tracing::debug!("deep-link callback received, exchanging code");
+    Ok(crate::oauth::OAuthPrepared {
+        auth_url,
+        callback_scheme: "dev.malpercio.identitywallet".to_string(),
+    })
+}
 
-    // 10. Token exchange with nonce retry
+/// Phase 2 of the claim-flow PDS login: exchange the code and store the `OAuthClient`.
+///
+/// Parses + CSRF-validates the auth-session callback URL against the parked `pending_pds_login`,
+/// exchanges the code for DPoP-bound tokens, builds the `OAuthClient`, stores it in
+/// `ClaimState.pds_oauth_client`, and emits `pds_auth_ready` (preserved for parity).
+#[tauri::command]
+pub async fn complete_pds_auth(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::oauth::AppState>,
+    callback_url: String,
+) -> Result<(), ClaimError> {
+    // Take the parked flow — clears it so a stray second call can't reuse the verifier.
+    let pending = state
+        .pending_pds_login
+        .lock()
+        .unwrap()
+        .take()
+        .ok_or(ClaimError::Unauthorized)?;
+
+    // Parse + CSRF-validate the callback URL before any token exchange.
+    let (code, callback_state) =
+        crate::oauth::parse_callback_url(&callback_url).map_err(|_| ClaimError::Unauthorized)?;
+    if callback_state != pending.csrf_state {
+        tracing::error!("complete_pds_auth: CSRF state mismatch");
+        return Err(ClaimError::Unauthorized);
+    }
+
+    let pds_client = state.pds_client();
+    let dpop = crate::oauth::DPoPKeypair::get_or_create().map_err(|e| {
+        tracing::error!(error = %e, "DPoP keypair creation failed");
+        ClaimError::NetworkError {
+            message: "failed to create DPoP keypair".to_string(),
+        }
+    })?;
+
+    // Token exchange with nonce retry.
     let (token_resp, initial_nonce) = pds_exchange_code_with_retry(
         pds_client,
         &dpop,
-        &callback.code,
-        &pkce_verifier,
-        &metadata,
-        &client_id,
+        &code,
+        &pending.pkce_verifier,
+        &pending.metadata,
+        &pending.client_id,
     )
     .await
     .map_err(|e| {
@@ -474,7 +484,7 @@ pub async fn start_pds_auth(
         e
     })?;
 
-    // 11. Create OAuthClient and store in ClaimState
+    // Create OAuthClient and store in ClaimState.
     let session = std::sync::Arc::new(std::sync::Mutex::new(crate::oauth::OAuthSession {
         access_token: token_resp.access_token,
         refresh_token: token_resp.refresh_token,
@@ -489,8 +499,10 @@ pub async fn start_pds_auth(
     }));
 
     let oauth_client =
-        OAuthClient::new(session, pds_url.clone()).map_err(|_| ClaimError::NetworkError {
-            message: "failed to create OAuth client".to_string(),
+        OAuthClient::new(session, pending.oauth_client_pds_url.clone()).map_err(|_| {
+            ClaimError::NetworkError {
+                message: "failed to create OAuth client".to_string(),
+            }
         })?;
 
     let mut claim_state = state.claim_state.lock().await;
@@ -502,7 +514,7 @@ pub async fn start_pds_auth(
     }
     drop(claim_state);
 
-    // 12. Emit event to frontend
+    // Emit the (vestigial but preserved) ready event.
     app.emit("pds_auth_ready", ()).map_err(|e| {
         tracing::error!(error = %e, "failed to emit pds_auth_ready event");
         ClaimError::NetworkError {

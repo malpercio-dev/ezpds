@@ -26,6 +26,10 @@ pub struct AppState {
     /// `complete_oauth_flow` while the ASWebAuthenticationSession runs. Distinct from
     /// `pending_auth`: the PKCE verifier and CSRF state never leave the Rust backend.
     pub pending_login: Mutex<Option<PendingLogin>>,
+    /// The pending claim-flow PDS login parked between `claim::prepare_pds_auth` and
+    /// `claim::complete_pds_auth`. Mirrors `pending_login` for the import flow; carries the
+    /// discovered auth-server metadata + client_id alongside the verifier/CSRF state.
+    pub pending_pds_login: Mutex<Option<crate::claim::PendingPdsLogin>>,
     /// The active authenticated session after a successful token exchange.
     /// Set by `complete_oauth_flow` on success; read by `OAuthClient` for every request.
     pub oauth_session: Mutex<Option<OAuthSession>>,
@@ -51,6 +55,7 @@ impl AppState {
         Self {
             pending_auth: Mutex::new(None),
             pending_login: Mutex::new(None),
+            pending_pds_login: Mutex::new(None),
             oauth_session: Mutex::new(None),
             custos_client: OnceLock::new(),
             pds_client: crate::pds_client::PdsClient::new(),
@@ -553,8 +558,9 @@ pub async fn complete_oauth_flow(
 
 /// Extract `code` and `state` from an OAuth callback URL
 /// (`dev.malpercio.identitywallet:/oauth/callback?code=...&state=...`). Returns
-/// `CallbackAbandoned` if the URL is unparseable or missing either parameter.
-fn parse_callback_url(callback_url: &str) -> Result<(String, String), OAuthError> {
+/// `CallbackAbandoned` if the URL is unparseable or missing either parameter. Shared with the
+/// claim flow's `complete_pds_auth`.
+pub(crate) fn parse_callback_url(callback_url: &str) -> Result<(String, String), OAuthError> {
     let url = url::Url::parse(callback_url).map_err(|_| OAuthError::CallbackAbandoned)?;
     let mut code_opt: Option<String> = None;
     let mut state_opt: Option<String> = None;
@@ -963,6 +969,7 @@ mod tests {
                 csrf_state: "correct-state".to_string(),
             })),
             pending_login: std::sync::Mutex::new(None),
+            pending_pds_login: std::sync::Mutex::new(None),
             oauth_session: std::sync::Mutex::new(None),
             custos_client: OnceLock::new(),
             pds_client: crate::pds_client::PdsClient::new(),
@@ -995,6 +1002,7 @@ mod tests {
                 csrf_state: "good-state".to_string(),
             })),
             pending_login: std::sync::Mutex::new(None),
+            pending_pds_login: std::sync::Mutex::new(None),
             oauth_session: std::sync::Mutex::new(None),
             custos_client: OnceLock::new(),
             pds_client: crate::pds_client::PdsClient::new(),
@@ -1029,6 +1037,7 @@ mod tests {
                 csrf_state: "expected-state".to_string(),
             })),
             pending_login: std::sync::Mutex::new(None),
+            pending_pds_login: std::sync::Mutex::new(None),
             oauth_session: std::sync::Mutex::new(None),
             custos_client: OnceLock::new(),
             pds_client: crate::pds_client::PdsClient::new(),
