@@ -323,15 +323,22 @@ async fn create_account(
         claim_code,
     };
 
+    // Log the target PDS host so a wrong-host failure (e.g. a claim code minted on a different
+    // server) is visible in logs instead of silently masquerading as "claim code expired".
+    let host = state.custos_client().base_url_str().to_owned();
     let resp = state
         .custos_client()
         .post("/v1/accounts/mobile", &req)
         .await
-        .map_err(|e| CreateAccountError::NetworkError {
-            message: e.to_string(),
+        .map_err(|e| {
+            tracing::warn!(host = %host, error = %e, "create_account: request to PDS failed");
+            CreateAccountError::NetworkError {
+                message: e.to_string(),
+            }
         })?;
 
     let status = resp.status();
+    tracing::info!(host = %host, status = status.as_u16(), "create_account: PDS responded");
 
     if status.is_success() {
         // 3. Deserialize success body.

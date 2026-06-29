@@ -1,17 +1,31 @@
 <script lang="ts">
-  import { savePdsUrl, type PdsConfigError } from '$lib/ipc';
+  import { onMount } from 'svelte';
+  import { savePdsUrl, getPdsUrl, type PdsConfigError } from '$lib/ipc';
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
   import TextField from '$lib/components/ui/TextField.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
 
-  const DEFAULT_PDS_URL = 'https://relay.ezpds.com';
+  const DEFAULT_PDS_URL = 'https://obsign.org';
 
   let { onnext }: { onnext: () => void } = $props();
 
   let url = $state(DEFAULT_PDS_URL);
   let loading = $state(false);
   let error = $state<string | undefined>(undefined);
+
+  // Seed the field from the currently-saved PDS URL (if any) so the user sees the host that is
+  // actually active, instead of always seeing the built-in default. The active URL is restored
+  // from the Keychain at launch and is otherwise invisible — which made a stale/wrong host
+  // (e.g. a previous staging URL) impossible to notice.
+  onMount(async () => {
+    try {
+      const saved = await getPdsUrl();
+      if (saved) url = saved;
+    } catch (e) {
+      console.warn('[PdsConfigScreen] failed to load saved PDS URL:', e);
+    }
+  });
 
   let isValidFormat = $derived(
     url.trim().length > 0 &&
@@ -48,7 +62,7 @@
     type="url"
     mono
     disabled={loading}
-    placeholder="https://relay.ezpds.com"
+    placeholder="https://obsign.org"
     autocomplete="off"
     autocorrect="off"
     autocapitalize="off"
