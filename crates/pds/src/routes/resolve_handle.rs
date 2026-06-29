@@ -42,18 +42,30 @@ pub async fn resolve_handle_handler(
     }
 
     // 2. DNS TXT fallback: look for `did=<did>` in `_atproto.<handle>` records.
+    //
+    // A DNS error (timeout / SERVFAIL / transport) is not "handle definitely absent" — log it and
+    // fall through to the next method (HTTP well-known), then 404, exactly as the well-known step
+    // below does. (NXDOMAIN / NODATA is already mapped to an empty list by the resolver, not an
+    // error.) Aborting with a 500 here would both break the fallback chain and surface transient
+    // DNS failures as server errors.
     if let Some(resolver) = &state.txt_resolver {
         let name = format!("_atproto.{}", params.handle);
-        let records = resolver.txt_lookup(&name).await.map_err(|e| {
-            tracing::error!(error = %e, handle = %params.handle, "DNS TXT lookup failed");
-            ApiError::new(ErrorCode::InternalError, "handle resolution failed")
-        })?;
-
-        for record in records {
-            if let Some(did) = record.strip_prefix("did=") {
-                return Ok(Json(ResolveHandleResponse {
-                    did: did.to_string(),
-                }));
+        match resolver.txt_lookup(&name).await {
+            Ok(records) => {
+                for record in records {
+                    if let Some(did) = record.strip_prefix("did=") {
+                        return Ok(Json(ResolveHandleResponse {
+                            did: did.to_string(),
+                        }));
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    handle = %params.handle,
+                    "DNS TXT lookup failed; falling through to well-known"
+                );
             }
         }
     }
@@ -254,8 +266,13 @@ mod tests {
         assert_eq!(body["did"], external_did);
     }
 
+    /// A DNS resolver error (timeout / SERVFAIL / transport — not NXDOMAIN, which the resolver
+    /// already maps to an empty list) must not abort resolution: it falls through to the next
+    /// method and, if nothing resolves, returns 404. Previously this returned 500, which broke
+    /// the fallback chain and surfaced transient DNS failures as server errors (observed on the
+    /// staging deploy resolving `_atproto.<handle>`).
     #[tokio::test]
-    async fn dns_infrastructure_error_returns_500() {
+    async fn dns_error_falls_through_to_404() {
         let state = AppState {
             txt_resolver: Some(Arc::new(ErrTxtResolver)),
             ..test_state().await
@@ -266,14 +283,42 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let body: serde_json::Value = serde_json::from_slice(
             &axum::body::to_bytes(response.into_body(), usize::MAX)
                 .await
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(body["error"]["code"], "INTERNAL_ERROR");
+        assert_eq!(body["error"]["code"], "HANDLE_NOT_FOUND");
+    }
+
+    /// A DNS resolver error must not prevent the HTTP well-known fallback from resolving the
+    /// handle — the fallback chain continues past a failed DNS lookup.
+    #[tokio::test]
+    async fn dns_error_falls_through_to_well_known() {
+        let did = "did:plc:wellknownuser12345678901234";
+        let state = AppState {
+            txt_resolver: Some(Arc::new(ErrTxtResolver)),
+            well_known_resolver: Some(Arc::new(FixedWellKnownResolver {
+                did: Some(did.to_string()),
+            })),
+            ..test_state().await
+        };
+
+        let response = app(state)
+            .oneshot(resolve_handle_request("alice.bsky.social"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["did"], did);
     }
 
     #[tokio::test]
