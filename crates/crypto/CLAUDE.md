@@ -1,6 +1,6 @@
 # Crypto Crate
 
-Last verified: 2026-03-20
+Last verified: 2026-06-28
 
 ## Purpose
 Provides cryptographic primitives for the ezpds workspace: P-256 key generation,
@@ -153,6 +153,7 @@ pub fn verify_p256_signature(
 - `split_secret` polynomial coefficients are fresh OS RNG per call; information-theoretic security (a single share reveals nothing)
 - `combine_shares` requires exactly 2 shares with distinct indices in [1, 3]; returns `CryptoError::SecretReconstruction` otherwise
 - GF(2^8) arithmetic uses the AES irreducible polynomial (0x11b); secret bytes are always the first argument to `gf_mul` (non-branching position)
+- **did:plc op CBOR is canonical DAG-CBOR for any number of map entries.** The op structs wrap `services` / `verificationMethods` in an internal `CanonicalMap` that serializes keys length-first (DAG-CBOR order) instead of `BTreeMap`/`ciborium`'s bytewise order — bytewise would emit a non-canonical op for keys of differing length (e.g. `atproto_pds` + `atproto_labeler`) that plc.directory rejects. Cross-checked against `@ipld/dag-cbor` by the `golden_*` tests (genesis op bytes + derived DID, proving byte-identity transitively via the hash) and `rotation_op_with_multiple_services_encodes_canonically` (multi-service CID). Public APIs still take/return plain `BTreeMap<String, _>`; the canonical ordering is internal to the op encoder.
 
 ## Key Files
 - `src/lib.rs` - Re-exports public API

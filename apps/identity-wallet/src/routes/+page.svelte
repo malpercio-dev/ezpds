@@ -332,7 +332,7 @@
     />
   {:else if step === 'handle_registration'}
     <HandleRegistrationScreen
-      handleLabel={form.handle}
+      handle={form.handle}
       did={form.did}
       onsuccess={(handle) => finishCreateFlow(handle)}
       ontimeout={(handle) => finishCreateFlow(handle)}

@@ -1,6 +1,6 @@
 # PDS Crate (Custos)
 
-Last verified: 2026-06-26
+Last verified: 2026-06-28
 
 ## Purpose
 
@@ -18,6 +18,7 @@ src/
   crawler.rs       — outbound requestCrawl notifier (rate-limited, retrying, fire-and-forget)
   iroh_tunnel.rs   — Iroh QUIC endpoint: NAT-traversing device↔pds tunnel (opt-in)
   record_write.rs  — shared repo write flow + firehose commit emission
+  handle.rs        — handle validation (structural + domain policy), shared by provisioning + handle routes
   auth/            — authentication primitives (no HTTP, no DB schema ownership)
   db/              — SQL query functions + migration runner (no business logic)
   routes/          — HTTP handlers, one file per endpoint

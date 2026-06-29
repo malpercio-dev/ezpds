@@ -187,14 +187,24 @@ export type RegisterHandleError =
 /**
  * Register the user's handle with the PDS.
  *
- * `handleLabel` is the label portion only (e.g. `"alice"`).
- * The Rust backend fetches the PDS's primary domain from `describeServer`,
- * reads the DID and session token from Keychain, and POSTs to `/v1/handles`.
+ * `handle` is the FULL handle (e.g. `"alice.ezpds.com"`), assembled on the client from the
+ * PDS's `availableUserDomains` before the DID ceremony so it matches the published genesis op.
+ * The Rust backend reads the DID and session token from Keychain and POSTs to `/v1/handles`.
  *
  * On failure, the Promise rejects with a `RegisterHandleError`.
  */
-export const registerHandle = (handleLabel: string): Promise<RegisterHandleResult> =>
-  invoke('register_handle', { handleLabel });
+export const registerHandle = (handle: string): Promise<RegisterHandleResult> =>
+  invoke('register_handle', { handle });
+
+/**
+ * Fetch the PDS's configured handle domains (`availableUserDomains` from describeServer).
+ *
+ * The handle screen uses this to show the domain suffix and assemble the full handle BEFORE
+ * the DID ceremony, so the genesis op's `alsoKnownAs` carries the real, resolvable handle.
+ * Resolves to the (possibly empty) domain list; rejects with a message string on failure.
+ */
+export const getAvailableUserDomains = (): Promise<string[]> =>
+  invoke('get_available_user_domains');
 
 /**
  * Error returned by the `register_created_identity` Rust command.

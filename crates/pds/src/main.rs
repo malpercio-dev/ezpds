@@ -13,6 +13,7 @@ mod crawler;
 mod db;
 mod dns;
 mod firehose;
+mod handle;
 mod iroh_tunnel;
 mod record_write;
 mod routes;
