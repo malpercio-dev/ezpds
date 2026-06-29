@@ -47,8 +47,10 @@ pub async fn create_account(
     // --- Auth: require matching Bearer token ---
     require_admin_token(&headers, &state)?;
 
-    // --- Validate handle format (structural: must be a real <name>.<domain> handle) ---
-    if let Err(msg) = crate::handle::validate_handle_structure(&payload.handle) {
+    // --- Validate handle format (structure + served-domain policy) ---
+    if let Err(msg) =
+        crate::handle::validate_handle(&payload.handle, &state.config.available_user_domains)
+    {
         return Err(ApiError::new(ErrorCode::InvalidHandle, msg));
     }
 

@@ -19,7 +19,7 @@ use uuid::Uuid;
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::handle::validate_handle_structure;
+use crate::handle::validate_handle;
 use crate::routes::register_device::Platform;
 use crate::routes::token::generate_token;
 
@@ -59,8 +59,8 @@ pub async fn create_mobile_account(
         ));
     }
 
-    // --- Validate handle format (structural: must be a real <name>.<domain> handle) ---
-    if let Err(msg) = validate_handle_structure(&payload.handle) {
+    // --- Validate handle format (structure + served-domain policy) ---
+    if let Err(msg) = validate_handle(&payload.handle, &state.config.available_user_domains) {
         return Err(ApiError::new(ErrorCode::InvalidHandle, msg));
     }
 
@@ -400,6 +400,32 @@ mod tests {
         let claim_code = seed_claim_code(&state.db).await;
         let body = format!(
             r#"{{"email":"bare@example.com","handle":"alice","devicePublicKey":"dGVzdC1rZXk=","platform":"ios","claimCode":"{claim_code}"}}"#
+        );
+
+        let response = app(state)
+            .oneshot(post_create_mobile_account(&body))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(json["error"]["code"], "INVALID_HANDLE");
+    }
+
+    /// A handle whose domain is not in availableUserDomains must be rejected at provisioning —
+    /// otherwise the DID ceremony publishes it to plc.directory before /v1/handles applies the
+    /// domain policy, leaking an unsupported handle into federated identity state.
+    #[tokio::test]
+    async fn rejects_unsupported_domain_handle() {
+        let state = test_state().await;
+        let claim_code = seed_claim_code(&state.db).await;
+        let body = format!(
+            r#"{{"email":"x@example.com","handle":"alice.other.com","devicePublicKey":"dGVzdC1rZXk=","platform":"ios","claimCode":"{claim_code}"}}"#
         );
 
         let response = app(state)

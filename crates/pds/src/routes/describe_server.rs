@@ -228,7 +228,7 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-        assert_eq!(json["availableUserDomains"][0], "test.example.com");
+        assert_eq!(json["availableUserDomains"][0], "example.com");
     }
 
     #[tokio::test]

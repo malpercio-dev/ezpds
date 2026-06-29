@@ -45,5 +45,10 @@ describe('handle utils', () => {
       expect(isValidLabel('ali ce')).toBe(false);
       expect(isValidLabel('älice')).toBe(false);
     });
+
+    it('enforces the RFC 1035 63-character label limit', () => {
+      expect(isValidLabel('a'.repeat(63))).toBe(true);
+      expect(isValidLabel('a'.repeat(64))).toBe(false);
+    });
   });
 });

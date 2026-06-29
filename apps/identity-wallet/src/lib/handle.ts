@@ -15,8 +15,10 @@
  * hyphen, no dots (a dot would create extra labels), no underscores or whitespace.
  */
 export function isValidLabel(label: string): boolean {
+  const normalized = label.trim();
   const labelRegex = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
-  return labelRegex.test(label.trim());
+  // Enforce the RFC 1035 single-label limit (63 chars) the server also applies.
+  return normalized.length > 0 && normalized.length <= 63 && labelRegex.test(normalized);
 }
 
 /**
