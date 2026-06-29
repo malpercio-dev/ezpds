@@ -47,6 +47,7 @@ use crate::routes::get_preferences::get_preferences_handler;
 use crate::routes::get_record::get_record;
 use crate::routes::get_repo::get_repo;
 use crate::routes::get_repo_signing_key::get_repo_signing_key;
+use crate::routes::get_service_auth::get_service_auth;
 use crate::routes::get_session::get_session;
 use crate::routes::health::health;
 use crate::routes::list_blobs::list_blobs;
@@ -207,6 +208,10 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/xrpc/com.atproto.server.getSession", get(get_session))
         .route(
+            "/xrpc/com.atproto.server.getServiceAuth",
+            get(get_service_auth),
+        )
+        .route(
             "/xrpc/com.atproto.server.refreshSession",
             post(refresh_session),
         )
@@ -312,10 +317,11 @@ pub fn app(state: AppState) -> Router {
 ///
 /// Both proxied namespaces are forwarded *on behalf of an authenticated user*, so the caller's
 /// session is validated locally (the `AuthenticatedUser` extractor) before anything leaves the
-/// PDS; the upstream then re-validates the passed-through token. Unauthenticated callers are
-/// rejected here rather than at the upstream. The auth check is scoped to the proxy branches:
-/// an unrecognised NSID still returns `501` without an auth challenge, so probing for supported
-/// methods does not require credentials.
+/// PDS; the proxy then mints a fresh ES256 service-auth JWT signed by that user's repo key for
+/// the upstream to verify (the caller's PDS session token is never forwarded). Unauthenticated
+/// callers are rejected here rather than at the upstream. The auth check is scoped to the proxy
+/// branches: an unrecognised NSID still returns `501` without an auth challenge, so probing for
+/// supported methods does not require credentials.
 ///
 /// Axum gives static path segments priority over parameterised ones, so specific routes
 /// registered for individual NSIDs will match before this catch-all.
@@ -336,11 +342,14 @@ async fn xrpc_handler(
     };
 
     match upstream {
-        Some((url, did)) => {
-            if let Err(rejection) = auth {
-                return rejection.into_response();
-            }
-            proxy_xrpc(&state, url, did, &method, req).await
+        Some((url, proxy_did)) => {
+            // The proxy mints a service-auth JWT signed by the *authenticated user's* repo key,
+            // so the user DID — not just a pass/fail gate result — has to flow into `proxy_xrpc`.
+            let user = match auth {
+                Ok(user) => user,
+                Err(rejection) => return rejection.into_response(),
+            };
+            proxy_xrpc(&state, url, proxy_did, &method, &user.did, req).await
         }
         None => ApiError::new(
             ErrorCode::MethodNotImplemented,

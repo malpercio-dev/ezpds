@@ -235,6 +235,54 @@ pub fn verify_refresh_token_allow_expired(
         })
 }
 
+// ── Service-auth JWT minting (inter-service auth for AppView/chat proxying) ───
+
+/// Mint an inter-service auth JWT (ATProto `getServiceAuth` / proxy auth): a
+/// `base64url(header).base64url(payload).base64url(signature)` triple where `signature` is the
+/// 64-byte r‖s P-256 ECDSA signature of the `header.payload` bytes produced by `sign`.
+///
+/// The signature MUST be low-S normalized — the AppView verifies it as **ES256** against the
+/// issuer's `#atproto` did:key and rejects high-S. `repo_engine::CommitSigner::sign` already
+/// low-S normalizes, so pass `|bytes| signer.sign(bytes)`.
+///
+/// Claims: `iss` = account DID, `aud` = receiving service DID (no `#fragment`), `iat`, the
+/// absolute `exp`, and — when `lxm` is `Some` — the lexicon method the token authorizes. A
+/// `None` `lxm` mints a method-unrestricted token (callers should keep its `exp` short), matching
+/// `com.atproto.server.getServiceAuth`, which omits the `lxm` claim entirely when not requested.
+pub fn mint_service_auth_jwt<F>(
+    sign: F,
+    iss: &str,
+    aud: &str,
+    lxm: Option<&str>,
+    iat: u64,
+    exp: u64,
+) -> String
+where
+    F: FnOnce(&[u8]) -> Vec<u8>,
+{
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+    let header = serde_json::json!({ "typ": "JWT", "alg": "ES256" });
+    let mut payload = serde_json::json!({
+        "iss": iss,
+        "aud": aud,
+        "iat": iat,
+        "exp": exp,
+    });
+    if let Some(lxm) = lxm {
+        payload["lxm"] = serde_json::Value::String(lxm.to_string());
+    }
+
+    let header_b64 =
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).expect("JWT header serializes"));
+    let payload_b64 =
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).expect("JWT payload serializes"));
+    let signing_input = format!("{header_b64}.{payload_b64}");
+
+    let sig_b64 = URL_SAFE_NO_PAD.encode(sign(signing_input.as_bytes()));
+    format!("{signing_input}.{sig_b64}")
+}
+
 // ── Legacy HS256 token issuance ───────────────────────────────────────────────
 
 const ACCESS_TOKEN_TTL_SECS: u64 = 2 * 60 * 60; // 2 hours
@@ -307,4 +355,84 @@ pub(crate) fn issue_refresh_jwt(
         tracing::error!(error = %e, "failed to sign refresh JWT");
         ApiError::new(ErrorCode::InternalError, "failed to issue token")
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use p256::ecdsa::{signature::Verifier, Signature, SigningKey, VerifyingKey};
+
+    /// The minted service-auth JWT is a well-formed ES256 token with the required claims, and
+    /// — the load-bearing check — its signature verifies against the signing key, so Bluesky's
+    /// AppView (which resolves the `#atproto` key from the DID doc) would accept it. Also
+    /// asserts low-S, which atproto verifiers require.
+    #[test]
+    fn service_auth_jwt_is_es256_with_required_claims_and_verifies() {
+        let key_bytes = [0x11u8; 32];
+        let signer = repo_engine::CommitSigner::from_bytes(&key_bytes).unwrap();
+        let signing_key = SigningKey::from_bytes(p256::FieldBytes::from_slice(&key_bytes)).unwrap();
+        let verifying_key = VerifyingKey::from(&signing_key);
+
+        let jwt = mint_service_auth_jwt(
+            |b| signer.sign(b),
+            "did:plc:abc123",
+            "did:web:api.bsky.app",
+            Some("app.bsky.feed.getTimeline"),
+            1_000,
+            1_060,
+        );
+
+        let parts: Vec<&str> = jwt.split('.').collect();
+        assert_eq!(parts.len(), 3, "JWT must be header.payload.signature");
+
+        let header: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[0]).unwrap()).unwrap();
+        assert_eq!(header["alg"], "ES256");
+        assert_eq!(header["typ"], "JWT");
+
+        let claims: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[1]).unwrap()).unwrap();
+        assert_eq!(claims["iss"], "did:plc:abc123");
+        assert_eq!(claims["aud"], "did:web:api.bsky.app");
+        assert_eq!(claims["lxm"], "app.bsky.feed.getTimeline");
+        assert_eq!(claims["iat"], 1_000);
+        assert_eq!(claims["exp"], 1_060);
+
+        // Independent proof: the ES256 signature verifies against the key.
+        let signing_input = format!("{}.{}", parts[0], parts[1]);
+        let sig = Signature::from_slice(&URL_SAFE_NO_PAD.decode(parts[2]).unwrap()).unwrap();
+        assert!(
+            verifying_key.verify(signing_input.as_bytes(), &sig).is_ok(),
+            "ES256 signature must verify against the signing key"
+        );
+        assert!(
+            sig.normalize_s().is_none(),
+            "signature must be canonical low-S (atproto verifiers reject high-S)"
+        );
+    }
+
+    /// A `None` `lxm` mints a method-unrestricted token: the `lxm` claim is omitted entirely
+    /// (not `null`, not empty), matching `com.atproto.server.getServiceAuth` semantics.
+    #[test]
+    fn service_auth_jwt_omits_lxm_when_method_unrestricted() {
+        let signer = repo_engine::CommitSigner::from_bytes(&[0x11u8; 32]).unwrap();
+        let jwt = mint_service_auth_jwt(
+            |b| signer.sign(b),
+            "did:plc:abc123",
+            "did:web:api.bsky.app",
+            None,
+            1_000,
+            1_060,
+        );
+        let parts: Vec<&str> = jwt.split('.').collect();
+        let claims: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[1]).unwrap()).unwrap();
+        assert!(
+            claims.get("lxm").is_none(),
+            "a method-unrestricted token must omit the lxm claim, got {claims}"
+        );
+        assert_eq!(claims["iss"], "did:plc:abc123");
+        assert_eq!(claims["exp"], 1_060);
+    }
 }
