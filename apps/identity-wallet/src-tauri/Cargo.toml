@@ -15,9 +15,13 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [dependencies]
 # Tauri-specific — declared locally (not in workspace.dependencies per design plan)
 tauri = { version = "2", features = [] }
-tauri-plugin-deep-link = "2"
-tauri-plugin-opener = "2"
 tauri-plugin-log = "2"
+# In-app OAuth via ASWebAuthenticationSession (iOS/macOS). VENDORED in-repo (not a live git dep)
+# because it sits in the wallet's auth path — we audit and pin the exact source. Wraps the
+# Apple-blessed session so the custom-scheme callback is captured by the session itself, instead
+# of relying on Safari to auto-launch the app from a redirect (which iOS blocks). Provenance +
+# audit notes: apps/identity-wallet/vendor/tauri-plugin-auth-session/VENDORED.md.
+tauri-plugin-auth-session = { path = "../vendor/tauri-plugin-auth-session" }
 log = "0.4"
 url = "2"
 # serde/serde_json are in workspace.dependencies (root Cargo.toml lines 30-32)
