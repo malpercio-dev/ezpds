@@ -102,13 +102,7 @@ pub async fn get_service_auth(
         })?;
 
     let token = crate::auth::signing_key::mint_account_service_auth(
-        &state.db,
-        master_key,
-        &user.did,
-        aud_claim,
-        lxm,
-        now,
-        exp,
+        &state.db, master_key, &user.did, aud_claim, lxm, now, exp,
     )
     .await?;
 
@@ -384,7 +378,10 @@ mod tests {
         let token = access_jwt(&state.jwt_secret, TEST_DID);
 
         let response = app(state)
-            .oneshot(get_request(&token, "aud=did:web:api.bsky.app%23bsky_appview"))
+            .oneshot(get_request(
+                &token,
+                "aud=did:web:api.bsky.app%23bsky_appview",
+            ))
             .await
             .unwrap();
 
