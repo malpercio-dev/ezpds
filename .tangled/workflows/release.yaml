@@ -21,6 +21,23 @@ dependencies:
     - coreutils
 
 steps:
+  # Backstop for the `just release` recipe: refuse to ship a tag whose version doesn't match
+  # the workspace version the binary will report (env!("CARGO_PKG_VERSION")). Catches a
+  # hand-pushed tag that skipped `just set-version`. cargo + jq are both in the deps above.
+  - name: Verify release tag matches workspace version
+    command: |
+      tag="$(git tag --points-at HEAD | grep -E '^v[0-9]' | head -n1)"
+      version="v$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name=="pds") | .version')"
+      if [ -z "$tag" ]; then
+        echo "⚠ no v* tag points at HEAD; skipping tag/version check" >&2
+        exit 0
+      fi
+      if [ "$tag" != "$version" ]; then
+        echo "✗ release tag '$tag' does not match workspace version '$version' (Cargo.toml)." >&2
+        echo "  Bump [workspace.package].version to match (just set-version ${tag#v}) and re-tag." >&2
+        exit 1
+      fi
+      echo "✓ release tag '$tag' matches workspace version '$version'"
   - name: CI (fmt, clippy, test, audit)
     command: just ci-pds
   - name: Promote to production (deploy + health, with retries)

@@ -53,6 +53,58 @@ ci-pds: fmt-check
 nix-check:
     nix flake check --impure --accept-flake-config
 
+# --- Release versioning ---------------------------------------------------------
+# The workspace version (Cargo.toml [workspace.package].version) is the single source of
+# truth: every crate inherits it, and the PDS reports it at _health/describeServer via
+# env!("CARGO_PKG_VERSION"). `set-version` bumps it; `release` derives the git tag from it,
+# so the tag and the reported version can never drift. The release CI re-asserts the match.
+
+# Bump the workspace version and resync Cargo.lock. Run in a reviewed PR, then `just release`
+# from main after it merges. Usage: just set-version 0.3.1
+set-version version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! printf '%s' "{{version}}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+      echo "✗ version must be X.Y.Z (got '{{version}}')" >&2; exit 1
+    fi
+    # Rewrite only the [workspace.package] version line (not dependency versions below it).
+    awk -v v="{{version}}" '
+      /^\[workspace\.package\]/ {p=1}
+      p && /^version *=/ && !done {print "version = \"" v "\""; done=1; next}
+      {print}
+    ' Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml
+    # Resync the lockfile so the new workspace-crate versions land in Cargo.lock and
+    # `just lock-check` stays green (cargo metadata resolves without upgrading other deps).
+    cargo metadata --format-version 1 >/dev/null
+    echo "✓ workspace version set to {{version}} — commit Cargo.toml + Cargo.lock, open a PR,"
+    echo "  then run 'just release' from main once it's merged."
+
+# Cut a release: create the annotated tag v{workspace version} and push it to both remotes.
+# The tangled push triggers release.yaml -> production. Derives the tag from Cargo.toml, so it
+# always matches the reported PDS version. Run from a clean, synced `main` (see sync-tangled-main).
+release:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version="$(awk '/^\[workspace\.package\]/{p=1} p&&/^version *=/{if(match($0,/"[^"]+"/)){print substr($0,RSTART+1,RLENGTH-2);exit}}' Cargo.toml)"
+    if [ -z "$version" ]; then echo "✗ could not read [workspace.package] version from Cargo.toml" >&2; exit 1; fi
+    tag="v${version}"
+    if [ -n "$(git status --porcelain)" ]; then echo "✗ working tree not clean — commit/stash first" >&2; exit 1; fi
+    if [ "$(git rev-parse --abbrev-ref HEAD)" != "main" ]; then
+      echo "✗ release from 'main' only (you are on $(git rev-parse --abbrev-ref HEAD))" >&2; exit 1
+    fi
+    if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+      echo "✗ tag ${tag} already exists — bump the version with 'just set-version' first" >&2; exit 1
+    fi
+    github_url="$(git remote get-url --push --all origin | grep -i github | head -n1)"
+    tangled_url="$(git remote get-url --push --all origin | grep -iv github | head -n1)"
+    echo "→ tagging ${tag} at $(git rev-parse --short HEAD)…"
+    git tag -a "${tag}" -m "Release ${tag}"
+    echo "→ pushing ${tag} → tangled (triggers production deploy)…"
+    git push "${tangled_url}" "${tag}"
+    echo "→ pushing ${tag} → github (record)…"
+    git push "${github_url}" "${tag}"
+    echo "✓ released ${tag}"
+
 # Sync GitHub `main` (canonical) -> tangled `main`. PRs are merged on GitHub; tangled
 # `main` does not auto-update, so it drifts and needs periodic syncing. This refuses
 # anything that is not a clean fast-forward, so it can never clobber tangled history.
