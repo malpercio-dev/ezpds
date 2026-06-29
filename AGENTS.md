@@ -3,7 +3,7 @@
 Last verified: 2026-06-26
 
 ## Tech Stack
-- Language: Rust (stable channel via rust-toolchain.toml)
+- Language: Rust (pinned to an exact stable version in rust-toolchain.toml, currently 1.96.0)
 - Build: Cargo workspace (resolver v2)
 - Database: SQLite via sqlx 0.8 (runtime-tokio + sqlite features)
 - Dev Environment: Nix flake + devenv (direnv integration via .envrc)
@@ -35,7 +35,7 @@ Deploys use the Railway CLI (nixpkgs dep) with environment-scoped tokens held as
 - Managed entirely by Nix flake + devenv; do not install tools globally
 - direnv auto-activates via `.envrc` (`use flake . --impure --accept-flake-config`)
 - **Always run `nix develop` from the workspace root**, not from a subdirectory — `CARGO_HOME` and `RUSTUP_HOME` resolve relative to devenv root
-- Rust toolchain managed by **rustup** (not Nix's `rust-default`); pinned in `rust-toolchain.toml` (stable, with rustfmt + clippy + rust-analyzer + iOS targets). On first shell entry, `enterShell` runs `rustup toolchain install` automatically.
+- Rust toolchain managed by **rustup** (not Nix's `rust-default`); pinned in `rust-toolchain.toml` to an **exact version** (currently 1.96.0 — not the moving `stable` channel, so local and CI never diverge on rustfmt/clippy; bump deliberately), with rustfmt + clippy + rust-analyzer + iOS targets. On first shell entry, `enterShell` runs `rustup toolchain install` automatically.
 - Shell provides: just, cargo-audit, sqlite (runtime binary + dev headers/library for sqlx's libsqlite3-sys), pkg-config, cargo-tauri, node (22.x), pnpm, rustup, shellcheck
 - `LIBSQLITE3_SYS_USE_PKG_CONFIG=1` is set automatically by devenv (links sqlx against Nix-provided SQLite instead of bundled)
 - `DEVELOPER_DIR` and the Apple iOS toolchain are resolved dynamically (no hardcoded Xcode paths): `enterShell` sources `apps/identity-wallet/scripts/ios-env.sh`, which runs `/usr/bin/xcode-select -p` to point `DEVELOPER_DIR` at the active Xcode (Nix's Darwin hooks otherwise clobber it to a stub SDK). The same script is sourced by the patched Xcode Run Script phase, so CLI and Xcode builds resolve the toolchain identically. iOS-host `CC`/`AR`/linker overrides are gated on `EZPDS_IOS_BUILD=1` (set only by the `just ios-*` recipes and the Xcode Run Script), so a plain `cargo build --workspace` / `cargo run -p pds` is unaffected.
