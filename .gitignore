@@ -41,6 +41,9 @@ devenv.local.nix
 # playwright-mcp
 .playwright-mcp/
 
+# LLM Wiki (local knowledge store — not source)
+.llm-wiki/
+
 # SvelteKit / frontend build artifacts
 apps/identity-wallet/.svelte-kit/
 apps/identity-wallet/dist/
