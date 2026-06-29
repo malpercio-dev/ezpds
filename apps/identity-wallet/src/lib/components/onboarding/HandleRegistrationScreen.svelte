@@ -7,13 +7,13 @@
   import Spinner from '$lib/components/ui/Spinner.svelte';
 
   let {
-    handleLabel,
+    handle,
     did,
     onsuccess,
     ontimeout,
   }: {
-    /** The label portion of the handle (e.g. `"alice"`), collected earlier in onboarding. */
-    handleLabel: string;
+    /** The full handle (e.g. `"alice.ezpds.com"`), assembled earlier in onboarding. */
+    handle: string;
     /** The user's DID, used to verify HTTP resolution resolves to the correct identity. */
     did: string;
     /** Called when the handle registers and HTTP resolution confirms the DID. */
@@ -84,7 +84,7 @@
     stopPolling();
 
     try {
-      const result = await registerHandle(handleLabel);
+      const result = await registerHandle(handle);
       startPolling(result.handle);
     } catch (raw: unknown) {
       console.error('[HandleRegistrationScreen] registerHandle failed:', raw);

@@ -528,47 +528,20 @@ async fn perform_did_ceremony(
     })
 }
 
-/// Register the user's handle with the PDS and set up HTTP resolution.
+/// Register the user's (already-full) handle with the PDS and set up HTTP resolution.
 ///
-/// Fetches the PDS's primary user domain via `GET /xrpc/com.atproto.server.describeServer`,
-/// constructs the full handle (`{handle_label}.{domain}`), reads the DID and session token
-/// from Keychain, then POSTs to `POST /v1/handles`.
+/// `handle` is the complete handle (e.g. `alice.ezpds.com`), assembled on the client from the
+/// PDS's `availableUserDomains` *before* the DID ceremony so it matches the published genesis
+/// op's `alsoKnownAs` exactly. Reads the DID and session token from Keychain, then POSTs to
+/// `POST /v1/handles`.
 ///
 /// Returns the full handle and DNS propagation status on success.
 #[tauri::command]
 async fn register_handle(
-    handle_label: String,
+    handle: String,
     state: tauri::State<'_, oauth::AppState>,
 ) -> Result<RegisterHandleResult, RegisterHandleError> {
-    // Step 1: Fetch the PDS's primary user domain.
-    let resp = state
-        .custos_client()
-        .get("/xrpc/com.atproto.server.describeServer")
-        .await
-        .map_err(|e| RegisterHandleError::NetworkError {
-            message: e.to_string(),
-        })?;
-
-    if !resp.status().is_success() {
-        return Err(RegisterHandleError::NetworkError {
-            message: format!("describeServer returned HTTP {}", resp.status().as_u16()),
-        });
-    }
-
-    let server_info: DescribeServerResponse =
-        resp.json()
-            .await
-            .map_err(|e| RegisterHandleError::Unknown {
-                message: format!("failed to parse describeServer response: {e}"),
-            })?;
-
-    let domain = server_info
-        .available_user_domains
-        .into_iter()
-        .next()
-        .ok_or(RegisterHandleError::NoDomains)?;
-
-    let full_handle = format!("{handle_label}.{domain}");
+    let full_handle = handle;
 
     // Step 2: Read DID and session token from Keychain.
     // Missing DID here is a post-ceremony invariant violation — error! is appropriate.
@@ -644,6 +617,37 @@ async fn register_handle(
             }),
         }
     }
+}
+
+/// Fetch the PDS's configured handle domains (`availableUserDomains` from describeServer) so the
+/// client can build the full `{label}.{domain}` handle BEFORE the DID ceremony — ensuring the
+/// did:plc genesis op's `alsoKnownAs` carries the real, resolvable handle.
+///
+/// Returns the (possibly empty) domain list on success; the caller decides what to do when the
+/// list is empty. Rejects with a message string on network/parse failure.
+#[tauri::command]
+async fn get_available_user_domains(
+    state: tauri::State<'_, oauth::AppState>,
+) -> Result<Vec<String>, String> {
+    let resp = state
+        .custos_client()
+        .get("/xrpc/com.atproto.server.describeServer")
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !resp.status().is_success() {
+        return Err(format!(
+            "describeServer returned HTTP {}",
+            resp.status().as_u16()
+        ));
+    }
+
+    let server_info: DescribeServerResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("failed to parse describeServer response: {e}"))?;
+
+    Ok(server_info.available_user_domains)
 }
 
 /// Return the saved PDS base URL, or `None` if not yet configured.
@@ -910,6 +914,7 @@ pub fn run() {
             register_handle,
             register_created_identity,
             check_handle_resolution,
+            get_available_user_domains,
             list_identities,
             get_stored_did_doc,
             get_device_key_id,

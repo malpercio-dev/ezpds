@@ -1,7 +1,7 @@
 # Obsign (identity-wallet) Mobile App
 
-Last verified: 2026-06-26
-Last updated: 2026-06-26
+Last verified: 2026-06-28
+Last updated: 2026-06-28
 
 ## Purpose
 
@@ -12,7 +12,7 @@ Tauri v2 iOS application — SvelteKit 2 + Svelte 5 frontend running in a native
 ### Frontend (SvelteKit 2 + Svelte 5)
 
 **Exposes:**
-- `src/lib/ipc.ts` — typed wrappers for all Tauri IPC commands; import these instead of calling `invoke()` directly. Exports: `createAccount()`, `getOrCreateDeviceKey()`, `signWithDeviceKey()`, `performDIDCeremony()`, `registerHandle()`, `registerCreatedIdentity()`, `startOAuthFlow()`, `loadHomeData()`, `logOut()`, `getPdsUrl()`, `savePdsUrl()`, `resolveIdentity()`, `startPdsAuth()`, `requestClaimVerification()`, `signAndVerifyClaim()`, `submitClaim()`, `listIdentities()`, `getStoredDidDoc()`, `getDeviceKeyId()`, `checkIdentityStatus()`, `buildRecoveryOverride()`, `submitRecoveryOverride()`, and their associated types (`DevicePublicKey`, `DeviceKeyError`, `CreateAccountResult`, `CreateAccountError`, `DIDCeremonyResult`, `DIDCeremonyError`, `RegisterHandleResult`, `RegisterHandleError`, `RegisterIdentityError`, `OAuthError`, `SessionInfo`, `HomeData`, `PdsConfigError`, `IdentityInfo`, `VerifiedClaimOp`, `OpDiff`, `ServiceChange`, `ClaimResult`, `ResolveError`, `ClaimError`, `IdentityStoreError`, `UnauthorizedChange`, `IdentityStatus`, `SignedRecoveryOp`, `RecoveryError`)
+- `src/lib/ipc.ts` — typed wrappers for all Tauri IPC commands; import these instead of calling `invoke()` directly. Exports: `createAccount()`, `getOrCreateDeviceKey()`, `signWithDeviceKey()`, `performDIDCeremony()`, `registerHandle()`, `getAvailableUserDomains()`, `registerCreatedIdentity()`, `startOAuthFlow()`, `loadHomeData()`, `logOut()`, `getPdsUrl()`, `savePdsUrl()`, `resolveIdentity()`, `startPdsAuth()`, `requestClaimVerification()`, `signAndVerifyClaim()`, `submitClaim()`, `listIdentities()`, `getStoredDidDoc()`, `getDeviceKeyId()`, `checkIdentityStatus()`, `buildRecoveryOverride()`, `submitRecoveryOverride()`, and their associated types (`DevicePublicKey`, `DeviceKeyError`, `CreateAccountResult`, `CreateAccountError`, `DIDCeremonyResult`, `DIDCeremonyError`, `RegisterHandleResult`, `RegisterHandleError`, `RegisterIdentityError`, `OAuthError`, `SessionInfo`, `HomeData`, `PdsConfigError`, `IdentityInfo`, `VerifiedClaimOp`, `OpDiff`, `ServiceChange`, `ClaimResult`, `ResolveError`, `ClaimError`, `IdentityStoreError`, `UnauthorizedChange`, `IdentityStatus`, `SignedRecoveryOp`, `RecoveryError`)
 - `src/lib/components/onboarding/` — eighteen onboarding screen components (ModeSelectScreen, PdsConfigScreen, WelcomeScreen, ClaimCodeScreen, EmailScreen, HandleScreen, PasswordScreen, LoadingScreen, DIDCeremonyScreen, DIDSuccessScreen, ShamirBackupScreen, HandleRegistrationScreen, AuthenticatingScreen, IdentityInputScreen, PdsAuthScreen, EmailVerificationScreen, ReviewOperationScreen, ClaimSuccessScreen)
 - `src/lib/components/home/` — six home screen components (IdentityListHome, HomeScreen, DIDDocumentScreen, RecoveryInfoScreen, AlertDetailScreen, RecoveryOverrideScreen) plus DIDAvatar utility component (deterministic DID-derived hue circle)
 - `src/lib/utils/deadline.ts` — PLC recovery deadline utilities: `getDeadline(createdAt)` (adds 72h to ISO 8601 timestamp), `getUrgency(deadline)` (returns `'safe'` | `'warning'` | `'critical'` | `'expired'`), `formatCountdown(deadline)` (human-readable `"Xh Ym remaining"`). `Urgency` type exported. Thresholds: expired = 0, critical < 4h, warning < 24h, safe >= 24h

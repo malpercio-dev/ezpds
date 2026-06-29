@@ -47,8 +47,8 @@ pub async fn create_account(
     // --- Auth: require matching Bearer token ---
     require_admin_token(&headers, &state)?;
 
-    // --- Validate handle format ---
-    if let Err(msg) = validate_handle(&payload.handle) {
+    // --- Validate handle format (structural: must be a real <name>.<domain> handle) ---
+    if let Err(msg) = crate::handle::validate_handle_structure(&payload.handle) {
         return Err(ApiError::new(ErrorCode::InvalidHandle, msg));
     }
 
@@ -154,26 +154,6 @@ pub async fn create_account(
         ErrorCode::InternalError,
         "failed to create account",
     ))
-}
-
-/// Validate that a handle string passes basic format checks.
-/// ATProto handles are domain names; this enforces only the least-controversial rules
-/// (non-empty, ASCII, no whitespace, max length) to avoid incorrect rejections.
-/// More thorough validation (segment structure, domain policy) is deferred to a later wave.
-pub(crate) fn validate_handle(handle: &str) -> Result<(), &'static str> {
-    if handle.is_empty() {
-        return Err("handle must not be empty");
-    }
-    if handle.len() > 253 {
-        return Err("handle must be at most 253 characters");
-    }
-    if !handle.is_ascii() {
-        return Err("handle must contain only ASCII characters");
-    }
-    if handle.chars().any(|c| c.is_ascii_whitespace()) {
-        return Err("handle must not contain whitespace");
-    }
-    Ok(())
 }
 
 fn is_valid_tier(tier: &str) -> bool {
@@ -639,35 +619,6 @@ mod tests {
     }
 
     // ── Pure unit tests ───────────────────────────────────────────────────────
-
-    #[test]
-    fn validate_handle_rejects_empty() {
-        assert!(super::validate_handle("").is_err());
-    }
-
-    #[test]
-    fn validate_handle_rejects_non_ascii() {
-        assert!(super::validate_handle("älice.example.com").is_err());
-    }
-
-    #[test]
-    fn validate_handle_rejects_whitespace() {
-        assert!(super::validate_handle("alice example.com").is_err());
-        assert!(super::validate_handle("alice\t.example.com").is_err());
-    }
-
-    #[test]
-    fn validate_handle_rejects_too_long() {
-        assert!(super::validate_handle(&"a".repeat(254)).is_err());
-    }
-
-    #[test]
-    fn validate_handle_accepts_valid_handles() {
-        assert!(super::validate_handle("alice.example.com").is_ok());
-        assert!(super::validate_handle("malpercio.dev").is_ok());
-        assert!(super::validate_handle("a.b").is_ok());
-        assert!(super::validate_handle(&"a".repeat(253)).is_ok());
-    }
 
     #[test]
     fn is_valid_tier_accepts_known_tiers() {
