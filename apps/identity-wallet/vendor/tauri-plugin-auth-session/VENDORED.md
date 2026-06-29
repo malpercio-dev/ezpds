@@ -13,4 +13,10 @@ not log, store, or transmit the URL/code.
 The `guest-js/` npm API is intentionally NOT vendored — the app invokes
 `plugin:auth-session|start` directly from `src/lib/ipc.ts`.
 
-To update: re-copy from a newer pinned commit and re-audit src/apple.rs + src/lib.rs.
+## Local modifications to the upstream source
+
+- `Cargo.toml`: added `publish = false` (this is a private fork that must never be released to
+  crates.io under the upstream's name/metadata).
+
+To update: re-copy from a newer pinned commit, re-apply the local modifications above, and
+re-audit `src/apple.rs` + `src/lib.rs`.

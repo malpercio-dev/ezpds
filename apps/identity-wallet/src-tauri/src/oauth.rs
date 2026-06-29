@@ -423,11 +423,9 @@ pub async fn complete_oauth_flow(
     // Parse code + state from the callback URL and validate CSRF before any token exchange.
     let (code, callback_state) = parse_callback_url(&callback_url)?;
     if callback_state != pending.csrf_state {
-        tracing::error!(
-            expected = %pending.csrf_state,
-            received = %callback_state,
-            "CSRF state mismatch in OAuth callback; aborting flow"
-        );
+        // Don't log the state values — the CSRF nonce is backend-only; logging it would leak
+        // auth-flow correlation data into device logs.
+        tracing::error!("CSRF state mismatch in OAuth callback; aborting flow");
         return Err(OAuthError::StateMismatch);
     }
 

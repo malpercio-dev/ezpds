@@ -7,6 +7,8 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/yanqianglu/tauri-plugin-auth-session"
 edition = "2021"
 rust-version = "1.77"
+# Local addition to the vendored copy (see VENDORED.md): never publish this fork to crates.io.
+publish = false
 links = "tauri-plugin-auth-session"
 keywords = ["tauri", "tauri-plugin", "authentication", "oauth", "custom-tabs"]
 categories = ["authentication", "gui"]

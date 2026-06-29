@@ -131,6 +131,11 @@ pub struct ClaimState {
 /// auth-server metadata plus the secrets the token exchange needs — none of it is serialized to
 /// the webview.
 pub struct PendingPdsLogin {
+    /// The DID this auth was prepared for — re-checked against `ClaimState` in `complete_pds_auth`
+    /// so a concurrent `resolve_identity` can't attach this client to a different claim.
+    pub did: String,
+    /// The PDS URL this auth was prepared for (re-checked alongside `did`).
+    pub pds_url: String,
     /// PKCE code_verifier for the token exchange.
     pub pkce_verifier: String,
     /// CSRF state — validated against the callback URL's `state` param.
@@ -139,7 +144,7 @@ pub struct PendingPdsLogin {
     pub metadata: crate::pds_client::AuthServerMetadata,
     /// OAuth `client_id` for this PDS.
     pub client_id: String,
-    /// PDS base URL the resulting `OAuthClient` targets.
+    /// PDS base URL the resulting `OAuthClient` targets (the identity's resolved PDS).
     pub oauth_client_pds_url: String,
 }
 
@@ -395,8 +400,12 @@ pub async fn prepare_pds_auth(
         .as_ref()
         .cloned()
         .unwrap_or_else(|| format!("{}/oauth/par", metadata.issuer));
-    let oauth_client_pds_url = state.custos_client().base_url_str().to_string();
-    let client_id = crate::pds_client::client_id_for_pds(&oauth_client_pds_url);
+    // `client_id` is derived from the app's own client-metadata base URL, but the OAuthClient must
+    // target the *identity's resolved PDS* (`pds_url`) — not the app/custos base — or claim
+    // verification calls would hit the wrong endpoint.
+    let client_metadata_base_url = state.custos_client().base_url_str().to_string();
+    let client_id = crate::pds_client::client_id_for_pds(&client_metadata_base_url);
+    let oauth_client_pds_url = pds_url.clone();
 
     let par_resp = pds_par_with_retry(PdsParWithRetryParams {
         pds_client,
@@ -419,8 +428,10 @@ pub async fn prepare_pds_auth(
         &client_id,
     );
 
-    // 8. Park the secrets + discovered metadata for `complete_pds_auth`.
+    // 8. Park the secrets + discovered metadata for `complete_pds_auth`, bound to this claim.
     *state.pending_pds_login.lock().unwrap() = Some(PendingPdsLogin {
+        did: did.clone(),
+        pds_url: pds_url.clone(),
         pkce_verifier,
         csrf_state,
         metadata,
@@ -507,6 +518,13 @@ pub async fn complete_pds_auth(
 
     let mut claim_state = state.claim_state.lock().await;
     if let Some(ref mut claim) = claim_state.as_mut() {
+        // Reject if `resolve_identity` switched the active claim while the auth session was open —
+        // otherwise this client (for the original DID/PDS) would attach to a different claim.
+        if claim.did != pending.did || claim.pds_url != pending.pds_url {
+            drop(claim_state);
+            tracing::warn!("complete_pds_auth: pending auth no longer matches the active claim");
+            return Err(ClaimError::Unauthorized);
+        }
         claim.pds_oauth_client = Some(std::sync::Arc::new(oauth_client));
     } else {
         drop(claim_state);
