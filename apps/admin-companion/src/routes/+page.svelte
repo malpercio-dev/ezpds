@@ -44,8 +44,8 @@
       <CodeOutput value={state.key.keyId} prompt={false} />
       <p class="note">
         The private key stays in this device's secure key store — the Secure Enclave on
-        iPhone hardware. The relay only ever sees the public key above, verified on every
-        request; no replayable secret lives here.
+        iPhone hardware. The relay holds only the public key above; by design it will
+        verify a per-request signature rather than store any replayable secret.
       </p>
     {:else if state.kind === 'loading'}
       <p class="resolving">resolving did:key…</p>

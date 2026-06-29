@@ -93,10 +93,15 @@ if [ -n "${EZPDS_IOS_BUILD:-}" ]; then
   # `base64`, only under EZPDS_IOS_BUILD), so other Nix tools are untouched. No-op on CI
   # (the runner's base64 is already /usr/bin's).
   if [ -x /usr/bin/base64 ]; then
-    _ezpds_shim="${TMPDIR:-/tmp}/ezpds-ios-shims"
-    # Only touch PATH if the shim was actually created. The `if` also keeps a failed
-    # mkdir/ln from aborting a caller that sources this under `set -e`.
-    if mkdir -p "${_ezpds_shim}" 2>/dev/null && ln -sf /usr/bin/base64 "${_ezpds_shim}/base64" 2>/dev/null; then
+    _ezpds_shim="${TMPDIR:-/tmp}/ezpds-ios-shims.$(id -u 2>/dev/null || echo 0)"
+    # Prepend the shim to PATH only if the directory is trustworthy: a per-uid name, not a
+    # symlink, created private (700), and owned by us. A predictable, world-writable shim dir
+    # ahead of cargo/Xcode would let another local user hijack the `base64` the signing step
+    # runs. The `if` also keeps a failed mkdir/ln from aborting a caller sourcing this under `set -e`.
+    if [ ! -L "${_ezpds_shim}" ] \
+       && { [ -d "${_ezpds_shim}" ] || mkdir -m 700 "${_ezpds_shim}" 2>/dev/null; } \
+       && [ -O "${_ezpds_shim}" ] \
+       && ln -sf /usr/bin/base64 "${_ezpds_shim}/base64" 2>/dev/null; then
       case ":${PATH}:" in
         *":${_ezpds_shim}:"*) : ;;
         *) export PATH="${_ezpds_shim}:${PATH}" ;;
