@@ -17,7 +17,12 @@ fi
 echo "ios-postinit: patching ${PBXPROJ}"
 
 # --- Patch A: swift-rs --disable-sandbox override must be wired (macOS 26 EPERM) ---
-if ! grep -q 'swift-rs-patch' "${REPO_ROOT}/Cargo.toml"; then
+if ! awk '
+  /^\[patch\.crates-io\]/ { in_patch = 1; next }
+  /^\[/ { in_patch = 0 }
+  in_patch && /^[[:space:]]*swift-rs[[:space:]]*=[[:space:]]*\{[^}]*path[[:space:]]*=[[:space:]]*"apps\/identity-wallet\/swift-rs-patch"/ { found = 1 }
+  END { exit(found ? 0 : 1) }
+' "${REPO_ROOT}/Cargo.toml"; then
   echo "error: [patch.crates-io] swift-rs = { path = \"apps/identity-wallet/swift-rs-patch\" } is missing" >&2
   echo "       from ${REPO_ROOT}/Cargo.toml. The swift-rs sandbox workaround is not active." >&2
   exit 1

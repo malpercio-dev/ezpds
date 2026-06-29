@@ -15,7 +15,12 @@ fi
 
 fail=0
 
-if ! grep -q 'swift-rs-patch' "${REPO_ROOT}/Cargo.toml"; then
+if ! awk '
+  /^\[patch\.crates-io\]/ { in_patch = 1; next }
+  /^\[/ { in_patch = 0 }
+  in_patch && /^[[:space:]]*swift-rs[[:space:]]*=[[:space:]]*\{[^}]*path[[:space:]]*=[[:space:]]*"apps\/identity-wallet\/swift-rs-patch"/ { found = 1 }
+  END { exit(found ? 0 : 1) }
+' "${REPO_ROOT}/Cargo.toml"; then
   echo "ios-check: FAIL — swift-rs [patch.crates-io] override missing from Cargo.toml" >&2
   fail=1
 fi
