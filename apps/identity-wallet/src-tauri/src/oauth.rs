@@ -19,11 +19,15 @@ use uuid::Uuid;
 /// Both fields are Option-wrapped so the state is cleanly empty before any
 /// OAuth flow starts and after a flow completes.
 pub struct AppState {
-    /// The pending OAuth flow waiting for the deep-link callback.
-    /// Set by `start_oauth_flow` before opening Safari; cleared by `handle_deep_link`.
+    /// The pending claim-flow OAuth waiting for the deep-link callback.
+    /// Set by `claim::start_pds_auth` before opening Safari; cleared by `handle_deep_link`.
     pub pending_auth: Mutex<Option<PendingOAuthFlow>>,
+    /// The pending create-flow login parked between `prepare_oauth_flow` and
+    /// `complete_oauth_flow` while the ASWebAuthenticationSession runs. Distinct from
+    /// `pending_auth`: the PKCE verifier and CSRF state never leave the Rust backend.
+    pub pending_login: Mutex<Option<PendingLogin>>,
     /// The active authenticated session after a successful token exchange.
-    /// Set by `start_oauth_flow` on success; read by `OAuthClient` for every request.
+    /// Set by `complete_oauth_flow` on success; read by `OAuthClient` for every request.
     pub oauth_session: Mutex<Option<OAuthSession>>,
     /// Runtime custos client. Populated from Keychain on startup or by
     /// `save_pds_url` on first launch. Falls back to the compile-time default if unset.
@@ -46,6 +50,7 @@ impl AppState {
     pub fn new() -> Self {
         Self {
             pending_auth: Mutex::new(None),
+            pending_login: Mutex::new(None),
             oauth_session: Mutex::new(None),
             custos_client: OnceLock::new(),
             pds_client: crate::pds_client::PdsClient::new(),
@@ -305,6 +310,25 @@ pub struct PendingOAuthFlow {
     pub csrf_state: String,
 }
 
+/// State parked in `AppState.pending_login` between `prepare_oauth_flow` and
+/// `complete_oauth_flow`. Holds the secrets that must stay in the Rust backend across the
+/// browser session — they are never serialized to the webview.
+pub struct PendingLogin {
+    /// PKCE code_verifier for the token exchange.
+    pub pkce_verifier: String,
+    /// CSRF state — validated against the callback URL's `state` param.
+    pub csrf_state: String,
+}
+
+/// Returned by `prepare_oauth_flow`. The frontend feeds `auth_url` + `callback_scheme` into the
+/// auth-session plugin's `start()`, then hands the resulting callback URL to `complete_oauth_flow`.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OAuthPrepared {
+    pub auth_url: String,
+    pub callback_scheme: String,
+}
+
 // ── OAuth session ─────────────────────────────────────────────────────────────
 
 /// Active OAuth session stored in AppState after successful token exchange.
@@ -398,46 +422,36 @@ pub fn handle_deep_link(urls: Vec<url::Url>, app_state: &AppState) {
 
 // ── Tauri command ─────────────────────────────────────────────────────────────
 
-/// Drive the full OAuth 2.0 PKCE + DPoP authorization round-trip.
+/// Phase 1 of the create-flow login: PKCE + PAR → the `/oauth/authorize` URL.
 ///
-/// Called from the SvelteKit frontend via `invoke('start_oauth_flow')`.
-/// Parks on a Tokio oneshot channel until `handle_deep_link` delivers
-/// the authorization code from the system browser redirect.
+/// Called from the frontend via `invoke('prepare_oauth_flow')`. Generates PKCE/CSRF + the DPoP
+/// keypair, performs the PAR call, builds the authorize URL, and parks the PKCE verifier + CSRF
+/// state in `AppState.pending_login` — they never reach the webview. The frontend feeds the
+/// returned `authUrl`/`callbackScheme` into the auth-session plugin's `start()`, then calls
+/// `complete_oauth_flow` with the resulting callback URL.
 ///
-/// # Flow
-/// 1. Generate PKCE verifier/challenge and CSRF state parameter
-/// 2. Get-or-create DPoP keypair; build PAR DPoP proof
-/// 3. POST /oauth/par → receive request_uri
-/// 4. Open system browser to /oauth/authorize?client_id=...&request_uri=...
-/// 5. Park on oneshot receiver; handle_deep_link will send the code+state
-/// 6. Validate CSRF state matches
-/// 7. POST /oauth/token (authorization_code grant + PKCE verifier + DPoP proof)
-///    → on use_dpop_nonce 400: retry with server-issued nonce
-/// 8. Store access_token + refresh_token in Keychain
-/// 9. Populate AppState.oauth_session
+/// This replaces the old single `start_oauth_flow`, which opened external Safari and waited on a
+/// deep-link callback — a flow iOS Safari blocks because it will not auto-launch the app from a
+/// server-side redirect to a custom scheme. ASWebAuthenticationSession (driven by the plugin)
+/// captures the custom-scheme callback itself.
 #[tauri::command]
-pub async fn start_oauth_flow(
-    app: tauri::AppHandle,
+pub async fn prepare_oauth_flow(
     state: tauri::State<'_, AppState>,
     login_hint: Option<String>,
-) -> Result<(), OAuthError> {
-    // OpenerExt adds the `.opener()` method to AppHandle.
-    use tauri_plugin_opener::OpenerExt;
-
+) -> Result<OAuthPrepared, OAuthError> {
     let custos = state.custos_client();
 
-    // 1. Generate PKCE and CSRF state.
+    // 1. PKCE + CSRF state.
     let (pkce_verifier, pkce_challenge) = pkce::generate();
     let csrf_state = generate_state_param();
 
-    // 2. Get-or-create DPoP keypair.
+    // 2. DPoP keypair + PAR proof.
     let dpop = DPoPKeypair::get_or_create()?;
     let dpop_jkt = dpop.public_jwk_thumbprint();
-
-    let par_htu = format!("{}/oauth/par", state.custos_client().base_url_str());
+    let par_htu = format!("{}/oauth/par", custos.base_url_str());
     let par_proof = dpop.make_proof("POST", &par_htu, None, None)?;
 
-    // 3. PAR call.
+    // 3. PAR call → request_uri.
     let par_resp = custos
         .par(
             &pkce_challenge,
@@ -448,20 +462,9 @@ pub async fn start_oauth_flow(
         )
         .await?;
 
-    // 4. Set up the oneshot channel and park pending_auth.
-    let (tx, rx) = tokio::sync::oneshot::channel::<Result<CallbackParams, OAuthError>>();
-    {
-        let mut pending = state.pending_auth.lock().unwrap();
-        *pending = Some(PendingOAuthFlow {
-            tx,
-            pkce_verifier: pkce_verifier.clone(),
-            csrf_state: csrf_state.clone(),
-        });
-    } // Mutex guard dropped here — not held across .await.
-
-    // 5. Open Safari to the authorization endpoint.
+    // 4. Build the authorize URL.
     let auth_url = {
-        let base = state.custos_client().base_url_str();
+        let base = custos.base_url_str();
         let request_uri_encoded =
             url::form_urlencoded::byte_serialize(par_resp.request_uri.as_bytes())
                 .collect::<String>();
@@ -476,38 +479,68 @@ pub async fn start_oauth_flow(
         u
     };
 
-    app.opener()
-        .open_url(&auth_url, None::<&str>)
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to open system browser for OAuth");
-            OAuthError::ParFailed
-        })?;
+    // 5. Park the secrets server-side for `complete_oauth_flow`.
+    *state.pending_login.lock().unwrap() = Some(PendingLogin {
+        pkce_verifier,
+        csrf_state,
+    });
 
-    // 6. Wait for the deep-link callback to deliver the authorization code.
-    // The outer ? handles RecvError (channel dropped) → CallbackAbandoned.
-    // The inner ? propagates OAuthError::StateMismatch if handle_deep_link detected a CSRF mismatch.
-    let callback = rx.await.map_err(|_| OAuthError::CallbackAbandoned)??;
+    Ok(OAuthPrepared {
+        auth_url,
+        callback_scheme: "dev.malpercio.identitywallet".to_string(),
+    })
+}
 
-    // 7. Token exchange.
-    let token_htu = format!("{}/oauth/token", state.custos_client().base_url_str());
+/// Phase 2 of the create-flow login: exchange the authorization code for tokens.
+///
+/// Called from the frontend via `invoke('complete_oauth_flow', { callbackUrl })` with the URL the
+/// auth-session plugin returned. Parses `code`/`state`, validates the CSRF state against the
+/// parked `pending_login`, performs the DPoP-bound token exchange (with the one-time nonce
+/// retry), stores the tokens in the Keychain, and populates `AppState.oauth_session`.
+#[tauri::command]
+pub async fn complete_oauth_flow(
+    state: tauri::State<'_, AppState>,
+    callback_url: String,
+) -> Result<(), OAuthError> {
+    // Take the parked flow — clears it so a stray second call can't reuse the verifier.
+    let pending = state
+        .pending_login
+        .lock()
+        .unwrap()
+        .take()
+        .ok_or(OAuthError::CallbackAbandoned)?;
+
+    // Parse code + state from the callback URL and validate CSRF before any token exchange.
+    let (code, callback_state) = parse_callback_url(&callback_url)?;
+    if callback_state != pending.csrf_state {
+        tracing::error!(
+            expected = %pending.csrf_state,
+            received = %callback_state,
+            "CSRF state mismatch in OAuth callback; aborting flow"
+        );
+        return Err(OAuthError::StateMismatch);
+    }
+
+    // Token exchange (one-time use_dpop_nonce retry handled inside).
+    let custos = state.custos_client();
+    let dpop = DPoPKeypair::get_or_create()?;
+    let token_htu = format!("{}/oauth/token", custos.base_url_str());
     let (token_resp, initial_nonce) =
-        exchange_code_with_retry(custos, &dpop, &callback.code, &pkce_verifier, &token_htu).await?;
+        exchange_code_with_retry(custos, &dpop, &code, &pending.pkce_verifier, &token_htu).await?;
 
-    // 8. Store tokens in Keychain.
+    // Store tokens in the Keychain.
     crate::keychain::store_oauth_tokens(&token_resp.access_token, &token_resp.refresh_token)
         .map_err(|_| OAuthError::KeychainError)?;
 
-    // 9. Update AppState.
-    // Seed dpop_nonce from the token response to avoid a guaranteed use_dpop_nonce retry
-    // on the first OAuthClient request immediately after login.
+    // Seed dpop_nonce from the token response to avoid a guaranteed use_dpop_nonce retry on the
+    // first OAuthClient request immediately after login.
     let expires_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| OAuthError::TokenExchangeFailed)?
         .as_secs()
         + token_resp.expires_in;
 
-    let mut session = state.oauth_session.lock().unwrap();
-    *session = Some(OAuthSession {
+    *state.oauth_session.lock().unwrap() = Some(OAuthSession {
         access_token: token_resp.access_token,
         refresh_token: token_resp.refresh_token,
         expires_at,
@@ -516,6 +549,26 @@ pub async fn start_oauth_flow(
 
     tracing::info!("OAuth flow complete; session stored");
     Ok(())
+}
+
+/// Extract `code` and `state` from an OAuth callback URL
+/// (`dev.malpercio.identitywallet:/oauth/callback?code=...&state=...`). Returns
+/// `CallbackAbandoned` if the URL is unparseable or missing either parameter.
+fn parse_callback_url(callback_url: &str) -> Result<(String, String), OAuthError> {
+    let url = url::Url::parse(callback_url).map_err(|_| OAuthError::CallbackAbandoned)?;
+    let mut code_opt: Option<String> = None;
+    let mut state_opt: Option<String> = None;
+    for (key, value) in url.query_pairs() {
+        match key.as_ref() {
+            "code" => code_opt = Some(value.into_owned()),
+            "state" => state_opt = Some(value.into_owned()),
+            _ => {}
+        }
+    }
+    match (code_opt, state_opt) {
+        (Some(code), Some(state)) => Ok((code, state)),
+        _ => Err(OAuthError::CallbackAbandoned),
+    }
 }
 
 /// Perform the authorization code token exchange with one retry on `use_dpop_nonce`.
@@ -909,6 +962,7 @@ mod tests {
                 pkce_verifier: "v".to_string(),
                 csrf_state: "correct-state".to_string(),
             })),
+            pending_login: std::sync::Mutex::new(None),
             oauth_session: std::sync::Mutex::new(None),
             custos_client: OnceLock::new(),
             pds_client: crate::pds_client::PdsClient::new(),
@@ -940,6 +994,7 @@ mod tests {
                 pkce_verifier: "v".to_string(),
                 csrf_state: "good-state".to_string(),
             })),
+            pending_login: std::sync::Mutex::new(None),
             oauth_session: std::sync::Mutex::new(None),
             custos_client: OnceLock::new(),
             pds_client: crate::pds_client::PdsClient::new(),
@@ -973,6 +1028,7 @@ mod tests {
                 pkce_verifier: "v".to_string(),
                 csrf_state: "expected-state".to_string(),
             })),
+            pending_login: std::sync::Mutex::new(None),
             oauth_session: std::sync::Mutex::new(None),
             custos_client: OnceLock::new(),
             pds_client: crate::pds_client::PdsClient::new(),

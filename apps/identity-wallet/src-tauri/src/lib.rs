@@ -874,6 +874,10 @@ pub fn run() {
         )
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
+        // In-app OAuth session (ASWebAuthenticationSession on iOS/macOS). Invoked from the
+        // frontend as `plugin:auth-session|start`; drives the create-flow PDS login. The claim
+        // flow still uses the deep-link plugin above (converted in a follow-up).
+        .plugin(tauri_plugin_auth_session::init())
         .setup(|app| {
             // Restore PDS URL from Keychain if previously configured.
             if let Some(url) = keychain::load_pds_url() {
@@ -929,7 +933,8 @@ pub fn run() {
             save_pds_url,
             home::load_home_data,
             home::log_out,
-            oauth::start_oauth_flow,
+            oauth::prepare_oauth_flow,
+            oauth::complete_oauth_flow,
             claim::resolve_identity,
             claim::start_pds_auth,
             claim::request_claim_verification,

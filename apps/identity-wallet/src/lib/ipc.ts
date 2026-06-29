@@ -253,7 +253,33 @@ export type OAuthError =
   | { code: 'INVALID_GRANT' }
   | { code: 'NOT_AUTHENTICATED' };
 
-export const startOAuthFlow = (): Promise<void> => invoke('start_oauth_flow');
+/**
+ * Drive the create-flow PDS login via the native in-app auth session (ASWebAuthenticationSession
+ * on iOS, via the auth-session plugin). Three steps: `prepare_oauth_flow` (Rust) does PKCE + PAR
+ * and returns the authorize URL; the plugin opens the in-app session and returns the
+ * custom-scheme callback URL; `complete_oauth_flow` (Rust) validates the CSRF state and exchanges
+ * the code for tokens. The PKCE verifier and CSRF state never leave the Rust backend — only the
+ * authorize URL and (briefly) the callback URL transit the webview.
+ *
+ * This replaces the old external-Safari + deep-link flow, which iOS Safari blocks: it will not
+ * auto-launch the app from a server-side redirect to a custom URL scheme.
+ */
+export const startOAuthFlow = async (): Promise<void> => {
+  const prepared = await invoke<{ authUrl: string; callbackScheme: string }>('prepare_oauth_flow');
+  let callbackUrl: string;
+  try {
+    callbackUrl = await invoke<string>('plugin:auth-session|start', {
+      authUrl: prepared.authUrl,
+      callbackUrlScheme: prepared.callbackScheme,
+    });
+  } catch {
+    // The auth-session plugin rejects with a plain string ("user_cancelled", "Invalid auth
+    // URL: ..."), not the OAuthError shape. Normalize so the UI's error handling stays uniform;
+    // a dismissed sheet reads as an abandoned callback.
+    throw { code: 'CALLBACK_ABANDONED' } as OAuthError;
+  }
+  await invoke('complete_oauth_flow', { callbackUrl });
+};
 
 // ── Home screen ──────────────────────────────────────────────────────────
 //
