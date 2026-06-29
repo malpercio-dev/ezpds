@@ -871,11 +871,10 @@ pub fn run() {
                 .level(log::LevelFilter::Debug)
                 .build(),
         )
-        .plugin(tauri_plugin_opener::init())
         // In-app OAuth session (ASWebAuthenticationSession on iOS/macOS). Invoked from the
         // frontend as `plugin:auth-session|start`; drives both the create-flow and claim-flow
-        // PDS logins. (Replaced the deep-link plugin, which iOS Safari's custom-scheme redirect
-        // block made unreliable.)
+        // PDS logins. (Replaced the deep-link + opener plugins, which depended on Safari
+        // auto-launching the app from a custom-scheme redirect — which iOS blocks.)
         .plugin(tauri_plugin_auth_session::init())
         .setup(|app| {
             // Restore PDS URL from Keychain if previously configured.

@@ -15,7 +15,6 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [dependencies]
 # Tauri-specific — declared locally (not in workspace.dependencies per design plan)
 tauri = { version = "2", features = [] }
-tauri-plugin-opener = "2"
 tauri-plugin-log = "2"
 # In-app OAuth via ASWebAuthenticationSession (iOS/macOS). VENDORED in-repo (not a live git dep)
 # because it sits in the wallet's auth path — we audit and pin the exact source. Wraps the
