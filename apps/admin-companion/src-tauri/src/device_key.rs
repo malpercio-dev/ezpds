@@ -78,7 +78,9 @@ const DEVICE_KEY_APP_LABEL_ACCOUNT: &str = "admin-device-key-app-label";
 /// Avoids repeating the struct literal at every map_err call site.
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 fn keychain_err(e: impl std::fmt::Display) -> DeviceKeyError {
-    DeviceKeyError::KeychainError { message: e.to_string() }
+    DeviceKeyError::KeychainError {
+        message: e.to_string(),
+    }
 }
 
 // ── did:key construction ──────────────────────────────────────────────────────
@@ -154,7 +156,11 @@ pub fn sign(data: &[u8]) -> Result<Vec<u8>, DeviceKeyError> {
     // If the key doesn't exist, signal that get_or_create must be called first.
     // Distinguish ItemNotFound from other OS errors.
     let private_bytes = crate::keychain::get_item(ACCOUNT).map_err(|e| {
-        if crate::keychain::is_not_found(&e) { DeviceKeyError::KeyNotFound } else { keychain_err(e) }
+        if crate::keychain::is_not_found(&e) {
+            DeviceKeyError::KeyNotFound
+        } else {
+            keychain_err(e)
+        }
     })?;
 
     let signing_key =
@@ -272,7 +278,11 @@ pub fn sign(data: &[u8]) -> Result<Vec<u8>, DeviceKeyError> {
     // not-found (key was never created) from a transient/permission error, so a flaky
     // Keychain read does not masquerade as "no key" and trip the caller into re-pairing.
     let app_label = crate::keychain::get_item(DEVICE_KEY_APP_LABEL_ACCOUNT).map_err(|e| {
-        if crate::keychain::is_not_found(&e) { DeviceKeyError::KeyNotFound } else { keychain_err(e) }
+        if crate::keychain::is_not_found(&e) {
+            DeviceKeyError::KeyNotFound
+        } else {
+            keychain_err(e)
+        }
     })?;
 
     // Find the SE private key in the Keychain by its application_label.

@@ -94,11 +94,14 @@ if [ -n "${EZPDS_IOS_BUILD:-}" ]; then
   # (the runner's base64 is already /usr/bin's).
   if [ -x /usr/bin/base64 ]; then
     _ezpds_shim="${TMPDIR:-/tmp}/ezpds-ios-shims"
-    mkdir -p "${_ezpds_shim}" 2>/dev/null && ln -sf /usr/bin/base64 "${_ezpds_shim}/base64" 2>/dev/null
-    case ":${PATH}:" in
-      *":${_ezpds_shim}:"*) : ;;
-      *) export PATH="${_ezpds_shim}:${PATH}" ;;
-    esac
+    # Only touch PATH if the shim was actually created. The `if` also keeps a failed
+    # mkdir/ln from aborting a caller that sources this under `set -e`.
+    if mkdir -p "${_ezpds_shim}" 2>/dev/null && ln -sf /usr/bin/base64 "${_ezpds_shim}/base64" 2>/dev/null; then
+      case ":${PATH}:" in
+        *":${_ezpds_shim}:"*) : ;;
+        *) export PATH="${_ezpds_shim}:${PATH}" ;;
+      esac
+    fi
     unset _ezpds_shim
   fi
 fi
