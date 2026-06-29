@@ -17,5 +17,14 @@
   -->
   <key>ITSAppUsesNonExemptEncryption</key>
   <false/>
+
+  <!--
+    Camera access is used solely to scan the relay's pairing-code QR on the Pair screen
+    (Phase 7). The operator can always pair by entering the relay URL and code by hand,
+    so declining the camera prompt never blocks pairing. Tauri merges this key into the
+    generated iOS Info.plist, satisfying iOS's NSCameraUsageDescription requirement.
+  -->
+  <key>NSCameraUsageDescription</key>
+  <string>Scan a relay pairing code to pair this device.</string>
 </dict>
 </plist>

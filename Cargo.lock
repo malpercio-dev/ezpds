@@ -12,18 +12,23 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 name = "admin-companion"
 version = "0.1.0"
 dependencies = [
+ "base64 0.21.7",
  "crypto",
  "log",
  "multibase",
  "p256",
+ "reqwest 0.12.28",
  "security-framework",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tauri",
  "tauri-build",
+ "tauri-plugin-barcode-scanner",
  "tauri-plugin-log",
  "thiserror 2.0.18",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -7810,6 +7815,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tauri-plugin-barcode-scanner"
+version = "2.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3b68f0e3782b61a6e16a67380be40226e2b7233f3e36dadf6e5d03f07d2e7b3"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "tauri-plugin-deep-link"
 version = "2.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9924,7 +9943,7 @@ dependencies = [
  "log",
  "serde",
  "thiserror 2.0.18",
- "windows 0.61.3",
+ "windows 0.62.2",
  "windows-core 0.62.2",
 ]
 

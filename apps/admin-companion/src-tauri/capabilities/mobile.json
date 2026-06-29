@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "Camera barcode/QR scanning on the Pair screen. Mobile-only: the plugin and its commands exist only on iOS/Android, so this capability is platform-gated and is skipped on the macOS host build.",
+  "platforms": ["iOS", "android"],
+  "windows": ["main"],
+  "permissions": ["barcode-scanner:default"]
+}

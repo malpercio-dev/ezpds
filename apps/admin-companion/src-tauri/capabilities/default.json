@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "default",
+  "description": "Core IPC + logging for the main window. App-defined commands (pairing, signing) are allowed by default from the local webview and need no permission here; only plugin commands are listed.",
+  "windows": ["main"],
+  "permissions": ["core:default", "log:default"]
+}
