@@ -14,7 +14,11 @@ exclude = ["apps/identity-wallet/vendor/tauri-plugin-auth-session"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+# Single source of truth for every crate's version AND the version the PDS reports at
+# `_health` / `describeServer` (via `env!("CARGO_PKG_VERSION")`). Keep in lockstep with the
+# release tag: `just set-version X.Y.Z` to bump (in a reviewed PR), then `just release` cuts the
+# matching `v X.Y.Z` tag. The release CI also asserts the tag equals this version.
+version = "0.3.0"
 edition = "2021"
 publish = false
 

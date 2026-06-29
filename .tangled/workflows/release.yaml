@@ -21,6 +21,36 @@ dependencies:
     - coreutils
 
 steps:
+  # Backstop for the `just release` recipe: refuse to ship a tag whose version doesn't match
+  # the workspace version the binary will report (env!("CARGO_PKG_VERSION")). Catches a
+  # hand-pushed tag that skipped `just set-version`. cargo + jq are both in the deps above.
+  - name: Verify release tag matches workspace version
+    command: |
+      # The workflow triggers on `v*`, so a non-semver tag like `vfoo` could reach the deploy and
+      # then silently pass the "no vX.Y.Z tag" skip below. Reject any v-prefixed tag on HEAD that
+      # is not a valid vX.Y.Z before doing anything else.
+      release_tags="$(git tag --points-at HEAD | grep -E '^v' || true)"
+      non_semver="$(printf '%s\n' "$release_tags" | grep -Ev '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)"
+      if [ -n "$non_semver" ]; then
+        echo "✗ non-semver release tag(s) point at HEAD:" >&2
+        printf '    %s\n' "$non_semver" >&2
+        exit 1
+      fi
+      # Then check EVERY semver tag on HEAD (not just the first) against the reported version.
+      tags="$(printf '%s\n' "$release_tags" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)"
+      version="v$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name=="pds") | .version')"
+      if [ -z "$tags" ]; then
+        echo "⚠ no vX.Y.Z tag points at HEAD; skipping tag/version check" >&2
+        exit 0
+      fi
+      mismatched="$(printf '%s\n' "$tags" | grep -vxF "$version" || true)"
+      if [ -n "$mismatched" ]; then
+        echo "✗ release tag(s) do not match workspace version '$version' (Cargo.toml):" >&2
+        printf '    %s\n' "$mismatched" >&2
+        echo "  Remove/recreate the mismatched tag(s), or bump [workspace.package].version to the intended tag and re-tag." >&2
+        exit 1
+      fi
+      echo "✓ all vX.Y.Z tag(s) on HEAD match workspace version '$version'"
   - name: CI (fmt, clippy, test, audit)
     command: just ci-pds
   - name: Promote to production (deploy + health, with retries)
