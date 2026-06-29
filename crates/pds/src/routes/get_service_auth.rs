@@ -414,6 +414,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn multiple_aud_fragments_are_rejected() {
+        // More than one `#` is malformed; `is_valid_aud` must reject it rather than splitting on
+        // the first and trusting the remainder.
+        let state = state_with_master_key().await;
+        seed_account_with_repo(&state.db, TEST_DID).await;
+        let token = access_jwt(&state.jwt_secret, TEST_DID);
+
+        let response = app(state)
+            .oneshot(get_request(
+                &token,
+                "aud=did:web:api.bsky.app%23bsky_appview%23extra",
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn missing_auth_is_rejected() {
         let state = state_with_master_key().await;
         let response = app(state)

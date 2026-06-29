@@ -282,10 +282,9 @@ pub async fn load_repo_signer(
 
 /// Mint an inter-service auth JWT for `did`, signed by that account's `#atproto` repo key.
 ///
-/// This is the single source of truth shared by the `app.bsky.*`/`chat.bsky.*` proxy
-/// (`routes/service_proxy.rs`) and `com.atproto.server.getServiceAuth` (`routes/get_service_auth.rs`)
-/// so the two paths cannot drift in how they load the key or assemble claims. `aud` must already
-/// be the bare service DID (no `#fragment`); `lxm`/`iat`/`exp` are passed through to
+/// The single source of truth for account service-auth JWT minting, so every caller loads the
+/// key and assembles claims identically and the paths cannot drift. `aud` must already be the
+/// bare service DID (no `#fragment`); `lxm`/`iat`/`exp` are passed through to
 /// [`crate::auth::jwt::mint_service_auth_jwt`] verbatim.
 pub async fn mint_account_service_auth(
     pool: &SqlitePool,
