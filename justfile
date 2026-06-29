@@ -67,12 +67,17 @@ set-version version:
     if ! printf '%s' "{{version}}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
       echo "✗ version must be X.Y.Z (got '{{version}}')" >&2; exit 1
     fi
-    # Rewrite only the [workspace.package] version line (not dependency versions below it).
+    # Rewrite only the [workspace.package] version line (not dependency versions below it):
+    # scope strictly to that section (reset on any other section header) and fail if no version
+    # line was found, so a missing/renamed field can never silently rewrite a later `version`.
     awk -v v="{{version}}" '
-      /^\[workspace\.package\]/ {p=1}
-      p && /^version *=/ && !done {print "version = \"" v "\""; done=1; next}
+      /^\[workspace\.package\]$/ {p=1; print; next}
+      /^\[/ {p=0}
+      p && /^version[[:space:]]*=/ && !done {print "version = \"" v "\""; done=1; next}
       {print}
-    ' Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml
+      END { if (!done) { print "✗ could not rewrite [workspace.package].version" > "/dev/stderr"; exit 1 } }
+    ' Cargo.toml > Cargo.toml.tmp
+    mv Cargo.toml.tmp Cargo.toml
     # Resync the lockfile so the new workspace-crate versions land in Cargo.lock and
     # `just lock-check` stays green (cargo metadata resolves without upgrading other deps).
     cargo metadata --format-version 1 >/dev/null
