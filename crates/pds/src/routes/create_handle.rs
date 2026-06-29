@@ -133,7 +133,6 @@ pub async fn create_handle_handler(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::app::test_state;
     use crate::routes::test_utils::{state_with_err_dns, state_with_ok_dns};
     use crate::routes::token::generate_token;
