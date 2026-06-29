@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ios-env.sh — derive the Apple toolchain for cross-compiling identity-wallet's
+# ios-env.sh — derive the Apple toolchain for cross-compiling admin-companion's
 # Rust code to iOS, with ZERO hardcoded paths.
 #
 # Sourced by:

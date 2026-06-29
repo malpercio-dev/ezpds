@@ -6,7 +6,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"        # apps/identity-wallet
+APP_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"        # apps/admin-companion
 REPO_ROOT="$(cd "${APP_DIR}/../.." && pwd)"      # repo root
 
 PBXPROJ="$(ls "${APP_DIR}"/src-tauri/gen/apple/*.xcodeproj/project.pbxproj 2>/dev/null | head -n1 || true)"

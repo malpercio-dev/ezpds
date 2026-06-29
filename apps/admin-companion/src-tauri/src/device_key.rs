@@ -72,6 +72,15 @@ const DEVICE_KEY_PUB_ACCOUNT: &str = "admin-device-key-pub";
 #[cfg(all(target_os = "ios", not(target_env = "sim")))]
 const DEVICE_KEY_APP_LABEL_ACCOUNT: &str = "admin-device-key-app-label";
 
+// ── Error helpers ─────────────────────────────────────────────────────────────
+
+/// Wrap any display-able error as [`DeviceKeyError::KeychainError`].
+/// Avoids repeating the struct literal at every map_err call site.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn keychain_err(e: impl std::fmt::Display) -> DeviceKeyError {
+    DeviceKeyError::KeychainError { message: e.to_string() }
+}
+
 // ── did:key construction ──────────────────────────────────────────────────────
 
 /// Build a [`DevicePublicKey`] from a compressed (33-byte SEC1) P-256 point.
@@ -118,18 +127,10 @@ pub fn get_or_create() -> Result<DevicePublicKey, DeviceKeyError> {
             let keypair =
                 crypto::generate_p256_keypair().map_err(|_| DeviceKeyError::KeyGenerationFailed)?;
             let bytes = keypair.private_key_bytes.to_vec();
-            crate::keychain::store_item(ACCOUNT, &bytes).map_err(|e| {
-                DeviceKeyError::KeychainError {
-                    message: e.to_string(),
-                }
-            })?;
+            crate::keychain::store_item(ACCOUNT, &bytes).map_err(keychain_err)?;
             bytes
         }
-        Err(e) => {
-            return Err(DeviceKeyError::KeychainError {
-                message: e.to_string(),
-            })
-        }
+        Err(e) => return Err(keychain_err(e)),
     };
 
     // Reconstruct the public key from stored private bytes.
@@ -153,13 +154,7 @@ pub fn sign(data: &[u8]) -> Result<Vec<u8>, DeviceKeyError> {
     // If the key doesn't exist, signal that get_or_create must be called first.
     // Distinguish ItemNotFound from other OS errors.
     let private_bytes = crate::keychain::get_item(ACCOUNT).map_err(|e| {
-        if crate::keychain::is_not_found(&e) {
-            DeviceKeyError::KeyNotFound
-        } else {
-            DeviceKeyError::KeychainError {
-                message: e.to_string(),
-            }
-        }
+        if crate::keychain::is_not_found(&e) { DeviceKeyError::KeyNotFound } else { keychain_err(e) }
     })?;
 
     let signing_key =
@@ -200,9 +195,7 @@ pub fn get_or_create() -> Result<DevicePublicKey, DeviceKeyError> {
         }
         (Err(e), _) | (_, Err(e)) if !crate::keychain::is_not_found(&e) => {
             // Transient OS error — do not fall through to generation.
-            return Err(DeviceKeyError::KeychainError {
-                message: e.to_string(),
-            });
+            return Err(keychain_err(e));
         }
         _ => {
             // One or both missing — fall through to generate.
@@ -254,11 +247,7 @@ pub fn get_or_create() -> Result<DevicePublicKey, DeviceKeyError> {
     compressed[1..].copy_from_slice(&uncompressed[1..33]);
 
     // Store the compressed public key for the fast path on future calls.
-    crate::keychain::store_item(DEVICE_KEY_PUB_ACCOUNT, &compressed).map_err(|e| {
-        DeviceKeyError::KeychainError {
-            message: e.to_string(),
-        }
-    })?;
+    crate::keychain::store_item(DEVICE_KEY_PUB_ACCOUNT, &compressed).map_err(keychain_err)?;
 
     // Get and store application_label. Roll back the pub account if this fails.
     let app_label = priv_key.application_label().ok_or_else(|| {
@@ -269,9 +258,7 @@ pub fn get_or_create() -> Result<DevicePublicKey, DeviceKeyError> {
     })?;
     crate::keychain::store_item(DEVICE_KEY_APP_LABEL_ACCOUNT, &app_label).map_err(|e| {
         let _ = crate::keychain::delete_item(DEVICE_KEY_PUB_ACCOUNT);
-        DeviceKeyError::KeychainError {
-            message: e.to_string(),
-        }
+        keychain_err(e)
     })?;
 
     Ok(make_device_public_key(&compressed))
@@ -285,13 +272,7 @@ pub fn sign(data: &[u8]) -> Result<Vec<u8>, DeviceKeyError> {
     // not-found (key was never created) from a transient/permission error, so a flaky
     // Keychain read does not masquerade as "no key" and trip the caller into re-pairing.
     let app_label = crate::keychain::get_item(DEVICE_KEY_APP_LABEL_ACCOUNT).map_err(|e| {
-        if crate::keychain::is_not_found(&e) {
-            DeviceKeyError::KeyNotFound
-        } else {
-            DeviceKeyError::KeychainError {
-                message: e.to_string(),
-            }
-        }
+        if crate::keychain::is_not_found(&e) { DeviceKeyError::KeyNotFound } else { keychain_err(e) }
     })?;
 
     // Find the SE private key in the Keychain by its application_label.
@@ -304,9 +285,7 @@ pub fn sign(data: &[u8]) -> Result<Vec<u8>, DeviceKeyError> {
         .load_refs(true)
         .limit(1);
 
-    let results = search.search().map_err(|e| DeviceKeyError::KeychainError {
-        message: e.to_string(),
-    })?;
+    let results = search.search().map_err(keychain_err)?;
 
     // Extract the SecKey from the typed Reference result.
     let sec_key = match results.into_iter().next() {

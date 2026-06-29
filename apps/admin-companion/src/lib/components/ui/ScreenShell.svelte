@@ -76,6 +76,7 @@
     font-family: var(--font-display);
     font-size: var(--text-data);
     letter-spacing: 0.02em;
+    color: var(--color-ink-soft);
   }
   .brand {
     color: var(--color-primary);
@@ -83,9 +84,6 @@
   .caret {
     margin: 0 var(--space-sm);
     color: var(--color-muted);
-  }
-  .prompt {
-    color: var(--color-ink-soft);
   }
   .title {
     margin: 0;
