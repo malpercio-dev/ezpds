@@ -70,6 +70,11 @@ pub async fn get_service_auth(
             "aud must be a valid atproto DID or did#serviceId reference",
         ));
     }
+    // The token's `aud` is the bare service DID: a `#serviceId` is a DID-document service
+    // selector, not part of the audience the receiving service matches against its own DID, so a
+    // token carrying the fragment would be rejected. `is_valid_aud` has already rejected empty or
+    // multiple fragments, so a single `split_once` cleanly yields the base DID.
+    let aud_claim = aud.split_once('#').map_or(aud, |(did, _)| did);
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -95,17 +100,17 @@ pub async fn get_service_auth(
                 "signing key master key not configured",
             )
         })?;
-    let signer =
-        crate::auth::signing_key::load_repo_signer(&state.db, &user.did, master_key).await?;
 
-    let token = crate::auth::jwt::mint_service_auth_jwt(
-        |bytes| signer.sign(bytes),
+    let token = crate::auth::signing_key::mint_account_service_auth(
+        &state.db,
+        master_key,
         &user.did,
-        aud,
+        aud_claim,
         lxm,
         now,
         exp,
-    );
+    )
+    .await?;
 
     Ok(Json(GetServiceAuthResponse { token }))
 }
@@ -141,11 +146,17 @@ fn resolve_expiry(requested: Option<u64>, has_lxm: bool, now: u64) -> Result<u64
     Ok(exp)
 }
 
-/// True when `aud` is an atproto DID (`did:method:id`), optionally suffixed with a `#serviceId`
-/// fragment. Deliberately structural, not a full DID-syntax validator — the audience service
+/// True when `aud` is an atproto DID (`did:method:id`), optionally suffixed with a single
+/// non-empty `#serviceId` fragment. A trailing `#`, an empty fragment, or multiple `#`s are
+/// rejected. Deliberately structural, not a full DID-syntax validator — the audience service
 /// performs the authoritative check.
 fn is_valid_aud(aud: &str) -> bool {
-    let did = aud.split('#').next().unwrap_or(aud);
+    let did = match aud.split_once('#') {
+        // A fragment is allowed only if it is non-empty and itself fragment-free.
+        Some((did, fragment)) if !fragment.is_empty() && !fragment.contains('#') => did,
+        Some(_) => return false,
+        None => aud,
+    };
     let mut parts = did.splitn(3, ':');
     parts.next() == Some("did")
         && parts.next().is_some_and(|method| !method.is_empty())
@@ -358,6 +369,44 @@ mod tests {
 
         let response = app(state)
             .oneshot(get_request(&token, "aud=not-a-did"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn service_fragment_aud_mints_bare_did() {
+        // A `did#serviceId` audience is accepted, but the minted token's `aud` claim must be the
+        // bare DID — the receiving service matches `aud` against its own DID, not a service ref.
+        let state = state_with_master_key().await;
+        seed_account_with_repo(&state.db, TEST_DID).await;
+        let token = access_jwt(&state.jwt_secret, TEST_DID);
+
+        let response = app(state)
+            .oneshot(get_request(&token, "aud=did:web:api.bsky.app%23bsky_appview"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        let (_, claims) = decode_jwt(json["token"].as_str().unwrap());
+        assert_eq!(
+            claims["aud"], "did:web:api.bsky.app",
+            "the #serviceId fragment must be stripped from the minted aud"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_aud_fragment_is_rejected() {
+        // A trailing `#` (empty fragment) is malformed and must be rejected, not silently
+        // treated as the bare DID.
+        let state = state_with_master_key().await;
+        seed_account_with_repo(&state.db, TEST_DID).await;
+        let token = access_jwt(&state.jwt_secret, TEST_DID);
+
+        let response = app(state)
+            .oneshot(get_request(&token, "aud=did:web:api.bsky.app%23"))
             .await
             .unwrap();
 

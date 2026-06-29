@@ -14,11 +14,6 @@ auth:bearer {
   token: {{accessJwt}}
 }
 
-params:query {
-  aud: {{aud}}
-  lxm: {{lxm}}
-}
-
 vars:pre-request {
   baseUrl: http://localhost:8080
   aud: did:web:api.bsky.app

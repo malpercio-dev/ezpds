@@ -140,11 +140,13 @@ pub async fn proxy_xrpc(
 
 /// Mint a fresh ES256 service-auth JWT for proxying `nsid` to `proxy_did` on behalf of `did`.
 ///
-/// Loads the account's `#atproto` repo signing key (decrypting it with the configured master
-/// key) and signs a short-lived token: `iss` = the account DID, `aud` = the service DID with any
-/// `#fragment` stripped (the AppView keys verification on the bare DID), `lxm` = the proxied
-/// method, 60s TTL. Returns the built error response on the unhappy paths (master key missing →
-/// 503, key load/decrypt failure → 500) so the caller can early-return it.
+/// Delegates the key load + claim assembly to the shared
+/// [`crate::auth::signing_key::mint_account_service_auth`] (the same path
+/// `com.atproto.server.getServiceAuth` uses) so the two never drift. Resolves the master key and
+/// strips the audience fragment here: `aud` = the service DID with any `#fragment` removed (the
+/// AppView keys verification on the bare DID; the fragment belongs in the `atproto-proxy` header),
+/// `lxm` = the proxied method, 60s TTL. Returns the built error response on the unhappy paths
+/// (master key missing → 503, clock failure → 500, key load/decrypt failure → 500).
 async fn mint_service_auth(
     state: &AppState,
     did: &str,
@@ -166,29 +168,30 @@ async fn mint_service_auth(
             .into_response()
         })?;
 
-    let signer = crate::auth::signing_key::load_repo_signer(&state.db, did, master_key)
-        .await
-        .map_err(IntoResponse::into_response)?;
-
     // The audience is the bare service DID — a `#fragment` (e.g. `#bsky_chat`) belongs in the
     // `atproto-proxy` header, not the JWT `aud`, which the AppView matches against its own DID.
     let aud = proxy_did.split('#').next().unwrap_or(proxy_did);
 
-    // A failure to read the wall clock is unrecoverable here; fall back to 0 so the token is
-    // simply already-expired (rejected upstream) rather than panicking the request.
+    // Mint with the same clock-failure handling as getServiceAuth (a 500), rather than silently
+    // emitting an already-expired token.
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map_err(|_| {
+            ApiError::new(ErrorCode::InternalError, "system clock error").into_response()
+        })?;
 
-    Ok(crate::auth::jwt::mint_service_auth_jwt(
-        |bytes| signer.sign(bytes),
+    crate::auth::signing_key::mint_account_service_auth(
+        &state.db,
+        master_key,
         did,
         aud,
         Some(nsid),
         now,
         now + 60,
-    ))
+    )
+    .await
+    .map_err(IntoResponse::into_response)
 }
 
 #[cfg(test)]
@@ -200,7 +203,7 @@ mod tests {
         http::{Request, StatusCode},
     };
     use tower::ServiceExt;
-    use wiremock::matchers::{body_json, header, method, path, query_param};
+    use wiremock::matchers::{body_json, header, header_exists, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use crate::app::{app, test_state, AppState};
@@ -641,11 +644,13 @@ mod tests {
         let auth = bearer(&state);
 
         // The forwarded Authorization is now a minted service-auth JWT, not the inbound token,
-        // so we no longer match on its value; the `atproto-proxy` header still carries the full
-        // service DID (fragment included) so the chat service routes the request.
+        // so we no longer match on its value — but the chat branch must still send *an*
+        // Authorization header, so assert its presence. The `atproto-proxy` header still carries
+        // the full service DID (fragment included) so the chat service routes the request.
         Mock::given(method("GET"))
             .and(path("/xrpc/chat.bsky.convo.listConvos"))
             .and(query_param("limit", "50"))
+            .and(header_exists("authorization"))
             .and(header("atproto-proxy", "did:web:api.bsky.chat#bsky_chat"))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({ "convos": [] })),
