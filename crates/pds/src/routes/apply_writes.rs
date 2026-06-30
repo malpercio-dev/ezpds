@@ -471,12 +471,12 @@ mod tests {
 
     #[tokio::test]
     async fn apply_writes_unknown_handle_returns_400() {
-        // An identifier that is neither a DID nor a registered handle is a clean 400.
-        let (state, did) = setup().await;
-        let token = access_jwt(&state.jwt_secret, &did);
+        // An identifier that is neither a DID nor a registered handle is a clean 400. No token is
+        // sent: resolution must fail *before* auth, so omitting it guards that ordering.
+        let (state, _did) = setup().await;
         let app = crate::app::app(state);
         let body = serde_json::json!({ "repo": "nobody.example.com", "writes": [create_item("k1", "hi")] });
-        let resp = app.oneshot(apply_req(body, Some(&token))).await.unwrap();
+        let resp = app.oneshot(apply_req(body, None)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 

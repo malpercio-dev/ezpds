@@ -222,15 +222,13 @@ mod tests {
     async fn create_record_unknown_handle_returns_400() {
         // An identifier that is neither a DID nor a registered handle is a clean 400 — and the
         // resolution failure surfaces before auth, so no token is needed to exercise it.
-        let (state, did) = setup_account_with_repo().await;
-        let token = access_jwt(&state.jwt_secret, &did);
+        let (state, _did) = setup_account_with_repo().await;
         let app = crate::app::app(state);
 
         let request = Request::builder()
             .method(http::Method::POST)
             .uri("/xrpc/com.atproto.repo.createRecord")
             .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {token}"))
             .body(Body::from(
                 serde_json::to_string(&serde_json::json!({
                     "repo": "nobody.example.com",
