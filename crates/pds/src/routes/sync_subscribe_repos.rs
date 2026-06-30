@@ -151,6 +151,25 @@ async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) 
                 break;
             }
         }
+
+        // The durable range `(cursor, upper]` is a dense prefix (the sequencer advances `last_seq`
+        // only after the row is persisted), so a complete replay always ends with `after == upper`.
+        // Reaching here with `after < upper` means a row at or below the frontier is missing — DB
+        // corruption or a not-yet-built retention sweep over-pruning the live window. Fail closed
+        // rather than start live streaming and silently skip the missing seqs (which would break
+        // the no-gap contract); the client reconnects from its last good cursor.
+        if after < upper {
+            tracing::error!(
+                cursor,
+                upper,
+                after,
+                "firehose replay backlog ended before the frontier; closing"
+            );
+            let frame = encode_error_frame("InternalError", "replay backlog is incomplete");
+            let _ = sender.send(Message::Binary(frame)).await;
+            let _ = sender.close().await;
+            return;
+        }
     }
 
     let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);

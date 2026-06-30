@@ -301,9 +301,12 @@ impl Firehose {
     /// DB write fails — the counter is *not* advanced in that case, so the number is retried by the
     /// next emit (no hole).
     pub async fn emit_commit(&self, input: CommitInput) -> Result<u64, FirehoseError> {
+        let _guard = self.emit_lock.lock().await;
+        // Capture the timestamp and serialize the storable form *under the lock*, in the same
+        // critical section as `seq` assignment, so the stored `time`/`sequenced_at` stay monotonic
+        // with seq order even when commits race. Scope the borrow of `input` so it ends before we
+        // move `input`'s fields into the broadcast event below.
         let time = now_rfc3339();
-        // Serialize the storable form (borrowing `input`) in its own scope so the borrow ends
-        // before we move `input`'s fields into the broadcast event below.
         let blob = {
             let stored = StoredCommitRef {
                 repo: &input.repo,
@@ -316,8 +319,6 @@ impl Firehose {
             };
             serde_ipld_dagcbor::to_vec(&stored).map_err(|e| FirehoseError::Encode(e.to_string()))?
         };
-
-        let _guard = self.emit_lock.lock().await;
         let seq = self.last_seq.load(Ordering::Acquire) + 1;
         crate::db::firehose_seq::insert_event(&self.db, seq, &input.repo, "commit", &blob, &time)
             .await?;
@@ -350,6 +351,9 @@ impl Firehose {
         active: bool,
         status: Option<String>,
     ) -> Result<u64, FirehoseError> {
+        let _guard = self.emit_lock.lock().await;
+        // Capture the timestamp and serialize under the lock so `time`/`sequenced_at` stay
+        // monotonic with seq order even when emits race (same critical section as `seq`).
         let time = now_rfc3339();
         let blob = {
             let stored = StoredAccountRef {
@@ -360,8 +364,6 @@ impl Firehose {
             };
             serde_ipld_dagcbor::to_vec(&stored).map_err(|e| FirehoseError::Encode(e.to_string()))?
         };
-
-        let _guard = self.emit_lock.lock().await;
         let seq = self.last_seq.load(Ordering::Acquire) + 1;
         crate::db::firehose_seq::insert_event(&self.db, seq, &did, "account", &blob, &time).await?;
         self.last_seq.store(seq, Ordering::Release);
