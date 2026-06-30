@@ -75,6 +75,10 @@ pub enum ErrorCode {
     /// Serialized as `"InvalidRequest"` (PascalCase) to match the AT Protocol XRPC error format.
     #[serde(rename = "InvalidRequest")]
     InvalidRequest,
+    /// The new handle does not resolve to the authenticated user's DID.
+    /// Returned by `com.atproto.identity.updateHandle` when the proposed handle
+    /// cannot be validated against the caller's identity.
+    HandleResolutionFailed,
     // TODO: add remaining codes from Appendix A as endpoints are implemented:
     // 400: INVALID_DOCUMENT, INVALID_PROOF, INVALID_ENDPOINT, INVALID_CONFIRMATION
     // 401: INVALID_CREDENTIALS
@@ -117,6 +121,7 @@ impl ErrorCode {
             ErrorCode::Conflict => 409,
             ErrorCode::InvalidSwap => 409,
             ErrorCode::InvalidRequest => 400,
+            ErrorCode::HandleResolutionFailed => 400,
         }
     }
 }
@@ -292,6 +297,7 @@ mod tests {
             (ErrorCode::ExpiredToken, 400),
             (ErrorCode::PayloadTooLarge, 413),
             (ErrorCode::InvalidRequest, 400),
+            (ErrorCode::HandleResolutionFailed, 400),
         ];
         for (code, expected) in cases {
             assert_eq!(code.status_code(), expected, "wrong status for {code:?}");

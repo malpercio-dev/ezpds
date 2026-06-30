@@ -57,6 +57,7 @@ pub mod sync_subscribe_repos;
 pub mod transfer_accept;
 pub mod transfer_complete;
 pub mod transfer_initiate;
+pub mod update_handle;
 pub mod upload_blob;
 
 mod code_gen;
