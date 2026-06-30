@@ -5,25 +5,25 @@ meta {
 }
 
 post {
-  url: {{baseUrl}}/xrpc/com.atproto.repo.deleteRecord?did={{did}}&collection={{collection}}&rkey={{rkey}}
-  body: none
+  url: {{baseUrl}}/xrpc/com.atproto.repo.deleteRecord
+  body: json
   auth: bearer
-}
-
-params:query {
-  did: {{did}}
-  collection: {{collection}}
-  rkey: {{rkey}}
-  ~swapCommit:
-  ~swapRecord:
 }
 
 auth:bearer {
   token: {{accessToken}}
 }
 
+body:json {
+  {
+    "repo": "{{did}}",
+    "collection": "{{collection}}",
+    "rkey": "{{rkey}}"
+  }
+}
+
 docs {
-  Optional optimistic-concurrency params (enable as needed):
-  - swapCommit: only delete if the repo head matches this commit CID, else 409 InvalidSwap.
-  - swapRecord: only delete if the record currently at the key has this CID, else 409 InvalidSwap.
+  Optional optimistic-concurrency body fields (add alongside repo/collection/rkey):
+  - "swapCommit": "<cid>" — only delete if the repo head matches this commit CID, else 409 InvalidSwap.
+  - "swapRecord": "<cid>" — only delete if the record currently at the key has this CID, else 409 InvalidSwap.
 }

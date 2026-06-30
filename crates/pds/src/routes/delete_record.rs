@@ -2,7 +2,7 @@
 
 //! com.atproto.repo.deleteRecord - Delete a record from a repository.
 
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::Deserialize;
@@ -13,8 +13,11 @@ use common::{ApiError, ErrorCode};
 use repo_engine::Repository;
 
 #[derive(Deserialize)]
-pub struct DeleteRecordParams {
-    did: String,
+pub struct DeleteRecordBody {
+    /// The DID of the repo (e.g. "did:plc:abc123"), carried in the JSON body as `repo` per the
+    /// `com.atproto.repo.deleteRecord` lexicon. Like createRecord/applyWrites, this is treated as a
+    /// DID: handle-to-DID resolution is not performed anywhere in the repo write path.
+    repo: String,
     collection: String,
     rkey: String,
     /// `swapCommit`: when present, only delete if the repo head matches this commit CID.
@@ -30,12 +33,12 @@ pub struct DeleteRecordParams {
 /// Delete a record. Idempotent: deleting a record that does not exist succeeds.
 pub async fn delete_record(
     State(state): State<AppState>,
-    Query(params): Query<DeleteRecordParams>,
     headers: axum::http::HeaderMap,
+    axum::Json(body): axum::Json<DeleteRecordBody>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let did = &params.did;
-    let collection = &params.collection;
-    let rkey = &params.rkey;
+    let did = &body.repo;
+    let collection = &body.collection;
+    let rkey = &body.rkey;
 
     if !crate::auth::validation::is_valid_did(did) {
         return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
@@ -97,8 +100,8 @@ pub async fn delete_record(
     // client fails with InvalidSwap rather than the delete silently succeeding (including the
     // idempotent no-op path below, where a mismatched swapRecord must still be a hard error).
     let swap = crate::record_write::SwapCheck {
-        commit: params.swap_commit.clone(),
-        record: params.swap_record.clone().map(Some),
+        commit: body.swap_commit.clone(),
+        record: body.swap_record.clone().map(Some),
     };
     crate::record_write::enforce_swap(&swap, &root_cid_str, &mut repo, &mst_key).await?;
 
@@ -189,19 +192,16 @@ pub async fn delete_record(
 mod tests {
     use super::*;
     use axum::body::Body;
-    use axum::http::{self, Request};
+    use axum::http::Request;
     use tower::ServiceExt;
 
-    use crate::routes::test_utils::{access_jwt, seed_account_with_repo, state_with_master_key};
+    use crate::routes::test_utils::{
+        access_jwt, delete_record_request, put_record_request, seed_account_with_repo,
+        state_with_master_key,
+    };
 
     fn delete_req(did: &str, rkey: &str, token: Option<&str>) -> Request<Body> {
-        let mut b = Request::builder().method(http::Method::POST).uri(format!(
-            "/xrpc/com.atproto.repo.deleteRecord?did={did}&collection=app.bsky.feed.post&rkey={rkey}"
-        ));
-        if let Some(t) = token {
-            b = b.header("Authorization", format!("Bearer {t}"));
-        }
-        b.body(Body::empty()).unwrap()
+        delete_record_request(did, "app.bsky.feed.post", rkey, serde_json::json!({}), token)
     }
 
     #[tokio::test]
@@ -239,17 +239,13 @@ mod tests {
 
     /// Helper: create a record via putRecord and return its CID.
     async fn seed_record(app: &axum::Router, token: &str, did: &str, rkey: &str) -> String {
-        let request = Request::builder()
-            .method(http::Method::POST)
-            .uri(format!(
-                "/xrpc/com.atproto.repo.putRecord?did={did}&collection=app.bsky.feed.post&rkey={rkey}"
-            ))
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {token}"))
-            .body(Body::from(
-                serde_json::to_string(&serde_json::json!({"record": {"text": "x"}})).unwrap(),
-            ))
-            .unwrap();
+        let request = put_record_request(
+            did,
+            "app.bsky.feed.post",
+            rkey,
+            serde_json::json!({"record": {"text": "x"}}),
+            Some(token),
+        );
         let resp = app.clone().oneshot(request).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
@@ -268,14 +264,13 @@ mod tests {
         let app = crate::app::app(state);
 
         let cid = seed_record(&app, &token, &did, "d1").await;
-        let req = Request::builder()
-            .method(http::Method::POST)
-            .uri(format!(
-                "/xrpc/com.atproto.repo.deleteRecord?did={did}&collection=app.bsky.feed.post&rkey=d1&swapRecord={cid}"
-            ))
-            .header("Authorization", format!("Bearer {token}"))
-            .body(Body::empty())
-            .unwrap();
+        let req = delete_record_request(
+            &did,
+            "app.bsky.feed.post",
+            "d1",
+            serde_json::json!({"swapRecord": cid}),
+            Some(&token),
+        );
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
     }
@@ -291,14 +286,13 @@ mod tests {
         seed_record(&app, &token, &did, "d2").await;
         // A swapRecord CID that doesn't match the current record → 409 InvalidSwap.
         let bogus = "bafyreie5cvv4h45feadgeuwhbcutmh6t2ceseocckahdoe6uat64zmz454";
-        let req = Request::builder()
-            .method(http::Method::POST)
-            .uri(format!(
-                "/xrpc/com.atproto.repo.deleteRecord?did={did}&collection=app.bsky.feed.post&rkey=d2&swapRecord={bogus}"
-            ))
-            .header("Authorization", format!("Bearer {token}"))
-            .body(Body::empty())
-            .unwrap();
+        let req = delete_record_request(
+            &did,
+            "app.bsky.feed.post",
+            "d2",
+            serde_json::json!({"swapRecord": bogus}),
+            Some(&token),
+        );
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::CONFLICT);
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
@@ -320,14 +314,13 @@ mod tests {
         // error (current CID is None, expected is Some) rather than the idempotent no-op
         // success that an absent record would otherwise produce.
         let cid = "bafyreie5cvv4h45feadgeuwhbcutmh6t2ceseocckahdoe6uat64zmz454";
-        let req = Request::builder()
-            .method(http::Method::POST)
-            .uri(format!(
-                "/xrpc/com.atproto.repo.deleteRecord?did={did}&collection=app.bsky.feed.post&rkey=ghost&swapRecord={cid}"
-            ))
-            .header("Authorization", format!("Bearer {token}"))
-            .body(Body::empty())
-            .unwrap();
+        let req = delete_record_request(
+            &did,
+            "app.bsky.feed.post",
+            "ghost",
+            serde_json::json!({"swapRecord": cid}),
+            Some(&token),
+        );
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::CONFLICT);
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
@@ -347,14 +340,13 @@ mod tests {
 
         seed_record(&app, &token, &did, "d3").await;
         let bogus = "bafyreie5cvv4h45feadgeuwhbcutmh6t2ceseocckahdoe6uat64zmz454";
-        let req = Request::builder()
-            .method(http::Method::POST)
-            .uri(format!(
-                "/xrpc/com.atproto.repo.deleteRecord?did={did}&collection=app.bsky.feed.post&rkey=d3&swapCommit={bogus}"
-            ))
-            .header("Authorization", format!("Bearer {token}"))
-            .body(Body::empty())
-            .unwrap();
+        let req = delete_record_request(
+            &did,
+            "app.bsky.feed.post",
+            "d3",
+            serde_json::json!({"swapCommit": bogus}),
+            Some(&token),
+        );
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::CONFLICT);
     }
