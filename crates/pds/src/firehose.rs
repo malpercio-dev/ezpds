@@ -180,32 +180,35 @@ pub struct CommitInput {
     pub blocks: Vec<u8>,
 }
 
-/// A new subscription: where to resume cursor replay from, and the live event stream.
+/// A new subscription: the durable backlog to replay first, then the live event stream.
 ///
-/// The handler replays the durable log for `cursor < seq <= upper` (paging through
-/// `db::firehose_seq::events_in_range`), then streams live events from `rx`. Because `rx` was
-/// taken and `upper` snapshotted together under the sequencer lock — before any later emit could
-/// advance the counter — every live event has `seq > upper`, so replay and the live stream are
-/// exactly disjoint: no event is dropped between them and none is delivered twice.
+/// `replay` is the materialised `(cursor, upper]` range read back from the durable log (oldest
+/// first); the consumer sends it before streaming live events from `rx`. Because `rx` was taken
+/// and the frontier `upper` snapshotted together under the sequencer lock — before any later emit
+/// could advance the counter — every live event has `seq > upper`, so replay and the live stream
+/// are exactly disjoint: no event is dropped between them and none is delivered twice.
 pub struct Subscription {
+    /// The missed events with `cursor < seq <= upper`, oldest first, to send before live streaming.
+    /// Empty for a live-only subscription (no cursor).
+    pub replay: Vec<FirehoseEvent>,
     /// Live event stream for everything emitted after this subscription was created
     /// (all with `seq > upper`).
     pub rx: broadcast::Receiver<FirehoseEvent>,
-    /// The requested cursor, or `None` for live-only (no replay).
-    pub cursor: Option<u64>,
-    /// The sequence frontier captured when this subscription attached — the inclusive upper
-    /// bound for DB replay and the exclusive lower bound for the live stream.
-    pub upper: u64,
 }
 
 /// The outcome of [`Firehose::subscribe_from`].
 pub enum SubscribeOutcome {
-    /// The subscription was established; replay `(cursor, upper]` from the log, then stream `rx`.
+    /// The subscription was established; send `replay`, then stream `rx`.
     Subscribed(Subscription),
     /// The requested cursor is ahead of the latest assigned sequence (`current`), so it cannot
     /// be honoured — the client is claiming to have seen events that do not exist.
     FutureCursor { current: u64 },
 }
+
+/// How many backlog rows to read per query when materialising a cursor replay from the durable
+/// log, so a subscriber resuming from an old cursor pages the DB rather than issuing one unbounded
+/// query.
+const REPLAY_BATCH: u32 = 256;
 
 /// The persistent firehose: a durable monotonic sequencer plus a broadcast fan-out.
 ///
@@ -256,15 +259,24 @@ impl Firehose {
 
     /// Subscribe with optional cursor replay.
     ///
-    /// Returns a [`Subscription`] carrying the live receiver plus the `(cursor, upper]` range the
-    /// handler should replay from the durable log first. A cursor ahead of the latest assigned
-    /// sequence yields [`SubscribeOutcome::FutureCursor`].
+    /// Returns a [`Subscription`] whose `replay` is the materialised `(cursor, upper]` backlog read
+    /// from the durable log (oldest first) and whose `rx` streams every later event. A cursor ahead
+    /// of the latest assigned sequence yields [`SubscribeOutcome::FutureCursor`]; a `cursor = None`
+    /// gives an empty `replay` (live-only).
     ///
     /// The live receiver and the `upper` frontier are captured together under `emit_lock`, so no
     /// concurrent emit can slip an event past both the replay range and the receiver, nor advance
-    /// the counter into a spurious `FutureCursor`. Events older than the (currently unbounded)
-    /// log can always be replayed; there is no in-memory buffer to age out.
-    pub async fn subscribe_from(&self, cursor: Option<u64>) -> SubscribeOutcome {
+    /// the counter into a spurious `FutureCursor`. Replay is then read outside the lock, bounded by
+    /// `upper`, so it stays disjoint from the live stream. Events older than the (currently
+    /// unbounded) log can always be replayed; there is no in-memory buffer to age out.
+    ///
+    /// Returns [`FirehoseError`] if the backlog can't be assembled: a DB read failure, a stored row
+    /// that won't decode, or a gap in the `(cursor, upper]` range (which `read_replay` rejects so a
+    /// hole is never silently bridged). The caller fails the subscription closed in that case.
+    pub async fn subscribe_from(
+        &self,
+        cursor: Option<u64>,
+    ) -> Result<SubscribeOutcome, FirehoseError> {
         let (rx, upper) = {
             let _guard = self.emit_lock.lock().await;
             // Subscribe to the live channel *before* releasing the lock so that no event emitted
@@ -273,13 +285,61 @@ impl Firehose {
             (self.tx.subscribe(), self.last_seq.load(Ordering::Acquire))
         };
 
-        if let Some(c) = cursor {
-            if c > upper {
-                return SubscribeOutcome::FutureCursor { current: upper };
+        let replay = match cursor {
+            Some(c) if c > upper => return Ok(SubscribeOutcome::FutureCursor { current: upper }),
+            Some(c) => self.read_replay(c, upper).await?,
+            None => Vec::new(),
+        };
+
+        Ok(SubscribeOutcome::Subscribed(Subscription { replay, rx }))
+    }
+
+    /// Materialise the durable replay backlog for `(cursor, upper]`, oldest first.
+    ///
+    /// Pages the log in `REPLAY_BATCH` chunks and decodes each row into a [`FirehoseEvent`]. The
+    /// range is a dense prefix (the sequencer advances `last_seq` only after a row is persisted),
+    /// so this enforces density per row — each `seq` must be exactly the previous plus one, and the
+    /// last must reach `upper` — and returns [`FirehoseError`] on any gap rather than silently
+    /// skipping a missing `seq`. A negative stored `seq` (which can't occur from our writer) or a
+    /// row that won't decode is likewise a hard error: replay must be exact or fail closed.
+    async fn read_replay(
+        &self,
+        cursor: u64,
+        upper: u64,
+    ) -> Result<Vec<FirehoseEvent>, FirehoseError> {
+        let mut events = Vec::new();
+        let mut after = cursor;
+        while after < upper {
+            let batch =
+                crate::db::firehose_seq::events_in_range(&self.db, after, upper, REPLAY_BATCH)
+                    .await?;
+            if batch.is_empty() {
+                break;
+            }
+            let page_len = batch.len();
+            for row in batch {
+                let seq = u64::try_from(row.seq).map_err(|_| {
+                    FirehoseError::Decode(format!("negative stored firehose seq {}", row.seq))
+                })?;
+                if seq != after + 1 {
+                    return Err(FirehoseError::Decode(format!(
+                        "firehose replay gap: expected seq {}, found {seq}",
+                        after + 1
+                    )));
+                }
+                after = seq;
+                events.push(decode_stored_event(seq, &row.event_type, &row.event)?);
+            }
+            if (page_len as u32) < REPLAY_BATCH {
+                break;
             }
         }
-
-        SubscribeOutcome::Subscribed(Subscription { rx, cursor, upper })
+        if after < upper {
+            return Err(FirehoseError::Decode(format!(
+                "firehose replay backlog ended at seq {after} before the frontier {upper}"
+            )));
+        }
+        Ok(events)
     }
 
     /// Number of live subscribers. Primarily for diagnostics and tests.
@@ -694,27 +754,12 @@ mod tests {
 
         // Second "process": a fresh firehose over the same DB. A relay reconnects with cursor 1.
         let fh2 = Firehose::new(db.clone()).await.unwrap();
-        let SubscribeOutcome::Subscribed(sub) = fh2.subscribe_from(Some(1)).await else {
+        let SubscribeOutcome::Subscribed(sub) = fh2.subscribe_from(Some(1)).await.unwrap() else {
             panic!("expected a subscription");
         };
-        assert_eq!(
-            sub.upper, 3,
-            "frontier reflects the persisted log after restart"
-        );
 
-        // The handler would page (cursor, upper] from the log; the missed commits come back.
-        let rows =
-            crate::db::firehose_seq::events_in_range(&db, sub.cursor.unwrap(), sub.upper, 10)
-                .await
-                .unwrap();
-        let seqs: Vec<u64> = rows
-            .iter()
-            .map(|r| {
-                decode_stored_event(r.seq as u64, &r.event_type, &r.event)
-                    .unwrap()
-                    .seq()
-            })
-            .collect();
+        // The missed commits (seq 2, 3) come back materialised from the durable log.
+        let seqs: Vec<u64> = sub.replay.iter().map(|e| e.seq()).collect();
         assert_eq!(
             seqs,
             vec![2, 3],
@@ -723,30 +768,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subscribe_from_reports_cursor_and_frontier() {
+    async fn subscribe_from_materialises_replay_backlog() {
         let fh = test_firehose().await;
         for _ in 0..5 {
             fh.emit_commit(commit_input("did:plc:a")).await.unwrap();
         }
 
-        let SubscribeOutcome::Subscribed(sub) = fh.subscribe_from(Some(2)).await else {
+        let SubscribeOutcome::Subscribed(sub) = fh.subscribe_from(Some(2)).await.unwrap() else {
             panic!("expected a subscription");
         };
-        // The handler will replay (cursor, upper] = (2, 5] from the durable log.
-        assert_eq!(sub.cursor, Some(2));
-        assert_eq!(sub.upper, 5);
+        // Replay carries (cursor, upper] = (2, 5] from the durable log, oldest first.
+        let seqs: Vec<u64> = sub.replay.iter().map(|e| e.seq()).collect();
+        assert_eq!(seqs, vec![3, 4, 5]);
     }
 
     #[tokio::test]
-    async fn subscribe_from_without_cursor_has_no_replay_range() {
+    async fn subscribe_from_without_cursor_has_empty_replay() {
         let fh = test_firehose().await;
         fh.emit_commit(commit_input("did:plc:a")).await.unwrap();
 
-        let SubscribeOutcome::Subscribed(sub) = fh.subscribe_from(None).await else {
+        let SubscribeOutcome::Subscribed(sub) = fh.subscribe_from(None).await.unwrap() else {
             panic!("expected a subscription");
         };
-        assert_eq!(sub.cursor, None, "no cursor means live-only, no replay");
-        assert_eq!(sub.upper, 1);
+        assert!(
+            sub.replay.is_empty(),
+            "no cursor means live-only, no replay"
+        );
     }
 
     #[tokio::test]
@@ -754,17 +801,39 @@ mod tests {
         let fh = test_firehose().await;
         fh.emit_commit(commit_input("did:plc:a")).await.unwrap(); // seq 1
 
-        match fh.subscribe_from(Some(2)).await {
+        match fh.subscribe_from(Some(2)).await.unwrap() {
             SubscribeOutcome::FutureCursor { current } => assert_eq!(current, 1),
             SubscribeOutcome::Subscribed(_) => panic!("cursor 2 is in the future of seq 1"),
         }
 
-        // The current seq itself is not "in the future": it subscribes (replay range empty).
-        let SubscribeOutcome::Subscribed(sub) = fh.subscribe_from(Some(1)).await else {
+        // The current seq itself is not "in the future": it subscribes with an empty replay.
+        let SubscribeOutcome::Subscribed(sub) = fh.subscribe_from(Some(1)).await.unwrap() else {
             panic!("expected a subscription");
         };
-        assert_eq!(sub.cursor, Some(1));
-        assert_eq!(sub.upper, 1);
+        assert!(sub.replay.is_empty());
+    }
+
+    #[tokio::test]
+    async fn subscribe_from_fails_closed_on_replay_gap() {
+        let fh = test_firehose().await;
+        for _ in 0..3 {
+            fh.emit_commit(commit_input("did:plc:a")).await.unwrap(); // seq 1, 2, 3
+        }
+
+        // Punch a hole the sequencer would never produce: seq 2 is missing but 3 remains, so the
+        // intermediate gap can only be caught by a per-row density check, not a frontier check.
+        sqlx::query("DELETE FROM repo_seq WHERE seq = 2")
+            .execute(&fh.db)
+            .await
+            .unwrap();
+
+        assert!(
+            matches!(
+                fh.subscribe_from(Some(0)).await,
+                Err(FirehoseError::Decode(_))
+            ),
+            "a gap in the durable replay range must fail closed, not silently skip the missing seq"
+        );
     }
 
     #[tokio::test]

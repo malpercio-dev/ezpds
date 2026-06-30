@@ -9,22 +9,25 @@
 //! * `op = 1` is a message; `t` names the type (`#commit`).
 //! * `op = -1` is an error; the body carries `{error, message}` and the stream then closes.
 //!
-//! A `cursor` query parameter requests replay: the handler first sends every still-buffered
-//! event whose `seq` is greater than the cursor, then streams live events with no gap. A
-//! cursor ahead of the current sequence is rejected with a `FutureCursor` error frame. A
+//! A `cursor` query parameter requests replay: the firehose materialises every event whose `seq`
+//! is greater than the cursor from its durable log (so replay survives a restart), and the handler
+//! sends those before streaming live events with no gap. A cursor ahead of the current sequence is
+//! rejected with a `FutureCursor` error frame. A
 //! subscriber that cannot keep up overflows the broadcast buffer, receives a
 //! `ConsumerTooSlow` error frame, and is disconnected (it can reconnect with its last cursor).
 //!
-//! A periodic WebSocket Ping keeps the connection alive and surfaces dead peers: once the
-//! socket is gone the Ping send fails and the handler exits.
+//! A periodic WebSocket Ping keeps the connection alive through idle proxies and surfaces dead
+//! peers. The heartbeat runs from the moment the socket attaches — including throughout any
+//! replay backlog — and a peer that stops answering (no Pong within the read deadline) is
+//! dropped promptly, rather than only when the next Ping send happens to fail.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::response::Response;
 use futures_util::stream::SplitSink;
-use futures_util::{FutureExt, SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -32,13 +35,14 @@ use crate::app::AppState;
 use crate::firehose::{AccountEvent, CommitEvent, FirehoseEvent, SubscribeOutcome, Subscription};
 use repo_engine::Cid;
 
-/// How often to send a keepalive Ping to detect dead connections.
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+/// How often to send a keepalive Ping. Kept well under the reverse-proxy idle window (Railway's,
+/// in production) so an otherwise-silent firehose connection is never reaped as idle.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 
-/// How many backlog events to read per query when replaying a cursor from the durable log.
-/// Bounds replay memory so a subscriber resuming from a very old cursor streams in pages rather
-/// than materialising the entire log at once.
-const REPLAY_BATCH: u32 = 256;
+/// If the peer sends nothing — not even a Pong replying to our keepalive Ping — within this
+/// window, the socket is treated as half-open and dropped. Spans several heartbeats so a single
+/// dropped Pong doesn't sever a healthy connection.
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Deserialize)]
 pub struct SubscribeReposParams {
@@ -64,121 +68,62 @@ pub async fn subscribe_repos(
 async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) {
     let (mut sender, mut receiver) = socket.split();
 
-    // Validate the cursor and attach to the stream atomically: the future-cursor check, the live
-    // subscribe, and the replay frontier (`upper`) snapshot all happen under one lock inside
-    // `subscribe_from`, so a concurrent commit can't produce a spurious FutureCursor or slip an
-    // event past us. Replay then reads the durable `repo_seq` log for `(cursor, upper]`, and the
-    // live stream (`rx`) carries everything with `seq > upper` — the two ranges are exactly
-    // disjoint, so there is no gap and no duplicate across the boundary.
-    let Subscription {
-        mut rx,
-        cursor,
-        upper,
-    } = match state.firehose.subscribe_from(cursor).await {
-        SubscribeOutcome::Subscribed(sub) => sub,
-        SubscribeOutcome::FutureCursor { .. } => {
+    // Attach to the firehose under one lock: `subscribe_from` snapshots the live receiver and the
+    // sequence frontier together (so a concurrent commit can't produce a spurious FutureCursor or
+    // slip an event past the boundary), then materialises the durable replay backlog for
+    // `(cursor, upper]` from `repo_seq` — paged and density-checked in the firehose layer. The
+    // live stream (`rx`) then carries everything with `seq > upper`, so replay and live are exactly
+    // disjoint: no gap, no duplicate across the boundary.
+    let Subscription { replay, mut rx } = match state.firehose.subscribe_from(cursor).await {
+        Ok(SubscribeOutcome::Subscribed(sub)) => sub,
+        Ok(SubscribeOutcome::FutureCursor { .. }) => {
             // A cursor ahead of everything we've emitted is a client error: refuse and close.
             let frame = encode_error_frame("FutureCursor", "cursor is in the future");
-            let _ = sender.send(Message::Binary(frame)).await;
-            let _ = sender.close().await;
+            let _ = send_message(&mut sender, Message::Binary(frame)).await;
+            let _ = tokio::time::timeout(READ_TIMEOUT, sender.close()).await;
+            return;
+        }
+        Err(e) => {
+            // The durable replay backlog couldn't be assembled (a DB error, a corrupt stored row,
+            // or a sequence gap). Fail closed rather than stream live past a hole; the client
+            // reconnects from its last good cursor.
+            tracing::error!(error = %e, "failed to assemble firehose replay backlog; closing");
+            let frame = encode_error_frame("InternalError", "failed to read replay backlog");
+            let _ = send_message(&mut sender, Message::Binary(frame)).await;
+            let _ = tokio::time::timeout(READ_TIMEOUT, sender.close()).await;
             return;
         }
     };
 
-    // Replay missed events first, oldest first, before any live event. Page the durable log so a
-    // subscriber resuming from a very old cursor doesn't materialise everything at once. Poll the
-    // incoming half between sends so a client that closes (or errors) mid-replay aborts promptly
-    // rather than after we encode and write up to a full page of now-unwanted events.
-    if let Some(cursor) = cursor {
-        let mut after = cursor;
-        while after < upper {
-            let batch = match crate::db::firehose_seq::events_in_range(
-                &state.db,
-                after,
-                upper,
-                REPLAY_BATCH,
-            )
-            .await
-            {
-                Ok(batch) => batch,
-                Err(e) => {
-                    tracing::error!(error = %e, cursor, "failed to read firehose replay backlog; closing");
-                    let frame =
-                        encode_error_frame("InternalError", "failed to read replay backlog");
-                    let _ = sender.send(Message::Binary(frame)).await;
-                    let _ = sender.close().await;
-                    return;
-                }
-            };
-            if batch.is_empty() {
-                break;
-            }
-            let page_len = batch.len();
-            for row in batch {
-                if let Some(incoming) = receiver.next().now_or_never() {
-                    match incoming {
-                        Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
-                        Some(Ok(_)) => {}
-                    }
-                }
-                after = row.seq as u64;
-                let event = match crate::firehose::decode_stored_event(
-                    after,
-                    &row.event_type,
-                    &row.event,
-                ) {
-                    Ok(event) => event,
-                    Err(e) => {
-                        // Skipping a corrupt row and replaying later seqs would open a silent gap,
-                        // breaking the no-gap replay contract. Fail closed: surface the error and
-                        // close so the client can't advance past the bad event (it reconnects from
-                        // its last good cursor). A self-written row failing to decode means DB
-                        // corruption — the loud error is the signal an operator needs.
-                        tracing::error!(error = %e, seq = after, "failed to decode stored firehose event; closing");
-                        let frame =
-                            encode_error_frame("InternalError", "failed to decode replay backlog");
-                        let _ = sender.send(Message::Binary(frame)).await;
-                        let _ = sender.close().await;
-                        return;
-                    }
-                };
-                if !send_event(&mut sender, &event).await {
-                    return;
-                }
-            }
-            // A short page means the range is exhausted; avoid an extra empty query.
-            if (page_len as u32) < REPLAY_BATCH {
-                break;
-            }
-        }
-
-        // The durable range `(cursor, upper]` is a dense prefix (the sequencer advances `last_seq`
-        // only after the row is persisted), so a complete replay always ends with `after == upper`.
-        // Reaching here with `after < upper` means a row at or below the frontier is missing — DB
-        // corruption or a not-yet-built retention sweep over-pruning the live window. Fail closed
-        // rather than start live streaming and silently skip the missing seqs (which would break
-        // the no-gap contract); the client reconnects from its last good cursor.
-        if after < upper {
-            tracing::error!(
-                cursor,
-                upper,
-                after,
-                "firehose replay backlog ended before the frontier; closing"
-            );
-            let frame = encode_error_frame("InternalError", "replay backlog is incomplete");
-            let _ = sender.send(Message::Binary(frame)).await;
-            let _ = sender.close().await;
-            return;
-        }
-    }
-
     let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
     // The first tick fires immediately; consume it so the first real Ping waits a full interval.
     heartbeat.tick().await;
+    // Don't let a stalled send (or a long replay) bunch up catch-up ticks into a Ping burst.
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    // Last time we heard anything from the peer; refreshed by every inbound frame (notably the
+    // Pong answering our keepalive Ping) and checked against READ_TIMEOUT on each heartbeat.
+    let mut last_seen = Instant::now();
+
+    // Replay the missed backlog oldest-first before any live event, then stream live. Both
+    // phases share one `select!` so the heartbeat and the read-deadline / close detection stay
+    // live throughout — including during a long replay, the case a bare replay loop left silent.
+    let mut replay = replay.into_iter();
+    let mut replay_done = false;
 
     loop {
         tokio::select! {
-            event = rx.recv() => match event {
+            // While the backlog drains, the live branch below stays disabled so a newer commit
+            // can't overtake a buffered one; once `replay.next()` is exhausted we flip to live.
+            maybe_event = async { replay.next() }, if !replay_done => match maybe_event {
+                Some(event) => {
+                    if !send_event(&mut sender, &event).await {
+                        break;
+                    }
+                }
+                None => replay_done = true,
+            },
+            event = rx.recv(), if replay_done => match event {
                 Ok(event) => {
                     if !send_event(&mut sender, &event).await {
                         break;
@@ -189,22 +134,30 @@ async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) 
                         "ConsumerTooSlow",
                         "consumer fell too far behind the firehose; reconnect with your last cursor",
                     );
-                    let _ = sender.send(Message::Binary(frame)).await;
-                    let _ = sender.close().await;
+                    let _ = send_message(&mut sender, Message::Binary(frame)).await;
+                    let _ = tokio::time::timeout(READ_TIMEOUT, sender.close()).await;
                     break;
                 }
                 Err(RecvError::Closed) => break,
             },
             _ = heartbeat.tick() => {
-                if sender.send(Message::Ping(Vec::new())).await.is_err() {
+                // A conformant peer answers every keepalive Ping with a Pong, refreshing
+                // `last_seen` below. If we've heard nothing within READ_TIMEOUT the socket is
+                // half-open; drop it now instead of waiting for a later send to fail.
+                if last_seen.elapsed() >= READ_TIMEOUT {
+                    break;
+                }
+                if !send_message(&mut sender, Message::Ping(Vec::new())).await {
                     break;
                 }
             }
             incoming = receiver.next() => match incoming {
                 // Peer closed, the stream ended, or a transport error — we're done.
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
-                // The firehose is server→client; Pongs and any other client frames are ignored.
-                Some(Ok(_)) => {}
+                // Any other frame — notably the Pong answering our keepalive Ping — proves the
+                // peer is alive and refreshes the read deadline. The firehose is server→client,
+                // so the frame is otherwise ignored.
+                Some(Ok(_)) => last_seen = Instant::now(),
             },
         }
     }
@@ -229,7 +182,20 @@ async fn send_event(sender: &mut SplitSink<WebSocket, Message>, event: &Firehose
         // `#account` frames are fixed-shape (no CIDs or CAR blocks), so encoding cannot fail.
         FirehoseEvent::Account(account) => encode_account_frame(account),
     };
-    sender.send(Message::Binary(frame)).await.is_ok()
+    send_message(sender, Message::Binary(frame)).await
+}
+
+/// Send one WebSocket message, bounding the write on [`READ_TIMEOUT`]. A peer that has stopped
+/// reading (a full TCP receive window / half-open socket) leaves `sender.send(...)` pending
+/// indefinitely; awaited bare inside the `select!`, that single write would park the whole
+/// connection and starve the heartbeat tick that enforces the read deadline. The timeout caps
+/// any such stall so liveness is preserved during both replay and live streaming. Returns
+/// `false` on send failure or timeout (the caller should stop).
+async fn send_message(sender: &mut SplitSink<WebSocket, Message>, message: Message) -> bool {
+    matches!(
+        tokio::time::timeout(READ_TIMEOUT, sender.send(message)).await,
+        Ok(Ok(()))
+    )
 }
 
 /// DAG-CBOR header for a message frame: `{op, t}`.

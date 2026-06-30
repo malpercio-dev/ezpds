@@ -1,0 +1,95 @@
+name: CI
+
+# The Linux half of CI — the PDS test gate (fmt, lock-check, clippy, test, audit) via
+# `just ci-pds`. Replaces the retired tangled spindle workflows (pr/staging/release.yaml).
+#
+# Deploys are now **native Railway GitHub integrations** — Railway connects to this repo
+# and builds the Dockerfile itself, so there is no `railway up` and no Railway token here:
+#   - staging    env watches `main`        → auto-deploys on merge
+#   - production env watches `production`   → deploys when the branch is advanced to a v* tag
+#                                             (`just deploy-production <tag>`)
+# Both Railway services use "Wait for CI", so the green check from this workflow is the
+# deploy gate. The verify-release job below additionally blocks any production tip that
+# isn't tagged with a vX.Y.Z that matches the workspace version. See docs/deploy.md.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, production]
+  workflow_dispatch:
+
+# Read-only: this workflow never deploys or touches secrets. Railway pulls and builds the
+# Dockerfile out-of-band, so the only thing CI needs is to check out and test the code.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: PDS gate (fmt, clippy, test, audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Read-only gate — never pushes — so don't leave the token in .git/config.
+          persist-credentials: false
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+
+      # rust-toolchain.toml pins the exact channel (1.96.0) + rustfmt/clippy, so a bare
+      # `rustup toolchain install` provisions everything ci-pds needs. SQLite is bundled
+      # (LIBSQLITE3_SYS_USE_PKG_CONFIG stays unset, as in the Dockerfile) — no system libs.
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          # cache-bin: false — with the default (true), rust-cache caches ~/.cargo/bin together
+          # with .crates2.json and can restore the "cargo-audit is installed" metadata WITHOUT the
+          # binary. `cargo binstall` then sees it as present and skips, so `cargo audit` is missing
+          # when ci-pds runs it. Keep caching the registry/git/target (the real speedup), not bin.
+          cache-bin: false
+
+      - name: Install cargo-audit
+        uses: cargo-bins/cargo-binstall@main
+        # `&& cargo audit --version` verifies the binary is actually on PATH, so a future install
+        # regression fails here with a clear message instead of deep inside `just ci-pds`.
+      - run: cargo binstall -y --locked cargo-audit && cargo audit --version
+
+      - name: CI gate (fmt, lock-check, clippy, test, audit)
+        run: just ci-pds
+
+  verify-release:
+    name: Verify production tag matches workspace version
+    # Production-only backstop. Railway watches the `production` branch; advancing it to a
+    # v* tag is the production deploy, so refuse to let a production tip ship unless a
+    # vX.Y.Z tag points at it AND equals the version the binary reports
+    # (env!("CARGO_PKG_VERSION")). Catches a hand-moved production branch or a stray tag.
+    if: github.ref == 'refs/heads/production'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history + tags so `git tag --points-at HEAD` can see the release tag.
+          fetch-depth: 0
+          # Read-only job — never pushes — so don't leave the token in .git/config.
+          persist-credentials: false
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+
+      # cargo (for `cargo metadata`) comes from the pinned toolchain; jq is preinstalled
+      # on ubuntu-latest. No build cache needed — this only reads metadata.
+      - name: Rust toolchain
+        run: rustup toolchain install --no-self-update
+
+      - name: Verify release tag matches workspace version
+        run: just verify-release-tag

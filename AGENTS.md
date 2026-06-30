@@ -1,6 +1,6 @@
 # ezpds
 
-Last verified: 2026-06-26
+Last verified: 2026-06-30
 
 ## Tech Stack
 - Language: Rust (pinned to an exact stable version in rust-toolchain.toml, currently 1.96.0)
@@ -20,16 +20,15 @@ Last verified: 2026-06-26
 - `just ci` - Full local gate (fmt-check, lock-check, clippy, test, audit) — the same checks CI runs
 
 ## CI/CD
-CI is split by platform: the **PDS** builds and deploys on **tangled spindles** (`.tangled/workflows/`, Linux); the **iOS app** builds and ships on **GitHub Actions** (a public mirror, macOS), because `cargo tauri ios build` needs macOS + Xcode that Linux spindles lack.
+CI runs on **GitHub Actions**, split into a Linux **PDS** lane and a macOS **iOS** lane (the iOS app needs macOS + Xcode that Linux runners lack). Deploys are **not** run by CI — they use **Railway's native GitHub integration**: Railway is connected to the repo and builds/deploys the `Dockerfile` itself, so there is **no `railway up` and no Railway token in CI**.
 
-**PDS (tangled spindles).** Three workflows, each running `just ci-pds` first (the Linux gate — like `just ci` but `--exclude identity-wallet`, since the iOS app needs the Apple/GTK toolchain absent in CI):
-- `pr.yaml` — test gate on PRs to `main` (no deploy, no Railway token)
-- `staging.yaml` — push to `main` → deploy to the Railway **staging** environment
-- `release.yaml` — push a `v*` tag → promote to **production**
+**PDS (`.github/workflows/ci.yml`).** A `just ci-pds` test gate (the Linux gate — like `just ci` but `--exclude identity-wallet --exclude admin-companion`, since the iOS apps need the Apple/GTK toolchain absent in CI) runs on PRs to `main`, on push to `main`, and on push to `production`. Both Railway environments use "Wait for CI", so the green check is the deploy gate:
+- **staging** — Railway watches `main`; merging a PR deploys staging.
+- **production** — Railway watches the `production` branch; promoting a release means advancing `production` to a `vX.Y.Z` tag (`just deploy-production <tag>`), never a `main` merge. A `verify-release` job on the `production` branch refuses any tip whose tag doesn't match the workspace version.
 
-Deploys use the Railway CLI (nixpkgs dep) with environment-scoped tokens held as tangled repo secrets; production is reached only via a `v*` tag, never by merging to `main`. Litestream backs up the production SQLite DB. See [docs/deploy.md](docs/deploy.md).
+Release flow: `just set-version X.Y.Z` (PR) → merge → `just release` (cuts/pushes the `vX.Y.Z` tag) → `just deploy-production vX.Y.Z` (advances `production`). Litestream backs up the production SQLite DB. See [docs/deploy.md](docs/deploy.md).
 
-**iOS (GitHub Actions).** `.github/workflows/ios-testflight.yml` builds the `identity-wallet` Tauri app on a free public-repo `macos-26` runner and uploads to TestFlight on every push to `main` (App Store Connect API-key signing; never runs on `pull_request`, keeping secrets off fork PRs). Needs a public GitHub mirror (`origin` dual-push). The build/upload core is shared `just` recipes (`ios-ipa`, `ios-upload`, `ios-release`) usable locally. See [docs/ios-cicd.md](docs/ios-cicd.md).
+**iOS (`.github/workflows/ios-testflight.yml`).** Builds the `identity-wallet` Tauri app on a free public-repo `macos-26` runner and uploads to TestFlight on every push to `main` (App Store Connect API-key signing; never runs on `pull_request`, keeping secrets off fork PRs). The build/upload core is shared `just` recipes (`ios-ipa`, `ios-upload`, `ios-release`) usable locally. See [docs/ios-cicd.md](docs/ios-cicd.md).
 
 ## Dev Environment
 - Managed entirely by Nix flake + devenv; do not install tools globally
