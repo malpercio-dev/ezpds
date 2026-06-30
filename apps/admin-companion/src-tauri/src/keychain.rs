@@ -106,18 +106,30 @@ pub fn is_not_found(err: &KeychainError) -> bool {
 const DEVICE_ID_ACCOUNT: &str = "admin-device-id";
 /// Keychain account holding the paired relay's base URL (e.g. `https://relay.example`).
 const RELAY_URL_ACCOUNT: &str = "admin-relay-url";
+/// Keychain account holding the operator-chosen device label (shown on the Settings
+/// screen and sent to the relay at registration). Persisted alongside the pairing so the
+/// label the relay knows this device by is the label the operator sees locally.
+const LABEL_ACCOUNT: &str = "admin-device-label";
 
-/// The persisted result of a successful pairing: which relay this device is paired to
-/// and the id the relay knows it by. Serializes camelCase for the `pairing_state` IPC.
+/// The persisted result of a successful pairing: which relay this device is paired to,
+/// the id the relay knows it by, and the operator-chosen label. Serializes camelCase for
+/// the `pairing_state` IPC.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Pairing {
     pub device_id: String,
     pub relay_url: String,
+    pub label: String,
 }
 
 /// Persist the pairing produced by a successful device registration.
-pub fn store_pairing(device_id: &str, relay_url: &str) -> Result<(), KeychainError> {
+///
+/// The relay URL is written **last**: `get_pairing` treats `device_id + relay_url` as
+/// "paired", so making relay_url the final commit means a mid-store failure leaves the
+/// pairing reading as "not paired" (fail-closed) rather than a half-written, readable
+/// pairing that contradicts the `Err` returned here.
+pub fn store_pairing(device_id: &str, relay_url: &str, label: &str) -> Result<(), KeychainError> {
+    store_item(LABEL_ACCOUNT, label.as_bytes())?;
     store_item(DEVICE_ID_ACCOUNT, device_id.as_bytes())?;
     store_item(RELAY_URL_ACCOUNT, relay_url.as_bytes())?;
     Ok(())
@@ -127,7 +139,9 @@ pub fn store_pairing(device_id: &str, relay_url: &str) -> Result<(), KeychainErr
 ///
 /// A missing `device_id` *or* `relay_url` is treated as "not paired" (`None`); only a
 /// transient/permission error propagates. This mirrors `device_key`'s discipline of
-/// never letting a flaky Keychain read masquerade as a clean "absent" state.
+/// never letting a flaky Keychain read masquerade as a clean "absent" state. The label is
+/// best-effort: a device paired before labels were persisted reads as paired with an empty
+/// label (the UI substitutes a fallback), never as "not paired".
 pub fn get_pairing() -> Result<Option<Pairing>, KeychainError> {
     match (
         get_string(DEVICE_ID_ACCOUNT)?,
@@ -136,6 +150,7 @@ pub fn get_pairing() -> Result<Option<Pairing>, KeychainError> {
         (Some(device_id), Some(relay_url)) => Ok(Some(Pairing {
             device_id,
             relay_url,
+            label: get_string(LABEL_ACCOUNT)?.unwrap_or_default(),
         })),
         _ => Ok(None),
     }
@@ -144,8 +159,9 @@ pub fn get_pairing() -> Result<Option<Pairing>, KeychainError> {
 /// Forget the current pairing (the companion app's "unpair"). Idempotent: clearing an
 /// already-absent pairing succeeds. Does **not** delete the device key — a re-pair
 /// reuses the same key so the relay can recognise a returning device by its public key.
+/// The biometric preference also survives (it is a device setting, not pairing state).
 pub fn clear_pairing() -> Result<(), KeychainError> {
-    for account in [DEVICE_ID_ACCOUNT, RELAY_URL_ACCOUNT] {
+    for account in [DEVICE_ID_ACCOUNT, RELAY_URL_ACCOUNT, LABEL_ACCOUNT] {
         match delete_item(account) {
             Ok(()) => {}
             Err(e) if is_not_found(&e) => {}
@@ -153,6 +169,29 @@ pub fn clear_pairing() -> Result<(), KeychainError> {
         }
     }
     Ok(())
+}
+
+// ── Biometric preference ──────────────────────────────────────────────────────
+//
+// Every signing action is gated behind a biometric (user-presence) check. The operator
+// can turn that gate off in Settings — stored here, not as pairing state, so it persists
+// across unpair/re-pair (it describes the device, not the relay link). Default is **on**:
+// an absent preference reads as enabled, so a fresh install is gated by default.
+
+/// Keychain account holding the biometric-gate preference (`"1"` on, `"0"` off).
+const BIOMETRIC_PREF_ACCOUNT: &str = "admin-biometric-enabled";
+
+/// Whether the biometric gate is enabled. Absent (fresh install) ⇒ `true`: signing is
+/// gated by default, and the operator opts out rather than in.
+pub fn get_biometric_enabled() -> Result<bool, KeychainError> {
+    Ok(get_string(BIOMETRIC_PREF_ACCOUNT)?
+        .map(|v| v != "0")
+        .unwrap_or(true))
+}
+
+/// Persist the biometric-gate preference.
+pub fn set_biometric_enabled(enabled: bool) -> Result<(), KeychainError> {
+    store_item(BIOMETRIC_PREF_ACCOUNT, if enabled { b"1" } else { b"0" })
 }
 
 /// Read a single Keychain item as a UTF-8 string, mapping a genuine not-found to
@@ -184,10 +223,11 @@ mod tests {
     #[test]
     fn store_and_get_pairing_round_trips() {
         clear_for_test();
-        store_pairing("device-123", "https://relay.example").expect("store");
+        store_pairing("device-123", "https://relay.example", "Operator iPhone").expect("store");
         let pairing = get_pairing().expect("read").expect("paired");
         assert_eq!(pairing.device_id, "device-123");
         assert_eq!(pairing.relay_url, "https://relay.example");
+        assert_eq!(pairing.label, "Operator iPhone");
     }
 
     #[test]
@@ -206,13 +246,48 @@ mod tests {
     }
 
     #[test]
+    fn get_pairing_tolerates_missing_label() {
+        // A device paired before labels were persisted has id + url but no label. It must
+        // still read as paired (label empty), never as "not paired".
+        clear_for_test();
+        store_item(DEVICE_ID_ACCOUNT, b"device-123").expect("store id");
+        store_item(RELAY_URL_ACCOUNT, b"https://relay.example").expect("store url");
+        let pairing = get_pairing().expect("read").expect("paired");
+        assert_eq!(pairing.label, "");
+    }
+
+    #[test]
     fn clear_pairing_forgets_and_is_idempotent() {
         clear_for_test();
-        store_pairing("device-123", "https://relay.example").expect("store");
+        store_pairing("device-123", "https://relay.example", "Operator iPhone").expect("store");
         clear_pairing().expect("first clear");
         assert_eq!(get_pairing().expect("read"), None);
         // Clearing an already-absent pairing is a no-op success (unpair is idempotent).
         clear_pairing().expect("second clear is a no-op");
+    }
+
+    #[test]
+    fn biometric_pref_defaults_on_and_round_trips() {
+        clear_for_test();
+        // Fresh install: absent preference reads as enabled (signing gated by default).
+        assert!(get_biometric_enabled().expect("read default"));
+
+        set_biometric_enabled(false).expect("disable");
+        assert!(!get_biometric_enabled().expect("read disabled"));
+
+        set_biometric_enabled(true).expect("enable");
+        assert!(get_biometric_enabled().expect("read enabled"));
+    }
+
+    #[test]
+    fn biometric_pref_survives_unpair() {
+        // The biometric preference is a device setting, not pairing state — unpair must
+        // not reset it.
+        clear_for_test();
+        store_pairing("device-123", "https://relay.example", "Operator iPhone").expect("store");
+        set_biometric_enabled(false).expect("disable");
+        clear_pairing().expect("unpair");
+        assert!(!get_biometric_enabled().expect("pref persists across unpair"));
     }
 }
 

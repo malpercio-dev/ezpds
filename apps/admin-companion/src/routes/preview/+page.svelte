@@ -8,15 +8,27 @@
   import CodeOutput from '$lib/components/ui/CodeOutput.svelte';
   import DeviceRow from '$lib/components/ui/DeviceRow.svelte';
   import TextField from '$lib/components/ui/TextField.svelte';
+  import Toggle from '$lib/components/ui/Toggle.svelte';
+  import ErrorState from '$lib/components/ui/ErrorState.svelte';
+  import { classifyRelayError } from '$lib/errors';
 
   let relayUrl = $state('https://relay.ezpds.com');
   let label = $state('');
   let loadingDemo = $state(false);
+  let biometricOn = $state(true);
 
   function demoLoad() {
     loadingDemo = true;
     setTimeout(() => (loadingDemo = false), 1400);
   }
+
+  // The error matrix, built through the real classifier so the gallery shows exactly
+  // what the screens render.
+  const notPairedView = classifyRelayError({ code: 'NOT_PAIRED' });
+  const unreachableView = classifyRelayError({ code: 'UNREACHABLE', message: 'connection refused' });
+  const revokedView = classifyRelayError({ code: 'RELAY_REJECTED', status: 403, message: 'forbidden' });
+  const clockSkewView = classifyRelayError({ code: 'RELAY_REJECTED', status: 401, message: 'unauthorized' });
+  const noop = () => {};
 </script>
 
 <ScreenShell prompt="preview" title="Components">
@@ -48,12 +60,35 @@
   <section>
     <h2>Code output</h2>
     <div class="stack">
-      <CodeOutput label="Account claim code" value="PDS-7Q4M-2XK9" />
+      <CodeOutput label="Account claim code" value="PDS-7Q4M-2XK9" onshare={noop} />
       <CodeOutput
         label="This device's admin key"
         value="did:key:zDnaerByL1n8mP2qVxK4hyTpR9wQ7cF6sJvU3bN5aH2gWmEx"
         prompt={false}
       />
+    </div>
+  </section>
+
+  <section>
+    <h2>Toggle</h2>
+    <div class="panel-pad">
+      <Toggle
+        bind:checked={biometricOn}
+        label="Require Face ID to sign"
+        description="Confirm with Face ID, Touch ID, or your passcode before generating a claim code or unpairing."
+      />
+    </div>
+  </section>
+
+  <section>
+    <h2>Error states</h2>
+    <div class="stack">
+      <div class="panel-pad"><ErrorState view={notPairedView} onpair={noop} /></div>
+      <div class="panel-pad">
+        <ErrorState view={unreachableView} relayUrl="https://relay.ezpds.com" onretry={noop} />
+      </div>
+      <div class="panel-pad"><ErrorState view={revokedView} onpair={noop} /></div>
+      <div class="panel-pad"><ErrorState view={clockSkewView} onretry={noop} /></div>
     </div>
   </section>
 
@@ -129,6 +164,12 @@
     border: var(--border-hairline) solid var(--color-line);
     border-radius: var(--radius-lg);
     padding: 0 var(--space-md);
+  }
+  .panel-pad {
+    background: var(--color-surface);
+    border: var(--border-hairline) solid var(--color-line);
+    border-radius: var(--radius-lg);
+    padding: var(--space-md);
   }
   .divider {
     height: var(--border-hairline);

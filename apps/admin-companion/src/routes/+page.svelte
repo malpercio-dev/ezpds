@@ -1,53 +1,33 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
-  import {
-    getOrCreateDeviceKey,
-    pairingState,
-    generateClaimCode,
-    unpair,
-    type DevicePublicKey,
-    type DeviceKeyError,
-    type Pairing,
-    type RelayClientError,
-  } from '$lib/ipc';
-  import { describeRelayError } from '$lib/errors';
+  import { pairingState, generateClaimCode, type Pairing } from '$lib/ipc';
+  import { classifyRelayError, type ErrorView } from '$lib/errors';
+  import { requireUserPresence, presenceAllows } from '$lib/biometric';
+  import { shareText } from '$lib/share';
   import ScreenShell from '$lib/components/ui/ScreenShell.svelte';
   import StatusChip from '$lib/components/ui/StatusChip.svelte';
   import CodeOutput from '$lib/components/ui/CodeOutput.svelte';
   import Button from '$lib/components/ui/Button.svelte';
+  import ErrorState from '$lib/components/ui/ErrorState.svelte';
 
-  // Phase 7: the home screen branches on whether this device has paired. Unpaired →
-  // the operator pairs it; paired → they can mint a claim code (the demo action) over
-  // a signed request. The polished claim-code / Settings screens land in Phase 8; this
-  // is the minimal wiring that proves pairing + signing end-to-end.
-  type KeyState =
-    | { kind: 'loading' }
-    | { kind: 'ready'; key: DevicePublicKey }
-    | { kind: 'error'; code: string };
+  // Phase 8 Home: the demo-lifesaver flow, focused. A paired operator generates an account
+  // claim code over a signed request, gated by biometric user-presence, and shares it via
+  // the iOS Share Pane or copies it. An unpaired app never calls the endpoint — it routes
+  // to Pair. Device detail and unpair live in Settings.
 
-  let keyState = $state<KeyState>({ kind: 'loading' });
-  // 'error' is distinct from null (unpaired): a failed pairing read leaves the real
-  // state unknown, so we must not expose the pair CTA until it succeeds.
+  // 'error' is distinct from null (unpaired): a failed pairing read leaves the real state
+  // unknown, so we must not expose the Generate action against an unknown pairing.
   let pairing = $state<Pairing | null | 'loading' | 'error'>('loading');
 
   let claiming = $state(false);
   let claimCode = $state<string | undefined>(undefined);
-  let claimError = $state<string | undefined>(undefined);
+  let claimErrorView = $state<ErrorView | undefined>(undefined);
+  // A cancelled biometric prompt is not a failure — a quiet info hint, not an alarm.
+  let gateHint = $state<string | undefined>(undefined);
+  let shareHint = $state<string | undefined>(undefined);
 
-  let unpairing = $state(false);
-  let unpairError = $state<string | undefined>(undefined);
-
-  onMount(async () => {
-    const [key, pair] = await Promise.allSettled([getOrCreateDeviceKey(), pairingState()]);
-    keyState =
-      key.status === 'fulfilled'
-        ? { kind: 'ready', key: key.value }
-        : { kind: 'error', code: (key.reason as DeviceKeyError)?.code ?? 'UNKNOWN' };
-    // A failed pairing read is an *unknown* state, not "unpaired" — surfacing it as
-    // unpaired would wrongly invite re-pairing a device that is in fact paired.
-    pairing = pair.status === 'fulfilled' ? pair.value : 'error';
-  });
+  onMount(reloadPairing);
 
   async function reloadPairing() {
     pairing = 'loading';
@@ -59,128 +39,106 @@
   }
 
   async function mintClaimCode() {
+    // Claim the busy flag synchronously, before the biometric prompt's await, so rapid
+    // taps can't open multiple gates and fire concurrent mints.
+    if (claiming) return;
     claiming = true;
-    claimError = undefined;
+    gateHint = undefined;
+    shareHint = undefined;
     try {
+      // Confirm user presence before signing. A denial blocks; a disabled gate or an
+      // off-device build proceeds (see requireUserPresence).
+      const presence = await requireUserPresence('Generate a claim code');
+      if (!presenceAllows(presence)) {
+        gateHint = 'Confirm with Face ID to generate a claim code.';
+        return;
+      }
+      claimErrorView = undefined;
+      // Drop the prior code so a failed mint never leaves a stale code beside the error.
+      claimCode = undefined;
       claimCode = await generateClaimCode();
     } catch (e) {
-      claimError = describeRelayError(e as RelayClientError);
+      claimErrorView = classifyRelayError(e);
     } finally {
       claiming = false;
     }
   }
 
-  async function doUnpair() {
-    unpairing = true;
-    unpairError = undefined;
-    try {
-      await unpair();
-      pairing = null;
-      claimCode = undefined;
-      claimError = undefined;
-    } catch (e) {
-      unpairError = describeRelayError(e as RelayClientError);
-    } finally {
-      unpairing = false;
+  async function shareCode() {
+    if (!claimCode) return;
+    shareHint = undefined;
+    const opened = await shareText(claimCode);
+    if (!opened) {
+      shareHint = "Sharing isn't available here — copy the code instead.";
     }
   }
+
+  const isPaired = $derived(
+    pairing !== null && pairing !== 'loading' && pairing !== 'error',
+  );
 </script>
 
-<ScreenShell prompt="admin console" title="Operator">
-  <!-- Pairing status: the operator's primary context. -->
-  <section class="panel" aria-labelledby="pairing-label">
-    <div class="panel-head">
-      <span id="pairing-label" class="label">Relay pairing</span>
-      {#if pairing === 'loading'}
-        <StatusChip status="info" label="checking" />
-      {:else if pairing === 'error'}
-        <StatusChip status="error" label="check failed" />
-      {:else if pairing}
-        <StatusChip status="active" label="paired" />
-      {:else}
-        <StatusChip status="pending" label="not paired" />
-      {/if}
-    </div>
-
-    {#if pairing === 'loading'}
-      <p class="resolving">checking pairing…</p>
-    {:else if pairing === 'error'}
+<ScreenShell prompt="claim code" title="Generate a claim code">
+  {#if pairing === 'loading'}
+    <p class="resolving">checking pairing…</p>
+  {:else if pairing === 'error'}
+    <section class="panel" aria-label="Pairing check failed">
+      <StatusChip status="error" label="check failed" />
       <p class="note" role="alert">
         Couldn't read this device's pairing state. This is not the same as being unpaired —
         retry before pairing again.
       </p>
-      <div class="row">
-        <Button variant="secondary" onclick={reloadPairing}>Retry</Button>
-      </div>
-    {:else if pairing}
-      <CodeOutput value={pairing.relayUrl} label="Paired relay" prompt={false} copyable={false} />
-      <CodeOutput value={pairing.deviceId} label="Device id" prompt={false} />
-      {#if unpairError}
-        <p class="note" role="alert">{unpairError}</p>
-      {/if}
-      <div class="row">
-        <Button variant="destructive" loading={unpairing} onclick={doUnpair}>
-          Unpair this device
-        </Button>
-      </div>
-    {:else}
+      <Button variant="secondary" onclick={reloadPairing}>Retry</Button>
+    </section>
+  {:else if pairing === null}
+    <!-- Unpaired — route to Pair, never call the endpoint. -->
+    <section class="panel" aria-label="Not paired">
+      <StatusChip status="pending" label="not paired" />
       <p class="note">
-        This device is not yet paired with a relay. Pair it to mint account claim codes
-        from your phone.
-      </p>
-    {/if}
-  </section>
-
-  <!-- The demo action (paired only): a signed claim-code request. -->
-  {#if pairing && pairing !== 'loading' && pairing !== 'error'}
-    <section class="panel" aria-labelledby="claim-label">
-      <div class="panel-head">
-        <span id="claim-label" class="label">Account claim code</span>
-        {#if claimError}
-          <StatusChip status="error" label="failed" />
-        {/if}
-      </div>
-      {#if claimCode}
-        <CodeOutput value={claimCode} label="Latest claim code" />
-      {/if}
-      {#if claimError}
-        <p class="note" role="alert">{claimError}</p>
-      {/if}
-      <p class="note">
-        Generating a code sends a signed request the relay verifies against this device's
-        admin key — no shared secret leaves the phone.
+        This device isn't paired with a relay yet. Pair it to mint account claim codes from
+        your phone.
       </p>
     </section>
+  {:else}
+    <p class="lede">
+      Mint a single-use account claim code, signed by this device. Share it with the person
+      onboarding, or copy it.
+    </p>
+
+    {#if claimCode}
+      <CodeOutput value={claimCode} label="Account claim code" onshare={shareCode} />
+      {#if shareHint}
+        <p class="hint" role="status">
+          <StatusChip status="info" label="copy" />
+          <span>{shareHint}</span>
+        </p>
+      {/if}
+    {/if}
+
+    {#if claimErrorView}
+      <ErrorState
+        view={claimErrorView}
+        relayUrl={pairing.relayUrl}
+        retrying={claiming}
+        onretry={mintClaimCode}
+        onpair={() => goto('/pair')}
+      />
+    {/if}
+
+    {#if gateHint}
+      <p class="hint" role="status">
+        <StatusChip status="info" label="confirm" />
+        <span>{gateHint}</span>
+      </p>
+    {/if}
   {/if}
 
-  <!-- Device admin key (Phase 6 panel, retained). -->
-  <section class="panel" aria-labelledby="device-key-label">
-    <div class="panel-head">
-      <span id="device-key-label" class="label">This device's admin key</span>
-      {#if keyState.kind === 'ready'}
-        <StatusChip status="ready" label="ready" />
-      {:else if keyState.kind === 'loading'}
-        <StatusChip status="info" label="generating" />
-      {:else}
-        <StatusChip status="error" label="error" />
-      {/if}
-    </div>
-
-    {#if keyState.kind === 'ready'}
-      <CodeOutput value={keyState.key.keyId} prompt={false} />
-    {:else if keyState.kind === 'loading'}
-      <p class="resolving">resolving did:key…</p>
-    {:else}
-      <CodeOutput value={keyState.code} prompt={false} copyable={false} />
-      <p class="note">Could not access the device key. Check the device and retry.</p>
-    {/if}
-  </section>
-
   {#snippet actions()}
-    {#if pairing && pairing !== 'loading' && pairing !== 'error'}
+    {#if isPaired}
       <Button variant="primary" loading={claiming} onclick={mintClaimCode}>
-        Generate claim code
+        {claimCode ? 'Generate another code' : 'Generate claim code'}
       </Button>
+      <Button variant="secondary" onclick={() => goto('/settings')}>Settings</Button>
     {:else if pairing === null}
       <Button variant="primary" onclick={() => goto('/pair')}>Pair this device</Button>
     {/if}
@@ -198,17 +156,11 @@
     flex-direction: column;
     gap: var(--space-sm);
   }
-  .panel-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-sm);
-  }
-  .label {
-    font-family: var(--font-sans);
-    font-size: var(--text-label);
-    font-weight: var(--weight-medium);
-    color: var(--color-muted);
+  .lede {
+    margin: 0;
+    font-size: var(--text-body);
+    line-height: var(--leading-body);
+    color: var(--color-ink-soft);
   }
   .note {
     margin: 0;
@@ -222,9 +174,13 @@
     font-size: var(--text-data);
     color: var(--color-ink-soft);
   }
-  .row {
+  .hint {
     display: flex;
     flex-direction: column;
-    gap: var(--space-sm);
+    gap: var(--space-xs);
+    margin: 0;
+    font-size: var(--text-label);
+    line-height: var(--leading-body);
+    color: var(--color-ink-soft);
   }
 </style>

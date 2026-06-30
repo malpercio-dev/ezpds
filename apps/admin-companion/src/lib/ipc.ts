@@ -47,6 +47,9 @@ export interface Pairing {
   deviceId: string;
   /** Base URL of the paired relay. */
   relayUrl: string;
+  /** Operator-chosen label for this device (empty for pairings made before labels were
+   * persisted; the UI substitutes a fallback). */
+  label: string;
 }
 
 /**
@@ -89,9 +92,32 @@ export function generateClaimCode(): Promise<string> {
   return invoke<string>('generate_claim_code');
 }
 
-/** Forget the current pairing locally (unpair). */
+/**
+ * Revoke this device on the relay (a signed self-revoke), then forget the pairing
+ * locally. Throws a {@link RelayClientError} if the relay can't be reached or rejects the
+ * request — in which case the pairing is left intact so the caller can retry or fall back
+ * to {@link unpair}.
+ */
+export function revokeSelf(): Promise<void> {
+  return invoke('revoke_self');
+}
+
+/**
+ * Forget the current pairing locally **without** contacting the relay — the fallback when
+ * {@link revokeSelf} can't reach the relay. The credential stays valid server-side.
+ */
 export function unpair(): Promise<void> {
   return invoke('unpair');
+}
+
+/** Whether the biometric (user-presence) gate on signing actions is enabled (default on). */
+export function biometricEnabled(): Promise<boolean> {
+  return invoke<boolean>('biometric_enabled');
+}
+
+/** Persist the biometric-gate preference (the Settings toggle). */
+export function setBiometricEnabled(enabled: boolean): Promise<void> {
+  return invoke('set_biometric_enabled', { enabled });
 }
 
 /**
