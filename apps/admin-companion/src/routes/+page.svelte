@@ -39,21 +39,23 @@
   }
 
   async function mintClaimCode() {
-    // Confirm user presence before signing. A denial blocks; a disabled gate or an
-    // off-device build proceeds (see requireUserPresence).
+    // Claim the busy flag synchronously, before the biometric prompt's await, so rapid
+    // taps can't open multiple gates and fire concurrent mints.
+    if (claiming) return;
+    claiming = true;
     gateHint = undefined;
     shareHint = undefined;
-    const presence = await requireUserPresence('Generate a claim code');
-    if (!presenceAllows(presence)) {
-      gateHint = 'Confirm with Face ID to generate a claim code.';
-      return;
-    }
-
-    claiming = true;
-    claimErrorView = undefined;
-    // Drop the prior code so a failed mint never leaves a stale code beside the error.
-    claimCode = undefined;
     try {
+      // Confirm user presence before signing. A denial blocks; a disabled gate or an
+      // off-device build proceeds (see requireUserPresence).
+      const presence = await requireUserPresence('Generate a claim code');
+      if (!presenceAllows(presence)) {
+        gateHint = 'Confirm with Face ID to generate a claim code.';
+        return;
+      }
+      claimErrorView = undefined;
+      // Drop the prior code so a failed mint never leaves a stale code beside the error.
+      claimCode = undefined;
       claimCode = await generateClaimCode();
     } catch (e) {
       claimErrorView = classifyRelayError(e);

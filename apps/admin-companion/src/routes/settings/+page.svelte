@@ -69,16 +69,19 @@
   }
 
   async function doRevoke() {
+    // Claim the busy flag before the biometric prompt's await, so rapid taps can't open
+    // multiple gates and fire concurrent signed revokes.
+    if (unpairing) return;
+    unpairing = true;
     gateHint = undefined;
     unpairErrorView = undefined;
-    // Revoking is a signing action — gate it on user presence.
-    const presence = await requireUserPresence('Unpair this device');
-    if (!presenceAllows(presence)) {
-      gateHint = 'Confirm with Face ID to unpair this device.';
-      return;
-    }
-    unpairing = true;
     try {
+      // Revoking is a signing action — gate it on user presence.
+      const presence = await requireUserPresence('Unpair this device');
+      if (!presenceAllows(presence)) {
+        gateHint = 'Confirm with Face ID to unpair this device.';
+        return;
+      }
       await revokeSelf();
       await goto('/');
     } catch (e) {
@@ -89,6 +92,7 @@
   }
 
   async function forgetLocally() {
+    if (forgetting) return;
     forgetting = true;
     try {
       await unpair();
@@ -100,11 +104,19 @@
 
   // The "Pair this device" recovery (shown when the relay reports this device already
   // revoked): forget the dead local pairing, then go straight into the pairing flow.
+  // Navigate only after the local forget succeeds — otherwise stale revoked pairing state
+  // would be carried into the pairing flow.
   async function forgetAndPair() {
+    if (forgetting) return;
+    forgetting = true;
+    gateHint = undefined;
     try {
       await unpair();
-    } finally {
       await goto('/pair');
+    } catch {
+      gateHint = "Couldn't forget this device locally. Try again.";
+    } finally {
+      forgetting = false;
     }
   }
 
