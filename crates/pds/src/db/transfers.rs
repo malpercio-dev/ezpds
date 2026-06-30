@@ -209,14 +209,162 @@ pub async fn transfer_device_token_exists(
     device_id: &str,
     token_hash: &str,
 ) -> Result<bool, sqlx::Error> {
-    let found: Option<(String,)> =
-        sqlx::query_as("SELECT id FROM transfer_devices WHERE id = ? AND device_token_hash = ?")
-            .bind(device_id)
-            .bind(token_hash)
-            .fetch_optional(db)
-            .await?;
+    let found: Option<(String,)> = sqlx::query_as(
+        "SELECT id FROM transfer_devices \
+             WHERE id = ? AND device_token_hash = ? AND revoked_at IS NULL",
+    )
+    .bind(device_id)
+    .bind(token_hash)
+    .fetch_optional(db)
+    .await?;
 
     Ok(found.is_some())
+}
+
+/// Transfer row selected for completion by id.
+#[derive(Debug, PartialEq, Eq)]
+pub struct TransferByIdRow {
+    pub id: String,
+    pub did: String,
+    pub status: String,
+    pub accepted_device_id: Option<String>,
+}
+
+/// Fetch a transfer row by id, including the accepted-device credential id.
+pub async fn transfer_by_id(
+    tx: &mut SqliteTransaction<'_>,
+    transfer_id: &str,
+) -> Result<Option<TransferByIdRow>, sqlx::Error> {
+    let row: Option<(String, String, String, Option<String>)> =
+        sqlx::query_as("SELECT id, did, status, accepted_device_id FROM transfers WHERE id = ?")
+            .bind(transfer_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+
+    Ok(
+        row.map(|(id, did, status, accepted_device_id)| TransferByIdRow {
+            id,
+            did,
+            status,
+            accepted_device_id,
+        }),
+    )
+}
+
+/// Check whether a promoted-account session token belongs to the transfer DID.
+pub async fn session_token_matches_did(
+    tx: &mut SqliteTransaction<'_>,
+    did: &str,
+    token_hash: &str,
+) -> Result<bool, sqlx::Error> {
+    let found: Option<(String,)> = sqlx::query_as(
+        "SELECT id FROM sessions WHERE did = ? AND token_hash = ? AND expires_at > datetime('now')",
+    )
+    .bind(did)
+    .bind(token_hash)
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    Ok(found.is_some())
+}
+
+/// Check whether the accepted target device token matches.
+pub async fn transfer_device_token_matches(
+    tx: &mut SqliteTransaction<'_>,
+    device_id: &str,
+    token_hash: &str,
+) -> Result<bool, sqlx::Error> {
+    let found: Option<(String,)> = sqlx::query_as(
+        "SELECT id FROM transfer_devices \
+             WHERE id = ? AND device_token_hash = ? AND revoked_at IS NULL",
+    )
+    .bind(device_id)
+    .bind(token_hash)
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    Ok(found.is_some())
+}
+
+/// Mark an accepted/completing transfer terminal.
+pub async fn mark_transfer_complete(
+    tx: &mut SqliteTransaction<'_>,
+    transfer_id: &str,
+) -> Result<u64, sqlx::Error> {
+    let updated = sqlx::query(
+        "UPDATE transfers SET status = 'complete', completed_at = datetime('now') \
+         WHERE id = ? AND status IN ('accepted', 'completing')",
+    )
+    .bind(transfer_id)
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(updated.rows_affected())
+}
+
+/// Revoke all refresh tokens for a DID before deleting its sessions.
+pub async fn delete_refresh_tokens_for_did(
+    tx: &mut SqliteTransaction<'_>,
+    did: &str,
+) -> Result<u64, sqlx::Error> {
+    let deleted = sqlx::query("DELETE FROM refresh_tokens WHERE did = ?")
+        .bind(did)
+        .execute(&mut **tx)
+        .await?;
+    Ok(deleted.rows_affected())
+}
+
+/// Revoke all promoted-account sessions for a DID.
+pub async fn delete_sessions_for_did(
+    tx: &mut SqliteTransaction<'_>,
+    did: &str,
+) -> Result<u64, sqlx::Error> {
+    let deleted = sqlx::query("DELETE FROM sessions WHERE did = ?")
+        .bind(did)
+        .execute(&mut **tx)
+        .await?;
+    Ok(deleted.rows_affected())
+}
+
+/// Revoke every prior transfer-device credential for a DID except the accepted target.
+pub async fn revoke_other_transfer_devices(
+    tx: &mut SqliteTransaction<'_>,
+    did: &str,
+    keep_device_id: &str,
+) -> Result<u64, sqlx::Error> {
+    let updated = sqlx::query(
+        "UPDATE transfer_devices SET revoked_at = datetime('now') \
+         WHERE did = ? AND id != ? AND revoked_at IS NULL",
+    )
+    .bind(did)
+    .bind(keep_device_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(updated.rows_affected())
+}
+
+/// Append a transfer audit event.
+pub async fn insert_transfer_audit_event(
+    tx: &mut SqliteTransaction<'_>,
+    id: &str,
+    transfer_id: &str,
+    did: &str,
+    event_type: &str,
+    actor_device_id: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO transfer_audit_events \
+         (id, transfer_id, did, event_type, actor_device_id, created_at) \
+         VALUES (?, ?, ?, ?, ?, datetime('now'))",
+    )
+    .bind(id)
+    .bind(transfer_id)
+    .bind(did)
+    .bind(event_type)
+    .bind(actor_device_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -1,0 +1,44 @@
+meta {
+  name: Transfer Complete
+  type: http
+  seq: 57
+}
+
+post {
+  url: {{baseUrl}}/v1/transfer/complete
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{transferCompleteToken}}
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "transferId": "{{transferId}}"
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  transferId: 00000000-0000-0000-0000-000000000000
+  transferCompleteToken: paste-source-session-or-target-device-token
+}
+
+docs {
+  Finalize an accepted planned device swap. The bearer token may be either the
+  source account session token (before completion) or the accepted target device
+  token returned by `POST /v1/transfer/accept`.
+
+  Request body: `{ transferId }`.
+
+  Returns `{ transferId, status: "complete" }`. Completion revokes the old
+  promoted account sessions and prior transfer-device credentials, preserves the
+  accepted target device credential for device PDS discovery, and records a
+  transfer audit event.
+}
