@@ -628,6 +628,22 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         did: raw.chat.did,
     };
 
+    // A zero sweep interval would panic `tokio::time::interval` at startup (it asserts a
+    // non-zero period). Both GC tasks (blob + firehose) feed their interval straight from these
+    // knobs, so reject zero here at config load rather than letting a bad value crash boot.
+    if raw.blobs.gc_interval_secs == 0 {
+        return Err(ConfigError::Invalid(
+            "blobs.gc_interval_secs must be > 0 (tokio::time::interval panics on a zero period)"
+                .to_string(),
+        ));
+    }
+    if raw.firehose.gc_interval_secs == 0 {
+        return Err(ConfigError::Invalid(
+            "firehose.gc_interval_secs must be > 0 (tokio::time::interval panics on a zero period)"
+                .to_string(),
+        ));
+    }
+
     Ok(Config {
         bind_address,
         port,
@@ -756,6 +772,36 @@ mod tests {
         assert_eq!(config.firehose.gc_interval_secs, 300);
         assert_eq!(config.firehose.log_retention_secs, 0);
         assert_eq!(config.firehose.log_retention_count, 5000);
+    }
+
+    #[test]
+    fn blobs_gc_interval_secs_zero_is_rejected() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [blobs]
+            gc_interval_secs = 0
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+    }
+
+    #[test]
+    fn firehose_gc_interval_secs_zero_is_rejected() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [firehose]
+            gc_interval_secs = 0
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
     }
 
     #[test]

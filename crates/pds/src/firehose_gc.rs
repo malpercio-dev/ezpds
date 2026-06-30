@@ -8,21 +8,29 @@
 //! replay survives restarts (see `firehose.rs`). Without a sweep the table is append-only and
 //! would eventually dominate the production SQLite DB and the Litestream backup.
 //!
-//! ## Policy
+//! ## Policy (union — the most aggressive enabled retention bounds growth)
 //!
 //! On each pass the sweep computes a **low-water mark** below which rows are prunable, from the
 //! enabled retention knobs (see [`FirehoseConfig`](common::FirehoseConfig)):
 //!
 //! * **Age** (`log_retention_secs`): rows whose `sequenced_at` is older than `now − retention`
-//!   are prunable. The watermark is `MAX(seq)` among the rows older than the cutoff, so a whole
-//!   contiguous age prefix is pruned at once.
+//!   are prunable. The age watermark is `first_retained_seq − 1`, where `first_retained_seq` is
+//!   `MIN(seq)` among rows *at or after* the cutoff (see [`firehose_seq::retained_boundary_seq`]);
+//!   if no row is retained by age, the whole log is prunable up to the frontier.
 //! * **Count** (`log_retention_count`): keep at most the newest `N` rows, i.e. the watermark is
 //!   `MAX(seq) − N`.
 //!
-//! A row is pruned only when it falls below **every** enabled cutoff, so enabling both knobs
-//! bounds growth by whichever is more restrictive (the tighter goal wins). Either knob at `0`
-//! disables that policy; both at `0` makes the sweep a no-op (the log stays append-only, exactly
+//! The combined watermark is the **`max`** of the enabled policies' contributions: a row is
+//! pruned when it falls below **any** enabled cutoff, so enabling both knobs bounds growth by
+//! whichever policy fires (age prunes old rows even when count would keep them; count prunes a
+//! huge young backlog even when age would keep it). A `0` knob disables that policy and
+//! contributes nothing; both at `0` makes the sweep a no-op (the log stays append-only, exactly
 //! the pre-retention behaviour).
+//!
+//! The age boundary is deliberately computed from the first *retained* seq rather than
+//! `MAX(seq)` among old rows, so a row with a skewed-old timestamp can never lift the watermark
+//! past fresh rows (an over-prune / data loss). The worst case under non-monotonic timestamps is
+//! that an oddly-timestamped row lingers — an under-prune the next pass corrects.
 //!
 //! ## Invariants preserved
 //!
@@ -109,21 +117,46 @@ pub async fn run_firehose_gc(state: &AppState) -> GcStats {
         };
     }
 
-    let mut watermark = u64::MAX;
+    // Each enabled policy contributes how far it wants to prune (0 = prune nothing). The
+    // combined watermark is the `max`: prune when ANY enabled policy fires, so the most
+    // aggressive enabled retention bounds growth (union, not intersection).
+    let mut watermark = 0u64;
 
-    // Age-based: the highest seq among rows older than the retention window.
+    // Age-based: prune every row older than the retention window. The contribution is the seq
+    // just below the first *retained* row (over-prune-safe), or `max_seq` if nothing is retained.
     if config.log_retention_secs > 0 {
-        let cutoff =
-            chrono::Utc::now() - chrono::Duration::seconds(config.log_retention_secs as i64);
+        // Checked conversion: `log_retention_secs` is `u64`, but `chrono::Duration::seconds` takes
+        // an `i64`. A value bigger than `i64::MAX` would wrap to a negative duration on `as i64`,
+        // producing a cutoff in the future and pruning the whole log; treat overflow as a config
+        // error and skip the pass rather than risk that.
+        let retention_secs = match i64::try_from(config.log_retention_secs) {
+            Ok(v) => v,
+            Err(_) => {
+                tracing::error!(
+                    value = config.log_retention_secs,
+                    "firehose GC: log_retention_secs overflows i64; skipping pass"
+                );
+                return GcStats {
+                    pruned: 0,
+                    skipped: true,
+                };
+            }
+        };
+        let cutoff = chrono::Utc::now() - chrono::Duration::seconds(retention_secs);
         let cutoff_rfc3339 = cutoff.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-        match firehose_seq::age_cutoff_seq(&state.db, &cutoff_rfc3339).await {
-            Ok(Some(seq)) => watermark = watermark.min(seq),
-            Ok(None) => {} // nothing is old enough yet
+        match firehose_seq::retained_boundary_seq(&state.db, &cutoff_rfc3339).await {
+            // The boundary is the first retained seq; everything strictly older is prunable.
+            Ok(Some(first_retained)) => {
+                watermark = watermark.max(first_retained.saturating_sub(1));
+            }
+            // Nothing is retained by age → the whole log is older than the window → prune to the
+            // frontier guard below.
+            Ok(None) => watermark = watermark.max(max_seq),
             Err(e) => {
                 tracing::error!(
                     error = %e,
                     cutoff = %cutoff_rfc3339,
-                    "firehose GC: failed to compute age watermark; skipping pass"
+                    "firehose GC: failed to compute age boundary; skipping pass"
                 );
                 return GcStats {
                     pruned: 0,
@@ -133,15 +166,16 @@ pub async fn run_firehose_gc(state: &AppState) -> GcStats {
         }
     }
 
-    // Count-based: keep at most the newest `log_retention_count` rows.
+    // Count-based: keep at most the newest `log_retention_count` rows. A count larger than the
+    // log saturates to 0 (prune nothing) — exactly the "keep more than we have" case.
     if config.log_retention_count > 0 {
         let count_watermark = max_seq.saturating_sub(config.log_retention_count);
-        watermark = watermark.min(count_watermark);
+        watermark = watermark.max(count_watermark);
     }
 
-    // Neither knob produced a watermark (e.g. age found nothing old enough and count disabled):
+    // Neither knob produced a pruning watermark (both disabled, or every contribution was 0):
     // nothing to prune this pass.
-    if watermark == u64::MAX {
+    if watermark == 0 {
         return GcStats {
             pruned: 0,
             skipped: true,
@@ -341,7 +375,8 @@ mod tests {
             .await
             .unwrap();
         let stats = run_firehose_gc(&state).await;
-        // age watermark = MAX(seq) among old rows = 5, clamped to min(5, 5-1=4) = 4 → prune <=4.
+        // No row is retained by age (everything is 2020) → age contributes `max_seq` (5), clamped
+        // to the frontier (5-1=4) → prune <=4. The frontier (seq 5) is kept; 1..=4 pruned.
         assert_eq!(stats.pruned, 4, "frontier (seq 5) is kept; 1..=4 pruned");
         let rows = crate::db::firehose_seq::events_in_range(&state.db, 0, 5, 100)
             .await
@@ -351,11 +386,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gc_age_and_count_combine_to_the_tighter_watermark() {
+    async fn gc_count_wins_when_age_finds_nothing_old_while_count_is_exceeded() {
+        // Union semantics: a young backlog that exceeds the count limit must be pruned by count,
+        // even though age retains every row (nothing is old enough to prune by age). With the
+        // old intersection rule count would have been suppressed by age and the log stayed huge.
+        let state = state_with(FirehoseConfig {
+            gc_interval_secs: 3600,
+            log_retention_secs: 1, // 1s — but nothing has aged past it yet
+            log_retention_count: 3,
+        })
+        .await;
+        emit_n(&state, 10).await; // seq 1..=10, all young
+
+        let stats = run_firehose_gc(&state).await;
+        // age: boundary = MIN(seq) = 1 → contribution 0; count = 10 - 3 = 7. max(0, 7) = 7 → prune
+        // <=7, keep the newest 3 rows {8, 9, 10}.
+        assert_eq!(stats.pruned, 7);
+        assert!(!stats.skipped);
+        let rows = crate::db::firehose_seq::events_in_range(&state.db, 0, 10, 100)
+            .await
+            .unwrap();
+        let seqs: Vec<i64> = rows.iter().map(|r| r.seq).collect();
+        assert_eq!(
+            seqs,
+            vec![8, 9, 10],
+            "count prunes the young backlog age would keep"
+        );
+    }
+
+    #[tokio::test]
+    async fn gc_age_wins_up_to_the_frontier_when_all_rows_are_old() {
+        // Union semantics: when every row is older than the age window, age prunes the whole log
+        // up to the frontier guard, regardless of a count knob that would have kept more rows.
         let state = state_with(FirehoseConfig {
             gc_interval_secs: 3600,
             log_retention_secs: 1,
-            log_retention_count: 8,
+            log_retention_count: 8, // would keep 8 rows on its own
         })
         .await;
         emit_n(&state, 10).await; // seq 1..=10
@@ -367,14 +433,18 @@ mod tests {
             .unwrap();
 
         let stats = run_firehose_gc(&state).await;
-        // age watermark = 10 (clamped to 9 by the frontier guard); count watermark = 10 - 8 = 2.
-        // The tighter (smaller) wins → watermark = 2 → prune <=2 (2 rows), keep 3..=10 (8 rows).
-        assert_eq!(stats.pruned, 2);
+        // age: no row retained by age → contribution `max_seq` (10); count = 10 - 8 = 2.
+        // max(10, 2) = 10, clamped by the frontier guard to 9 → prune <=9, keep only {frontier}.
+        assert_eq!(stats.pruned, 9);
         let rows = crate::db::firehose_seq::events_in_range(&state.db, 0, 10, 100)
             .await
             .unwrap();
         let seqs: Vec<i64> = rows.iter().map(|r| r.seq).collect();
-        assert_eq!(seqs, vec![3, 4, 5, 6, 7, 8, 9, 10]);
+        assert_eq!(
+            seqs,
+            vec![10],
+            "age prunes old rows even when count would keep them"
+        );
     }
 
     #[tokio::test]

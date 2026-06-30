@@ -312,10 +312,13 @@ impl Firehose {
     ///
     /// **Best-effort at the pruned prefix.** The retention sweep (`firehose_gc`) prunes a
     /// *contiguous* prefix `seq ≤ watermark`, so the first row above a cursor that falls inside
-    /// the pruned window is the oldest retained row, not `cursor + 1`. The density check is
-    /// therefore **relaxed for the first row only**: a cursor behind the pruned window degrades to
-    /// best-effort (the subscriber receives the retained suffix) rather than failing closed. The
-    /// strict consecutive-row check still catches a *mid-range* hole (a durability bug, not a
+    /// the pruned window is the oldest retained row, not `cursor + 1`. The first-row density
+    /// check is **relaxed only when the cursor sits below the oldest retained row** (no row at
+    /// or below the cursor — i.e. `exists_at_or_below(cursor)` is false): that is a genuine pruned
+    /// prefix, so replay degrades to best-effort (the subscriber receives the retained suffix)
+    /// rather than failing closed. When a row *does* exist at or below the cursor, replay is
+    /// dense from the cursor and any jump on the first row is a mid-range gap that fails closed.
+    /// The strict consecutive-row check still catches a *mid-range* hole (a durability bug, not a
     /// prune) on the second row onward, and the frontier-reach check still catches a missing tail.
     async fn read_replay(
         &self,
@@ -324,10 +327,12 @@ impl Firehose {
     ) -> Result<Vec<FirehoseEvent>, FirehoseError> {
         let mut events = Vec::new();
         let mut after = cursor;
-        // The first decoded row is allowed to start above `cursor + 1`: it may be the oldest
-        // retained row after a prefix prune, in which case best-effort replay begins there. Once
-        // the replay has a row to anchor on, every subsequent row must be exactly `prev + 1`.
-        let mut anchored = false;
+        // Best-effort replay at the pruned prefix: the first decoded row may start above
+        // `cursor + 1` *only* when the cursor sits below the oldest retained row — i.e. there is
+        // no row at or below the cursor, so the gap is a pruned prefix, not a mid-range hole. If
+        // a row already exists at/below the cursor, replay is dense from the cursor and any jump
+        // on the first row is a real gap that must fail closed.
+        let mut anchored = crate::db::firehose_seq::exists_at_or_below(&self.db, cursor).await?;
         while after < upper {
             let batch =
                 crate::db::firehose_seq::events_in_range(&self.db, after, upper, REPLAY_BATCH)
@@ -917,6 +922,29 @@ mod tests {
         assert_eq!(
             sub.replay.iter().map(|e| e.seq()).collect::<Vec<_>>(),
             vec![4, 5]
+        );
+    }
+
+    #[tokio::test]
+    async fn subscribe_from_fails_closed_on_a_gap_at_the_cursor_when_a_row_exists_at_the_cursor() {
+        // Regression: with rows {1, 3} (seq 2 missing) and cursor = 1, a row EXISTS at the cursor
+        // (seq 1), so the gap above it is a mid-range hole — NOT a pruned prefix. The first-row
+        // relaxation must not fire: replay must fail closed instead of silently returning [3].
+        let fh = test_firehose().await;
+        for _ in 0..3 {
+            fh.emit_commit(commit_input("did:plc:a")).await.unwrap(); // seq 1..=3
+        }
+        sqlx::query("DELETE FROM repo_seq WHERE seq = 2")
+            .execute(&fh.db)
+            .await
+            .unwrap(); // leaves {1, 3}
+
+        assert!(
+            matches!(
+                fh.subscribe_from(Some(1)).await,
+                Err(FirehoseError::Decode(_))
+            ),
+            "a gap at the cursor when a row exists at the cursor is mid-range, not a pruned prefix"
         );
     }
 

@@ -63,28 +63,46 @@ pub async fn insert_event(
     Ok(())
 }
 
-/// The highest sequence number whose `sequenced_at` is strictly older than the `cutoff`
-/// (an RFC 3339 timestamp in the same fixed-width millis+`Z` format `insert_event` writes).
+/// The **lowest** retained sequence number whose `sequenced_at` is at or after the `cutoff`
+/// (an RFC 3339 timestamp in the same fixed-width millis+`Z` format [`insert_event`] writes).
 ///
-/// This is the age-based low-water mark for the retention sweep: every row at or below it is
-/// older than the configured retention window and therefore prunable. Returns `None` when no row
-/// is that old (the cutoff is in the past of no event), meaning age-based pruning prunes nothing
-/// this pass. `sequenced_at` is stored as RFC 3339 text; because the writer always uses the same
-/// fixed-width millis+`Z` form, a lexicographic `<` comparison is chronological.
+/// This is the age boundary for the retention sweep: every row strictly older than the
+/// configured retention window (`sequenced_at < cutoff`) is prunable, so the age watermark is
+/// `boundary − 1`. Returns `None` when *no* row is retained by age this pass (i.e. every row is
+/// older than the window), in which case the sweep prunes the whole log up to the frontier guard.
+/// `sequenced_at` is stored as RFC 3339 text; because the writer always uses the same fixed-width
+/// millis+`Z` form, a lexicographic `>=` comparison is chronological.
 ///
-/// `COALESCE(MAX(seq), 0)` collapses the no-matching-row case (NULL) to `0`, which is
-/// unambiguous here because `seq` starts at `1` — a `0` result therefore means "nothing old
-/// enough" and is mapped to `None`, matching the [`max_seq`] idiom.
-pub async fn age_cutoff_seq(
+/// Framing the cutoff as "first *retained* seq" (rather than `MAX(seq)` among old rows) makes
+/// the sweep **over-prune-safe**: a row with a skewed-old timestamp can never lift the watermark
+/// past fresh rows, because the boundary is the smallest seq that is *not* old. The worst case
+/// under non-monotonic timestamps is that an oddly-timestamped row lingers (an under-prune the
+/// next pass corrects), never that a fresh row is deleted.
+pub async fn retained_boundary_seq(
     db: &SqlitePool,
     cutoff_rfc3339: &str,
 ) -> Result<Option<u64>, sqlx::Error> {
-    let seq: i64 =
-        sqlx::query_scalar("SELECT COALESCE(MAX(seq), 0) FROM repo_seq WHERE sequenced_at < ?")
+    let seq: Option<i64> =
+        sqlx::query_scalar("SELECT MIN(seq) FROM repo_seq WHERE sequenced_at >= ?")
             .bind(cutoff_rfc3339)
             .fetch_one(db)
             .await?;
-    Ok(if seq > 0 { Some(seq as u64) } else { None })
+    Ok(seq.map(|s| s as u64))
+}
+
+/// Whether any row exists with `seq <= given` — used by replay to decide whether a cursor sits
+/// inside the retained range (strict first-row density) or below a pruned prefix (best-effort).
+///
+/// Cheap on the `INTEGER PRIMARY KEY`: a one-row indexed lookup.
+pub async fn exists_at_or_below(db: &SqlitePool, seq: u64) -> Result<bool, sqlx::Error> {
+    let s = i64::try_from(seq).map_err(|_| {
+        sqlx::Error::Protocol("firehose exists_at_or_below exceeds i64 range".into())
+    })?;
+    let row: Option<(i64,)> = sqlx::query_as("SELECT seq FROM repo_seq WHERE seq <= ? LIMIT 1")
+        .bind(s)
+        .fetch_optional(db)
+        .await?;
+    Ok(row.is_some())
 }
 
 /// Delete every row at or below `low_water_mark`, returning how many were removed.
@@ -145,16 +163,13 @@ mod tests {
     }
 
     async fn insert(db: &SqlitePool, seq: u64, ty: &str) {
-        insert_event(
-            db,
-            seq,
-            "did:plc:a",
-            ty,
-            &[0xCA, 0xFE],
-            "2026-06-30T00:00:00.000Z",
-        )
-        .await
-        .unwrap();
+        insert_at(db, seq, ty, "2026-06-30T00:00:00.000Z").await;
+    }
+
+    async fn insert_at(db: &SqlitePool, seq: u64, ty: &str, sequenced_at: &str) {
+        insert_event(db, seq, "did:plc:a", ty, &[0xCA, 0xFE], sequenced_at)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -218,13 +233,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn age_cutoff_seq_is_none_when_nothing_old_enough() {
+    async fn retained_boundary_is_min_retained_seq_when_some_rows_are_old() {
         let db = pool().await;
-        insert(&db, 1, "commit").await; // sequenced_at = 2026-06-30T00:00:00.000Z
+        // Rows 1-3 are old (2020), rows 4-5 are young (2026) — a contiguous age prefix.
+        insert_at(&db, 1, "commit", "2020-01-01T00:00:00.000Z").await;
+        insert_at(&db, 2, "commit", "2020-01-01T00:00:00.000Z").await;
+        insert_at(&db, 3, "commit", "2020-01-01T00:00:00.000Z").await;
+        insert_at(&db, 4, "commit", "2026-06-30T00:00:00.000Z").await;
+        insert_at(&db, 5, "commit", "2026-06-30T00:00:00.000Z").await;
 
-        // Nothing is older than 2020 → no age-based watermark.
+        // Cutoff between the two epochs: rows with sequenced_at >= cutoff are the 2026 ones,
+        // so the retained boundary is the smallest of them (seq 4); the age watermark is 3.
         assert_eq!(
-            age_cutoff_seq(&db, "2020-01-01T00:00:00.000Z")
+            retained_boundary_seq(&db, "2026-06-29T00:00:00.000Z")
+                .await
+                .unwrap(),
+            Some(4)
+        );
+    }
+
+    #[tokio::test]
+    async fn retained_boundary_is_none_when_all_rows_are_old() {
+        let db = pool().await;
+        insert_at(&db, 1, "commit", "2020-01-01T00:00:00.000Z").await;
+        insert_at(&db, 2, "commit", "2020-01-01T00:00:00.000Z").await;
+
+        // A cutoff in 2026 retains nothing (every row is older) → the sweep prunes the whole log.
+        assert_eq!(
+            retained_boundary_seq(&db, "2026-06-30T00:00:00.000Z")
                 .await
                 .unwrap(),
             None
@@ -232,19 +268,79 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn age_cutoff_seq_returns_highest_old_seq() {
+    async fn retained_boundary_is_min_seq_when_nothing_is_old() {
         let db = pool().await;
         insert(&db, 1, "commit").await;
         insert(&db, 2, "commit").await;
-        insert(&db, 3, "commit").await; // sequenced_at at the fixed 2026-06-30 instant
+        insert(&db, 3, "commit").await; // all at 2026-06-30
 
-        // The cutoff sits just after the inserted instant, so all three rows are older and the
-        // watermark is the highest of them (a contiguous age prefix, not a scattered set).
+        // A cutoff in 2020 (far past) retains every row → boundary is the smallest seq, and the
+        // age watermark (boundary - 1) is 0, meaning age prunes nothing this pass.
         assert_eq!(
-            age_cutoff_seq(&db, "2026-06-30T00:00:01.000Z")
+            retained_boundary_seq(&db, "2020-01-01T00:00:00.000Z")
                 .await
                 .unwrap(),
-            Some(3)
+            Some(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn retained_boundary_is_over_prune_safe_for_non_monotonic_timestamps() {
+        let db = pool().await;
+        // A high-seq row (seq 50) carries an OLD timestamp, while lower-seq rows are young.
+        // The boundary must be the smallest *retained* seq (1), NOT skewed by the old high row:
+        // the age watermark is boundary-1 = 0, so age prunes nothing — the odd row lingers rather
+        // than lifting the watermark to delete the fresh young rows.
+        insert_at(&db, 1, "commit", "2026-06-30T00:00:00.000Z").await;
+        insert_at(&db, 2, "commit", "2026-06-30T00:00:00.000Z").await;
+        insert_at(&db, 50, "commit", "2020-01-01T00:00:00.000Z").await;
+        assert_eq!(
+            retained_boundary_seq(&db, "2026-06-29T00:00:00.000Z")
+                .await
+                .unwrap(),
+            Some(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn exists_at_or_below_detects_rows_at_or_below_the_cursor() {
+        let db = pool().await;
+        insert(&db, 1, "commit").await;
+        insert(&db, 3, "commit").await;
+        insert(&db, 5, "commit").await;
+
+        // Any row at or below the cursor means the cursor is inside the retained range (a lower
+        // row survives), so replay must be strict from the cursor.
+        assert!(exists_at_or_below(&db, 1).await.unwrap(), "seq 1 == cursor");
+        assert!(
+            exists_at_or_below(&db, 2).await.unwrap(),
+            "seq 1 <= cursor 2"
+        );
+        assert!(exists_at_or_below(&db, 3).await.unwrap());
+        assert!(exists_at_or_below(&db, 5).await.unwrap());
+        assert!(
+            exists_at_or_below(&db, 6).await.unwrap(),
+            "seq 5 <= cursor 6"
+        );
+        // A cursor below every seq means the cursor sits in a pruned prefix, not the retained
+        // range — the only "false" case here, since no row exists at seq <= 0.
+        assert!(!exists_at_or_below(&db, 0).await.unwrap(), "no row <= 0");
+    }
+
+    #[tokio::test]
+    async fn exists_at_or_below_is_false_when_cursor_is_below_a_pruned_prefix() {
+        let db = pool().await;
+        // Pruned prefix: only the suffix {3, 5} survives, so cursors 0, 1, and 2 are all below the
+        // oldest retained row (seq 3) and must read as "outside the retained range".
+        insert(&db, 3, "commit").await;
+        insert(&db, 5, "commit").await;
+        assert!(!exists_at_or_below(&db, 0).await.unwrap());
+        assert!(!exists_at_or_below(&db, 1).await.unwrap());
+        assert!(!exists_at_or_below(&db, 2).await.unwrap());
+        assert!(exists_at_or_below(&db, 3).await.unwrap());
+        assert!(
+            exists_at_or_below(&db, 4).await.unwrap(),
+            "seq 3 <= cursor 4"
         );
     }
 
