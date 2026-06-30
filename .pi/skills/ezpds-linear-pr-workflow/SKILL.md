@@ -39,13 +39,19 @@ When picking up any Linear issue for the ezpds project. One issue per branch/PR 
 - Content-addressable storage (same content → same CID) must be idempotent: use `ON CONFLICT DO UPDATE` instead of bare INSERT, or the second upload panics the handler.
 - Filesystem operations should be atomic: prefer `remove_file` + match on `NotFound` over `exists()` + `remove_file` (TOCTOU race).
 - Do not use `assert_eq!` in library code that could be reached in production — use `debug_assert_eq!` to avoid panics in release builds. Tests use `assert_eq!` as normal.
+- The `pds` crate is **binary-only** (no library target). `cargo test -p pds --lib` fails with "no library targets found" — use `cargo test -p pds` (or scope by test name substring, e.g. `cargo test -p pds firehose`).
+- When a route test asserts that a firehose frame is emitted and then checks `try_recv` returns `Empty`, remember `oneshot(app(state))` **consumes** `AppState` (and thus the `Firehose` broadcast sender) once the response resolves — so the receiver sees `Closed`, not `Empty`. Fix: clone `state.firehose` into a local `Arc` before moving `state` into `app(state)`, subscribe via the clone, and hold it across the oneshot call so the sender stays alive.
+- **Backticks in `git commit -m "..."` are interpreted as shell command substitution**, mangling/stripping the message body (this corrupted a commit message when the summary contained `#identity`). Write the message to a temp file and use `git commit -F /tmp/msg.txt`.
+- After the user merges a PR, delete the merged local feature branch (`git branch -d feat/<name>`) to keep the branch list navigable. The `origin` remote fetches from the Tangled knot, which can lag GitHub main — `git pull --ff-only` after switching to `main` to catch the merge.
+- The `memory` tool's `replace` action requires both `old_text` (substring identifying the entry to update) **and** the `content` field (the new full entry text) — `description`/`failure_reason` alone are rejected with "content is required for 'replace' action". This parameter lookup has caused long retry loops; pass `content` explicitly on every `replace`.
 
 ## Verification
 
 1. `cargo fmt --all --check` exits 0
 2. `cargo clippy --workspace -- -D warnings` exits 0
-3. `cargo test --workspace` passes all tests
-4. All review findings (pass 1 + pass 2) are fixed and committed
-5. Branch is pushed to origin
+3. `cargo test --workspace` passes all tests (all suites report `0 failed`)
+4. All review findings (pass 1 + pass 2 + CodeRabbit) are fixed and committed
+5. Branch is pushed to origin (both Tangled mirror and GitHub)
 6. PR is open on GitHub via `gh pr create` (NOT Tangled)
 7. Linear issue is in 'In Review' state
+8. After merge: feature branch deleted locally (`git branch -d`), Linear issue marked Done, working tree clean on `main`
