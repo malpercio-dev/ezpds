@@ -2,9 +2,10 @@
 //
 // Higher-level planned-transfer workflows that compose multiple DB tables inside
 // request-sized transactions. The `db::transfers` module owns the SQL statements;
-// this module owns the cross-table ordering needed to accept a transfer code.
+// this module owns the cross-table ordering needed to accept and complete a transfer.
 
 use sqlx::SqlitePool;
+use uuid::Uuid;
 
 /// Outcome of accepting a transfer code from the new device.
 #[derive(Debug, PartialEq, Eq)]
@@ -15,6 +16,19 @@ pub enum AcceptOutcome {
     InvalidOrExpired,
     /// The code belongs to a transfer that has already advanced past `pending`.
     NotPending,
+}
+
+/// Outcome of completing a transfer handoff.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CompleteOutcome {
+    /// The accepted transfer is now terminal, or was already terminal for this target.
+    Completed { transfer_id: String },
+    /// No transfer with this id exists, or it is terminal without a valid accepted target.
+    Invalid,
+    /// The transfer exists but has not been accepted by a target device yet.
+    NotAccepted,
+    /// The bearer token belongs to neither the source account session nor the accepted target.
+    Unauthorized,
 }
 
 /// Accept a pending transfer code and atomically register the new device credentials.
@@ -69,6 +83,97 @@ pub async fn accept_transfer(
 
     tx.commit().await?;
     Ok(AcceptOutcome::Accepted {
+        transfer_id: row.id,
+    })
+}
+
+/// Complete an accepted transfer and revoke superseded credentials atomically.
+///
+/// The caller supplies the SHA-256 hash of the Bearer token from the request. The token
+/// authorizes completion if it is either an unexpired source session for the transfer DID
+/// or the accepted target device token. On the first successful completion, all promoted
+/// sessions for the DID are deleted (including the source session used for this request),
+/// prior transfer-device credentials are revoked, the accepted target credential is kept,
+/// the transfer moves to `complete`, and an audit row is inserted. A repeat call from the
+/// accepted target is idempotent and returns `Completed` without duplicating audit rows.
+pub async fn complete_transfer(
+    db: &SqlitePool,
+    transfer_id: &str,
+    token_hash: &str,
+) -> Result<CompleteOutcome, sqlx::Error> {
+    let mut tx = db.begin().await?;
+
+    let Some(row) = crate::db::transfers::transfer_by_id(&mut tx, transfer_id).await? else {
+        tx.commit().await?;
+        return Ok(CompleteOutcome::Invalid);
+    };
+
+    let source_session =
+        crate::db::transfers::session_token_matches_did(&mut tx, &row.did, token_hash).await?;
+
+    let Some(accepted_device_id) = row.accepted_device_id.clone() else {
+        tx.commit().await?;
+        return Ok(match (row.status.as_str(), source_session) {
+            ("pending", true) => CompleteOutcome::NotAccepted,
+            (_, false) => CompleteOutcome::Unauthorized,
+            _ => CompleteOutcome::Invalid,
+        });
+    };
+
+    let target_device = crate::db::transfers::transfer_device_token_matches(
+        &mut tx,
+        &accepted_device_id,
+        token_hash,
+    )
+    .await?;
+
+    if !source_session && !target_device {
+        tx.commit().await?;
+        return Ok(CompleteOutcome::Unauthorized);
+    }
+
+    match row.status.as_str() {
+        "accepted" | "completing" => {
+            let updated = crate::db::transfers::mark_transfer_complete(&mut tx, &row.id).await?;
+            if updated != 1 {
+                tx.commit().await?;
+                return Ok(CompleteOutcome::Invalid);
+            }
+
+            crate::db::transfers::delete_refresh_tokens_for_did(&mut tx, &row.did).await?;
+            crate::db::transfers::delete_sessions_for_did(&mut tx, &row.did).await?;
+            crate::db::transfers::revoke_other_transfer_devices(
+                &mut tx,
+                &row.did,
+                &accepted_device_id,
+            )
+            .await?;
+            crate::db::transfers::insert_transfer_audit_event(
+                &mut tx,
+                &Uuid::new_v4().to_string(),
+                &row.id,
+                &row.did,
+                "transfer.complete",
+                Some(&accepted_device_id),
+            )
+            .await?;
+        }
+        "complete" => {
+            // Idempotent for the surviving target credential; source sessions were revoked
+            // by the first completion and therefore cannot authorize a repeat call.
+        }
+        "pending" => {
+            tx.commit().await?;
+            return Ok(CompleteOutcome::NotAccepted);
+        }
+        _ => {
+            tx.commit().await?;
+            return Ok(CompleteOutcome::Invalid);
+        }
+    }
+
+    tx.commit().await?;
+    Ok(CompleteOutcome::Completed {
         transfer_id: row.id,
     })
 }

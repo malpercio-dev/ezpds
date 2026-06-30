@@ -158,6 +158,10 @@ static MIGRATIONS: &[Migration] = &[
         version: 29,
         sql: include_str!("migrations/V029__transfer_accept_devices.sql"),
     },
+    Migration {
+        version: 30,
+        sql: include_str!("migrations/V030__transfer_complete_audit.sql"),
+    },
 ];
 
 /// Open a WAL-mode SQLite connection pool with a maximum of 1 connection.
