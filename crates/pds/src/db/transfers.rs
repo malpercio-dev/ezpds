@@ -5,7 +5,9 @@
 // account is enforced by the partial unique index `idx_transfers_active_did`;
 // see V027__transfers.sql for the schema rationale.
 
-use sqlx::{SqliteConnection, SqlitePool};
+use sqlx::{Sqlite, SqlitePool, Transaction};
+
+pub type SqliteTransaction<'a> = Transaction<'a, Sqlite>;
 
 use crate::db::{is_unique_violation, unique_violation_column};
 
@@ -102,7 +104,7 @@ pub struct TransferCodeRow {
 
 /// Materialise an expired pending transfer for a code.
 pub async fn expire_pending_code(
-    conn: &mut SqliteConnection,
+    tx: &mut SqliteTransaction<'_>,
     code: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
@@ -110,14 +112,14 @@ pub async fn expire_pending_code(
          WHERE code = ? AND status = 'pending' AND expires_at <= datetime('now')",
     )
     .bind(code)
-    .execute(conn)
+    .execute(&mut **tx)
     .await?;
     Ok(())
 }
 
 /// Fetch the active transfer row matching a code, if one exists.
 pub async fn active_transfer_for_code(
-    conn: &mut SqliteConnection,
+    tx: &mut SqliteTransaction<'_>,
     code: &str,
 ) -> Result<Option<TransferCodeRow>, sqlx::Error> {
     let row: Option<(String, String, String)> = sqlx::query_as(
@@ -125,7 +127,7 @@ pub async fn active_transfer_for_code(
          WHERE code = ? AND status IN ('pending', 'accepted', 'completing')",
     )
     .bind(code)
-    .fetch_optional(conn)
+    .fetch_optional(&mut **tx)
     .await?;
 
     Ok(row.map(|(id, did, status)| TransferCodeRow { id, did, status }))
@@ -133,7 +135,7 @@ pub async fn active_transfer_for_code(
 
 /// Insert promoted-account device credentials produced by transfer acceptance.
 pub async fn insert_transfer_device(
-    conn: &mut SqliteConnection,
+    tx: &mut SqliteTransaction<'_>,
     device_id: &str,
     did: &str,
     platform: &str,
@@ -150,14 +152,14 @@ pub async fn insert_transfer_device(
     .bind(platform)
     .bind(public_key)
     .bind(device_token_hash)
-    .execute(conn)
+    .execute(&mut **tx)
     .await?;
     Ok(())
 }
 
 /// Mark a pending, unexpired transfer accepted by the supplied device.
 pub async fn mark_transfer_accepted(
-    conn: &mut SqliteConnection,
+    tx: &mut SqliteTransaction<'_>,
     transfer_id: &str,
     device_id: &str,
 ) -> Result<u64, sqlx::Error> {
@@ -168,7 +170,7 @@ pub async fn mark_transfer_accepted(
     )
     .bind(device_id)
     .bind(transfer_id)
-    .execute(conn)
+    .execute(&mut **tx)
     .await?;
 
     Ok(updated.rows_affected())
@@ -176,19 +178,19 @@ pub async fn mark_transfer_accepted(
 
 /// Delete a transfer-device credential row by id.
 pub async fn delete_transfer_device(
-    conn: &mut SqliteConnection,
+    tx: &mut SqliteTransaction<'_>,
     device_id: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query("DELETE FROM transfer_devices WHERE id = ?")
         .bind(device_id)
-        .execute(conn)
+        .execute(&mut **tx)
         .await?;
     Ok(())
 }
 
 /// Materialise a specific pending transfer as expired if it elapsed during acceptance.
 pub async fn expire_pending_transfer_if_elapsed(
-    conn: &mut SqliteConnection,
+    tx: &mut SqliteTransaction<'_>,
     transfer_id: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
@@ -196,7 +198,7 @@ pub async fn expire_pending_transfer_if_elapsed(
          WHERE id = ? AND status = 'pending' AND expires_at <= datetime('now')",
     )
     .bind(transfer_id)
-    .execute(conn)
+    .execute(&mut **tx)
     .await?;
     Ok(())
 }
