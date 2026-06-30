@@ -47,6 +47,14 @@ if ! grep -q 'SystemConfiguration' "${PBXPROJ}"; then
   fail=1
 fi
 
+# AuthenticationServices.framework must be linked: the vendored tauri-plugin-auth-session pulls
+# `objc2-authentication-services` (ASWebAuthenticationSession), whose
+# `_ASWebAuthenticationSessionErrorDomain` is otherwise undefined at Xcode link time.
+if ! grep -q 'AuthenticationServices' "${PBXPROJ}"; then
+  echo "ios-check: FAIL — AuthenticationServices.framework not linked (run 'just ios-postinit')" >&2
+  fail=1
+fi
+
 # The Rust staticlib must NOT be copied into the bundle — App Store upload rejects a
 # standalone `libapp.a` ("Invalid bundle structure"). Patch F excludes it at both layers:
 # project.yml (Externals -> buildPhase: none) and the live pbxproj (no `in Resources`).

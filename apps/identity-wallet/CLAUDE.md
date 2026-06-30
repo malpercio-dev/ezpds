@@ -197,9 +197,12 @@ scripts/ios-env.sh` into the "Build Rust Code" Run Script phase (that phase does
 not inherit the dev-shell environment), (4) sets
 `CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION = YES` (tolerates Xcode's spurious
 "entitlements modified during build" failure caused by the per-build project sync),
-and (5) injects `OTHER_LDFLAGS = -framework SystemConfiguration` (the
-`system-configuration` crate — pulled in by `hickory-resolver` + `reqwest` — needs
-`SystemConfiguration.framework`; see Troubleshooting), and (6) keeps the Rust staticlib
+and (5) injects `OTHER_LDFLAGS = -framework SystemConfiguration -framework
+AuthenticationServices` (the `system-configuration` crate — pulled in by
+`hickory-resolver` + `reqwest` — needs `SystemConfiguration.framework`; the vendored
+`tauri-plugin-auth-session` — `ASWebAuthenticationSession` — needs
+`AuthenticationServices.framework`; both share one `OTHER_LDFLAGS` line, see
+Troubleshooting), and (6) keeps the Rust staticlib
 `libapp.a` out of the app bundle (sets `Externals → buildPhase: none` in `project.yml` and
 strips the `libapp.a in Resources` entry from the pbxproj — App Store rejects a loose `.a`;
 see Troubleshooting). Verify at any time with `just ios-check`.
@@ -397,8 +400,8 @@ Full setup (mirror dual-push, App Store Connect, GitHub secrets) and gotchas:
 - `src-tauri/src/http.rs` -- CustosClient with runtime-configurable base URL; OAuth methods (par, token_exchange)
 - `src-tauri/.cargo/config.toml` -- Cargo configuration: `RUST_TEST_THREADS=1` (prevent test race conditions)
 - `apps/identity-wallet/scripts/ios-env.sh` -- Apple toolchain derivation for iOS cross-compilation: resolves `DEVELOPER_DIR` via `/usr/bin/xcode-select -p`, exports iOS-target `CC`/`AR`/linker overrides unconditionally and macOS-host overrides only under `EZPDS_IOS_BUILD=1`. Sourced (never executed) by devenv `enterShell` and the patched Xcode Run Script phase
-- `apps/identity-wallet/scripts/ios-postinit.sh` -- re-applies the six surviving workarounds to the gitignored Xcode project after every `cargo tauri ios init` (idempotent): verifies the swift-rs `[patch.crates-io]` entry, sets `ENABLE_USER_SCRIPT_SANDBOXING = NO`, injects `EZPDS_IOS_BUILD=1` + `PATH` + `source ios-env.sh` into the "Build Rust Code" Run Script phase, sets `CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION = YES`, injects `OTHER_LDFLAGS = -framework SystemConfiguration` to link `SystemConfiguration.framework` (needed by the `system-configuration` crate), and strips `libapp.a` from the app bundle (Patch F: project.yml `Externals → buildPhase: none` + pbxproj `in Resources` entry; App Store rejects a loose `.a`) (sentinel/grep-guarded; `plutil -lint` structural check)
-- `apps/identity-wallet/scripts/ios-check.sh` -- read-only verifier: fails if any `ios-postinit` patch is missing (including the `SystemConfiguration` link) or the pbxproj no longer parses; gates `just ios-dev`/`ios-build`
+- `apps/identity-wallet/scripts/ios-postinit.sh` -- re-applies the six surviving workarounds to the gitignored Xcode project after every `cargo tauri ios init` (idempotent): verifies the swift-rs `[patch.crates-io]` entry, sets `ENABLE_USER_SCRIPT_SANDBOXING = NO`, injects `EZPDS_IOS_BUILD=1` + `PATH` + `source ios-env.sh` into the "Build Rust Code" Run Script phase, sets `CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION = YES`, injects `OTHER_LDFLAGS = -framework SystemConfiguration -framework AuthenticationServices` to link `SystemConfiguration.framework` (needed by the `system-configuration` crate) and `AuthenticationServices.framework` (needed by the vendored `tauri-plugin-auth-session`'s `ASWebAuthenticationSession`) on one shared `OTHER_LDFLAGS` line, and strips `libapp.a` from the app bundle (Patch F: project.yml `Externals → buildPhase: none` + pbxproj `in Resources` entry; App Store rejects a loose `.a`) (sentinel/grep-guarded; `plutil -lint` structural check)
+- `apps/identity-wallet/scripts/ios-check.sh` -- read-only verifier: fails if any `ios-postinit` patch is missing (including the `SystemConfiguration` + `AuthenticationServices` links) or the pbxproj no longer parses; gates `just ios-dev`/`ios-build`
 - `src/lib/ipc.ts` -- Typed TypeScript wrappers for all Tauri IPC commands (getPdsUrl, savePdsUrl, createAccount, getOrCreateDeviceKey, signWithDeviceKey, performDIDCeremony, startOAuthFlow, loadHomeData, logOut, resolveIdentity, startPdsAuth, requestClaimVerification, signAndVerifyClaim, submitClaim, listIdentities, getStoredDidDoc, getDeviceKeyId, checkIdentityStatus, buildRecoveryOverride, submitRecoveryOverride)
 - `src/lib/components/onboarding/` -- Eighteen onboarding screen components (ModeSelectScreen, PdsConfigScreen, WelcomeScreen, ClaimCodeScreen, EmailScreen, HandleScreen, PasswordScreen, LoadingScreen, DIDCeremonyScreen, DIDSuccessScreen, ShamirBackupScreen, HandleRegistrationScreen, AuthenticatingScreen, IdentityInputScreen, PdsAuthScreen, EmailVerificationScreen, ReviewOperationScreen, ClaimSuccessScreen)
 - `src/lib/components/home/` -- Six home screen components (IdentityListHome, HomeScreen, DIDDocumentScreen, RecoveryInfoScreen, AlertDetailScreen, RecoveryOverrideScreen) plus DIDAvatar utility component
@@ -459,13 +462,13 @@ Caused by: Failed to update the excludes stack to see if a path is excluded
 
 ---
 
-### `Undefined symbols ... _SC*` / `SystemConfiguration.framework` at link (`Ld`)
+### `Undefined symbols ... _SC*` / `_ASWebAuthenticationSession*` — an Apple framework not linked at `Ld`
 
-The Rust code compiles, then Xcode's link step fails with `Undefined symbols for architecture arm64: _SCDynamicStore...`, `_SCNetworkReachability...`, etc. These belong to Apple's `SystemConfiguration.framework`, which the `system-configuration` crate needs — pulled in transitively by `hickory-resolver` (system DNS config) and `reqwest` (system proxy detection).
+The Rust code compiles, then Xcode's link step fails with `Undefined symbols for architecture arm64:` naming Apple framework symbols — e.g. `_SCDynamicStore...` / `_SCNetworkReachability...` (Apple's `SystemConfiguration.framework`, which the `system-configuration` crate needs — pulled in transitively by `hickory-resolver` for system DNS config and `reqwest` for system proxy detection), or `_ASWebAuthenticationSessionErrorDomain` (Apple's `AuthenticationServices.framework`, which the vendored `tauri-plugin-auth-session` needs via `objc2-authentication-services` / `ASWebAuthenticationSession`).
 
-Host builds (`cargo test` / `cargo build`) link fine because **rustc** does the final link and honors the crate's `#[link(name = "SystemConfiguration", kind = "framework")]`. On iOS the crate is built as a `staticlib` (`libapp.a`) and **Xcode** does the final link — it never sees that embedded directive, so the framework must be declared in the Xcode project or the symbols stay undefined. A `build.rs` `cargo:rustc-link-lib=framework=...` does NOT help (same staticlib → Xcode gap).
+Host builds (`cargo test` / `cargo build`) link fine because **rustc** does the final link and honors the crate's `#[link(name = "...", kind = "framework")]`. On iOS the crate is built as a `staticlib` (`libapp.a`) and **Xcode** does the final link — it never sees that embedded directive, so the framework must be declared in the Xcode project or the symbols stay undefined. A `build.rs` `cargo:rustc-link-lib=framework=...` does NOT help (same staticlib → Xcode gap).
 
-**Fix:** Already resolved automatically. `just ios-postinit` (Patch E) injects `OTHER_LDFLAGS = -framework SystemConfiguration` into the generated `project.pbxproj`, and `just ios-check` verifies it. `bundle.iOS.frameworks` in `tauri.conf.json` is best-effort only: `cargo tauri ios init` preserves an existing `project.yml` rather than regenerating it, so that config seeds only a fresh project and the pbxproj patch is the enforced mechanism. To link another Apple framework a new Rust dep requires, copy Patch E with the new name.
+**Fix:** Already resolved automatically. `just ios-postinit` (Patch E) injects `OTHER_LDFLAGS = "$(inherited) -framework SystemConfiguration -framework AuthenticationServices"` into the generated `project.pbxproj`, and `just ios-check` verifies both. `bundle.iOS.frameworks` in `tauri.conf.json` is best-effort only: `cargo tauri ios init` preserves an existing `project.yml` rather than regenerating it, so that config seeds only a fresh project and the pbxproj patch is the enforced mechanism. To link another Apple framework a new Rust dep requires, **add `-framework <Name>` to Patch E's single `OTHER_LDFLAGS` line** — do *not* add a second `OTHER_LDFLAGS` assignment, because in a pbxproj a later assignment for the same build config shadows (does not append to) the earlier one, silently dropping a framework.
 
 ---
 
