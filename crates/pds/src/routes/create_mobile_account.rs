@@ -21,7 +21,7 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::handle::validate_handle;
 use crate::routes::register_device::Platform;
-use crate::routes::token::generate_token;
+use crate::token::generate_token;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -580,7 +580,7 @@ mod tests {
 
     #[tokio::test]
     async fn token_hashes_are_sha256_of_tokens() {
-        use crate::routes::token::hash_bearer_token;
+        use crate::token::hash_bearer_token;
 
         let state = test_state().await;
         let db = state.db.clone();

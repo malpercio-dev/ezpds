@@ -19,7 +19,7 @@ use crate::db::oauth::{
     cleanup_expired_par_requests, get_oauth_client, store_par_request, ClientMetadata,
     StoredPARParams,
 };
-use crate::routes::token::generate_token;
+use crate::token::generate_token;
 
 // ── Request / response types ──────────────────────────────────────────────────
 

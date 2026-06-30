@@ -120,7 +120,7 @@ mod tests {
 
     use crate::app::{app, test_state, AppState};
     use crate::routes::test_utils::body_json;
-    use crate::routes::token::generate_token;
+    use crate::token::generate_token;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 

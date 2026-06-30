@@ -17,7 +17,7 @@ use crate::app::AppState;
 use crate::auth::password::{verify_password, VerifyResult};
 use crate::auth::rate_limit::{clear_failures, is_rate_limited, record_failure};
 use crate::db::accounts::resolve_by_email;
-use crate::routes::token::generate_token;
+use crate::token::generate_token;
 
 // ── Request / Response types ─────────────────────────────────────────────────
 
@@ -261,7 +261,7 @@ mod tests {
         let token = json["sessionToken"].as_str().unwrap();
 
         // Hash the token (same as require_session does internally).
-        let hash = crate::routes::token::hash_bearer_token(token).unwrap();
+        let hash = crate::token::hash_bearer_token(token).unwrap();
 
         let did: Option<String> = sqlx::query_scalar(
             "SELECT did FROM sessions WHERE token_hash = ? AND expires_at > datetime('now')",

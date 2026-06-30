@@ -19,6 +19,8 @@ mod iroh_tunnel;
 mod record_write;
 mod routes;
 mod telemetry;
+mod token;
+mod transfer;
 mod well_known;
 
 /// Convert a config database_url (which may be a plain filesystem path or a sqlx URL) to a valid sqlx URL.

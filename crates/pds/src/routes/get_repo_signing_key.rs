@@ -127,7 +127,7 @@ mod tests {
     /// Seed a claim code, pending account, device, and pending session.
     /// Returns (account_id, session_token_plaintext).
     async fn seed_pending_session(pool: &SqlitePool) -> (String, String) {
-        use crate::routes::token::generate_token;
+        use crate::token::generate_token;
         use uuid::Uuid;
 
         let claim_code = format!("TEST-{}", Uuid::new_v4());

@@ -1,3 +1,5 @@
+// pattern: Functional Core
+//
 // Token generation and hashing utilities.
 //
 // All session tokens and device tokens follow the same format:
