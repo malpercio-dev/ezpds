@@ -12,7 +12,8 @@ use common::{ApiError, ErrorCode};
 
 #[derive(Deserialize)]
 pub struct CreateRecordBody {
-    /// The DID of the repo (e.g. "did:plc:abc123").
+    /// The repo to write to, as an at-identifier — a DID (e.g. "did:plc:abc123") or a
+    /// registered handle. A handle is resolved to its owning DID before the write.
     repo: String,
     /// The NSID of the record collection (e.g. "app.bsky.feed.post").
     collection: String,
@@ -37,7 +38,8 @@ pub async fn create_record(
     headers: HeaderMap,
     axum::Json(body): axum::Json<CreateRecordBody>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let did = &body.repo;
+    // Resolve the at-identifier (DID or handle) to a DID before the ownership check and write.
+    let did = crate::record_write::resolve_repo_did(&state, &body.repo).await?;
     let collection = &body.collection;
     // Treat empty string as "absent" — generate a TID.
     let rkey = body
@@ -55,7 +57,7 @@ pub async fn create_record(
     let (_result, record_cid) = crate::record_write::write_record(
         &state,
         &headers,
-        did,
+        &did,
         &mst_key,
         &body.record,
         true, // create_only: reject if record already exists
@@ -174,6 +176,73 @@ mod tests {
 
         assert_eq!(resp.uri, format!("at://{did}/app.bsky.feed.post/mykey1"));
         assert!(!resp.cid.is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_record_resolves_handle_to_did() {
+        // `repo` accepts an at-identifier: a handle pointing at the account must resolve to the
+        // owning DID, and the response AT-URI must carry that resolved DID (not the handle).
+        let (state, did) = setup_account_with_repo().await;
+        sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
+            .bind("alice.example.com")
+            .bind(&did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let token = access_jwt(&state.jwt_secret, &did);
+        let app = crate::app::app(state);
+
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri("/xrpc/com.atproto.repo.createRecord")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({
+                    "repo": "alice.example.com",
+                    "collection": "app.bsky.feed.post",
+                    "rkey": "viahandle",
+                    "record": {"text": "hello via handle"}
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: CreateRecordResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(resp.uri, format!("at://{did}/app.bsky.feed.post/viahandle"));
+    }
+
+    #[tokio::test]
+    async fn create_record_unknown_handle_returns_400() {
+        // An identifier that is neither a DID nor a registered handle is a clean 400 — and the
+        // resolution failure surfaces before auth, so no token is needed to exercise it.
+        let (state, did) = setup_account_with_repo().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        let app = crate::app::app(state);
+
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri("/xrpc/com.atproto.repo.createRecord")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({
+                    "repo": "nobody.example.com",
+                    "collection": "app.bsky.feed.post",
+                    "record": {"text": "hello"}
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

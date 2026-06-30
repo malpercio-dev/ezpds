@@ -12,9 +12,9 @@ use common::{ApiError, ErrorCode};
 
 #[derive(Deserialize)]
 pub struct PutRecordBody {
-    /// The DID of the repo (e.g. "did:plc:abc123"), carried in the JSON body as `repo` per the
-    /// `com.atproto.repo.putRecord` lexicon. Like createRecord/applyWrites, this is treated as a
-    /// DID: handle-to-DID resolution is not performed anywhere in the repo write path.
+    /// The repo to write to, carried in the JSON body as `repo` per the
+    /// `com.atproto.repo.putRecord` lexicon. An at-identifier — a DID (e.g. "did:plc:abc123") or a
+    /// registered handle; a handle is resolved to its owning DID before the write.
     repo: String,
     /// The NSID of the record collection (e.g. "app.bsky.feed.post").
     collection: String,
@@ -58,7 +58,8 @@ pub async fn put_record(
     headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<PutRecordBody>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let did = &body.repo;
+    // Resolve the at-identifier (DID or handle) to a DID before the ownership check and write.
+    let did = crate::record_write::resolve_repo_did(&state, &body.repo).await?;
     let collection = &body.collection;
     let rkey = &body.rkey;
 
@@ -77,7 +78,7 @@ pub async fn put_record(
     let (_result, record_cid) = crate::record_write::write_record(
         &state,
         &headers,
-        did,
+        &did,
         &mst_key,
         &body.record,
         false, // create_only=false: upsert semantics

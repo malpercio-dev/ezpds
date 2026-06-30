@@ -96,6 +96,33 @@ where
     Ok(())
 }
 
+/// Resolve a repo at-identifier (DID or handle) to its DID.
+///
+/// The `com.atproto.repo.*` lexicons type the `repo` field as an *at-identifier* — a DID **or**
+/// a handle. A value already in `did:` form is returned unchanged (the caller's existing
+/// `is_valid_did` / account-status checks validate it downstream); anything else is treated as a
+/// handle and resolved to its owning DID via `db::accounts::resolve_identifier`.
+///
+/// All four write routes (`createRecord`, `putRecord`, `deleteRecord`, `applyWrites`) call this
+/// *before* their auth/ownership check, so the check binds against the resolved DID and the
+/// identifier handling cannot drift between routes.
+///
+/// Returns [`ErrorCode::InvalidRequest`] (400) when a handle does not resolve to a known account.
+pub(crate) async fn resolve_repo_did(state: &AppState, repo: &str) -> Result<String, ApiError> {
+    if repo.starts_with("did:") {
+        return Ok(repo.to_string());
+    }
+    crate::db::accounts::resolve_identifier(&state.db, repo)
+        .await?
+        .map(|account| account.did)
+        .ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::InvalidRequest,
+                "could not resolve repo to a known account",
+            )
+        })
+}
+
 /// Shared write flow: authenticate → open repo → load signer → write record →
 /// optimistic-concurrency CAS → GC.
 ///

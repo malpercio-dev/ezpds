@@ -53,4 +53,8 @@ docs {
 
   Optional `swapCommit` (a commit CID) enforces optimistic concurrency: the
   request fails with 409 if the repo's current commit no longer matches.
+
+  "repo" is an at-identifier: a DID or a registered handle (resolved to its
+  owning DID before the write). An identifier that resolves to no account
+  returns 400.
 }
