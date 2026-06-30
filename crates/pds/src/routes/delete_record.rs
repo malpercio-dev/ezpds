@@ -201,7 +201,13 @@ mod tests {
     };
 
     fn delete_req(did: &str, rkey: &str, token: Option<&str>) -> Request<Body> {
-        delete_record_request(did, "app.bsky.feed.post", rkey, serde_json::json!({}), token)
+        delete_record_request(
+            did,
+            "app.bsky.feed.post",
+            rkey,
+            serde_json::json!({}),
+            token,
+        )
     }
 
     #[tokio::test]

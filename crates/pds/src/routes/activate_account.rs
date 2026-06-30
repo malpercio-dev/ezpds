@@ -57,7 +57,15 @@ pub async fn activate_account_handler(
         }
         // Real transition: tell subscribers the repo is active again so they resume serving it.
         AccountStateChange::Changed => {
-            state.firehose.emit_account(user.did.clone(), true, None);
+            if let Err(e) = state
+                .firehose
+                .emit_account(user.did.clone(), true, None)
+                .await
+            {
+                // The status change is already durable in `accounts`; a failed firehose write is
+                // logged and dropped rather than failing the request.
+                tracing::warn!(error = %e, did = %user.did, "failed to sequence #account activation (non-fatal)");
+            }
             tracing::info!(did = %user.did, "account activated");
         }
     }

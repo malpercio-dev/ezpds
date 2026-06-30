@@ -93,11 +93,19 @@ pub async fn deactivate_account_handler(
         }
         // Real transition: tell subscribers the repo is no longer active so they stop serving it.
         AccountStateChange::Changed => {
-            state.firehose.emit_account(
-                user.did.clone(),
-                false,
-                Some(STATUS_DEACTIVATED.to_string()),
-            );
+            if let Err(e) = state
+                .firehose
+                .emit_account(
+                    user.did.clone(),
+                    false,
+                    Some(STATUS_DEACTIVATED.to_string()),
+                )
+                .await
+            {
+                // The status change is already durable in `accounts`; a failed firehose write is
+                // logged and dropped rather than failing the request.
+                tracing::warn!(error = %e, did = %user.did, "failed to sequence #account deactivation (non-fatal)");
+            }
             tracing::info!(
                 did = %user.did,
                 scheduled_deletion = delete_after.is_some(),

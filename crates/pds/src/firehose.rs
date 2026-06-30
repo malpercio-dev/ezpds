@@ -1,39 +1,56 @@
 // pattern: Imperative Shell
 
-//! In-memory firehose event pipeline backing `com.atproto.sync.subscribeRepos`.
+//! Persistent firehose event pipeline backing `com.atproto.sync.subscribeRepos`.
 //!
-//! Every repo commit produces a sequenced [`CommitEvent`] that is fanned out to all
-//! current subscribers over a Tokio broadcast channel. The sequencer is an in-process
-//! monotonic counter; subscribers attach via [`Firehose::subscribe`] and the WebSocket
-//! handler (a separate endpoint, implemented elsewhere) encodes each event into a
-//! DAG-CBOR frame.
+//! Every repo commit (and account-status change) produces a sequenced event that is both
+//! **persisted** to the `repo_seq` table and fanned out to all current subscribers over a Tokio
+//! broadcast channel. The WebSocket handler (`routes/sync_subscribe_repos.rs`) encodes each event
+//! into a DAG-CBOR frame.
 //!
-//! **Backpressure.** The broadcast channel is bounded. Producers never block: when the
-//! buffer is full the oldest events are overwritten and a lagging subscriber observes
-//! [`broadcast::error::RecvError::Lagged`] on its next `recv`, which the consumer treats
-//! as "you fell too far behind" and disconnects. A slow consumer therefore cannot stall
-//! commit production.
+//! **Durability & restart safety.** The monotonic `seq` and the event log live in SQLite, so a
+//! process restart / redeploy no longer resets the sequence to 0 or empties the replay backlog:
+//! the sequencer loads `MAX(seq)` on construction and continues from there, and cursor replay
+//! reads missed events back out of `repo_seq` (see `db::firehose_seq`). An event is persisted
+//! *before* it is broadcast, so anything a live subscriber can observe is already durable — which
+//! is what lets a fresh subscription bound its DB replay and the live stream against each other
+//! with no gap and no duplicate.
 //!
-//! **Ordering.** Sequence assignment and broadcast happen under a single mutex, so events
-//! are always delivered in strictly increasing `seq` order even when commits race across
-//! concurrent requests. The critical section never awaits (it only assigns an integer and
-//! does a non-blocking `send`), so a `std::sync::Mutex` is appropriate.
+//! **Backpressure.** The broadcast channel is bounded. Producers never block: when the buffer is
+//! full the oldest events are overwritten and a lagging subscriber observes
+//! [`broadcast::error::RecvError::Lagged`] on its next `recv`, which the consumer treats as "you
+//! fell too far behind" and disconnects (it reconnects with its last cursor and replays from the
+//! durable log).
+//!
+//! **Ordering.** A single async `emit_lock` serialises each emit's *persist → advance counter →
+//! broadcast* so events are delivered in strictly increasing `seq` order and the persisted log is
+//! a dense prefix (no holes a failed insert could leave). The lock is held across the DB write, so
+//! it is a `tokio::sync::Mutex`, not a `std::sync::Mutex`.
 
-// Dead code allow: a few accessors (`subscriber_count`, the `at_uri`/`as_str` wire helpers)
-// are exercised only by this module's unit tests and the `subscribeRepos` handler's tests.
-// The emit path is wired into the commit routes and the subscribe path into the WebSocket
-// handler.
+// Dead code allow: a few accessors (`subscriber_count`, the `at_uri`/`as_str` wire helpers) are
+// exercised only by this module's unit tests and the `subscribeRepos` handler's tests.
 #![allow(dead_code)]
 
-use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::sync::Mutex;
 
+use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
 use tokio::sync::broadcast;
 
 /// Default capacity of the broadcast ring buffer: the number of events retained for slow
 /// consumers before they begin to observe `Lagged`.
 const DEFAULT_CAPACITY: usize = 1024;
+
+/// Errors from sequencing (persisting + broadcasting) or reconstructing a firehose event.
+#[derive(Debug, thiserror::Error)]
+pub enum FirehoseError {
+    #[error("failed to encode firehose event for storage: {0}")]
+    Encode(String),
+    #[error("failed to decode stored firehose event: {0}")]
+    Decode(String),
+    #[error("failed to persist firehose event: {0}")]
+    Db(#[from] sqlx::Error),
+}
 
 /// The kind of change a single [`RepoOp`] records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +69,16 @@ impl OpAction {
             OpAction::Delete => "delete",
         }
     }
+
+    /// Parse a stored/wire `action` string back into an [`OpAction`].
+    fn from_wire(s: &str) -> Option<OpAction> {
+        match s {
+            "create" => Some(OpAction::Create),
+            "update" => Some(OpAction::Update),
+            "delete" => Some(OpAction::Delete),
+            _ => None,
+        }
+    }
 }
 
 /// A single record-level operation within a commit.
@@ -66,6 +93,10 @@ pub struct RepoOp {
     /// New record CID for create/update; `None` for delete.
     pub cid: Option<String>,
     /// New record value for create/update; `None` for delete.
+    ///
+    /// Carried on live events for in-process consumers, but **not** part of the `subscribeRepos`
+    /// wire frame, so it is not persisted; an op reconstructed from the durable log has
+    /// `value: None`.
     pub value: Option<serde_json::Value>,
 }
 
@@ -149,114 +180,106 @@ pub struct CommitInput {
     pub blocks: Vec<u8>,
 }
 
-/// A new subscription: the backlog to replay first, then live events on `rx`.
+/// A new subscription: where to resume cursor replay from, and the live event stream.
 ///
-/// `replay` holds the buffered events the subscriber missed (those with `seq` greater than the
-/// requested cursor, oldest first). `rx` delivers every event emitted *after* the subscription
-/// was taken. Because the snapshot and the channel subscribe happen under one lock that
-/// [`Firehose::emit_commit`] also holds while appending and broadcasting, the boundary between
-/// `replay` and `rx` is exact: no event is dropped between them and none is delivered twice.
+/// The handler replays the durable log for `cursor < seq <= upper` (paging through
+/// `db::firehose_seq::events_in_range`), then streams live events from `rx`. Because `rx` was
+/// taken and `upper` snapshotted together under the sequencer lock — before any later emit could
+/// advance the counter — every live event has `seq > upper`, so replay and the live stream are
+/// exactly disjoint: no event is dropped between them and none is delivered twice.
 pub struct Subscription {
-    /// Buffered events with `seq` > cursor, oldest first, to send before live streaming begins.
-    pub replay: Vec<FirehoseEvent>,
-    /// Live event stream for everything emitted after this subscription was created.
+    /// Live event stream for everything emitted after this subscription was created
+    /// (all with `seq > upper`).
     pub rx: broadcast::Receiver<FirehoseEvent>,
+    /// The requested cursor, or `None` for live-only (no replay).
+    pub cursor: Option<u64>,
+    /// The sequence frontier captured when this subscription attached — the inclusive upper
+    /// bound for DB replay and the exclusive lower bound for the live stream.
+    pub upper: u64,
 }
 
 /// The outcome of [`Firehose::subscribe_from`].
 pub enum SubscribeOutcome {
-    /// The subscription was established; replay its backlog, then stream `rx`.
+    /// The subscription was established; replay `(cursor, upper]` from the log, then stream `rx`.
     Subscribed(Subscription),
     /// The requested cursor is ahead of the latest assigned sequence (`current`), so it cannot
     /// be honoured — the client is claiming to have seen events that do not exist.
     FutureCursor { current: u64 },
 }
 
-/// The mutable core of the firehose, guarded by a single mutex so sequence assignment, the
-/// replay backlog, and broadcast ordering all advance atomically.
-struct Inner {
-    /// Monotonic sequence counter; the last value assigned (0 before the first emit).
-    seq: u64,
-    /// Recent events retained for cursor replay, oldest first, capped at `capacity`.
-    backlog: VecDeque<FirehoseEvent>,
-}
-
-/// The in-memory firehose: a monotonic sequencer plus a broadcast fan-out.
+/// The persistent firehose: a durable monotonic sequencer plus a broadcast fan-out.
 ///
-/// The PDS holds a single `Arc<Firehose>` in `AppState`; every request handler shares it.
+/// The PDS holds a single `Arc<Firehose>` in `AppState`; every request handler shares it. The
+/// `db` pool is the same one the rest of the PDS uses (the event log lives alongside the repo
+/// data), so cursor replay reads exactly the events `emit_*` persisted.
 pub struct Firehose {
-    /// Guards the sequence counter and replay backlog and serialises broadcast order.
-    /// Never held across an await — the critical section only mutates memory and does a
-    /// non-blocking `send`.
-    inner: Mutex<Inner>,
-    /// Number of recent events retained for cursor replay (matches the broadcast capacity).
-    capacity: usize,
+    /// Shared SQLite pool; the firehose persists every event to `repo_seq` here.
+    db: SqlitePool,
+    /// Serialises each emit's persist → counter-advance → broadcast so broadcast order matches
+    /// `seq` order and the persisted log stays a dense prefix. Held across the DB write, hence a
+    /// `tokio::sync::Mutex`. Also taken (briefly, no await) by `subscribe_from` so it can snapshot
+    /// the live receiver and the sequence frontier atomically against emission.
+    emit_lock: tokio::sync::Mutex<()>,
+    /// The last sequence number assigned. Written only under `emit_lock` (after the row is
+    /// persisted), so a value `<= last_seq` is always already durable. Read locklessly for
+    /// diagnostics (`current_seq`) and under the lock for the subscribe frontier.
+    last_seq: AtomicU64,
     tx: broadcast::Sender<FirehoseEvent>,
 }
 
 impl Firehose {
-    /// Create a firehose with the default ring-buffer capacity.
-    pub fn new() -> Self {
-        Self::with_capacity(DEFAULT_CAPACITY)
+    /// Create a firehose with the default broadcast-buffer capacity, seeding the sequence
+    /// counter from the persisted log so `seq` continues monotonically across restarts.
+    pub async fn new(db: SqlitePool) -> Result<Self, sqlx::Error> {
+        Self::with_capacity(db, DEFAULT_CAPACITY).await
     }
 
-    /// Create a firehose whose broadcast buffer and replay backlog each retain `capacity`
-    /// events for slow consumers and late (cursor-bearing) subscribers respectively.
-    pub fn with_capacity(capacity: usize) -> Self {
+    /// Create a firehose whose broadcast buffer retains `capacity` events for slow consumers,
+    /// seeding the sequence counter from `MAX(seq)` in the persisted log.
+    pub async fn with_capacity(db: SqlitePool, capacity: usize) -> Result<Self, sqlx::Error> {
+        let last = crate::db::firehose_seq::max_seq(&db).await?;
         let (tx, _rx) = broadcast::channel(capacity);
-        Self {
-            inner: Mutex::new(Inner {
-                seq: 0,
-                backlog: VecDeque::with_capacity(capacity),
-            }),
-            capacity,
+        Ok(Self {
+            db,
+            emit_lock: tokio::sync::Mutex::new(()),
+            last_seq: AtomicU64::new(last),
             tx,
-        }
+        })
     }
 
     /// Subscribe to the live event stream only (no replay). Each subscriber receives every
-    /// event emitted after it subscribes; a subscriber that falls more than `capacity` events
-    /// behind observes `RecvError::Lagged` on its next `recv`.
+    /// event emitted after it subscribes; a subscriber that falls more than the broadcast
+    /// capacity behind observes `RecvError::Lagged` on its next `recv`.
     pub fn subscribe(&self) -> broadcast::Receiver<FirehoseEvent> {
         self.tx.subscribe()
     }
 
     /// Subscribe with optional cursor replay.
     ///
-    /// With `cursor = None`, the returned [`Subscription`] has an empty `replay` and streams
-    /// only future events. With `cursor = Some(n)`, `replay` carries every still-buffered event
-    /// whose `seq` is strictly greater than `n` (so a client passing the last `seq` it processed
-    /// receives exactly what it missed), and `rx` continues seamlessly from there. A cursor
-    /// ahead of the latest assigned sequence yields [`SubscribeOutcome::FutureCursor`].
+    /// Returns a [`Subscription`] carrying the live receiver plus the `(cursor, upper]` range the
+    /// handler should replay from the durable log first. A cursor ahead of the latest assigned
+    /// sequence yields [`SubscribeOutcome::FutureCursor`].
     ///
-    /// Events older than the retained backlog cannot be replayed; such a cursor yields only the
-    /// events still in the buffer (best effort), matching how a real relay's buffer ages out.
-    ///
-    /// The future-cursor check, the backlog snapshot, and the channel subscribe all happen under
-    /// the single `inner` lock that [`Firehose::emit_commit`] also holds. This is atomic with
-    /// respect to emission: there is no window in which a concurrent `emit_commit` could turn a
-    /// valid cursor into a spurious `FutureCursor`, nor let an event slip past both the backlog
-    /// snapshot and the receiver.
-    pub fn subscribe_from(&self, cursor: Option<u64>) -> SubscribeOutcome {
-        let inner = self.inner.lock().expect("firehose inner mutex poisoned");
+    /// The live receiver and the `upper` frontier are captured together under `emit_lock`, so no
+    /// concurrent emit can slip an event past both the replay range and the receiver, nor advance
+    /// the counter into a spurious `FutureCursor`. Events older than the (currently unbounded)
+    /// log can always be replayed; there is no in-memory buffer to age out.
+    pub async fn subscribe_from(&self, cursor: Option<u64>) -> SubscribeOutcome {
+        let (rx, upper) = {
+            let _guard = self.emit_lock.lock().await;
+            // Subscribe to the live channel *before* releasing the lock so that no event emitted
+            // after this snapshot can slip past both the replay range and the receiver, and read
+            // the frontier under the same lock so `upper` reflects exactly what is already durable.
+            (self.tx.subscribe(), self.last_seq.load(Ordering::Acquire))
+        };
+
         if let Some(c) = cursor {
-            if c > inner.seq {
-                return SubscribeOutcome::FutureCursor { current: inner.seq };
+            if c > upper {
+                return SubscribeOutcome::FutureCursor { current: upper };
             }
         }
-        // Subscribe to the live channel *before* releasing the lock so that no event emitted
-        // after this snapshot can slip past both the backlog copy and the receiver.
-        let rx = self.tx.subscribe();
-        let replay = match cursor {
-            Some(c) => inner
-                .backlog
-                .iter()
-                .filter(|e| e.seq() > c)
-                .cloned()
-                .collect(),
-            None => Vec::new(),
-        };
-        SubscribeOutcome::Subscribed(Subscription { replay, rx })
+
+        SubscribeOutcome::Subscribed(Subscription { rx, cursor, upper })
     }
 
     /// Number of live subscribers. Primarily for diagnostics and tests.
@@ -266,27 +289,43 @@ impl Firehose {
 
     /// The last sequence number assigned (0 if nothing has been emitted yet).
     pub fn current_seq(&self) -> u64 {
-        self.inner
-            .lock()
-            .expect("firehose inner mutex poisoned")
-            .seq
+        self.last_seq.load(Ordering::Acquire)
     }
 
-    /// Assign the next sequence number, build a [`CommitEvent`], retain it for replay, and
-    /// broadcast it.
+    /// Persist, sequence, and broadcast a `#commit` event.
     ///
-    /// Returns the assigned sequence number. Never blocks and never fails: if there are no
-    /// subscribers the event is simply dropped from the live channel (its `seq` is still
-    /// consumed, keeping the sequence dense, and it still enters the replay backlog). Sequence
-    /// assignment, backlog append, and the broadcast are serialised so subscribers always
-    /// observe events in increasing `seq` order.
-    pub fn emit_commit(&self, input: CommitInput) -> u64 {
-        let mut inner = self.inner.lock().expect("firehose inner mutex poisoned");
-        inner.seq += 1;
-        let assigned = inner.seq;
+    /// Returns the assigned sequence number. The event is written to `repo_seq` (durable) *before*
+    /// it is broadcast, all under `emit_lock`, so live subscribers only ever see already-persisted
+    /// events and the log stays dense. An emit with no live subscribers still consumes its `seq`
+    /// and persists, keeping the sequence contiguous. Returns [`FirehoseError`] if encoding or the
+    /// DB write fails — the counter is *not* advanced in that case, so the number is retried by the
+    /// next emit (no hole).
+    pub async fn emit_commit(&self, input: CommitInput) -> Result<u64, FirehoseError> {
+        let time = now_rfc3339();
+        // Serialize the storable form (borrowing `input`) in its own scope so the borrow ends
+        // before we move `input`'s fields into the broadcast event below.
+        let blob = {
+            let stored = StoredCommitRef {
+                repo: &input.repo,
+                commit: &input.commit,
+                rev: &input.rev,
+                since: input.since.as_deref(),
+                time: &time,
+                ops: input.ops.iter().map(StoredOpRef::from).collect(),
+                blocks: &input.blocks,
+            };
+            serde_ipld_dagcbor::to_vec(&stored).map_err(|e| FirehoseError::Encode(e.to_string()))?
+        };
+
+        let _guard = self.emit_lock.lock().await;
+        let seq = self.last_seq.load(Ordering::Acquire) + 1;
+        crate::db::firehose_seq::insert_event(&self.db, seq, &input.repo, "commit", &blob, &time)
+            .await?;
+        self.last_seq.store(seq, Ordering::Release);
+
         let event = FirehoseEvent::Commit(Arc::new(CommitEvent {
-            seq: assigned,
-            time: now_rfc3339(),
+            seq,
+            time,
             repo: input.repo,
             commit: input.commit,
             rev: input.rev,
@@ -294,50 +333,179 @@ impl Firehose {
             ops: input.ops,
             blocks: input.blocks,
         }));
-        // Retain for cursor replay, evicting the oldest once the buffer is full.
-        if inner.backlog.len() == self.capacity {
-            inner.backlog.pop_front();
-        }
-        inner.backlog.push_back(event.clone());
         // A send error means "no subscribers"; that is expected, not a failure.
         let _ = self.tx.send(event);
-        assigned
+        Ok(seq)
     }
 
-    /// Assign the next sequence number, build an [`AccountEvent`], retain it for replay, and
-    /// broadcast it.
+    /// Persist, sequence, and broadcast an `#account` event.
     ///
     /// The account analogue of [`emit_commit`]: emitted when an account is deactivated
     /// (`active = false`, `status = Some("deactivated")`) or reactivated (`active = true`,
-    /// `status = None`). Shares the same sequencer and backlog so account-status frames are
-    /// ordered relative to commits exactly as a relay expects. Returns the assigned sequence
-    /// number; never blocks and never fails.
-    pub fn emit_account(&self, did: String, active: bool, status: Option<String>) -> u64 {
-        let mut inner = self.inner.lock().expect("firehose inner mutex poisoned");
-        inner.seq += 1;
-        let assigned = inner.seq;
+    /// `status = None`). Shares the same sequencer and durable log so account-status frames are
+    /// ordered relative to commits exactly as a relay expects.
+    pub async fn emit_account(
+        &self,
+        did: String,
+        active: bool,
+        status: Option<String>,
+    ) -> Result<u64, FirehoseError> {
+        let time = now_rfc3339();
+        let blob = {
+            let stored = StoredAccountRef {
+                did: &did,
+                time: &time,
+                active,
+                status: status.as_deref(),
+            };
+            serde_ipld_dagcbor::to_vec(&stored).map_err(|e| FirehoseError::Encode(e.to_string()))?
+        };
+
+        let _guard = self.emit_lock.lock().await;
+        let seq = self.last_seq.load(Ordering::Acquire) + 1;
+        crate::db::firehose_seq::insert_event(&self.db, seq, &did, "account", &blob, &time).await?;
+        self.last_seq.store(seq, Ordering::Release);
+
         let event = FirehoseEvent::Account(Arc::new(AccountEvent {
-            seq: assigned,
-            time: now_rfc3339(),
+            seq,
+            time,
             did,
             active,
             status,
         }));
-        // Retain for cursor replay, evicting the oldest once the buffer is full.
-        if inner.backlog.len() == self.capacity {
-            inner.backlog.pop_front();
-        }
-        inner.backlog.push_back(event.clone());
-        // A send error means "no subscribers"; that is expected, not a failure.
         let _ = self.tx.send(event);
-        assigned
+        Ok(seq)
     }
 }
 
-impl Default for Firehose {
-    fn default() -> Self {
-        Self::new()
+/// Reconstruct a [`FirehoseEvent`] from a persisted `repo_seq` row, for cursor replay.
+///
+/// `seq` comes from the row's primary key (not the stored payload). A reconstructed commit op
+/// carries `value: None` — the record value is not part of the wire frame and is not persisted.
+pub fn decode_stored_event(
+    seq: u64,
+    event_type: &str,
+    blob: &[u8],
+) -> Result<FirehoseEvent, FirehoseError> {
+    match event_type {
+        "commit" => {
+            let s: StoredCommitOwned = serde_ipld_dagcbor::from_slice(blob)
+                .map_err(|e| FirehoseError::Decode(e.to_string()))?;
+            let mut ops = Vec::with_capacity(s.ops.len());
+            for o in s.ops {
+                let action = OpAction::from_wire(&o.action).ok_or_else(|| {
+                    FirehoseError::Decode(format!("unknown op action {:?}", o.action))
+                })?;
+                ops.push(RepoOp {
+                    action,
+                    collection: o.collection,
+                    rkey: o.rkey,
+                    cid: o.cid,
+                    value: None,
+                });
+            }
+            Ok(FirehoseEvent::Commit(Arc::new(CommitEvent {
+                seq,
+                time: s.time,
+                repo: s.repo,
+                commit: s.commit,
+                rev: s.rev,
+                since: s.since,
+                ops,
+                blocks: s.blocks,
+            })))
+        }
+        "account" => {
+            let s: StoredAccountOwned = serde_ipld_dagcbor::from_slice(blob)
+                .map_err(|e| FirehoseError::Decode(e.to_string()))?;
+            Ok(FirehoseEvent::Account(Arc::new(AccountEvent {
+                seq,
+                time: s.time,
+                did: s.did,
+                active: s.active,
+                status: s.status,
+            })))
+        }
+        other => Err(FirehoseError::Decode(format!(
+            "unknown event_type {other:?}"
+        ))),
     }
+}
+
+// ── Stored payload representations ─────────────────────────────────────────────
+//
+// The `repo_seq.event` blob is a DAG-CBOR map carrying everything needed to rebuild the wire
+// frame for replay: the commit's metadata, its per-record ops (action/path/cid), and the CARv1
+// `blocks` (stored here because post-commit GC may have reclaimed the blocks the diff was built
+// from). The record `value` is deliberately omitted — it is not on the wire. Encoding borrows the
+// live event (the `*Ref` structs); decoding owns the result (the `*Owned` structs). Field *names*
+// must match across the pair; declaration order is irrelevant under DAG-CBOR's canonical map keys.
+
+#[derive(Serialize)]
+struct StoredCommitRef<'a> {
+    repo: &'a str,
+    commit: &'a str,
+    rev: &'a str,
+    since: Option<&'a str>,
+    time: &'a str,
+    ops: Vec<StoredOpRef<'a>>,
+    #[serde(with = "serde_bytes")]
+    blocks: &'a [u8],
+}
+
+#[derive(Serialize)]
+struct StoredOpRef<'a> {
+    action: &'a str,
+    collection: &'a str,
+    rkey: &'a str,
+    cid: Option<&'a str>,
+}
+
+impl<'a> From<&'a RepoOp> for StoredOpRef<'a> {
+    fn from(op: &'a RepoOp) -> Self {
+        StoredOpRef {
+            action: op.action.as_str(),
+            collection: &op.collection,
+            rkey: &op.rkey,
+            cid: op.cid.as_deref(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct StoredAccountRef<'a> {
+    did: &'a str,
+    time: &'a str,
+    active: bool,
+    status: Option<&'a str>,
+}
+
+#[derive(Deserialize)]
+struct StoredCommitOwned {
+    repo: String,
+    commit: String,
+    rev: String,
+    since: Option<String>,
+    time: String,
+    ops: Vec<StoredOpOwned>,
+    #[serde(with = "serde_bytes")]
+    blocks: Vec<u8>,
+}
+
+#[derive(Deserialize)]
+struct StoredOpOwned {
+    action: String,
+    collection: String,
+    rkey: String,
+    cid: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct StoredAccountOwned {
+    did: String,
+    time: String,
+    active: bool,
+    status: Option<String>,
 }
 
 /// Current UTC time as an RFC 3339 / ISO-8601 string with millisecond precision.
@@ -348,7 +516,24 @@ fn now_rfc3339() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::{open_pool, run_migrations};
     use tokio::sync::broadcast::error::{RecvError, TryRecvError};
+
+    /// A firehose backed by a fresh migrated in-memory database.
+    async fn test_firehose() -> Firehose {
+        let db = open_pool("sqlite::memory:").await.expect("test pool");
+        run_migrations(&db).await.expect("test migrations");
+        Firehose::new(db).await.expect("firehose")
+    }
+
+    /// A firehose with a tiny broadcast buffer for exercising slow-consumer lag.
+    async fn test_firehose_with_capacity(capacity: usize) -> Firehose {
+        let db = open_pool("sqlite::memory:").await.expect("test pool");
+        run_migrations(&db).await.expect("test migrations");
+        Firehose::with_capacity(db, capacity)
+            .await
+            .expect("firehose")
+    }
 
     fn commit_input(repo: &str) -> CommitInput {
         CommitInput {
@@ -382,17 +567,19 @@ mod tests {
             "at://did:plc:x/app.bsky.feed.post/abc"
         );
         assert_eq!(op.action.as_str(), "create");
+        assert_eq!(OpAction::from_wire("delete"), Some(OpAction::Delete));
+        assert_eq!(OpAction::from_wire("bogus"), None);
     }
 
     #[tokio::test]
     async fn sequence_numbers_are_monotonic_from_one() {
-        let fh = Firehose::new();
+        let fh = test_firehose().await;
         let mut rx = fh.subscribe();
 
         assert_eq!(fh.current_seq(), 0);
-        assert_eq!(fh.emit_commit(commit_input("did:plc:a")), 1);
-        assert_eq!(fh.emit_commit(commit_input("did:plc:a")), 2);
-        assert_eq!(fh.emit_commit(commit_input("did:plc:a")), 3);
+        assert_eq!(fh.emit_commit(commit_input("did:plc:a")).await.unwrap(), 1);
+        assert_eq!(fh.emit_commit(commit_input("did:plc:a")).await.unwrap(), 2);
+        assert_eq!(fh.emit_commit(commit_input("did:plc:a")).await.unwrap(), 3);
         assert_eq!(fh.current_seq(), 3);
 
         for expected in 1..=3 {
@@ -405,13 +592,13 @@ mod tests {
 
     #[tokio::test]
     async fn multiple_subscribers_each_receive_every_event() {
-        let fh = Firehose::new();
+        let fh = test_firehose().await;
         let mut rx1 = fh.subscribe();
         let mut rx2 = fh.subscribe();
         assert_eq!(fh.subscriber_count(), 2);
 
-        fh.emit_commit(commit_input("did:plc:a"));
-        fh.emit_commit(commit_input("did:plc:b"));
+        fh.emit_commit(commit_input("did:plc:a")).await.unwrap();
+        fh.emit_commit(commit_input("did:plc:b")).await.unwrap();
 
         for rx in [&mut rx1, &mut rx2] {
             let FirehoseEvent::Commit(first) = rx.recv().await.unwrap() else {
@@ -429,9 +616,9 @@ mod tests {
 
     #[tokio::test]
     async fn commit_event_carries_ops_and_blocks() {
-        let fh = Firehose::new();
+        let fh = test_firehose().await;
         let mut rx = fh.subscribe();
-        fh.emit_commit(commit_input("did:plc:a"));
+        fh.emit_commit(commit_input("did:plc:a")).await.unwrap();
 
         let FirehoseEvent::Commit(c) = rx.recv().await.unwrap() else {
             panic!("expected a #commit event");
@@ -440,113 +627,167 @@ mod tests {
         assert_eq!(c.ops.len(), 1);
         assert_eq!(c.ops[0].action, OpAction::Create);
         assert_eq!(c.ops[0].cid.as_deref(), Some("bafyrecord"));
+        // The live event still carries the record value for in-process consumers.
         assert_eq!(c.ops[0].value, Some(serde_json::json!({ "text": "hi" })));
         assert!(!c.time.is_empty());
     }
 
-    /// Unwrap a successful subscription, panicking on an unexpected `FutureCursor`.
-    fn subscribed(outcome: SubscribeOutcome) -> Subscription {
-        match outcome {
-            SubscribeOutcome::Subscribed(sub) => sub,
-            SubscribeOutcome::FutureCursor { current } => {
-                panic!("expected a subscription, got FutureCursor (current={current})")
+    #[tokio::test]
+    async fn emit_persists_each_event_to_the_log() {
+        let fh = test_firehose().await;
+        fh.emit_commit(commit_input("did:plc:a")).await.unwrap();
+        fh.emit_account(
+            "did:plc:a".to_string(),
+            false,
+            Some("deactivated".to_string()),
+        )
+        .await
+        .unwrap();
+
+        // Both events are durable, in order, with their types recorded.
+        let rows = crate::db::firehose_seq::events_in_range(&fh.db, 0, 2, 10)
+            .await
+            .unwrap();
+        let types: Vec<&str> = rows.iter().map(|r| r.event_type.as_str()).collect();
+        assert_eq!(rows.iter().map(|r| r.seq).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(types, vec!["commit", "account"]);
+    }
+
+    #[tokio::test]
+    async fn sequence_continues_across_restart() {
+        let db = open_pool("sqlite::memory:").await.unwrap();
+        run_migrations(&db).await.unwrap();
+
+        // First "process": emit two events, then drop the firehose (process exits).
+        {
+            let fh = Firehose::new(db.clone()).await.unwrap();
+            assert_eq!(fh.emit_commit(commit_input("did:plc:a")).await.unwrap(), 1);
+            assert_eq!(fh.emit_commit(commit_input("did:plc:a")).await.unwrap(), 2);
+        }
+
+        // Second "process": a fresh firehose over the same DB resumes from seq 2, not 0.
+        let fh2 = Firehose::new(db).await.unwrap();
+        assert_eq!(fh2.current_seq(), 2, "seq must survive a restart");
+        assert_eq!(
+            fh2.emit_commit(commit_input("did:plc:a")).await.unwrap(),
+            3,
+            "the next seq must continue monotonically after restart"
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_survives_restart() {
+        // Acceptance: after a redeploy, a relay reconnecting with a prior cursor replays the
+        // commits it missed — from the durable log, not an in-memory buffer the restart cleared.
+        let db = open_pool("sqlite::memory:").await.unwrap();
+        run_migrations(&db).await.unwrap();
+
+        // First "process": three commits, then the firehose (and its broadcast backlog) is gone.
+        {
+            let fh = Firehose::new(db.clone()).await.unwrap();
+            for _ in 0..3 {
+                fh.emit_commit(commit_input("did:plc:a")).await.unwrap();
             }
         }
+
+        // Second "process": a fresh firehose over the same DB. A relay reconnects with cursor 1.
+        let fh2 = Firehose::new(db.clone()).await.unwrap();
+        let SubscribeOutcome::Subscribed(sub) = fh2.subscribe_from(Some(1)).await else {
+            panic!("expected a subscription");
+        };
+        assert_eq!(
+            sub.upper, 3,
+            "frontier reflects the persisted log after restart"
+        );
+
+        // The handler would page (cursor, upper] from the log; the missed commits come back.
+        let rows =
+            crate::db::firehose_seq::events_in_range(&db, sub.cursor.unwrap(), sub.upper, 10)
+                .await
+                .unwrap();
+        let seqs: Vec<u64> = rows
+            .iter()
+            .map(|r| {
+                decode_stored_event(r.seq as u64, &r.event_type, &r.event)
+                    .unwrap()
+                    .seq()
+            })
+            .collect();
+        assert_eq!(
+            seqs,
+            vec![2, 3],
+            "missed commits replay from the durable log after a restart"
+        );
     }
 
     #[tokio::test]
-    async fn subscribe_from_replays_events_after_cursor() {
-        let fh = Firehose::new();
+    async fn subscribe_from_reports_cursor_and_frontier() {
+        let fh = test_firehose().await;
         for _ in 0..5 {
-            fh.emit_commit(commit_input("did:plc:a"));
+            fh.emit_commit(commit_input("did:plc:a")).await.unwrap();
         }
 
-        // Cursor at seq 2: replay must contain exactly seqs 3, 4, 5 in order.
-        let sub = subscribed(fh.subscribe_from(Some(2)));
-        let seqs: Vec<u64> = sub.replay.iter().map(|e| e.seq()).collect();
-        assert_eq!(seqs, vec![3, 4, 5]);
+        let SubscribeOutcome::Subscribed(sub) = fh.subscribe_from(Some(2)).await else {
+            panic!("expected a subscription");
+        };
+        // The handler will replay (cursor, upper] = (2, 5] from the durable log.
+        assert_eq!(sub.cursor, Some(2));
+        assert_eq!(sub.upper, 5);
     }
 
     #[tokio::test]
-    async fn subscribe_from_without_cursor_replays_nothing() {
-        let fh = Firehose::new();
-        fh.emit_commit(commit_input("did:plc:a"));
-        fh.emit_commit(commit_input("did:plc:a"));
+    async fn subscribe_from_without_cursor_has_no_replay_range() {
+        let fh = test_firehose().await;
+        fh.emit_commit(commit_input("did:plc:a")).await.unwrap();
 
-        let sub = subscribed(fh.subscribe_from(None));
-        assert!(sub.replay.is_empty(), "no cursor means no backfill");
+        let SubscribeOutcome::Subscribed(sub) = fh.subscribe_from(None).await else {
+            panic!("expected a subscription");
+        };
+        assert_eq!(sub.cursor, None, "no cursor means live-only, no replay");
+        assert_eq!(sub.upper, 1);
     }
 
     #[tokio::test]
     async fn subscribe_from_rejects_future_cursor() {
-        let fh = Firehose::new();
-        fh.emit_commit(commit_input("did:plc:a")); // seq 1
+        let fh = test_firehose().await;
+        fh.emit_commit(commit_input("did:plc:a")).await.unwrap(); // seq 1
 
-        // A cursor past the latest sequence is a future cursor and reports the current seq.
-        match fh.subscribe_from(Some(2)) {
+        match fh.subscribe_from(Some(2)).await {
             SubscribeOutcome::FutureCursor { current } => assert_eq!(current, 1),
             SubscribeOutcome::Subscribed(_) => panic!("cursor 2 is in the future of seq 1"),
         }
 
-        // The current seq itself is not "in the future": it subscribes with no replay.
-        let sub = subscribed(fh.subscribe_from(Some(1)));
-        assert!(sub.replay.is_empty());
-    }
-
-    #[tokio::test]
-    async fn subscribe_from_bridges_replay_and_live_without_gap_or_dup() {
-        let fh = Firehose::new();
-        fh.emit_commit(commit_input("did:plc:a")); // seq 1
-        fh.emit_commit(commit_input("did:plc:a")); // seq 2
-
-        // Subscribe from cursor 1: should replay seq 2, then receive seq 3 live.
-        let mut sub = subscribed(fh.subscribe_from(Some(1)));
-        assert_eq!(
-            sub.replay.iter().map(|e| e.seq()).collect::<Vec<_>>(),
-            vec![2]
-        );
-
-        fh.emit_commit(commit_input("did:plc:a")); // seq 3, after subscribe
-
-        let FirehoseEvent::Commit(live) = sub.rx.recv().await.unwrap() else {
-            panic!("expected a #commit event");
+        // The current seq itself is not "in the future": it subscribes (replay range empty).
+        let SubscribeOutcome::Subscribed(sub) = fh.subscribe_from(Some(1)).await else {
+            panic!("expected a subscription");
         };
-        assert_eq!(
-            live.seq, 3,
-            "live stream resumes exactly after the replay tail"
-        );
-    }
-
-    #[tokio::test]
-    async fn backlog_is_bounded_and_evicts_oldest() {
-        let fh = Firehose::with_capacity(3);
-        for _ in 0..6 {
-            fh.emit_commit(commit_input("did:plc:a"));
-        }
-        // Only the last 3 (seqs 4,5,6) remain; a cursor of 0 replays just those.
-        let sub = subscribed(fh.subscribe_from(Some(0)));
-        assert_eq!(
-            sub.replay.iter().map(|e| e.seq()).collect::<Vec<_>>(),
-            vec![4, 5, 6]
-        );
+        assert_eq!(sub.cursor, Some(1));
+        assert_eq!(sub.upper, 1);
     }
 
     #[tokio::test]
     async fn emit_account_shares_sequencer_and_carries_status() {
-        let fh = Firehose::new();
+        let fh = test_firehose().await;
         let mut rx = fh.subscribe();
 
         // A commit, then a deactivation, then a reactivation — all share one sequence space.
-        assert_eq!(fh.emit_commit(commit_input("did:plc:a")), 1);
+        assert_eq!(fh.emit_commit(commit_input("did:plc:a")).await.unwrap(), 1);
         assert_eq!(
             fh.emit_account(
                 "did:plc:a".to_string(),
                 false,
                 Some("deactivated".to_string())
-            ),
+            )
+            .await
+            .unwrap(),
             2
         );
-        assert_eq!(fh.emit_account("did:plc:a".to_string(), true, None), 3);
+        assert_eq!(
+            fh.emit_account("did:plc:a".to_string(), true, None)
+                .await
+                .unwrap(),
+            3
+        );
 
         let FirehoseEvent::Commit(c) = rx.recv().await.unwrap() else {
             panic!("expected a commit first");
@@ -571,42 +812,82 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn account_events_are_replayed_by_cursor() {
-        let fh = Firehose::new();
-        fh.emit_commit(commit_input("did:plc:a")); // seq 1
-        fh.emit_account(
-            "did:plc:a".to_string(),
-            false,
-            Some("deactivated".to_string()),
-        ); // seq 2
-
-        let sub = subscribed(fh.subscribe_from(Some(1)));
-        assert_eq!(
-            sub.replay.iter().map(|e| e.seq()).collect::<Vec<_>>(),
-            vec![2],
-            "an account event after the cursor must be replayed like any other"
-        );
+    async fn emit_with_no_subscribers_still_advances_and_persists() {
+        let fh = test_firehose().await;
+        // No subscribers attached: the broadcast is dropped but the seq is consumed and persisted.
+        assert_eq!(fh.emit_commit(commit_input("did:plc:a")).await.unwrap(), 1);
+        assert_eq!(fh.emit_commit(commit_input("did:plc:a")).await.unwrap(), 2);
+        assert_eq!(fh.current_seq(), 2);
+        assert_eq!(crate::db::firehose_seq::max_seq(&fh.db).await.unwrap(), 2);
     }
 
-    #[test]
-    fn emit_with_no_subscribers_still_advances_sequence() {
-        let fh = Firehose::new();
-        // No subscribers attached: send drops the event but the seq is still consumed.
-        assert_eq!(fh.emit_commit(commit_input("did:plc:a")), 1);
-        assert_eq!(fh.emit_commit(commit_input("did:plc:a")), 2);
-        assert_eq!(fh.current_seq(), 2);
+    #[tokio::test]
+    async fn decode_stored_commit_roundtrips_wire_fields() {
+        let fh = test_firehose().await;
+        let mut input = commit_input("did:plc:roundtrip");
+        input.since = Some("3kprev".to_string());
+        fh.emit_commit(input).await.unwrap();
+
+        let rows = crate::db::firehose_seq::events_in_range(&fh.db, 0, 1, 1)
+            .await
+            .unwrap();
+        let event =
+            decode_stored_event(rows[0].seq as u64, &rows[0].event_type, &rows[0].event).unwrap();
+
+        let FirehoseEvent::Commit(c) = event else {
+            panic!("expected a #commit event");
+        };
+        assert_eq!(c.seq, 1);
+        assert_eq!(c.repo, "did:plc:roundtrip");
+        assert_eq!(c.commit, "bafycommit");
+        assert_eq!(c.rev, "3krev");
+        assert_eq!(c.since.as_deref(), Some("3kprev"));
+        assert_eq!(c.blocks, vec![1, 2, 3]);
+        assert_eq!(c.ops.len(), 1);
+        assert_eq!(c.ops[0].action, OpAction::Create);
+        assert_eq!(c.ops[0].collection, "app.bsky.feed.post");
+        assert_eq!(c.ops[0].rkey, "abc");
+        assert_eq!(c.ops[0].cid.as_deref(), Some("bafyrecord"));
+        // The record value is not on the wire, so it is not persisted or restored.
+        assert_eq!(c.ops[0].value, None);
+    }
+
+    #[tokio::test]
+    async fn decode_stored_account_roundtrips() {
+        let fh = test_firehose().await;
+        fh.emit_account(
+            "did:plc:acct".to_string(),
+            false,
+            Some("deactivated".to_string()),
+        )
+        .await
+        .unwrap();
+
+        let rows = crate::db::firehose_seq::events_in_range(&fh.db, 0, 1, 1)
+            .await
+            .unwrap();
+        let event =
+            decode_stored_event(rows[0].seq as u64, &rows[0].event_type, &rows[0].event).unwrap();
+
+        let FirehoseEvent::Account(a) = event else {
+            panic!("expected an #account event");
+        };
+        assert_eq!(a.seq, 1);
+        assert_eq!(a.did, "did:plc:acct");
+        assert!(!a.active);
+        assert_eq!(a.status.as_deref(), Some("deactivated"));
     }
 
     #[tokio::test]
     async fn slow_subscriber_lags_without_blocking_producer() {
         // A tiny buffer makes overflow easy to trigger. A consumer that never drains must
         // not prevent the producer from emitting, and must observe Lagged rather than stall.
-        let fh = Firehose::with_capacity(2);
+        let fh = test_firehose_with_capacity(2).await;
         let mut slow = fh.subscribe();
 
         // Emit more events than the buffer holds; every emit returns immediately.
         for _ in 0..10 {
-            fh.emit_commit(commit_input("did:plc:a"));
+            fh.emit_commit(commit_input("did:plc:a")).await.unwrap();
         }
         assert_eq!(
             fh.current_seq(),

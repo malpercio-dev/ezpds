@@ -35,6 +35,11 @@ use repo_engine::Cid;
 /// How often to send a keepalive Ping to detect dead connections.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 
+/// How many backlog events to read per query when replaying a cursor from the durable log.
+/// Bounds replay memory so a subscriber resuming from a very old cursor streams in pages rather
+/// than materialising the entire log at once.
+const REPLAY_BATCH: u32 = 256;
+
 #[derive(Deserialize)]
 pub struct SubscribeReposParams {
     /// The last `seq` the consumer has already processed; replay resumes after it.
@@ -59,10 +64,17 @@ pub async fn subscribe_repos(
 async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) {
     let (mut sender, mut receiver) = socket.split();
 
-    // Validate the cursor and attach to the stream atomically: the future-cursor check, the
-    // backlog snapshot, and the live subscribe all happen under one lock inside `subscribe_from`,
-    // so a concurrent commit can't produce a spurious FutureCursor or slip an event past us.
-    let Subscription { replay, mut rx } = match state.firehose.subscribe_from(cursor) {
+    // Validate the cursor and attach to the stream atomically: the future-cursor check, the live
+    // subscribe, and the replay frontier (`upper`) snapshot all happen under one lock inside
+    // `subscribe_from`, so a concurrent commit can't produce a spurious FutureCursor or slip an
+    // event past us. Replay then reads the durable `repo_seq` log for `(cursor, upper]`, and the
+    // live stream (`rx`) carries everything with `seq > upper` — the two ranges are exactly
+    // disjoint, so there is no gap and no duplicate across the boundary.
+    let Subscription {
+        mut rx,
+        cursor,
+        upper,
+    } = match state.firehose.subscribe_from(cursor).await {
         SubscribeOutcome::Subscribed(sub) => sub,
         SubscribeOutcome::FutureCursor { .. } => {
             // A cursor ahead of everything we've emitted is a client error: refuse and close.
@@ -73,18 +85,64 @@ async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) 
         }
     };
 
-    // Replay missed events first, oldest first, before any live event. Poll the incoming half
-    // between sends so that a client that closes (or errors) mid-replay aborts immediately
-    // rather than after we encode and write up to a full backlog of now-unwanted events.
-    for event in &replay {
-        if let Some(incoming) = receiver.next().now_or_never() {
-            match incoming {
-                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
-                Some(Ok(_)) => {}
+    // Replay missed events first, oldest first, before any live event. Page the durable log so a
+    // subscriber resuming from a very old cursor doesn't materialise everything at once. Poll the
+    // incoming half between sends so a client that closes (or errors) mid-replay aborts promptly
+    // rather than after we encode and write up to a full page of now-unwanted events.
+    if let Some(cursor) = cursor {
+        let mut after = cursor;
+        while after < upper {
+            let batch = match crate::db::firehose_seq::events_in_range(
+                &state.db,
+                after,
+                upper,
+                REPLAY_BATCH,
+            )
+            .await
+            {
+                Ok(batch) => batch,
+                Err(e) => {
+                    tracing::error!(error = %e, cursor, "failed to read firehose replay backlog; closing");
+                    let frame =
+                        encode_error_frame("InternalError", "failed to read replay backlog");
+                    let _ = sender.send(Message::Binary(frame)).await;
+                    let _ = sender.close().await;
+                    return;
+                }
+            };
+            if batch.is_empty() {
+                break;
             }
-        }
-        if !send_event(&mut sender, event).await {
-            return;
+            let page_len = batch.len();
+            for row in batch {
+                if let Some(incoming) = receiver.next().now_or_never() {
+                    match incoming {
+                        Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
+                        Some(Ok(_)) => {}
+                    }
+                }
+                after = row.seq as u64;
+                let event = match crate::firehose::decode_stored_event(
+                    after,
+                    &row.event_type,
+                    &row.event,
+                ) {
+                    Ok(event) => event,
+                    Err(e) => {
+                        // A corrupt stored row must not kill the connection; skip it (the
+                        // subscriber can backfill via getRepo) and continue replaying.
+                        tracing::error!(error = %e, seq = after, "failed to decode stored firehose event; skipping");
+                        continue;
+                    }
+                };
+                if !send_event(&mut sender, &event).await {
+                    return;
+                }
+            }
+            // A short page means the range is exhausted; avoid an extra empty query.
+            if (page_len as u32) < REPLAY_BATCH {
+                break;
+            }
         }
     }
 
@@ -467,15 +525,18 @@ mod tests {
         )
     }
 
-    fn emit(firehose: &Firehose) -> u64 {
-        firehose.emit_commit(CommitInput {
-            repo: "did:plc:alice".to_string(),
-            commit: TEST_CID.to_string(),
-            rev: "3krev".to_string(),
-            since: None,
-            ops: Vec::new(),
-            blocks: vec![1, 2, 3],
-        })
+    async fn emit(firehose: &Firehose) -> u64 {
+        firehose
+            .emit_commit(CommitInput {
+                repo: "did:plc:alice".to_string(),
+                commit: TEST_CID.to_string(),
+                rev: "3krev".to_string(),
+                since: None,
+                ops: Vec::new(),
+                blocks: vec![1, 2, 3],
+            })
+            .await
+            .expect("emit commit")
     }
 
     /// Wait (briefly) until at least `n` subscribers have attached. This makes "emit after
@@ -511,7 +572,7 @@ mod tests {
         let (mut ws, _resp) = connect_async(&url).await.expect("ws connect");
 
         await_subscribers(&firehose, 1).await;
-        let seq = emit(&firehose);
+        let seq = emit(&firehose).await;
 
         let (header, body) = decode_frame(&next_binary(&mut ws).await);
         assert_eq!(map_get(&header, "t"), &Ipld::String("#commit".into()));
@@ -527,9 +588,9 @@ mod tests {
         let (url, firehose) = spawn_server().await;
 
         // Emit three events *before* anyone subscribes.
-        emit(&firehose); // seq 1
-        let seq2 = emit(&firehose); // seq 2
-        let seq3 = emit(&firehose); // seq 3
+        emit(&firehose).await; // seq 1
+        let seq2 = emit(&firehose).await; // seq 2
+        let seq3 = emit(&firehose).await; // seq 3
 
         // Subscribe from cursor 1: must replay exactly seq 2 then seq 3.
         let (mut ws, _resp) = connect_async(format!("{url}?cursor=1"))
@@ -549,7 +610,7 @@ mod tests {
         let (mut ws2, _) = connect_async(&url).await.expect("ws2 connect");
 
         await_subscribers(&firehose, 2).await;
-        let seq = emit(&firehose);
+        let seq = emit(&firehose).await;
 
         for ws in [&mut ws1, &mut ws2] {
             let (_, body) = decode_frame(&next_binary(ws).await);
@@ -560,7 +621,7 @@ mod tests {
     #[tokio::test]
     async fn websocket_future_cursor_yields_error_frame() {
         let (url, firehose) = spawn_server().await;
-        emit(&firehose); // current seq = 1
+        emit(&firehose).await; // current seq = 1
 
         // Cursor far ahead of what we've emitted is a client error.
         let (mut ws, _resp) = connect_async(format!("{url}?cursor=9999"))
@@ -668,11 +729,14 @@ mod tests {
         let (mut ws, _resp) = connect_async(&url).await.expect("ws connect");
         await_subscribers(&firehose, 1).await;
 
-        let seq = firehose.emit_account(
-            "did:plc:bob".to_string(),
-            false,
-            Some("deactivated".to_string()),
-        );
+        let seq = firehose
+            .emit_account(
+                "did:plc:bob".to_string(),
+                false,
+                Some("deactivated".to_string()),
+            )
+            .await
+            .expect("emit account");
 
         let (header, body) = decode_frame(&next_binary(&mut ws).await);
         assert_eq!(map_get(&header, "op"), &Ipld::Integer(1));
@@ -695,7 +759,10 @@ mod tests {
         let (mut ws, _resp) = connect_async(&url).await.expect("ws connect");
         await_subscribers(&firehose, 1).await;
 
-        let seq = firehose.emit_account("did:plc:carol".to_string(), true, None);
+        let seq = firehose
+            .emit_account("did:plc:carol".to_string(), true, None)
+            .await
+            .expect("emit account");
 
         let (header, body) = decode_frame(&next_binary(&mut ws).await);
         assert_eq!(map_get(&header, "t"), &Ipld::String("#account".to_string()));
@@ -716,11 +783,14 @@ mod tests {
         let (url, firehose) = spawn_server().await;
 
         // Emit an account event before subscribing.
-        let seq = firehose.emit_account(
-            "did:plc:dave".to_string(),
-            false,
-            Some("deactivated".to_string()),
-        );
+        let seq = firehose
+            .emit_account(
+                "did:plc:dave".to_string(),
+                false,
+                Some("deactivated".to_string()),
+            )
+            .await
+            .expect("emit account");
 
         // Subscribe from cursor 0 (before seq 1): the account event must be replayed.
         let (mut ws, _resp) = connect_async(format!("{url}?cursor=0"))
