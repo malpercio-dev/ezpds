@@ -223,6 +223,10 @@ pub struct Firehose {
     /// `tokio::sync::Mutex`. Also taken (briefly, no await) by `subscribe_from` so it can snapshot
     /// the live receiver and the sequence frontier atomically against emission.
     emit_lock: tokio::sync::Mutex<()>,
+    /// Serialises retention pruning with cursor replay. A subscription with a cursor holds this
+    /// from before it captures `upper` until the durable backlog is materialised, so the retention
+    /// sweep cannot delete `(cursor, upper]` after the subscription snapshot is established.
+    retention_replay_lock: tokio::sync::Mutex<()>,
     /// The last sequence number assigned. Written only under `emit_lock` (after the row is
     /// persisted), so a value `<= last_seq` is always already durable. Read locklessly for
     /// diagnostics (`current_seq`) and under the lock for the subscribe frontier.
@@ -245,6 +249,7 @@ impl Firehose {
         Ok(Self {
             db,
             emit_lock: tokio::sync::Mutex::new(()),
+            retention_replay_lock: tokio::sync::Mutex::new(()),
             last_seq: AtomicU64::new(last),
             tx,
         })
@@ -266,17 +271,29 @@ impl Firehose {
     ///
     /// The live receiver and the `upper` frontier are captured together under `emit_lock`, so no
     /// concurrent emit can slip an event past both the replay range and the receiver, nor advance
-    /// the counter into a spurious `FutureCursor`. Replay is then read outside the lock, bounded by
-    /// `upper`, so it stays disjoint from the live stream. Events older than the (currently
-    /// unbounded) log can always be replayed; there is no in-memory buffer to age out.
+    /// the counter into a spurious `FutureCursor`. For cursor subscriptions, the
+    /// `retention_replay_lock` is acquired *before* this snapshot and held until replay is fully
+    /// materialised, so `firehose_gc` cannot prune rows in `(cursor, upper]` after the subscription
+    /// snapshot is established. Replay is then read outside `emit_lock`, bounded by `upper`, so it
+    /// stays disjoint from the live stream. If a GC pass wins the retention/replay lock before the
+    /// subscription snapshots, a cursor inside the already-pruned prefix degrades to best-effort
+    /// replay (see [`read_replay`]) rather than failing closed.
     ///
     /// Returns [`FirehoseError`] if the backlog can't be assembled: a DB read failure, a stored row
-    /// that won't decode, or a gap in the `(cursor, upper]` range (which `read_replay` rejects so a
-    /// hole is never silently bridged). The caller fails the subscription closed in that case.
+    /// that won't decode, or a *mid-range* gap in the `(cursor, upper]` range (which `read_replay`
+    /// rejects so a hole is never silently bridged). A cursor that falls inside a **pruned prefix**
+    /// degrades to best-effort instead — the subscriber receives the retained suffix — because the
+    /// retention sweep only ever removes a contiguous prefix below the live frontier. The caller
+    /// fails the subscription closed only on a real error (DB/decode/mid-range gap).
     pub async fn subscribe_from(
         &self,
         cursor: Option<u64>,
     ) -> Result<SubscribeOutcome, FirehoseError> {
+        let _retention_guard = if cursor.is_some() {
+            Some(self.retention_replay_lock.lock().await)
+        } else {
+            None
+        };
         let (rx, upper) = {
             let _guard = self.emit_lock.lock().await;
             // Subscribe to the live channel *before* releasing the lock so that no event emitted
@@ -294,14 +311,33 @@ impl Firehose {
         Ok(SubscribeOutcome::Subscribed(Subscription { replay, rx }))
     }
 
+    /// Lock out retention pruning while a cursor replay snapshot is captured/materialised.
+    pub(crate) async fn lock_retention_replay(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.retention_replay_lock.lock().await
+    }
+
     /// Materialise the durable replay backlog for `(cursor, upper]`, oldest first.
     ///
     /// Pages the log in `REPLAY_BATCH` chunks and decodes each row into a [`FirehoseEvent`]. The
     /// range is a dense prefix (the sequencer advances `last_seq` only after a row is persisted),
-    /// so this enforces density per row — each `seq` must be exactly the previous plus one, and the
-    /// last must reach `upper` — and returns [`FirehoseError`] on any gap rather than silently
-    /// skipping a missing `seq`. A negative stored `seq` (which can't occur from our writer) or a
-    /// row that won't decode is likewise a hard error: replay must be exact or fail closed.
+    /// so this enforces density between **consecutive** rows — each `seq` must be exactly the
+    /// previous plus one, and the last must reach `upper` — and returns [`FirehoseError`] on any
+    /// gap rather than silently skipping a missing `seq`. A negative stored `seq` (which can't
+    /// occur from our writer) or a row that won't decode is likewise a hard error: replay must be
+    /// exact or fail closed.
+    ///
+    /// **Best-effort at the pruned prefix.** The retention sweep (`firehose_gc`) prunes a
+    /// *contiguous* prefix `seq ≤ watermark`, so the first row above a cursor that falls inside
+    /// the pruned window is the oldest retained row, not `cursor + 1`. The first-row density
+    /// check is **relaxed only when the cursor sits below the oldest retained row** (no row at
+    /// or below the cursor): that is a genuine pruned prefix, so replay degrades to best-effort
+    /// (the subscriber receives the retained suffix) rather than failing closed. When a row *does*
+    /// exist at or below the cursor, replay is dense from the cursor and any jump on the first row
+    /// is a mid-range gap that fails closed. The first replay page projects that cursor-presence
+    /// bit in the same SQL statement that reads the rows, so the pruned-prefix decision observes
+    /// one SQLite snapshot (no TOCTOU between the batch and the cursor-presence check). The strict
+    /// consecutive-row check still catches a *mid-range* hole (a durability bug, not a
+    /// prune) on the second row onward, and the frontier-reach check still catches a missing tail.
     async fn read_replay(
         &self,
         cursor: u64,
@@ -309,10 +345,31 @@ impl Firehose {
     ) -> Result<Vec<FirehoseEvent>, FirehoseError> {
         let mut events = Vec::new();
         let mut after = cursor;
+        // `anchored` means replay has at least one row to be dense from. It starts false, so the
+        // first decoded row is allowed to start above `cursor + 1` — but only if that gap is a
+        // genuine *pruned prefix* (no row at/below the cursor), not a mid-range hole. The first
+        // replay page reads rows and the cursor-presence bit in one SQL statement so both come
+        // from the same SQLite snapshot. Once replay has a row to anchor on, every subsequent row
+        // must be exactly `prev + 1`.
+        let mut anchored = false;
+        let mut first_page = true;
+        let mut cursor_present = false;
         while after < upper {
-            let batch =
+            let batch = if first_page {
+                let page = crate::db::firehose_seq::first_events_in_range_with_cursor_presence(
+                    &self.db,
+                    cursor,
+                    upper,
+                    REPLAY_BATCH,
+                )
+                .await?;
+                first_page = false;
+                cursor_present = page.cursor_present;
+                page.rows
+            } else {
                 crate::db::firehose_seq::events_in_range(&self.db, after, upper, REPLAY_BATCH)
-                    .await?;
+                    .await?
+            };
             if batch.is_empty() {
                 break;
             }
@@ -322,11 +379,30 @@ impl Firehose {
                     FirehoseError::Decode(format!("negative stored firehose seq {}", row.seq))
                 })?;
                 if seq != after + 1 {
-                    return Err(FirehoseError::Decode(format!(
-                        "firehose replay gap: expected seq {}, found {seq}",
-                        after + 1
-                    )));
+                    // A gap. If we've already anchored, this is a mid-range hole — fail closed.
+                    if anchored {
+                        return Err(FirehoseError::Decode(format!(
+                            "firehose replay gap: expected seq {}, found {seq}",
+                            after + 1
+                        )));
+                    }
+                    // First-row gap: decide pruned-prefix vs mid-range hole from the same SQL
+                    // snapshot as the first page. If the cursor still has a retained row, the gap
+                    // is a real mid-range hole → fail closed. If the cursor row is gone, a sweep
+                    // pruned the prefix → degrade to best-effort from here.
+                    if cursor_present {
+                        return Err(FirehoseError::Decode(format!(
+                            "firehose replay gap: expected seq {}, found {seq}",
+                            after + 1
+                        )));
+                    }
+                    // Pruned prefix: best-effort. Anchor here and continue dense from this row.
+                    anchored = true;
+                    after = seq;
+                    events.push(decode_stored_event(seq, &row.event_type, &row.event)?);
+                    continue;
                 }
+                anchored = true;
                 after = seq;
                 events.push(decode_stored_event(seq, &row.event_type, &row.event)?);
             }
@@ -860,7 +936,66 @@ mod tests {
                 fh.subscribe_from(Some(0)).await,
                 Err(FirehoseError::Decode(_))
             ),
-            "a gap in the durable replay range must fail closed, not silently skip the missing seq"
+            "a mid-range gap in the durable replay range must fail closed, not silently skip the missing seq"
+        );
+    }
+
+    #[tokio::test]
+    async fn subscribe_from_degrades_to_best_effort_after_pruned_prefix() {
+        let fh = test_firehose().await;
+        for _ in 0..5 {
+            fh.emit_commit(commit_input("did:plc:a")).await.unwrap(); // seq 1..=5
+        }
+
+        // Simulate a retention sweep that pruned a contiguous prefix (seq 1 and 2) but kept the
+        // dense suffix 3..=5 including the frontier.
+        sqlx::query("DELETE FROM repo_seq WHERE seq <= 2")
+            .execute(&fh.db)
+            .await
+            .unwrap();
+
+        // A cursor inside the pruned window must NOT fail closed: it degrades to best-effort and
+        // replays the retained suffix. seq 1..2 are gone (best-effort), 3..=5 are delivered.
+        let SubscribeOutcome::Subscribed(sub) = fh.subscribe_from(Some(0)).await.unwrap() else {
+            panic!("cursor 0 below the pruned window must degrade, not fail");
+        };
+        let seqs: Vec<u64> = sub.replay.iter().map(|e| e.seq()).collect();
+        assert_eq!(
+            seqs,
+            vec![3, 4, 5],
+            "best-effort replays the retained suffix"
+        );
+
+        // A cursor inside the retained window replays normally (dense from cursor+1).
+        let SubscribeOutcome::Subscribed(sub) = fh.subscribe_from(Some(3)).await.unwrap() else {
+            panic!("cursor 3 is inside the retained window");
+        };
+        assert_eq!(
+            sub.replay.iter().map(|e| e.seq()).collect::<Vec<_>>(),
+            vec![4, 5]
+        );
+    }
+
+    #[tokio::test]
+    async fn subscribe_from_fails_closed_on_a_gap_at_the_cursor_when_a_row_exists_at_the_cursor() {
+        // Regression: with rows {1, 3} (seq 2 missing) and cursor = 1, a row EXISTS at the cursor
+        // (seq 1), so the gap above it is a mid-range hole — NOT a pruned prefix. The first-row
+        // relaxation must not fire: replay must fail closed instead of silently returning [3].
+        let fh = test_firehose().await;
+        for _ in 0..3 {
+            fh.emit_commit(commit_input("did:plc:a")).await.unwrap(); // seq 1..=3
+        }
+        sqlx::query("DELETE FROM repo_seq WHERE seq = 2")
+            .execute(&fh.db)
+            .await
+            .unwrap(); // leaves {1, 3}
+
+        assert!(
+            matches!(
+                fh.subscribe_from(Some(1)).await,
+                Err(FirehoseError::Decode(_))
+            ),
+            "a gap at the cursor when a row exists at the cursor is mid-range, not a pruned prefix"
         );
     }
 

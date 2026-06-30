@@ -374,8 +374,8 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
     use crate::auth::new_nonce_store;
     use crate::db::{open_pool, run_migrations};
     use common::{
-        AppViewConfig, BlobsConfig, ChatConfig, CrawlersConfig, IrohConfig, OAuthConfig,
-        TelemetryConfig,
+        AppViewConfig, BlobsConfig, ChatConfig, CrawlersConfig, FirehoseConfig, IrohConfig,
+        OAuthConfig, TelemetryConfig,
     };
     use p256::pkcs8::EncodePrivateKey;
     use rand_core::OsRng;
@@ -436,6 +436,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
             links: common::ServerLinksConfig::default(),
             contact: common::ContactConfig::default(),
             blobs: BlobsConfig::default(),
+            firehose: FirehoseConfig::default(),
             oauth: OAuthConfig::default(),
             iroh: IrohConfig::default(),
             appview: AppViewConfig::default(),

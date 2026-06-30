@@ -31,6 +31,8 @@ pub struct Config {
     pub links: ServerLinksConfig,
     pub contact: ContactConfig,
     pub blobs: BlobsConfig,
+    /// Persistent firehose event log (`repo_seq`) retention / pruning configuration.
+    pub firehose: FirehoseConfig,
     pub oauth: OAuthConfig,
     pub iroh: IrohConfig,
     pub appview: AppViewConfig,
@@ -86,6 +88,52 @@ impl Default for BlobsConfig {
             temp_ttl_secs: default_temp_ttl_secs(),
         }
     }
+}
+
+/// Persistent firehose event-log (`repo_seq`) retention configuration.
+///
+/// The `repo_seq` table is append-only and unbounded without a sweep: every `#commit` and
+/// `#account` frame (including each commit's CARv1 `blocks`) is retained forever, so on the
+/// production SQLite DB it would eventually dominate storage and the Litestream backup. The
+/// retention sweep periodically prunes rows below a computed low-water mark, keeping at least
+/// the live frontier (`MAX(seq)`) so a reconnecting relay can always resume from the newest
+/// retained event.
+///
+/// A row is pruned when it falls below **any** enabled cutoff (the highest watermark wins), so
+/// age can delete an old prefix even when count would keep it, and count can cap a large young
+/// backlog even when age would keep it. A knob set to `0` disables that policy. With both at `0`
+/// the sweep is a no-op (the log stays append-only, matching the pre-retention behaviour).
+#[derive(Debug, Clone, Deserialize)]
+pub struct FirehoseConfig {
+    /// How often the `repo_seq` retention sweep runs, in seconds. Default: 3600 (1 hour).
+    #[serde(default = "default_firehose_gc_interval_secs")]
+    pub gc_interval_secs: u64,
+    /// Age-based retention: rows whose `sequenced_at` is older than this many seconds are
+    /// prunable. Default: 604800 (7 days). Set to `0` to disable age-based pruning.
+    #[serde(default = "default_firehose_log_retention_secs")]
+    pub log_retention_secs: u64,
+    /// Count-based retention: keep at most this many of the newest rows. `0` disables
+    /// count-based pruning. Default: `0` (age-based only).
+    #[serde(default)]
+    pub log_retention_count: u64,
+}
+
+impl Default for FirehoseConfig {
+    fn default() -> Self {
+        Self {
+            gc_interval_secs: default_firehose_gc_interval_secs(),
+            log_retention_secs: default_firehose_log_retention_secs(),
+            log_retention_count: 0,
+        }
+    }
+}
+
+fn default_firehose_gc_interval_secs() -> u64 {
+    60 * 60 // 1 hour
+}
+
+fn default_firehose_log_retention_secs() -> u64 {
+    7 * 24 * 60 * 60 // 7 days
 }
 
 fn default_max_blob_size() -> u64 {
@@ -290,6 +338,8 @@ pub(crate) struct RawConfig {
     pub(crate) contact: ContactConfig,
     #[serde(default)]
     pub(crate) blobs: BlobsConfig,
+    #[serde(default)]
+    pub(crate) firehose: FirehoseConfig,
     #[serde(default)]
     pub(crate) oauth: OAuthConfig,
     #[serde(default)]
@@ -578,6 +628,22 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         did: raw.chat.did,
     };
 
+    // A zero sweep interval would panic `tokio::time::interval` at startup (it asserts a
+    // non-zero period). Both GC tasks (blob + firehose) feed their interval straight from these
+    // knobs, so reject zero here at config load rather than letting a bad value crash boot.
+    if raw.blobs.gc_interval_secs == 0 {
+        return Err(ConfigError::Invalid(
+            "blobs.gc_interval_secs must be > 0 (tokio::time::interval panics on a zero period)"
+                .to_string(),
+        ));
+    }
+    if raw.firehose.gc_interval_secs == 0 {
+        return Err(ConfigError::Invalid(
+            "firehose.gc_interval_secs must be > 0 (tokio::time::interval panics on a zero period)"
+                .to_string(),
+        ));
+    }
+
     Ok(Config {
         bind_address,
         port,
@@ -590,6 +656,7 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         links: raw.links,
         contact: raw.contact,
         blobs: raw.blobs,
+        firehose: raw.firehose,
         oauth: raw.oauth,
         iroh: raw.iroh,
         appview,
@@ -670,6 +737,71 @@ mod tests {
         let config = validate_and_build(raw).unwrap();
 
         assert_eq!(config.public_url, "https://pds.example.com");
+    }
+
+    #[test]
+    fn firehose_section_defaults_when_absent() {
+        // No [firehose] section at all: the serde defaults must kick in (1h sweep interval, 7-day
+        // age retention, count disabled).
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.firehose.gc_interval_secs, 60 * 60);
+        assert_eq!(config.firehose.log_retention_secs, 7 * 24 * 60 * 60);
+        assert_eq!(config.firehose.log_retention_count, 0);
+    }
+
+    #[test]
+    fn firehose_section_overrides_from_toml() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [firehose]
+            gc_interval_secs = 300
+            log_retention_secs = 0
+            log_retention_count = 5000
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.firehose.gc_interval_secs, 300);
+        assert_eq!(config.firehose.log_retention_secs, 0);
+        assert_eq!(config.firehose.log_retention_count, 5000);
+    }
+
+    #[test]
+    fn blobs_gc_interval_secs_zero_is_rejected() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [blobs]
+            gc_interval_secs = 0
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+    }
+
+    #[test]
+    fn firehose_gc_interval_secs_zero_is_rejected() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [firehose]
+            gc_interval_secs = 0
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
     }
 
     #[test]

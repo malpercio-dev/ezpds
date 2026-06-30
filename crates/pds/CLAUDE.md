@@ -15,6 +15,7 @@ src/
   main.rs          — startup: open pool, run migrations, bind server
   app.rs           — AppState definition and construction
   firehose.rs      — persistent subscribeRepos event pipeline (durable sequencer + broadcast fan-out)
+  firehose_gc.rs   — periodic `repo_seq` retention sweep (age/count pruning below the live frontier)
   crawler.rs       — outbound requestCrawl notifier (rate-limited, retrying, fire-and-forget)
   iroh_tunnel.rs   — Iroh QUIC endpoint: NAT-traversing device↔pds tunnel (opt-in)
   record_write.rs  — shared repo write flow + firehose commit emission
