@@ -14,8 +14,9 @@ use repo_engine::Repository;
 
 #[derive(Deserialize)]
 pub struct DeleteRecordBody {
-    /// The DID (or handle) of the repo (e.g. "did:plc:abc123"). Per the
-    /// `com.atproto.repo.deleteRecord` lexicon this is `repo`, carried in the JSON body.
+    /// The DID of the repo (e.g. "did:plc:abc123"), carried in the JSON body as `repo` per the
+    /// `com.atproto.repo.deleteRecord` lexicon. Like createRecord/applyWrites, this is treated as a
+    /// DID: handle-to-DID resolution is not performed anywhere in the repo write path.
     repo: String,
     collection: String,
     rkey: String,
