@@ -2,7 +2,7 @@
 
 //! com.atproto.repo.putRecord - Create or update a record in a repository.
 
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
@@ -11,14 +11,14 @@ use crate::app::AppState;
 use common::{ApiError, ErrorCode};
 
 #[derive(Deserialize)]
-pub struct PutRecordParams {
-    did: String,
-    collection: String,
-    rkey: String,
-}
-
-#[derive(Deserialize)]
 pub struct PutRecordBody {
+    /// The DID (or handle) of the repo (e.g. "did:plc:abc123"). Per the
+    /// `com.atproto.repo.putRecord` lexicon this is `repo`, carried in the JSON body.
+    repo: String,
+    /// The NSID of the record collection (e.g. "app.bsky.feed.post").
+    collection: String,
+    /// The record key.
+    rkey: String,
     /// The record data as a JSON object.
     record: serde_json::Value,
     /// `swapCommit`: when present, only write if the repo head matches this commit CID.
@@ -48,19 +48,18 @@ pub struct PutRecordResponse {
     cid: String,
 }
 
-/// PUT /xrpc/com.atproto.repo.putRecord
+/// POST /xrpc/com.atproto.repo.putRecord
 ///
 /// Create or update a record in the repository. Unlike createRecord, this always
 /// succeeds regardless of whether the record already exists (upsert semantics).
 pub async fn put_record(
     State(state): State<AppState>,
-    Query(params): Query<PutRecordParams>,
     headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<PutRecordBody>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let did = &params.did;
-    let collection = &params.collection;
-    let rkey = &params.rkey;
+    let did = &body.repo;
+    let collection = &body.collection;
+    let rkey = &body.rkey;
 
     // Reject a malformed collection/rkey before touching the repo.
     repo_engine::validate_record_path(collection, rkey)
@@ -98,11 +97,11 @@ pub async fn put_record(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::Body;
-    use axum::http::{self, Request};
     use tower::ServiceExt;
 
-    use crate::routes::test_utils::{access_jwt, seed_account_with_repo, state_with_master_key};
+    use crate::routes::test_utils::{
+        access_jwt, put_record_request, seed_account_with_repo, state_with_master_key,
+    };
 
     async fn setup_account_with_repo() -> (AppState, String) {
         let state = state_with_master_key().await;
@@ -116,16 +115,13 @@ mod tests {
         let (state, did) = setup_account_with_repo().await;
         let app = crate::app::app(state);
 
-        let request = Request::builder()
-            .method(http::Method::POST)
-            .uri(format!(
-                "/xrpc/com.atproto.repo.putRecord?did={did}&collection=app.bsky.feed.post&rkey=t1"
-            ))
-            .header("Content-Type", "application/json")
-            .body(Body::from(
-                serde_json::to_string(&serde_json::json!({"record": {"text": "x"}})).unwrap(),
-            ))
-            .unwrap();
+        let request = put_record_request(
+            &did,
+            "app.bsky.feed.post",
+            "t1",
+            serde_json::json!({"record": {"text": "x"}}),
+            None,
+        );
 
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -137,17 +133,13 @@ mod tests {
         let other_token = access_jwt(&state.jwt_secret, "did:plc:someoneelse");
         let app = crate::app::app(state);
 
-        let request = Request::builder()
-            .method(http::Method::POST)
-            .uri(format!(
-                "/xrpc/com.atproto.repo.putRecord?did={did}&collection=app.bsky.feed.post&rkey=t1"
-            ))
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {other_token}"))
-            .body(Body::from(
-                serde_json::to_string(&serde_json::json!({"record": {"text": "x"}})).unwrap(),
-            ))
-            .unwrap();
+        let request = put_record_request(
+            &did,
+            "app.bsky.feed.post",
+            "t1",
+            serde_json::json!({"record": {"text": "x"}}),
+            Some(&other_token),
+        );
 
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
@@ -164,15 +156,13 @@ mod tests {
             "createdAt": "2026-06-22T00:00:00Z"
         });
 
-        let request = Request::builder()
-            .method(http::Method::POST)
-            .uri(format!(
-                "/xrpc/com.atproto.repo.putRecord?did={did}&collection=app.bsky.feed.post&rkey=test1"
-            ))
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {token}"))
-            .body(Body::from(serde_json::to_string(&serde_json::json!({"record": record})).unwrap()))
-            .unwrap();
+        let request = put_record_request(
+            &did,
+            "app.bsky.feed.post",
+            "test1",
+            serde_json::json!({"record": record}),
+            Some(&token),
+        );
 
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -192,17 +182,13 @@ mod tests {
         let token = access_jwt(&state.jwt_secret, &did);
         let app = crate::app::app(state);
 
-        let request = Request::builder()
-            .method(http::Method::POST)
-            .uri(format!(
-                "/xrpc/com.atproto.repo.putRecord?did={did}&collection=notanid&rkey=t1"
-            ))
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {token}"))
-            .body(Body::from(
-                serde_json::to_string(&serde_json::json!({"record": {"text": "x"}})).unwrap(),
-            ))
-            .unwrap();
+        let request = put_record_request(
+            &did,
+            "notanid",
+            "t1",
+            serde_json::json!({"record": {"text": "x"}}),
+            Some(&token),
+        );
 
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -215,17 +201,13 @@ mod tests {
         let app = crate::app::app(state);
 
         // Floats are not part of the ATProto data model.
-        let request = Request::builder()
-            .method(http::Method::POST)
-            .uri(format!(
-                "/xrpc/com.atproto.repo.putRecord?did={did}&collection=app.bsky.feed.post&rkey=f1"
-            ))
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {token}"))
-            .body(Body::from(
-                serde_json::to_string(&serde_json::json!({"record": {"score": 1.5}})).unwrap(),
-            ))
-            .unwrap();
+        let request = put_record_request(
+            &did,
+            "app.bsky.feed.post",
+            "f1",
+            serde_json::json!({"record": {"score": 1.5}}),
+            Some(&token),
+        );
 
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -239,13 +221,13 @@ mod tests {
 
         let record = serde_json::json!({"text": "test"});
 
-        let request = Request::builder()
-            .method(http::Method::POST)
-            .uri("/xrpc/com.atproto.repo.putRecord?did=did:plc:nonexistent&collection=app.bsky.feed.post&rkey=test1")
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {token}"))
-            .body(Body::from(serde_json::to_string(&serde_json::json!({"record": record})).unwrap()))
-            .unwrap();
+        let request = put_record_request(
+            "did:plc:nonexistent",
+            "app.bsky.feed.post",
+            "test1",
+            serde_json::json!({"record": record}),
+            Some(&token),
+        );
 
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -262,15 +244,13 @@ mod tests {
             "createdAt": "2026-06-22T00:00:00Z"
         });
 
-        let request = Request::builder()
-            .method(http::Method::POST)
-            .uri(format!(
-                "/xrpc/com.atproto.repo.putRecord?did={did}&collection=app.bsky.feed.post&rkey=test2"
-            ))
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {token}"))
-            .body(Body::from(serde_json::to_string(&serde_json::json!({"record": record})).unwrap()))
-            .unwrap();
+        let request = put_record_request(
+            &did,
+            "app.bsky.feed.post",
+            "test2",
+            serde_json::json!({"record": record}),
+            Some(&token),
+        );
 
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -284,15 +264,8 @@ mod tests {
         rkey: &str,
         body: serde_json::Value,
     ) -> (StatusCode, serde_json::Value) {
-        let request = Request::builder()
-            .method(http::Method::POST)
-            .uri(format!(
-                "/xrpc/com.atproto.repo.putRecord?did={did}&collection=app.bsky.feed.post&rkey={rkey}"
-            ))
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {token}"))
-            .body(Body::from(serde_json::to_string(&body).unwrap()))
-            .unwrap();
+        let request =
+            put_record_request(did, "app.bsky.feed.post", rkey, body, Some(token));
         let response = app.clone().oneshot(request).await.unwrap();
         let status = response.status();
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -456,17 +429,13 @@ mod tests {
         // Update the same record key repeatedly; each commit supersedes the prior
         // commit/MST/record, which post-commit GC should reclaim.
         for i in 0..8 {
-            let request = Request::builder()
-                .method(http::Method::POST)
-                .uri(format!(
-                    "/xrpc/com.atproto.repo.putRecord?did={did}&collection=app.bsky.feed.post&rkey=same"
-                ))
-                .header("Content-Type", "application/json")
-                .header("Authorization", format!("Bearer {token}"))
-                .body(Body::from(
-                    serde_json::to_string(&serde_json::json!({"record": {"n": i}})).unwrap(),
-                ))
-                .unwrap();
+            let request = put_record_request(
+                &did,
+                "app.bsky.feed.post",
+                "same",
+                serde_json::json!({"record": {"n": i}}),
+                Some(&token),
+            );
             let response = app.clone().oneshot(request).await.unwrap();
             assert_eq!(response.status(), StatusCode::OK);
         }

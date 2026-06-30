@@ -99,20 +99,15 @@ mod tests {
 
     /// PUT a record at `rkey` via the repo.putRecord endpoint.
     async fn put_record(app: &axum::Router, token: &str, did: &str, rkey: &str) -> StatusCode {
-        let request = Request::builder()
-            .method(http::Method::POST)
-            .uri(format!(
-                "/xrpc/com.atproto.repo.putRecord?did={did}&collection=app.bsky.feed.post&rkey={rkey}"
-            ))
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {token}"))
-            .body(Body::from(
-                serde_json::to_string(&serde_json::json!({
-                    "record": { "text": "hello", "createdAt": "2026-06-26T00:00:00Z" }
-                }))
-                .unwrap(),
-            ))
-            .unwrap();
+        let request = crate::routes::test_utils::put_record_request(
+            did,
+            "app.bsky.feed.post",
+            rkey,
+            serde_json::json!({
+                "record": { "text": "hello", "createdAt": "2026-06-26T00:00:00Z" }
+            }),
+            Some(token),
+        );
         app.clone().oneshot(request).await.unwrap().status()
     }
 

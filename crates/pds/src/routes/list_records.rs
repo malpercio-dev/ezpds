@@ -127,17 +127,13 @@ mod tests {
 
     /// Put a record via the putRecord handler (keeps the test honest: real write path).
     async fn put(app: &axum::Router, token: &str, did: &str, rkey: &str, value: serde_json::Value) {
-        let request = Request::builder()
-            .method(http::Method::POST)
-            .uri(format!(
-                "/xrpc/com.atproto.repo.putRecord?did={did}&collection=app.bsky.feed.post&rkey={rkey}"
-            ))
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {token}"))
-            .body(Body::from(
-                serde_json::to_string(&serde_json::json!({ "record": value })).unwrap(),
-            ))
-            .unwrap();
+        let request = crate::routes::test_utils::put_record_request(
+            did,
+            "app.bsky.feed.post",
+            rkey,
+            serde_json::json!({ "record": value }),
+            Some(token),
+        );
         let resp = app.clone().oneshot(request).await.unwrap();
         assert_eq!(
             resp.status(),
@@ -233,17 +229,13 @@ mod tests {
         )
         .await;
         // A record in a different collection must not leak into the listing.
-        let like_request = Request::builder()
-            .method(http::Method::POST)
-            .uri(format!(
-                "/xrpc/com.atproto.repo.putRecord?did={did}&collection=app.bsky.feed.like&rkey=like1"
-            ))
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {token}"))
-            .body(Body::from(
-                serde_json::to_string(&serde_json::json!({ "record": { "subject": "x" } })).unwrap(),
-            ))
-            .unwrap();
+        let like_request = crate::routes::test_utils::put_record_request(
+            &did,
+            "app.bsky.feed.like",
+            "like1",
+            serde_json::json!({ "record": { "subject": "x" } }),
+            Some(&token),
+        );
         assert_eq!(
             app.clone().oneshot(like_request).await.unwrap().status(),
             StatusCode::OK

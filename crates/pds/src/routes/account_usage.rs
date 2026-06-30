@@ -126,7 +126,8 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::routes::test_utils::{
-        access_jwt, body_json, seed_account_with_repo, test_state_with_admin_token,
+        access_jwt, body_json, put_record_request, seed_account_with_repo,
+        test_state_with_admin_token,
     };
 
     const ADMIN: &str = "test-admin-token";
@@ -164,17 +165,13 @@ mod tests {
     }
 
     async fn put_record(app: &axum::Router, token: &str, did: &str, collection: &str, rkey: &str) {
-        let request = Request::builder()
-            .method(http::Method::POST)
-            .uri(format!(
-                "/xrpc/com.atproto.repo.putRecord?did={did}&collection={collection}&rkey={rkey}"
-            ))
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {token}"))
-            .body(Body::from(
-                serde_json::to_string(&serde_json::json!({ "record": { "text": "x" } })).unwrap(),
-            ))
-            .unwrap();
+        let request = put_record_request(
+            did,
+            collection,
+            rkey,
+            serde_json::json!({ "record": { "text": "x" } }),
+            Some(token),
+        );
         assert_eq!(
             app.clone().oneshot(request).await.unwrap().status(),
             StatusCode::OK
