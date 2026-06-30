@@ -7,16 +7,18 @@
 //   - JSON body: { "handle": "new-handle.example.com" }
 //
 // Processing steps:
-//   1. AuthenticatedUser extractor → JWT-scoped DID
+//   1. AuthenticatedUser extractor → JWT-scoped DID; reject non-access tokens
 //   2. Validate new handle structure (validate_handle_structure)
-//   3. Verify the new handle resolves to the caller's DID
-//      (local DB → DNS TXT → HTTP well-known, same chain as resolveHandle)
-//   4. Check the new handle is not already owned by a different DID (handles table)
-//   5. Fetch the current handle(s) for the caller's DID
-//   6. Swap handles: DELETE old handle(s) for this DID, INSERT new handle
-//   7. Update DID document alsoKnownAs to reflect the new handle set
-//   8. Emit #identity firehose frame with the new handle
-//   9. Return 200 (empty JSON object)
+//   3. Check local ownership: if caller already owns the handle → idempotent;
+//      if a different DID owns it → 409 HANDLE_TAKEN
+//   4. For handles on external domains (not in available_user_domains), verify
+//      resolution via the resolveHandle chain (local DB → DNS TXT → HTTP well-known);
+//      PDS-served handles skip this — the PDS is authoritative
+//   5. Atomically swap handles in a transaction:
+//      DELETE old handle(s) for this DID, INSERT new handle
+//   6. Update DID document alsoKnownAs to reflect the new handle set
+//   7. Emit #identity firehose frame with the new handle
+//   8. Return 200 (empty JSON object)
 //
 // Outputs (success):  200 { }
 // Outputs (error):    400 INVALID_HANDLE, 401 UNAUTHORIZED, 409 HANDLE_TAKEN,
@@ -59,39 +61,9 @@ pub async fn update_handle_handler(
     crate::handle::validate_handle_structure(&payload.handle)
         .map_err(|msg| ApiError::new(ErrorCode::InvalidHandle, msg))?;
 
-    // Step 2: Determine whether the new handle is on a PDS-served domain or an external
-    // domain, and verify it resolves (or will resolve) to the caller's DID.
-    let is_served_domain = {
-        // Structural validation guarantees at least one dot.
-        let dot = payload
-            .handle
-            .find('.')
-            .expect("structure guarantees a dot");
-        let domain = &payload.handle[dot + 1..];
-        state
-            .config
-            .available_user_domains
-            .iter()
-            .any(|d| d == domain)
-    };
-
-    if is_served_domain {
-        // PDS-served handle: the PDS is authoritative. The only check needed is that
-        // the handle is not already taken by a different DID (performed in Step 3).
-        // External resolution is skipped because the handle will resolve once we insert it.
-    } else {
-        // User-controlled domain: verify the handle already resolves to the caller's DID
-        // via the resolveHandle chain (local DB → DNS TXT → HTTP well-known).
-        let resolved_did = resolve_handle_for_update(&state, &payload.handle).await?;
-        if resolved_did.as_deref() != Some(did.as_str()) {
-            return Err(ApiError::new(
-                ErrorCode::HandleResolutionFailed,
-                "new handle does not resolve to your DID",
-            ));
-        }
-    }
-
-    // Step 3: Check the new handle is not already owned by a different DID.
+    // Step 2: Check whether the new handle is already owned locally, BEFORE any
+    // external resolution. If the caller already owns it → no-op (idempotent).
+    // If a different DID owns it → 409 immediately without hitting a resolver.
     let existing_owner: Option<(String,)> =
         sqlx::query_as("SELECT did FROM handles WHERE handle = ?")
             .bind(&payload.handle)
@@ -109,39 +81,85 @@ pub async fn update_handle_handler(
                 "handle is already taken",
             ));
         }
-        // If the owner IS the caller, this is a no-op — same handle.
+        // Caller already owns this handle — idempotent no-op.
         // Still proceed to emit #identity (idempotent).
     }
 
-    // Step 4: Remove all old handles for this DID, insert the new one.
-    // Atomic via DB-level serialisation (SQLite single writer) — no explicit transaction needed
-    // since the two statements are safe independently: if the DELETE succeeds but INSERT fails,
-    // the caller has no handle (retryable). If INSERT succeeds but DELETE fails (impossible with
-    // no error on INSERT), they'd have two handles (also recoverable).
-    let rows_deleted = sqlx::query("DELETE FROM handles WHERE did = ?")
-        .bind(did)
-        .execute(&state.db)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, did = %did, "failed to remove old handles");
-            ApiError::new(ErrorCode::InternalError, "failed to update handles")
-        })?
-        .rows_affected();
-    tracing::debug!(did = %did, rows_deleted, new_handle = %payload.handle, "removed old handles");
+    // Step 3: For handles the caller does not already own, verify the new handle
+    // resolves (or will resolve) to the caller's DID.
+    let is_served_domain = {
+        // Structural validation guarantees at least one dot.
+        let dot = payload
+            .handle
+            .find('.')
+            .expect("structure guarantees a dot");
+        let domain = &payload.handle[dot + 1..];
+        state
+            .config
+            .available_user_domains
+            .iter()
+            .any(|d| d == domain)
+    };
 
-    sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
-        .bind(&payload.handle)
-        .bind(did)
-        .execute(&state.db)
-        .await
-        .map_err(|e| {
-            if crate::db::is_unique_violation(&e) {
-                // Race: another request inserted this handle between our check and insert.
-                return ApiError::new(ErrorCode::HandleTaken, "handle was taken concurrently");
-            }
-            tracing::error!(error = %e, handle = %payload.handle, did = %did, "failed to insert handle");
+    if is_served_domain {
+        // PDS-served handle: the PDS is authoritative. The handle will resolve
+        // once we insert it — skip external resolution.
+    } else {
+        // User-controlled domain: verify the handle already resolves to the
+        // caller's DID via the resolveHandle chain (local DB → DNS TXT → HTTP
+        // well-known).
+        let resolved_did = resolve_handle_for_update(&state, &payload.handle).await?;
+        if resolved_did.as_deref() != Some(did.as_str()) {
+            return Err(ApiError::new(
+                ErrorCode::HandleResolutionFailed,
+                "new handle does not resolve to your DID",
+            ));
+        }
+    }
+
+    // Step 4: Atomically swap handles (DELETE old + INSERT new) in a single
+    // transaction so the two writes commit or roll back together.
+    {
+        let mut tx = state.db.begin().await.map_err(|e| {
+            tracing::error!(error = %e, "failed to begin transaction for handle swap");
             ApiError::new(ErrorCode::InternalError, "failed to update handles")
         })?;
+
+        let rows_deleted = sqlx::query("DELETE FROM handles WHERE did = ?")
+            .bind(did)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, did = %did, "failed to remove old handles");
+                ApiError::new(ErrorCode::InternalError, "failed to update handles")
+            })?
+            .rows_affected();
+        tracing::debug!(did = %did, rows_deleted, new_handle = %payload.handle, "removed old handles");
+
+        sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
+            .bind(&payload.handle)
+            .bind(did)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                if crate::db::is_unique_violation(&e) {
+                    // Race: another request inserted this handle between our check and insert.
+                    return ApiError::new(ErrorCode::HandleTaken, "handle was taken concurrently");
+                }
+                tracing::error!(
+                    error = %e,
+                    handle = %payload.handle,
+                    did = %did,
+                    "failed to insert handle"
+                );
+                ApiError::new(ErrorCode::InternalError, "failed to update handles")
+            })?;
+
+        tx.commit().await.map_err(|e| {
+            tracing::error!(error = %e, "failed to commit handle swap transaction");
+            ApiError::new(ErrorCode::InternalError, "failed to update handles")
+        })?;
+    }
 
     // Step 5: Update DID document alsoKnownAs to reflect the new handle set.
     let also_known_as = fetch_also_known_as(&state.db, did).await?;
