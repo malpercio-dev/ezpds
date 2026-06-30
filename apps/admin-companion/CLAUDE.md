@@ -15,22 +15,35 @@ and the design plan [docs/design-plans/2026-06-26-admin-companion-app.md](../../
 The relay side (pairing/auth/device endpoints, Phases 1–5) is already shipped. This
 app is built across Phases 6–8.
 
-## Current status (Phase 6 — scaffold)
+## Current status (Phase 7 — pairing + signing client)
 
-Scaffold + design-system foundation. Wired so far:
+Phase 6 scaffold (device key, token layer, Brass Console UI primitives at `/preview`)
+plus the Phase 7 pairing + request-signing client. Wired:
 - **Device admin key** — `src-tauri/src/device_key.rs` (`#[cfg]` dispatch: Secure
   Enclave on a real device, software P-256 on macOS/simulator), backed by
   `src-tauri/src/keychain.rs` (service `"ezpds-admin-companion"`).
-- Two IPC commands: `get_or_create_device_key`, `sign_with_device_key`.
-- The terminal-native token layer (`src/lib/styles/{tokens,fonts,base}.css`).
-- **Brass Console UI primitives** in `src/lib/components/ui/` — `Button`,
-  `StatusChip`, `CodeOutput`, `DeviceRow`, `TextField`, `ScreenShell` — every state
-  exercised at the `/preview` route; documented in `DESIGN.md` §5. The home screen
-  (`src/routes/+page.svelte`) consumes them.
+- **Canonical signing envelopes** — `src-tauri/src/signing.rs` (Functional Core): the
+  registration and per-request `sign_string`s + `sha256_hex` + base64url-no-pad,
+  byte-for-byte matching the relay's `crates/pds/src/routes/auth.rs`. Golden tests pin
+  both to the relay's own pinned literals (the `pds` crate is binary-only, so the
+  contract is shared by value, not import).
+- **Relay client** — `src-tauri/src/relay_client.rs` (Imperative Shell, reqwest): `pair`
+  (self-signed `POST /v1/admin/devices`), `generate_claim_code` (signed
+  `POST /v1/accounts/claim-codes`), `unpair` (local forget), `current_pairing`. Request
+  construction is factored into pure `build_*` fns so a test verifies a built request
+  with `crypto::verify_p256_signature` — the relay's own verifier — proving acceptance
+  without a live relay.
+- **Pairing persistence** — `keychain.rs` `store_pairing`/`get_pairing`/`clear_pairing`
+  (accounts `admin-device-id`, `admin-relay-url`).
+- IPC commands: `pair_device`, `pairing_state`, `generate_claim_code`, `unpair` (plus
+  Phase 6's `get_or_create_device_key`, `sign_with_device_key`).
+- **Pair screen** (`src/routes/pair/+page.svelte`): manual relay-URL + code entry
+  (simulator path) and a camera **Scan QR** button (real device, mobile-only). Home
+  (`src/routes/+page.svelte`) branches on `pairing_state`.
 
-Not yet built (later phases): QR pairing + request-signing envelope (Phase 7);
-the operator screens that assemble these primitives — claim-code / Settings + error
-states (Phase 8).
+Not yet built (Phase 8): the polished claim-code / Settings screens, server-side
+self-revoke on unpair, and the full error-state matrix (clock-skew / revoked /
+unreachable copy lives in `src/lib/errors.ts`, ready to consume).
 
 ## Contracts
 
@@ -41,13 +54,30 @@ states (Phase 8).
   did:plc rotation key.
 - `device_key::sign(data) -> Result<Vec<u8>, DeviceKeyError>` — raw 64-byte (r‖s),
   **low-S normalized** P-256 signature (the relay's verifier rejects high-S).
-- `DeviceKeyError` serializes as `{ code: "SCREAMING_SNAKE_CASE" }`.
+- `DeviceKeyError` / `RelayClientError` serialize as `{ code: "SCREAMING_SNAKE_CASE", … }`.
 - Keychain accounts: `admin-device-key-priv` (software path), `admin-device-key-pub` +
-  `admin-device-key-app-label` (Secure Enclave path).
+  `admin-device-key-app-label` (Secure Enclave path); `admin-device-id` + `admin-relay-url`
+  (pairing state). "Unpair" clears the pairing accounts but **keeps the device key**, so a
+  re-pair is recognised by the same public key.
+- **Signing contract is single-source-of-truth and must stay in lockstep with the relay.**
+  `signing.rs`'s golden tests pin the exact literals the relay's `auth.rs` tests pin; if the
+  relay changes an envelope, both tests break together. Signatures are low-S P-256, raw r‖s,
+  base64url-no-pad; the body field is `sha256_hex(exact_request_bytes)`. The client serializes
+  a request body **once** and signs+sends those same bytes so the relay's recomputed hash matches.
 
 ### Frontend
+
 - `src/lib/ipc.ts` is the **only** file that calls `invoke()`; pages import from it.
 - SSR/prerender disabled globally (`src/routes/+layout.ts`); static SPA in `dist/`.
+- **Pairing QR payload** is JSON `{"relayUrl","pairingCode"}` (parsed by
+  `parsePairingPayload`); the operator's code-minting tool encodes it. Manual entry fills the
+  same two fields, so pairing works on the simulator (no camera).
+- **Camera QR** uses `@tauri-apps/plugin-barcode-scanner` — **mobile-only**: the Rust dep is
+  `cfg(target_os ios/android)`-gated, the plugin is registered behind `#[cfg(mobile)]`, and
+  its ACL grant lives in `src-tauri/capabilities/mobile.json` (`platforms: [iOS, android]`).
+  `capabilities/default.json` grants `core:default` + `log:default` on all platforms. Camera
+  use is declared via `NSCameraUsageDescription` in `Info.ios.plist`. The host build skips the
+  mobile capability, so `cargo build/test -p admin-companion` stays Apple-camera-free.
 - **Design tokens are the live system.** Reference `var(--color-*)` / `var(--font-*)` /
   `var(--space-*)`; never hardcode hex/px. Every text pair in `tokens.css` is verified to
   clear **WCAG 2.2 AAA (≥7:1)** on its intended ground (the seed anchors were AA; they

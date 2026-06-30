@@ -25,9 +25,24 @@ crypto = { workspace = true }
 p256 = { workspace = true }
 multibase = { workspace = true }
 tracing = { workspace = true }
+# Request-envelope signing (Phase 7): SHA-256 body hash + base64url-no-pad signature
+# encoding, byte-for-byte matching the relay's `admin_request_sign_string` contract.
+sha2 = { workspace = true }
+base64 = { workspace = true }
+# Per-request nonce (anti-replay) — a fresh UUID v4 per signed request.
+uuid = { workspace = true }
+# Relay HTTP client. default-features = false + rustls-tls: iOS has no OpenSSL, so rustls
+# is the only viable TLS backend (same rationale as identity-wallet's pds_client).
+reqwest = { workspace = true }
 # Secure Enclave + Keychain access (real-device and macOS/simulator software paths both
 # touch the Keychain via this crate). OSX_10_12 enables the SE access-control APIs.
 security-framework = { workspace = true, features = ["OSX_10_12"] }
+
+# Camera QR scanning for the Pair screen. Mobile-only (iOS/Android); gated to those
+# targets so the macOS host build and its test suite never compile it. Registered
+# behind `#[cfg(mobile)]` in lib.rs, granted via capabilities/mobile.json.
+[target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
+tauri-plugin-barcode-scanner = "2"
 
 [build-dependencies]
 tauri-build = { workspace = true, features = [] }
