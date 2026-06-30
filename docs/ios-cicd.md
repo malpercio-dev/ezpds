@@ -1,29 +1,29 @@
 # iOS CI/CD — TestFlight
 
-**Last verified:** 2026-06-24
+**Last verified:** 2026-06-30
 
 ## Overview
 
-The PDS ships through **tangled spindles** (`.tangled/workflows/`), which run on
-Linux. The `identity-wallet` Tauri iOS app cannot build there — `cargo tauri ios
-build` needs macOS + Xcode + the Apple toolchain, which Linux CI does not have
-(this is exactly why `just ci-pds` builds the workspace with `--exclude
-identity-wallet`).
+CI/CD runs on **GitHub Actions**, split into two lanes by platform. The Linux PDS lane
+(`.github/workflows/ci.yml`) runs the `just ci-pds` test gate, and Railway deploys the
+PDS natively from GitHub (see [`docs/deploy.md`](deploy.md)). The `identity-wallet`
+Tauri iOS app can't build on the Linux runners — `cargo tauri ios build` needs macOS +
+Xcode + the Apple toolchain (this is exactly why `just ci-pds` builds the workspace with
+`--exclude identity-wallet`), so it gets its own macOS lane.
 
-So the iOS build lives in **GitHub Actions** on a **public mirror** of this repo.
-GitHub-hosted macOS runners (Apple Silicon) are **free for public repositories**,
-so the cloud iOS lane costs nothing. The workflow builds a signed App Store IPA and
-uploads it to **TestFlight**; you install/update the app from the TestFlight app on
-your device.
+That macOS lane is this workflow. GitHub-hosted macOS runners (Apple Silicon) are **free
+for public repositories**, so the cloud iOS lane costs nothing. The workflow builds a
+signed App Store IPA and uploads it to **TestFlight**; you install/update the app from the
+TestFlight app on your device.
 
 ```
-  git push  ──►  tangled (knot.malpercio.dev)  ──►  spindles: PDS → Railway   (Linux)
-            └─►  github mirror (public)         ──►  Actions: iOS → TestFlight   (macOS)
+  git push main ──►  Actions: ci.yml          →  Railway: PDS staging/production   (Linux)
+                └─►  Actions: ios-testflight   →  TestFlight                        (macOS)
 ```
 
-The two pipelines never overlap: tangled owns the PDS, GitHub owns iOS. The
-tangled pipeline already proves the shared Rust core is correct on Linux; the GitHub
-lane only proves the iOS-specific surface (cross-compile → sign → package → ship).
+The two lanes never overlap: the PDS lane proves the shared Rust core is correct on Linux
+and ships the server; the iOS lane only proves the iOS-specific surface (cross-compile →
+sign → package → ship).
 
 - **Trigger:** push to `main` (paths-filtered) + manual `workflow_dispatch`. Never
   `pull_request` — a public repo must not expose signing secrets to fork PRs.
@@ -35,24 +35,16 @@ lane only proves the iOS-specific surface (cross-compile → sign → package �
 
 These steps need your Apple and GitHub accounts; do them once.
 
-### 1. Public GitHub mirror + dual-push remote
+### 1. Public GitHub repo
 
-Create a **public** repo on GitHub (e.g. `youruser/ezpds`). Then point `origin` at
-both knots so a single `git push` updates tangled *and* GitHub:
+The repo lives on **GitHub** and must be **public** so the macOS runners are free (and so
+Railway can connect to it for native PDS deploys). Point `origin` at it and push `main`:
 
 ```bash
-# Re-add the existing tangled URL explicitly: the FIRST `--add --push` replaces the
-# implicit (fetch-derived) push URL, so tangled must be listed alongside GitHub.
-git remote set-url --add --push origin git@knot.malpercio.dev:malpercio.dev/ezpds
-git remote set-url --add --push origin git@github.com:youruser/ezpds.git
-
-git remote -v   # expect TWO (push) URLs for origin
+git remote set-url origin git@github.com:youruser/ezpds.git
+git remote -v
 git push origin main
 ```
-
-(Alternative: keep `origin` single and add a separate `github` remote, pushing it
-explicitly or from a tangled spindle step. The dual-push above is the lowest-effort
-option for a solo dev — your normal push is the CI trigger.)
 
 ### 2. App Store Connect
 
@@ -177,9 +169,10 @@ for the first time inside a CI log.
   pinning to commit SHAs is the stricter supply-chain posture; consider it once the
   pipeline is stable.
 
-## Coexistence with tangled
+## Relationship to the PDS lane
 
-Nothing about this changes the PDS pipeline. `git push` still drives tangled
-spindles (`pr.yaml` / `staging.yaml` / `release.yaml`) exactly as before; the mirror
-push simply also lands on GitHub and fires the iOS lane. See
-[`docs/deploy.md`](deploy.md) for the PDS side.
+The two lanes share the repo but never overlap. A push to `main` fires both
+`.github/workflows/ci.yml` (PDS test gate → Railway deploys staging) and this
+`ios-testflight.yml` (iOS → TestFlight); production PDS deploys are driven separately by
+advancing the `production` branch to a release tag. See [`docs/deploy.md`](deploy.md) for
+the PDS side.

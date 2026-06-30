@@ -265,8 +265,7 @@ mod tests {
         rkey: &str,
         body: serde_json::Value,
     ) -> (StatusCode, serde_json::Value) {
-        let request =
-            put_record_request(did, "app.bsky.feed.post", rkey, body, Some(token));
+        let request = put_record_request(did, "app.bsky.feed.post", rkey, body, Some(token));
         let response = app.clone().oneshot(request).await.unwrap();
         let status = response.status();
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
