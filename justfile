@@ -105,8 +105,11 @@ release:
     if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
       echo "✗ release requires HEAD == origin/main — push/pull main first" >&2; exit 1
     fi
-    if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
-      echo "✗ tag ${tag} already exists — bump the version with 'just set-version' first" >&2; exit 1
+    # Check origin too: a stale clone may lack a tag that already exists on the remote, which
+    # would otherwise only surface as a confusing push rejection after the local tag is created.
+    if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null \
+      || git ls-remote --exit-code --tags --refs origin "refs/tags/${tag}" >/dev/null 2>&1; then
+      echo "✗ tag ${tag} already exists (locally or on origin) — bump the version with 'just set-version' first" >&2; exit 1
     fi
     echo "→ tagging ${tag} at $(git rev-parse --short HEAD)…"
     git tag -a "${tag}" -m "Release ${tag}"
@@ -126,6 +129,10 @@ deploy-production tag="":
     #!/usr/bin/env bash
     set -euo pipefail
     tag="{{tag}}"
+    # Resolve tags against origin, not a possibly-stale local clone — otherwise the default
+    # "latest" pick (or an explicit tag this clone hasn't fetched) could promote the wrong
+    # release, or an outdated one, to production.
+    git fetch --quiet --tags origin
     if [ -z "$tag" ]; then
       tag="$(git tag --list --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)"
       if [ -z "$tag" ]; then echo "✗ no vX.Y.Z tag exists — cut one with 'just release'" >&2; exit 1; fi
