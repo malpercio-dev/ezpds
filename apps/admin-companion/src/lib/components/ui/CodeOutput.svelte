@@ -8,6 +8,7 @@
     label,
     prompt = true,
     copyable = true,
+    onshare,
   }: {
     value: string;
     /** Optional caption above the code (e.g. "Account claim code"). */
@@ -15,6 +16,8 @@
     /** Show the leading ▸ prompt glyph. */
     prompt?: boolean;
     copyable?: boolean;
+    /** When provided, render a Share affordance (the iOS Share Pane) beside Copy. */
+    onshare?: () => void;
   } = $props();
 
   let copied = $state(false);
@@ -41,16 +44,26 @@
     <code class="value">
       {#if prompt}<span class="prompt" aria-hidden="true">▸</span>{/if}{value}
     </code>
-    {#if copyable}
-      <button type="button" class="copy" class:is-copied={copied} onclick={copy} aria-label={copied ? 'Copied' : 'Copy to clipboard'}>
-        {#if copied}
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5" /></svg>
-          <span class="copy-text">copied</span>
-        {:else}
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg>
-          <span class="copy-text">copy</span>
+    {#if copyable || onshare}
+      <div class="tools">
+        {#if copyable}
+          <button type="button" class="tool" class:is-copied={copied} onclick={copy} aria-label={copied ? 'Copied' : 'Copy to clipboard'}>
+            {#if copied}
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5" /></svg>
+              <span class="tool-text">copied</span>
+            {:else}
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg>
+              <span class="tool-text">copy</span>
+            {/if}
+          </button>
         {/if}
-      </button>
+        {#if onshare}
+          <button type="button" class="tool" onclick={onshare} aria-label="Share">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4" /><path d="m8 8 4-4 4 4" /><path d="M5 12v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6" /></svg>
+            <span class="tool-text">share</span>
+          </button>
+        {/if}
+      </div>
     {/if}
   </div>
   <span class="sr-status" role="status" aria-live="polite">{copied ? 'Copied to clipboard' : ''}</span>
@@ -93,7 +106,13 @@
     color: var(--color-primary);
     margin-right: var(--space-sm);
   }
-  .copy {
+  .tools {
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+  }
+  .tool {
     flex: none;
     display: inline-flex;
     align-items: center;
@@ -110,16 +129,16 @@
     transition: color var(--duration-fast) var(--ease-standard),
       border-color var(--duration-fast) var(--ease-standard);
   }
-  .copy:hover {
+  .tool:hover {
     color: var(--color-ink);
     border-color: var(--color-muted);
   }
   /* Confirmation reinforces text ("copied") + check glyph with the safe tone — not color alone. */
-  .copy.is-copied {
+  .tool.is-copied {
     color: var(--color-safe);
     border-color: var(--color-safe-surface);
   }
-  .copy :global(svg) {
+  .tool :global(svg) {
     flex: none;
   }
   .sr-status {

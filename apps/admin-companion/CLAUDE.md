@@ -1,7 +1,7 @@
 # Admin Companion (operator console) Mobile App
 
-Last verified: 2026-06-28
-Last updated: 2026-06-28
+Last verified: 2026-06-29
+Last updated: 2026-06-29
 
 ## Purpose
 
@@ -15,10 +15,11 @@ and the design plan [docs/design-plans/2026-06-26-admin-companion-app.md](../../
 The relay side (pairing/auth/device endpoints, Phases 1–5) is already shipped. This
 app is built across Phases 6–8.
 
-## Current status (Phase 7 — pairing + signing client)
+## Current status (Phase 8 — operator screens + biometric/share)
 
-Phase 6 scaffold (device key, token layer, Brass Console UI primitives at `/preview`)
-plus the Phase 7 pairing + request-signing client. Wired:
+Phases 6–8 complete: device key + token layer + Brass Console primitives (Phase 6), the
+pairing + request-signing client (Phase 7), and the operator screens, biometric gate,
+share sheet, and server-side self-revoke (Phase 8). Wired:
 - **Device admin key** — `src-tauri/src/device_key.rs` (`#[cfg]` dispatch: Secure
   Enclave on a real device, software P-256 on macOS/simulator), backed by
   `src-tauri/src/keychain.rs` (service `"ezpds-admin-companion"`).
@@ -29,21 +30,28 @@ plus the Phase 7 pairing + request-signing client. Wired:
   contract is shared by value, not import).
 - **Relay client** — `src-tauri/src/relay_client.rs` (Imperative Shell, reqwest): `pair`
   (self-signed `POST /v1/admin/devices`), `generate_claim_code` (signed
-  `POST /v1/accounts/claim-codes`), `unpair` (local forget), `current_pairing`. Request
-  construction is factored into pure `build_*` fns so a test verifies a built request
-  with `crypto::verify_p256_signature` — the relay's own verifier — proving acceptance
-  without a live relay.
-- **Pairing persistence** — `keychain.rs` `store_pairing`/`get_pairing`/`clear_pairing`
-  (accounts `admin-device-id`, `admin-relay-url`).
-- IPC commands: `pair_device`, `pairing_state`, `generate_claim_code`, `unpair` (plus
-  Phase 6's `get_or_create_device_key`, `sign_with_device_key`).
-- **Pair screen** (`src/routes/pair/+page.svelte`): manual relay-URL + code entry
-  (simulator path) and a camera **Scan QR** button (real device, mobile-only). Home
-  (`src/routes/+page.svelte`) branches on `pairing_state`.
-
-Not yet built (Phase 8): the polished claim-code / Settings screens, server-side
-self-revoke on unpair, and the full error-state matrix (clock-skew / revoked /
-unreachable copy lives in `src/lib/errors.ts`, ready to consume).
+  `POST /v1/accounts/claim-codes`), `revoke_self` (signed `POST /v1/admin/devices/:id/revoke`
+  for this device's own id, then local clear), `unpair` (local-only forget — the fallback
+  when the relay is unreachable), `current_pairing`. Request construction is factored into
+  pure `build_*` fns so a test verifies a built request with `crypto::verify_p256_signature`
+  — the relay's own verifier — proving acceptance (and path-binding of the revoke) without
+  a live relay.
+- **Pairing + preference persistence** — `keychain.rs`
+  `store_pairing`/`get_pairing`/`clear_pairing` (accounts `admin-device-id`,
+  `admin-relay-url`, `admin-device-label`) and `get/set_biometric_enabled`
+  (`admin-biometric-enabled`, default on, **survives unpair** — it's a device setting).
+- IPC commands: `pair_device`, `pairing_state`, `generate_claim_code`, `revoke_self`,
+  `unpair`, `biometric_enabled`, `set_biometric_enabled` (plus Phase 6's
+  `get_or_create_device_key`, `sign_with_device_key`).
+- **Screens**: **Pair** (`src/routes/pair/`), **Home** (`src/routes/+page.svelte` —
+  biometric-gated claim code, Copy + iOS Share, routes to Pair when unpaired),
+  **Settings** (`src/routes/settings/` — device label + relay URL + admin key, biometric
+  toggle, unpair = self-revoke with a local-only fallback). The error-state matrix
+  (not-paired / clock-skew / revoked / unreachable) is rendered by the shared
+  `ui/ErrorState.svelte` off `errors.ts`'s `classifyRelayError`.
+- **New UI primitives**: `ui/Toggle.svelte` (switch; state by position + on/off text, not
+  color), `ui/ErrorState.svelte` (a classified failure → chip + message + recovery CTA),
+  and `CodeOutput`'s optional `onshare` Share affordance. All exercised at `/preview`.
 
 ## Contracts
 
@@ -55,10 +63,14 @@ unreachable copy lives in `src/lib/errors.ts`, ready to consume).
 - `device_key::sign(data) -> Result<Vec<u8>, DeviceKeyError>` — raw 64-byte (r‖s),
   **low-S normalized** P-256 signature (the relay's verifier rejects high-S).
 - `DeviceKeyError` / `RelayClientError` serialize as `{ code: "SCREAMING_SNAKE_CASE", … }`.
+  The biometric-pref IPC commands surface keychain errors through `RelayClientError::Keychain`
+  (the app's single Serialize error type) rather than exposing `KeychainError` directly.
 - Keychain accounts: `admin-device-key-priv` (software path), `admin-device-key-pub` +
   `admin-device-key-app-label` (Secure Enclave path); `admin-device-id` + `admin-relay-url`
-  (pairing state). "Unpair" clears the pairing accounts but **keeps the device key**, so a
-  re-pair is recognised by the same public key.
+  + `admin-device-label` (pairing state); `admin-biometric-enabled` (the gate preference).
+  "Unpair" clears the pairing accounts but **keeps the device key** (so a re-pair is
+  recognised by the same public key) **and keeps `admin-biometric-enabled`** (a device
+  setting, not pairing state).
 - **Signing contract is single-source-of-truth and must stay in lockstep with the relay.**
   `signing.rs`'s golden tests pin the exact literals the relay's `auth.rs` tests pin; if the
   relay changes an envelope, both tests break together. Signatures are low-S P-256, raw r‖s,
@@ -72,12 +84,20 @@ unreachable copy lives in `src/lib/errors.ts`, ready to consume).
 - **Pairing QR payload** is JSON `{"relayUrl","pairingCode"}` (parsed by
   `parsePairingPayload`); the operator's code-minting tool encodes it. Manual entry fills the
   same two fields, so pairing works on the simulator (no camera).
-- **Camera QR** uses `@tauri-apps/plugin-barcode-scanner` — **mobile-only**: the Rust dep is
-  `cfg(target_os ios/android)`-gated, the plugin is registered behind `#[cfg(mobile)]`, and
-  its ACL grant lives in `src-tauri/capabilities/mobile.json` (`platforms: [iOS, android]`).
-  `capabilities/default.json` grants `core:default` + `log:default` on all platforms. Camera
-  use is declared via `NSCameraUsageDescription` in `Info.ios.plist`. The host build skips the
-  mobile capability, so `cargo build/test -p admin-companion` stays Apple-camera-free.
+- **Mobile-only plugins** (camera QR, biometric, share) follow one pattern: the Rust dep is
+  `cfg(target_os ios/android)`-gated in `Cargo.toml`, registered behind `#[cfg(mobile)]` in
+  `lib.rs`, granted in `src-tauri/capabilities/mobile.json` (`platforms: [iOS, android]`), and
+  imported **dynamically** in JS so the host/desktop build never resolves it. The host build
+  skips the mobile capability, so `cargo build/test -p admin-companion` stays Apple-toolchain-free.
+  - `@tauri-apps/plugin-barcode-scanner` (camera QR on Pair) — `NSCameraUsageDescription`.
+  - `@tauri-apps/plugin-biometric` (`barcode-scanner`/`biometric`/`sharesheet` `:default` ACLs)
+    drives the **user-presence gate**: `src/lib/biometric.ts` `requireUserPresence(reason)` is
+    called before every signing action (claim code, self-revoke). Needs `NSFaceIDUsageDescription`.
+    Off-device (desktop/host) or with the Settings toggle off, the gate resolves to allow; only a
+    cancelled/failed prompt blocks. The toggle is `set_biometric_enabled` (default on).
+  - `@buildyourwebapp/tauri-plugin-sharesheet` — `src/lib/share.ts` `shareText()` opens the iOS
+    Share Pane for a claim code; returns `false` off-device so the UI falls back to copy.
+  - `capabilities/default.json` grants `core:default` + `log:default` on all platforms.
 - **Design tokens are the live system.** Reference `var(--color-*)` / `var(--font-*)` /
   `var(--space-*)`; never hardcode hex/px. Every text pair in `tokens.css` is verified to
   clear **WCAG 2.2 AAA (≥7:1)** on its intended ground (the seed anchors were AA; they

@@ -179,7 +179,7 @@ pub async fn pair(
     let device_id = parse_success::<RegisterDeviceResponse>(response)
         .await?
         .device_id;
-    keychain::store_pairing(&device_id, relay_url)?;
+    keychain::store_pairing(&device_id, relay_url, label)?;
     Ok(device_id)
 }
 
@@ -212,9 +212,27 @@ pub fn current_pairing() -> Result<Option<Pairing>, RelayClientError> {
     Ok(keychain::get_pairing()?)
 }
 
-/// Forget this device's pairing locally (the companion app's "unpair"). Phase 7 clears
-/// only local state; server-side self-revoke (a signed revoke request) lands with the
-/// Settings screen in Phase 8. The device key is preserved so a re-pair is recognised.
+/// Revoke this device on the relay, then forget the pairing locally — the Settings
+/// "unpair" action. Sends a signed `POST /v1/admin/devices/:id/revoke` for this device's
+/// **own** id (the relay's `require_admin` accepts a device revoking itself), so the admin
+/// credential is dead server-side even if the phone is later lost. Local state is cleared
+/// only *after* the relay confirms: a failed revoke leaves the pairing intact so the
+/// operator can retry, or fall back to a local-only [`unpair`].
+pub async fn revoke_self() -> Result<(), RelayClientError> {
+    let pairing = keychain::get_pairing()?.ok_or(RelayClientError::NotPaired)?;
+    let path = format!("/v1/admin/devices/{}/revoke", pairing.device_id);
+    // The revoke endpoint takes no body. The signature still binds method + path, so a
+    // signature minted to revoke this device cannot be replayed to revoke another.
+    let signed = build_signed_request(&pairing, "POST", &path, b"", unix_now(), &fresh_nonce())?;
+    ensure_success(send(signed).await?).await?;
+    keychain::clear_pairing()?;
+    Ok(())
+}
+
+/// Forget this device's pairing locally **without** contacting the relay. The fallback
+/// when [`revoke_self`] can't reach the relay: the operator can still detach this phone,
+/// accepting that the credential remains valid server-side until revoked another way. The
+/// device key is preserved so a re-pair is recognised.
 pub fn unpair() -> Result<(), RelayClientError> {
     keychain::clear_pairing()?;
     Ok(())
@@ -317,6 +335,21 @@ async fn parse_success<T: serde::de::DeserializeOwned>(
     })
 }
 
+/// Verify a response is 2xx, mapping a non-success status to [`RelayClientError::RelayRejected`]
+/// (best-effort extracting the relay's error text). For calls whose success body we don't
+/// need — e.g. revoke, which only has to land.
+async fn ensure_success(response: reqwest::Response) -> Result<(), RelayClientError> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(());
+    }
+    let text = response.text().await.map_err(unreachable)?;
+    Err(RelayClientError::RelayRejected {
+        status: status.as_u16(),
+        message: extract_error_message(&text),
+    })
+}
+
 /// Pull the human-readable message out of the relay's error envelope
 /// (`{ "error": { "code", "message" } }`), falling back to the raw body.
 fn extract_error_message(body: &str) -> String {
@@ -381,7 +414,8 @@ mod tests {
     fn signed_claim_code_request_is_accepted_by_relay_verifier() {
         keychain::clear_for_test();
         let key = device_key::get_or_create().expect("device key");
-        keychain::store_pairing("device-xyz", "https://relay.example").expect("store pairing");
+        keychain::store_pairing("device-xyz", "https://relay.example", "Operator iPhone")
+            .expect("store pairing");
         let pairing = keychain::get_pairing().unwrap().unwrap();
 
         let body = br#"{"count":1}"#;
@@ -420,11 +454,60 @@ mod tests {
         .expect("the relay's verifier must accept this signed request");
     }
 
+    // Phase 8 self-revoke, proven without a live relay: a signed `POST
+    // /v1/admin/devices/:id/revoke` over an empty body carries a signature the relay's OWN
+    // verifier accepts — and that signature is bound to the path (this device's id), so it
+    // cannot be replayed to revoke a *different* device.
+    #[test]
+    fn signed_self_revoke_request_is_accepted_and_path_bound() {
+        keychain::clear_for_test();
+        let key = device_key::get_or_create().expect("device key");
+        keychain::store_pairing("device-self", "https://relay.example", "Operator iPhone")
+            .expect("store pairing");
+        let pairing = keychain::get_pairing().unwrap().unwrap();
+
+        let path = "/v1/admin/devices/device-self/revoke";
+        let req = build_signed_request(&pairing, "POST", path, b"", 1_700_000_000, "nonce-rev")
+            .expect("build signed revoke request");
+
+        assert_eq!(
+            req.url,
+            "https://relay.example/v1/admin/devices/device-self/revoke"
+        );
+        assert_eq!(req.body, b"");
+        assert_eq!(header(&req, signing::ADMIN_DEVICE_HEADER), "device-self");
+
+        // The relay's verifier accepts the self-revoke over its canonical envelope.
+        let sign_string =
+            signing::request_sign_string("POST", path, 1_700_000_000, "nonce-rev", b"");
+        verify_p256_signature(
+            &DidKeyUri(key.key_id.clone()),
+            sign_string.as_bytes(),
+            &decode_sig(header(&req, signing::ADMIN_SIGNATURE_HEADER)),
+        )
+        .expect("the relay's verifier must accept this self-revoke");
+
+        // The same signature must NOT verify against a different device's revoke path —
+        // the envelope binds the target id, so a self-revoke can't revoke another device.
+        let other_path = "/v1/admin/devices/device-victim/revoke";
+        let other_sign_string =
+            signing::request_sign_string("POST", other_path, 1_700_000_000, "nonce-rev", b"");
+        assert!(
+            verify_p256_signature(
+                &DidKeyUri(key.key_id),
+                other_sign_string.as_bytes(),
+                &decode_sig(header(&req, signing::ADMIN_SIGNATURE_HEADER)),
+            )
+            .is_err(),
+            "a revoke signature must be bound to its own device's path"
+        );
+    }
+
     #[test]
     fn build_signed_request_binds_body_so_tamper_is_detected() {
         keychain::clear_for_test();
         let key = device_key::get_or_create().expect("device key");
-        keychain::store_pairing("device-xyz", "https://relay.example").unwrap();
+        keychain::store_pairing("device-xyz", "https://relay.example", "Operator iPhone").unwrap();
         let pairing = keychain::get_pairing().unwrap().unwrap();
 
         let req = build_signed_request(

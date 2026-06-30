@@ -38,11 +38,16 @@ reqwest = { workspace = true }
 # touch the Keychain via this crate). OSX_10_12 enables the SE access-control APIs.
 security-framework = { workspace = true, features = ["OSX_10_12"] }
 
-# Camera QR scanning for the Pair screen. Mobile-only (iOS/Android); gated to those
-# targets so the macOS host build and its test suite never compile it. Registered
-# behind `#[cfg(mobile)]` in lib.rs, granted via capabilities/mobile.json.
+# Mobile-only plugins (iOS/Android), gated to those targets so the macOS host build and
+# its test suite never compile them. Registered behind `#[cfg(mobile)]` in lib.rs, granted
+# via capabilities/mobile.json:
+#   - barcode-scanner: camera QR on the Pair screen.
+#   - biometric: Face ID / Touch ID user-presence gate on every signing action (AC7.4).
+#   - sharesheet: the iOS Share Pane for a generated claim code (AC1.2).
 [target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
 tauri-plugin-barcode-scanner = "2"
+tauri-plugin-biometric = "2"
+tauri-plugin-sharesheet = "0.0.1"
 
 [build-dependencies]
 tauri-build = { workspace = true, features = [] }
