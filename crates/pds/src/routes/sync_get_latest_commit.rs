@@ -291,4 +291,48 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"]["code"], "NOT_FOUND");
     }
+
+    #[tokio::test]
+    async fn suspended_or_takendown_repo_still_returns_latest_commit() {
+        // The contract mirrors getRepoStatus's `rev`: a non-active repo still has a last-known
+        // commit. `get_repo_status` derives lifecycle from three separate columns, so cover the
+        // suspended and taken-down paths alongside the deactivated case above — a regression in
+        // either column would otherwise pass unnoticed.
+        let state = state_with_master_key().await;
+        let mut expected = Vec::new();
+        for (did, column) in [
+            ("did:plc:latestcommitsuspended", "suspended_at"),
+            ("did:plc:latestcommittakendown", "taken_down_at"),
+        ] {
+            seed_account_with_repo(&state.db, did).await;
+            let cid: String =
+                sqlx::query_scalar("SELECT repo_root_cid FROM accounts WHERE did = ?")
+                    .bind(did)
+                    .fetch_one(&state.db)
+                    .await
+                    .unwrap();
+            // Fixed SQL per column (never interpolated) so the query stays static.
+            let sql = match column {
+                "suspended_at" => {
+                    "UPDATE accounts SET suspended_at = datetime('now') WHERE did = ?"
+                }
+                "taken_down_at" => {
+                    "UPDATE accounts SET taken_down_at = datetime('now') WHERE did = ?"
+                }
+                other => panic!("unsupported lifecycle column: {other}"),
+            };
+            sqlx::query(sql).bind(did).execute(&state.db).await.unwrap();
+            expected.push((did, cid));
+        }
+        let app = crate::app::app(state);
+
+        for (did, expected_cid) in expected {
+            let (status, body) = get_latest(&app, did).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(
+                body["cid"], expected_cid,
+                "{did} must still report its last-known commit"
+            );
+        }
+    }
 }
