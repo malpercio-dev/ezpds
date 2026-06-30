@@ -1,0 +1,470 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-06-30T12:03:38Z",
+  "title": "Design System: Admin Companion",
+  "extensions": {
+    "colorMeta": {
+      "primary": {
+        "role": "primary",
+        "displayName": "Sealing-Wax Gold",
+        "canonical": "oklch(0.72 0.12 80)",
+        "tonalRamp": [
+          "oklch(0.18 0.12 80)",
+          "oklch(0.28 0.12 80)",
+          "oklch(0.40 0.12 80)",
+          "oklch(0.52 0.12 80)",
+          "oklch(0.64 0.12 80)",
+          "oklch(0.76 0.12 80)",
+          "oklch(0.87 0.078 80)",
+          "oklch(0.95 0.078 80)"
+        ]
+      },
+      "primary-hover": {
+        "role": "primary",
+        "displayName": "Lit Brass",
+        "canonical": "oklch(0.78 0.13 82)",
+        "tonalRamp": [
+          "oklch(0.18 0.13 82)",
+          "oklch(0.28 0.13 82)",
+          "oklch(0.40 0.13 82)",
+          "oklch(0.52 0.13 82)",
+          "oklch(0.64 0.13 82)",
+          "oklch(0.76 0.13 82)",
+          "oklch(0.87 0.085 82)",
+          "oklch(0.95 0.085 82)"
+        ]
+      },
+      "primary-deep": {
+        "role": "primary",
+        "displayName": "Deep Brass",
+        "canonical": "oklch(0.70 0.13 78)",
+        "tonalRamp": [
+          "oklch(0.18 0.13 78)",
+          "oklch(0.28 0.13 78)",
+          "oklch(0.40 0.13 78)",
+          "oklch(0.52 0.13 78)",
+          "oklch(0.64 0.13 78)",
+          "oklch(0.76 0.13 78)",
+          "oklch(0.87 0.085 78)",
+          "oklch(0.95 0.085 78)"
+        ]
+      },
+      "on-primary": {
+        "role": "neutral",
+        "displayName": "Slate Ink (on brass)",
+        "canonical": "oklch(0.16 0.012 250)",
+        "tonalRamp": [
+          "oklch(0.18 0.012 250)",
+          "oklch(0.28 0.012 250)",
+          "oklch(0.40 0.012 250)",
+          "oklch(0.52 0.012 250)",
+          "oklch(0.64 0.012 250)",
+          "oklch(0.76 0.012 250)",
+          "oklch(0.87 0.008 250)",
+          "oklch(0.95 0.008 250)"
+        ]
+      },
+      "bg": {
+        "role": "neutral",
+        "displayName": "Console Slate",
+        "canonical": "oklch(0.18 0.012 250)",
+        "tonalRamp": [
+          "oklch(0.18 0.013 250)",
+          "oklch(0.28 0.013 250)",
+          "oklch(0.40 0.013 250)",
+          "oklch(0.52 0.013 250)",
+          "oklch(0.64 0.013 250)",
+          "oklch(0.76 0.013 250)",
+          "oklch(0.87 0.008 250)",
+          "oklch(0.95 0.008 250)"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Panel Slate",
+        "canonical": "oklch(0.22 0.014 250)",
+        "tonalRamp": [
+          "oklch(0.18 0.014 250)",
+          "oklch(0.28 0.014 250)",
+          "oklch(0.40 0.014 250)",
+          "oklch(0.52 0.014 250)",
+          "oklch(0.64 0.014 250)",
+          "oklch(0.76 0.014 250)",
+          "oklch(0.87 0.009 250)",
+          "oklch(0.95 0.009 250)"
+        ]
+      },
+      "surface-raised": {
+        "role": "neutral",
+        "displayName": "Raised Slate",
+        "canonical": "oklch(0.26 0.015 250)",
+        "tonalRamp": [
+          "oklch(0.18 0.015 250)",
+          "oklch(0.28 0.015 250)",
+          "oklch(0.40 0.015 250)",
+          "oklch(0.52 0.015 250)",
+          "oklch(0.64 0.015 250)",
+          "oklch(0.76 0.015 250)",
+          "oklch(0.87 0.01 250)",
+          "oklch(0.95 0.01 250)"
+        ]
+      },
+      "line": {
+        "role": "neutral",
+        "displayName": "Steel Line",
+        "canonical": "oklch(0.34 0.012 250)",
+        "tonalRamp": [
+          "oklch(0.18 0.012 250)",
+          "oklch(0.28 0.012 250)",
+          "oklch(0.40 0.012 250)",
+          "oklch(0.52 0.012 250)",
+          "oklch(0.64 0.012 250)",
+          "oklch(0.76 0.012 250)",
+          "oklch(0.87 0.008 250)",
+          "oklch(0.95 0.008 250)"
+        ]
+      },
+      "border-strong": {
+        "role": "neutral",
+        "displayName": "Steel Line (control)",
+        "canonical": "oklch(0.52 0.012 250)",
+        "tonalRamp": [
+          "oklch(0.18 0.012 250)",
+          "oklch(0.28 0.012 250)",
+          "oklch(0.40 0.012 250)",
+          "oklch(0.52 0.012 250)",
+          "oklch(0.64 0.012 250)",
+          "oklch(0.76 0.012 250)",
+          "oklch(0.87 0.008 250)",
+          "oklch(0.95 0.008 250)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Filament",
+        "canonical": "oklch(0.95 0.006 250)",
+        "tonalRamp": [
+          "oklch(0.18 0.008 250)",
+          "oklch(0.28 0.008 250)",
+          "oklch(0.40 0.008 250)",
+          "oklch(0.52 0.008 250)",
+          "oklch(0.64 0.008 250)",
+          "oklch(0.76 0.008 250)",
+          "oklch(0.87 0.005 250)",
+          "oklch(0.95 0.005 250)"
+        ]
+      },
+      "ink-soft": {
+        "role": "neutral",
+        "displayName": "Filament Soft",
+        "canonical": "oklch(0.82 0.008 250)",
+        "tonalRamp": [
+          "oklch(0.18 0.008 250)",
+          "oklch(0.28 0.008 250)",
+          "oklch(0.40 0.008 250)",
+          "oklch(0.52 0.008 250)",
+          "oklch(0.64 0.008 250)",
+          "oklch(0.76 0.008 250)",
+          "oklch(0.87 0.005 250)",
+          "oklch(0.95 0.005 250)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Filament Dim",
+        "canonical": "oklch(0.73 0.010 250)",
+        "tonalRamp": [
+          "oklch(0.18 0.01 250)",
+          "oklch(0.28 0.01 250)",
+          "oklch(0.40 0.01 250)",
+          "oklch(0.52 0.01 250)",
+          "oklch(0.64 0.01 250)",
+          "oklch(0.76 0.01 250)",
+          "oklch(0.87 0.007 250)",
+          "oklch(0.95 0.007 250)"
+        ]
+      },
+      "safe": {
+        "role": "tertiary",
+        "displayName": "Verified Green",
+        "canonical": "oklch(0.82 0.10 150)",
+        "tonalRamp": [
+          "oklch(0.18 0.1 150)",
+          "oklch(0.28 0.1 150)",
+          "oklch(0.40 0.1 150)",
+          "oklch(0.52 0.1 150)",
+          "oklch(0.64 0.1 150)",
+          "oklch(0.76 0.1 150)",
+          "oklch(0.87 0.065 150)",
+          "oklch(0.95 0.065 150)"
+        ]
+      },
+      "warning": {
+        "role": "tertiary",
+        "displayName": "Caution Amber",
+        "canonical": "oklch(0.82 0.10 50)",
+        "tonalRamp": [
+          "oklch(0.18 0.1 50)",
+          "oklch(0.28 0.1 50)",
+          "oklch(0.40 0.1 50)",
+          "oklch(0.52 0.1 50)",
+          "oklch(0.64 0.1 50)",
+          "oklch(0.76 0.1 50)",
+          "oklch(0.87 0.065 50)",
+          "oklch(0.95 0.065 50)"
+        ]
+      },
+      "critical": {
+        "role": "tertiary",
+        "displayName": "Alarm Red",
+        "canonical": "oklch(0.82 0.10 25)",
+        "tonalRamp": [
+          "oklch(0.18 0.1 25)",
+          "oklch(0.28 0.1 25)",
+          "oklch(0.40 0.1 25)",
+          "oklch(0.52 0.1 25)",
+          "oklch(0.64 0.1 25)",
+          "oklch(0.76 0.1 25)",
+          "oklch(0.87 0.065 25)",
+          "oklch(0.95 0.065 25)"
+        ]
+      },
+      "critical-solid": {
+        "role": "tertiary",
+        "displayName": "Alarm Solid",
+        "canonical": "oklch(0.44 0.16 25)",
+        "tonalRamp": [
+          "oklch(0.18 0.16 25)",
+          "oklch(0.28 0.16 25)",
+          "oklch(0.40 0.16 25)",
+          "oklch(0.52 0.16 25)",
+          "oklch(0.64 0.16 25)",
+          "oklch(0.76 0.16 25)",
+          "oklch(0.87 0.104 25)",
+          "oklch(0.95 0.104 25)"
+        ]
+      },
+      "info": {
+        "role": "tertiary",
+        "displayName": "Calm Slate",
+        "canonical": "oklch(0.82 0.10 240)",
+        "tonalRamp": [
+          "oklch(0.18 0.1 240)",
+          "oklch(0.28 0.1 240)",
+          "oklch(0.40 0.1 240)",
+          "oklch(0.52 0.1 240)",
+          "oklch(0.64 0.1 240)",
+          "oklch(0.76 0.1 240)",
+          "oklch(0.87 0.065 240)",
+          "oklch(0.95 0.065 240)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display — JetBrains Mono (the prompt)",
+        "purpose": "Mono. The one display moment per screen: the `ezpds ▸ <prompt>` console line and the wordmark. Mono is the signet here — elevated, not relegated."
+      },
+      "headline": {
+        "displayName": "Headline — technical grotesk",
+        "purpose": "Grotesk 600, ~1.375rem. Section and screen headings — the working voice."
+      },
+      "title": {
+        "displayName": "Title — technical grotesk",
+        "purpose": "Grotesk 600, ~1.125rem. Card titles, group headers, a device label."
+      },
+      "body": {
+        "displayName": "Body — technical grotesk",
+        "purpose": "Grotesk 400, 1rem, line-height 1.6 (looser than Obsign — light-on-dark reads lighter). Prose and explanations; cap at 65–75ch."
+      },
+      "label": {
+        "displayName": "Label — technical grotesk",
+        "purpose": "Grotesk 500, 0.8125rem, +0.01em. Buttons, field labels, metadata. Sentence case, never all-caps eyebrows."
+      },
+      "data": {
+        "displayName": "Data — JetBrains Mono",
+        "purpose": "Mono, 0.875rem. Claim codes, did:keys, device IDs, timestamps, status values — anything literal and verifiable. Wraps break-all; never truncates a code silently."
+      }
+    },
+    "shadows": [
+      {
+        "name": "sheet",
+        "value": "0 -8px 32px oklch(0.10 0.01 250 / 0.5)",
+        "purpose": "A confirmation sheet rising from the bottom — the only bottom-anchored elevation."
+      },
+      {
+        "name": "toast",
+        "value": "0 4px 20px oklch(0.10 0.01 250 / 0.5)",
+        "purpose": "Transient status notifications. Soft, neutral, never colored."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-standard",
+        "value": "cubic-bezier(0.22, 1, 0.36, 1)",
+        "purpose": "Ease-out (quart-like) default for every state transition. No bounce, no elastic."
+      },
+      {
+        "name": "duration-fast",
+        "value": "120ms",
+        "purpose": "Micro-feedback: copy confirm, focus ring, color shifts."
+      },
+      {
+        "name": "duration-base",
+        "value": "180ms",
+        "purpose": "Default control transitions (button background, toggle thumb)."
+      },
+      {
+        "name": "duration-slow",
+        "value": "240ms",
+        "purpose": "Larger surface moves; still well under the 250ms product ceiling."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "mobile",
+        "value": "≤430px — single-column iPhone WKWebView. Layout is fixed-column, full-height (100dvh); there are no width breakpoints. The only responsive switch is prefers-reduced-motion (the spinner/thumb hold still rather than disappear)."
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Button — Primary (One Lamp)",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Sealing-Wax Gold fill with deep-slate ink (7.7:1, AAA). The single primary action per screen — the One Lamp. Used at most once.",
+      "html": "<div class=\"ds-pbtn-frame\"><button class=\"ds-pbtn\">Generate claim code</button></div>",
+      "css": ".ds-pbtn-frame{background:oklch(0.18 0.012 250);padding:24px;border-radius:10px;display:flex}.ds-pbtn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:8px 16px;border:1px solid transparent;border-radius:6px;font-family:system-ui, -apple-system, 'Helvetica Neue', sans-serif;font-size:1rem;font-weight:500;line-height:1;cursor:pointer;transition:background 180ms cubic-bezier(0.22,1,0.36,1),border-color 180ms cubic-bezier(0.22,1,0.36,1);background:oklch(0.72 0.12 80);color:oklch(0.16 0.012 250)}.ds-pbtn:hover{background:oklch(0.78 0.13 82)}.ds-pbtn:active{background:oklch(0.70 0.13 78)}.ds-pbtn:focus-visible{outline:2px solid oklch(0.72 0.12 80);outline-offset:2px;}"
+    },
+    {
+      "name": "Button — Secondary (quiet default)",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Panel Slate with a Steel Line hairline. The quiet default action; carries everything that isn't the One Lamp.",
+      "html": "<div class=\"ds-sbtn-frame\"><button class=\"ds-sbtn\">Settings</button></div>",
+      "css": ".ds-sbtn-frame{background:oklch(0.18 0.012 250);padding:24px;border-radius:10px;display:flex}.ds-sbtn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:8px 16px;border:1px solid transparent;border-radius:6px;font-family:system-ui, -apple-system, 'Helvetica Neue', sans-serif;font-size:1rem;font-weight:500;line-height:1;cursor:pointer;transition:background 180ms cubic-bezier(0.22,1,0.36,1),border-color 180ms cubic-bezier(0.22,1,0.36,1);background:oklch(0.22 0.014 250);color:oklch(0.95 0.006 250);border-color:oklch(0.52 0.012 250)}.ds-sbtn:hover{background:oklch(0.26 0.015 250)}.ds-sbtn:active{background:oklch(0.26 0.015 250);border-color:oklch(0.34 0.012 250)}.ds-sbtn:focus-visible{outline:2px solid oklch(0.72 0.12 80);outline-offset:2px;}"
+    },
+    {
+      "name": "Button — Destructive",
+      "kind": "button",
+      "refersTo": "button-destructive",
+      "description": "Alarm Solid fill with light text (7.5:1, AAA). Reserved for the irreversible revoke / unpair — deliberately scarce.",
+      "html": "<div class=\"ds-dbtn-frame\"><button class=\"ds-dbtn\">Unpair this device</button></div>",
+      "css": ".ds-dbtn-frame{background:oklch(0.18 0.012 250);padding:24px;border-radius:10px;display:flex}.ds-dbtn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:8px 16px;border:1px solid transparent;border-radius:6px;font-family:system-ui, -apple-system, 'Helvetica Neue', sans-serif;font-size:1rem;font-weight:500;line-height:1;cursor:pointer;transition:background 180ms cubic-bezier(0.22,1,0.36,1),border-color 180ms cubic-bezier(0.22,1,0.36,1);background:oklch(0.44 0.16 25);color:oklch(0.96 0.006 250)}.ds-dbtn:hover{filter:brightness(1.08)}.ds-dbtn:active{filter:brightness(0.94)}.ds-dbtn:focus-visible{outline:2px solid oklch(0.72 0.12 80);outline-offset:2px;}"
+    },
+    {
+      "name": "StatusChip (tonal-pair badge)",
+      "kind": "chip",
+      "refersTo": "status-chip",
+      "description": "Status is never color alone: each chip is a signal tone on a deep same-hue surface PLUS a terminal glyph PLUS a text label. The glyph is the register's voice; the label is the screen-reader truth.",
+      "html": "<div class=\"ds-chips-frame\"><span class=\"ds-chip ds-chip-safe\"><span class=\"ds-chip-g\" aria-hidden=\"true\">●</span> active</span><span class=\"ds-chip ds-chip-warn\"><span class=\"ds-chip-g\" aria-hidden=\"true\">◌</span> pending</span><span class=\"ds-chip ds-chip-crit\"><span class=\"ds-chip-g\" aria-hidden=\"true\">⊘</span> revoked</span><span class=\"ds-chip ds-chip-info\"><span class=\"ds-chip-g\" aria-hidden=\"true\">○</span> info</span></div>",
+      "css": ".ds-chips-frame{background:oklch(0.18 0.012 250);padding:24px;border-radius:10px;display:flex;flex-wrap:wrap;gap:8px}.ds-chip{display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border-radius:4px;font-family:'JetBrains Mono', ui-monospace, 'SF Mono', 'Menlo', monospace;font-size:0.8125rem;line-height:1;white-space:nowrap}.ds-chip-g{font-size:0.9em}.ds-chip-safe{color:oklch(0.82 0.10 150);background:oklch(0.26 0.04 150)}.ds-chip-warn{color:oklch(0.82 0.10 50);background:oklch(0.26 0.04 50)}.ds-chip-crit{color:oklch(0.82 0.10 25);background:oklch(0.26 0.04 25)}.ds-chip-info{color:oklch(0.82 0.10 240);background:oklch(0.26 0.04 240)}"
+    },
+    {
+      "name": "CodeOutput (signature component)",
+      "kind": "custom",
+      "refersTo": "code-output",
+      "description": "The signature surface: a claim code / did:key / device ID rendered as copyable terminal output — mono on Raised Slate, a leading gold ▸ prompt glyph, copy + share affordances. Wraps break-all; never truncates a literal silently (Literal-Truth rule).",
+      "html": "<div class=\"ds-code-frame\"><span class=\"ds-code-cap\">Account claim code</span><div class=\"ds-code-surface\"><code class=\"ds-code-val\"><span class=\"ds-code-prompt\">▸</span>PDS-7Q4M-2XK9</code><div class=\"ds-code-tools\"><button class=\"ds-code-tool\"><svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"9\" y=\"9\" width=\"11\" height=\"11\" rx=\"2\"/><path d=\"M5 15V5a2 2 0 0 1 2-2h10\"/></svg> copy</button><button class=\"ds-code-tool\"><svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 16V4\"/><path d=\"m8 8 4-4 4 4\"/><path d=\"M5 12v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6\"/></svg> share</button></div></div></div>",
+      "css": ".ds-code-frame{background:oklch(0.18 0.012 250);padding:24px;border-radius:10px;display:flex;flex-direction:column;gap:4px}.ds-code-cap{font-family:system-ui, -apple-system, 'Helvetica Neue', sans-serif;font-size:0.8125rem;font-weight:500;color:oklch(0.73 0.010 250)}.ds-code-surface{display:flex;align-items:flex-start;gap:8px;background:oklch(0.26 0.015 250);border:1px solid oklch(0.34 0.012 250);border-radius:6px;padding:8px 16px}.ds-code-val{flex:1;min-width:0;font-family:'JetBrains Mono', ui-monospace, 'SF Mono', 'Menlo', monospace;font-size:0.875rem;line-height:1.55;color:oklch(0.95 0.006 250);overflow-wrap:anywhere;word-break:break-all}.ds-code-prompt{color:oklch(0.72 0.12 80);margin-right:8px}.ds-code-tools{flex:none;display:flex;flex-direction:column;gap:4px}.ds-code-tool{display:inline-flex;align-items:center;gap:4px;min-height:32px;padding:4px 8px;background:transparent;border:1px solid oklch(0.52 0.012 250);border-radius:4px;color:oklch(0.82 0.008 250);font-family:'JetBrains Mono', ui-monospace, 'SF Mono', 'Menlo', monospace;font-size:0.8125rem;cursor:pointer;transition:color 120ms cubic-bezier(0.22,1,0.36,1),border-color 120ms cubic-bezier(0.22,1,0.36,1)}.ds-code-tool:hover{color:oklch(0.95 0.006 250);border-color:oklch(0.73 0.010 250)}.ds-code-tool:focus-visible{outline:2px solid oklch(0.72 0.12 80);outline-offset:2px}.ds-code-tool svg{flex:none}"
+    },
+    {
+      "name": "TextField",
+      "kind": "input",
+      "refersTo": "text-field",
+      "description": "A labelled input well: Raised Slate ground, Steel Line border, 2px gold focus ring. The `mono` variant sets literal values (relay URL, pairing code) in JetBrains Mono. Errors are border + leading ! glyph + message, never color alone.",
+      "html": "<div class=\"ds-field-frame\"><label class=\"ds-field-label\" for=\"ds-field-i\">Relay URL</label><input id=\"ds-field-i\" class=\"ds-field-input\" type=\"url\" value=\"https://relay.ezpds.com\" /></div>",
+      "css": ".ds-field-frame{background:oklch(0.18 0.012 250);padding:24px;border-radius:10px;display:flex;flex-direction:column;gap:4px}.ds-field-label{font-family:system-ui, -apple-system, 'Helvetica Neue', sans-serif;font-size:0.8125rem;font-weight:500;color:oklch(0.82 0.008 250)}.ds-field-input{width:100%;min-height:44px;padding:8px 16px;background:oklch(0.26 0.015 250);color:oklch(0.95 0.006 250);border:1px solid oklch(0.52 0.012 250);border-radius:6px;font-family:'JetBrains Mono', ui-monospace, 'SF Mono', 'Menlo', monospace;font-size:0.875rem;transition:border-color 120ms cubic-bezier(0.22,1,0.36,1)}.ds-field-input:focus-visible{outline:2px solid oklch(0.72 0.12 80);outline-offset:2px;border-color:oklch(0.72 0.12 80)}"
+    },
+    {
+      "name": "Toggle (switch)",
+      "kind": "custom",
+      "refersTo": "toggle",
+      "description": "A labelled switch for a boolean setting. State is conveyed by thumb POSITION and an explicit on/off mono label — never color alone. The gold “on” track is the active-state use of the brass accent, not a status color.",
+      "html": "<div class=\"ds-tog-frame\"><div class=\"ds-tog-text\"><span class=\"ds-tog-label\" id=\"ds-tog-lbl\">Require Face ID to sign</span><span class=\"ds-tog-desc\" id=\"ds-tog-dsc\">Confirm before generating a claim code or unpairing.</span></div><button class=\"ds-tog ds-tog-on\" role=\"switch\" aria-checked=\"true\" aria-labelledby=\"ds-tog-lbl\" aria-describedby=\"ds-tog-dsc\"><span class=\"ds-tog-state\" aria-hidden=\"true\">on</span><span class=\"ds-tog-track\"><span class=\"ds-tog-thumb\"></span></span></button></div>",
+      "css": ".ds-tog-frame{background:oklch(0.18 0.012 250);padding:24px;border-radius:10px;display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.ds-tog-text{display:flex;flex-direction:column;gap:2px;min-width:0}.ds-tog-label{font-family:system-ui, -apple-system, 'Helvetica Neue', sans-serif;font-size:1rem;font-weight:500;color:oklch(0.95 0.006 250)}.ds-tog-desc{font-family:system-ui, -apple-system, 'Helvetica Neue', sans-serif;font-size:0.8125rem;color:oklch(0.82 0.008 250)}.ds-tog{flex:none;display:inline-flex;align-items:center;gap:8px;min-height:44px;padding:0;background:transparent;border:none;cursor:pointer}.ds-tog-state{font-family:'JetBrains Mono', ui-monospace, 'SF Mono', 'Menlo', monospace;font-size:0.8125rem;color:oklch(0.72 0.12 80);min-width:2ch;text-align:right}.ds-tog-track{position:relative;display:inline-block;width:40px;height:24px;background:oklch(0.72 0.12 80);border:1px solid oklch(0.72 0.12 80);border-radius:9999px}.ds-tog-thumb{position:absolute;top:50%;left:4px;width:16px;height:16px;margin-top:-8px;background:oklch(0.16 0.012 250);border-radius:9999px;transform:translateX(16px);transition:transform 180ms cubic-bezier(0.22,1,0.36,1)}.ds-tog:focus-visible{outline:2px solid oklch(0.72 0.12 80);outline-offset:2px;border-radius:4px}"
+    },
+    {
+      "name": "ScreenShell prompt (console header)",
+      "kind": "nav",
+      "refersTo": "screen-prompt",
+      "description": "The screen scaffold's display moment: the `ezpds ▸ <prompt>` line in mono — the one place the display face appears, once per screen — over a working-voice grotesk headline. Keeps every operator screen structurally identical.",
+      "html": "<div class=\"ds-shell-frame\"><p class=\"ds-shell-prompt\"><span class=\"ds-shell-brand\">ezpds</span><span class=\"ds-shell-caret\">▸</span>claim code</p><h1 class=\"ds-shell-title\">Generate a claim code</h1></div>",
+      "css": ".ds-shell-frame{background:oklch(0.18 0.012 250);padding:32px 24px;border-radius:10px;display:flex;flex-direction:column;gap:4px}.ds-shell-prompt{margin:0;font-family:'JetBrains Mono', ui-monospace, 'SF Mono', 'Menlo', monospace;font-size:0.875rem;letter-spacing:0.02em;color:oklch(0.82 0.008 250)}.ds-shell-brand{color:oklch(0.72 0.12 80)}.ds-shell-caret{margin:0 8px;color:oklch(0.73 0.010 250)}.ds-shell-title{margin:0;font-family:system-ui, -apple-system, 'Helvetica Neue', sans-serif;font-size:1.375rem;line-height:1.25;font-weight:600;color:oklch(0.95 0.006 250)}"
+    },
+    {
+      "name": "DeviceRow (the ls -l row)",
+      "kind": "custom",
+      "refersTo": "device-row",
+      "description": "A dense, aligned ls -l row: label + shortened mono did:key (head…tail with a VISIBLE ellipsis, the full value one tap away) + last-seen, with a StatusChip on the right. The operator's current device is marked by a gold “this device” label, not a side-stripe.",
+      "html": "<div class=\"ds-row-frame\"><div class=\"ds-row\"><div class=\"ds-row-main\"><span class=\"ds-row-label\">iPhone 17 Pro <span class=\"ds-row-self\">this device</span></span><span class=\"ds-row-id\">did:key:zDnaerByL1n8…aH2g</span></div><div class=\"ds-row-meta\"><span class=\"ds-chip ds-chip-safe\"><span class=\"ds-chip-g\" aria-hidden=\"true\">●</span> active</span><span class=\"ds-row-seen\">seen 2m ago</span></div></div></div>",
+      "css": ".ds-row-frame{background:oklch(0.18 0.012 250);padding:24px;border-radius:10px}.ds-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px;background:oklch(0.22 0.014 250);border:1px solid oklch(0.34 0.012 250);border-radius:10px}.ds-row-main{display:flex;flex-direction:column;gap:4px;min-width:0}.ds-row-label{font-family:system-ui, -apple-system, 'Helvetica Neue', sans-serif;font-size:1.125rem;font-weight:600;color:oklch(0.95 0.006 250);display:flex;gap:8px;align-items:baseline}.ds-row-self{font-family:system-ui, -apple-system, 'Helvetica Neue', sans-serif;font-size:0.8125rem;font-weight:500;color:oklch(0.72 0.12 80)}.ds-row-id{font-family:'JetBrains Mono', ui-monospace, 'SF Mono', 'Menlo', monospace;font-size:0.875rem;color:oklch(0.82 0.008 250)}.ds-row-meta{flex:none;display:flex;flex-direction:column;align-items:flex-end;gap:4px}.ds-chip{display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border-radius:4px;font-family:'JetBrains Mono', ui-monospace, 'SF Mono', 'Menlo', monospace;font-size:0.8125rem;line-height:1;white-space:nowrap}.ds-chip-g{font-size:0.9em}.ds-chip-safe{color:oklch(0.82 0.10 150);background:oklch(0.26 0.04 150)}.ds-row-seen{font-family:'JetBrains Mono', ui-monospace, 'SF Mono', 'Menlo', monospace;font-size:0.8125rem;color:oklch(0.73 0.010 250)}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Brass Console",
+    "overview": "This is the control surface of a precision instrument: brass dials and gold indicator lamps lit against cool brushed steel, in a calm, dimly-lit operations room. The operator who self-hosts a relay administers it today from a terminal; this is that terminal made into an instrument they can hold — exact, dense, and fast, the way good operator tooling (Warp, Charm, Linear, Railway) is exact. Gravitas comes from precision and legible density — aligned columns, monospace where the data is literal, gold reserved for the one action that matters — never from chrome and never from theatrics.\n\nIt is the technical sibling of Obsign, the identity wallet. It shares Obsign's soul — the sealing-wax gold, the “practice the assurance you preach” rigor, the WCAG 2.2 AAA bar — but deliberately inverts the register: where Obsign is warm parchment under daylight, this is cool slate under low light; where Obsign hides the cryptographic machinery behind plain human stakes, this leads with it, because the machinery is the operator's native language. The two apps are recognizably the same house; this one is the operator's room in it.\n\nThis system explicitly rejects hacker cosplay / terminal kitsch (CRT scanlines, phosphor glow, Matrix rain, h4ck3r green-on-black, fake boot logs as decor), consumer-app friendliness (humane onboarding carousels, soft playful cards, mascots, reassurance copy — Obsign's lane, not this one), crypto / web3 hype (neon, coins, gradients), the enterprise dashboard / chart-soup (gauge clusters, KPI hero cards), and the low-contrast dark-theme cliché (gray-on-darker-gray mush). Terminal-native here means a refined command surface, not a costume.",
+    "keyCharacteristics": [
+      "Cool slate ground, sealing-wax gold accent — brass on steel, a deliberate temperature/value inversion of Obsign's gold-on-white.",
+      "Monospace-forward: the mono is the signature voice (the literal truth of a code or key), a grotesk carries dense UI and prose.",
+      "Dense but legible — the clarity of a good ls -l, never chart-soup, never mush.",
+      "Gold is the one action, never decoration; status is the green/amber/red/slate ramp, never gold.",
+      "Status is never color alone — color + glyph + text + position, always.",
+      "WCAG 2.2 AAA, held against a dark ground where it is hardest — the one Obsign principle carried with zero compromise."
+    ],
+    "rules": [
+      {
+        "name": "The Seal-vs-Signal Rule",
+        "section": "colors",
+        "body": "Gold is action and identity; the green/amber/red/slate ramp is status. Status colors always carry a glyph and a text label and appear only in status contexts. Gold never masquerades as a status, and a status color never carries the brand. This rule is what lets a warm accent and a warm-ish amber coexist without confusion."
+      },
+      {
+        "name": "The Cool-Ground Rule",
+        "section": "colors",
+        "body": "The surface stays cool slate (hue ~250). Warmth lives in the brass accent and nowhere else. Tinting the ground warm “to feel inviting” is forbidden — this is an instrument, not a hearth, and it muddies AAA contrast."
+      },
+      {
+        "name": "The One-Lamp Rule",
+        "section": "colors",
+        "body": "Brass appears on ≤10% of any screen — ideally one element: the primary action or the current selection. A console with every control lit gold is a console no operator can read. Its rarity is what makes it read as the action."
+      },
+      {
+        "name": "The Literal-Truth Rule",
+        "section": "typography",
+        "body": "Every code, did:key, device ID, and signature is set in mono. Monospace signals “this is exact, verify it character by character.” Proportional type is for prose, never for literals."
+      },
+      {
+        "name": "The Mono-as-Voice, Not-Costume Rule",
+        "section": "typography",
+        "body": "Mono is elevated because this audience is technical and reads literal output — not as a decorative “developer” skin. The instant mono is paired with scanlines, glow, or fake terminal chrome, it has become the kitsch this system bans. Refined command surface, never costume."
+      },
+      {
+        "name": "The Flat-At-Rest Rule",
+        "section": "elevation",
+        "body": "Surfaces are flat with a hairline at rest. A shadow is a response to floating (sheet, toast) — a state, not a decoration. A panel with a resting shadow is wrong."
+      }
+    ],
+    "dos": [
+      "Do keep the ground cool slate (oklch(0.18 0.012 250)) and let brass and type carry the warmth.",
+      "Do treat gold as the One Lamp — the single primary action or current selection, ≤10% of the screen. Matte brass, never metallic glint.",
+      "Do hold WCAG 2.2 AAA against the dark ground — Filament on Console Slate clears it; verify every text-on-color and every status pairing.",
+      "Do signal status with color and a glyph and a text label and position — always all four (● active / ⊘ revoked / ! error).",
+      "Do set every claim code, did:key, device ID, and signature in mono; wrap break-all, never truncate a literal silently.",
+      "Do lead with the literal — report exact output the way a terminal would, not soft consumer phrasing.",
+      "Do keep density legible: aligned columns, the clarity of a good ls -l.",
+      "Do keep a visible 2px gold focus ring on every interactive element.",
+      "Do stay flat at rest; reserve the two soft shadows for floating sheets and toasts."
+    ],
+    "donts": [
+      "Don't do hacker cosplay / terminal kitsch — no CRT scanlines, phosphor glow, Matrix rain, h4ck3r green-on-black, or fake boot logs as decoration. Refined command surface, not costume.",
+      "Don't drift into consumer-app friendliness (Obsign's lane): no humane onboarding carousels, soft playful cards, mascots, emoji-led empty states, or reassurance copy.",
+      "Don't ship the low-contrast dark-theme cliché: no gray-on-darker-gray mush. If body text is even close to 7:1, push it toward Filament.",
+      "Don't let gold look like money — no metallic gradients, coin shapes, or glint. The instant it reads as currency it's the crypto/web3 anti-reference.",
+      "Don't build the enterprise dashboard / chart-soup: no gauge clusters, KPI hero cards, or SaaS analytics widgets. Density is legible operator output, not dashboards.",
+      "Don't let a status color carry the brand, or gold masquerade as a status (the Seal-vs-Signal Rule).",
+      "Don't signal urgency by color alone — a colorblind operator must never have to guess which device is live.",
+      "Don't use a border-left/border-right colored stripe; use a full 1px Steel Line hairline, a tonal ground, or a leading glyph.",
+      "Don't use gradient-clipped text, decorative glassmorphism, or a big-number hero-metric template."
+    ]
+  }
+}
