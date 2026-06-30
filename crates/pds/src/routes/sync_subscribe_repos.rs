@@ -15,16 +15,18 @@
 //! subscriber that cannot keep up overflows the broadcast buffer, receives a
 //! `ConsumerTooSlow` error frame, and is disconnected (it can reconnect with its last cursor).
 //!
-//! A periodic WebSocket Ping keeps the connection alive and surfaces dead peers: once the
-//! socket is gone the Ping send fails and the handler exits.
+//! A periodic WebSocket Ping keeps the connection alive through idle proxies and surfaces dead
+//! peers. The heartbeat runs from the moment the socket attaches — including throughout any
+//! replay backlog — and a peer that stops answering (no Pong within the read deadline) is
+//! dropped promptly, rather than only when the next Ping send happens to fail.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::response::Response;
 use futures_util::stream::SplitSink;
-use futures_util::{FutureExt, SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -32,8 +34,14 @@ use crate::app::AppState;
 use crate::firehose::{AccountEvent, CommitEvent, FirehoseEvent, SubscribeOutcome, Subscription};
 use repo_engine::Cid;
 
-/// How often to send a keepalive Ping to detect dead connections.
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+/// How often to send a keepalive Ping. Kept well under the reverse-proxy idle window (Railway's,
+/// in production) so an otherwise-silent firehose connection is never reaped as idle.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
+
+/// If the peer sends nothing — not even a Pong replying to our keepalive Ping — within this
+/// window, the socket is treated as half-open and dropped. Spans several heartbeats so a single
+/// dropped Pong doesn't sever a healthy connection.
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Deserialize)]
 pub struct SubscribeReposParams {
@@ -73,28 +81,35 @@ async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) 
         }
     };
 
-    // Replay missed events first, oldest first, before any live event. Poll the incoming half
-    // between sends so that a client that closes (or errors) mid-replay aborts immediately
-    // rather than after we encode and write up to a full backlog of now-unwanted events.
-    for event in &replay {
-        if let Some(incoming) = receiver.next().now_or_never() {
-            match incoming {
-                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
-                Some(Ok(_)) => {}
-            }
-        }
-        if !send_event(&mut sender, event).await {
-            return;
-        }
-    }
-
     let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
     // The first tick fires immediately; consume it so the first real Ping waits a full interval.
     heartbeat.tick().await;
+    // Don't let a stalled send (or a long replay) bunch up catch-up ticks into a Ping burst.
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    // Last time we heard anything from the peer; refreshed by every inbound frame (notably the
+    // Pong answering our keepalive Ping) and checked against READ_TIMEOUT on each heartbeat.
+    let mut last_seen = Instant::now();
+
+    // Replay the missed backlog oldest-first before any live event, then stream live. Both
+    // phases share one `select!` so the heartbeat and the read-deadline / close detection stay
+    // live throughout — including during a long replay, the case a bare replay loop left silent.
+    let mut replay = replay.into_iter();
+    let mut replay_done = false;
 
     loop {
         tokio::select! {
-            event = rx.recv() => match event {
+            // While the backlog drains, the live branch below stays disabled so a newer commit
+            // can't overtake a buffered one; once `replay.next()` is exhausted we flip to live.
+            maybe_event = async { replay.next() }, if !replay_done => match maybe_event {
+                Some(event) => {
+                    if !send_event(&mut sender, &event).await {
+                        break;
+                    }
+                }
+                None => replay_done = true,
+            },
+            event = rx.recv(), if replay_done => match event {
                 Ok(event) => {
                     if !send_event(&mut sender, &event).await {
                         break;
@@ -112,6 +127,12 @@ async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) 
                 Err(RecvError::Closed) => break,
             },
             _ = heartbeat.tick() => {
+                // A conformant peer answers every keepalive Ping with a Pong, refreshing
+                // `last_seen` below. If we've heard nothing within READ_TIMEOUT the socket is
+                // half-open; drop it now instead of waiting for a later send to fail.
+                if last_seen.elapsed() >= READ_TIMEOUT {
+                    break;
+                }
                 if sender.send(Message::Ping(Vec::new())).await.is_err() {
                     break;
                 }
@@ -119,8 +140,10 @@ async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) 
             incoming = receiver.next() => match incoming {
                 // Peer closed, the stream ended, or a transport error — we're done.
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
-                // The firehose is server→client; Pongs and any other client frames are ignored.
-                Some(Ok(_)) => {}
+                // Any other frame — notably the Pong answering our keepalive Ping — proves the
+                // peer is alive and refreshes the read deadline. The firehose is server→client,
+                // so the frame is otherwise ignored.
+                Some(Ok(_)) => last_seen = Instant::now(),
             },
         }
     }
