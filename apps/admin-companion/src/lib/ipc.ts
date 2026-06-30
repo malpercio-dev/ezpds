@@ -111,15 +111,22 @@ export interface PairingPayload {
 export function parsePairingPayload(text: string): PairingPayload | null {
   try {
     const parsed: unknown = JSON.parse(text);
+    if (parsed === null || typeof parsed !== 'object') return null;
+    const record = parsed as Record<string, unknown>;
+    const { relayUrl, pairingCode } = record;
+    // The contract is exactly two fields — an object carrying extras (e.g. a stray
+    // "debug" key) is not a valid pairing payload and must be rejected. Requiring both
+    // fields to be present strings under a 2-key cap means the two keys can only be
+    // relayUrl and pairingCode.
     if (
-      parsed &&
-      typeof parsed === 'object' &&
-      typeof (parsed as Record<string, unknown>).relayUrl === 'string' &&
-      typeof (parsed as Record<string, unknown>).pairingCode === 'string'
+      Object.keys(record).length === 2 &&
+      typeof relayUrl === 'string' &&
+      typeof pairingCode === 'string'
     ) {
-      const { relayUrl, pairingCode } = parsed as PairingPayload;
-      if (relayUrl.trim() && pairingCode.trim()) {
-        return { relayUrl: relayUrl.trim(), pairingCode: pairingCode.trim() };
+      const url = relayUrl.trim();
+      const code = pairingCode.trim();
+      if (url && code) {
+        return { relayUrl: url, pairingCode: code };
       }
     }
   } catch {

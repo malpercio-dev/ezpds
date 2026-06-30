@@ -18,7 +18,12 @@ use serde::Serialize;
 use crate::keychain::Pairing;
 use crate::{device_key, keychain, signing};
 
-/// Platform tag sent at registration and stored on the device row.
+/// Platform tag sent at registration and stored on the device row. Derived from the
+/// build target so an Android build registers as `"android"`; iOS and the macOS host
+/// (where tests run) both report `"ios"`.
+#[cfg(target_os = "android")]
+const PLATFORM: &str = "android";
+#[cfg(not(target_os = "android"))]
 const PLATFORM: &str = "ios";
 
 /// Errors surfaced to the frontend, serialized as `{ "code": "SCREAMING_SNAKE_CASE", … }`
@@ -250,8 +255,17 @@ struct ClaimCodesResponseBody {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+/// Shared reqwest client with explicit timeouts. The async client has **no** default
+/// timeout, so without these a stalled or unreachable relay would hang a pairing or
+/// claim-code IPC call indefinitely. The connect timeout bounds DNS/TCP/TLS setup; the
+/// overall timeout bounds the whole request. Falls back to an untimed client only if the
+/// builder fails to initialise the TLS backend (effectively never).
 fn http_client() -> reqwest::Client {
-    reqwest::Client::new()
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
 }
 
 /// Current Unix time in seconds. Clamps a pre-epoch clock to 0 (which the relay's ±60s

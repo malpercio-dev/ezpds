@@ -50,10 +50,23 @@
   }
 
   async function submit() {
+    // The footer action Button calls submit() directly, bypassing the form's native
+    // `type="url"`/required validation — so re-check the inputs here before any IPC.
+    const url = relayUrl.trim();
+    const code = pairingCode.trim();
+    if (!url || !code || pairing) return;
+    // Mirror the form's URL constraint: a bare host (no scheme) can't be paired against.
+    try {
+      new URL(url);
+    } catch {
+      pairError = "That relay URL isn't a valid address — include https://.";
+      return;
+    }
+
     pairing = true;
     pairError = undefined;
     try {
-      await pairDevice(relayUrl.trim(), pairingCode.trim(), label.trim() || 'Operator iPhone');
+      await pairDevice(url, code, label.trim() || 'Operator iPhone');
       await goto('/');
     } catch (e) {
       pairError = describeRelayError(e as RelayClientError);

@@ -66,6 +66,7 @@ unreachable copy lives in `src/lib/errors.ts`, ready to consume).
   a request body **once** and signs+sends those same bytes so the relay's recomputed hash matches.
 
 ### Frontend
+
 - `src/lib/ipc.ts` is the **only** file that calls `invoke()`; pages import from it.
 - SSR/prerender disabled globally (`src/routes/+layout.ts`); static SPA in `dist/`.
 - **Pairing QR payload** is JSON `{"relayUrl","pairingCode"}` (parsed by

@@ -27,11 +27,16 @@
     | { kind: 'error'; code: string };
 
   let keyState = $state<KeyState>({ kind: 'loading' });
-  let pairing = $state<Pairing | null | 'loading'>('loading');
+  // 'error' is distinct from null (unpaired): a failed pairing read leaves the real
+  // state unknown, so we must not expose the pair CTA until it succeeds.
+  let pairing = $state<Pairing | null | 'loading' | 'error'>('loading');
 
   let claiming = $state(false);
   let claimCode = $state<string | undefined>(undefined);
   let claimError = $state<string | undefined>(undefined);
+
+  let unpairing = $state(false);
+  let unpairError = $state<string | undefined>(undefined);
 
   onMount(async () => {
     const [key, pair] = await Promise.allSettled([getOrCreateDeviceKey(), pairingState()]);
@@ -39,8 +44,19 @@
       key.status === 'fulfilled'
         ? { kind: 'ready', key: key.value }
         : { kind: 'error', code: (key.reason as DeviceKeyError)?.code ?? 'UNKNOWN' };
-    pairing = pair.status === 'fulfilled' ? pair.value : null;
+    // A failed pairing read is an *unknown* state, not "unpaired" — surfacing it as
+    // unpaired would wrongly invite re-pairing a device that is in fact paired.
+    pairing = pair.status === 'fulfilled' ? pair.value : 'error';
   });
+
+  async function reloadPairing() {
+    pairing = 'loading';
+    try {
+      pairing = await pairingState();
+    } catch {
+      pairing = 'error';
+    }
+  }
 
   async function mintClaimCode() {
     claiming = true;
@@ -55,10 +71,18 @@
   }
 
   async function doUnpair() {
-    await unpair();
-    pairing = null;
-    claimCode = undefined;
-    claimError = undefined;
+    unpairing = true;
+    unpairError = undefined;
+    try {
+      await unpair();
+      pairing = null;
+      claimCode = undefined;
+      claimError = undefined;
+    } catch (e) {
+      unpairError = describeRelayError(e as RelayClientError);
+    } finally {
+      unpairing = false;
+    }
   }
 </script>
 
@@ -69,6 +93,8 @@
       <span id="pairing-label" class="label">Relay pairing</span>
       {#if pairing === 'loading'}
         <StatusChip status="info" label="checking" />
+      {:else if pairing === 'error'}
+        <StatusChip status="error" label="check failed" />
       {:else if pairing}
         <StatusChip status="active" label="paired" />
       {:else}
@@ -78,11 +104,24 @@
 
     {#if pairing === 'loading'}
       <p class="resolving">checking pairing…</p>
+    {:else if pairing === 'error'}
+      <p class="note" role="alert">
+        Couldn't read this device's pairing state. This is not the same as being unpaired —
+        retry before pairing again.
+      </p>
+      <div class="row">
+        <Button variant="secondary" onclick={reloadPairing}>Retry</Button>
+      </div>
     {:else if pairing}
       <CodeOutput value={pairing.relayUrl} label="Paired relay" prompt={false} copyable={false} />
       <CodeOutput value={pairing.deviceId} label="Device id" prompt={false} />
+      {#if unpairError}
+        <p class="note" role="alert">{unpairError}</p>
+      {/if}
       <div class="row">
-        <Button variant="destructive" onclick={doUnpair}>Unpair this device</Button>
+        <Button variant="destructive" loading={unpairing} onclick={doUnpair}>
+          Unpair this device
+        </Button>
       </div>
     {:else}
       <p class="note">
@@ -93,7 +132,7 @@
   </section>
 
   <!-- The demo action (paired only): a signed claim-code request. -->
-  {#if pairing && pairing !== 'loading'}
+  {#if pairing && pairing !== 'loading' && pairing !== 'error'}
     <section class="panel" aria-labelledby="claim-label">
       <div class="panel-head">
         <span id="claim-label" class="label">Account claim code</span>
@@ -119,11 +158,11 @@
     <div class="panel-head">
       <span id="device-key-label" class="label">This device's admin key</span>
       {#if keyState.kind === 'ready'}
-        <StatusChip status="ready" />
+        <StatusChip status="ready" label="ready" />
       {:else if keyState.kind === 'loading'}
         <StatusChip status="info" label="generating" />
       {:else}
-        <StatusChip status="error" />
+        <StatusChip status="error" label="error" />
       {/if}
     </div>
 
@@ -138,13 +177,14 @@
   </section>
 
   {#snippet actions()}
-    {#if pairing && pairing !== 'loading'}
+    {#if pairing && pairing !== 'loading' && pairing !== 'error'}
       <Button variant="primary" loading={claiming} onclick={mintClaimCode}>
         Generate claim code
       </Button>
     {:else if pairing === null}
       <Button variant="primary" onclick={() => goto('/pair')}>Pair this device</Button>
     {/if}
+    <!-- 'loading'/'error': no primary action until the real pairing state is known. -->
   {/snippet}
 </ScreenShell>
 
