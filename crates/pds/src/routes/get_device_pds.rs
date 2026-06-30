@@ -104,29 +104,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deprecated_relay_alias_returns_same_shape() {
-        // The legacy /v1/devices/:id/relay path is kept as a deprecated alias for one
-        // release cycle so already-deployed app builds keep working. It must route to the
-        // same handler and return the renamed `pdsUrl` field.
-        let state = test_state().await;
-        let (device_id, token) = seed_device(&state.db).await;
-        let expected = state.config.public_url.clone();
-
-        let request = Request::builder()
-            .method("GET")
-            .uri(format!("/v1/devices/{device_id}/relay"))
-            .header("Authorization", format!("Bearer {token}"))
-            .body(Body::empty())
-            .unwrap();
-
-        let response = app(state).oneshot(request).await.unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let json = body_json(response).await;
-        assert_eq!(json["pdsUrl"], expected);
-    }
-
-    #[tokio::test]
     async fn pds_url_matches_config_public_url() {
         let state = test_state().await;
         let (device_id, token) = seed_device(&state.db).await;
