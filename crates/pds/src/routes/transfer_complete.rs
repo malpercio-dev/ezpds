@@ -88,7 +88,7 @@ mod tests {
 
     use crate::app::{app, test_state, AppState};
     use crate::routes::test_utils::body_json;
-    use crate::token::generate_token;
+    use crate::token::{generate_token, hash_bearer_token};
 
     struct AcceptedTransferFixture {
         did: String,
@@ -361,6 +361,39 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(audit_events, 1);
+    }
+
+    #[tokio::test]
+    async fn stale_source_session_cannot_reenter_complete_terminal_path() {
+        // Source sessions are deleted on first completion, so a repeat call with the
+        // original source token is unauthorized. Simulate a stale session row surviving
+        // completion to prove the terminal path only honors the target credential.
+        let state = test_state().await;
+        let db = state.db.clone();
+        let fixture = seed_accepted_transfer(&db).await;
+
+        let first = complete(state.clone(), &fixture.transfer_id, &fixture.target_token).await;
+        assert_eq!(first.status(), StatusCode::OK);
+
+        // Re-insert a session row matching the (now-revoked) source token hash.
+        let stale_hash = hash_bearer_token(&fixture.source_token).unwrap();
+        sqlx::query(
+            "INSERT INTO sessions (id, did, device_id, token_hash, created_at, expires_at) \
+             VALUES (?, ?, NULL, ?, datetime('now'), datetime('now', '+1 year'))",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(&fixture.did)
+        .bind(&stale_hash)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let response = complete(state, &fixture.transfer_id, &fixture.source_token).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "stale source session must not re-enter the terminal success path"
+        );
     }
 
     #[tokio::test]

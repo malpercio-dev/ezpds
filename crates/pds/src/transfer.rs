@@ -159,8 +159,13 @@ pub async fn complete_transfer(
             .await?;
         }
         "complete" => {
-            // Idempotent for the surviving target credential; source sessions were revoked
-            // by the first completion and therefore cannot authorize a repeat call.
+            // Idempotent only for the surviving target credential. Source sessions were
+            // revoked by the first completion, so they must not re-enter the terminal
+            // success path even if a stale session row were observed.
+            if !target_device {
+                tx.commit().await?;
+                return Ok(CompleteOutcome::Unauthorized);
+            }
         }
         "pending" => {
             tx.commit().await?;
