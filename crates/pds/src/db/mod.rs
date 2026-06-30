@@ -3,6 +3,7 @@ pub mod admin_devices;
 pub mod blobs;
 pub mod blocks;
 pub mod dids;
+pub mod firehose_seq;
 pub mod iroh_identity;
 pub mod jwt_secret;
 pub mod oauth;
@@ -148,6 +149,10 @@ static MIGRATIONS: &[Migration] = &[
     Migration {
         version: 27,
         sql: include_str!("migrations/V027__transfers.sql"),
+    },
+    Migration {
+        version: 28,
+        sql: include_str!("migrations/V028__repo_seq.sql"),
     },
 ];
 
@@ -1340,6 +1345,58 @@ mod tests {
         assert!(
             detail.contains("idx_admin_nonces_seen_at"),
             "admin_nonces WHERE seen_at query must use idx_admin_nonces_seen_at; got: {detail}"
+        );
+    }
+
+    // ── V028 tests ───────────────────────────────────────────────────────────
+
+    /// The `repo_seq` firehose event log exists after V028.
+    #[tokio::test]
+    async fn v028_repo_seq_table_exists() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        let rows: Vec<(i64,)> = sqlx::query_as("PRAGMA table_info(repo_seq)")
+            .fetch_all(&pool)
+            .await
+            .expect("PRAGMA table_info(repo_seq) must succeed");
+        assert!(!rows.is_empty(), "repo_seq table must exist after V028");
+    }
+
+    /// `repo_seq.seq` is the PRIMARY KEY, so a duplicate sequence number is rejected.
+    #[tokio::test]
+    async fn v028_repo_seq_seq_is_unique() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        let insert = "INSERT INTO repo_seq (seq, did, event_type, event, sequenced_at) \
+                      VALUES (1, 'did:plc:a', 'commit', x'cafe', datetime('now'))";
+        sqlx::query(insert).execute(&pool).await.unwrap();
+        assert!(
+            sqlx::query(insert).execute(&pool).await.is_err(),
+            "duplicate seq must be rejected by the PRIMARY KEY"
+        );
+    }
+
+    /// A `seq > ?` range scan uses the integer primary key rather than a full table scan.
+    #[tokio::test]
+    async fn v028_repo_seq_range_scan_uses_primary_key() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        let plan: Vec<(i64, i64, i64, String)> =
+            sqlx::query_as("EXPLAIN QUERY PLAN SELECT * FROM repo_seq WHERE seq > 5 ORDER BY seq")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        let detail = plan
+            .iter()
+            .map(|r| r.3.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !detail.contains("SCAN repo_seq"),
+            "seq range query must not be a full table scan; got: {detail}"
         );
     }
 }

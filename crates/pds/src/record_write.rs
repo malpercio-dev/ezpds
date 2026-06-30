@@ -378,14 +378,23 @@ pub async fn emit_firehose_commit(
         }
     };
 
-    state.firehose.emit_commit(crate::firehose::CommitInput {
-        repo: did.to_string(),
-        commit: new_root.to_string(),
-        rev: new_rev,
-        since: prev_rev,
-        ops,
-        blocks,
-    });
+    if let Err(e) = state
+        .firehose
+        .emit_commit(crate::firehose::CommitInput {
+            repo: did.to_string(),
+            commit: new_root.to_string(),
+            rev: new_rev,
+            since: prev_rev,
+            ops,
+            blocks,
+        })
+        .await
+    {
+        // Best-effort, matching the diff-assembly failures above: the commit is already durable,
+        // so a sequencer write failure is logged and dropped rather than failing the write. A
+        // subscriber that misses the event can backfill via getRepo.
+        tracing::warn!(error = %e, did = %did, "failed to sequence firehose commit (non-fatal)");
+    }
 
     // New content is live: notify configured crawlers (relays/BGSes) so they pull it promptly.
     // Fire-and-forget and rate-limited — never blocks the commit.

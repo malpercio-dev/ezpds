@@ -14,7 +14,7 @@ crates (`crypto`, `repo-engine`, `common`) are pure Functional Cores that the PD
 src/
   main.rs          — startup: open pool, run migrations, bind server
   app.rs           — AppState definition and construction
-  firehose.rs      — in-memory subscribeRepos event pipeline (sequencer + broadcast fan-out)
+  firehose.rs      — persistent subscribeRepos event pipeline (durable sequencer + broadcast fan-out)
   crawler.rs       — outbound requestCrawl notifier (rate-limited, retrying, fire-and-forget)
   iroh_tunnel.rs   — Iroh QUIC endpoint: NAT-traversing device↔pds tunnel (opt-in)
   record_write.rs  — shared repo write flow + firehose commit emission
@@ -26,24 +26,34 @@ src/
 
 ### `firehose.rs`
 
-The in-memory event pipeline behind `com.atproto.sync.subscribeRepos`. Holds a monotonic
-sequencer and a Tokio `broadcast` channel; `AppState.firehose: Arc<Firehose>` is shared by
-every handler. Each repo commit calls `record_write::emit_firehose_commit`, which builds the
-commit's block diff (`repo_engine::export_commit_blocks_car`, run *before* post-commit GC) and
-publishes a sequenced `CommitEvent` carrying the DID, rev, `since`, per-record `RepoOp`s
-(action + collection/rkey + cid + value), and the CARv1 diff blocks. Backpressure is by design:
-the bounded channel never blocks producers — a slow subscriber observes `Lagged` and is expected
-to disconnect. All three write paths (`create_record`/`put_record` via `record_write`,
-`delete_record`, `apply_writes`) emit exactly one event per commit. (Those same write paths
-reject a deactivated account with 403 before committing.) Account-status changes emit a
-separate `#account` frame instead of a `#commit`: `deactivate_account`/`activate_account` call
-`Firehose::emit_account` (active=false/`deactivated` or active=true) **only on a real status
-transition** — a redundant no-op activate/deactivate returns 200 and emits nothing. The
-`#account` frame shares the same sequencer and replay backlog so account frames are ordered relative to commits. Alongside the broadcast
-channel the firehose keeps a bounded replay backlog so a late subscriber that passes a `cursor`
-can be backfilled; `subscribe_from(cursor)` snapshots that backlog and attaches the live
-receiver under one lock, so the replay→live boundary is exact (no gap, no duplication). The
-subscriber-facing WebSocket frame encoding lives in the `sync_subscribe_repos` handler.
+The **persistent** event pipeline behind `com.atproto.sync.subscribeRepos`. Holds a durable
+monotonic sequencer (backed by the `repo_seq` table, V028) and a Tokio `broadcast` channel;
+`AppState.firehose: Arc<Firehose>` is shared by every handler. Each repo commit calls
+`record_write::emit_firehose_commit`, which builds the commit's block diff
+(`repo_engine::export_commit_blocks_car`, run *before* post-commit GC) and publishes a sequenced
+`CommitEvent` carrying the DID, rev, `since`, per-record `RepoOp`s (action + collection/rkey + cid
++ value), and the CARv1 diff blocks. Backpressure is by design: the bounded channel never blocks
+producers — a slow subscriber observes `Lagged` and is expected to disconnect. All three write
+paths (`create_record`/`put_record` via `record_write`, `delete_record`, `apply_writes`) emit
+exactly one event per commit. (Those same write paths reject a deactivated account with 403 before
+committing.) Account-status changes emit a separate `#account` frame instead of a `#commit`:
+`deactivate_account`/`activate_account` call `Firehose::emit_account` (active=false/`deactivated`
+or active=true) **only on a real status transition** — a redundant no-op activate/deactivate
+returns 200 and emits nothing. The `#account` frame shares the same sequencer so account frames
+are ordered relative to commits.
+
+**Durability (V028).** `emit_commit`/`emit_account` are `async` and persist each event to
+`repo_seq` (via `db::firehose_seq`) **before** broadcasting it, all under one async `emit_lock`
+that keeps broadcast order = `seq` order and the log a dense prefix (a failed insert doesn't
+consume a `seq`). The sequencer loads `MAX(seq)` on construction, so `seq` is monotonic across
+restarts/redeploys. Emit is best-effort at the call sites — a sequencer write failure is logged
+and dropped (the commit/status change is already durable; subscribers backfill via `getRepo`).
+`subscribe_from(cursor)` snapshots the live receiver and the sequence frontier `upper` together
+under `emit_lock`; the `sync_subscribe_repos` handler then pages the durable log for
+`(cursor, upper]` (`events_in_range`, decoded via `decode_stored_event`) and streams live events
+(`seq > upper`) after — the two ranges are exactly disjoint, so the replay→live boundary has no gap
+and no duplication, and replay now survives a restart (it reads the log, not an in-memory buffer).
+The subscriber-facing WebSocket frame encoding lives in the `sync_subscribe_repos` handler.
 
 ### `crawler.rs`
 
@@ -101,6 +111,7 @@ and async query functions; no business logic lives here.
 | `password_reset.rs` | `insert_reset_token`, `get_reset_token`, `mark_reset_token_used`, `update_password_hash` |
 | `preferences.rs` | `get_preferences` (DID→stored `app.bsky` preferences JSON blob); `put_preferences` (upsert the blob, overwriting any previous value) |
 | `transfers.rs` | Planned device-swap sessions (V027): `insert_transfer` opens a `pending` transfer for a DID, sweeping any expired active row first then letting the partial unique indexes reject a still-active duplicate (→ `DuplicateActive`, the 409 path) or an already-taken active code (→ `CodeCollision`, caller regenerates and retries). Wired by `routes/transfer_initiate.rs` |
+| `firehose_seq.rs` | Persistent firehose event log (V028): `max_seq` (seed the sequencer on boot), `insert_event` (append one sequenced `#commit`/`#account` row with an explicit `seq`), `events_in_range(after, upper, limit)` (the cursor-replay page query). Consumed by `firehose.rs` (persist-before-broadcast) and `routes/sync_subscribe_repos.rs` (replay paging) |
 | `admin_devices.rs` | Operator companion app admin-device model (V025): pairing-code mint/consume (single-use), device insert/get/list/revoke (derived active status) + `touch_last_seen` (liveness bump on auth), nonce insert-if-absent + stale-nonce sweep (anti-replay). Pairing/register wired by `routes/admin_devices.rs`; the `require_admin` signed-request guard (`routes/auth.rs`) consumes `get_device`/`insert_nonce_if_absent`/`touch_last_seen`; the list/revoke routes (`routes/admin_devices.rs`) consume `list_devices`/`revoke_device`/`get_device` |
 
 See [`src/db/CLAUDE.md`](src/db/CLAUDE.md) for migration history and invariants.

@@ -207,6 +207,18 @@ async fn run() -> anyhow::Result<()> {
         );
     }
 
+    // Seed the firehose sequencer from the persisted event log so `seq` continues monotonically
+    // across restarts and cursor replay survives redeploys (the log is read back from `repo_seq`).
+    let firehose = Arc::new(
+        firehose::Firehose::new(pool.clone())
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "fatal: failed to initialise firehose sequencer");
+                e
+            })
+            .with_context(|| "failed to initialise firehose sequencer from the event log")?,
+    );
+
     let state = app::AppState {
         config: Arc::new(config),
         db: pool,
@@ -218,7 +230,7 @@ async fn run() -> anyhow::Result<()> {
         oauth_signing_keypair,
         dpop_nonces: auth::new_nonce_store(),
         failed_login_attempts: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-        firehose: Arc::new(firehose::Firehose::new()),
+        firehose,
         crawlers,
         iroh,
     };

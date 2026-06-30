@@ -9,9 +9,10 @@
 //! * `op = 1` is a message; `t` names the type (`#commit`).
 //! * `op = -1` is an error; the body carries `{error, message}` and the stream then closes.
 //!
-//! A `cursor` query parameter requests replay: the handler first sends every still-buffered
-//! event whose `seq` is greater than the cursor, then streams live events with no gap. A
-//! cursor ahead of the current sequence is rejected with a `FutureCursor` error frame. A
+//! A `cursor` query parameter requests replay: the firehose materialises every event whose `seq`
+//! is greater than the cursor from its durable log (so replay survives a restart), and the handler
+//! sends those before streaming live events with no gap. A cursor ahead of the current sequence is
+//! rejected with a `FutureCursor` error frame. A
 //! subscriber that cannot keep up overflows the broadcast buffer, receives a
 //! `ConsumerTooSlow` error frame, and is disconnected (it can reconnect with its last cursor).
 //!
@@ -67,14 +68,27 @@ pub async fn subscribe_repos(
 async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) {
     let (mut sender, mut receiver) = socket.split();
 
-    // Validate the cursor and attach to the stream atomically: the future-cursor check, the
-    // backlog snapshot, and the live subscribe all happen under one lock inside `subscribe_from`,
-    // so a concurrent commit can't produce a spurious FutureCursor or slip an event past us.
-    let Subscription { replay, mut rx } = match state.firehose.subscribe_from(cursor) {
-        SubscribeOutcome::Subscribed(sub) => sub,
-        SubscribeOutcome::FutureCursor { .. } => {
+    // Attach to the firehose under one lock: `subscribe_from` snapshots the live receiver and the
+    // sequence frontier together (so a concurrent commit can't produce a spurious FutureCursor or
+    // slip an event past the boundary), then materialises the durable replay backlog for
+    // `(cursor, upper]` from `repo_seq` — paged and density-checked in the firehose layer. The
+    // live stream (`rx`) then carries everything with `seq > upper`, so replay and live are exactly
+    // disjoint: no gap, no duplicate across the boundary.
+    let Subscription { replay, mut rx } = match state.firehose.subscribe_from(cursor).await {
+        Ok(SubscribeOutcome::Subscribed(sub)) => sub,
+        Ok(SubscribeOutcome::FutureCursor { .. }) => {
             // A cursor ahead of everything we've emitted is a client error: refuse and close.
             let frame = encode_error_frame("FutureCursor", "cursor is in the future");
+            let _ = send_message(&mut sender, Message::Binary(frame)).await;
+            let _ = tokio::time::timeout(READ_TIMEOUT, sender.close()).await;
+            return;
+        }
+        Err(e) => {
+            // The durable replay backlog couldn't be assembled (a DB error, a corrupt stored row,
+            // or a sequence gap). Fail closed rather than stream live past a hole; the client
+            // reconnects from its last good cursor.
+            tracing::error!(error = %e, "failed to assemble firehose replay backlog; closing");
+            let frame = encode_error_frame("InternalError", "failed to read replay backlog");
             let _ = send_message(&mut sender, Message::Binary(frame)).await;
             let _ = tokio::time::timeout(READ_TIMEOUT, sender.close()).await;
             return;
@@ -149,9 +163,12 @@ async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) 
     }
 }
 
-/// Encode and send one firehose event. Returns `false` if the socket send failed (the caller
-/// should stop). An event that fails to encode is logged and skipped without dropping the
-/// connection — one malformed event must not kill an otherwise-healthy subscriber.
+/// Encode and send one firehose event. Returns `false` (the caller stops and closes) if the frame
+/// cannot be encoded or the socket send fails. Failing closed on an encode error matters for the
+/// no-gap contract: silently skipping an unencodable `#commit` and continuing would deliver later
+/// `seq`s past the missing one. A self-written commit that won't encode signals corruption an
+/// operator should see; the client reconnects from its last good cursor. `#account` frames are
+/// fixed-shape (no CIDs or CAR blocks), so their encoding cannot fail.
 async fn send_event(sender: &mut SplitSink<WebSocket, Message>, event: &FirehoseEvent) -> bool {
     let frame = match event {
         FirehoseEvent::Commit(commit) => match encode_commit_frame(commit) {
@@ -160,12 +177,11 @@ async fn send_event(sender: &mut SplitSink<WebSocket, Message>, event: &Firehose
                 tracing::error!(
                     error = %e,
                     seq = commit.seq,
-                    "failed to encode firehose #commit frame; skipping event"
+                    "failed to encode firehose #commit frame; closing"
                 );
-                return true;
+                return false;
             }
         },
-        // `#account` frames are fixed-shape (no CIDs or CAR blocks), so encoding cannot fail.
         FirehoseEvent::Account(account) => encode_account_frame(account),
     };
     send_message(sender, Message::Binary(frame)).await
@@ -503,15 +519,18 @@ mod tests {
         )
     }
 
-    fn emit(firehose: &Firehose) -> u64 {
-        firehose.emit_commit(CommitInput {
-            repo: "did:plc:alice".to_string(),
-            commit: TEST_CID.to_string(),
-            rev: "3krev".to_string(),
-            since: None,
-            ops: Vec::new(),
-            blocks: vec![1, 2, 3],
-        })
+    async fn emit(firehose: &Firehose) -> u64 {
+        firehose
+            .emit_commit(CommitInput {
+                repo: "did:plc:alice".to_string(),
+                commit: TEST_CID.to_string(),
+                rev: "3krev".to_string(),
+                since: None,
+                ops: Vec::new(),
+                blocks: vec![1, 2, 3],
+            })
+            .await
+            .expect("emit commit")
     }
 
     /// Wait (briefly) until at least `n` subscribers have attached. This makes "emit after
@@ -547,7 +566,7 @@ mod tests {
         let (mut ws, _resp) = connect_async(&url).await.expect("ws connect");
 
         await_subscribers(&firehose, 1).await;
-        let seq = emit(&firehose);
+        let seq = emit(&firehose).await;
 
         let (header, body) = decode_frame(&next_binary(&mut ws).await);
         assert_eq!(map_get(&header, "t"), &Ipld::String("#commit".into()));
@@ -563,9 +582,9 @@ mod tests {
         let (url, firehose) = spawn_server().await;
 
         // Emit three events *before* anyone subscribes.
-        emit(&firehose); // seq 1
-        let seq2 = emit(&firehose); // seq 2
-        let seq3 = emit(&firehose); // seq 3
+        emit(&firehose).await; // seq 1
+        let seq2 = emit(&firehose).await; // seq 2
+        let seq3 = emit(&firehose).await; // seq 3
 
         // Subscribe from cursor 1: must replay exactly seq 2 then seq 3.
         let (mut ws, _resp) = connect_async(format!("{url}?cursor=1"))
@@ -585,7 +604,7 @@ mod tests {
         let (mut ws2, _) = connect_async(&url).await.expect("ws2 connect");
 
         await_subscribers(&firehose, 2).await;
-        let seq = emit(&firehose);
+        let seq = emit(&firehose).await;
 
         for ws in [&mut ws1, &mut ws2] {
             let (_, body) = decode_frame(&next_binary(ws).await);
@@ -596,7 +615,7 @@ mod tests {
     #[tokio::test]
     async fn websocket_future_cursor_yields_error_frame() {
         let (url, firehose) = spawn_server().await;
-        emit(&firehose); // current seq = 1
+        emit(&firehose).await; // current seq = 1
 
         // Cursor far ahead of what we've emitted is a client error.
         let (mut ws, _resp) = connect_async(format!("{url}?cursor=9999"))
@@ -704,11 +723,14 @@ mod tests {
         let (mut ws, _resp) = connect_async(&url).await.expect("ws connect");
         await_subscribers(&firehose, 1).await;
 
-        let seq = firehose.emit_account(
-            "did:plc:bob".to_string(),
-            false,
-            Some("deactivated".to_string()),
-        );
+        let seq = firehose
+            .emit_account(
+                "did:plc:bob".to_string(),
+                false,
+                Some("deactivated".to_string()),
+            )
+            .await
+            .expect("emit account");
 
         let (header, body) = decode_frame(&next_binary(&mut ws).await);
         assert_eq!(map_get(&header, "op"), &Ipld::Integer(1));
@@ -731,7 +753,10 @@ mod tests {
         let (mut ws, _resp) = connect_async(&url).await.expect("ws connect");
         await_subscribers(&firehose, 1).await;
 
-        let seq = firehose.emit_account("did:plc:carol".to_string(), true, None);
+        let seq = firehose
+            .emit_account("did:plc:carol".to_string(), true, None)
+            .await
+            .expect("emit account");
 
         let (header, body) = decode_frame(&next_binary(&mut ws).await);
         assert_eq!(map_get(&header, "t"), &Ipld::String("#account".to_string()));
@@ -752,11 +777,14 @@ mod tests {
         let (url, firehose) = spawn_server().await;
 
         // Emit an account event before subscribing.
-        let seq = firehose.emit_account(
-            "did:plc:dave".to_string(),
-            false,
-            Some("deactivated".to_string()),
-        );
+        let seq = firehose
+            .emit_account(
+                "did:plc:dave".to_string(),
+                false,
+                Some("deactivated".to_string()),
+            )
+            .await
+            .expect("emit account");
 
         // Subscribe from cursor 0 (before seq 1): the account event must be replayed.
         let (mut ws, _resp) = connect_async(format!("{url}?cursor=0"))

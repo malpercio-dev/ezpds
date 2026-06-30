@@ -23,8 +23,9 @@ docs {
   body. `op = 1` is a message whose `t` names the type (`#commit`); `op = -1` is an error whose
   body is `{error, message}`, after which the stream closes.
 
-  Optional `cursor` (a sequence number) requests replay: the server first sends every still-
-  buffered event with `seq` greater than the cursor, then streams live events with no gap. A
-  cursor ahead of the current sequence is rejected with a `FutureCursor` error frame; a consumer
-  that falls too far behind receives `ConsumerTooSlow` and is disconnected. Unauthenticated.
+  Optional `cursor` (a sequence number) requests replay: the server first replays every event
+  with `seq` greater than the cursor from its durable log (so replay survives a server restart),
+  then streams live events with no gap. A cursor ahead of the current sequence is rejected with a
+  `FutureCursor` error frame; a consumer that falls too far behind receives `ConsumerTooSlow` and
+  is disconnected. Unauthenticated.
 }

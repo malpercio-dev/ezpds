@@ -415,6 +415,14 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
     };
     let dpop_nonces = new_nonce_store();
 
+    // Build the firehose before the struct literal: the `db` field below moves the pool, so the
+    // sequencer needs its own clone first.
+    let firehose = Arc::new(
+        crate::firehose::Firehose::new(db.clone())
+            .await
+            .expect("test firehose"),
+    );
+
     AppState {
         config: Arc::new(Config {
             bind_address: "127.0.0.1".to_string(),
@@ -449,7 +457,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
         oauth_signing_keypair: test_signing_key,
         dpop_nonces,
         failed_login_attempts: Arc::new(Mutex::new(HashMap::new())),
-        firehose: Arc::new(crate::firehose::Firehose::new()),
+        firehose,
         crawlers: Arc::new(crate::crawler::CrawlerNotifier::new(
             http_client,
             "test.example.com".to_string(),
