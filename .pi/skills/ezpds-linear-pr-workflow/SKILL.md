@@ -15,11 +15,12 @@ When picking up any Linear issue for the ezpds project. One issue per branch/PR 
 2. **Prep** — Mark the issue In Progress (`linear_update_issue`). Create a feature branch from main (`git checkout -b feat/<short-desc>`). Read existing code first: similar routes, the migration folder, DB modules, and the PDS CLAUDE.md.
 3. **Implement** — Migration SQL → DB query module (`db/<entity>.rs`) → register migration in `db/mod.rs` → route handler (`routes/<name>.rs`) → register in `routes/mod.rs` and `app.rs` → Bruno `.bru` file. Check the actual table schema (PRAGMA table_info or migration SQL) before writing queries that reference FK columns.
 4. **Verify** — Run: `cargo fmt --all && cargo clippy --workspace -- -D warnings && cargo test --workspace`. Fix all issues before committing.
-5. **Ship** — Commit with a structured message (module prefix, what, which Linear issue). Push branch to origin. Open PR via `tangled_open_pr` with a description listing what changed and the acceptance criteria.
+5. **Ship** — Commit with a structured message (module prefix, what, which Linear issue). Push branch to origin (the `origin` remote pushes to BOTH the Tangled knot mirror and GitHub — pushes go to both automatically; the GitHub push URL prints a `pull/new` URL). **Open the PR on GitHub, not Tangled**, using the `gh` CLI (`gh pr create --repo malpercio-dev/ezpds --base main --head <branch> --title "..." --body-file /tmp/<pr>.md`), which is installed and authenticated. Write the PR body to a temp file first (the body lists what changed, maps acceptance criteria, notes any deferred items). Do NOT use `tangled_open_pr` for ezpds — it opens a Tangled-native PR on the wrong surface and generates a web-form URL rather than creating a GitHub PR. After `gh pr create`, capture the returned PR URL and number.
 6. **Review (pass 1 — code quality)** — Read the full diff (`git diff main...HEAD`). Check: dead code and stale comments, unused imports, missing test coverage for new code paths, API response shape matches spec (Content-Type, field names, camelCase), error variants are actually used, all new error codes have status_code_mapping test entries.
 7. **Review (pass 2 — adversarial)** — Think like an attacker. Check: TOCTOU races (exists-then-act vs atomic operations), idempotency (content-addressable operations must not fail on duplicate), resource exhaustion (per-user quotas, rate limits, disk fill), crash-orphaned resources (files without DB rows, DB rows without files), `assert!` in library code (use `debug_assert!` to avoid panics in release), known-answer tests for deterministic outputs (CIDs, hashes), edge cases (empty input, boundary values, max limits), path traversal and symlink attacks on filesystem operations, timing side channels in crypto, MIME/type spoofing.
-8. **Fix all findings** — Every review finding gets fixed in this PR. Do not defer to follow-up unless the finding requires a separate Linear issue (e.g. GC for orphaned files). Commit fixes separately from the feature commit.
-9. **Pause** — Mark the Linear issue as In Review (`linear_update_issue`). Do not start the next issue until the PR is reviewed and merged. Mark Done only after merge.
+8. **CodeRabbit review (GitHub)** — After pushing, CodeRabbit posts an automated review on the GitHub PR. Poll via `gh pr view <num> --repo malpercio-dev/ezpds --json reviewDecision,latestReviews` and `gh api repos/malpercio-dev/ezpds/pulls/<num>/reviews`. Triaged each finding against current code: fix all valid issues, skip stale ones with a one-line reason. Push fixes and reply on the PR (`gh pr comment <num> --repo malpercio-dev/ezpds --body-file /tmp/<reply>.md`) requesting re-review. Iterate until `reviewDecision` is `APPROVED` and all CI checks pass before the user merges. Do NOT mark the Linear issue Done until the human merge.
+9. **Fix all findings** — Every review finding (two-pass + CodeRabbit) gets fixed in this PR. Do not defer to follow-up unless the finding requires a separate Linear issue (e.g. GC for orphaned files). Commit fixes separately from the feature commit.
+10. **Pause** — Mark the Linear issue as In Review (`linear_update_issue`). Do not start the next issue until the PR is reviewed, CodeRabbit-approved, and merged by the user. Mark Done only after merge.
 
 ## Pitfalls
 
@@ -32,7 +33,8 @@ When picking up any Linear issue for the ezpds project. One issue per branch/PR 
 - Always register new routes in both `routes/mod.rs` AND `app.rs` router.
 - The `infer` crate returns None for content without magic bytes (plain text, etc.). Always provide a fallback MIME type.
 - JWT `exp` claims must use a current timestamp, not a hardcoded past value. Use `SystemTime::now()` in tests.
-- Push the branch to origin before attempting to open a PR on Tangled.
+- **Open PRs on GitHub, NOT Tangled, using `gh pr create`.** Tangled is now purely a mirror — CI, CodeRabbit reviews, and the merge gate all run on GitHub. `tangled_open_pr` opens a Tangled-native PR (wrong surface) and only returns a web-form URL. This mistake has recurred across sessions; verify the target platform from memory before creating any PR.
+- Push the branch to origin before attempting to open a PR (the `origin` remote pushes to both the Tangled mirror and GitHub).
 - `axum::body::to_bytes(body, limit)` already enforces the limit — do not add redundant post-read size checks. Map its error directly to PayloadTooLarge.
 - Content-addressable storage (same content → same CID) must be idempotent: use `ON CONFLICT DO UPDATE` instead of bare INSERT, or the second upload panics the handler.
 - Filesystem operations should be atomic: prefer `remove_file` + match on `NotFound` over `exists()` + `remove_file` (TOCTOU race).
@@ -45,5 +47,5 @@ When picking up any Linear issue for the ezpds project. One issue per branch/PR 
 3. `cargo test --workspace` passes all tests
 4. All review findings (pass 1 + pass 2) are fixed and committed
 5. Branch is pushed to origin
-6. PR is open on Tangled
+6. PR is open on GitHub via `gh pr create` (NOT Tangled)
 7. Linear issue is in 'In Review' state
