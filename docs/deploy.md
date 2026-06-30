@@ -47,7 +47,7 @@ The PDS container expects the following environment variables and mounts:
 
 1. **Create Railway project** for the PDS.
 2. **Add a Dockerfile service:**
-   - The repo is on tangled, which Railway cannot connect to directly, so deploys are driven by the spindle CI pipeline via the Railway CLI (`railway up`) — see **CI/CD pipeline** below. Railway detects `railway.toml` and uses the Dockerfile builder automatically. (For initial bootstrap you can also run `railway up` from a local checkout.)
+   - Connect the Railway service to the GitHub repo and let Railway build and deploy on its own — see **CI/CD pipeline** below. Railway detects `railway.toml` and uses the Dockerfile builder automatically. (For initial bootstrap you can also run `railway up` from a local checkout.)
    - Set the following environment variables in the Railway dashboard:
      - `EZPDS_PUBLIC_URL` - Use the Railway domain once assigned (see chicken-and-egg note below).
      - `EZPDS_AVAILABLE_USER_DOMAINS` - Your handle domain list (comma-separated).
@@ -72,19 +72,24 @@ The PDS validates its public URL against the domain it's accessed through. On fi
 2. Let the first deployment complete and verify health: `curl https://PDS-xyz.railway.app/xrpc/_health`.
 3. If migrating a custom domain, update `EZPDS_PUBLIC_URL` and redeploy.
 
-### CI/CD pipeline (tangled spindle → Railway)
+### CI/CD pipeline (GitHub Actions test gate + native Railway deploys)
 
-The repo and CI live on tangled; there is no GitHub integration. Three spindle workflows in `.tangled/workflows/` drive everything, each running the `just ci` gate first (fmt, clippy, test, audit):
+CI/CD lives on **GitHub**. Deploys use **Railway's native GitHub integration** — each Railway environment is connected to the repo and watches a branch, so Railway pulls, builds the `Dockerfile`, and deploys on its own. There is **no `railway up` and no Railway token in CI**; GitHub Actions only runs the test gate.
 
-| Workflow | Trigger | Action |
-|----------|---------|--------|
-| `pr.yaml` | pull request → `main` | test gate only (no deploy, no Railway token) |
-| `staging.yaml` | push → `main` | `just ci`, then `railway up` to the **staging** environment |
-| `release.yaml` | push a `v*` tag | `just ci`, then `railway up` to **production** |
+- **Test gate — `.github/workflows/ci.yml`.** Runs `just ci-pds` (fmt, lock-check, clippy, test, audit) on pull requests to `main`, on push to `main`, and on push to `production`. Both Railway services use **"Wait for CI"**, so this workflow's green check is the deploy gate. A second `verify-release` job runs only on the `production` branch and fails unless a `vX.Y.Z` tag points at the tip and matches the workspace version (`env!("CARGO_PKG_VERSION")`).
 
-Deploys use the Railway CLI (a `nixpkgs` dependency in the workflow) authenticated by an environment-scoped project token stored as a tangled repo secret (`RAILWAY_TOKEN_STAGING` / `RAILWAY_TOKEN_PRODUCTION`). Because `railway up --ci` returns at build completion, `scripts/ci/railway-wait-healthy.sh` then polls deployment status so an unhealthy deploy fails the pipeline. No Railway token is present in PR pipelines.
+| Environment | Railway watches | Deploys when |
+|-------------|-----------------|--------------|
+| **staging** (`ezpds-staging.up.railway.app`, serverless sleep) | `main` branch | a PR merges to `main` (after CI passes) |
+| **production** (`ezpds-production.up.railway.app`, kept warm) | `production` branch | the `production` branch is advanced to a `v*` tag (after CI passes) |
 
-**Two environments:** `production` (`ezpds-production.up.railway.app`, kept warm) and `staging` (`ezpds-staging.up.railway.app`, serverless sleep), each with its own secrets (distinct master key, admin token, user-domain list) and its own `/data` volume. Production is reached only by pushing a `v*` tag — merging to `main` deploys staging, never production.
+Each environment has its own secrets (distinct master key, admin token, user-domain list) and its own `/data` volume, set in the Railway dashboard. Merging to `main` deploys **staging only** — production never moves on a `main` merge.
+
+**Releasing to production.** Tags are the release anchors (always equal to the reported PDS version), and promoting one is a deliberate, separate step:
+
+1. `just set-version X.Y.Z` in a reviewed PR; merge it → staging deploys.
+2. `just release` from `main` cuts and pushes the annotated `vX.Y.Z` tag (does **not** deploy).
+3. `just deploy-production vX.Y.Z` advances the `production` branch to that tag and pushes it. Railway sees the new tip, CI re-runs (gate + `verify-release`), and the production service deploys once it is green. Omit the tag to promote the latest; roll back to an older tag with `FORCE=1 just deploy-production vX.Y.Z`.
 
 ### Backup & rollback
 
@@ -134,7 +139,7 @@ docker buildx imagetools inspect ghcr.io/your-org/PDS:latest | grep Digest
 ghcr.io/your-org/PDS@sha256:abc123...
 ```
 
-The primary CI/CD path (tangled spindle → Railway, above) needs none of this. For the colmena/NixOS path, publish to GHCR (a GitHub account/PAT works even though the repo lives on tangled) and pin the image by digest in the NixOS module.
+The primary CI/CD path (GitHub Actions gate → native Railway deploys, above) needs none of this. For the colmena/NixOS path, publish to GHCR and pin the image by digest in the NixOS module.
 
 ## Security Posture
 

@@ -1,8 +1,8 @@
 name: iOS · TestFlight
 
-# The macOS half of CI. Tangled spindles run Linux only and cannot build the iOS
-# app (see .tangled/workflows/), so the identity-wallet Tauri build lives here on
-# the public GitHub mirror — GitHub-hosted macOS runners are free for public repos.
+# The macOS half of CI. The PDS test gate runs on Linux (.github/workflows/ci.yml) and
+# cannot build the iOS app — `cargo tauri ios build` needs macOS + Xcode — so the
+# identity-wallet Tauri build lives here. GitHub-hosted macOS runners are free for public repos.
 #
 # Flow: regenerate the (gitignored) Xcode project -> re-apply the ios-postinit
 # patches -> stamp a unique build number -> build a signed App Store IPA -> upload

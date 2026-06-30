@@ -40,8 +40,8 @@ lock-check:
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
 ci: fmt-check lock-check clippy test audit
 
-# CI gate for the Linux pds pipeline (tangled spindles). Excludes the iOS apps
-# (identity-wallet, admin-companion), which need the Apple toolchain (security-framework)
+# CI gate for the Linux pds pipeline (GitHub Actions, .github/workflows/ci.yml). Excludes the
+# iOS apps (identity-wallet, admin-companion), which need the Apple toolchain (security-framework)
 # absent in CI; the mobile apps are built and checked via `just ios-*` / `just admin-*` on macOS.
 ci-pds: fmt-check
     just lock-check
@@ -84,9 +84,11 @@ set-version version:
     echo "✓ workspace version set to {{version}} — commit Cargo.toml + Cargo.lock, open a PR,"
     echo "  then run 'just release' from main once it's merged."
 
-# Cut a release: create the annotated tag v{workspace version} and push it to both remotes.
-# The tangled push triggers release.yaml -> production. Derives the tag from Cargo.toml, so it
-# always matches the reported PDS version. Run from a clean, synced `main` (see sync-tangled-main).
+# Cut a release: create the annotated tag v{workspace version} and push it to origin. The tag
+# is the release anchor — it always matches the reported PDS version (derived from Cargo.toml).
+# Tagging does NOT deploy: promoting a tag to production is a separate, explicit step
+# (`just deploy-production <tag>`, which advances the `production` branch Railway watches).
+# Run from a clean `main`.
 release:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -100,102 +102,92 @@ release:
     if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
       echo "✗ tag ${tag} already exists — bump the version with 'just set-version' first" >&2; exit 1
     fi
-    github_url="$(git remote get-url --push --all origin | grep -i github | head -n1)"
-    tangled_url="$(git remote get-url --push --all origin | grep -iv github | head -n1)"
     echo "→ tagging ${tag} at $(git rev-parse --short HEAD)…"
     git tag -a "${tag}" -m "Release ${tag}"
-    echo "→ pushing ${tag} → tangled (triggers production deploy)…"
-    git push "${tangled_url}" "${tag}"
-    echo "→ pushing ${tag} → github (record)…"
-    git push "${github_url}" "${tag}"
-    echo "✓ released ${tag}"
+    echo "→ pushing ${tag} → origin…"
+    git push origin "${tag}"
+    echo "✓ released ${tag} — promote it with 'just deploy-production ${tag}'"
 
-# Sync GitHub `main` (canonical) -> tangled `main`. PRs are merged on GitHub; tangled
-# `main` does not auto-update, so it drifts and needs periodic syncing. This refuses
-# anything that is not a clean fast-forward, so it can never clobber tangled history.
-# NOTE: pushing tangled `main` triggers the staging deploy (just ci-pds -> Railway).
-# Pre-validate first with `just ci-pds` if the pds changed.
-sync-tangled-main:
+# Promote a release tag to production. Railway watches the `production` branch and deploys its
+# tip (gated on the CI workflow + the verify-release-tag backstop), so "deploying production"
+# means moving `production` to a vX.Y.Z tag:
+#   just deploy-production v0.3.1   # promote a specific tag
+#   just deploy-production          # promote the highest vX.Y.Z tag
+# A normal promote must fast-forward (production never holds commits the tag lacks). Rolling
+# back to an OLDER tag is a non-fast-forward; pass FORCE=1 to allow it — production is a deploy
+# pointer, not a work branch, so rewinding it is safe.
+deploy-production tag="":
     #!/usr/bin/env bash
     set -euo pipefail
-
-    # Derive both push URLs from origin (no hardcoded SSH aliases): origin push-mirrors
-    # to BOTH the GitHub mirror (URL contains "github") and the tangled knot (does not).
-    github_url="$(git remote get-url --push --all origin | grep -i github | head -n1 || true)"
-    tangled_url="$(git remote get-url --push --all origin | grep -iv github | head -n1 || true)"
-    if [ -z "$github_url" ] || [ -z "$tangled_url" ]; then
-      echo "✗ origin must push-mirror to both GitHub and tangled; found:" >&2
-      git remote get-url --push --all origin >&2
-      exit 1
+    tag="{{tag}}"
+    if [ -z "$tag" ]; then
+      tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)"
+      if [ -z "$tag" ]; then echo "✗ no vX.Y.Z tag exists — cut one with 'just release'" >&2; exit 1; fi
+      echo "→ no tag given; using latest: ${tag}"
     fi
-
-    # Fast-forwarding local main touches the working tree — require it clean.
-    if [ -n "$(git status --porcelain)" ]; then
-      echo "✗ working tree not clean — commit or stash before syncing" >&2
-      exit 1
+    if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+      echo "✗ tag must be vX.Y.Z (got '$tag')" >&2; exit 1
     fi
-
-    # Fetch each SHA from its resolved push URL, NOT from `origin` — `git fetch origin`
-    # uses origin's *fetch* URL, which may be GitHub. Reading the "tangled" SHA from there
-    # would make it equal the GitHub SHA, so the equality check below would falsely report
-    # "already in sync" and never push.
-    echo "→ fetching tangled main…"
-    git fetch "$tangled_url" main
-    tangled="$(git rev-parse FETCH_HEAD)"
-    echo "→ fetching github main…"
-    git fetch "$github_url" main
-    github="$(git rev-parse FETCH_HEAD)"
-
-    echo
-    echo "tangled main: $(git rev-parse --short "$tangled")"
-    echo "github  main: $(git rev-parse --short "$github")"
-
-    if [ "$tangled" = "$github" ]; then
-      echo "✓ already in sync — nothing to push"
-      exit 0
+    if ! git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+      echo "✗ tag ${tag} does not exist locally — fetch it or cut it with 'just release'" >&2; exit 1
     fi
-
-    echo
-    echo "incoming (on GitHub, not yet on tangled):"
-    git log --oneline --graph "$tangled".."$github"
-
-    # Refuse a non-fast-forward: tangled must hold no commits GitHub lacks.
-    if ! git merge-base --is-ancestor "$tangled" "$github"; then
-      echo >&2
-      echo "✗ tangled main has commits not on GitHub main — NOT a clean fast-forward." >&2
-      echo "  Refusing to push; reconcile the divergence manually." >&2
-      exit 1
-    fi
-
-    # Fast-forward local main, then push the tangled URL ONLY (origin would also push to
-    # GitHub — harmless but redundant). An EXIT trap restores the branch you started on for
-    # EVERY exit path: if the ff merge or push fails, `set -e` aborts mid-flight and would
-    # otherwise strand you on `main`. A failed restore warns loudly rather than silently
-    # swallowing the error, so a wrong-branch end state is never hidden.
-    start_branch="$(git rev-parse --abbrev-ref HEAD)"
-    restore_branch() {
-      if [ "$start_branch" != "main" ] && [ "$(git rev-parse --abbrev-ref HEAD)" != "$start_branch" ]; then
-        git checkout "$start_branch" \
-          || echo "⚠ could not restore branch '$start_branch' — you are on $(git rev-parse --abbrev-ref HEAD)" >&2
+    target="$(git rev-parse "${tag}^{commit}")"
+    # Compare against the current remote production tip to classify the move.
+    if git fetch --quiet origin production 2>/dev/null; then
+      current="$(git rev-parse FETCH_HEAD)"
+      if [ "$current" = "$target" ]; then
+        echo "✓ production already at ${tag} ($(git rev-parse --short "$target")) — nothing to do"; exit 0
       fi
-    }
-    trap restore_branch EXIT
-
-    git checkout main
-    git merge --ff-only "$github"
-    echo
-    echo "→ pushing main → tangled (this triggers the staging deploy)…"
-    git push "$tangled_url" main
-
-    # Verify against the tangled URL directly (same reason as the fetch above).
-    echo "→ verifying tangled main…"
-    git fetch "$tangled_url" main
-    if [ "$(git rev-parse FETCH_HEAD)" = "$github" ]; then
-      echo "✓ tangled main == github main ($(git rev-parse --short "$github"))"
+      if ! git merge-base --is-ancestor "$current" "$target"; then
+        if [ "${FORCE:-}" != "1" ]; then
+          echo "✗ ${tag} is behind/diverged from current production ($(git rev-parse --short "$current")) — this is a rollback." >&2
+          echo "  Re-run with FORCE=1 to rewind production to ${tag}." >&2
+          exit 1
+        fi
+        echo "→ FORCE=1: rewinding production to ${tag}"
+        git push --force origin "${target}:refs/heads/production"
+        echo "✓ production → ${tag}; Railway will deploy once CI is green"
+        exit 0
+      fi
     else
-      echo "✗ post-push verification failed — tangled does not match GitHub" >&2
+      echo "→ production branch does not exist yet — creating it at ${tag}"
+    fi
+    echo "→ pushing ${tag} ($(git rev-parse --short "$target")) → production…"
+    git push origin "${target}:refs/heads/production"
+    echo "✓ production → ${tag}; Railway will deploy once CI is green"
+
+# Verify the commit at HEAD is a valid production release point — used by the CI workflow on the
+# `production` branch, and runnable locally. Every v-prefixed tag on HEAD must be semver vX.Y.Z,
+# at least one such tag must exist, and it must equal the workspace version the binary reports
+# (env!("CARGO_PKG_VERSION")). The production branch is advanced to a v* tag to deploy and Railway
+# gates the deploy on CI, so this is the backstop against shipping a tip whose tag/version disagree.
+verify-release-tag:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # The branch may carry any v-prefixed tag; reject a non-semver one (e.g. `vfoo`) outright so it
+    # can never slip past the version check below.
+    release_tags="$(git tag --points-at HEAD | grep -E '^v' || true)"
+    non_semver="$(printf '%s\n' "$release_tags" | grep -Ev '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)"
+    if [ -n "$non_semver" ]; then
+      echo "✗ non-semver release tag(s) point at HEAD:" >&2
+      printf '    %s\n' "$non_semver" >&2
       exit 1
     fi
+    tags="$(printf '%s\n' "$release_tags" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)"
+    if [ -z "$tags" ]; then
+      echo "✗ no vX.Y.Z tag points at HEAD — the production branch must be advanced to a release tag" >&2
+      echo "  (cut one with 'just release', then 'just deploy-production <tag>')." >&2
+      exit 1
+    fi
+    version="v$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name=="pds") | .version')"
+    mismatched="$(printf '%s\n' "$tags" | grep -vxF "$version" || true)"
+    if [ -n "$mismatched" ]; then
+      echo "✗ release tag(s) do not match workspace version '$version' (Cargo.toml):" >&2
+      printf '    %s\n' "$mismatched" >&2
+      echo "  Bump [workspace.package].version to the intended tag and re-tag, or remove the mismatched tag." >&2
+      exit 1
+    fi
+    echo "✓ all vX.Y.Z tag(s) on HEAD match workspace version '$version'"
 
 # --- iOS (identity-wallet) — run from repo root; requires macOS + Xcode ---
 
