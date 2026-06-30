@@ -223,6 +223,10 @@ pub struct Firehose {
     /// `tokio::sync::Mutex`. Also taken (briefly, no await) by `subscribe_from` so it can snapshot
     /// the live receiver and the sequence frontier atomically against emission.
     emit_lock: tokio::sync::Mutex<()>,
+    /// Serialises retention pruning with cursor replay. A subscription with a cursor holds this
+    /// from before it captures `upper` until the durable backlog is materialised, so the retention
+    /// sweep cannot delete `(cursor, upper]` after the subscription snapshot is established.
+    retention_replay_lock: tokio::sync::Mutex<()>,
     /// The last sequence number assigned. Written only under `emit_lock` (after the row is
     /// persisted), so a value `<= last_seq` is always already durable. Read locklessly for
     /// diagnostics (`current_seq`) and under the lock for the subscribe frontier.
@@ -245,6 +249,7 @@ impl Firehose {
         Ok(Self {
             db,
             emit_lock: tokio::sync::Mutex::new(()),
+            retention_replay_lock: tokio::sync::Mutex::new(()),
             last_seq: AtomicU64::new(last),
             tx,
         })
@@ -266,12 +271,13 @@ impl Firehose {
     ///
     /// The live receiver and the `upper` frontier are captured together under `emit_lock`, so no
     /// concurrent emit can slip an event past both the replay range and the receiver, nor advance
-    /// the counter into a spurious `FutureCursor`. Replay is then read outside the lock, bounded by
-    /// `upper`, so it stays disjoint from the live stream. Events still present in the log can
-    /// always be replayed; there is no in-memory buffer to age out. The retention sweep
-    /// (`firehose_gc`) may prune a contiguous prefix below the live frontier, in which case a
-    /// cursor inside the pruned window degrades to best-effort replay (see [`read_replay`])
-    /// rather than failing closed.
+    /// the counter into a spurious `FutureCursor`. For cursor subscriptions, the
+    /// `retention_replay_lock` is acquired *before* this snapshot and held until replay is fully
+    /// materialised, so `firehose_gc` cannot prune rows in `(cursor, upper]` after the subscription
+    /// snapshot is established. Replay is then read outside `emit_lock`, bounded by `upper`, so it
+    /// stays disjoint from the live stream. If a GC pass wins the retention/replay lock before the
+    /// subscription snapshots, a cursor inside the already-pruned prefix degrades to best-effort
+    /// replay (see [`read_replay`]) rather than failing closed.
     ///
     /// Returns [`FirehoseError`] if the backlog can't be assembled: a DB read failure, a stored row
     /// that won't decode, or a *mid-range* gap in the `(cursor, upper]` range (which `read_replay`
@@ -283,6 +289,11 @@ impl Firehose {
         &self,
         cursor: Option<u64>,
     ) -> Result<SubscribeOutcome, FirehoseError> {
+        let _retention_guard = if cursor.is_some() {
+            Some(self.retention_replay_lock.lock().await)
+        } else {
+            None
+        };
         let (rx, upper) = {
             let _guard = self.emit_lock.lock().await;
             // Subscribe to the live channel *before* releasing the lock so that no event emitted
@@ -298,6 +309,11 @@ impl Firehose {
         };
 
         Ok(SubscribeOutcome::Subscribed(Subscription { replay, rx }))
+    }
+
+    /// Lock out retention pruning while a cursor replay snapshot is captured/materialised.
+    pub(crate) async fn lock_retention_replay(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.retention_replay_lock.lock().await
     }
 
     /// Materialise the durable replay backlog for `(cursor, upper]`, oldest first.

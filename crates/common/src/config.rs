@@ -100,7 +100,7 @@ impl Default for BlobsConfig {
 /// retained event.
 ///
 /// A row is pruned when it falls below **any** enabled cutoff (the highest watermark wins), so
-/// age can delete an old suffix even when count would keep it, and count can cap a large young
+/// age can delete an old prefix even when count would keep it, and count can cap a large young
 /// backlog even when age would keep it. A knob set to `0` disables that policy. With both at `0`
 /// the sweep is a no-op (the log stays append-only, matching the pre-retention behaviour).
 #[derive(Debug, Clone, Deserialize)]

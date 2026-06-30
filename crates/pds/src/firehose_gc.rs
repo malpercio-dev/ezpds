@@ -100,6 +100,11 @@ pub async fn run_firehose_gc(state: &AppState) -> GcStats {
         };
     }
 
+    // Coordinate with cursor replay: either this GC pass wins the lock and a later subscription
+    // snapshots the post-prune log, or an active replay holds the lock and this pass waits until
+    // the snapshotted `(cursor, upper]` backlog has been materialised.
+    let _replay_guard = state.firehose.lock_retention_replay().await;
+
     let max_seq = match firehose_seq::max_seq(&state.db).await {
         Ok(max) => max,
         Err(e) => {
@@ -126,10 +131,10 @@ pub async fn run_firehose_gc(state: &AppState) -> GcStats {
     // Age-based: prune every row older than the retention window. The contribution is the seq
     // just below the first *retained* row (over-prune-safe), or `max_seq` if nothing is retained.
     if config.log_retention_secs > 0 {
-        // Checked conversion: `log_retention_secs` is `u64`, but `chrono::Duration::seconds` takes
-        // an `i64`. A value bigger than `i64::MAX` would wrap to a negative duration on `as i64`,
-        // producing a cutoff in the future and pruning the whole log; treat overflow as a config
-        // error and skip the pass rather than risk that.
+        // Checked arithmetic: `log_retention_secs` is `u64`, but chrono durations are signed, and
+        // the final DateTime subtraction can also overflow near timestamp bounds. Treat either as
+        // a config/runtime overflow and skip the pass rather than risk a future cutoff that prunes
+        // the whole log.
         let retention_secs = match i64::try_from(config.log_retention_secs) {
             Ok(v) => v,
             Err(_) => {
@@ -143,7 +148,20 @@ pub async fn run_firehose_gc(state: &AppState) -> GcStats {
                 };
             }
         };
-        let cutoff = chrono::Utc::now() - chrono::Duration::seconds(retention_secs);
+        let retention = chrono::Duration::seconds(retention_secs);
+        let cutoff = match chrono::Utc::now().checked_sub_signed(retention) {
+            Some(cutoff) => cutoff,
+            None => {
+                tracing::error!(
+                    value = config.log_retention_secs,
+                    "firehose GC: retention cutoff overflowed; skipping pass"
+                );
+                return GcStats {
+                    pruned: 0,
+                    skipped: true,
+                };
+            }
+        };
         let cutoff_rfc3339 = cutoff.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         match firehose_seq::retained_boundary_seq(&state.db, &cutoff_rfc3339).await {
             // The boundary is the first retained seq; everything strictly older is prunable.
@@ -186,9 +204,10 @@ pub async fn run_firehose_gc(state: &AppState) -> GcStats {
     // Never prune the live frontier row: a reconnecting relay must be able to resume from at
     // least the newest retained event, and `read_replay` must be able to reach the `upper`
     // frontier it snapshotted. The watermark is the highest prunable seq, so this keeps `MAX(seq)`
-    // and guarantees the retained suffix is non-empty. This also makes the sweep safe to run
-    // *without* the firehose `emit_lock`: a row emitted during this pass has `seq` greater than
-    // the `max_seq` we read, hence greater than the watermark, so the range delete can't touch it.
+    // and guarantees the retained suffix is non-empty. Replay safety is provided by the
+    // retention/replay lock acquired at the start of this pass; emit safety does not require the
+    // firehose `emit_lock` because a row emitted during this pass has `seq` greater than the
+    // `max_seq` we read, hence greater than the watermark, so the range delete can't touch it.
     let watermark = watermark.min(max_seq.saturating_sub(1));
 
     // A watermark of 0 prunes nothing (every `seq` is >= 1) — the log stays fully retained.
