@@ -93,29 +93,49 @@ else
   echo "ios-postinit: no CODE_SIGN_ENTITLEMENTS in pbxproj; skipping entitlements allowance"
 fi
 
-# --- Patch E: link SystemConfiguration.framework (system-configuration crate) ---
-# `hickory-resolver` (system DNS config) and `reqwest` (system proxy detection) both
-# use the `system-configuration` crate, which needs Apple's SystemConfiguration.framework.
-# On host builds rustc honors the crate's `#[link(kind="framework")]`; on iOS the crate is
-# a staticlib that Xcode links, and Xcode never sees that directive — so the framework must
-# be declared in the Xcode project or the link fails with `Undefined symbols ... _SC*`.
+# --- Patch E: link the Apple frameworks our staticlib deps need (OTHER_LDFLAGS) ---
+# Two workspace deps reference Apple framework symbols that rustc would auto-link via
+# `#[link(kind="framework")]` on a host build, but on iOS the crate compiles into the
+# `libapp.a` staticlib that Xcode links — and Xcode never sees those directives, so each
+# framework must be declared in the Xcode project or the link fails with `Undefined symbols`:
+#   - SystemConfiguration: `system-configuration` crate (hickory-resolver system DNS config,
+#     reqwest system-proxy detection) → otherwise `_SC*` undefined.
+#   - AuthenticationServices: vendored `tauri-plugin-auth-session` → `objc2-authentication-services`
+#     (ASWebAuthenticationSession, the in-app OAuth flow) → otherwise
+#     `_ASWebAuthenticationSessionErrorDomain` undefined.
 # `bundle.iOS.frameworks` in tauri.conf.json only seeds a FRESH project.yml; cargo-mobile2
 # preserves an existing project.yml, so it does not retroactively apply — we enforce the link
-# on the generated pbxproj here. The grep guard makes this idempotent AND a no-op if a fresh
-# project.yml already linked it as a proper framework (no double-link).
-if grep -q 'SystemConfiguration' "${PBXPROJ}"; then
-  echo "ios-postinit: SystemConfiguration.framework already linked"
+# on the generated pbxproj here. BOTH frameworks MUST share ONE OTHER_LDFLAGS line: a second
+# OTHER_LDFLAGS assignment for the same build config shadows (not appends to) the first, which
+# would silently drop a framework. The branches below keep this idempotent across a fresh init,
+# an older SystemConfiguration-only tree (extend in place), and an already-current tree.
+if grep -qE 'OTHER_LDFLAGS = .*-framework SystemConfiguration -framework AuthenticationServices' "${PBXPROJ}"; then
+  # Skip ONLY when the fully-patched single-line state is already present — not on a bare
+  # `AuthenticationServices` match, which a split/partial OTHER_LDFLAGS could satisfy while
+  # still shadowing a framework. A partial state falls through to the repair branches below.
+  echo "ios-postinit: SystemConfiguration + AuthenticationServices already linked"
+elif grep -q 'OTHER_LDFLAGS = .*-framework SystemConfiguration' "${PBXPROJ}"; then
+  # Older patched tree linked SystemConfiguration only — append AuthenticationServices to that
+  # existing OTHER_LDFLAGS line in place (before its closing quote) rather than adding a second.
+  /usr/bin/perl -0pi -e 's/(OTHER_LDFLAGS = "[^"\n]*-framework SystemConfiguration)("[^\n]*;)/$1 -framework AuthenticationServices$2/mg' "${PBXPROJ}"
+  if ! grep -q 'AuthenticationServices' "${PBXPROJ}"; then
+    echo "error: could not extend the existing OTHER_LDFLAGS line with AuthenticationServices." >&2
+    echo "       Inspect ${PBXPROJ} and adjust the regex in $(basename "$0")." >&2
+    exit 1
+  fi
+  echo "ios-postinit: added AuthenticationServices.framework to the existing OTHER_LDFLAGS line"
 else
-  # Append OTHER_LDFLAGS after each target's PRODUCT_BUNDLE_IDENTIFIER (its two build configs),
-  # reusing that line's indentation. `\$(inherited)` stays literal (Xcode expands it).
-  /usr/bin/perl -0pi -e 's/^([ \t]*)PRODUCT_BUNDLE_IDENTIFIER = ([^\n]*);$/$1PRODUCT_BUNDLE_IDENTIFIER = $2;\n$1OTHER_LDFLAGS = "\$(inherited) -framework SystemConfiguration";/mg' "${PBXPROJ}"
-  if ! grep -q 'SystemConfiguration' "${PBXPROJ}"; then
-    echo "error: could not inject OTHER_LDFLAGS for SystemConfiguration into the pbxproj." >&2
+  # Fresh project: add one OTHER_LDFLAGS line linking BOTH frameworks after each target's
+  # PRODUCT_BUNDLE_IDENTIFIER (its two build configs), reusing that line's indentation.
+  # `\$(inherited)` stays literal (Xcode expands it).
+  /usr/bin/perl -0pi -e 's/^([ \t]*)PRODUCT_BUNDLE_IDENTIFIER = ([^\n]*);$/$1PRODUCT_BUNDLE_IDENTIFIER = $2;\n$1OTHER_LDFLAGS = "\$(inherited) -framework SystemConfiguration -framework AuthenticationServices";/mg' "${PBXPROJ}"
+  if ! grep -q 'AuthenticationServices' "${PBXPROJ}"; then
+    echo "error: could not inject OTHER_LDFLAGS for the required frameworks into the pbxproj." >&2
     echo "       Expected a PRODUCT_BUNDLE_IDENTIFIER build setting to anchor it; Tauri's" >&2
     echo "       generated template may differ. Adjust the regex in $(basename "$0")." >&2
     exit 1
   fi
-  echo "ios-postinit: linked SystemConfiguration.framework via OTHER_LDFLAGS"
+  echo "ios-postinit: linked SystemConfiguration + AuthenticationServices via OTHER_LDFLAGS"
 fi
 
 # --- Patch F: don't ship the Rust staticlib inside the .app (App Store rejects it) ---

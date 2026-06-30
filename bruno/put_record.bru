@@ -5,15 +5,9 @@ meta {
 }
 
 post {
-  url: {{baseUrl}}/xrpc/com.atproto.repo.putRecord?did={{did}}&collection={{collection}}&rkey={{rkey}}
+  url: {{baseUrl}}/xrpc/com.atproto.repo.putRecord
   body: json
   auth: bearer
-}
-
-params:query {
-  did: {{did}}
-  collection: {{collection}}
-  rkey: {{rkey}}
 }
 
 auth:bearer {
@@ -22,6 +16,9 @@ auth:bearer {
 
 body:json {
   {
+    "repo": "{{did}}",
+    "collection": "{{collection}}",
+    "rkey": "{{rkey}}",
     "record": {{record}}
   }
 }

@@ -1,0 +1,28 @@
+meta {
+  name: Get Service Auth (getServiceAuth)
+  type: http
+  seq: 56
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.server.getServiceAuth?aud={{aud}}&lxm={{lxm}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  aud: did:web:api.bsky.app
+  lxm: app.bsky.feed.getTimeline
+}
+
+docs {
+  Mints a short-lived ES256 inter-service auth JWT, signed by the account's repo key, for the
+  requested `aud` service. `lxm` (the lexicon method to bind the token to) is optional — omit it
+  for a method-unrestricted token (capped at 60s). `exp` (absolute Unix-seconds) is optional and
+  defaults to 60s in the future; a method-bound token may request up to 1 hour out.
+}

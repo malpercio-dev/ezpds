@@ -13,7 +13,6 @@ pub mod recovery;
 use crypto::{build_did_plc_genesis_op_with_external_signer, CryptoError, DidKeyUri};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
-use tauri_plugin_deep_link::DeepLinkExt;
 
 // ── Request / response types ────────────────────────────────────────────────
 
@@ -323,15 +322,22 @@ async fn create_account(
         claim_code,
     };
 
+    // Log the target PDS host so a wrong-host failure (e.g. a claim code minted on a different
+    // server) is visible in logs instead of silently masquerading as "claim code expired".
+    let host = state.custos_client().base_url_str().to_owned();
     let resp = state
         .custos_client()
         .post("/v1/accounts/mobile", &req)
         .await
-        .map_err(|e| CreateAccountError::NetworkError {
-            message: e.to_string(),
+        .map_err(|e| {
+            tracing::warn!(host = %host, error = %e, "create_account: request to PDS failed");
+            CreateAccountError::NetworkError {
+                message: e.to_string(),
+            }
         })?;
 
     let status = resp.status();
+    tracing::info!(host = %host, status = status.as_u16(), "create_account: PDS responded");
 
     if status.is_success() {
         // 3. Deserialize success body.
@@ -528,47 +534,20 @@ async fn perform_did_ceremony(
     })
 }
 
-/// Register the user's handle with the PDS and set up HTTP resolution.
+/// Register the user's (already-full) handle with the PDS and set up HTTP resolution.
 ///
-/// Fetches the PDS's primary user domain via `GET /xrpc/com.atproto.server.describeServer`,
-/// constructs the full handle (`{handle_label}.{domain}`), reads the DID and session token
-/// from Keychain, then POSTs to `POST /v1/handles`.
+/// `handle` is the complete handle (e.g. `alice.ezpds.com`), assembled on the client from the
+/// PDS's `availableUserDomains` *before* the DID ceremony so it matches the published genesis
+/// op's `alsoKnownAs` exactly. Reads the DID and session token from Keychain, then POSTs to
+/// `POST /v1/handles`.
 ///
 /// Returns the full handle and DNS propagation status on success.
 #[tauri::command]
 async fn register_handle(
-    handle_label: String,
+    handle: String,
     state: tauri::State<'_, oauth::AppState>,
 ) -> Result<RegisterHandleResult, RegisterHandleError> {
-    // Step 1: Fetch the PDS's primary user domain.
-    let resp = state
-        .custos_client()
-        .get("/xrpc/com.atproto.server.describeServer")
-        .await
-        .map_err(|e| RegisterHandleError::NetworkError {
-            message: e.to_string(),
-        })?;
-
-    if !resp.status().is_success() {
-        return Err(RegisterHandleError::NetworkError {
-            message: format!("describeServer returned HTTP {}", resp.status().as_u16()),
-        });
-    }
-
-    let server_info: DescribeServerResponse =
-        resp.json()
-            .await
-            .map_err(|e| RegisterHandleError::Unknown {
-                message: format!("failed to parse describeServer response: {e}"),
-            })?;
-
-    let domain = server_info
-        .available_user_domains
-        .into_iter()
-        .next()
-        .ok_or(RegisterHandleError::NoDomains)?;
-
-    let full_handle = format!("{handle_label}.{domain}");
+    let full_handle = handle;
 
     // Step 2: Read DID and session token from Keychain.
     // Missing DID here is a post-ceremony invariant violation — error! is appropriate.
@@ -644,6 +623,37 @@ async fn register_handle(
             }),
         }
     }
+}
+
+/// Fetch the PDS's configured handle domains (`availableUserDomains` from describeServer) so the
+/// client can build the full `{label}.{domain}` handle BEFORE the DID ceremony — ensuring the
+/// did:plc genesis op's `alsoKnownAs` carries the real, resolvable handle.
+///
+/// Returns the (possibly empty) domain list on success; the caller decides what to do when the
+/// list is empty. Rejects with a message string on network/parse failure.
+#[tauri::command]
+async fn get_available_user_domains(
+    state: tauri::State<'_, oauth::AppState>,
+) -> Result<Vec<String>, String> {
+    let resp = state
+        .custos_client()
+        .get("/xrpc/com.atproto.server.describeServer")
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !resp.status().is_success() {
+        return Err(format!(
+            "describeServer returned HTTP {}",
+            resp.status().as_u16()
+        ));
+    }
+
+    let server_info: DescribeServerResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("failed to parse describeServer response: {e}"))?;
+
+    Ok(server_info.available_user_domains)
 }
 
 /// Return the saved PDS base URL, or `None` if not yet configured.
@@ -861,19 +871,16 @@ pub fn run() {
                 .level(log::LevelFilter::Debug)
                 .build(),
         )
-        .plugin(tauri_plugin_deep_link::init())
-        .plugin(tauri_plugin_opener::init())
+        // In-app OAuth session (ASWebAuthenticationSession on iOS/macOS). Invoked from the
+        // frontend as `plugin:auth-session|start`; drives both the create-flow and claim-flow
+        // PDS logins. (Replaced the deep-link + opener plugins, which depended on Safari
+        // auto-launching the app from a custom-scheme redirect — which iOS blocks.)
+        .plugin(tauri_plugin_auth_session::init())
         .setup(|app| {
             // Restore PDS URL from Keychain if previously configured.
             if let Some(url) = keychain::load_pds_url() {
                 app.state::<oauth::AppState>().set_custos_client(url);
             }
-
-            let app_handle = app.app_handle().clone();
-            app.deep_link().on_open_url(move |event| {
-                let state = app_handle.state::<oauth::AppState>();
-                oauth::handle_deep_link(event.urls(), &state);
-            });
 
             // On relaunch: restore persisted session from Keychain and notify frontend.
             // The 300 ms delay lets the SvelteKit app boot and register its event listener
@@ -910,6 +917,7 @@ pub fn run() {
             register_handle,
             register_created_identity,
             check_handle_resolution,
+            get_available_user_domains,
             list_identities,
             get_stored_did_doc,
             get_device_key_id,
@@ -917,9 +925,11 @@ pub fn run() {
             save_pds_url,
             home::load_home_data,
             home::log_out,
-            oauth::start_oauth_flow,
+            oauth::prepare_oauth_flow,
+            oauth::complete_oauth_flow,
             claim::resolve_identity,
-            claim::start_pds_auth,
+            claim::prepare_pds_auth,
+            claim::complete_pds_auth,
             claim::request_claim_verification,
             claim::sign_and_verify_claim,
             claim::submit_claim,

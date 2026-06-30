@@ -27,6 +27,7 @@ pub mod get_preferences;
 pub mod get_record;
 pub mod get_repo;
 pub mod get_repo_signing_key;
+pub mod get_service_auth;
 pub mod get_session;
 pub mod health;
 pub mod list_blobs;

@@ -64,9 +64,10 @@ pub async fn create_handle_handler(
         ));
     }
 
-    // Step 3: Validate handle format.
-    let name = validate_handle(&payload.handle, &state.config.available_user_domains)
-        .map_err(|msg| ApiError::new(ErrorCode::InvalidHandle, msg))?;
+    // Step 3: Validate handle format (structure + domain policy).
+    let name =
+        crate::handle::validate_handle(&payload.handle, &state.config.available_user_domains)
+            .map_err(|msg| ApiError::new(ErrorCode::InvalidHandle, msg))?;
 
     // Step 4: Insert the handle. A UNIQUE violation means the handle is already taken.
     sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
@@ -128,55 +129,10 @@ pub async fn create_handle_handler(
     }))
 }
 
-/// Validate a handle string against the server's available user domains.
-///
-/// A valid handle is `<name>.<domain>` where:
-/// - `name` is non-empty, at most 63 characters (RFC 1035 label limit), contains only
-///   ASCII alphanumerics and hyphens, and does not start or end with a hyphen.
-/// - `domain` is one of the server's `available_user_domains`.
-///
-/// Returns the `name` portion on success so callers can use it for DNS record creation.
-///
-/// # Errors
-/// Returns a static error message string suitable for surfacing as a 400 body.
-fn validate_handle<'a>(
-    handle: &'a str,
-    available_domains: &[String],
-) -> Result<&'a str, &'static str> {
-    let dot = handle
-        .find('.')
-        .ok_or("handle must be in the format <name>.<domain>")?;
-
-    let name = &handle[..dot];
-    let domain = &handle[dot + 1..];
-
-    if name.is_empty() {
-        return Err("handle name cannot be empty");
-    }
-    if name.len() > 63 {
-        return Err("handle name exceeds maximum DNS label length of 63 characters");
-    }
-    if name.starts_with('-') || name.ends_with('-') {
-        return Err("handle name cannot start or end with a hyphen");
-    }
-    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-        return Err("handle name may only contain letters, digits, and hyphens");
-    }
-    if domain.is_empty() {
-        return Err("handle domain cannot be empty");
-    }
-    if !available_domains.iter().any(|d| d == domain) {
-        return Err("handle domain is not served by this server");
-    }
-
-    Ok(name)
-}
-
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::app::test_state;
     use crate::routes::test_utils::{state_with_err_dns, state_with_ok_dns};
     use crate::routes::token::generate_token;
@@ -186,78 +142,6 @@ mod tests {
     };
     use tower::ServiceExt;
     use uuid::Uuid;
-
-    // ── validate_handle unit tests ─────────────────────────────────────────────
-
-    #[test]
-    fn validate_handle_accepts_valid_handle() {
-        let domains = vec!["example.com".to_string()];
-        assert_eq!(
-            validate_handle("alice.example.com", &domains),
-            Ok("alice"),
-            "valid handle should return the name portion"
-        );
-    }
-
-    #[test]
-    fn validate_handle_rejects_no_dot() {
-        let domains = vec!["example.com".to_string()];
-        assert!(validate_handle("aliceexample", &domains).is_err());
-    }
-
-    #[test]
-    fn validate_handle_rejects_empty_name() {
-        let domains = vec!["example.com".to_string()];
-        assert!(validate_handle(".example.com", &domains).is_err());
-    }
-
-    #[test]
-    fn validate_handle_rejects_leading_hyphen() {
-        let domains = vec!["example.com".to_string()];
-        assert!(validate_handle("-alice.example.com", &domains).is_err());
-    }
-
-    #[test]
-    fn validate_handle_rejects_trailing_hyphen() {
-        let domains = vec!["example.com".to_string()];
-        assert!(validate_handle("alice-.example.com", &domains).is_err());
-    }
-
-    #[test]
-    fn validate_handle_rejects_invalid_chars() {
-        let domains = vec!["example.com".to_string()];
-        assert!(validate_handle("ali_ce.example.com", &domains).is_err());
-        assert!(validate_handle("ali ce.example.com", &domains).is_err());
-    }
-
-    #[test]
-    fn validate_handle_rejects_unavailable_domain() {
-        let domains = vec!["example.com".to_string()];
-        assert!(validate_handle("alice.other.com", &domains).is_err());
-    }
-
-    #[test]
-    fn validate_handle_accepts_hyphen_in_middle_of_name() {
-        let domains = vec!["example.com".to_string()];
-        assert_eq!(
-            validate_handle("al-ice.example.com", &domains),
-            Ok("al-ice")
-        );
-    }
-
-    #[test]
-    fn validate_handle_rejects_name_exceeding_63_chars() {
-        let domains = vec!["example.com".to_string()];
-        let long_name = "a".repeat(64);
-        assert!(validate_handle(&format!("{long_name}.example.com"), &domains).is_err());
-    }
-
-    #[test]
-    fn validate_handle_accepts_name_exactly_63_chars() {
-        let domains = vec!["example.com".to_string()];
-        let name = "a".repeat(63);
-        assert!(validate_handle(&format!("{name}.example.com"), &domains).is_ok());
-    }
 
     // ── Integration test helpers ───────────────────────────────────────────────
 

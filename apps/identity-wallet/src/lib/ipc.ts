@@ -187,14 +187,24 @@ export type RegisterHandleError =
 /**
  * Register the user's handle with the PDS.
  *
- * `handleLabel` is the label portion only (e.g. `"alice"`).
- * The Rust backend fetches the PDS's primary domain from `describeServer`,
- * reads the DID and session token from Keychain, and POSTs to `/v1/handles`.
+ * `handle` is the FULL handle (e.g. `"alice.ezpds.com"`), assembled on the client from the
+ * PDS's `availableUserDomains` before the DID ceremony so it matches the published genesis op.
+ * The Rust backend reads the DID and session token from Keychain and POSTs to `/v1/handles`.
  *
  * On failure, the Promise rejects with a `RegisterHandleError`.
  */
-export const registerHandle = (handleLabel: string): Promise<RegisterHandleResult> =>
-  invoke('register_handle', { handleLabel });
+export const registerHandle = (handle: string): Promise<RegisterHandleResult> =>
+  invoke('register_handle', { handle });
+
+/**
+ * Fetch the PDS's configured handle domains (`availableUserDomains` from describeServer).
+ *
+ * The handle screen uses this to show the domain suffix and assemble the full handle BEFORE
+ * the DID ceremony, so the genesis op's `alsoKnownAs` carries the real, resolvable handle.
+ * Resolves to the (possibly empty) domain list; rejects with a message string on failure.
+ */
+export const getAvailableUserDomains = (): Promise<string[]> =>
+  invoke('get_available_user_domains');
 
 /**
  * Error returned by the `register_created_identity` Rust command.
@@ -243,7 +253,33 @@ export type OAuthError =
   | { code: 'INVALID_GRANT' }
   | { code: 'NOT_AUTHENTICATED' };
 
-export const startOAuthFlow = (): Promise<void> => invoke('start_oauth_flow');
+/**
+ * Drive the create-flow PDS login via the native in-app auth session (ASWebAuthenticationSession
+ * on iOS, via the auth-session plugin). Three steps: `prepare_oauth_flow` (Rust) does PKCE + PAR
+ * and returns the authorize URL; the plugin opens the in-app session and returns the
+ * custom-scheme callback URL; `complete_oauth_flow` (Rust) validates the CSRF state and exchanges
+ * the code for tokens. The PKCE verifier and CSRF state never leave the Rust backend — only the
+ * authorize URL and (briefly) the callback URL transit the webview.
+ *
+ * This replaces the old external-Safari + deep-link flow, which iOS Safari blocks: it will not
+ * auto-launch the app from a server-side redirect to a custom URL scheme.
+ */
+export const startOAuthFlow = async (): Promise<void> => {
+  const prepared = await invoke<{ authUrl: string; callbackScheme: string }>('prepare_oauth_flow');
+  let callbackUrl: string;
+  try {
+    callbackUrl = await invoke<string>('plugin:auth-session|start', {
+      authUrl: prepared.authUrl,
+      callbackUrlScheme: prepared.callbackScheme,
+    });
+  } catch {
+    // The auth-session plugin rejects with a plain string ("user_cancelled", "Invalid auth
+    // URL: ..."), not the OAuthError shape. Normalize so the UI's error handling stays uniform;
+    // a dismissed sheet reads as an abandoned callback.
+    throw { code: 'CALLBACK_ABANDONED' } as OAuthError;
+  }
+  await invoke('complete_oauth_flow', { callbackUrl });
+};
 
 // ── Home screen ──────────────────────────────────────────────────────────
 //
@@ -450,14 +486,32 @@ export const resolveIdentity = (handleOrDid: string): Promise<IdentityInfo> =>
   invoke('resolve_identity', { handleOrDid });
 
 /**
- * Authenticate with the old PDS via OAuth 2.0 PKCE + DPoP.
+ * Authenticate with the identity's existing PDS via OAuth 2.0 PKCE + DPoP, using the native
+ * in-app auth session (ASWebAuthenticationSession) — same three-step shape as `startOAuthFlow`:
+ * `prepare_pds_auth` (Rust) discovers the auth server + PAR and returns the authorize URL; the
+ * auth-session plugin opens the in-app session and returns the callback URL; `complete_pds_auth`
+ * (Rust) validates it, exchanges the code, and stores the OAuth client in claim state. Resolves
+ * when complete.
  *
- * Opens Safari for user authentication and handles the OAuth callback via deep-link.
- * On success, stores the OAuth client in claim state for use by subsequent commands.
- * Resolves the returned Promise when complete.
+ * Replaces the old external-Safari + deep-link flow (iOS blocks the custom-scheme redirect).
  */
-export const startPdsAuth = (pdsUrl: string): Promise<void> =>
-  invoke('start_pds_auth', { pdsUrl });
+export const startPdsAuth = async (pdsUrl: string): Promise<void> => {
+  const prepared = await invoke<{ authUrl: string; callbackScheme: string }>('prepare_pds_auth', {
+    pdsUrl,
+  });
+  let callbackUrl: string;
+  try {
+    callbackUrl = await invoke<string>('plugin:auth-session|start', {
+      authUrl: prepared.authUrl,
+      callbackUrlScheme: prepared.callbackScheme,
+    });
+  } catch {
+    // The auth-session plugin rejects with a plain string (e.g. "user_cancelled"); map to the
+    // ClaimError shape the UI expects (a dismissed sheet reads as unauthorized).
+    throw { code: 'UNAUTHORIZED' } as ClaimError;
+  }
+  await invoke('complete_pds_auth', { callbackUrl });
+};
 
 /**
  * Request email verification for the PLC operation.

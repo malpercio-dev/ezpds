@@ -1,6 +1,6 @@
 # PDS Crate (Custos)
 
-Last verified: 2026-06-26
+Last verified: 2026-06-28
 
 ## Purpose
 
@@ -18,6 +18,7 @@ src/
   crawler.rs       — outbound requestCrawl notifier (rate-limited, retrying, fire-and-forget)
   iroh_tunnel.rs   — Iroh QUIC endpoint: NAT-traversing device↔pds tunnel (opt-in)
   record_write.rs  — shared repo write flow + firehose commit emission
+  handle.rs        — handle validation (structural + domain policy), shared by provisioning + handle routes
   auth/            — authentication primitives (no HTTP, no DB schema ownership)
   db/              — SQL query functions + migration runner (no business logic)
   routes/          — HTTP handlers, one file per endpoint
@@ -124,6 +125,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `static_assets.rs` | `GET /static/*path` — embedded brand fonts (woff2/ttf via `include_bytes!`) and future web-UI assets |
 | `create_session.rs` | `POST /xrpc/com.atproto.server.createSession` |
 | `get_session.rs` | `GET /xrpc/com.atproto.server.getSession` |
+| `get_service_auth.rs` | `GET /xrpc/com.atproto.server.getServiceAuth` — mint a short-lived ES256 inter-service auth JWT (signed by the account's repo key) for a requested `aud` service; optional `lxm` (method binding) and `exp` (absolute, ≤1h with `lxm`, ≤60s without). Shares the mint helper with `service_proxy.rs` |
 | `refresh_session.rs` | `POST /xrpc/com.atproto.server.refreshSession` |
 | `request_password_reset.rs` | `POST /xrpc/com.atproto.server.requestPasswordReset` |
 | `reset_password.rs` | `POST /xrpc/com.atproto.server.resetPassword` |

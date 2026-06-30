@@ -25,14 +25,5 @@
       "frameworks": ["SystemConfiguration"],
       "bundleVersion": "2"
     }
-  },
-  "plugins": {
-    "deep-link": {
-      "mobile": [
-        {
-          "scheme": ["dev.malpercio.identitywallet"]
-        }
-      ]
-    }
   }
 }

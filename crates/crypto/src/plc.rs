@@ -73,18 +73,61 @@ pub struct PlcService {
     pub endpoint: String,
 }
 
+/// A string-keyed map that serializes its entries in DAG-CBOR canonical key order: shortest key
+/// first, then bytewise. The PLC op structs use this for `services` and `verificationMethods`
+/// because `BTreeMap`/`ciborium` emit keys in pure bytewise order, which is NOT canonical
+/// DAG-CBOR when keys differ in length (e.g. `atproto_pds` vs `atproto_labeler`) — plc.directory
+/// would reject such an op or derive a different DID. Single-entry maps (the common case) are
+/// unaffected, so existing genesis DIDs are stable.
+#[derive(Clone)]
+struct CanonicalMap<V>(BTreeMap<String, V>);
+
+impl<V> CanonicalMap<V> {
+    fn into_inner(self) -> BTreeMap<String, V> {
+        self.0
+    }
+
+    fn get(&self, key: &str) -> Option<&V> {
+        self.0.get(key)
+    }
+}
+
+impl<V: Serialize> Serialize for CanonicalMap<V> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        // DAG-CBOR map key order: by UTF-8 byte length, then bytewise.
+        let mut entries: Vec<(&String, &V)> = self.0.iter().collect();
+        entries.sort_by(|(a, _), (b, _)| {
+            a.len()
+                .cmp(&b.len())
+                .then_with(|| a.as_bytes().cmp(b.as_bytes()))
+        });
+        let mut map = serializer.serialize_map(Some(entries.len()))?;
+        for (key, value) in entries {
+            map.serialize_entry(key, value)?;
+        }
+        map.end()
+    }
+}
+
+impl<'de, V: Deserialize<'de>> Deserialize<'de> for CanonicalMap<V> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self(BTreeMap::deserialize(deserializer)?))
+    }
+}
+
 #[derive(Serialize)]
 struct UnsignedPlcOp {
     prev: Option<String>,
     #[serde(rename = "type")]
     op_type: String,
-    services: BTreeMap<String, PlcService>,
+    services: CanonicalMap<PlcService>,
     #[serde(rename = "alsoKnownAs")]
     also_known_as: Vec<String>,
     #[serde(rename = "rotationKeys")]
     rotation_keys: Vec<String>,
     #[serde(rename = "verificationMethods")]
-    verification_methods: BTreeMap<String, String>,
+    verification_methods: CanonicalMap<String>,
 }
 
 // For SignedPlcOp key lengths (includes "sig"):
@@ -103,13 +146,13 @@ struct SignedPlcOp {
     prev: Option<String>,
     #[serde(rename = "type")]
     op_type: String,
-    services: BTreeMap<String, PlcService>,
+    services: CanonicalMap<PlcService>,
     #[serde(rename = "alsoKnownAs")]
     also_known_as: Vec<String>,
     #[serde(rename = "rotationKeys")]
     rotation_keys: Vec<String>,
     #[serde(rename = "verificationMethods")]
-    verification_methods: BTreeMap<String, String>,
+    verification_methods: CanonicalMap<String>,
 }
 
 // ── CID computation ─────────────────────────────────────────────────────────
@@ -221,6 +264,10 @@ where
             endpoint: service_endpoint.to_string(),
         },
     );
+
+    // Wrap the maps so they serialize in DAG-CBOR canonical (length-first) key order.
+    let services = CanonicalMap(services);
+    let verification_methods = CanonicalMap(verification_methods);
 
     let unsigned_op = UnsignedPlcOp {
         prev: None,
@@ -348,6 +395,10 @@ pub fn build_did_plc_rotation_op<F>(
 where
     F: FnOnce(&[u8]) -> Result<Vec<u8>, CryptoError>,
 {
+    // Wrap the maps so they serialize in DAG-CBOR canonical (length-first) key order.
+    let services = CanonicalMap(services);
+    let verification_methods = CanonicalMap(verification_methods);
+
     let unsigned_op = UnsignedPlcOp {
         prev: Some(prev_cid.to_string()),
         op_type: "plc_operation".to_string(),
@@ -521,8 +572,8 @@ pub fn verify_plc_operation(
                     prev: signed_op.prev,
                     rotation_keys: signed_op.rotation_keys,
                     also_known_as: signed_op.also_known_as,
-                    verification_methods: signed_op.verification_methods,
-                    services: signed_op.services,
+                    verification_methods: signed_op.verification_methods.into_inner(),
+                    services: signed_op.services.into_inner(),
                 });
             }
             Err(e) => {
@@ -749,7 +800,7 @@ pub fn verify_genesis_op(
         did,
         rotation_keys: signed_op.rotation_keys,
         also_known_as: signed_op.also_known_as,
-        verification_methods: signed_op.verification_methods,
+        verification_methods: signed_op.verification_methods.into_inner(),
         atproto_pds_endpoint,
     })
 }
@@ -870,6 +921,181 @@ mod tests {
         assert_eq!(
             op1.signed_op_json, op2.signed_op_json,
             "signed_op_json must be identical for same inputs"
+        );
+    }
+
+    // ── Golden / cross-implementation conformance ──────────────────────────────
+    //
+    // These pin ezpds's `ciborium` output, derived did:plc, and CIDv1 against values
+    // computed independently by `@ipld/dag-cbor` — the canonical DAG-CBOR library used by the
+    // JS atproto/plc stack. Because `did = base32(sha256(signed-op CBOR))[..24]`, a matching DID
+    // transitively proves the CBOR bytes are byte-identical to the reference: a hash cannot match
+    // unless the encodings do. Together these assert ezpds emits canonical DAG-CBOR for the
+    // genesis-op shape, so plc.directory will accept it and derive the same DID.
+    //
+    // Reference values generated with @ipld/dag-cbor for the fixed inputs below. If the genesis
+    // op shape ever changes, regenerate them rather than hand-editing.
+
+    const GOLDEN_ROTATION_KEY: &str = "did:key:zDnaeT5tHRpfWmU2y43QQv9LjMcW3oA3JGbHThVgLeC8nsZ5o";
+    const GOLDEN_SIGNING_KEY: &str = "did:key:zDnaekzKfClC8Vs9wXkz3FjQ5gQAZmuPV3F3YHc9pTbqyHGYx";
+    const GOLDEN_HANDLE: &str = "alice.ezpds.com";
+    const GOLDEN_ENDPOINT: &str = "https://pds.ezpds.com";
+    // Fixed stand-in signature: raw bytes 1..=64, base64url (no pad).
+    const GOLDEN_SIG_BASE64URL: &str =
+        "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QA";
+    const GOLDEN_UNSIGNED_CBOR_HEX: &str = "a66470726576f664747970656d706c635f6f7065726174696f6e687365727669636573a16b617470726f746f5f706473a264747970657819417470726f746f506572736f6e616c4461746153657276657268656e64706f696e747568747470733a2f2f7064732e657a7064732e636f6d6b616c736f4b6e6f776e4173817461743a2f2f616c6963652e657a7064732e636f6d6c726f746174696f6e4b6579738278396469643a6b65793a7a446e616554357448527066576d5532793433515176394c6a4d6357336f41334a476248546856674c6543386e735a356f78396469643a6b65793a7a446e61656b7a4b66436c433856733977586b7a33466a51356751415a6d7550563346335948633970546271794847597873766572696669636174696f6e4d6574686f6473a167617470726f746f78396469643a6b65793a7a446e61656b7a4b66436c433856733977586b7a33466a51356751415a6d75505633463359486339705462717948475978";
+    const GOLDEN_SIGNED_CBOR_HEX: &str = "a763736967785641514944424155474277674a4367734d4451345045424553457851564668635947526f62484230654879416849694d6b4a53596e4b436b714b7977744c6938774d54497a4e4455324e7a67354f6a73385054345f51416470726576f664747970656d706c635f6f7065726174696f6e687365727669636573a16b617470726f746f5f706473a264747970657819417470726f746f506572736f6e616c4461746153657276657268656e64706f696e747568747470733a2f2f7064732e657a7064732e636f6d6b616c736f4b6e6f776e4173817461743a2f2f616c6963652e657a7064732e636f6d6c726f746174696f6e4b6579738278396469643a6b65793a7a446e616554357448527066576d5532793433515176394c6a4d6357336f41334a476248546856674c6543386e735a356f78396469643a6b65793a7a446e61656b7a4b66436c433856733977586b7a33466a51356751415a6d7550563346335948633970546271794847597873766572696669636174696f6e4d6574686f6473a167617470726f746f78396469643a6b65793a7a446e61656b7a4b66436c433856733977586b7a33466a51356751415a6d75505633463359486339705462717948475978";
+    const GOLDEN_DID: &str = "did:plc:7exl2lz3g2kd37kmzxfp6yrz";
+    const GOLDEN_CID: &str = "bafyreihzf26s6ozwsq672tgnzl7weolwff5yskqx4hnryrdrrxvqgbbssm";
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn golden_services() -> CanonicalMap<PlcService> {
+        let mut services = BTreeMap::new();
+        services.insert(
+            "atproto_pds".to_string(),
+            PlcService {
+                service_type: "AtprotoPersonalDataServer".to_string(),
+                endpoint: GOLDEN_ENDPOINT.to_string(),
+            },
+        );
+        CanonicalMap(services)
+    }
+
+    fn golden_verification_methods() -> CanonicalMap<String> {
+        let mut vms = BTreeMap::new();
+        vms.insert("atproto".to_string(), GOLDEN_SIGNING_KEY.to_string());
+        CanonicalMap(vms)
+    }
+
+    fn golden_signed_op() -> SignedPlcOp {
+        SignedPlcOp {
+            sig: GOLDEN_SIG_BASE64URL.to_string(),
+            prev: None,
+            op_type: "plc_operation".to_string(),
+            services: golden_services(),
+            also_known_as: vec![format!("at://{GOLDEN_HANDLE}")],
+            rotation_keys: vec![
+                GOLDEN_ROTATION_KEY.to_string(),
+                GOLDEN_SIGNING_KEY.to_string(),
+            ],
+            verification_methods: golden_verification_methods(),
+        }
+    }
+
+    /// The unsigned op (the bytes that get signed) encodes byte-identically to @ipld/dag-cbor.
+    /// If this drifts, the signature would be computed over non-canonical bytes and plc.directory
+    /// would reject it.
+    #[test]
+    fn golden_unsigned_op_cbor_matches_dag_cbor_reference() {
+        let op = UnsignedPlcOp {
+            prev: None,
+            op_type: "plc_operation".to_string(),
+            services: golden_services(),
+            also_known_as: vec![format!("at://{GOLDEN_HANDLE}")],
+            rotation_keys: vec![
+                GOLDEN_ROTATION_KEY.to_string(),
+                GOLDEN_SIGNING_KEY.to_string(),
+            ],
+            verification_methods: golden_verification_methods(),
+        };
+        let mut cbor = Vec::new();
+        into_writer(&op, &mut cbor).expect("encode unsigned op");
+        assert_eq!(
+            hex(&cbor),
+            GOLDEN_UNSIGNED_CBOR_HEX,
+            "ciborium unsigned-op bytes must equal @ipld/dag-cbor canonical bytes"
+        );
+    }
+
+    /// The signed op encodes byte-identically to @ipld/dag-cbor (the bytes hashed for the DID).
+    #[test]
+    fn golden_signed_op_cbor_matches_dag_cbor_reference() {
+        let mut cbor = Vec::new();
+        into_writer(&golden_signed_op(), &mut cbor).expect("encode signed op");
+        assert_eq!(
+            hex(&cbor),
+            GOLDEN_SIGNED_CBOR_HEX,
+            "ciborium signed-op bytes must equal @ipld/dag-cbor canonical bytes"
+        );
+    }
+
+    /// The full builder derives the same did:plc as the independent reference pipeline
+    /// (@ipld/dag-cbor encode → sha256 → base32lower → first 24 chars).
+    #[test]
+    fn golden_genesis_did_matches_reference() {
+        let rotation = DidKeyUri(GOLDEN_ROTATION_KEY.to_string());
+        let signing = DidKeyUri(GOLDEN_SIGNING_KEY.to_string());
+        let op = build_did_plc_genesis_op_with_external_signer(
+            &rotation,
+            &signing,
+            GOLDEN_HANDLE,
+            GOLDEN_ENDPOINT,
+            // Fixed stand-in signature: raw bytes 1..=64.
+            |_unsigned_cbor| Ok((1u8..=64).collect()),
+        )
+        .expect("build genesis op");
+        assert_eq!(
+            op.did, GOLDEN_DID,
+            "derived did:plc must match the @ipld/dag-cbor reference"
+        );
+    }
+
+    /// `compute_cid` (used as `prev` in later ops) matches the reference CIDv1 (dag-cbor, sha-256).
+    #[test]
+    fn golden_compute_cid_matches_reference() {
+        let mut cbor = Vec::new();
+        into_writer(&golden_signed_op(), &mut cbor).expect("encode signed op");
+        assert_eq!(compute_cid(&cbor).expect("compute_cid"), GOLDEN_CID);
+    }
+
+    const GOLDEN_PREV_CID: &str = "bafyreihzf26s6ozwsq672tgnzl7weolwff5yskqx4hnryrdrrxvqgbbssm";
+    const GOLDEN_MULTISERVICE_CID: &str =
+        "bafyreiaikoz7wscl3eh7jnsnokc5ytbg6q6gtv56rbsautqjz2riufyj5i";
+
+    /// A PLC op with multiple `services` whose keys diverge under bytewise vs DAG-CBOR
+    /// length-first ordering — `atproto_pds` (len 11) vs `atproto_labeler` (len 15) — must still
+    /// encode canonically (length-first: pds before labeler). `BTreeMap`/`ciborium` would emit
+    /// them bytewise (labeler before pds), producing an op plc.directory rejects. Cross-checked
+    /// against @ipld/dag-cbor: CID = CIDv1 (dag-cbor, sha-256) of the signed op.
+    #[test]
+    fn rotation_op_with_multiple_services_encodes_canonically() {
+        let mut services = BTreeMap::new();
+        services.insert(
+            "atproto_pds".to_string(),
+            PlcService {
+                service_type: "AtprotoPersonalDataServer".to_string(),
+                endpoint: GOLDEN_ENDPOINT.to_string(),
+            },
+        );
+        services.insert(
+            "atproto_labeler".to_string(),
+            PlcService {
+                service_type: "AtprotoLabeler".to_string(),
+                endpoint: "https://labeler.ezpds.com".to_string(),
+            },
+        );
+        let mut vms = BTreeMap::new();
+        vms.insert("atproto".to_string(), GOLDEN_SIGNING_KEY.to_string());
+
+        let op = build_did_plc_rotation_op(
+            GOLDEN_PREV_CID,
+            vec![
+                GOLDEN_ROTATION_KEY.to_string(),
+                GOLDEN_SIGNING_KEY.to_string(),
+            ],
+            vms,
+            vec![format!("at://{GOLDEN_HANDLE}")],
+            services,
+            // Fixed stand-in signature: raw bytes 1..=64.
+            |_unsigned_cbor| Ok((1u8..=64).collect()),
+        )
+        .expect("build rotation op");
+        assert_eq!(
+            op.cid, GOLDEN_MULTISERVICE_CID,
+            "multi-service op must encode in canonical DAG-CBOR key order (length-first)"
         );
     }
 

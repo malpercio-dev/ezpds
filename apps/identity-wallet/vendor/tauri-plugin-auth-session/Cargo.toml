@@ -1,0 +1,56 @@
+[package]
+name = "tauri-plugin-auth-session"
+version = "0.2.2"
+description = "Tauri v2 plugin for in-app OAuth authentication on Apple and Android platforms"
+authors = ["Yanqiang Lu"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/yanqianglu/tauri-plugin-auth-session"
+edition = "2021"
+rust-version = "1.77"
+# Local addition to the vendored copy (see VENDORED.md): never publish this fork to crates.io.
+publish = false
+links = "tauri-plugin-auth-session"
+keywords = ["tauri", "tauri-plugin", "authentication", "oauth", "custom-tabs"]
+categories = ["authentication", "gui"]
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = [
+    "NSSet",
+    "NSArray",
+    "NSString",
+    "NSURL",
+    "NSError",
+] }
+objc2-authentication-services = { version = "0.3", features = [
+    "ASWebAuthenticationSession",
+    "block2",
+] }
+block2 = "0.6"
+dispatch2 = "0.3"
+tokio = { version = "1", features = ["sync"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2-ui-kit = { version = "0.3", features = [
+    "UIApplication",
+    "UIScene",
+    "UIWindowScene",
+    "UIView",
+    "UIResponder",
+    "UIWindow",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3", features = [
+    "NSApplication",
+    "NSWindow",
+    "NSResponder",
+    "NSRunningApplication",
+] }
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }

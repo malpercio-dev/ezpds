@@ -195,17 +195,13 @@ mod tests {
             "createdAt": "2026-06-22T00:00:00Z"
         });
 
-        let put_request = Request::builder()
-            .method(http::Method::POST)
-            .uri(format!(
-                "/xrpc/com.atproto.repo.putRecord?did={did}&collection=app.bsky.feed.post&rkey=roundtrip1"
-            ))
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {token}"))
-            .body(Body::from(
-                serde_json::to_string(&serde_json::json!({"record": record})).unwrap(),
-            ))
-            .unwrap();
+        let put_request = crate::routes::test_utils::put_record_request(
+            &did,
+            "app.bsky.feed.post",
+            "roundtrip1",
+            serde_json::json!({"record": record}),
+            Some(&token),
+        );
 
         let put_response = app.clone().oneshot(put_request).await.unwrap();
         assert_eq!(put_response.status(), StatusCode::OK);
@@ -243,17 +239,13 @@ mod tests {
 
         let cid = "bafyreie5cvv4h45feadgeuwhbcutmh6t2ceseocckahdoe6uat64zmz454";
         let record = serde_json::json!({ "embed": { "$link": cid } });
-        let put = Request::builder()
-            .method(http::Method::POST)
-            .uri(format!(
-                "/xrpc/com.atproto.repo.putRecord?did={did}&collection=app.bsky.feed.post&rkey=link1"
-            ))
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {token}"))
-            .body(Body::from(
-                serde_json::to_string(&serde_json::json!({ "record": record })).unwrap(),
-            ))
-            .unwrap();
+        let put = crate::routes::test_utils::put_record_request(
+            &did,
+            "app.bsky.feed.post",
+            "link1",
+            serde_json::json!({ "record": record }),
+            Some(&token),
+        );
         assert_eq!(
             app.clone().oneshot(put).await.unwrap().status(),
             StatusCode::OK
@@ -285,17 +277,13 @@ mod tests {
         rkey: &str,
         record: serde_json::Value,
     ) -> (StatusCode, serde_json::Value) {
-        let request = Request::builder()
-            .method(http::Method::POST)
-            .uri(format!(
-                "/xrpc/com.atproto.repo.putRecord?did={did}&collection=app.bsky.feed.post&rkey={rkey}"
-            ))
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {token}"))
-            .body(Body::from(
-                serde_json::to_string(&serde_json::json!({ "record": record })).unwrap(),
-            ))
-            .unwrap();
+        let request = crate::routes::test_utils::put_record_request(
+            did,
+            "app.bsky.feed.post",
+            rkey,
+            serde_json::json!({ "record": record }),
+            Some(token),
+        );
         let response = app.clone().oneshot(request).await.unwrap();
         let status = response.status();
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)

@@ -2,7 +2,7 @@
 //!
 //! All PDS API calls go through `CustosClient`. The base URL starts
 //! as compile-time configured (`http://localhost:8080` in debug builds,
-//! `https://relay.ezpds.com` in release builds) and can be overridden
+//! `https://obsign.org` in release builds) and can be overridden
 //! at runtime via AppState.
 
 use reqwest::{Client, Response};
@@ -13,13 +13,13 @@ use crate::oauth::OAuthError;
 #[cfg(debug_assertions)]
 const CUSTOS_BASE_URL: &str = "http://localhost:8080";
 #[cfg(not(debug_assertions))]
-const CUSTOS_BASE_URL: &str = "https://relay.ezpds.com";
+const CUSTOS_BASE_URL: &str = "https://obsign.org";
 
 /// Returns the compile-time default PDS base URL.
 ///
 /// Used by integration tests that need the default URL to construct expected
-/// endpoint strings. The PDS configuration UI hardcodes the same constant
-/// independently so the UI does not take a Rust→TS IPC round-trip on mount.
+/// endpoint strings. The PDS configuration UI hardcodes the same default string as its
+/// fallback, and additionally seeds the field from the saved URL (via `get_pds_url`) on mount.
 pub fn default_pds_url() -> &'static str {
     CUSTOS_BASE_URL
 }

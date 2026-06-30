@@ -122,9 +122,9 @@ jobs:
           chmod +x "$RUNNER_TEMP/arm64-shims/brew"
           echo "$RUNNER_TEMP/arm64-shims" >> "$GITHUB_PATH"
 
-      # gen/apple is gitignored — regenerate it from scratch, then re-apply the six
+      # gen/apple is gitignored — regenerate it from scratch, then re-apply the
       # pbxproj/project.yml patches (sandbox, Run Script env, entitlements,
-      # SystemConfiguration, libapp.a strip).
+      # SystemConfiguration + AuthenticationServices frameworks, libapp.a strip).
       - name: Generate the Xcode project
         working-directory: apps/identity-wallet
         run: cargo tauri ios init

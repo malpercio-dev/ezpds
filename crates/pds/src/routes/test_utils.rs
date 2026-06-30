@@ -346,6 +346,56 @@ pub async fn body_json(response: axum::response::Response) -> serde_json::Value 
     serde_json::from_slice(&bytes).unwrap()
 }
 
+/// Build a `com.atproto.repo.putRecord` POST request with `repo`/`collection`/`rkey` merged into
+/// the JSON `body` (which carries `record` and optionally `swapRecord`/`swapCommit`), per the lexicon.
+pub fn put_record_request(
+    did: &str,
+    collection: &str,
+    rkey: &str,
+    mut body: serde_json::Value,
+    token: Option<&str>,
+) -> axum::http::Request<axum::body::Body> {
+    body["repo"] = serde_json::json!(did);
+    body["collection"] = serde_json::json!(collection);
+    body["rkey"] = serde_json::json!(rkey);
+    let mut b = axum::http::Request::builder()
+        .method(axum::http::Method::POST)
+        .uri("/xrpc/com.atproto.repo.putRecord")
+        .header("Content-Type", "application/json");
+    if let Some(t) = token {
+        b = b.header("Authorization", format!("Bearer {t}"));
+    }
+    b.body(axum::body::Body::from(
+        serde_json::to_string(&body).unwrap(),
+    ))
+    .unwrap()
+}
+
+/// Build a `com.atproto.repo.deleteRecord` POST request with `repo`/`collection`/`rkey` merged into
+/// the JSON `body` (which optionally carries `swapRecord`/`swapCommit`), per the lexicon.
+pub fn delete_record_request(
+    did: &str,
+    collection: &str,
+    rkey: &str,
+    mut body: serde_json::Value,
+    token: Option<&str>,
+) -> axum::http::Request<axum::body::Body> {
+    body["repo"] = serde_json::json!(did);
+    body["collection"] = serde_json::json!(collection);
+    body["rkey"] = serde_json::json!(rkey);
+    let mut b = axum::http::Request::builder()
+        .method(axum::http::Method::POST)
+        .uri("/xrpc/com.atproto.repo.deleteRecord")
+        .header("Content-Type", "application/json");
+    if let Some(t) = token {
+        b = b.header("Authorization", format!("Bearer {t}"));
+    }
+    b.body(axum::body::Body::from(
+        serde_json::to_string(&body).unwrap(),
+    ))
+    .unwrap()
+}
+
 /// Sign `message` with a P-256 keypair's private bytes, returning the base64url-encoded
 /// r‖s (low-S normalised) signature. Shared by tests that exercise device signed-request auth.
 pub fn sign_p256(keypair: &crypto::P256Keypair, message: &[u8]) -> String {
