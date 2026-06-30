@@ -97,6 +97,23 @@ pub async fn create_handle_handler(
         );
     }
 
+    // Step 4c: Emit an `#identity` firehose frame so relays/AppViews re-resolve the account's
+    // identity promptly. Best-effort, matching the rest of the firehose emit path: the handle row
+    // and DID-doc update are already durable, so a sequencer write failure is logged and dropped
+    // (a subscriber that misses the event backfills via the DID document / getRepo).
+    if let Err(e) = state
+        .firehose
+        .emit_identity(session.did.clone(), Some(payload.handle.clone()))
+        .await
+    {
+        tracing::warn!(
+            error = %e,
+            did = %session.did,
+            handle = %payload.handle,
+            "failed to sequence #identity firehose event after handle creation (non-fatal)"
+        );
+    }
+
     // Step 5: Create DNS record if a provider is configured.
     // INSERT precedes this call: a row with no DNS record is recoverable; a DNS record
     // with no row would be an invisible orphan.
@@ -420,6 +437,50 @@ mod tests {
         let app = crate::app::app(state);
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// Creating a handle emits exactly one `#identity` firehose frame carrying the new handle,
+    /// ordered through the shared sequencer (its `seq` is one greater than the firehose frontier
+    /// before the call).
+    #[tokio::test]
+    async fn creating_a_handle_emits_one_identity_frame() {
+        let state = test_state().await;
+        let db = state.db.clone();
+        let ts = insert_account_and_session(&db).await;
+        let handle = format!("alice.{}", state.config.available_user_domains[0]);
+        // Subscribe before the request so the broadcast frame is delivered to this receiver.
+        // Hold a clone of the firehose so it is not dropped when the oneshot router is dropped
+        // (otherwise the channel closes and `try_recv` below would report `Closed`).
+        let firehose = state.firehose.clone();
+        let mut rx = firehose.subscribe();
+        let frontier = firehose.current_seq();
+
+        let app = crate::app::app(state);
+        let response = app
+            .oneshot(create_handle_request(&ts.session_token, &ts.did, &handle))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Exactly one frame is emitted, and it is an `#identity` frame with the new handle.
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .expect("identity frame was emitted")
+            .expect("receiver not closed");
+        let crate::firehose::FirehoseEvent::Identity(identity) = event else {
+            panic!("expected an #identity frame, got {event:?}");
+        };
+        assert_eq!(identity.did, ts.did);
+        assert_eq!(identity.handle.as_deref(), Some(handle.as_str()));
+        assert_eq!(
+            identity.seq,
+            frontier + 1,
+            "the identity frame must be sequenced immediately after the prior frontier"
+        );
+        // No further frame is emitted by this single-handle creation.
+        use tokio::sync::broadcast::error::TryRecvError;
+        assert_eq!(rx.try_recv().unwrap_err(), TryRecvError::Empty);
+        drop(firehose);
     }
 
     /// account_id that doesn't match the session DID returns 401.
