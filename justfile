@@ -141,6 +141,14 @@ deploy-production tag="":
     if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
       echo "✗ tag must be vX.Y.Z (got '$tag')" >&2; exit 1
     fi
+    # Only ever promote an origin-published tag. The fetch above brought origin's tags local for
+    # resolution, but the local namespace can also hold a local-only tag (auto-selected as
+    # "latest" or passed explicitly); refuse anything origin doesn't have, so an unpushed commit
+    # can never reach production. (A divergent same-name tag is additionally caught by the
+    # production-branch verify-release CI job before Railway deploys.)
+    if ! git ls-remote --exit-code --tags --refs origin "refs/tags/${tag}" >/dev/null 2>&1; then
+      echo "✗ tag ${tag} is not on origin — push it (e.g. with 'just release') before promoting" >&2; exit 1
+    fi
     if ! git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
       echo "✗ tag ${tag} does not exist locally — fetch it or cut it with 'just release'" >&2; exit 1
     fi
