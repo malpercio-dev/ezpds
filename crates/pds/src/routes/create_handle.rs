@@ -14,8 +14,12 @@
 //   2. Validate account_id matches session did (prevents acting on other accounts)
 //   3. validate_handle(handle, available_user_domains) → 400 INVALID_HANDLE on failure
 //   4. INSERT INTO handles (handle, did, created_at) → 409 HANDLE_TAKEN on UNIQUE violation
+//   4b. Update DID document alsoKnownAs (best-effort, logged not fatal)
 //   5. If state.dns_provider is Some: call create_record(name, hostname); dns_status = "propagating"
 //      If state.dns_provider is None: dns_status = "not_configured"
+//   5b. Emit `#identity` firehose frame (best-effort, non-fatal). Placed AFTER the DNS step so
+//      DNS failure (502, exits before reaching here) suppresses the frame rather than
+//      announcing a handle the route reports as not-yet-provisioned.
 //   6. Return { "handle": "...", "dns_status": "...", "did": "..." }
 //
 // Note: INSERT precedes the DNS call (step 4 before step 5) so that a DB row
@@ -120,6 +124,25 @@ pub async fn create_handle_handler(
     } else {
         "not_configured"
     };
+
+    // Step 5b: Emit an `#identity` firehose frame once the handle's externally-visible create
+    // path has completed. Placed after the DNS step so DNS failure (which returns 502 and exits
+    // this handler before reaching here) does not broadcast a handle the route has reported as
+    // not-yet-provisioned; a later successful create/retry or a subsequent commit will emit it.
+    // Best-effort, matching the rest of the firehose emit path: a sequencer write failure is
+    // logged and dropped (a subscriber that misses the event backfills via the DID document).
+    if let Err(e) = state
+        .firehose
+        .emit_identity(session.did.clone(), Some(payload.handle.clone()))
+        .await
+    {
+        tracing::warn!(
+            error = %e,
+            did = %session.did,
+            handle = %payload.handle,
+            "failed to sequence #identity firehose event after handle creation (non-fatal)"
+        );
+    }
 
     // Step 6: Return the result.
     Ok(Json(CreateHandleResponse {
@@ -308,6 +331,36 @@ mod tests {
         );
     }
 
+    /// When DNS creation fails, the route returns 502 and emits NO `#identity` frame: the
+    /// firehose emit (Step 5b) sits after the DNS step, which exits the handler on failure, so
+    /// a handle the route reports as not-yet-provisioned is never broadcast to relays.
+    #[tokio::test]
+    async fn dns_failure_emits_no_identity_frame() {
+        let state = state_with_err_dns().await;
+        let db = state.db.clone();
+        let ts = insert_account_and_session(&db).await;
+        let handle = format!("alice.{}", state.config.available_user_domains[0]);
+        // Hold a clone so the channel stays open after the oneshot router is dropped.
+        let firehose = state.firehose.clone();
+        let mut rx = firehose.subscribe();
+
+        let app = crate::app::app(state);
+        let response = app
+            .oneshot(create_handle_request(&ts.session_token, &ts.did, &handle))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+
+        // The emit is gated behind successful DNS; a 502 must not have broadcast anything.
+        use tokio::sync::broadcast::error::TryRecvError;
+        assert_eq!(
+            rx.try_recv().unwrap_err(),
+            TryRecvError::Empty,
+            "DNS failure must suppress the #identity frame"
+        );
+        drop(firehose);
+    }
+
     // ── Duplicate handle ───────────────────────────────────────────────────────
 
     /// Creating the same handle twice returns 409 HANDLE_TAKEN.
@@ -420,6 +473,50 @@ mod tests {
         let app = crate::app::app(state);
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// Creating a handle emits exactly one `#identity` firehose frame carrying the new handle,
+    /// ordered through the shared sequencer (its `seq` is one greater than the firehose frontier
+    /// before the call).
+    #[tokio::test]
+    async fn creating_a_handle_emits_one_identity_frame() {
+        let state = test_state().await;
+        let db = state.db.clone();
+        let ts = insert_account_and_session(&db).await;
+        let handle = format!("alice.{}", state.config.available_user_domains[0]);
+        // Subscribe before the request so the broadcast frame is delivered to this receiver.
+        // Hold a clone of the firehose so it is not dropped when the oneshot router is dropped
+        // (otherwise the channel closes and `try_recv` below would report `Closed`).
+        let firehose = state.firehose.clone();
+        let mut rx = firehose.subscribe();
+        let frontier = firehose.current_seq();
+
+        let app = crate::app::app(state);
+        let response = app
+            .oneshot(create_handle_request(&ts.session_token, &ts.did, &handle))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Exactly one frame is emitted, and it is an `#identity` frame with the new handle.
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .expect("identity frame was emitted")
+            .expect("receiver not closed");
+        let crate::firehose::FirehoseEvent::Identity(identity) = event else {
+            panic!("expected an #identity frame, got {event:?}");
+        };
+        assert_eq!(identity.did, ts.did);
+        assert_eq!(identity.handle.as_deref(), Some(handle.as_str()));
+        assert_eq!(
+            identity.seq,
+            frontier + 1,
+            "the identity frame must be sequenced immediately after the prior frontier"
+        );
+        // No further frame is emitted by this single-handle creation.
+        use tokio::sync::broadcast::error::TryRecvError;
+        assert_eq!(rx.try_recv().unwrap_err(), TryRecvError::Empty);
+        drop(firehose);
     }
 
     /// account_id that doesn't match the session DID returns 401.

@@ -119,6 +119,24 @@ pub async fn delete_handle_handler(
         );
     }
 
+    // Step 5b: Emit an `#identity` firehose frame so relays/AppViews re-resolve the account's
+    // identity promptly. The removed handle is no longer asserted here, so `handle` is `None`: a
+    // relay re-resolves the DID document to discover the remaining `alsoKnownAs`. Best-effort, like
+    // the rest of the firehose emit path — the handle row is already gone and the DID-doc update is
+    // durable, so a sequencer write failure is logged and dropped.
+    if let Err(e) = state
+        .firehose
+        .emit_identity(session.did.clone(), None)
+        .await
+    {
+        tracing::warn!(
+            error = %e,
+            did = %session.did,
+            handle = %handle,
+            "failed to sequence #identity firehose event after handle deletion (non-fatal)"
+        );
+    }
+
     // Step 6: Return 204 No Content.
     Ok(StatusCode::NO_CONTENT)
 }
@@ -381,5 +399,55 @@ mod tests {
         )
         .unwrap();
         assert_eq!(body["error"]["code"], "HANDLE_NOT_FOUND");
+    }
+
+    /// Deleting an owned handle emits exactly one `#identity` firehose frame (with `handle = None`,
+    /// signalling relays to re-resolve the DID document for the remaining `alsoKnownAs`), ordered
+    /// through the shared sequencer immediately after the prior frontier.
+    #[tokio::test]
+    async fn deleting_a_handle_emits_one_identity_frame() {
+        let state = test_state().await;
+        let db = state.db.clone();
+        let did = format!(
+            "did:plc:{}",
+            &Uuid::new_v4().to_string().replace('-', "")[..24]
+        );
+        let handle = format!("alice.{}", state.config.available_user_domains[0]);
+
+        seed_handle(&db, &handle, &did).await;
+        let token = insert_session(&db, &did).await;
+        // Subscribe before the request so the broadcast frame is delivered to this receiver.
+        // Hold a clone of the firehose so it is not dropped when the oneshot router is dropped
+        // (otherwise the channel closes and `try_recv` below would report `Closed`).
+        let firehose = state.firehose.clone();
+        let mut rx = firehose.subscribe();
+        let frontier = firehose.current_seq();
+
+        let app = crate::app::app(state);
+        let response = app
+            .oneshot(delete_handle_request(&token, &handle))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        // Exactly one frame is emitted, and it is an `#identity` frame with no handle asserted.
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .expect("identity frame was emitted")
+            .expect("receiver not closed");
+        let crate::firehose::FirehoseEvent::Identity(identity) = event else {
+            panic!("expected an #identity frame, got {event:?}");
+        };
+        assert_eq!(identity.did, did);
+        assert_eq!(identity.handle, None);
+        assert_eq!(
+            identity.seq,
+            frontier + 1,
+            "the identity frame must be sequenced immediately after the prior frontier"
+        );
+        // No further frame is emitted by this single-handle deletion.
+        use tokio::sync::broadcast::error::TryRecvError;
+        assert_eq!(rx.try_recv().unwrap_err(), TryRecvError::Empty);
+        drop(firehose);
     }
 }

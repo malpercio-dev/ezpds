@@ -151,12 +151,31 @@ pub struct AccountEvent {
     pub status: Option<String>,
 }
 
-/// A frame broadcast to firehose subscribers. Modelled as an enum so further frame types
-/// (e.g. `#identity`) can be added without changing the channel item type.
+/// An `#identity` firehose event: a change to an account's handle or DID document. Relays /
+/// AppViews use it to re-resolve a user's identity promptly, rather than waiting to notice via
+/// the next `#commit`. Like `#account`, it carries no repo blocks — only the (optional) new
+/// handle and a timestamp — so its wire encoding is infallible.
+#[derive(Debug, Clone)]
+pub struct IdentityEvent {
+    /// Monotonic sequence number assigned by the [`Firehose`] sequencer.
+    pub seq: u64,
+    /// RFC 3339 timestamp of emission.
+    pub time: String,
+    /// The account's DID.
+    pub did: String,
+    /// The account's current handle when known, so a relay can short-circuit re-resolution. `None`
+    /// when the new handle is unknown (e.g. a handle was removed and no canonical replacement is
+    /// asserted); the relay re-resolves the DID document to discover the current `alsoKnownAs`.
+    pub handle: Option<String>,
+}
+
+/// A frame broadcast to firehose subscribers. Modelled as an enum so further frame types can be
+/// added without changing the channel item type.
 #[derive(Debug, Clone)]
 pub enum FirehoseEvent {
     Commit(Arc<CommitEvent>),
     Account(Arc<AccountEvent>),
+    Identity(Arc<IdentityEvent>),
 }
 
 impl FirehoseEvent {
@@ -165,6 +184,7 @@ impl FirehoseEvent {
         match self {
             FirehoseEvent::Commit(c) => c.seq,
             FirehoseEvent::Account(a) => a.seq,
+            FirehoseEvent::Identity(i) => i.seq,
         }
     }
 }
@@ -522,6 +542,50 @@ impl Firehose {
         let _ = self.tx.send(event);
         Ok(seq)
     }
+
+    /// Persist, sequence, and broadcast an `#identity` event.
+    ///
+    /// Emitted whenever an account's handle or DID document changes (a handle add/remove via the
+    /// provisioning routes, a future `updateHandle` XRPC, or a PLC rotation that touches the DID
+    /// doc). `handle` is the account's current handle when known (`Some`), or `None` to signal
+    /// "identity changed; re-resolve the DID document" without asserting a specific handle (used
+    /// when a handle is removed and no canonical replacement is asserted here).
+    ///
+    /// The identity analogue of [`emit_account`]: it shares the same sequencer and durable log so
+    /// `#identity` frames are ordered relative to commits and account-status frames exactly as a
+    /// relay expects. Like `#account`, every field is a plain scalar, so its wire encoding is
+    /// infallible and needs no pre-emit CID validation.
+    pub async fn emit_identity(
+        &self,
+        did: String,
+        handle: Option<String>,
+    ) -> Result<u64, FirehoseError> {
+        let _guard = self.emit_lock.lock().await;
+        // Capture the timestamp and serialize under the lock so `time`/`sequenced_at` stay
+        // monotonic with seq order even when emits race (same critical section as `seq`).
+        let time = now_rfc3339();
+        let blob = {
+            let stored = StoredIdentityRef {
+                did: &did,
+                time: &time,
+                handle: handle.as_deref(),
+            };
+            serde_ipld_dagcbor::to_vec(&stored).map_err(|e| FirehoseError::Encode(e.to_string()))?
+        };
+        let seq = self.last_seq.load(Ordering::Acquire) + 1;
+        crate::db::firehose_seq::insert_event(&self.db, seq, &did, "identity", &blob, &time)
+            .await?;
+        self.last_seq.store(seq, Ordering::Release);
+
+        let event = FirehoseEvent::Identity(Arc::new(IdentityEvent {
+            seq,
+            time,
+            did,
+            handle,
+        }));
+        let _ = self.tx.send(event);
+        Ok(seq)
+    }
 }
 
 /// Validate that a commit's wire CIDs parse, so an un-encodable commit is rejected before it is
@@ -588,6 +652,16 @@ pub fn decode_stored_event(
                 status: s.status,
             })))
         }
+        "identity" => {
+            let s: StoredIdentityOwned = serde_ipld_dagcbor::from_slice(blob)
+                .map_err(|e| FirehoseError::Decode(e.to_string()))?;
+            Ok(FirehoseEvent::Identity(Arc::new(IdentityEvent {
+                seq,
+                time: s.time,
+                did: s.did,
+                handle: s.handle,
+            })))
+        }
         other => Err(FirehoseError::Decode(format!(
             "unknown event_type {other:?}"
         ))),
@@ -642,6 +716,19 @@ struct StoredAccountRef<'a> {
     status: Option<&'a str>,
 }
 
+/// Stored `#identity` payload (borrowed form, for encoding a live event).
+///
+/// Carries the DID, the emission `time`, and the optional `handle`. Everything needed to rebuild
+/// the wire frame for replay; no CIDs or blocks. `handle` is stored explicitly (including as
+/// `null` when `None`) so a reconstructed event is byte-identical to the original after a
+/// round-trip, independent of the wire frame's `skip_serializing_if` omission.
+#[derive(Serialize)]
+struct StoredIdentityRef<'a> {
+    did: &'a str,
+    time: &'a str,
+    handle: Option<&'a str>,
+}
+
 #[derive(Deserialize)]
 struct StoredCommitOwned {
     repo: String,
@@ -668,6 +755,14 @@ struct StoredAccountOwned {
     time: String,
     active: bool,
     status: Option<String>,
+}
+
+/// Stored `#identity` payload (owned form, decoded back out for replay).
+#[derive(Deserialize)]
+struct StoredIdentityOwned {
+    did: String,
+    time: String,
+    handle: Option<String>,
 }
 
 /// Current UTC time as an RFC 3339 / ISO-8601 string with millisecond precision.
@@ -751,7 +846,9 @@ mod tests {
         for expected in 1..=3 {
             match rx.recv().await.unwrap() {
                 FirehoseEvent::Commit(c) => assert_eq!(c.seq, expected),
-                FirehoseEvent::Account(_) => panic!("expected a #commit event"),
+                FirehoseEvent::Account(_) | FirehoseEvent::Identity(_) => {
+                    panic!("expected a #commit event")
+                }
             }
         }
     }
@@ -1126,6 +1223,86 @@ mod tests {
         assert_eq!(a.did, "did:plc:acct");
         assert!(!a.active);
         assert_eq!(a.status.as_deref(), Some("deactivated"));
+    }
+
+    #[tokio::test]
+    async fn emit_identity_shares_sequencer_and_carries_handle() {
+        let fh = test_firehose().await;
+        let mut rx = fh.subscribe();
+
+        // A commit, then an identity-with-handle, then an identity-without-handle — all share
+        // one sequence space and are delivered in seq order.
+        assert_eq!(fh.emit_commit(commit_input("did:plc:a")).await.unwrap(), 1);
+        assert_eq!(
+            fh.emit_identity(
+                "did:plc:a".to_string(),
+                Some("alice.example.com".to_string()),
+            )
+            .await
+            .unwrap(),
+            2
+        );
+        assert_eq!(
+            fh.emit_identity("did:plc:a".to_string(), None)
+                .await
+                .unwrap(),
+            3
+        );
+
+        let FirehoseEvent::Commit(_) = rx.recv().await.unwrap() else {
+            panic!("expected a commit first");
+        };
+        let FirehoseEvent::Identity(with_handle) = rx.recv().await.unwrap() else {
+            panic!("expected an #identity event");
+        };
+        assert_eq!(with_handle.seq, 2);
+        assert_eq!(with_handle.did, "did:plc:a");
+        assert_eq!(with_handle.handle.as_deref(), Some("alice.example.com"));
+        assert!(!with_handle.time.is_empty());
+
+        let FirehoseEvent::Identity(no_handle) = rx.recv().await.unwrap() else {
+            panic!("expected an #identity event");
+        };
+        assert_eq!(no_handle.seq, 3);
+        assert_eq!(no_handle.handle, None);
+    }
+
+    #[tokio::test]
+    async fn decode_stored_identity_roundtrips() {
+        let fh = test_firehose().await;
+        fh.emit_identity(
+            "did:plc:ident".to_string(),
+            Some("bob.example.com".to_string()),
+        )
+        .await
+        .unwrap();
+
+        let rows = crate::db::firehose_seq::events_in_range(&fh.db, 0, 1, 1)
+            .await
+            .unwrap();
+        assert_eq!(rows[0].event_type, "identity");
+        let event =
+            decode_stored_event(rows[0].seq as u64, &rows[0].event_type, &rows[0].event).unwrap();
+
+        let FirehoseEvent::Identity(i) = event else {
+            panic!("expected an #identity event");
+        };
+        assert_eq!(i.seq, 1);
+        assert_eq!(i.did, "did:plc:ident");
+        assert_eq!(i.handle.as_deref(), Some("bob.example.com"));
+        // `handle: None` likewise survives a persist + decode round-trip intact.
+        fh.emit_identity("did:plc:ident".to_string(), None)
+            .await
+            .unwrap();
+        let rows = crate::db::firehose_seq::events_in_range(&fh.db, 1, 2, 1)
+            .await
+            .unwrap();
+        let FirehoseEvent::Identity(i2) =
+            decode_stored_event(rows[0].seq as u64, &rows[0].event_type, &rows[0].event).unwrap()
+        else {
+            panic!("expected an #identity event");
+        };
+        assert_eq!(i2.handle, None);
     }
 
     #[tokio::test]

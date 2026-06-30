@@ -32,7 +32,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::app::AppState;
-use crate::firehose::{AccountEvent, CommitEvent, FirehoseEvent, SubscribeOutcome, Subscription};
+use crate::firehose::{
+    AccountEvent, CommitEvent, FirehoseEvent, IdentityEvent, SubscribeOutcome, Subscription,
+};
 use repo_engine::Cid;
 
 /// How often to send a keepalive Ping. Kept well under the reverse-proxy idle window (Railway's,
@@ -183,6 +185,7 @@ async fn send_event(sender: &mut SplitSink<WebSocket, Message>, event: &Firehose
             }
         },
         FirehoseEvent::Account(account) => encode_account_frame(account),
+        FirehoseEvent::Identity(identity) => encode_identity_frame(identity),
     };
     send_message(sender, Message::Binary(frame)).await
 }
@@ -322,6 +325,41 @@ fn encode_account_frame(account: &AccountEvent) -> Vec<u8> {
 
     let mut frame = serde_ipld_dagcbor::to_vec(&header).expect("#account header must encode");
     let body_bytes = serde_ipld_dagcbor::to_vec(&body).expect("#account body must encode");
+    frame.extend_from_slice(&body_bytes);
+    frame
+}
+
+/// The `#identity` message body, encoded as DAG-CBOR per com.atproto.sync.subscribeRepos.
+///
+/// Carries no CIDs or blocks — just the DID, the emission `time`, and the (optional) new handle.
+/// `handle` is omitted from the wire when `None` (the lexicon field is optional), matching how
+/// `#account` omits `status` for an active account.
+#[derive(Serialize)]
+struct IdentityBody<'a> {
+    seq: u64,
+    did: &'a str,
+    time: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    handle: Option<&'a str>,
+}
+
+/// Encode an [`IdentityEvent`] into a complete firehose frame: the `#identity` header
+/// concatenated with the DAG-CBOR body. Like `#account`, every field is a plain scalar, so
+/// encoding is infallible.
+fn encode_identity_frame(identity: &IdentityEvent) -> Vec<u8> {
+    let header = MessageHeader {
+        op: 1,
+        t: "#identity",
+    };
+    let body = IdentityBody {
+        seq: identity.seq,
+        did: &identity.did,
+        time: &identity.time,
+        handle: identity.handle.as_deref(),
+    };
+
+    let mut frame = serde_ipld_dagcbor::to_vec(&header).expect("#identity header must encode");
+    let body_bytes = serde_ipld_dagcbor::to_vec(&body).expect("#identity body must encode");
     frame.extend_from_slice(&body_bytes);
     frame
 }
@@ -698,6 +736,178 @@ mod tests {
         assert!(
             !map.contains_key("status"),
             "status must be absent when active=true (skip_serializing_if)"
+        );
+    }
+
+    // ── encode_identity_frame tests ──────────────────────────────────────────────
+
+    fn sample_identity_with_handle() -> IdentityEvent {
+        IdentityEvent {
+            seq: 9,
+            time: "2026-06-30T00:00:00.000Z".to_string(),
+            did: "did:plc:alice".to_string(),
+            handle: Some("alice.example.com".to_string()),
+        }
+    }
+
+    fn sample_identity_without_handle() -> IdentityEvent {
+        IdentityEvent {
+            seq: 10,
+            time: "2026-06-30T00:01:00.000Z".to_string(),
+            did: "did:plc:alice".to_string(),
+            handle: None,
+        }
+    }
+
+    #[test]
+    fn identity_frame_header_is_op1_identity() {
+        let frame = encode_identity_frame(&sample_identity_with_handle());
+        let (header, _) = decode_frame(&frame);
+        assert_eq!(map_get(&header, "op"), &Ipld::Integer(1));
+        assert_eq!(
+            map_get(&header, "t"),
+            &Ipld::String("#identity".to_string())
+        );
+    }
+
+    #[test]
+    fn identity_frame_with_handle_carries_all_fields() {
+        let frame = encode_identity_frame(&sample_identity_with_handle());
+        let (_, body) = decode_frame(&frame);
+
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(9));
+        assert_eq!(
+            map_get(&body, "did"),
+            &Ipld::String("did:plc:alice".to_string())
+        );
+        assert_eq!(
+            map_get(&body, "time"),
+            &Ipld::String("2026-06-30T00:00:00.000Z".to_string())
+        );
+        assert_eq!(
+            map_get(&body, "handle"),
+            &Ipld::String("alice.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn identity_frame_without_handle_omits_field() {
+        let frame = encode_identity_frame(&sample_identity_without_handle());
+        let (_, body) = decode_frame(&frame);
+
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(10));
+        let Ipld::Map(ref map) = body else {
+            panic!("body must be a map");
+        };
+        assert!(
+            !map.contains_key("handle"),
+            "handle must be absent when None (skip_serializing_if)"
+        );
+    }
+
+    #[test]
+    fn identity_frame_did_and_time_are_strings_not_links() {
+        let frame = encode_identity_frame(&sample_identity_with_handle());
+        let (_, body) = decode_frame(&frame);
+
+        match map_get(&body, "did") {
+            Ipld::String(_) => {}
+            other => panic!("did must be a plain string, got {other:?}"),
+        }
+        match map_get(&body, "time") {
+            Ipld::String(_) => {}
+            other => panic!("time must be a plain string, got {other:?}"),
+        }
+        match map_get(&body, "handle") {
+            Ipld::String(_) => {}
+            other => panic!("handle must be a plain string, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn websocket_streams_identity_event_with_correct_wire_format() {
+        let (url, firehose) = spawn_server().await;
+        let (mut ws, _resp) = connect_async(&url).await.expect("ws connect");
+        await_subscribers(&firehose, 1).await;
+
+        let seq = firehose
+            .emit_identity(
+                "did:plc:eve".to_string(),
+                Some("eve.example.com".to_string()),
+            )
+            .await
+            .expect("emit identity");
+
+        let (header, body) = decode_frame(&next_binary(&mut ws).await);
+        assert_eq!(map_get(&header, "op"), &Ipld::Integer(1));
+        assert_eq!(
+            map_get(&header, "t"),
+            &Ipld::String("#identity".to_string())
+        );
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(seq as i128));
+        assert_eq!(
+            map_get(&body, "did"),
+            &Ipld::String("did:plc:eve".to_string())
+        );
+        assert_eq!(
+            map_get(&body, "handle"),
+            &Ipld::String("eve.example.com".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_streams_identity_event_without_handle() {
+        let (url, firehose) = spawn_server().await;
+        let (mut ws, _resp) = connect_async(&url).await.expect("ws connect");
+        await_subscribers(&firehose, 1).await;
+
+        let seq = firehose
+            .emit_identity("did:plc:frank".to_string(), None)
+            .await
+            .expect("emit identity");
+
+        let (header, body) = decode_frame(&next_binary(&mut ws).await);
+        assert_eq!(
+            map_get(&header, "t"),
+            &Ipld::String("#identity".to_string())
+        );
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(seq as i128));
+        let Ipld::Map(ref map) = body else {
+            panic!("body must be a map");
+        };
+        assert!(
+            !map.contains_key("handle"),
+            "handle must be absent over the wire when None"
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_identity_event_is_replayed_by_cursor() {
+        let (url, firehose) = spawn_server().await;
+
+        // Emit an identity event before subscribing.
+        let seq = firehose
+            .emit_identity(
+                "did:plc:grace".to_string(),
+                Some("grace.example.com".to_string()),
+            )
+            .await
+            .expect("emit identity");
+
+        // Subscribe from cursor 0 (before seq 1): the identity event must be replayed.
+        let (mut ws, _resp) = connect_async(format!("{url}?cursor=0"))
+            .await
+            .expect("ws connect");
+
+        let (header, body) = decode_frame(&next_binary(&mut ws).await);
+        assert_eq!(
+            map_get(&header, "t"),
+            &Ipld::String("#identity".to_string())
+        );
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(seq as i128));
+        assert_eq!(
+            map_get(&body, "did"),
+            &Ipld::String("did:plc:grace".to_string())
         );
     }
 
