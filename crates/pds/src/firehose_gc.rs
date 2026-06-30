@@ -148,7 +148,19 @@ pub async fn run_firehose_gc(state: &AppState) -> GcStats {
                 };
             }
         };
-        let retention = chrono::Duration::seconds(retention_secs);
+        let retention = match chrono::Duration::try_seconds(retention_secs) {
+            Some(retention) => retention,
+            None => {
+                tracing::error!(
+                    value = config.log_retention_secs,
+                    "firehose GC: log_retention_secs exceeds chrono duration bounds; skipping pass"
+                );
+                return GcStats {
+                    pruned: 0,
+                    skipped: true,
+                };
+            }
+        };
         let cutoff = match chrono::Utc::now().checked_sub_signed(retention) {
             Some(cutoff) => cutoff,
             None => {
@@ -303,6 +315,25 @@ mod tests {
             crate::db::firehose_seq::max_seq(&state.db).await.unwrap(),
             5,
             "nothing pruned"
+        );
+    }
+
+    #[tokio::test]
+    async fn gc_skips_when_age_retention_exceeds_chrono_duration_bounds() {
+        let state = state_with(FirehoseConfig {
+            gc_interval_secs: 3600,
+            log_retention_secs: i64::MAX as u64,
+            log_retention_count: 0,
+        })
+        .await;
+        emit_n(&state, 3).await;
+
+        let stats = run_firehose_gc(&state).await;
+        assert!(stats.skipped);
+        assert_eq!(stats.pruned, 0);
+        assert_eq!(
+            crate::db::firehose_seq::max_seq(&state.db).await.unwrap(),
+            3
         );
     }
 
