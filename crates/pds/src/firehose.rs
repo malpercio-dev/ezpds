@@ -267,12 +267,18 @@ impl Firehose {
     /// The live receiver and the `upper` frontier are captured together under `emit_lock`, so no
     /// concurrent emit can slip an event past both the replay range and the receiver, nor advance
     /// the counter into a spurious `FutureCursor`. Replay is then read outside the lock, bounded by
-    /// `upper`, so it stays disjoint from the live stream. Events older than the (currently
-    /// unbounded) log can always be replayed; there is no in-memory buffer to age out.
+    /// `upper`, so it stays disjoint from the live stream. Events still present in the log can
+    /// always be replayed; there is no in-memory buffer to age out. The retention sweep
+    /// (`firehose_gc`) may prune a contiguous prefix below the live frontier, in which case a
+    /// cursor inside the pruned window degrades to best-effort replay (see [`read_replay`])
+    /// rather than failing closed.
     ///
     /// Returns [`FirehoseError`] if the backlog can't be assembled: a DB read failure, a stored row
-    /// that won't decode, or a gap in the `(cursor, upper]` range (which `read_replay` rejects so a
-    /// hole is never silently bridged). The caller fails the subscription closed in that case.
+    /// that won't decode, or a *mid-range* gap in the `(cursor, upper]` range (which `read_replay`
+    /// rejects so a hole is never silently bridged). A cursor that falls inside a **pruned prefix**
+    /// degrades to best-effort instead — the subscriber receives the retained suffix — because the
+    /// retention sweep only ever removes a contiguous prefix below the live frontier. The caller
+    /// fails the subscription closed only on a real error (DB/decode/mid-range gap).
     pub async fn subscribe_from(
         &self,
         cursor: Option<u64>,
@@ -298,10 +304,19 @@ impl Firehose {
     ///
     /// Pages the log in `REPLAY_BATCH` chunks and decodes each row into a [`FirehoseEvent`]. The
     /// range is a dense prefix (the sequencer advances `last_seq` only after a row is persisted),
-    /// so this enforces density per row — each `seq` must be exactly the previous plus one, and the
-    /// last must reach `upper` — and returns [`FirehoseError`] on any gap rather than silently
-    /// skipping a missing `seq`. A negative stored `seq` (which can't occur from our writer) or a
-    /// row that won't decode is likewise a hard error: replay must be exact or fail closed.
+    /// so this enforces density between **consecutive** rows — each `seq` must be exactly the
+    /// previous plus one, and the last must reach `upper` — and returns [`FirehoseError`] on any
+    /// gap rather than silently skipping a missing `seq`. A negative stored `seq` (which can't
+    /// occur from our writer) or a row that won't decode is likewise a hard error: replay must be
+    /// exact or fail closed.
+    ///
+    /// **Best-effort at the pruned prefix.** The retention sweep (`firehose_gc`) prunes a
+    /// *contiguous* prefix `seq ≤ watermark`, so the first row above a cursor that falls inside
+    /// the pruned window is the oldest retained row, not `cursor + 1`. The density check is
+    /// therefore **relaxed for the first row only**: a cursor behind the pruned window degrades to
+    /// best-effort (the subscriber receives the retained suffix) rather than failing closed. The
+    /// strict consecutive-row check still catches a *mid-range* hole (a durability bug, not a
+    /// prune) on the second row onward, and the frontier-reach check still catches a missing tail.
     async fn read_replay(
         &self,
         cursor: u64,
@@ -309,6 +324,10 @@ impl Firehose {
     ) -> Result<Vec<FirehoseEvent>, FirehoseError> {
         let mut events = Vec::new();
         let mut after = cursor;
+        // The first decoded row is allowed to start above `cursor + 1`: it may be the oldest
+        // retained row after a prefix prune, in which case best-effort replay begins there. Once
+        // the replay has a row to anchor on, every subsequent row must be exactly `prev + 1`.
+        let mut anchored = false;
         while after < upper {
             let batch =
                 crate::db::firehose_seq::events_in_range(&self.db, after, upper, REPLAY_BATCH)
@@ -321,12 +340,13 @@ impl Firehose {
                 let seq = u64::try_from(row.seq).map_err(|_| {
                     FirehoseError::Decode(format!("negative stored firehose seq {}", row.seq))
                 })?;
-                if seq != after + 1 {
+                if anchored && seq != after + 1 {
                     return Err(FirehoseError::Decode(format!(
                         "firehose replay gap: expected seq {}, found {seq}",
                         after + 1
                     )));
                 }
+                anchored = true;
                 after = seq;
                 events.push(decode_stored_event(seq, &row.event_type, &row.event)?);
             }
@@ -860,7 +880,43 @@ mod tests {
                 fh.subscribe_from(Some(0)).await,
                 Err(FirehoseError::Decode(_))
             ),
-            "a gap in the durable replay range must fail closed, not silently skip the missing seq"
+            "a mid-range gap in the durable replay range must fail closed, not silently skip the missing seq"
+        );
+    }
+
+    #[tokio::test]
+    async fn subscribe_from_degrades_to_best_effort_after_pruned_prefix() {
+        let fh = test_firehose().await;
+        for _ in 0..5 {
+            fh.emit_commit(commit_input("did:plc:a")).await.unwrap(); // seq 1..=5
+        }
+
+        // Simulate a retention sweep that pruned a contiguous prefix (seq 1 and 2) but kept the
+        // dense suffix 3..=5 including the frontier.
+        sqlx::query("DELETE FROM repo_seq WHERE seq <= 2")
+            .execute(&fh.db)
+            .await
+            .unwrap();
+
+        // A cursor inside the pruned window must NOT fail closed: it degrades to best-effort and
+        // replays the retained suffix. seq 1..2 are gone (best-effort), 3..=5 are delivered.
+        let SubscribeOutcome::Subscribed(sub) = fh.subscribe_from(Some(0)).await.unwrap() else {
+            panic!("cursor 0 below the pruned window must degrade, not fail");
+        };
+        let seqs: Vec<u64> = sub.replay.iter().map(|e| e.seq()).collect();
+        assert_eq!(
+            seqs,
+            vec![3, 4, 5],
+            "best-effort replays the retained suffix"
+        );
+
+        // A cursor inside the retained window replays normally (dense from cursor+1).
+        let SubscribeOutcome::Subscribed(sub) = fh.subscribe_from(Some(3)).await.unwrap() else {
+            panic!("cursor 3 is inside the retained window");
+        };
+        assert_eq!(
+            sub.replay.iter().map(|e| e.seq()).collect::<Vec<_>>(),
+            vec![4, 5]
         );
     }
 

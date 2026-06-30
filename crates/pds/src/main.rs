@@ -13,6 +13,7 @@ mod crawler;
 mod db;
 mod dns;
 mod firehose;
+mod firehose_gc;
 mod handle;
 mod iroh_tunnel;
 mod record_write;
@@ -249,6 +250,19 @@ async fn run() -> anyhow::Result<()> {
     tracing::info!(
         interval_secs = state.config.blobs.gc_interval_secs,
         "blob garbage collector started"
+    );
+
+    // Spawn the periodic `repo_seq` firehose event-log retention sweep. It prunes old firehose
+    // events below the configured age/count watermark so the durable log backing
+    // `subscribeRepos` cursor replay does not grow without bound; it is best-effort and runs for
+    // the life of the process, so the handle is dropped on shutdown rather than joined.
+    let fh_gc_interval = std::time::Duration::from_secs(state.config.firehose.gc_interval_secs);
+    let _firehose_gc = firehose_gc::spawn_firehose_gc(state.clone(), fh_gc_interval);
+    tracing::info!(
+        interval_secs = state.config.firehose.gc_interval_secs,
+        retention_secs = state.config.firehose.log_retention_secs,
+        retention_count = state.config.firehose.log_retention_count,
+        "firehose repo_seq retention sweep started"
     );
 
     // Spawn the Iroh accept loop when the tunnel is enabled. Like the blob GC it is detached
