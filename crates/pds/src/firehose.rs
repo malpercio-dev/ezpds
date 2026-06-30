@@ -318,7 +318,11 @@ impl Firehose {
     /// prefix, so replay degrades to best-effort (the subscriber receives the retained suffix)
     /// rather than failing closed. When a row *does* exist at or below the cursor, replay is
     /// dense from the cursor and any jump on the first row is a mid-range gap that fails closed.
-    /// The strict consecutive-row check still catches a *mid-range* hole (a durability bug, not a
+    /// The `anchored` decision is made lazily — at the moment a gap is first observed — by
+    /// re-checking `exists_at_or_below(cursor)` against the same log state the batch was read
+    /// from, so a concurrent sweep cannot flip the cursor row between the decision and the batch
+    /// read (no TOCTOU). The strict consecutive-row check still catches a *mid-range* hole (a
+    /// durability bug, not a
     /// prune) on the second row onward, and the frontier-reach check still catches a missing tail.
     async fn read_replay(
         &self,
@@ -327,12 +331,15 @@ impl Firehose {
     ) -> Result<Vec<FirehoseEvent>, FirehoseError> {
         let mut events = Vec::new();
         let mut after = cursor;
-        // Best-effort replay at the pruned prefix: the first decoded row may start above
-        // `cursor + 1` *only* when the cursor sits below the oldest retained row — i.e. there is
-        // no row at or below the cursor, so the gap is a pruned prefix, not a mid-range hole. If
-        // a row already exists at/below the cursor, replay is dense from the cursor and any jump
-        // on the first row is a real gap that must fail closed.
-        let mut anchored = crate::db::firehose_seq::exists_at_or_below(&self.db, cursor).await?;
+        // `anchored` means replay has at least one row to be dense from. It starts false, so the
+        // first decoded row is allowed to start above `cursor + 1` — but only if that gap is a
+        // genuine *pruned prefix* (no row at/below the cursor), not a mid-range hole. We decide
+        // that LAZILY, at the moment a gap is first observed, by re-checking
+        // `exists_at_or_below(cursor)` against the same log state the batch was read from. This
+        // avoids the TOCTOU of deciding `anchored` up-front (a concurrent sweep could prune the
+        // cursor row between an early decision and the first batch read). Once replay has a row
+        // to anchor on, every subsequent row must be exactly `prev + 1`.
+        let mut anchored = false;
         while after < upper {
             let batch =
                 crate::db::firehose_seq::events_in_range(&self.db, after, upper, REPLAY_BATCH)
@@ -345,11 +352,31 @@ impl Firehose {
                 let seq = u64::try_from(row.seq).map_err(|_| {
                     FirehoseError::Decode(format!("negative stored firehose seq {}", row.seq))
                 })?;
-                if anchored && seq != after + 1 {
-                    return Err(FirehoseError::Decode(format!(
-                        "firehose replay gap: expected seq {}, found {seq}",
-                        after + 1
-                    )));
+                if seq != after + 1 {
+                    // A gap. If we've already anchored, this is a mid-range hole — fail closed.
+                    if anchored {
+                        return Err(FirehoseError::Decode(format!(
+                            "firehose replay gap: expected seq {}, found {seq}",
+                            after + 1
+                        )));
+                    }
+                    // First-row gap: decide pruned-prefix vs mid-range hole from the SAME log
+                    // state as this batch (lazy re-check, no TOCTOU). If the cursor still has a
+                    // retained row, the gap is a real mid-range hole → fail closed. If the cursor
+                    // row is gone, a sweep pruned the prefix → degrade to best-effort from here.
+                    let cursor_present =
+                        crate::db::firehose_seq::exists_at_or_below(&self.db, cursor).await?;
+                    if cursor_present {
+                        return Err(FirehoseError::Decode(format!(
+                            "firehose replay gap: expected seq {}, found {seq}",
+                            after + 1
+                        )));
+                    }
+                    // Pruned prefix: best-effort. Anchor here and continue dense from this row.
+                    anchored = true;
+                    after = seq;
+                    events.push(decode_stored_event(seq, &row.event_type, &row.event)?);
+                    continue;
                 }
                 anchored = true;
                 after = seq;

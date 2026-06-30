@@ -356,15 +356,17 @@ mod tests {
 
     #[tokio::test]
     async fn gc_age_prunes_rows_older_than_the_window() {
+        // Use a wide (1-day) window so the just-emitted rows are deterministically inside it; a
+        // tiny `1s` window would make the "nothing old enough yet" assertion flaky on a slow run.
         let state = state_with(FirehoseConfig {
             gc_interval_secs: 3600,
-            log_retention_secs: 1, // 1 second retention
+            log_retention_secs: 86_400, // 1 day
             log_retention_count: 0,
         })
         .await;
         emit_n(&state, 5).await; // seq 1..=5, all at ~now
 
-        // Everything was just emitted, so nothing is older than 1s yet.
+        // Everything was just emitted, so nothing is older than 1 day yet.
         let stats = run_firehose_gc(&state).await;
         assert!(stats.skipped, "nothing is old enough yet");
         assert_eq!(stats.pruned, 0);
@@ -390,9 +392,11 @@ mod tests {
         // Union semantics: a young backlog that exceeds the count limit must be pruned by count,
         // even though age retains every row (nothing is old enough to prune by age). With the
         // old intersection rule count would have been suppressed by age and the log stayed huge.
+        // A wide (1-day) age window keeps these rows deterministically young so the count branch
+        // is what fires; a `1s` window would make the test flaky if the run drifted past 1s.
         let state = state_with(FirehoseConfig {
             gc_interval_secs: 3600,
-            log_retention_secs: 1, // 1s — but nothing has aged past it yet
+            log_retention_secs: 86_400, // 1 day — nothing has aged past it
             log_retention_count: 3,
         })
         .await;
