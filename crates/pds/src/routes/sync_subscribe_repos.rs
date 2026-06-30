@@ -75,8 +75,8 @@ async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) 
         SubscribeOutcome::FutureCursor { .. } => {
             // A cursor ahead of everything we've emitted is a client error: refuse and close.
             let frame = encode_error_frame("FutureCursor", "cursor is in the future");
-            let _ = sender.send(Message::Binary(frame)).await;
-            let _ = sender.close().await;
+            let _ = send_message(&mut sender, Message::Binary(frame)).await;
+            let _ = tokio::time::timeout(READ_TIMEOUT, sender.close()).await;
             return;
         }
     };
@@ -120,8 +120,8 @@ async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) 
                         "ConsumerTooSlow",
                         "consumer fell too far behind the firehose; reconnect with your last cursor",
                     );
-                    let _ = sender.send(Message::Binary(frame)).await;
-                    let _ = sender.close().await;
+                    let _ = send_message(&mut sender, Message::Binary(frame)).await;
+                    let _ = tokio::time::timeout(READ_TIMEOUT, sender.close()).await;
                     break;
                 }
                 Err(RecvError::Closed) => break,
@@ -133,7 +133,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) 
                 if last_seen.elapsed() >= READ_TIMEOUT {
                     break;
                 }
-                if sender.send(Message::Ping(Vec::new())).await.is_err() {
+                if !send_message(&mut sender, Message::Ping(Vec::new())).await {
                     break;
                 }
             }
@@ -168,7 +168,20 @@ async fn send_event(sender: &mut SplitSink<WebSocket, Message>, event: &Firehose
         // `#account` frames are fixed-shape (no CIDs or CAR blocks), so encoding cannot fail.
         FirehoseEvent::Account(account) => encode_account_frame(account),
     };
-    sender.send(Message::Binary(frame)).await.is_ok()
+    send_message(sender, Message::Binary(frame)).await
+}
+
+/// Send one WebSocket message, bounding the write on [`READ_TIMEOUT`]. A peer that has stopped
+/// reading (a full TCP receive window / half-open socket) leaves `sender.send(...)` pending
+/// indefinitely; awaited bare inside the `select!`, that single write would park the whole
+/// connection and starve the heartbeat tick that enforces the read deadline. The timeout caps
+/// any such stall so liveness is preserved during both replay and live streaming. Returns
+/// `false` on send failure or timeout (the caller should stop).
+async fn send_message(sender: &mut SplitSink<WebSocket, Message>, message: Message) -> bool {
+    matches!(
+        tokio::time::timeout(READ_TIMEOUT, sender.send(message)).await,
+        Ok(Ok(()))
+    )
 }
 
 /// DAG-CBOR header for a message frame: `{op, t}`.
