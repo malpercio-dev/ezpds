@@ -1,12 +1,134 @@
 ---
 name: Admin Companion
 description: A precision operator console for an ezpds relay — brass on cool steel, dark-first, monospace-forward.
-# SEED: re-run /impeccable document (scan mode) once the Tauri app has code, to extract the
-# real tokens, finalize fonts, and generate the .impeccable/design.json sidecar. Component
-# tokens and exact ramps below are starting points, not final.
-# Colors are OKLCH-canonical (forked from the Obsign token architecture). Exact ramps and
-# component tokens land on the scan-mode re-run once there's code. Seed frontmatter is name +
-# description only by design; the anchor values live in the Colors section below.
+# Tokens are OKLCH-canonical (forked from the Obsign architecture). Some sit outside the
+# sRGB gamut by design, so Stitch's hex linter will warn — that is expected. The live source
+# of truth is src/lib/styles/tokens.css; tonal ramps, shadows, motion, and full component
+# HTML/CSS snippets live in the .impeccable/design.json sidecar.
+colors:
+  primary: "oklch(0.72 0.12 80)"
+  primary-hover: "oklch(0.78 0.13 82)"
+  primary-deep: "oklch(0.70 0.13 78)"
+  on-primary: "oklch(0.16 0.012 250)"
+  on-color: "oklch(0.96 0.006 250)"
+  bg: "oklch(0.18 0.012 250)"
+  surface: "oklch(0.22 0.014 250)"
+  surface-raised: "oklch(0.26 0.015 250)"
+  line: "oklch(0.34 0.012 250)"
+  border-strong: "oklch(0.52 0.012 250)"
+  ink: "oklch(0.95 0.006 250)"
+  ink-soft: "oklch(0.82 0.008 250)"
+  muted: "oklch(0.73 0.010 250)"
+  safe: "oklch(0.82 0.10 150)"
+  safe-surface: "oklch(0.26 0.04 150)"
+  warning: "oklch(0.82 0.10 50)"
+  warning-surface: "oklch(0.26 0.04 50)"
+  critical: "oklch(0.82 0.10 25)"
+  critical-surface: "oklch(0.26 0.04 25)"
+  critical-solid: "oklch(0.44 0.16 25)"
+  info: "oklch(0.82 0.10 240)"
+  info-surface: "oklch(0.26 0.04 240)"
+typography:
+  display:
+    fontFamily: "JetBrains Mono, ui-monospace, 'SF Mono', Menlo, monospace"
+    fontSize: "1.625rem"
+    fontWeight: 400
+    lineHeight: 1.2
+    letterSpacing: "0.02em"
+  headline:
+    fontFamily: "system-ui, -apple-system, 'Helvetica Neue', sans-serif"
+    fontSize: "1.375rem"
+    fontWeight: 600
+    lineHeight: 1.25
+    letterSpacing: "normal"
+  title:
+    fontFamily: "system-ui, -apple-system, 'Helvetica Neue', sans-serif"
+    fontSize: "1.125rem"
+    fontWeight: 600
+    lineHeight: 1.35
+    letterSpacing: "normal"
+  body:
+    fontFamily: "system-ui, -apple-system, 'Helvetica Neue', sans-serif"
+    fontSize: "1rem"
+    fontWeight: 400
+    lineHeight: 1.6
+    letterSpacing: "normal"
+  label:
+    fontFamily: "system-ui, -apple-system, 'Helvetica Neue', sans-serif"
+    fontSize: "0.8125rem"
+    fontWeight: 500
+    lineHeight: 1.3
+    letterSpacing: "0.01em"
+  data:
+    fontFamily: "JetBrains Mono, ui-monospace, 'SF Mono', Menlo, monospace"
+    fontSize: "0.875rem"
+    fontWeight: 400
+    lineHeight: 1.55
+    letterSpacing: "normal"
+rounded:
+  sm: "4px"
+  md: "6px"
+  lg: "10px"
+  xl: "14px"
+  full: "9999px"
+spacing:
+  "2xs": "2px"
+  xs: "4px"
+  sm: "8px"
+  md: "16px"
+  lg: "24px"
+  xl: "32px"
+  "2xl": "48px"
+components:
+  button-primary:
+    backgroundColor: "{colors.primary}"
+    textColor: "{colors.on-primary}"
+    typography: "{typography.body}"
+    rounded: "{rounded.md}"
+    padding: "8px 16px"
+    height: "44px"
+  button-primary-hover:
+    backgroundColor: "{colors.primary-hover}"
+  button-primary-active:
+    backgroundColor: "{colors.primary-deep}"
+  button-secondary:
+    backgroundColor: "{colors.surface}"
+    textColor: "{colors.ink}"
+    typography: "{typography.body}"
+    rounded: "{rounded.md}"
+    padding: "8px 16px"
+    height: "44px"
+  button-destructive:
+    backgroundColor: "{colors.critical-solid}"
+    textColor: "{colors.on-color}"
+    typography: "{typography.body}"
+    rounded: "{rounded.md}"
+    padding: "8px 16px"
+    height: "44px"
+  status-chip:
+    backgroundColor: "{colors.safe-surface}"
+    textColor: "{colors.safe}"
+    typography: "{typography.label}"
+    rounded: "{rounded.sm}"
+    padding: "4px 8px"
+  code-surface:
+    backgroundColor: "{colors.surface-raised}"
+    textColor: "{colors.ink}"
+    typography: "{typography.data}"
+    rounded: "{rounded.md}"
+    padding: "8px 16px"
+  text-field:
+    backgroundColor: "{colors.surface-raised}"
+    textColor: "{colors.ink}"
+    typography: "{typography.data}"
+    rounded: "{rounded.md}"
+    padding: "8px 16px"
+    height: "44px"
+  toggle-track-on:
+    backgroundColor: "{colors.primary}"
+    rounded: "{rounded.full}"
+    width: "40px"
+    height: "24px"
 ---
 
 # Design System: Admin Companion
@@ -108,9 +230,10 @@ in every state at the `/preview` route. No hardcoded hex/px — every value is a
 - **Focus-visible** — a 2px gold ring with offset on every interactive element (global, in `base.css`); never removed (visible focus is a security feature here).
 
 Every text-on-surface and text-on-color pairing these compose is verified WCAG 2.2 AAA
-(see the contrast note in `tokens.css`). Next design step: assemble these into the Phase 8
-operator screens (Pair, Home, Settings, error/recovery states); then re-run
-`/impeccable document` in scan mode to emit the `.impeccable/design.json` sidecar.
+(see the contrast note in `tokens.css`). These primitives are assembled into the operator
+screens — Pair, Home, Settings, and the error/recovery states. The machine-readable token
+layer lives in this file's frontmatter and the `.impeccable/design.json` sidecar (tonal
+ramps, shadows, motion, and the full component HTML/CSS the live panel renders).
 
 ## 6. Do's and Don'ts
 
