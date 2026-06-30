@@ -111,7 +111,7 @@ and async query functions; no business logic lives here.
 | `oauth.rs` | OAuth client lookup, auth code storage, token management |
 | `password_reset.rs` | `insert_reset_token`, `get_reset_token`, `mark_reset_token_used`, `update_password_hash` |
 | `preferences.rs` | `get_preferences` (DID→stored `app.bsky` preferences JSON blob); `put_preferences` (upsert the blob, overwriting any previous value) |
-| `transfers.rs` | Planned device-swap sessions (V027): `insert_transfer` opens a `pending` transfer for a DID, sweeping any expired active row first then letting the partial unique indexes reject a still-active duplicate (→ `DuplicateActive`, the 409 path) or an already-taken active code (→ `CodeCollision`, caller regenerates and retries). Wired by `routes/transfer_initiate.rs` |
+| `transfers.rs` | Planned device-swap sessions (V027/V029): `insert_transfer` opens a `pending` transfer for a DID, sweeping any expired active row first then letting the partial unique indexes reject a still-active duplicate (→ `DuplicateActive`, the 409 path) or an already-taken active code (→ `CodeCollision`, caller regenerates and retries). `accept_transfer` accepts an unexpired pending code and atomically stores promoted-device credentials in `transfer_devices`; `transfer_device_token_exists` lets device-token auth accept those credentials. Wired by `routes/transfer_initiate.rs` and `routes/transfer_accept.rs` |
 | `firehose_seq.rs` | Persistent firehose event log (V028): `max_seq` (seed the sequencer on boot), `insert_event` (append one sequenced `#commit`/`#account` row with an explicit `seq`), `events_in_range(after, upper, limit)` (the cursor-replay page query). Consumed by `firehose.rs` (persist-before-broadcast) and `routes/sync_subscribe_repos.rs` (replay paging) |
 | `admin_devices.rs` | Operator companion app admin-device model (V025): pairing-code mint/consume (single-use), device insert/get/list/revoke (derived active status) + `touch_last_seen` (liveness bump on auth), nonce insert-if-absent + stale-nonce sweep (anti-replay). Pairing/register wired by `routes/admin_devices.rs`; the `require_admin` signed-request guard (`routes/auth.rs`) consumes `get_device`/`insert_nonce_if_absent`/`touch_last_seen`; the list/revoke routes (`routes/admin_devices.rs`) consume `list_devices`/`revoke_device`/`get_device` |
 
@@ -153,6 +153,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `create_signing_key.rs` | `POST /v1/pds/keys` (deprecated alias: `POST /v1/relay/keys`) |
 | `register_device.rs` | `POST /v1/devices` |
 | `transfer_initiate.rs` | `POST /v1/transfer/initiate` — open a planned device-swap session (source-device session token → DID); mints a 6-char code + `pending` transfer, one active per account (409 otherwise) |
+| `transfer_accept.rs` | `POST /v1/transfer/accept` — accept a planned device-swap code from the new device; no bearer auth (code is the credential); registers promoted-device credentials and advances the transfer to `accepted` atomically |
 | `get_device_pds.rs` | `GET /v1/devices/:id/pds` |
 | `describe_server.rs` | `GET /xrpc/com.atproto.server.describeServer` |
 | `describe_repo.rs` | `GET /xrpc/com.atproto.repo.describeRepo` |

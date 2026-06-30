@@ -1,8 +1,9 @@
 // pattern: Imperative Shell
 //
-// Query functions for the V027 `transfers` table — planned device-swap sessions.
-// One active transfer per account is enforced by the partial unique index
-// `idx_transfers_active_did`; see V027__transfers.sql for the schema rationale.
+// Query functions for the V027 `transfers` table and V029 transfer-accepted
+// device credentials — planned device-swap sessions. One active transfer per
+// account is enforced by the partial unique index `idx_transfers_active_did`;
+// see V027__transfers.sql for the schema rationale.
 
 use sqlx::SqlitePool;
 
@@ -89,6 +90,120 @@ pub async fn insert_transfer(
         },
         Err(e) => Err(e),
     }
+}
+
+/// Outcome of accepting a transfer code from the new device.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AcceptOutcome {
+    /// The code was valid and the new device credentials were durably registered.
+    Accepted { transfer_id: String },
+    /// No pending, unexpired transfer matches this code.
+    InvalidOrExpired,
+    /// The code belongs to a transfer that has already advanced past `pending`.
+    NotPending,
+}
+
+/// Accept a pending transfer code and atomically register the new device credentials.
+///
+/// The code is a bearer credential, so acceptance is a single transaction: stale pending
+/// rows for this code are first swept to `expired`, then the still-pending row is locked by
+/// the write transaction, the new device token hash is stored, and the transfer advances to
+/// `accepted`. A second accept attempt observes `accepted` and does not mint another device.
+pub async fn accept_transfer(
+    db: &SqlitePool,
+    code: &str,
+    device_id: &str,
+    platform: &str,
+    public_key: &str,
+    device_token_hash: &str,
+) -> Result<AcceptOutcome, sqlx::Error> {
+    let mut tx = db.begin().await?;
+
+    // Materialise expiry before lookup so an expired code is indistinguishable from an
+    // unknown code to the caller and the active-code partial index slot is released.
+    sqlx::query(
+        "UPDATE transfers SET status = 'expired' \
+         WHERE code = ? AND status = 'pending' AND expires_at <= datetime('now')",
+    )
+    .bind(code)
+    .execute(&mut *tx)
+    .await?;
+
+    let row: Option<(String, String, String)> = sqlx::query_as(
+        "SELECT id, did, status FROM transfers \
+         WHERE code = ? AND status IN ('pending', 'accepted', 'completing')",
+    )
+    .bind(code)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let Some((transfer_id, did, status)) = row else {
+        tx.commit().await?;
+        return Ok(AcceptOutcome::InvalidOrExpired);
+    };
+
+    if status != "pending" {
+        tx.commit().await?;
+        return Ok(AcceptOutcome::NotPending);
+    }
+
+    sqlx::query(
+        "INSERT INTO transfer_devices \
+         (id, did, platform, public_key, device_token_hash, created_at, last_seen_at) \
+         VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+    )
+    .bind(device_id)
+    .bind(&did)
+    .bind(platform)
+    .bind(public_key)
+    .bind(device_token_hash)
+    .execute(&mut *tx)
+    .await?;
+
+    let updated = sqlx::query(
+        "UPDATE transfers \
+         SET status = 'accepted', accepted_device_id = ?, accepted_at = datetime('now') \
+         WHERE id = ? AND status = 'pending' AND expires_at > datetime('now')",
+    )
+    .bind(device_id)
+    .bind(&transfer_id)
+    .execute(&mut *tx)
+    .await?;
+
+    if updated.rows_affected() != 1 {
+        sqlx::query("DELETE FROM transfer_devices WHERE id = ?")
+            .bind(device_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "UPDATE transfers SET status = 'expired' \
+             WHERE id = ? AND status = 'pending' AND expires_at <= datetime('now')",
+        )
+        .bind(&transfer_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        return Ok(AcceptOutcome::InvalidOrExpired);
+    }
+
+    tx.commit().await?;
+    Ok(AcceptOutcome::Accepted { transfer_id })
+}
+
+/// Check whether a promoted-account transfer device matches the supplied token hash.
+pub async fn transfer_device_token_exists(
+    db: &SqlitePool,
+    device_id: &str,
+    token_hash: &str,
+) -> Result<bool, sqlx::Error> {
+    let found: Option<(String,)> =
+        sqlx::query_as("SELECT id FROM transfer_devices WHERE id = ? AND device_token_hash = ?")
+            .bind(device_id)
+            .bind(token_hash)
+            .fetch_optional(db)
+            .await?;
+
+    Ok(found.is_some())
 }
 
 #[cfg(test)]

@@ -1,0 +1,41 @@
+meta {
+  name: Transfer Accept
+  type: http
+  seq: 56
+}
+
+post {
+  url: {{baseUrl}}/v1/transfer/accept
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "transferCode": "{{transferCode}}",
+    "devicePublicKey": "{{devicePublicKey}}",
+    "platform": "ios"
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  transferCode: ABC123
+  devicePublicKey: dGVzdC1rZXk=
+}
+
+docs {
+  Accept a planned device-swap transfer from the new device. The transfer code
+  serves as the auth credential; no Authorization header is required.
+
+  Request body: `{ transferCode, devicePublicKey, platform }` where platform is
+  one of `ios`, `android`, `macos`, `linux`, or `windows`.
+
+  Returns `{ transferId, status: "accepted", deviceId, deviceToken }`. The
+  returned device token is shown once and can authenticate device PDS discovery
+  at `GET /v1/devices/:id/pds`.
+}

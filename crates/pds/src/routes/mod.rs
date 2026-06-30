@@ -54,6 +54,7 @@ pub mod sync_get_latest_commit;
 pub mod sync_get_record;
 pub mod sync_get_repo_status;
 pub mod sync_subscribe_repos;
+pub mod transfer_accept;
 pub mod transfer_initiate;
 pub mod upload_blob;
 

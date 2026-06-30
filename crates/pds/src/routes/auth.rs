@@ -474,12 +474,24 @@ pub async fn require_device_token(
                 ApiError::new(ErrorCode::InternalError, "device lookup failed")
             })?;
 
-    if found.is_none() {
+    if found.is_some() {
+        return Ok(());
+    }
+
+    let transfer_device_found =
+        crate::db::transfers::transfer_device_token_exists(db, device_id, &token_hash)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "failed to query transfer device token");
+                ApiError::new(ErrorCode::InternalError, "device lookup failed")
+            })?;
+
+    if !transfer_device_found {
         tracing::debug!(device_id = %device_id, "no device matched id+token_hash");
     }
 
-    found
-        .map(|_| ())
+    transfer_device_found
+        .then_some(())
         .ok_or_else(|| ApiError::new(ErrorCode::Unauthorized, "invalid device token"))
 }
 
