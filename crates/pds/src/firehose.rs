@@ -354,13 +354,21 @@ impl Firehose {
 
     /// Persist, sequence, and broadcast a `#commit` event.
     ///
-    /// Returns the assigned sequence number. The event is written to `repo_seq` (durable) *before*
-    /// it is broadcast, all under `emit_lock`, so live subscribers only ever see already-persisted
-    /// events and the log stays dense. An emit with no live subscribers still consumes its `seq`
-    /// and persists, keeping the sequence contiguous. Returns [`FirehoseError`] if encoding or the
-    /// DB write fails — the counter is *not* advanced in that case, so the number is retried by the
-    /// next emit (no hole).
+    /// The commit's wire CIDs (the root and each op `cid`) are validated *before* the row is
+    /// persisted, so an un-encodable commit is rejected here rather than entering the durable log as
+    /// a replay poison pill — a row that decodes but later fails to wire-encode, closing every
+    /// subscriber that reconnects across it. The event is then written to `repo_seq` (durable)
+    /// *before* it is broadcast, all under `emit_lock`, so live subscribers only ever see
+    /// already-persisted events and the log stays dense. An emit with no live subscribers still
+    /// consumes its `seq` and persists, keeping the sequence contiguous. Returns [`FirehoseError`]
+    /// if validation, encoding, or the DB write fails — the counter is *not* advanced in that case,
+    /// so the number is retried by the next emit (no hole).
     pub async fn emit_commit(&self, input: CommitInput) -> Result<u64, FirehoseError> {
+        // Reject a commit whose wire frame couldn't be encoded *before* it enters the durable log.
+        // Frame encoding is infallible except for CID parsing, so validating the root + op CIDs is
+        // equivalent to "this commit will encode" without building the full frame here.
+        validate_commit_cids(&input)?;
+
         let _guard = self.emit_lock.lock().await;
         // Capture the timestamp and serialize the storable form *under the lock*, in the same
         // critical section as `seq` assignment, so the stored `time`/`sequenced_at` stay monotonic
@@ -438,6 +446,22 @@ impl Firehose {
         let _ = self.tx.send(event);
         Ok(seq)
     }
+}
+
+/// Validate that a commit's wire CIDs parse, so an un-encodable commit is rejected before it is
+/// persisted (rather than poisoning replay). Mirrors the CID parsing the `#commit` frame encoder
+/// does — the only fallible part of encoding it; the rest (DAG-CBOR of scalars/bytes) cannot fail.
+fn validate_commit_cids(input: &CommitInput) -> Result<(), FirehoseError> {
+    repo_engine::Cid::try_from(input.commit.as_str()).map_err(|e| {
+        FirehoseError::Encode(format!("invalid commit CID {:?}: {e}", input.commit))
+    })?;
+    for op in &input.ops {
+        if let Some(cid) = &op.cid {
+            repo_engine::Cid::try_from(cid.as_str())
+                .map_err(|e| FirehoseError::Encode(format!("invalid op CID {cid:?}: {e}")))?;
+        }
+    }
+    Ok(())
 }
 
 /// Reconstruct a [`FirehoseEvent`] from a persisted `repo_seq` row, for cursor replay.
@@ -597,17 +621,21 @@ mod tests {
             .expect("firehose")
     }
 
+    /// A valid CIDv1 (dag-cbor, sha2-256) — `emit_commit` now validates wire CIDs before
+    /// persisting, so test commits must carry real CIDs rather than placeholder strings.
+    const VALID_CID: &str = "bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uwrf3e2o6cw3djmprrm";
+
     fn commit_input(repo: &str) -> CommitInput {
         CommitInput {
             repo: repo.to_string(),
-            commit: "bafycommit".to_string(),
+            commit: VALID_CID.to_string(),
             rev: "3krev".to_string(),
             since: None,
             ops: vec![RepoOp {
                 action: OpAction::Create,
                 collection: "app.bsky.feed.post".to_string(),
                 rkey: "abc".to_string(),
-                cid: Some("bafyrecord".to_string()),
+                cid: Some(VALID_CID.to_string()),
                 value: Some(serde_json::json!({ "text": "hi" })),
             }],
             blocks: vec![1, 2, 3],
@@ -688,7 +716,7 @@ mod tests {
         assert_eq!(c.blocks, vec![1, 2, 3]);
         assert_eq!(c.ops.len(), 1);
         assert_eq!(c.ops[0].action, OpAction::Create);
-        assert_eq!(c.ops[0].cid.as_deref(), Some("bafyrecord"));
+        assert_eq!(c.ops[0].cid.as_deref(), Some(VALID_CID));
         // The live event still carries the record value for in-process consumers.
         assert_eq!(c.ops[0].value, Some(serde_json::json!({ "text": "hi" })));
         assert!(!c.time.is_empty());
@@ -837,6 +865,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn emit_commit_rejects_invalid_cid_without_persisting() {
+        let fh = test_firehose().await;
+        let mut input = commit_input("did:plc:a");
+        input.commit = "not-a-cid".to_string();
+
+        assert!(
+            matches!(fh.emit_commit(input).await, Err(FirehoseError::Encode(_))),
+            "an un-encodable commit must be rejected at emit"
+        );
+        // Rejected *before* persistence: no row and no consumed seq, so it can't become a durable
+        // replay poison pill.
+        assert_eq!(fh.current_seq(), 0);
+        assert_eq!(crate::db::firehose_seq::max_seq(&fh.db).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
     async fn emit_account_shares_sequencer_and_carries_status() {
         let fh = test_firehose().await;
         let mut rx = fh.subscribe();
@@ -910,7 +954,7 @@ mod tests {
         };
         assert_eq!(c.seq, 1);
         assert_eq!(c.repo, "did:plc:roundtrip");
-        assert_eq!(c.commit, "bafycommit");
+        assert_eq!(c.commit, VALID_CID);
         assert_eq!(c.rev, "3krev");
         assert_eq!(c.since.as_deref(), Some("3kprev"));
         assert_eq!(c.blocks, vec![1, 2, 3]);
@@ -918,7 +962,7 @@ mod tests {
         assert_eq!(c.ops[0].action, OpAction::Create);
         assert_eq!(c.ops[0].collection, "app.bsky.feed.post");
         assert_eq!(c.ops[0].rkey, "abc");
-        assert_eq!(c.ops[0].cid.as_deref(), Some("bafyrecord"));
+        assert_eq!(c.ops[0].cid.as_deref(), Some(VALID_CID));
         // The record value is not on the wire, so it is not persisted or restored.
         assert_eq!(c.ops[0].value, None);
     }
