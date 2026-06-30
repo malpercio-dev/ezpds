@@ -40,18 +40,24 @@ if grep -q 'CODE_SIGN_ENTITLEMENTS = ' "${PBXPROJ}" && ! grep -q 'CODE_SIGN_ALLO
   fail=1
 fi
 
-# SystemConfiguration.framework must be linked: hickory-resolver + reqwest pull in the
-# `system-configuration` crate, whose `_SC*` symbols are otherwise undefined at Xcode link time.
-if ! grep -q 'SystemConfiguration' "${PBXPROJ}"; then
-  echo "ios-check: FAIL — SystemConfiguration.framework not linked (run 'just ios-postinit')" >&2
+# Both Apple frameworks must be linked on ONE shared OTHER_LDFLAGS line (Patch E):
+#   - SystemConfiguration: hickory-resolver + reqwest (`system-configuration` crate; `_SC*`).
+#   - AuthenticationServices: vendored tauri-plugin-auth-session (ASWebAuthenticationSession;
+#     `_ASWebAuthenticationSessionErrorDomain`).
+# A bare-string grep is insufficient: a split or duplicated OTHER_LDFLAGS (two assignments for
+# the same build config) would still contain both names while the later one SHADOWS the earlier,
+# silently dropping a framework — the exact failure Patch E exists to prevent. So validate the
+# EFFECTIVE state: at least one OTHER_LDFLAGS line links both (in the canonical order Patch E
+# writes), and NO OTHER_LDFLAGS line links only one of them. (`|| true`: grep -c exits 1 on zero
+# matches, which would trip `set -e`.)
+ldflags_both=$(grep -cE 'OTHER_LDFLAGS = .*-framework SystemConfiguration -framework AuthenticationServices' "${PBXPROJ}" || true)
+ldflags_sc=$(grep -cE 'OTHER_LDFLAGS = .*-framework SystemConfiguration' "${PBXPROJ}" || true)
+ldflags_as=$(grep -cE 'OTHER_LDFLAGS = .*-framework AuthenticationServices' "${PBXPROJ}" || true)
+if [ "${ldflags_both}" -lt 1 ]; then
+  echo "ios-check: FAIL — no OTHER_LDFLAGS line links both SystemConfiguration + AuthenticationServices (run 'just ios-postinit')" >&2
   fail=1
-fi
-
-# AuthenticationServices.framework must be linked: the vendored tauri-plugin-auth-session pulls
-# `objc2-authentication-services` (ASWebAuthenticationSession), whose
-# `_ASWebAuthenticationSessionErrorDomain` is otherwise undefined at Xcode link time.
-if ! grep -q 'AuthenticationServices' "${PBXPROJ}"; then
-  echo "ios-check: FAIL — AuthenticationServices.framework not linked (run 'just ios-postinit')" >&2
+elif [ "${ldflags_both}" -ne "${ldflags_sc}" ] || [ "${ldflags_both}" -ne "${ldflags_as}" ]; then
+  echo "ios-check: FAIL — a partial/split OTHER_LDFLAGS links only one framework; the other is shadowed (run 'just ios-postinit')" >&2
   fail=1
 fi
 

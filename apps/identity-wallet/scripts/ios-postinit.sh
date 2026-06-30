@@ -109,7 +109,10 @@ fi
 # OTHER_LDFLAGS assignment for the same build config shadows (not appends to) the first, which
 # would silently drop a framework. The branches below keep this idempotent across a fresh init,
 # an older SystemConfiguration-only tree (extend in place), and an already-current tree.
-if grep -q 'AuthenticationServices' "${PBXPROJ}"; then
+if grep -qE 'OTHER_LDFLAGS = .*-framework SystemConfiguration -framework AuthenticationServices' "${PBXPROJ}"; then
+  # Skip ONLY when the fully-patched single-line state is already present — not on a bare
+  # `AuthenticationServices` match, which a split/partial OTHER_LDFLAGS could satisfy while
+  # still shadowing a framework. A partial state falls through to the repair branches below.
   echo "ios-postinit: SystemConfiguration + AuthenticationServices already linked"
 elif grep -q 'OTHER_LDFLAGS = .*-framework SystemConfiguration' "${PBXPROJ}"; then
   # Older patched tree linked SystemConfiguration only — append AuthenticationServices to that
