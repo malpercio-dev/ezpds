@@ -116,7 +116,7 @@ pub fn admin_request_sign_string(
     nonce: &str,
     body: &[u8],
 ) -> String {
-    let body_hash = crate::routes::token::sha256_hex(body);
+    let body_hash = crate::token::sha256_hex(body);
     format!("{method}\n{path}\n{timestamp}\n{nonce}\n{body_hash}")
 }
 
@@ -374,7 +374,7 @@ pub async fn require_pending_session(
     headers: &HeaderMap,
     db: &sqlx::SqlitePool,
 ) -> Result<PendingSessionInfo, ApiError> {
-    use crate::routes::token::hash_bearer_token;
+    use crate::token::hash_bearer_token;
 
     // Extract Bearer token from Authorization header.
     let token = headers
@@ -439,7 +439,7 @@ pub async fn require_device_token(
     device_id: &str,
     db: &sqlx::SqlitePool,
 ) -> Result<(), ApiError> {
-    use crate::routes::token::hash_bearer_token;
+    use crate::token::hash_bearer_token;
 
     let token = headers
         .get(axum::http::header::AUTHORIZATION)
@@ -510,7 +510,7 @@ pub async fn require_session(
     headers: &HeaderMap,
     db: &sqlx::SqlitePool,
 ) -> Result<SessionInfo, ApiError> {
-    use crate::routes::token::hash_bearer_token;
+    use crate::token::hash_bearer_token;
 
     let token = headers
         .get(axum::http::header::AUTHORIZATION)
@@ -668,7 +668,7 @@ mod tests {
 
     #[tokio::test]
     async fn pending_session_valid_unexpired_session_returns_ok() {
-        use crate::routes::token::generate_token;
+        use crate::token::generate_token;
         use uuid::Uuid;
 
         let state = test_state().await;
@@ -742,7 +742,7 @@ mod tests {
 
     #[tokio::test]
     async fn pending_session_expired_session_returns_401() {
-        use crate::routes::token::generate_token;
+        use crate::token::generate_token;
         use uuid::Uuid;
 
         let state = test_state().await;
@@ -854,7 +854,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_valid_unexpired_session_returns_ok() {
-        use crate::routes::token::generate_token;
+        use crate::token::generate_token;
         use uuid::Uuid;
 
         let state = test_state().await;
@@ -901,7 +901,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_expired_session_returns_401() {
-        use crate::routes::token::generate_token;
+        use crate::token::generate_token;
         use uuid::Uuid;
 
         let state = test_state().await;
@@ -972,7 +972,7 @@ mod tests {
         let state = test_state().await;
         let (device_id, _) = seed_device(&state.db).await;
         // Generate a fresh token that was never stored in DB
-        let wrong_token = crate::routes::token::generate_token().plaintext;
+        let wrong_token = crate::token::generate_token().plaintext;
         let err = require_device_token(&bearer(&wrong_token), &device_id, &state.db)
             .await
             .unwrap_err();
@@ -1128,7 +1128,7 @@ mod require_admin_tests {
     fn sign_string_is_newline_separated_with_body_hash() {
         // Pins the wire format so the signing client stays in lockstep. The final
         // field is the lowercase hex SHA-256 of the body (empty body shown here).
-        let empty_hash = crate::routes::token::sha256_hex(b"");
+        let empty_hash = crate::token::sha256_hex(b"");
         assert_eq!(
             admin_request_sign_string("POST", "/x", 1700, "abc", b""),
             format!("POST\n/x\n1700\nabc\n{empty_hash}")

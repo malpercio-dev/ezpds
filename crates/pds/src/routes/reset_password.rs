@@ -15,7 +15,7 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::auth::password::hash_password;
 use crate::db::password_reset::{get_reset_token, mark_reset_token_used, update_password_hash};
-use crate::routes::token::hash_bearer_token;
+use crate::token::hash_bearer_token;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -95,7 +95,7 @@ mod tests {
 
     use crate::app::{app, test_state};
     use crate::routes::test_utils::{body_json, insert_account_with_password};
-    use crate::routes::token::generate_token;
+    use crate::token::generate_token;
 
     fn post_reset_password(token: &str, password: &str) -> Request<Body> {
         Request::builder()

@@ -59,7 +59,6 @@ pub mod transfer_initiate;
 pub mod upload_blob;
 
 mod code_gen;
-pub(crate) mod token;
 pub(crate) mod uniqueness;
 
 #[cfg(test)]

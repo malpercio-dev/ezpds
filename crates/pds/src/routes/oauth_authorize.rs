@@ -26,7 +26,7 @@ use crate::db::oauth::{
 use crate::routes::oauth_templates::{
     encode_param, error_page, error_redirect, render_consent_page,
 };
-use crate::routes::token::generate_token;
+use crate::token::generate_token;
 
 /// Fully-resolved parameters for the authorization consent page.
 ///
@@ -615,7 +615,7 @@ mod tests {
 
     use crate::app::{app, test_state};
     use crate::db::oauth::register_oauth_client;
-    use crate::routes::token::hash_bearer_token;
+    use crate::token::hash_bearer_token;
 
     const CLIENT_ID: &str = "https://app.example.com/client-metadata.json";
     const REDIRECT_URI: &str = "https://app.example.com/callback";

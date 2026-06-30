@@ -57,7 +57,7 @@ use crate::app::AppState;
 use crate::auth::password::hash_password;
 use crate::db::is_unique_violation;
 use crate::routes::auth::require_pending_session;
-use crate::routes::token::generate_token;
+use crate::token::generate_token;
 use common::{ApiError, ErrorCode};
 
 #[derive(Deserialize)]
@@ -699,7 +699,7 @@ fn build_did_document(verified: &crypto::VerifiedGenesisOp) -> Result<serde_json
 mod tests {
     use super::*;
     use crate::app::test_state_with_plc_url;
-    use crate::routes::token::generate_token;
+    use crate::token::generate_token;
     use axum::{
         body::Body,
         http::{Request, StatusCode},
@@ -1053,7 +1053,7 @@ mod tests {
 
         // session row created with correct did and matching token_hash
         let session_token_str = body["session_token"].as_str().unwrap();
-        let expected_hash = crate::routes::token::hash_bearer_token(session_token_str).unwrap();
+        let expected_hash = crate::token::hash_bearer_token(session_token_str).unwrap();
         let session_row: Option<(String,)> =
             sqlx::query_as("SELECT did FROM sessions WHERE token_hash = ?")
                 .bind(&expected_hash)

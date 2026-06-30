@@ -15,8 +15,8 @@ use uuid::Uuid;
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::db::transfers::{accept_transfer as accept_transfer_row, AcceptOutcome};
-use crate::routes::token::generate_token;
+use crate::token::generate_token;
+use crate::transfer::{accept_transfer as accept_transfer_row, AcceptOutcome};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
