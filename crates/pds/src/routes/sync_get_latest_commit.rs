@@ -56,6 +56,16 @@ pub async fn sync_get_latest_commit(
         .head
         .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "repo not found"))?;
 
+    // The response contract guarantees a well-formed commit `cid`, so validate the stored repo
+    // root up front — even on the fast path below, where the rev is read straight from the
+    // column without opening the repo. A malformed `repo_root_cid` (which the production write
+    // paths never produce) is reported as a clean 404 rather than a 200 carrying a bogus cid,
+    // matching the unreadable-head behavior of `read_repo_rev`.
+    repo_engine::Cid::try_from(head.as_str()).map_err(|e| {
+        tracing::error!(error = %e, did = %did, "invalid repo root CID in database");
+        ApiError::new(ErrorCode::NotFound, "repo not found")
+    })?;
+
     // Prefer the rev stored on the account row (written at every commit) — the common path is a
     // pure column read. A pre-migration account has a repo root but no stored rev: read it from
     // the commit block. A head whose commit block is missing/unreadable cannot yield a latest
@@ -255,6 +265,29 @@ mod tests {
         let app = crate::app::app(state);
 
         let (status, body) = get_latest(&app, "did:plc:latestcommitbad").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"]["code"], "NOT_FOUND");
+    }
+
+    #[tokio::test]
+    async fn malformed_head_with_rev_returns_404_not_bogus_cid() {
+        let state = state_with_master_key().await;
+        // A malformed repo_root_cid paired with a populated repo_rev: the fast path reads rev
+        // straight from the column, so without up-front CID validation it would 200 with a bogus
+        // cid. The head must be validated first, yielding a 404 instead.
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, repo_root_cid, repo_rev, created_at, updated_at) \
+             VALUES (?, 'malformedlatest@example.com', 'hash', ?, ?, datetime('now'), datetime('now'))",
+        )
+        .bind("did:plc:latestcommitmalformed")
+        .bind("not-a-valid-cid")
+        .bind("3kabcdefghij2")
+        .execute(&state.db)
+        .await
+        .unwrap();
+        let app = crate::app::app(state);
+
+        let (status, body) = get_latest(&app, "did:plc:latestcommitmalformed").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"]["code"], "NOT_FOUND");
     }
