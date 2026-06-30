@@ -11,6 +11,7 @@
     type DevicePublicKey,
     type DeviceKeyError,
     type Pairing,
+    type RelayClientError,
   } from '$lib/ipc';
   import { classifyRelayError, type ErrorView } from '$lib/errors';
   import { requireUserPresence, presenceAllows } from '$lib/biometric';
@@ -40,6 +41,10 @@
   let unpairing = $state(false);
   let forgetting = $state(false);
   let unpairErrorView = $state<ErrorView | undefined>(undefined);
+  // Whether the *last* revoke failed because the relay was unreachable. Only then is the
+  // local-only "forget anyway" escape hatch safe to offer — on a retryable failure
+  // (clock-skew / reject) clearing local pairing would orphan a still-authorized device.
+  let revokeUnreachable = $state(false);
   let gateHint = $state<string | undefined>(undefined);
 
   onMount(async () => {
@@ -76,6 +81,7 @@
     unpairing = true;
     gateHint = undefined;
     unpairErrorView = undefined;
+    revokeUnreachable = false;
     try {
       // Revoking is a signing action — gate it on user presence.
       const presence = await requireUserPresence('Unpair this device');
@@ -87,6 +93,9 @@
       await goto('/');
     } catch (e) {
       unpairErrorView = classifyRelayError(e);
+      // Only an unreachable relay justifies the local-only escape hatch; a clock-skew or
+      // reject is retryable and must NOT let the operator orphan a still-authorized device.
+      revokeUnreachable = (e as RelayClientError)?.code === 'UNREACHABLE';
     } finally {
       unpairing = false;
     }
@@ -197,9 +206,11 @@
           onretry={doRevoke}
           onpair={forgetAndPair}
         />
-        <Button variant="secondary" loading={forgetting} onclick={forgetLocally}>
-          Forget on this device anyway
-        </Button>
+        {#if revokeUnreachable}
+          <Button variant="secondary" loading={forgetting} onclick={forgetLocally}>
+            Forget on this device anyway
+          </Button>
+        {/if}
       {/if}
 
       {#if gateHint}
