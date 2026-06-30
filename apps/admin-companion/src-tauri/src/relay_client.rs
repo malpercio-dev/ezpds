@@ -454,7 +454,7 @@ mod tests {
         .expect("the relay's verifier must accept this signed request");
     }
 
-    // Phase 8 self-revoke, proven without a live relay: a signed `POST
+    // Self-revoke, proven without a live relay: a signed `POST
     // /v1/admin/devices/:id/revoke` over an empty body carries a signature the relay's OWN
     // verifier accepts — and that signature is bound to the path (this device's id), so it
     // cannot be replayed to revoke a *different* device.

@@ -51,6 +51,8 @@
 
     claiming = true;
     claimErrorView = undefined;
+    // Drop the prior code so a failed mint never leaves a stale code beside the error.
+    claimCode = undefined;
     try {
       claimCode = await generateClaimCode();
     } catch (e) {

@@ -123,10 +123,15 @@ pub struct Pairing {
 }
 
 /// Persist the pairing produced by a successful device registration.
+///
+/// The relay URL is written **last**: `get_pairing` treats `device_id + relay_url` as
+/// "paired", so making relay_url the final commit means a mid-store failure leaves the
+/// pairing reading as "not paired" (fail-closed) rather than a half-written, readable
+/// pairing that contradicts the `Err` returned here.
 pub fn store_pairing(device_id: &str, relay_url: &str, label: &str) -> Result<(), KeychainError> {
+    store_item(LABEL_ACCOUNT, label.as_bytes())?;
     store_item(DEVICE_ID_ACCOUNT, device_id.as_bytes())?;
     store_item(RELAY_URL_ACCOUNT, relay_url.as_bytes())?;
-    store_item(LABEL_ACCOUNT, label.as_bytes())?;
     Ok(())
 }
 
@@ -166,7 +171,7 @@ pub fn clear_pairing() -> Result<(), KeychainError> {
     Ok(())
 }
 
-// ── Biometric preference (Phase 8) ───────────────────────────────────────────
+// ── Biometric preference ──────────────────────────────────────────────────────
 //
 // Every signing action is gated behind a biometric (user-presence) check. The operator
 // can turn that gate off in Settings — stored here, not as pairing state, so it persists

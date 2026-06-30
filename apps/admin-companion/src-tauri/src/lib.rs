@@ -1,10 +1,11 @@
 //! admin-companion — Tauri backend entry point.
 //!
-//! Phase 7 wires the operator console's two capabilities on top of the Phase 6 device
-//! key: **pairing** (claim a QR pairing code → register this device's public key) and
-//! **signed admin requests** (every call carries the canonical `X-Admin-*` envelope the
-//! relay verifies). The demo action is `generate_claim_code`. The terminal-native
-//! operator screens that assemble these land in Phase 8.
+//! The operator console's capabilities, layered on the device admin key: **pairing**
+//! (claim a QR pairing code → register this device's public key), **signed admin requests**
+//! (every call carries the canonical `X-Admin-*` envelope the relay verifies — the demo
+//! action is `generate_claim_code`), and **self-revoke** plus the biometric-gate preference
+//! that back the Settings screen. The terminal-native operator screens consume these
+//! commands over IPC.
 
 mod device_key;
 mod keychain;

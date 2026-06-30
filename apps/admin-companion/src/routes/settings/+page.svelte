@@ -98,6 +98,16 @@
     }
   }
 
+  // The "Pair this device" recovery (shown when the relay reports this device already
+  // revoked): forget the dead local pairing, then go straight into the pairing flow.
+  async function forgetAndPair() {
+    try {
+      await unpair();
+    } finally {
+      await goto('/pair');
+    }
+  }
+
   // The pairing as a concrete object when paired, else undefined — narrows cleanly in the
   // markup (`{#if paired}` exposes `paired.relayUrl` etc. without repeated guards).
   const paired = $derived(
@@ -169,7 +179,7 @@
           relayUrl={paired.relayUrl}
           retrying={unpairing}
           onretry={doRevoke}
-          onpair={forgetLocally}
+          onpair={forgetAndPair}
         />
         <Button variant="secondary" loading={forgetting} onclick={forgetLocally}>
           Forget on this device anyway

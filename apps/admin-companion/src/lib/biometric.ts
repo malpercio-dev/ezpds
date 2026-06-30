@@ -35,8 +35,16 @@ export function presenceAllows(outcome: PresenceOutcome): boolean {
  * the outcome is `denied`.
  */
 export async function requireUserPresence(reason: string): Promise<PresenceOutcome> {
-  // Honor the operator's Settings toggle: an explicit opt-out is not a denial.
-  if (!(await biometricEnabled())) return 'skipped';
+  // Honor the operator's Settings toggle: an explicit opt-out is not a denial. If the
+  // preference can't be read (a keychain hiccup), fail *closed* — default to gated so a
+  // failed settings read never drops the user-presence requirement or breaks the action.
+  let enabled = true;
+  try {
+    enabled = await biometricEnabled();
+  } catch {
+    enabled = true;
+  }
+  if (!enabled) return 'skipped';
 
   let plugin: typeof import('@tauri-apps/plugin-biometric');
   try {
