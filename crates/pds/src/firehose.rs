@@ -314,15 +314,13 @@ impl Firehose {
     /// *contiguous* prefix `seq ≤ watermark`, so the first row above a cursor that falls inside
     /// the pruned window is the oldest retained row, not `cursor + 1`. The first-row density
     /// check is **relaxed only when the cursor sits below the oldest retained row** (no row at
-    /// or below the cursor — i.e. `exists_at_or_below(cursor)` is false): that is a genuine pruned
-    /// prefix, so replay degrades to best-effort (the subscriber receives the retained suffix)
-    /// rather than failing closed. When a row *does* exist at or below the cursor, replay is
-    /// dense from the cursor and any jump on the first row is a mid-range gap that fails closed.
-    /// The `anchored` decision is made lazily — at the moment a gap is first observed — by
-    /// re-checking `exists_at_or_below(cursor)` against the same log state the batch was read
-    /// from, so a concurrent sweep cannot flip the cursor row between the decision and the batch
-    /// read (no TOCTOU). The strict consecutive-row check still catches a *mid-range* hole (a
-    /// durability bug, not a
+    /// or below the cursor): that is a genuine pruned prefix, so replay degrades to best-effort
+    /// (the subscriber receives the retained suffix) rather than failing closed. When a row *does*
+    /// exist at or below the cursor, replay is dense from the cursor and any jump on the first row
+    /// is a mid-range gap that fails closed. The first replay page projects that cursor-presence
+    /// bit in the same SQL statement that reads the rows, so the pruned-prefix decision observes
+    /// one SQLite snapshot (no TOCTOU between the batch and the cursor-presence check). The strict
+    /// consecutive-row check still catches a *mid-range* hole (a durability bug, not a
     /// prune) on the second row onward, and the frontier-reach check still catches a missing tail.
     async fn read_replay(
         &self,
@@ -333,17 +331,29 @@ impl Firehose {
         let mut after = cursor;
         // `anchored` means replay has at least one row to be dense from. It starts false, so the
         // first decoded row is allowed to start above `cursor + 1` — but only if that gap is a
-        // genuine *pruned prefix* (no row at/below the cursor), not a mid-range hole. We decide
-        // that LAZILY, at the moment a gap is first observed, by re-checking
-        // `exists_at_or_below(cursor)` against the same log state the batch was read from. This
-        // avoids the TOCTOU of deciding `anchored` up-front (a concurrent sweep could prune the
-        // cursor row between an early decision and the first batch read). Once replay has a row
-        // to anchor on, every subsequent row must be exactly `prev + 1`.
+        // genuine *pruned prefix* (no row at/below the cursor), not a mid-range hole. The first
+        // replay page reads rows and the cursor-presence bit in one SQL statement so both come
+        // from the same SQLite snapshot. Once replay has a row to anchor on, every subsequent row
+        // must be exactly `prev + 1`.
         let mut anchored = false;
+        let mut first_page = true;
+        let mut cursor_present = false;
         while after < upper {
-            let batch =
+            let batch = if first_page {
+                let page = crate::db::firehose_seq::first_events_in_range_with_cursor_presence(
+                    &self.db,
+                    cursor,
+                    upper,
+                    REPLAY_BATCH,
+                )
+                .await?;
+                first_page = false;
+                cursor_present = page.cursor_present;
+                page.rows
+            } else {
                 crate::db::firehose_seq::events_in_range(&self.db, after, upper, REPLAY_BATCH)
-                    .await?;
+                    .await?
+            };
             if batch.is_empty() {
                 break;
             }
@@ -360,12 +370,10 @@ impl Firehose {
                             after + 1
                         )));
                     }
-                    // First-row gap: decide pruned-prefix vs mid-range hole from the SAME log
-                    // state as this batch (lazy re-check, no TOCTOU). If the cursor still has a
-                    // retained row, the gap is a real mid-range hole → fail closed. If the cursor
-                    // row is gone, a sweep pruned the prefix → degrade to best-effort from here.
-                    let cursor_present =
-                        crate::db::firehose_seq::exists_at_or_below(&self.db, cursor).await?;
+                    // First-row gap: decide pruned-prefix vs mid-range hole from the same SQL
+                    // snapshot as the first page. If the cursor still has a retained row, the gap
+                    // is a real mid-range hole → fail closed. If the cursor row is gone, a sweep
+                    // pruned the prefix → degrade to best-effort from here.
                     if cursor_present {
                         return Err(FirehoseError::Decode(format!(
                             "firehose replay gap: expected seq {}, found {seq}",

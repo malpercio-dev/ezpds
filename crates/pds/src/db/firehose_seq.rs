@@ -87,22 +87,62 @@ pub async fn retained_boundary_seq(
             .bind(cutoff_rfc3339)
             .fetch_one(db)
             .await?;
-    Ok(seq.map(|s| s as u64))
+    match seq {
+        Some(s) => u64::try_from(s)
+            .map(Some)
+            .map_err(|_| sqlx::Error::Protocol("stored firehose seq is negative".into())),
+        None => Ok(None),
+    }
 }
 
-/// Whether any row exists with `seq <= given` — used by replay to decide whether a cursor sits
-/// inside the retained range (strict first-row density) or below a pruned prefix (best-effort).
+/// First replay page plus whether the cursor is inside the retained range.
 ///
-/// Cheap on the `INTEGER PRIMARY KEY`: a one-row indexed lookup.
-pub async fn exists_at_or_below(db: &SqlitePool, seq: u64) -> Result<bool, sqlx::Error> {
-    let s = i64::try_from(seq).map_err(|_| {
-        sqlx::Error::Protocol("firehose exists_at_or_below exceeds i64 range".into())
-    })?;
-    let row: Option<(i64,)> = sqlx::query_as("SELECT seq FROM repo_seq WHERE seq <= ? LIMIT 1")
-        .bind(s)
-        .fetch_optional(db)
-        .await?;
-    Ok(row.is_some())
+/// `cursor_present` is computed in the same SQL statement as the first page (`EXISTS(seq <=
+/// cursor)` projected onto each returned row), so the first-row pruned-prefix decision observes
+/// the same SQLite snapshot as the rows it is deciding about. If the first page is empty the flag
+/// is false; callers don't need it because an empty backlog before `upper` fails the frontier
+/// check.
+pub struct FirstReplayPage {
+    pub rows: Vec<StoredEventRow>,
+    pub cursor_present: bool,
+}
+
+/// Read the first cursor-replay page and the cursor-presence bit in one SQLite snapshot.
+pub async fn first_events_in_range_with_cursor_presence(
+    db: &SqlitePool,
+    cursor: u64,
+    upper: u64,
+    limit: u32,
+) -> Result<FirstReplayPage, sqlx::Error> {
+    let cursor = i64::try_from(cursor)
+        .map_err(|_| sqlx::Error::Protocol("firehose cursor exceeds i64 range".into()))?;
+    let upper = i64::try_from(upper)
+        .map_err(|_| sqlx::Error::Protocol("firehose frontier exceeds i64 range".into()))?;
+    let rows: Vec<(i64, String, Vec<u8>, i64)> = sqlx::query_as(
+        "SELECT seq, event_type, event, \
+         EXISTS(SELECT 1 FROM repo_seq WHERE seq <= ?) AS cursor_present \
+         FROM repo_seq WHERE seq > ? AND seq <= ? ORDER BY seq ASC LIMIT ?",
+    )
+    .bind(cursor)
+    .bind(cursor)
+    .bind(upper)
+    .bind(i64::from(limit))
+    .fetch_all(db)
+    .await?;
+
+    let cursor_present = rows.first().is_some_and(|(_, _, _, present)| *present != 0);
+    let rows = rows
+        .into_iter()
+        .map(|(seq, event_type, event, _)| StoredEventRow {
+            seq,
+            event_type,
+            event,
+        })
+        .collect();
+    Ok(FirstReplayPage {
+        rows,
+        cursor_present,
+    })
 }
 
 /// Delete every row at or below `low_water_mark`, returning how many were removed.
@@ -303,45 +343,72 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exists_at_or_below_detects_rows_at_or_below_the_cursor() {
+    async fn retained_boundary_rejects_negative_stored_seq() {
+        let db = pool().await;
+        sqlx::query(
+            "INSERT INTO repo_seq (seq, did, event_type, event, sequenced_at) \
+             VALUES (-1, 'did:plc:a', 'commit', x'CAFE', '2026-06-30T00:00:00.000Z')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let err = retained_boundary_seq(&db, "2026-06-29T00:00:00.000Z")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, sqlx::Error::Protocol(_)));
+    }
+
+    #[tokio::test]
+    async fn first_page_reports_cursor_present_from_the_same_snapshot() {
         let db = pool().await;
         insert(&db, 1, "commit").await;
         insert(&db, 3, "commit").await;
         insert(&db, 5, "commit").await;
 
         // Any row at or below the cursor means the cursor is inside the retained range (a lower
-        // row survives), so replay must be strict from the cursor.
-        assert!(exists_at_or_below(&db, 1).await.unwrap(), "seq 1 == cursor");
-        assert!(
-            exists_at_or_below(&db, 2).await.unwrap(),
-            "seq 1 <= cursor 2"
+        // row survives), so replay must be strict from the cursor. The flag is projected by the
+        // same SELECT that reads the first replay page.
+        let page = first_events_in_range_with_cursor_presence(&db, 2, 5, 100)
+            .await
+            .unwrap();
+        assert_eq!(
+            page.rows.iter().map(|r| r.seq).collect::<Vec<_>>(),
+            vec![3, 5]
         );
-        assert!(exists_at_or_below(&db, 3).await.unwrap());
-        assert!(exists_at_or_below(&db, 5).await.unwrap());
-        assert!(
-            exists_at_or_below(&db, 6).await.unwrap(),
-            "seq 5 <= cursor 6"
+        assert!(page.cursor_present, "seq 1 <= cursor 2");
+
+        let page = first_events_in_range_with_cursor_presence(&db, 0, 5, 100)
+            .await
+            .unwrap();
+        assert_eq!(
+            page.rows.iter().map(|r| r.seq).collect::<Vec<_>>(),
+            vec![1, 3, 5]
         );
-        // A cursor below every seq means the cursor sits in a pruned prefix, not the retained
-        // range — the only "false" case here, since no row exists at seq <= 0.
-        assert!(!exists_at_or_below(&db, 0).await.unwrap(), "no row <= 0");
+        assert!(!page.cursor_present, "no row <= 0");
     }
 
     #[tokio::test]
-    async fn exists_at_or_below_is_false_when_cursor_is_below_a_pruned_prefix() {
+    async fn first_page_reports_false_when_cursor_is_below_a_pruned_prefix() {
         let db = pool().await;
         // Pruned prefix: only the suffix {3, 5} survives, so cursors 0, 1, and 2 are all below the
         // oldest retained row (seq 3) and must read as "outside the retained range".
         insert(&db, 3, "commit").await;
         insert(&db, 5, "commit").await;
-        assert!(!exists_at_or_below(&db, 0).await.unwrap());
-        assert!(!exists_at_or_below(&db, 1).await.unwrap());
-        assert!(!exists_at_or_below(&db, 2).await.unwrap());
-        assert!(exists_at_or_below(&db, 3).await.unwrap());
-        assert!(
-            exists_at_or_below(&db, 4).await.unwrap(),
-            "seq 3 <= cursor 4"
+        let page = first_events_in_range_with_cursor_presence(&db, 2, 5, 100)
+            .await
+            .unwrap();
+        assert_eq!(
+            page.rows.iter().map(|r| r.seq).collect::<Vec<_>>(),
+            vec![3, 5]
         );
+        assert!(!page.cursor_present);
+
+        let page = first_events_in_range_with_cursor_presence(&db, 4, 5, 100)
+            .await
+            .unwrap();
+        assert_eq!(page.rows.iter().map(|r| r.seq).collect::<Vec<_>>(), vec![5]);
+        assert!(page.cursor_present, "seq 3 <= cursor 4");
     }
 
     #[tokio::test]

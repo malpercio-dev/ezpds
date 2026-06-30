@@ -60,7 +60,8 @@ use crate::db::firehose_seq;
 pub struct GcStats {
     /// Rows deleted from `repo_seq`.
     pub pruned: u64,
-    /// Passes skipped (all retention knobs disabled or the log empty).
+    /// Passes that did not delete anything because retention was disabled, the log/frontier made
+    /// pruning unsafe, or an operational error forced this sweep to leave the log untouched.
     pub skipped: bool,
 }
 

@@ -252,8 +252,8 @@ async fn run() -> anyhow::Result<()> {
         "blob garbage collector started"
     );
 
-    // Spawn the periodic `repo_seq` firehose event-log retention sweep. It prunes old firehose
-    // events below the configured age/count watermark so the durable log backing
+    // Spawn the periodic `repo_seq` firehose event-log retention sweep. It prunes rows below the
+    // configured age/count watermark so the durable log backing
     // `subscribeRepos` cursor replay does not grow without bound; it is best-effort and runs for
     // the life of the process, so the handle is dropped on shutdown rather than joined.
     let fh_gc_interval = std::time::Duration::from_secs(state.config.firehose.gc_interval_secs);

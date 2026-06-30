@@ -95,14 +95,14 @@ impl Default for BlobsConfig {
 /// The `repo_seq` table is append-only and unbounded without a sweep: every `#commit` and
 /// `#account` frame (including each commit's CARv1 `blocks`) is retained forever, so on the
 /// production SQLite DB it would eventually dominate storage and the Litestream backup. The
-/// retention sweep periodically prunes old rows below a computed low-water mark, keeping at
-/// least the live frontier (`MAX(seq)`) so a reconnecting relay can always resume from the
-/// newest retained event.
+/// retention sweep periodically prunes rows below a computed low-water mark, keeping at least
+/// the live frontier (`MAX(seq)`) so a reconnecting relay can always resume from the newest
+/// retained event.
 ///
-/// A row is pruned only when it falls below **every** enabled cutoff (the tighter retention
-/// goal wins), so enabling both knobs bounds growth by whichever is more restrictive. A knob set
-/// to `0` disables that policy. With both at `0` the sweep is a no-op (the log stays
-/// append-only, matching the pre-retention behaviour).
+/// A row is pruned when it falls below **any** enabled cutoff (the highest watermark wins), so
+/// age can delete an old suffix even when count would keep it, and count can cap a large young
+/// backlog even when age would keep it. A knob set to `0` disables that policy. With both at `0`
+/// the sweep is a no-op (the log stays append-only, matching the pre-retention behaviour).
 #[derive(Debug, Clone, Deserialize)]
 pub struct FirehoseConfig {
     /// How often the `repo_seq` retention sweep runs, in seconds. Default: 3600 (1 hour).
