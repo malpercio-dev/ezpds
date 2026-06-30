@@ -99,6 +99,12 @@ release:
     if [ "$(git rev-parse --abbrev-ref HEAD)" != "main" ]; then
       echo "✗ release from 'main' only (you are on $(git rev-parse --abbrev-ref HEAD))" >&2; exit 1
     fi
+    # Tag the merged, pushed main — not a local-only or stale commit — so the tag (and the
+    # production branch later advanced to it) carries real merged-main provenance.
+    git fetch --quiet origin main
+    if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+      echo "✗ release requires HEAD == origin/main — push/pull main first" >&2; exit 1
+    fi
     if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
       echo "✗ tag ${tag} already exists — bump the version with 'just set-version' first" >&2; exit 1
     fi
@@ -121,7 +127,7 @@ deploy-production tag="":
     set -euo pipefail
     tag="{{tag}}"
     if [ -z "$tag" ]; then
-      tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)"
+      tag="$(git tag --list --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)"
       if [ -z "$tag" ]; then echo "✗ no vX.Y.Z tag exists — cut one with 'just release'" >&2; exit 1; fi
       echo "→ no tag given; using latest: ${tag}"
     fi
