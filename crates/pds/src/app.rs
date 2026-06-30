@@ -303,13 +303,6 @@ pub fn app(state: AppState) -> Router {
             "/v1/pds/keys",
             get(get_pds_signing_key).post(create_signing_key),
         )
-        // DEPRECATED: relay-named aliases, kept one release cycle so already-deployed
-        // app builds keep working. Remove once all clients use the /pds paths.
-        .route("/v1/devices/:id/relay", get(get_device_pds))
-        .route(
-            "/v1/relay/keys",
-            get(get_pds_signing_key).post(create_signing_key),
-        )
         .route("/v1/repo-signing-key", get(get_repo_signing_key))
         .route("/static/*path", get(static_handler))
         .layer(CorsLayer::permissive())
