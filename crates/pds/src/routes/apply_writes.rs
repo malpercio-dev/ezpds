@@ -14,7 +14,8 @@ use repo_engine::{Repository, WriteOp};
 
 #[derive(Deserialize)]
 pub struct ApplyWritesBody {
-    /// The DID of the repo to write to.
+    /// The repo to write to, as an at-identifier — a DID or a registered handle; a handle is
+    /// resolved to its owning DID before the write.
     repo: String,
     /// The ordered list of writes to apply atomically.
     #[serde(default)]
@@ -101,7 +102,9 @@ pub async fn apply_writes(
     headers: HeaderMap,
     axum::Json(body): axum::Json<ApplyWritesBody>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let did = &body.repo;
+    // Resolve the at-identifier (DID or handle) to a DID before the ownership check and write.
+    let did = crate::record_write::resolve_repo_did(&state, &body.repo).await?;
+    let did = did.as_str();
 
     if !crate::auth::validation::is_valid_did(did) {
         return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
@@ -438,6 +441,43 @@ mod tests {
             StatusCode::FORBIDDEN,
             "a deactivated account must not be able to apply writes"
         );
+    }
+
+    #[tokio::test]
+    async fn apply_writes_resolves_handle_to_did() {
+        // `repo` accepts an at-identifier: a handle must resolve to the owning DID and each
+        // result AT-URI must carry that resolved DID.
+        let (state, did) = setup().await;
+        sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
+            .bind("alice.example.com")
+            .bind(&did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let token = access_jwt(&state.jwt_secret, &did);
+        let app = crate::app::app(state);
+        let body = serde_json::json!({
+            "repo": "alice.example.com",
+            "writes": [create_item("viahandle", "hi")],
+        });
+        let resp = app.oneshot(apply_req(body, Some(&token))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        assert_eq!(
+            json["results"][0]["uri"],
+            format!("at://{did}/app.bsky.feed.post/viahandle")
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_writes_unknown_handle_returns_400() {
+        // An identifier that is neither a DID nor a registered handle is a clean 400. No token is
+        // sent: resolution must fail *before* auth, so omitting it guards that ordering.
+        let (state, _did) = setup().await;
+        let app = crate::app::app(state);
+        let body = serde_json::json!({ "repo": "nobody.example.com", "writes": [create_item("k1", "hi")] });
+        let resp = app.oneshot(apply_req(body, None)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

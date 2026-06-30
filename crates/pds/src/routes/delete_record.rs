@@ -14,9 +14,9 @@ use repo_engine::Repository;
 
 #[derive(Deserialize)]
 pub struct DeleteRecordBody {
-    /// The DID of the repo (e.g. "did:plc:abc123"), carried in the JSON body as `repo` per the
-    /// `com.atproto.repo.deleteRecord` lexicon. Like createRecord/applyWrites, this is treated as a
-    /// DID: handle-to-DID resolution is not performed anywhere in the repo write path.
+    /// The repo to delete from, carried in the JSON body as `repo` per the
+    /// `com.atproto.repo.deleteRecord` lexicon. An at-identifier — a DID (e.g. "did:plc:abc123")
+    /// or a registered handle; a handle is resolved to its owning DID before the delete.
     repo: String,
     collection: String,
     rkey: String,
@@ -36,7 +36,9 @@ pub async fn delete_record(
     headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<DeleteRecordBody>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let did = &body.repo;
+    // Resolve the at-identifier (DID or handle) to a DID before the ownership check and write.
+    let did = crate::record_write::resolve_repo_did(&state, &body.repo).await?;
+    let did = did.as_str();
     let collection = &body.collection;
     let rkey = &body.rkey;
 

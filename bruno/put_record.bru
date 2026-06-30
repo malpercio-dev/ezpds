@@ -24,6 +24,9 @@ body:json {
 }
 
 docs {
+  "repo" is an at-identifier: a DID or a registered handle (resolved to its owning DID
+  before the write). An identifier that resolves to no account returns 400.
+
   Optional optimistic-concurrency body fields (add alongside "record"):
   - "swapCommit": "<cid>" — only write if the repo head matches this commit CID, else 409 InvalidSwap.
   - "swapRecord": "<cid>" — only write if the record currently at the key has this CID;
