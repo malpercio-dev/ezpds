@@ -27,7 +27,7 @@ following the reference PDS's `repo_seq` pattern.
 
 ### Schema — `V028__repo_seq.sql`
 
-```
+```sql
 repo_seq(seq INTEGER PRIMARY KEY, did TEXT, event_type TEXT, event BLOB, sequenced_at TEXT)
 ```
 

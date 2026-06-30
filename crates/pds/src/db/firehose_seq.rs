@@ -45,11 +45,15 @@ pub async fn insert_event(
     event: &[u8],
     sequenced_at: &str,
 ) -> Result<(), sqlx::Error> {
+    // `seq` is assigned by our own sequencer and never legitimately exceeds i64::MAX, but reject
+    // rather than silently wrap (a wrapped negative would corrupt the ordering the PK enforces).
+    let seq = i64::try_from(seq)
+        .map_err(|_| sqlx::Error::Protocol("firehose seq exceeds i64 range".into()))?;
     sqlx::query(
         "INSERT INTO repo_seq (seq, did, event_type, event, sequenced_at) \
          VALUES (?, ?, ?, ?, ?)",
     )
-    .bind(seq as i64)
+    .bind(seq)
     .bind(did)
     .bind(event_type)
     .bind(event)
@@ -72,12 +76,18 @@ pub async fn events_in_range(
     upper: u64,
     limit: u32,
 ) -> Result<Vec<StoredEventRow>, sqlx::Error> {
+    // Reject (rather than wrap) sequence bounds SQLite can't represent; both are sequencer-derived
+    // and never legitimately exceed i64::MAX, but a wrapped negative would silently skew the range.
+    let after = i64::try_from(after)
+        .map_err(|_| sqlx::Error::Protocol("firehose cursor exceeds i64 range".into()))?;
+    let upper = i64::try_from(upper)
+        .map_err(|_| sqlx::Error::Protocol("firehose frontier exceeds i64 range".into()))?;
     sqlx::query_as::<_, StoredEventRow>(
         "SELECT seq, event_type, event FROM repo_seq \
          WHERE seq > ? AND seq <= ? ORDER BY seq ASC LIMIT ?",
     )
-    .bind(after as i64)
-    .bind(upper as i64)
+    .bind(after)
+    .bind(upper)
     .bind(limit)
     .fetch_all(db)
     .await

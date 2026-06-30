@@ -129,10 +129,17 @@ async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) 
                 ) {
                     Ok(event) => event,
                     Err(e) => {
-                        // A corrupt stored row must not kill the connection; skip it (the
-                        // subscriber can backfill via getRepo) and continue replaying.
-                        tracing::error!(error = %e, seq = after, "failed to decode stored firehose event; skipping");
-                        continue;
+                        // Skipping a corrupt row and replaying later seqs would open a silent gap,
+                        // breaking the no-gap replay contract. Fail closed: surface the error and
+                        // close so the client can't advance past the bad event (it reconnects from
+                        // its last good cursor). A self-written row failing to decode means DB
+                        // corruption — the loud error is the signal an operator needs.
+                        tracing::error!(error = %e, seq = after, "failed to decode stored firehose event; closing");
+                        let frame =
+                            encode_error_frame("InternalError", "failed to decode replay backlog");
+                        let _ = sender.send(Message::Binary(frame)).await;
+                        let _ = sender.close().await;
+                        return;
                     }
                 };
                 if !send_event(&mut sender, &event).await {

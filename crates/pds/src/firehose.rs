@@ -677,8 +677,8 @@ mod tests {
 
     #[tokio::test]
     async fn replay_survives_restart() {
-        // Acceptance: after a redeploy, a relay reconnecting with a prior cursor replays the
-        // commits it missed — from the durable log, not an in-memory buffer the restart cleared.
+        // Regression: after a redeploy, a relay reconnecting with a prior cursor must replay the
+        // commits it missed from the durable log, not an in-memory buffer the restart cleared.
         let db = open_pool("sqlite::memory:").await.unwrap();
         run_migrations(&db).await.unwrap();
 
