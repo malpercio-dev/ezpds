@@ -70,8 +70,9 @@
 
   async function doRevoke() {
     // Claim the busy flag before the biometric prompt's await, so rapid taps can't open
-    // multiple gates and fire concurrent signed revokes.
-    if (unpairing) return;
+    // multiple gates and fire concurrent signed revokes. Revoke and local-forget share the
+    // pairing state, so they're mutually exclusive — neither starts while the other runs.
+    if (unpairing || forgetting) return;
     unpairing = true;
     gateHint = undefined;
     unpairErrorView = undefined;
@@ -92,11 +93,14 @@
   }
 
   async function forgetLocally() {
-    if (forgetting) return;
+    if (forgetting || unpairing) return;
     forgetting = true;
+    gateHint = undefined;
     try {
       await unpair();
       await goto('/');
+    } catch {
+      gateHint = "Couldn't forget this device locally. Try again.";
     } finally {
       forgetting = false;
     }
@@ -107,7 +111,7 @@
   // Navigate only after the local forget succeeds — otherwise stale revoked pairing state
   // would be carried into the pairing flow.
   async function forgetAndPair() {
-    if (forgetting) return;
+    if (forgetting || unpairing) return;
     forgetting = true;
     gateHint = undefined;
     try {
