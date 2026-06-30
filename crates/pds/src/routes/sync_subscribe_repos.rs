@@ -163,9 +163,12 @@ async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) 
     }
 }
 
-/// Encode and send one firehose event. Returns `false` if the socket send failed (the caller
-/// should stop). An event that fails to encode is logged and skipped without dropping the
-/// connection — one malformed event must not kill an otherwise-healthy subscriber.
+/// Encode and send one firehose event. Returns `false` (the caller stops and closes) if the frame
+/// cannot be encoded or the socket send fails. Failing closed on an encode error matters for the
+/// no-gap contract: silently skipping an unencodable `#commit` and continuing would deliver later
+/// `seq`s past the missing one. A self-written commit that won't encode signals corruption an
+/// operator should see; the client reconnects from its last good cursor. `#account` frames are
+/// fixed-shape (no CIDs or CAR blocks), so their encoding cannot fail.
 async fn send_event(sender: &mut SplitSink<WebSocket, Message>, event: &FirehoseEvent) -> bool {
     let frame = match event {
         FirehoseEvent::Commit(commit) => match encode_commit_frame(commit) {
@@ -174,12 +177,11 @@ async fn send_event(sender: &mut SplitSink<WebSocket, Message>, event: &Firehose
                 tracing::error!(
                     error = %e,
                     seq = commit.seq,
-                    "failed to encode firehose #commit frame; skipping event"
+                    "failed to encode firehose #commit frame; closing"
                 );
-                return true;
+                return false;
             }
         },
-        // `#account` frames are fixed-shape (no CIDs or CAR blocks), so encoding cannot fail.
         FirehoseEvent::Account(account) => encode_account_frame(account),
     };
     send_message(sender, Message::Binary(frame)).await
