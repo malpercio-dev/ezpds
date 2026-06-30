@@ -50,10 +50,18 @@ jobs:
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
+        with:
+          # cache-bin: false — with the default (true), rust-cache caches ~/.cargo/bin together
+          # with .crates2.json and can restore the "cargo-audit is installed" metadata WITHOUT the
+          # binary. `cargo binstall` then sees it as present and skips, so `cargo audit` is missing
+          # when ci-pds runs it. Keep caching the registry/git/target (the real speedup), not bin.
+          cache-bin: false
 
       - name: Install cargo-audit
         uses: cargo-bins/cargo-binstall@main
-      - run: cargo binstall -y --locked cargo-audit
+        # `&& cargo audit --version` verifies the binary is actually on PATH, so a future install
+        # regression fails here with a clear message instead of deep inside `just ci-pds`.
+      - run: cargo binstall -y --locked cargo-audit && cargo audit --version
 
       - name: CI gate (fmt, lock-check, clippy, test, audit)
         run: just ci-pds
