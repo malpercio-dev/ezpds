@@ -1050,9 +1050,9 @@ mod tests {
             "genesis blocks must be persisted (commit + MST node); got {block_count}"
         );
 
-        // MM-198: a fresh account must self-announce — genesis #commit then #account (active)
-        // sequenced to the firehose, so a never-crawled host doesn't stay invisible to the
-        // relay until its first record write.
+        // A fresh account must self-announce — genesis #commit then #account (active) sequenced
+        // to the firehose, so a never-crawled host doesn't stay invisible to the relay until
+        // its first record write.
         use crate::firehose::FirehoseEvent;
         let FirehoseEvent::Commit(commit_event) = fh_rx
             .try_recv()
