@@ -1,27 +1,31 @@
-name: iOS · TestFlight
+name: Admin Companion · TestFlight
 
-# The macOS half of CI. The PDS test gate runs on Linux (.github/workflows/ci.yml) and
-# cannot build the iOS app — `cargo tauri ios build` needs macOS + Xcode — so the
-# identity-wallet Tauri build lives here. GitHub-hosted macOS runners are free for public repos.
+# The macOS half of CI for the second iOS app (the operator console). The PDS test gate
+# runs on Linux (.github/workflows/ci.yml) and cannot build a Tauri iOS app — `cargo tauri
+# ios build` needs macOS + Xcode — so the admin-companion build lives here, alongside the
+# identity-wallet lane (.github/workflows/ios-testflight.yml). GitHub-hosted macOS runners
+# are free for public repos.
 #
-# Flow: regenerate the (gitignored) Xcode project -> re-apply the ios-postinit
+# Flow: regenerate the (gitignored) Xcode project -> re-apply the admin-postinit
 # patches -> stamp a unique build number -> build a signed App Store IPA -> upload
-# to TestFlight. Code signing is explicit (cert + App Store profile); the API key is upload-only.
+# to TestFlight. Signing is explicit, driven by an Apple Distribution cert/profile;
+# upload uses an App Store Connect API key.
 #
-# One-time setup (mirror, App Store Connect, secrets): see docs/ios-cicd.md.
+# One-time setup (App Store Connect app record, the admin provisioning profile +
+# IOS_MOBILE_PROVISION_ADMIN secret): see docs/ios-cicd.md.
 
 on:
   push:
     branches: [main]
-    # Skip iOS rebuilds for changes that cannot affect the app (e.g. pds-only
-    # docs). crates/** is included because the app links shared workspace crates.
+    # Skip rebuilds for changes that cannot affect the app. crates/** is included
+    # because the app links shared workspace crates.
     paths:
-      - "apps/identity-wallet/**"
+      - "apps/admin-companion/**"
       - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
-      - ".github/workflows/ios-testflight.yml"
+      - ".github/workflows/admin-testflight.yml"
   workflow_dispatch:
 
 # Public repo + signing secrets: this workflow must never run for pull_request
@@ -31,7 +35,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ios-testflight-${{ github.ref }}
+  group: admin-testflight-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -66,7 +70,7 @@ jobs:
           node-version: 22
 
       - name: Install frontend dependencies
-        working-directory: apps/identity-wallet
+        working-directory: apps/admin-companion
         run: pnpm install --frozen-lockfile
 
       # rust-toolchain.toml pins the channel AND lists aarch64-apple-ios, so a bare
@@ -119,21 +123,21 @@ jobs:
           echo "$RUNNER_TEMP/arm64-shims" >> "$GITHUB_PATH"
 
       # gen/apple is gitignored — regenerate it from scratch, then re-apply the
-      # pbxproj/project.yml patches (sandbox, Run Script env, entitlements,
-      # SystemConfiguration + AuthenticationServices frameworks, libapp.a strip).
+      # pbxproj/project.yml patches (sandbox, Run Script env, SystemConfiguration
+      # framework, libapp.a strip).
       - name: Generate the Xcode project
-        working-directory: apps/identity-wallet
+        working-directory: apps/admin-companion
         run: cargo tauri ios init
 
-      - name: Re-apply ios-postinit patches
-        run: just ios-postinit
+      - name: Re-apply admin-postinit patches
+        run: just admin-postinit
 
       # TestFlight rejects duplicate build numbers and the app version is pinned at
       # 0.1.0, so derive a unique, monotonic CFBundleVersion from the CI run number.
       # $GITHUB_RUN_NUMBER is a built-in env var — no untrusted ${{ }} in the shell.
       - name: Stamp a unique TestFlight build number
         run: |
-          conf="apps/identity-wallet/src-tauri/tauri.conf.json"
+          conf="apps/admin-companion/src-tauri/tauri.conf.json"
           tmp="$(mktemp)"
           jq --arg bv "$GITHUB_RUN_NUMBER" '.bundle.iOS.bundleVersion = $bv' "$conf" > "$tmp"
           mv "$tmp" "$conf"
@@ -142,15 +146,17 @@ jobs:
       - name: Build signed IPA
         # SIGNING — explicit cert + App Store profile (Tauri's automatic signing emits an
         # "Apple Distribution: Tauri (unset)" placeholder App Store rejects, tauri#11092).
-        # The APPLE_* vars also feed the app-store-connect export. Scoped to this step.
+        # The profile is bound to admin-companion's bundle id, so IOS_MOBILE_PROVISION is
+        # sourced from IOS_MOBILE_PROVISION_ADMIN; the APPLE_* vars also feed the
+        # app-store-connect export. Scoped to this step, not the job.
         env:
           IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
           IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
-          IOS_MOBILE_PROVISION: ${{ secrets.IOS_MOBILE_PROVISION }}
+          IOS_MOBILE_PROVISION: ${{ secrets.IOS_MOBILE_PROVISION_ADMIN }}
           APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-        run: just ios-ipa
+        run: just admin-ipa
 
       - name: Upload to TestFlight
         # altool authenticates with the App Store Connect API key (ID + issuer); the .p8
@@ -158,4 +164,4 @@ jobs:
         env:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-        run: just ios-upload
+        run: just admin-upload

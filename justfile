@@ -296,3 +296,38 @@ admin-dev device="": admin-check
 # Build the admin console for the Simulator (verifies patches first).
 admin-build: admin-check
     cd apps/admin-companion && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && cargo tauri ios build --debug
+
+# --- admin-companion release -> TestFlight (macOS + Xcode) ---
+# CI runs these on a GitHub macOS runner (.github/workflows/admin-testflight.yml);
+# they double as the local `just admin-release` escape hatch. Same signing model as
+# identity-wallet (see the iOS release block above), but the App Store profile is
+# bound to admin-companion's own bundle id (dev.malpercio.admincompanion) — set
+# IOS_MOBILE_PROVISION to that profile's base64. The Apple Distribution cert
+# (IOS_CERTIFICATE/_PASSWORD) and the API key (APPLE_API_KEY/_ISSUER) are team-wide
+# and shared with the identity-wallet lane. See docs/ios-cicd.md.
+
+# Build a signed, App Store-method IPA for the admin console. Assumes the Xcode
+# project exists: run `cargo tauri ios init` + `just admin-postinit` once first
+# (CI does both every run).
+admin-ipa: admin-check
+    # Drop any stale .ipa first so `admin-upload` can't pick it up.
+    rm -f apps/admin-companion/src-tauri/gen/apple/build/arm64/*.ipa
+    cd apps/admin-companion && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && cargo tauri ios build --export-method app-store-connect
+
+# Upload the most recently built admin-companion IPA to App Store Connect / TestFlight
+# via altool. Requires APPLE_API_KEY (key id) + APPLE_API_ISSUER (issuer id) in the
+# environment and the matching AuthKey_<key id>.p8 in ~/.appstoreconnect/private_keys/.
+admin-upload:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Newest .ipa by mtime — `ls -t` picks the freshest build, not the alphabetically first.
+    ipa="$(ls -t apps/admin-companion/src-tauri/gen/apple/build/arm64/*.ipa 2>/dev/null | head -n1 || true)"
+    if [ -z "$ipa" ]; then
+      echo "no .ipa found - run 'just admin-ipa' first" >&2
+      exit 1
+    fi
+    echo "uploading $ipa to TestFlight..."
+    xcrun altool --upload-app --type ios --file "$ipa" --apiKey "$APPLE_API_KEY" --apiIssuer "$APPLE_API_ISSUER"
+
+# Full local release lane: build the signed IPA, then upload to TestFlight.
+admin-release: admin-ipa admin-upload

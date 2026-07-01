@@ -7,10 +7,13 @@ members = [
     "apps/identity-wallet/src-tauri",
     "apps/admin-companion/src-tauri",
 ]
-# Vendored Tauri plugin — a path *dependency* of identity-wallet, NOT a workspace member: it
-# pulls `tauri` (GUI toolchain) which the Linux PDS CI lacks, so it must never build standalone
-# via `cargo build --workspace`. It builds only as identity-wallet's dep (excluded from ci-pds).
-exclude = ["apps/identity-wallet/vendor/tauri-plugin-auth-session"]
+# Vendored Tauri plugins — path *dependencies* of the iOS apps, NOT workspace members: they
+# pull `tauri` (GUI toolchain) which the Linux PDS CI lacks, so they must never build standalone
+# via `cargo build --workspace`. Each builds only as its app's dep (excluded from ci-pds).
+exclude = [
+    "apps/identity-wallet/vendor/tauri-plugin-auth-session",
+    "apps/admin-companion/vendor/tauri-plugin-sharesheet",
+]
 resolver = "2"
 
 [workspace.package]

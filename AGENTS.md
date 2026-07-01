@@ -28,7 +28,7 @@ CI runs on **GitHub Actions**, split into a Linux **PDS** lane and a macOS **iOS
 
 Release flow: `just set-version X.Y.Z` (PR) → merge → `just release` (cuts/pushes the `vX.Y.Z` tag) → `just deploy-production vX.Y.Z` (advances `production`). Litestream backs up the production SQLite DB. See [docs/deploy.md](docs/deploy.md).
 
-**iOS (`.github/workflows/ios-testflight.yml`).** Builds the `identity-wallet` Tauri app on a free public-repo `macos-26` runner and uploads to TestFlight on every push to `main` (App Store Connect API-key signing; never runs on `pull_request`, keeping secrets off fork PRs). The build/upload core is shared `just` recipes (`ios-ipa`, `ios-upload`, `ios-release`) usable locally. See [docs/ios-cicd.md](docs/ios-cicd.md).
+**iOS (`.github/workflows/ios-testflight.yml`).** Builds the `identity-wallet` Tauri app on a free public-repo `macos-26` runner and uploads to TestFlight on every push to `main` (App Store Connect API-key signing; never runs on `pull_request`, keeping secrets off fork PRs). The build/upload core is shared `just` recipes (`ios-ipa`, `ios-upload`, `ios-release`) usable locally. The **admin-companion** operator console ships through its own parallel lane — `.github/workflows/admin-testflight.yml` + `just admin-ipa`/`admin-upload`/`admin-release`, triggered on `apps/admin-companion/**` — reusing every signing secret except its own bundle-id-bound provisioning profile (`IOS_MOBILE_PROVISION_ADMIN`). See [docs/ios-cicd.md](docs/ios-cicd.md).
 
 ## Dev Environment
 - Managed entirely by Nix flake + devenv; do not install tools globally
