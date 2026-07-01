@@ -34,8 +34,11 @@ const REPO_REF_TYPE: &str = "com.atproto.admin.defs#repoRef";
 
 /// `com.atproto.admin.defs#repoRef` — the only subject type this endpoint accepts. Record- and
 /// blob-level takedown (the reference PDS's other subject kinds) are not modelled here; ezpds
-/// only tracks lifecycle state per-account.
+/// only tracks lifecycle state per-account. Unlike [`StatusAttrInput`], `repoRef` has no optional
+/// lexicon field ezpds chooses not to persist, so an unrecognised field is rejected outright
+/// rather than silently ignored — it means the caller sent something other than a plain repoRef.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RepoRefSubject {
     #[serde(rename = "$type")]
     type_: String,
@@ -356,6 +359,29 @@ mod tests {
 
         let body = serde_json::json!({
             "subject": {"$type": "com.atproto.repo.strongRef", "did": "did:plc:usstd7"},
+            "takedown": {"applied": true},
+        })
+        .to_string();
+        let response = app(state)
+            .oneshot(request(&body, Some("test-admin-token")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn subject_with_unknown_field_returns_400() {
+        // deny_unknown_fields on RepoRefSubject: an extra field (e.g. a strongRef's `uri`/`cid`
+        // smuggled alongside `did`) is rejected rather than silently ignored.
+        let state = test_state_with_admin_token().await;
+        insert_account(&state.db, "did:plc:usstd9", "usstd9@example.com").await;
+
+        let body = serde_json::json!({
+            "subject": {
+                "$type": "com.atproto.admin.defs#repoRef",
+                "did": "did:plc:usstd9",
+                "uri": "at://did:plc:usstd9/app.bsky.feed.post/abc",
+            },
             "takedown": {"applied": true},
         })
         .to_string();
