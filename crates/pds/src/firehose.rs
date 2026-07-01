@@ -51,6 +51,13 @@ use tokio::sync::broadcast;
 /// consumers before they begin to observe `Lagged`.
 const DEFAULT_CAPACITY: usize = 1024;
 
+/// The `com.atproto.sync.subscribeRepos` lexicon caps `#sync.blocks` (the commit-block CAR) at
+/// 10,000 bytes. A `#sync` whose CAR exceeds this cannot be a valid wire frame, so it is rejected
+/// before it enters the durable log rather than replaying later as an oversized frame a strict
+/// subscriber would reject. In practice a single signed commit block is well under this, so the
+/// check is a guard against a future caller (e.g. `importRepo`) staging an over-large CAR.
+const MAX_SYNC_BLOCKS_BYTES: usize = 10_000;
+
 /// Errors from sequencing (persisting + broadcasting) or reconstructing a firehose event.
 #[derive(Debug, thiserror::Error)]
 pub enum FirehoseError {
@@ -640,12 +647,17 @@ impl Firehose {
     /// The Sync v1.1 state assertion analogue of [`emit_account`]: emitted (best-effort) when a
     /// relay may need an authoritative repo head to re-anchor against but there is no atomic write
     /// to bind it to. Genesis and activation stage their `#sync` inside the account transaction via
-    /// [`EmitGuard::stage_sync`] instead; this bare primitive is kept for callers (and tests) that
-    /// do not need that atomicity. Shares the same sequencer and durable log so `#sync` frames are
-    /// ordered relative to commits and account frames exactly as a relay expects. `blocks` is a
-    /// pre-built CARv1 byte string (scalars otherwise), so its wire encoding is infallible and
-    /// needs no pre-emit CID validation.
+    /// [`PendingCommit::stage_sync`]/[`PendingAccount::stage_sync`] instead; this bare primitive is
+    /// kept for callers (and tests) that do not need that atomicity. Shares the same sequencer and
+    /// durable log so `#sync` frames are ordered relative to commits and account frames exactly as
+    /// a relay expects. The commit-block CAR is capped at [`MAX_SYNC_BLOCKS_BYTES`] before persist;
+    /// otherwise `blocks` is a pre-built CARv1 byte string (scalars otherwise), so its wire encoding
+    /// is infallible and needs no pre-emit CID validation.
     pub async fn emit_sync(&self, input: SyncInput) -> Result<u64, FirehoseError> {
+        // Reject an over-cap CAR before it enters the durable log (mirrors `validate_commit_cids`
+        // in `emit_commit`), so an oversized `#sync` can't become a replay poison pill.
+        validate_sync_blocks(&input.blocks)?;
+
         let _guard = self.emit_lock.lock().await;
         // Capture the timestamp and serialize under the lock so `time`/`sequenced_at` stay
         // monotonic with seq order even when emits race (same critical section as `seq`).
@@ -956,6 +968,9 @@ async fn stage_sync_row(
     time: &str,
     seq: u64,
 ) -> Result<(), FirehoseError> {
+    // Same over-cap guard as `emit_sync`: a staged oversized `#sync` would roll the caller's
+    // transaction back (via `?`) rather than persist a frame that replays as invalid.
+    validate_sync_blocks(&input.blocks)?;
     let blob = {
         let stored = StoredSyncRef {
             did: &input.did,
@@ -1021,6 +1036,20 @@ fn validate_commit_cids(input: &CommitInput) -> Result<(), FirehoseError> {
             repo_engine::Cid::try_from(cid.as_str())
                 .map_err(|e| FirehoseError::Encode(format!("invalid op CID {cid:?}: {e}")))?;
         }
+    }
+    Ok(())
+}
+
+/// Reject a `#sync` whose commit-block CAR exceeds the lexicon's [`MAX_SYNC_BLOCKS_BYTES`] cap,
+/// so an oversized (and therefore unencodable-on-the-wire) frame is turned away before it is
+/// persisted rather than poisoning replay. Applied by every `#sync` persistence path
+/// (`emit_sync` and the staged path via [`stage_sync_row`]).
+fn validate_sync_blocks(blocks: &[u8]) -> Result<(), FirehoseError> {
+    if blocks.len() > MAX_SYNC_BLOCKS_BYTES {
+        return Err(FirehoseError::Encode(format!(
+            "#sync blocks CAR is {} bytes, over the {MAX_SYNC_BLOCKS_BYTES}-byte lexicon cap",
+            blocks.len()
+        )));
     }
     Ok(())
 }
@@ -1840,6 +1869,58 @@ mod tests {
         assert_eq!(s.rev, "3ksync");
         assert_eq!(s.blocks, vec![0xCA, 0xFE, 0xBA, 0xBE]);
         assert!(!s.time.is_empty());
+    }
+
+    #[tokio::test]
+    async fn emit_sync_rejects_oversized_blocks_without_persisting() {
+        let fh = test_firehose().await;
+        let mut input = sync_input("did:plc:big");
+        input.blocks = vec![0u8; MAX_SYNC_BLOCKS_BYTES + 1];
+        assert!(
+            matches!(fh.emit_sync(input).await, Err(FirehoseError::Encode(_))),
+            "a #sync CAR over the lexicon cap must be rejected at emit"
+        );
+        // Rejected before persistence: no row, no consumed seq.
+        assert_eq!(fh.current_seq(), 0);
+        assert_eq!(crate::db::firehose_seq::max_seq(&fh.db).await.unwrap(), 0);
+
+        // A CAR exactly at the cap is accepted.
+        let mut at_cap = sync_input("did:plc:big");
+        at_cap.blocks = vec![0u8; MAX_SYNC_BLOCKS_BYTES];
+        assert_eq!(fh.emit_sync(at_cap).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn stage_sync_rejects_oversized_blocks_and_rolls_back() {
+        // A staged over-cap `#sync` must fail the whole transaction rather than persist an
+        // invalid frame — here the chained account write must roll back with it.
+        let fh = test_firehose().await;
+        insert_account(&fh.db, "did:plc:a", "root").await;
+
+        let mut tx = fh.db.begin().await.unwrap();
+        sqlx::query("UPDATE accounts SET deactivated_at = NULL WHERE did = 'did:plc:a'")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let account = fh
+            .lock_emit()
+            .await
+            .stage_account(&mut tx, "did:plc:a".to_string(), true, None)
+            .await
+            .unwrap();
+        let mut oversized = sync_input("did:plc:a");
+        oversized.blocks = vec![0u8; MAX_SYNC_BLOCKS_BYTES + 1];
+        let result = account.stage_sync(&mut tx, oversized).await;
+        assert!(
+            matches!(result, Err(FirehoseError::Encode(_))),
+            "an over-cap staged #sync must be rejected"
+        );
+        drop(tx);
+        assert_eq!(
+            fh.current_seq(),
+            0,
+            "seq must not advance on a rejected stage"
+        );
     }
 
     #[tokio::test]

@@ -51,7 +51,7 @@ assertion relays use to auto-repair drift; it is emitted on account genesis (abo
 `activateAccount` (chained after the `#account` via `PendingAccount::stage_sync` when the account
 has a repo — the commit-block CAR is built *before* the transaction, since the single-connection
 pool can't serve a block read while the tx holds the connection), and belongs on a future
-`importRepo` (MM-220). Account-status changes emit a separate
+`importRepo` once that lands. Account-status changes emit a separate
 `#account` frame instead of a `#commit`: `activate_account.rs`/`deactivate_account.rs` stage one
 via `Firehose::stage_account` (active=false/`deactivated` or active=true) **only on a real status
 transition** — a redundant no-op activate/deactivate returns 200 and emits nothing.
