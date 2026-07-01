@@ -33,9 +33,13 @@
 //        INSERT accounts (did, email, password_hash=argon2id(password), recovery_share=pending_share_2)
 //        INSERT did_documents (did, document)
 //        INSERT sessions (id, did, device_id=NULL, token_hash, expires_at=+1 year)
+//        stage the genesis repo's #commit firehose event (same tx as the account row)
 //        DELETE pending_sessions WHERE account_id = ?
 //        DELETE devices WHERE account_id = ?
 //        DELETE pending_accounts WHERE id = ?
+//  13a. After the transaction commits: finish the staged #commit, emit an #account (active)
+//       event, and notify configured crawlers — so a never-crawled host self-announces to the
+//       relay instead of staying invisible until its first record write.
 //  14. Return { "did", "did_document", "status": "active", "session_token",
 //               "shamir_share_1": <base32>, "shamir_share_3": <base32> }
 //
@@ -169,6 +173,10 @@ pub async fn create_did_handler(
                 ApiError::new(ErrorCode::InternalError, "failed to build genesis repo")
             })?;
     let genesis_root_str = genesis_root.to_string();
+    // Every block `build_genesis_repo` wrote is reachable from `genesis_root` (there is no
+    // previous commit to diff against), so the genesis `#commit` frame's CARv1 payload can be
+    // built directly from these in-memory blocks — no block-store round trip needed.
+    let genesis_car = build_genesis_car(genesis_root, &genesis_blocks);
 
     // Phase 3: Pre-store DID and Shamir shares for retry resilience, then POST to plc.directory.
     // Shares are generated once and stored alongside pending_did so that retries return the
@@ -191,7 +199,7 @@ pub async fn create_did_handler(
     let session_token = generate_token();
     let password_hash = hash_password(&payload.password)?;
     promote_account(
-        &state.db,
+        &state,
         did,
         &pending.email,
         &session.account_id,
@@ -203,6 +211,7 @@ pub async fn create_did_handler(
         &genesis_root_str,
         &genesis_rev,
         &genesis_blocks,
+        genesis_car,
     )
     .await?;
 
@@ -508,15 +517,17 @@ async fn post_to_plc_directory(
     Ok(())
 }
 
-/// Atomically promote a pending account to a full account (Steps 10-13).
+/// Atomically promote a pending account to a full account (Steps 10-13), and sequence the
+/// account's genesis repo to the firehose so a never-crawled host self-announces instead of
+/// staying invisible until its first record write.
 ///
-/// In a single transaction: INSERT accounts + did_documents + sessions,
-/// then DELETE pending_sessions + devices + pending_accounts.
+/// In a single transaction: INSERT accounts + did_documents + sessions, stage the genesis
+/// `#commit` firehose event, then DELETE pending_sessions + devices + pending_accounts.
 /// `recovery_share` is Share 2 of the Shamir split; stored for PDS-side custody.
 /// `password_hash` is the argon2id PHC string for the account's password set during the ceremony.
 #[allow(clippy::too_many_arguments)]
 async fn promote_account(
-    db: &sqlx::SqlitePool,
+    state: &AppState,
     did: &str,
     email: &str,
     account_id: &str,
@@ -528,6 +539,7 @@ async fn promote_account(
     genesis_root: &str,
     genesis_rev: &str,
     genesis_blocks: &[(repo_engine::Cid, Vec<u8>)],
+    genesis_car: Vec<u8>,
 ) -> Result<(), ApiError> {
     let did_document_str = serde_json::to_string(did_document).map_err(|e| {
         tracing::error!(error = %e, "failed to serialize DID document");
@@ -535,7 +547,12 @@ async fn promote_account(
     })?;
     let session_id = uuid::Uuid::new_v4().to_string();
 
-    let mut tx = db
+    // Acquired *before* opening the transaction below — see `Firehose::lock_emit`'s docs
+    // (crates/pds/CLAUDE.md's firehose section) for why that order matters on this crate's
+    // single-connection pool.
+    let emit_guard = state.firehose.lock_emit().await;
+    let mut tx = state
+        .db
         .begin()
         .await
         .inspect_err(|e| tracing::error!(error = %e, "failed to begin promotion transaction"))
@@ -610,6 +627,28 @@ async fn promote_account(
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store genesis repo"))?;
     }
 
+    // Stage the genesis `#commit` event in the same transaction as the repo it describes: a
+    // repo root recorded on `accounts` with no corresponding firehose row would be the same
+    // "durable write, silently dropped event" hazard `record_write::commit_repo_write` avoids
+    // for ordinary record writes.
+    let pending_commit = emit_guard
+        .stage_commit(
+            &mut tx,
+            crate::firehose::CommitInput {
+                repo: did.to_string(),
+                commit: genesis_root.to_string(),
+                rev: genesis_rev.to_string(),
+                since: None,
+                ops: Vec::new(),
+                blocks: genesis_car,
+            },
+        )
+        .await
+        .inspect_err(|e| tracing::error!(error = %e, did = %did, "failed to stage genesis firehose commit event"))
+        .map_err(|_| {
+            ApiError::new(ErrorCode::InternalError, "failed to sequence genesis repo")
+        })?;
+
     sqlx::query("DELETE FROM pending_sessions WHERE account_id = ?")
         .bind(account_id)
         .execute(&mut *tx)
@@ -636,7 +675,50 @@ async fn promote_account(
         .inspect_err(|e| tracing::error!(error = %e, "failed to commit promotion transaction"))
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to commit transaction"))?;
 
+    // Only now that the transaction (which already carries the genesis commit's `repo_seq`
+    // row) has committed successfully: advance the sequence counter and broadcast the event.
+    pending_commit.finish();
+
+    // Emit the `#account` (active) frame separately, best-effort, once the account and its
+    // genesis commit are both durable — mirrors `create_handle.rs`'s post-write `#identity`
+    // emission: a sequencer write failure here is logged and dropped rather than failing an
+    // otherwise-successful account creation. A relay that misses it still learns the account is
+    // active from the genesis commit above or a later one.
+    if let Err(e) = state
+        .firehose
+        .emit_account(did.to_string(), true, None)
+        .await
+    {
+        tracing::warn!(
+            error = %e,
+            did = %did,
+            "failed to sequence #account firehose event after account promotion (non-fatal)"
+        );
+    }
+
+    // A fresh account may be the first thing this host has ever announced: request crawl so a
+    // relay that has never seen this PDS discovers it now rather than waiting on some future
+    // commit to trigger the notification.
+    state.crawlers.notify();
+
     Ok(())
+}
+
+/// Build the CARv1 bytes for the genesis commit's `#commit` firehose frame from the in-memory
+/// blocks `build_genesis_repo` returned. Every block genesis writes is reachable from `root`
+/// (there is no previous commit to diff against), so — unlike
+/// `record_write::commit_repo_write`, which reads blocks back from the block store — no diff
+/// computation or store round trip is needed here.
+fn build_genesis_car(root: repo_engine::Cid, blocks: &[(repo_engine::Cid, Vec<u8>)]) -> Vec<u8> {
+    let mut ordered: Vec<&(repo_engine::Cid, Vec<u8>)> = blocks.iter().collect();
+    // Root-first, then CID order — mirrors `repo_engine::car_export`'s own block ordering, which
+    // many streaming CAR parsers expect.
+    ordered.sort_unstable_by_key(|(cid, _)| (*cid != root, *cid));
+    let mut car = repo_engine::car_v1_header(root);
+    for (cid, bytes) in ordered {
+        car.extend_from_slice(&repo_engine::car_v1_block_frame(*cid, bytes));
+    }
+    car
 }
 
 /// Construct a minimal DID Core document from a verified genesis operation.
@@ -891,6 +973,8 @@ mod tests {
             &setup.repo_signing_key_id,
         );
 
+        // Subscribe before issuing the request so the genesis firehose events are captured.
+        let mut fh_rx = state.firehose.subscribe();
         let app = crate::app::app(state.clone());
         let response = app
             .oneshot(create_did_request(
@@ -965,6 +1049,41 @@ mod tests {
             block_count >= 2,
             "genesis blocks must be persisted (commit + MST node); got {block_count}"
         );
+
+        // A fresh account must self-announce — genesis #commit then #account (active) sequenced
+        // to the firehose, so a never-crawled host doesn't stay invisible to the relay until
+        // its first record write.
+        use crate::firehose::FirehoseEvent;
+        let FirehoseEvent::Commit(commit_event) = fh_rx
+            .try_recv()
+            .expect("a genesis #commit event must be emitted")
+        else {
+            panic!("expected a #commit event first");
+        };
+        assert_eq!(commit_event.repo, did);
+        assert_eq!(commit_event.commit, repo_root.clone().unwrap());
+        assert!(commit_event.since.is_none(), "genesis commit has no since");
+        assert!(
+            commit_event.ops.is_empty(),
+            "genesis commit carries no record ops"
+        );
+        let car =
+            atrium_repo::blockstore::CarStore::open(std::io::Cursor::new(&commit_event.blocks))
+                .await
+                .expect("genesis commit blocks must be a valid CAR");
+        let roots: Vec<_> = car.roots().collect();
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].to_string(), commit_event.commit);
+
+        let FirehoseEvent::Account(account_event) = fh_rx
+            .try_recv()
+            .expect("an #account event must follow the genesis commit")
+        else {
+            panic!("expected an #account event second");
+        };
+        assert_eq!(account_event.did, did);
+        assert!(account_event.active, "fresh account should be active");
+        assert!(account_event.status.is_none());
 
         // shamir_share_1 and shamir_share_3 must be present, 52-char BASE32 (A-Z, 2-7).
         // Missing fields or wrong alphabet here means a rename or swap would go undetected.

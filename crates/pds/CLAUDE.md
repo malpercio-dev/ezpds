@@ -37,9 +37,13 @@ collection/rkey + cid + value), and the CARv1 diff blocks. Backpressure is by de
 channel never blocks producers — a slow subscriber observes `Lagged` and is expected to disconnect.
 All three write paths (`create_record`/`put_record` via `record_write`, `delete_record`,
 `apply_writes`) emit exactly one event per commit. (Those same write paths reject a deactivated
-account with 403 before committing.) Account-status changes emit a separate `#account` frame
-instead of a `#commit`: `activate_account.rs`/`deactivate_account.rs` stage one via
-`Firehose::stage_account` (active=false/`deactivated` or active=true) **only on a real status
+account with 403 before committing.) `create_did.rs`'s `promote_account` stages the same kind of
+`#commit` event for a new account's *genesis* repo, atomically with the `accounts`/`did_documents`/
+`sessions` inserts, so a fresh host self-announces to the relay instead of staying invisible until
+its first record write; it then emits a best-effort `#account` (active) frame and calls
+`crawlers.notify()` once that transaction has committed. Account-status changes emit a separate
+`#account` frame instead of a `#commit`: `activate_account.rs`/`deactivate_account.rs` stage one
+via `Firehose::stage_account` (active=false/`deactivated` or active=true) **only on a real status
 transition** — a redundant no-op activate/deactivate returns 200 and emits nothing. The `#account`
 frame shares the same sequencer so account frames are ordered relative to commits.
 
@@ -47,14 +51,17 @@ frame shares the same sequencer so account frames are ordered relative to commit
 `repo_seq` (via `db::firehose_seq`) **before** broadcasting it, all under one async `emit_lock`
 that keeps broadcast order = `seq` order and the log a dense prefix (a failed insert doesn't
 consume a `seq`). The sequencer loads `MAX(seq)` on construction, so `seq` is monotonic across
-restarts/redeploys. Those two methods remain a bare best-effort primitive (used directly only by
-tests and `emit_identity`'s neighbours); the production call sites instead acquire `emit_lock` via
-`Firehose::lock_emit` (returning an `EmitGuard`) *before* opening their transaction, then call
+restarts/redeploys. Those two methods remain a bare best-effort primitive — used directly by tests,
+`emit_identity`'s neighbours (`create_handle.rs`/`delete_handle.rs`/`update_handle.rs`), and
+`create_did.rs`'s post-commit `emit_account` call, none of which need atomicity with a specific
+transaction; the call sites that do instead acquire `emit_lock` via `Firehose::lock_emit`
+(returning an `EmitGuard`) *before* opening their transaction, then call
 `EmitGuard::stage_commit`/`stage_account` to insert the `repo_seq` row into that *caller's own*
-open transaction — the same one carrying the repo-root CAS (`record_write::commit_repo_write`) or
-the account-status UPDATE (`activate_account`/`deactivate_account`) — and get back a `Pending*`
-handle that carries the guard forward. Acquiring the lock before the transaction (rather than
-inside the staging call) matters on this crate's single-connection pool: `emit_commit`/
+open transaction — the same one carrying the repo-root CAS (`record_write::commit_repo_write`,
+`create_did.rs`'s genesis promotion) or the account-status UPDATE (`activate_account`/
+`deactivate_account`) — and get back a `Pending*` handle that carries the guard forward. Acquiring
+the lock before the transaction (rather than inside the staging call) matters on this crate's
+single-connection pool: `emit_commit`/
 `emit_account`/`emit_identity` already acquire the lock before touching the pool, so a staging
 path that instead opened its transaction first and acquired the lock after could deadlock against
 one of them (each would hold what the other is waiting for). The caller commits that transaction
