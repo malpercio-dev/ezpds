@@ -20,8 +20,13 @@ docs {
   WebSocket client (e.g. `websocat`) against the same URL.
 
   Streams binary frames, each two concatenated DAG-CBOR objects: a header (`{op, t}`) and a
-  body. `op = 1` is a message whose `t` names the type (`#commit`); `op = -1` is an error whose
-  body is `{error, message}`, after which the stream closes.
+  body. `op = 1` is a message whose `t` names the type — `#commit`, `#account`, `#identity`, or
+  `#sync`; `op = -1` is an error whose body is `{error, message}`, after which the stream closes.
+
+  Sync v1.1: `#commit` carries `prevData` (the previous commit's MST root CID, so a relay can
+  validate the diff inductively) and emits the deprecated `blobs` list empty. `#sync` is a state
+  assertion carrying the signed commit block in a small CAR (`{seq, did, blocks, rev, time}`),
+  emitted on account genesis and activation so a relay can auto-repair a repo it has drifted from.
 
   Optional `cursor` (a sequence number) requests replay: the server first replays every event
   with `seq` greater than the cursor from its durable log (so replay survives a server restart),

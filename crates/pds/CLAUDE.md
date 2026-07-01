@@ -32,16 +32,26 @@ monotonic sequencer (backed by the `repo_seq` table, V028) and a Tokio `broadcas
 `AppState.firehose: Arc<Firehose>` is shared by every handler. Each repo commit calls
 `record_write::commit_repo_write`, which builds the commit's block diff
 (`repo_engine::collect_commit_diff_cids` + `build_car_from_cids`, run *before* post-commit GC) and
-publishes a sequenced `CommitEvent` carrying the DID, rev, `since`, per-record `RepoOp`s (action +
-collection/rkey + cid + value), and the CARv1 diff blocks. Backpressure is by design: the bounded
+publishes a sequenced `CommitEvent` carrying the DID, rev, `since`, `prevData` (the previous
+commit's MST root CID — Sync v1.1's inductive-validation anchor, captured before the write mutates
+the repo; `None` for genesis), per-record `RepoOp`s (action + collection/rkey + cid + value), and
+the CARv1 diff blocks. The `#commit` wire frame emits the deprecated `blobs` list empty. Backpressure is by design: the bounded
 channel never blocks producers — a slow subscriber observes `Lagged` and is expected to disconnect.
 All three write paths (`create_record`/`put_record` via `record_write`, `delete_record`,
 `apply_writes`) emit exactly one event per commit. (Those same write paths reject a deactivated
 account with 403 before committing.) `create_did.rs`'s `promote_account` stages the same kind of
 `#commit` event for a new account's *genesis* repo, atomically with the `accounts`/`did_documents`/
 `sessions` inserts, so a fresh host self-announces to the relay instead of staying invisible until
-its first record write; it then emits a best-effort `#account` (active) frame and calls
-`crawlers.notify()` once that transaction has committed. Account-status changes emit a separate
+its first record write; chained after that genesis `#commit` in the same transaction is a Sync v1.1
+`#sync` state assertion (via `PendingCommit::stage_sync`, carrying a single-root CAR of just the
+signed commit block), so a relay can anchor to this fresh host's head. It then emits a best-effort
+`#account` (active) frame and calls `crawlers.notify()` once that transaction has committed.
+A `#sync` frame (`SyncEvent`: DID, rev, and a ≤10 KB commit-block CAR) is the Sync v1.1 head
+assertion relays use to auto-repair drift; it is emitted on account genesis (above) and on
+`activateAccount` (chained after the `#account` via `PendingAccount::stage_sync` when the account
+has a repo — the commit-block CAR is built *before* the transaction, since the single-connection
+pool can't serve a block read while the tx holds the connection), and belongs on a future
+`importRepo` (MM-220). Account-status changes emit a separate
 `#account` frame instead of a `#commit`: `activate_account.rs`/`deactivate_account.rs` stage one
 via `Firehose::stage_account` (active=false/`deactivated` or active=true) **only on a real status
 transition** — a redundant no-op activate/deactivate returns 200 and emits nothing.
@@ -51,16 +61,21 @@ for an admin-driven takedown/clear, but derives `active`/`status` from the accou
 takedown on a still-suspended account must report `suspended`, not `active`. The `#account` frame
 shares the same sequencer so account frames are ordered relative to commits.
 
-**Durability and atomicity.** `Firehose::emit_commit`/`emit_account` persist each event to
+**Durability and atomicity.** `Firehose::emit_commit`/`emit_account`/`emit_identity`/`emit_sync`
+persist each event to
 `repo_seq` (via `db::firehose_seq`) **before** broadcasting it, all under one async `emit_lock`
 that keeps broadcast order = `seq` order and the log a dense prefix (a failed insert doesn't
 consume a `seq`). The sequencer loads `MAX(seq)` on construction, so `seq` is monotonic across
-restarts/redeploys. Those two methods remain a bare best-effort primitive — used directly by tests,
+restarts/redeploys. Those methods remain bare best-effort primitives — used directly by tests,
 `emit_identity`'s neighbours (`create_handle.rs`/`delete_handle.rs`/`update_handle.rs`), and
 `create_did.rs`'s post-commit `emit_account` call, none of which need atomicity with a specific
 transaction; the call sites that do instead acquire `emit_lock` via `Firehose::lock_emit`
 (returning an `EmitGuard`) *before* opening their transaction, then call
 `EmitGuard::stage_commit`/`stage_account` to insert the `repo_seq` row into that *caller's own*
+open transaction. A caller that also needs a chained `#sync` in the same transaction (genesis,
+activation) calls `PendingCommit::stage_sync`/`PendingAccount::stage_sync`, which inserts the
+`#sync` row at the next `seq` and returns a `PendingWithSync` whose `finish` broadcasts the primary
+event then the `#sync`, advancing the counter past both. The staging insert lands in the caller's
 open transaction — the same one carrying the repo-root CAS (`record_write::commit_repo_write`,
 `create_did.rs`'s genesis promotion) or the account-status UPDATE (`activate_account`/
 `deactivate_account`) — and get back a `Pending*` handle that carries the guard forward. Acquiring
@@ -137,7 +152,7 @@ and async query functions; no business logic lives here.
 | `password_reset.rs` | `insert_reset_token`, `get_reset_token`, `mark_reset_token_used`, `update_password_hash` |
 | `preferences.rs` | `get_preferences` (DID→stored `app.bsky` preferences JSON blob); `put_preferences` (upsert the blob, overwriting any previous value) |
 | `transfers.rs` | Planned device-swap sessions (V027/V029/V030): `insert_transfer` opens a `pending` transfer for a DID, sweeping any expired active row first then letting the partial unique indexes reject a still-active duplicate (→ `DuplicateActive`, the 409 path) or an already-taken active code (→ `CodeCollision`, caller regenerates and retries). Transfer-accept query helpers store promoted-device credentials in `transfer_devices`; completion helpers revoke superseded sessions/transfer-device credentials and append `transfer_audit_events`. `transfer_device_token_exists` lets the `routes/auth.rs` device-token auth path accept those credentials later. Wired by `routes/transfer_initiate.rs`, the root `transfer.rs` accept/complete workflows, `routes/transfer_accept.rs`, `routes/transfer_complete.rs`, and `routes/auth.rs` |
-| `firehose_seq.rs` | Persistent firehose event log (V028): `max_seq` (seed the sequencer on boot), `insert_event` (append one sequenced `#commit`/`#account` row with an explicit `seq`), `events_in_range(after, upper, limit)` (the cursor-replay page query). Consumed by `firehose.rs` (persist-before-broadcast) and `routes/sync_subscribe_repos.rs` (replay paging) |
+| `firehose_seq.rs` | Persistent firehose event log (V028): `max_seq` (seed the sequencer on boot), `insert_event` (append one sequenced `#commit`/`#account`/`#identity`/`#sync` row with an explicit `seq`), `events_in_range(after, upper, limit)` (the cursor-replay page query). Consumed by `firehose.rs` (persist-before-broadcast) and `routes/sync_subscribe_repos.rs` (replay paging) |
 | `admin_devices.rs` | Operator companion app admin-device model (V025): pairing-code mint/consume (single-use), device insert/get/list/revoke (derived active status) + `touch_last_seen` (liveness bump on auth), nonce insert-if-absent + stale-nonce sweep (anti-replay). Pairing/register wired by `routes/admin_devices.rs`; the `require_admin` signed-request guard (`routes/auth.rs`) consumes `get_device`/`insert_nonce_if_absent`/`touch_last_seen`; the list/revoke routes (`routes/admin_devices.rs`) consume `list_devices`/`revoke_device`/`get_device` |
 
 See [`src/db/CLAUDE.md`](src/db/CLAUDE.md) for migration history and invariants.

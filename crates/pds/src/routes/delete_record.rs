@@ -94,8 +94,10 @@ pub async fn delete_record(
         ApiError::new(ErrorCode::InternalError, "failed to delete record")
     })?;
 
-    // Capture the pre-delete revision for the firehose event's `since`.
+    // Capture the pre-delete revision and MST root for the firehose event's `since` and Sync v1.1
+    // `prevData` (the previous commit's MST root CID) — both read before the delete mutates the repo.
     let prev_rev = repo.commit().rev().as_str().to_string();
+    let prev_data = repo.commit().data().to_string();
 
     let mst_key = format!("{collection}/{rkey}");
 
@@ -160,6 +162,7 @@ pub async fn delete_record(
         repo.root(),
         new_rev,
         Some(prev_rev),
+        Some(prev_data),
         vec![op],
         &root_cid_str,
     )

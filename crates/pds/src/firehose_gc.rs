@@ -286,6 +286,7 @@ mod tests {
                     commit: VALID_CID.to_string(),
                     rev: "3krev".to_string(),
                     since: None,
+                    prev_data: None,
                     ops: vec![],
                     blocks: vec![],
                 })

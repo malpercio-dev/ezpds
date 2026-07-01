@@ -137,6 +137,10 @@ pub struct CommitEvent {
     pub rev: String,
     /// The previous repo revision, or `None` for the first commit.
     pub since: Option<String>,
+    /// The previous commit's MST root (`data`) CID — Sync v1.1's `prevData`, which lets a relay
+    /// validate this commit's diff inductively without archival state. `None` for the first
+    /// (genesis) commit, which has no predecessor.
+    pub prev_data: Option<String>,
     /// Record operations applied in this commit.
     pub ops: Vec<RepoOp>,
     /// CARv1 blocks introduced by this commit (CAR root = `commit`), for BGS consumption.
@@ -179,6 +183,26 @@ pub struct IdentityEvent {
     pub handle: Option<String>,
 }
 
+/// A `#sync` firehose event: a Sync v1.1 state assertion carrying the account's current signed
+/// commit block. Unlike `#commit` it is not a diff — it names the current repo head and ships just
+/// the commit block (in a small CARv1) so a relay that has drifted from this host can re-anchor to
+/// it. Emitted on account genesis, activation, and (once wired) repo import — the moments a relay
+/// most needs an authoritative head to auto-repair against.
+#[derive(Debug, Clone)]
+pub struct SyncEvent {
+    /// Monotonic sequence number assigned by the [`Firehose`] sequencer.
+    pub seq: u64,
+    /// RFC 3339 timestamp of emission.
+    pub time: String,
+    /// The repo owner's DID.
+    pub did: String,
+    /// The current repo revision (TID), which must match the `rev` inside the commit block.
+    pub rev: String,
+    /// A CARv1 whose root is the current commit and which contains the signed commit block
+    /// (kept small — the lexicon caps `#sync.blocks` at 10 KB).
+    pub blocks: Vec<u8>,
+}
+
 /// A frame broadcast to firehose subscribers. Modelled as an enum so further frame types can be
 /// added without changing the channel item type.
 #[derive(Debug, Clone)]
@@ -186,6 +210,7 @@ pub enum FirehoseEvent {
     Commit(Arc<CommitEvent>),
     Account(Arc<AccountEvent>),
     Identity(Arc<IdentityEvent>),
+    Sync(Arc<SyncEvent>),
 }
 
 impl FirehoseEvent {
@@ -195,6 +220,7 @@ impl FirehoseEvent {
             FirehoseEvent::Commit(c) => c.seq,
             FirehoseEvent::Account(a) => a.seq,
             FirehoseEvent::Identity(i) => i.seq,
+            FirehoseEvent::Sync(s) => s.seq,
         }
     }
 }
@@ -206,7 +232,17 @@ pub struct CommitInput {
     pub commit: String,
     pub rev: String,
     pub since: Option<String>,
+    pub prev_data: Option<String>,
     pub ops: Vec<RepoOp>,
+    pub blocks: Vec<u8>,
+}
+
+/// Inputs to [`Firehose::emit_sync`] / [`EmitGuard::stage_sync`] — everything about a `#sync`
+/// state assertion except the sequencer-assigned `seq` and the emission `time`.
+pub struct SyncInput {
+    pub did: String,
+    pub rev: String,
+    /// CARv1 whose root is the current commit and which carries the signed commit block.
     pub blocks: Vec<u8>,
 }
 
@@ -487,6 +523,7 @@ impl Firehose {
                 commit: &input.commit,
                 rev: &input.rev,
                 since: input.since.as_deref(),
+                prev_data: input.prev_data.as_deref(),
                 time: &time,
                 ops: input.ops.iter().map(StoredOpRef::from).collect(),
                 blocks: &input.blocks,
@@ -505,6 +542,7 @@ impl Firehose {
             commit: input.commit,
             rev: input.rev,
             since: input.since,
+            prev_data: input.prev_data,
             ops: input.ops,
             blocks: input.blocks,
         }));
@@ -597,6 +635,46 @@ impl Firehose {
         Ok(seq)
     }
 
+    /// Persist, sequence, and broadcast a `#sync` event.
+    ///
+    /// The Sync v1.1 state assertion analogue of [`emit_account`]: emitted (best-effort) when a
+    /// relay may need an authoritative repo head to re-anchor against but there is no atomic write
+    /// to bind it to. Genesis and activation stage their `#sync` inside the account transaction via
+    /// [`EmitGuard::stage_sync`] instead; this bare primitive is kept for callers (and tests) that
+    /// do not need that atomicity. Shares the same sequencer and durable log so `#sync` frames are
+    /// ordered relative to commits and account frames exactly as a relay expects. `blocks` is a
+    /// pre-built CARv1 byte string (scalars otherwise), so its wire encoding is infallible and
+    /// needs no pre-emit CID validation.
+    pub async fn emit_sync(&self, input: SyncInput) -> Result<u64, FirehoseError> {
+        let _guard = self.emit_lock.lock().await;
+        // Capture the timestamp and serialize under the lock so `time`/`sequenced_at` stay
+        // monotonic with seq order even when emits race (same critical section as `seq`).
+        let time = now_rfc3339();
+        let blob = {
+            let stored = StoredSyncRef {
+                did: &input.did,
+                time: &time,
+                rev: &input.rev,
+                blocks: &input.blocks,
+            };
+            serde_ipld_dagcbor::to_vec(&stored).map_err(|e| FirehoseError::Encode(e.to_string()))?
+        };
+        let seq = self.last_seq.load(Ordering::Acquire) + 1;
+        crate::db::firehose_seq::insert_event(&self.db, seq, &input.did, "sync", &blob, &time)
+            .await?;
+        self.last_seq.store(seq, Ordering::Release);
+
+        let event = FirehoseEvent::Sync(Arc::new(SyncEvent {
+            seq,
+            time,
+            did: input.did,
+            rev: input.rev,
+            blocks: input.blocks,
+        }));
+        let _ = self.tx.send(event);
+        Ok(seq)
+    }
+
     /// Acquire the sequencer lock ahead of a transaction that may call
     /// [`EmitGuard::stage_commit`]/[`EmitGuard::stage_account`].
     ///
@@ -660,6 +738,7 @@ impl<'f> EmitGuard<'f> {
                 commit: &input.commit,
                 rev: &input.rev,
                 since: input.since.as_deref(),
+                prev_data: input.prev_data.as_deref(),
                 time: &time,
                 ops: input.ops.iter().map(StoredOpRef::from).collect(),
                 blocks: &input.blocks,
@@ -734,7 +813,7 @@ pub struct PendingCommit<'f> {
     _guard: EmitGuard<'f>,
 }
 
-impl PendingCommit<'_> {
+impl<'f> PendingCommit<'f> {
     /// Confirm the event: advance the sequence counter and broadcast it to live subscribers.
     ///
     /// Call this **only** after the caller's transaction (which already carries this event's
@@ -749,10 +828,54 @@ impl PendingCommit<'_> {
             commit: self.input.commit,
             rev: self.input.rev,
             since: self.input.since,
+            prev_data: self.input.prev_data,
             ops: self.input.ops,
             blocks: self.input.blocks,
         }));
         let _ = self.firehose.tx.send(event);
+    }
+
+    /// Stage a Sync v1.1 `#sync` immediately after this `#commit`, in the *same* transaction and
+    /// under the *same* sequencer lock, taking the next `seq`. The genesis account-creation flow
+    /// uses this so a fresh repo's head assertion lands atomically with the commit that created it.
+    /// The returned handle's [`finish`](PendingWithSync::finish) advances the counter past both and
+    /// broadcasts commit-then-sync; dropping it without finishing broadcasts neither and advances
+    /// nothing (see [`PendingCommit::finish`]).
+    pub async fn stage_sync(
+        self,
+        tx: &mut Transaction<'_, Sqlite>,
+        sync_input: SyncInput,
+    ) -> Result<PendingWithSync<'f>, FirehoseError> {
+        let sync_seq = self.seq + 1;
+        let sync_time = now_rfc3339();
+        stage_sync_row(tx, &sync_input, &sync_time, sync_seq).await?;
+
+        let PendingCommit {
+            firehose,
+            seq,
+            time,
+            input,
+            _guard,
+        } = self;
+        let primary = FirehoseEvent::Commit(Arc::new(CommitEvent {
+            seq,
+            time,
+            repo: input.repo,
+            commit: input.commit,
+            rev: input.rev,
+            since: input.since,
+            prev_data: input.prev_data,
+            ops: input.ops,
+            blocks: input.blocks,
+        }));
+        Ok(PendingWithSync {
+            firehose,
+            primary,
+            sync_seq,
+            sync_time,
+            sync_input,
+            _guard,
+        })
     }
 }
 
@@ -768,7 +891,7 @@ pub struct PendingAccount<'f> {
     _guard: EmitGuard<'f>,
 }
 
-impl PendingAccount<'_> {
+impl<'f> PendingAccount<'f> {
     /// Confirm the event: advance the sequence counter and broadcast it to live subscribers.
     /// Call this only after the caller's transaction has committed successfully (see
     /// [`PendingCommit::finish`]).
@@ -783,6 +906,102 @@ impl PendingAccount<'_> {
         }));
         let _ = self.firehose.tx.send(event);
     }
+
+    /// Stage a Sync v1.1 `#sync` immediately after this `#account`, in the *same* transaction and
+    /// under the *same* sequencer lock, taking the next `seq`. Account activation uses this so the
+    /// repo's head assertion lands atomically with the status transition that reactivated it. See
+    /// [`PendingCommit::stage_sync`] for the finish/drop contract.
+    pub async fn stage_sync(
+        self,
+        tx: &mut Transaction<'_, Sqlite>,
+        sync_input: SyncInput,
+    ) -> Result<PendingWithSync<'f>, FirehoseError> {
+        let sync_seq = self.seq + 1;
+        let sync_time = now_rfc3339();
+        stage_sync_row(tx, &sync_input, &sync_time, sync_seq).await?;
+
+        let PendingAccount {
+            firehose,
+            seq,
+            time,
+            did,
+            active,
+            status,
+            _guard,
+        } = self;
+        let primary = FirehoseEvent::Account(Arc::new(AccountEvent {
+            seq,
+            time,
+            did,
+            active,
+            status,
+        }));
+        Ok(PendingWithSync {
+            firehose,
+            primary,
+            sync_seq,
+            sync_time,
+            sync_input,
+            _guard,
+        })
+    }
+}
+
+/// Insert a `#sync` event's `repo_seq` row into the caller's open transaction at the given `seq`.
+/// Shared by [`PendingCommit::stage_sync`] and [`PendingAccount::stage_sync`], which chain a Sync
+/// v1.1 state assertion onto their primary staged event under the same lock and transaction.
+async fn stage_sync_row(
+    tx: &mut Transaction<'_, Sqlite>,
+    input: &SyncInput,
+    time: &str,
+    seq: u64,
+) -> Result<(), FirehoseError> {
+    let blob = {
+        let stored = StoredSyncRef {
+            did: &input.did,
+            time,
+            rev: &input.rev,
+            blocks: &input.blocks,
+        };
+        serde_ipld_dagcbor::to_vec(&stored).map_err(|e| FirehoseError::Encode(e.to_string()))?
+    };
+    crate::db::firehose_seq::insert_event(&mut **tx, seq, &input.did, "sync", &blob, time).await?;
+    Ok(())
+}
+
+/// A primary staged event (`#commit` or `#account`) chained with a trailing `#sync`, both inserted
+/// into the caller's open transaction but not yet committed or broadcast. Produced by
+/// [`PendingCommit::stage_sync`] / [`PendingAccount::stage_sync`]; see [`PendingCommit`]'s docs for
+/// the commit/finish contract. `finish` broadcasts the primary event first (lower `seq`) then the
+/// `#sync` (next `seq`), and advances the counter past both.
+#[must_use = "a staged event pair does nothing until the caller commits its transaction and calls `finish`"]
+pub struct PendingWithSync<'f> {
+    firehose: &'f Firehose,
+    primary: FirehoseEvent,
+    sync_seq: u64,
+    sync_time: String,
+    sync_input: SyncInput,
+    _guard: EmitGuard<'f>,
+}
+
+impl PendingWithSync<'_> {
+    /// Confirm both events: advance the sequence counter past the `#sync` and broadcast the primary
+    /// event then the `#sync`. Call this only after the caller's transaction (which carries both
+    /// `repo_seq` rows) has committed successfully (see [`PendingCommit::finish`]).
+    pub fn finish(self) {
+        self.firehose
+            .last_seq
+            .store(self.sync_seq, Ordering::Release);
+        let _ = self.firehose.tx.send(self.primary);
+        let sync_event = FirehoseEvent::Sync(Arc::new(SyncEvent {
+            seq: self.sync_seq,
+            time: self.sync_time,
+            did: self.sync_input.did,
+            rev: self.sync_input.rev,
+            blocks: self.sync_input.blocks,
+        }));
+        let _ = self.firehose.tx.send(sync_event);
+    }
 }
 
 /// Validate that a commit's wire CIDs parse, so an un-encodable commit is rejected before it is
@@ -792,6 +1011,11 @@ fn validate_commit_cids(input: &CommitInput) -> Result<(), FirehoseError> {
     repo_engine::Cid::try_from(input.commit.as_str()).map_err(|e| {
         FirehoseError::Encode(format!("invalid commit CID {:?}: {e}", input.commit))
     })?;
+    if let Some(prev_data) = &input.prev_data {
+        repo_engine::Cid::try_from(prev_data.as_str()).map_err(|e| {
+            FirehoseError::Encode(format!("invalid prevData CID {prev_data:?}: {e}"))
+        })?;
+    }
     for op in &input.ops {
         if let Some(cid) = &op.cid {
             repo_engine::Cid::try_from(cid.as_str())
@@ -834,6 +1058,7 @@ pub fn decode_stored_event(
                 commit: s.commit,
                 rev: s.rev,
                 since: s.since,
+                prev_data: s.prev_data,
                 ops,
                 blocks: s.blocks,
             })))
@@ -859,6 +1084,17 @@ pub fn decode_stored_event(
                 handle: s.handle,
             })))
         }
+        "sync" => {
+            let s: StoredSyncOwned = serde_ipld_dagcbor::from_slice(blob)
+                .map_err(|e| FirehoseError::Decode(e.to_string()))?;
+            Ok(FirehoseEvent::Sync(Arc::new(SyncEvent {
+                seq,
+                time: s.time,
+                did: s.did,
+                rev: s.rev,
+                blocks: s.blocks,
+            })))
+        }
         other => Err(FirehoseError::Decode(format!(
             "unknown event_type {other:?}"
         ))),
@@ -880,6 +1116,7 @@ struct StoredCommitRef<'a> {
     commit: &'a str,
     rev: &'a str,
     since: Option<&'a str>,
+    prev_data: Option<&'a str>,
     time: &'a str,
     ops: Vec<StoredOpRef<'a>>,
     #[serde(with = "serde_bytes")]
@@ -932,6 +1169,10 @@ struct StoredCommitOwned {
     commit: String,
     rev: String,
     since: Option<String>,
+    // A commit persisted before Sync v1.1 has no `prev_data` key; serde decodes a missing
+    // `Option` field to `None`, so those older rows replay with `prevData` absent.
+    #[serde(default)]
+    prev_data: Option<String>,
     time: String,
     ops: Vec<StoredOpOwned>,
     #[serde(with = "serde_bytes")]
@@ -960,6 +1201,28 @@ struct StoredIdentityOwned {
     did: String,
     time: String,
     handle: Option<String>,
+}
+
+/// Stored `#sync` payload (borrowed form, for encoding a live event). Carries the DID, the
+/// emission `time`, the `rev`, and the commit-block CARv1 `blocks` — everything needed to rebuild
+/// the wire frame for replay.
+#[derive(Serialize)]
+struct StoredSyncRef<'a> {
+    did: &'a str,
+    time: &'a str,
+    rev: &'a str,
+    #[serde(with = "serde_bytes")]
+    blocks: &'a [u8],
+}
+
+/// Stored `#sync` payload (owned form, decoded back out for replay).
+#[derive(Deserialize)]
+struct StoredSyncOwned {
+    did: String,
+    time: String,
+    rev: String,
+    #[serde(with = "serde_bytes")]
+    blocks: Vec<u8>,
 }
 
 /// Current UTC time as an RFC 3339 / ISO-8601 string with millisecond precision.
@@ -999,6 +1262,7 @@ mod tests {
             commit: VALID_CID.to_string(),
             rev: "3krev".to_string(),
             since: None,
+            prev_data: None,
             ops: vec![RepoOp {
                 action: OpAction::Create,
                 collection: "app.bsky.feed.post".to_string(),
@@ -1043,7 +1307,7 @@ mod tests {
         for expected in 1..=3 {
             match rx.recv().await.unwrap() {
                 FirehoseEvent::Commit(c) => assert_eq!(c.seq, expected),
-                FirehoseEvent::Account(_) | FirehoseEvent::Identity(_) => {
+                FirehoseEvent::Account(_) | FirehoseEvent::Identity(_) | FirehoseEvent::Sync(_) => {
                     panic!("expected a #commit event")
                 }
             }
@@ -1500,6 +1764,146 @@ mod tests {
             panic!("expected an #identity event");
         };
         assert_eq!(i2.handle, None);
+    }
+
+    #[tokio::test]
+    async fn commit_prev_data_survives_persist_and_replay() {
+        // Sync v1.1: `prevData` (the previous commit's MST root CID) must round-trip through the
+        // durable log so a relay replaying from a cursor still gets an inductively-verifiable frame.
+        let fh = test_firehose().await;
+        let mut input = commit_input("did:plc:prevdata");
+        input.since = Some("3kprev".to_string());
+        input.prev_data = Some(VALID_CID.to_string());
+        fh.emit_commit(input).await.unwrap();
+
+        let rows = crate::db::firehose_seq::events_in_range(&fh.db, 0, 1, 1)
+            .await
+            .unwrap();
+        let FirehoseEvent::Commit(c) =
+            decode_stored_event(rows[0].seq as u64, &rows[0].event_type, &rows[0].event).unwrap()
+        else {
+            panic!("expected a #commit event");
+        };
+        assert_eq!(c.prev_data.as_deref(), Some(VALID_CID));
+
+        // A genesis-style commit with no predecessor persists and replays `prevData` as absent.
+        let mut genesis = commit_input("did:plc:prevdata");
+        genesis.prev_data = None;
+        fh.emit_commit(genesis).await.unwrap();
+        let rows = crate::db::firehose_seq::events_in_range(&fh.db, 1, 2, 1)
+            .await
+            .unwrap();
+        let FirehoseEvent::Commit(c2) =
+            decode_stored_event(rows[0].seq as u64, &rows[0].event_type, &rows[0].event).unwrap()
+        else {
+            panic!("expected a #commit event");
+        };
+        assert_eq!(c2.prev_data, None);
+    }
+
+    #[tokio::test]
+    async fn emit_commit_rejects_invalid_prev_data_cid() {
+        let fh = test_firehose().await;
+        let mut input = commit_input("did:plc:a");
+        input.prev_data = Some("not-a-cid".to_string());
+        assert!(
+            matches!(fh.emit_commit(input).await, Err(FirehoseError::Encode(_))),
+            "a commit whose prevData won't encode must be rejected at emit"
+        );
+        assert_eq!(fh.current_seq(), 0);
+    }
+
+    fn sync_input(did: &str) -> SyncInput {
+        SyncInput {
+            did: did.to_string(),
+            rev: "3ksync".to_string(),
+            blocks: vec![0xCA, 0xFE, 0xBA, 0xBE],
+        }
+    }
+
+    #[tokio::test]
+    async fn emit_sync_shares_sequencer_and_broadcasts() {
+        let fh = test_firehose().await;
+        let mut rx = fh.subscribe();
+
+        assert_eq!(fh.emit_commit(commit_input("did:plc:a")).await.unwrap(), 1);
+        assert_eq!(fh.emit_sync(sync_input("did:plc:a")).await.unwrap(), 2);
+
+        let FirehoseEvent::Commit(_) = rx.recv().await.unwrap() else {
+            panic!("expected a commit first");
+        };
+        let FirehoseEvent::Sync(s) = rx.recv().await.unwrap() else {
+            panic!("expected a #sync event");
+        };
+        assert_eq!(s.seq, 2);
+        assert_eq!(s.did, "did:plc:a");
+        assert_eq!(s.rev, "3ksync");
+        assert_eq!(s.blocks, vec![0xCA, 0xFE, 0xBA, 0xBE]);
+        assert!(!s.time.is_empty());
+    }
+
+    #[tokio::test]
+    async fn decode_stored_sync_roundtrips() {
+        let fh = test_firehose().await;
+        fh.emit_sync(sync_input("did:plc:sync")).await.unwrap();
+
+        let rows = crate::db::firehose_seq::events_in_range(&fh.db, 0, 1, 1)
+            .await
+            .unwrap();
+        assert_eq!(rows[0].event_type, "sync");
+        let FirehoseEvent::Sync(s) =
+            decode_stored_event(rows[0].seq as u64, &rows[0].event_type, &rows[0].event).unwrap()
+        else {
+            panic!("expected a #sync event");
+        };
+        assert_eq!(s.seq, 1);
+        assert_eq!(s.did, "did:plc:sync");
+        assert_eq!(s.rev, "3ksync");
+        assert_eq!(s.blocks, vec![0xCA, 0xFE, 0xBA, 0xBE]);
+    }
+
+    #[tokio::test]
+    async fn stage_account_then_sync_broadcasts_both_in_order_after_finish() {
+        // Activation stages an `#account` (active) followed by a `#sync` in one transaction: both
+        // rows persist atomically, and `finish` advances the counter past both and broadcasts
+        // account-then-sync in seq order.
+        let fh = test_firehose().await;
+        let mut rx = fh.subscribe();
+        insert_account(&fh.db, "did:plc:a", "root").await;
+
+        let mut tx = fh.db.begin().await.unwrap();
+        sqlx::query("UPDATE accounts SET deactivated_at = NULL WHERE did = 'did:plc:a'")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let pending = fh
+            .lock_emit()
+            .await
+            .stage_account(&mut tx, "did:plc:a".to_string(), true, None)
+            .await
+            .unwrap()
+            .stage_sync(&mut tx, sync_input("did:plc:a"))
+            .await
+            .unwrap();
+
+        assert_eq!(fh.current_seq(), 0, "seq must not advance before finish");
+        assert!(rx.try_recv().is_err(), "must not broadcast before finish");
+
+        tx.commit().await.unwrap();
+        pending.finish();
+
+        assert_eq!(fh.current_seq(), 2, "both events consume a seq");
+        let FirehoseEvent::Account(a) = rx.try_recv().unwrap() else {
+            panic!("expected the #account event first");
+        };
+        assert_eq!(a.seq, 1);
+        assert!(a.active);
+        let FirehoseEvent::Sync(s) = rx.try_recv().unwrap() else {
+            panic!("expected the #sync event second");
+        };
+        assert_eq!(s.seq, 2);
+        assert_eq!(s.did, "did:plc:a");
+        assert_eq!(s.rev, "3ksync");
     }
 
     #[tokio::test]
