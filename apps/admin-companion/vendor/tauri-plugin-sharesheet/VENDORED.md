@@ -25,6 +25,9 @@ crate — which carries the offending `build.rs` — is vendored; the npm guest 
 - **Pruned** the non-build files (`guest-js/`, `package.json`, `pnpm-lock.yaml`, the JS build
   tooling, `.github/`, and cargo registry markers). Only the Rust crate plus its
   `ios/` / `android/` / `permissions/` / `api-iife.js` build inputs are kept.
+- **Reformatted `src/`** with the repo's rustfmt (4-space). `cargo fmt --all --check` formats
+  vendored *path* dependencies too (not just workspace members), so the upstream's 2-space
+  source failed the format gate. Whitespace only — no semantic change.
 
 ## Why the entitlement removal is safe
 
