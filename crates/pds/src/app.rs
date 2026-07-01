@@ -25,6 +25,7 @@ use crate::routes::admin_devices::{
 };
 use crate::routes::apply_writes::apply_writes;
 use crate::routes::atproto_did::atproto_did_handler;
+use crate::routes::check_account_status::check_account_status;
 use crate::routes::claim_codes::claim_codes;
 use crate::routes::create_account::create_account;
 use crate::routes::create_did::create_did_handler;
@@ -230,6 +231,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/xrpc/com.atproto.server.deactivateAccount",
             post(deactivate_account_handler),
+        )
+        .route(
+            "/xrpc/com.atproto.server.checkAccountStatus",
+            get(check_account_status),
         )
         .route(
             "/xrpc/com.atproto.server.requestPasswordReset",
