@@ -44,28 +44,45 @@ pub async fn activate_account_handler(
         ));
     }
 
-    match activate_account(&state.db, &user.did).await? {
+    // Open a transaction so the status transition and its firehose `#account` event (if any)
+    // commit atomically — a durable status change must never end up without a corresponding
+    // durable firehose row (see MM-205 / `Firehose::stage_account`).
+    let mut tx = state.db.begin().await.map_err(|e| {
+        tracing::error!(error = %e, did = %user.did, "failed to open activate transaction");
+        ApiError::new(ErrorCode::InternalError, "failed to activate account")
+    })?;
+
+    match activate_account(&mut tx, &user.did).await? {
         // `NotFound` means no account row matched the token's DID — the account was removed out
         // from under an otherwise-valid token, mirroring `getPreferences`/`deactivateAccount`.
         AccountStateChange::NotFound => {
+            tx.rollback().await.ok();
             tracing::warn!(did = %user.did, "activateAccount: account not found");
             return Err(ApiError::new(ErrorCode::InvalidToken, "account not found"));
         }
         // Already active: idempotent no-op. Don't re-emit a status-quo `#account` event.
         AccountStateChange::Unchanged => {
+            tx.commit().await.map_err(|e| {
+                tracing::error!(error = %e, did = %user.did, "failed to commit activate (no-op) transaction");
+                ApiError::new(ErrorCode::InternalError, "failed to activate account")
+            })?;
             tracing::debug!(did = %user.did, "activateAccount: already active; no event emitted");
         }
         // Real transition: tell subscribers the repo is active again so they resume serving it.
         AccountStateChange::Changed => {
-            if let Err(e) = state
+            let pending = state
                 .firehose
-                .emit_account(user.did.clone(), true, None)
+                .stage_account(&mut tx, user.did.clone(), true, None)
                 .await
-            {
-                // The status change is already durable in `accounts`; a failed firehose write is
-                // logged and dropped rather than failing the request.
-                tracing::warn!(error = %e, did = %user.did, "failed to sequence #account activation (non-fatal)");
-            }
+                .map_err(|e| {
+                    tracing::error!(error = %e, did = %user.did, "failed to stage #account activation event");
+                    ApiError::new(ErrorCode::InternalError, "failed to activate account")
+                })?;
+            tx.commit().await.map_err(|e| {
+                tracing::error!(error = %e, did = %user.did, "failed to commit activate transaction");
+                ApiError::new(ErrorCode::InternalError, "failed to activate account")
+            })?;
+            pending.finish();
             tracing::info!(did = %user.did, "account activated");
         }
     }

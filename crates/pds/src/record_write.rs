@@ -253,38 +253,21 @@ pub async fn write_record(
             }
         })?;
 
-    // Advance the repo root with optimistic concurrency: only if it hasn't moved
-    // since we read it. If a concurrent write advanced it first, that write wins and
-    // we return 409 so the client retries against the new root (rather than silently
-    // clobbering the other commit). The new blocks we wrote are orphaned and GC-able.
+    // Advance the repo root with optimistic concurrency: only if it hasn't moved since we read
+    // it. If a concurrent write advanced it first, that write wins and we return 409 so the
+    // client retries against the new root (rather than silently clobbering the other commit).
+    // The new blocks we wrote are orphaned and GC-able. `deactivated_at IS NULL` folds the
+    // deactivation guard into the commit CAS: the `account_is_active` check above and this swap
+    // are not atomic, so an account deactivated in between would otherwise still commit
+    // (deactivation leaves `repo_root_cid` untouched, so the CAS would match). Requiring the
+    // account to still be active here blocks that write — it surfaces as a concurrent-
+    // modification conflict rather than landing on a deactivated repo.
+    //
+    // The CAS and the firehose `#commit` event commit atomically (see `commit_repo_write`), while
+    // both the previous and new block sets are still present (the diff CAR is computed against
+    // them) — call this before GC.
     let new_root = repo.root().to_string();
     let new_rev = repo.commit().rev().as_str().to_string();
-    // `deactivated_at IS NULL` folds the deactivation guard into the commit CAS: the
-    // `account_is_active` check above and this swap are not atomic, so an account deactivated in
-    // between would otherwise still commit (deactivation leaves `repo_root_cid` untouched, so the
-    // CAS would match). Requiring the account to still be active here blocks that write — it
-    // surfaces as a concurrent-modification conflict rather than landing on a deactivated repo.
-    let advanced = crate::db::accounts::advance_repo_root_if_active(
-        &state.db,
-        did,
-        &new_root,
-        &new_rev,
-        &root_cid_str,
-    )
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, did = %did, "failed to update repo root CID");
-        ApiError::new(ErrorCode::InternalError, "failed to write record")
-    })?;
-    if !advanced {
-        return Err(ApiError::new(
-            ErrorCode::Conflict,
-            "repository was modified concurrently; retry against the current root",
-        ));
-    }
-
-    // Emit the firehose `#commit` event before GC, while the previous block set still exists
-    // (the diff CAR is computed against it).
     let (collection, rkey) = split_record_path(mst_key);
     let op = crate::firehose::RepoOp {
         action: if existed {
@@ -297,7 +280,7 @@ pub async fn write_record(
         cid: Some(record_cid.to_string()),
         value: Some(record.clone()),
     };
-    emit_firehose_commit(
+    commit_repo_write(
         state,
         did,
         root_cid,
@@ -305,8 +288,9 @@ pub async fn write_record(
         new_rev,
         Some(prev_rev),
         vec![op],
+        &root_cid_str,
     )
-    .await;
+    .await?;
 
     // Best-effort GC: reclaim blocks superseded by this commit. A GC failure must not
     // fail the write — the commit is durable; orphaned blocks are harmless until swept.
@@ -317,15 +301,31 @@ pub async fn write_record(
     Ok((WriteRecordResult { new_root }, record_cid))
 }
 
-/// Build the commit's block diff and emit a firehose `#commit` event.
+/// Advance the repo root (optimistic-concurrency CAS) and, while both the previous and new block
+/// sets are still present, stage the corresponding firehose `#commit` event in the *same*
+/// transaction as the CAS — so the two commit or roll back together and a durable commit can
+/// never end up without a corresponding durable `repo_seq` row (see [`crate::firehose`]'s module
+/// docs and `Firehose::stage_commit`).
 ///
-/// Best-effort: a failure to assemble the diff CAR is logged and dropped — the commit is
-/// already durable, and a subscriber that misses an event can backfill via `getRepo`.
+/// Returns [`ErrorCode::Conflict`] when the CAS didn't land — the repo moved, or the account was
+/// deactivated, since the caller last read `expected_root` — mirroring
+/// `db::accounts::advance_repo_root_if_active`'s own contract; nothing is staged or emitted in
+/// that case.
 ///
-/// **Ordering precondition:** call this *after* the root swap but *before* post-commit GC,
-/// while both the previous and new block sets are still present (the diff is computed as
-/// `reachable(new) − reachable(prev)`, which needs the old blocks to subtract them out).
-pub async fn emit_firehose_commit(
+/// The commit's block diff and CARv1 diff blocks are assembled *before* the transaction opens:
+/// this crate's DB pool serves a single connection (see `db::open_pool`), so building them
+/// inside the transaction — which also needs that connection for the CAS — would deadlock this
+/// task against itself waiting on a second connection that will never free up. Assembling them is
+/// still best-effort exactly as before: a failure is logged and dropped, and the write still
+/// lands (the record data is already durable in the block store) without a firehose event or a
+/// rev tag for this commit; a subscriber that misses it backfills via `getRepo`. Only the CAS and
+/// the firehose row (once the diff *is* available) are atomic with each other.
+///
+/// **Ordering precondition:** call this *before* post-commit GC, while both the previous and new
+/// block sets are still present (the diff is computed as `reachable(new) − reachable(prev)`,
+/// which needs the old blocks to subtract them out).
+#[allow(clippy::too_many_arguments)]
+pub async fn commit_repo_write(
     state: &AppState,
     did: &str,
     prev_root: repo_engine::Cid,
@@ -333,13 +333,16 @@ pub async fn emit_firehose_commit(
     new_rev: String,
     prev_rev: Option<String>,
     ops: Vec<crate::firehose::RepoOp>,
-) {
+    expected_root: &str,
+) -> Result<(), ApiError> {
     let mut store = SqliteBlockStore::new(state.db.clone(), did.to_string());
 
     // The exact CID set this commit introduced drives two things, computed once here while both
     // block sets are still present (pre-GC): the firehose diff CAR, and the per-block rev tag for
     // getRepo?since. Tagging this precise set (not "all untagged blocks") is what keeps the rev
-    // correct under concurrent same-repo writes — see `db::blocks::tag_blocks_rev`.
+    // correct under concurrent same-repo writes — see `db::blocks::tag_blocks_rev`. `cid_strs` is
+    // kept independently of `blocks` (rather than as one `Option` pair) because the rev tag is
+    // still applied even if the CAR later fails to build — only the event is dropped in that case.
     let diff_cids = match repo_engine::collect_commit_diff_cids(
         &mut store,
         Some(prev_root),
@@ -347,58 +350,116 @@ pub async fn emit_firehose_commit(
     )
     .await
     {
-        Ok(cids) => cids,
+        Ok(cids) => Some(cids),
         Err(e) => {
             tracing::warn!(
                 error = %e,
                 did = %did,
                 "failed to compute commit block diff; dropping firehose event + rev tag (non-fatal)"
             );
-            return;
+            None
         }
     };
+    let cid_strs: Option<Vec<String>> = diff_cids
+        .as_ref()
+        .map(|cids| cids.iter().map(|c| c.to_string()).collect());
+    let blocks = match diff_cids {
+        Some(cids) => match repo_engine::build_car_from_cids(&mut store, new_root, cids).await {
+            Ok(blocks) => Some(blocks),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    did = %did,
+                    "failed to build firehose commit CAR; dropping event (non-fatal)"
+                );
+                None
+            }
+        },
+        None => None,
+    };
 
-    // Stamp this commit's blocks with its revision so getRepo?since reports them as newer than any
-    // earlier revision. Best-effort: the commit is durable regardless, and untagged blocks still
-    // ship in a full export — they are only absent from `since` deltas.
-    let cid_strs: Vec<String> = diff_cids.iter().map(|c| c.to_string()).collect();
-    if let Err(e) = crate::db::blocks::tag_blocks_rev(&state.db, did, &cid_strs, &new_rev).await {
-        tracing::warn!(error = %e, did = %did, "failed to tag commit block revisions (non-fatal)");
+    let mut tx = state.db.begin().await.map_err(|e| {
+        tracing::error!(error = %e, did = %did, "failed to open write transaction");
+        ApiError::new(ErrorCode::InternalError, "failed to write record")
+    })?;
+
+    let new_root_str = new_root.to_string();
+    let advanced = crate::db::accounts::advance_repo_root_if_active(
+        &mut *tx,
+        did,
+        &new_root_str,
+        &new_rev,
+        expected_root,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, did = %did, "failed to update repo root CID");
+        ApiError::new(ErrorCode::InternalError, "failed to write record")
+    })?;
+    if !advanced {
+        tx.rollback().await.ok();
+        return Err(ApiError::new(
+            ErrorCode::Conflict,
+            "repository was modified concurrently; retry against the current root",
+        ));
     }
 
-    let blocks = match repo_engine::build_car_from_cids(&mut store, new_root, diff_cids).await {
-        Ok(blocks) => blocks,
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                did = %did,
-                "failed to build firehose commit CAR; dropping event (non-fatal)"
-            );
-            return;
+    let pending = match blocks {
+        Some(blocks) => {
+            let staged = state
+                .firehose
+                .stage_commit(
+                    &mut tx,
+                    crate::firehose::CommitInput {
+                        repo: did.to_string(),
+                        commit: new_root_str,
+                        rev: new_rev.clone(),
+                        since: prev_rev,
+                        ops,
+                        blocks,
+                    },
+                )
+                .await;
+            match staged {
+                Ok(pending) => Some(pending),
+                Err(e) => {
+                    // Dropping `tx` here (via the early return) rolls back the CAS too: per
+                    // MM-205, a commit must not land without a corresponding durable firehose row,
+                    // so a failure to stage that row fails the whole write rather than dropping
+                    // the event best-effort.
+                    tracing::error!(error = %e, did = %did, "failed to stage firehose commit event");
+                    return Err(ApiError::new(
+                        ErrorCode::InternalError,
+                        "failed to write record",
+                    ));
+                }
+            }
         }
+        None => None,
     };
 
-    if let Err(e) = state
-        .firehose
-        .emit_commit(crate::firehose::CommitInput {
-            repo: did.to_string(),
-            commit: new_root.to_string(),
-            rev: new_rev,
-            since: prev_rev,
-            ops,
-            blocks,
-        })
-        .await
-    {
-        // Best-effort, matching the diff-assembly failures above: the commit is already durable,
-        // so a sequencer write failure is logged and dropped rather than failing the write. A
-        // subscriber that misses the event can backfill via getRepo.
-        tracing::warn!(error = %e, did = %did, "failed to sequence firehose commit (non-fatal)");
+    tx.commit().await.map_err(|e| {
+        tracing::error!(error = %e, did = %did, "failed to commit repo write transaction");
+        ApiError::new(ErrorCode::InternalError, "failed to write record")
+    })?;
+    if let Some(pending) = pending {
+        pending.finish();
+    }
+
+    // Best-effort, independent of the firehose durability guarantee above: an untagged block
+    // still ships in a full export, just not in a `since` delta.
+    if let Some(cid_strs) = cid_strs {
+        if let Err(e) = crate::db::blocks::tag_blocks_rev(&state.db, did, &cid_strs, &new_rev).await
+        {
+            tracing::warn!(error = %e, did = %did, "failed to tag commit block revisions (non-fatal)");
+        }
     }
 
     // New content is live: notify configured crawlers (relays/BGSes) so they pull it promptly.
     // Fire-and-forget and rate-limited — never blocks the commit.
     state.crawlers.notify();
+
+    Ok(())
 }
 
 /// Split an MST key (`<collection>/<rkey>`) into its collection and record-key halves.

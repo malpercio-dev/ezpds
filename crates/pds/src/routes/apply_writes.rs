@@ -259,34 +259,15 @@ pub async fn apply_writes(
             }
         })?;
 
-    // Atomic commit: advance the persisted root only if it hasn't moved since we read it.
-    // A concurrent write losing this race returns 409 rather than clobbering the other commit.
-    // The shared helper folds the deactivation guard into the CAS so an account deactivated after
-    // the `get_repo_write_state` check above cannot have this batch land.
+    // Atomic commit: advance the persisted root only if it hasn't moved since we read it,
+    // committing that CAS atomically with the batch's firehose `#commit` event (before GC, since
+    // the diff CAR is computed against the previous block set). A concurrent write losing this
+    // race returns 409 rather than clobbering the other commit. The shared helper folds the
+    // deactivation guard into the CAS so an account deactivated after the `get_repo_write_state`
+    // check above cannot have this batch land. Each engine outcome maps back to its write's kind
+    // and retained value to form a `#repoOp`.
     let new_root = repo.root().to_string();
     let new_rev = repo.commit().rev().as_str().to_string();
-    let advanced = crate::db::accounts::advance_repo_root_if_active(
-        &state.db,
-        did,
-        &new_root,
-        &new_rev,
-        &root_cid_str,
-    )
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, did = %did, "failed to update repo root CID");
-        ApiError::new(ErrorCode::InternalError, "failed to apply writes")
-    })?;
-    if !advanced {
-        return Err(ApiError::new(
-            ErrorCode::Conflict,
-            "repository was modified concurrently; retry against the current root",
-        ));
-    }
-
-    // Emit one firehose `#commit` event for the whole batch, before GC (the diff CAR is
-    // computed against the previous block set). Each engine outcome maps back to its write's
-    // kind and retained value to form a `#repoOp`.
     let fh_ops: Vec<crate::firehose::RepoOp> = kinds
         .iter()
         .zip(outcomes.iter())
@@ -306,7 +287,7 @@ pub async fn apply_writes(
             }
         })
         .collect();
-    crate::record_write::emit_firehose_commit(
+    crate::record_write::commit_repo_write(
         &state,
         did,
         root_cid,
@@ -314,8 +295,9 @@ pub async fn apply_writes(
         new_rev,
         Some(prev_rev),
         fh_ops,
+        &root_cid_str,
     )
-    .await;
+    .await?;
 
     // Best-effort GC: reclaim the intermediate per-write commits and any superseded blocks.
     if let Err(e) = crate::record_write::gc_repo_blocks(&state.db, did, repo.root()).await {

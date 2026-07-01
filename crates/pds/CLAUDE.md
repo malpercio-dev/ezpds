@@ -1,6 +1,6 @@
 # PDS Crate (Custos)
 
-Last verified: 2026-06-28
+Last verified: 2026-07-01
 
 ## Purpose
 
@@ -30,7 +30,7 @@ src/
 The **persistent** event pipeline behind `com.atproto.sync.subscribeRepos`. Holds a durable
 monotonic sequencer (backed by the `repo_seq` table, V028) and a Tokio `broadcast` channel;
 `AppState.firehose: Arc<Firehose>` is shared by every handler. Each repo commit calls
-`record_write::emit_firehose_commit`, which builds the commit's block diff
+`record_write::commit_repo_write`, which builds the commit's block diff
 (`repo_engine::export_commit_blocks_car`, run *before* post-commit GC) and publishes a sequenced
 `CommitEvent` carrying the DID, rev, `since`, per-record `RepoOp`s (action + collection/rkey + cid
 + value), and the CARv1 diff blocks. Backpressure is by design: the bounded channel never blocks
@@ -38,28 +38,35 @@ producers — a slow subscriber observes `Lagged` and is expected to disconnect.
 paths (`create_record`/`put_record` via `record_write`, `delete_record`, `apply_writes`) emit
 exactly one event per commit. (Those same write paths reject a deactivated account with 403 before
 committing.) Account-status changes emit a separate `#account` frame instead of a `#commit`:
-`deactivate_account`/`activate_account` call `Firehose::emit_account` (active=false/`deactivated`
-or active=true) **only on a real status transition** — a redundant no-op activate/deactivate
-returns 200 and emits nothing. The `#account` frame shares the same sequencer so account frames
-are ordered relative to commits.
+`activate_account.rs`/`deactivate_account.rs` stage one via `Firehose::stage_account`
+(active=false/`deactivated` or active=true) **only on a real status transition** — a redundant
+no-op activate/deactivate returns 200 and emits nothing. The `#account` frame shares the same
+sequencer so account frames are ordered relative to commits.
 
-**Durability (V028).** `emit_commit`/`emit_account` are `async` and persist each event to
-`repo_seq` (via `db::firehose_seq`) **before** broadcasting it, all under one async `emit_lock`
-that keeps broadcast order = `seq` order and the log a dense prefix (a failed insert doesn't
-consume a `seq`). The sequencer loads `MAX(seq)` on construction, so `seq` is monotonic across
-restarts/redeploys. Emit is best-effort at the call sites — a sequencer write failure is logged
-and dropped (the commit/status change is already durable; subscribers backfill via `getRepo`).
-`subscribe_from(cursor)` snapshots the live receiver and the sequence frontier `upper` together
-under `emit_lock`; the `sync_subscribe_repos` handler then pages the durable log for
-`(cursor, upper]` (`events_in_range`, decoded via `decode_stored_event`) and streams live events
-(`seq > upper`) after — the two ranges are exactly disjoint, so the replay→live boundary has no gap
-and no duplication, and replay now survives a restart (it reads the log, not an in-memory buffer).
-The subscriber-facing WebSocket frame encoding lives in the `sync_subscribe_repos` handler.
+**Durability (V028) and atomicity (MM-205).** `Firehose::emit_commit`/`emit_account` persist each
+event to `repo_seq` (via `db::firehose_seq`) **before** broadcasting it, all under one async
+`emit_lock` that keeps broadcast order = `seq` order and the log a dense prefix (a failed insert
+doesn't consume a `seq`). The sequencer loads `MAX(seq)` on construction, so `seq` is monotonic
+across restarts/redeploys. Those two methods remain a bare best-effort primitive (used directly
+only by tests and `emit_identity`'s neighbours); the production call sites instead use
+`Firehose::stage_commit`/`stage_account`, which insert the `repo_seq` row into the *caller's own*
+open transaction — the same one carrying the repo-root CAS (`record_write::commit_repo_write`) or
+the account-status UPDATE (`activate_account`/`deactivate_account`) — and return a `Pending*`
+handle. The caller commits that transaction and only then calls `Pending*::finish` to advance
+`last_seq` and broadcast; a failed insert rolls the whole transaction back (via `?`/`Drop`) rather
+than landing the state change with a silently-dropped event, and dropping a `Pending*` without
+finishing never advances the sequence, so the seq is retried by the next emit. `subscribe_from
+(cursor)` snapshots the live receiver and the sequence frontier `upper` together under
+`emit_lock`; the `sync_subscribe_repos` handler then pages the durable log for `(cursor, upper]`
+(`events_in_range`, decoded via `decode_stored_event`) and streams live events (`seq > upper`)
+after — the two ranges are exactly disjoint, so the replay→live boundary has no gap and no
+duplication, and replay now survives a restart (it reads the log, not an in-memory buffer). The
+subscriber-facing WebSocket frame encoding lives in the `sync_subscribe_repos` handler.
 
 ### `crawler.rs`
 
 Outbound `com.atproto.sync.requestCrawl` notifier. `AppState.crawlers: Arc<CrawlerNotifier>`
-is shared by every handler; `record_write::emit_firehose_commit` calls `crawlers.notify()`
+is shared by every handler; `record_write::commit_repo_write` calls `crawlers.notify()`
 once per commit, right after the firehose event is emitted. `notify` is fire-and-forget: it
 selects the crawlers outside their rate-limit window (one notification per crawler per 30s),
 then spawns a detached task per crawler that POSTs `{ "hostname": <PDS-host> }` to

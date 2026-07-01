@@ -34,7 +34,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::{Sqlite, SqlitePool, Transaction};
 use tokio::sync::broadcast;
 
 /// Default capacity of the broadcast ring buffer: the number of events retained for slow
@@ -585,6 +585,163 @@ impl Firehose {
         }));
         let _ = self.tx.send(event);
         Ok(seq)
+    }
+
+    /// Stage a `#commit` event's row into the caller's already-open transaction, without
+    /// committing or broadcasting yet.
+    ///
+    /// This is the atomic counterpart to [`emit_commit`](Self::emit_commit): the caller runs its
+    /// own transactional write (the repo-root CAS) against `tx` *before* calling this, so by the
+    /// time it's called the caller has already decided the write should land. `stage_commit` then
+    /// assigns the event's `seq` and inserts its `repo_seq` row into that same `tx`, so the row
+    /// commits (or rolls back) together with the caller's write — a failed insert here rolls
+    /// `tx` back via `Drop`, taking the caller's write with it, rather than leaving a durable
+    /// commit with no corresponding firehose row. Held under `emit_lock` until the returned
+    /// [`PendingCommit`] is finished (or dropped), so seq assignment stays monotonic/dense even
+    /// though the transaction now spans the caller's write too.
+    ///
+    /// The caller must `tx.commit()` and then call [`PendingCommit::finish`] — only after a
+    /// successful commit — to advance the sequence counter and broadcast the event. Dropping the
+    /// returned handle without finishing never advances `last_seq` or broadcasts, so an aborted
+    /// write (caller rolls back instead of committing) leaves the sequence untouched, exactly
+    /// like a rejected [`emit_commit`](Self::emit_commit).
+    pub async fn stage_commit(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        input: CommitInput,
+    ) -> Result<PendingCommit<'_>, FirehoseError> {
+        validate_commit_cids(&input)?;
+
+        let guard = self.emit_lock.lock().await;
+        let time = now_rfc3339();
+        let blob = {
+            let stored = StoredCommitRef {
+                repo: &input.repo,
+                commit: &input.commit,
+                rev: &input.rev,
+                since: input.since.as_deref(),
+                time: &time,
+                ops: input.ops.iter().map(StoredOpRef::from).collect(),
+                blocks: &input.blocks,
+            };
+            serde_ipld_dagcbor::to_vec(&stored).map_err(|e| FirehoseError::Encode(e.to_string()))?
+        };
+        let seq = self.last_seq.load(Ordering::Acquire) + 1;
+        crate::db::firehose_seq::insert_event(&mut **tx, seq, &input.repo, "commit", &blob, &time)
+            .await?;
+
+        Ok(PendingCommit {
+            firehose: self,
+            seq,
+            time,
+            input,
+            _guard: guard,
+        })
+    }
+
+    /// Stage an `#account` event's row into the caller's already-open transaction (see
+    /// [`stage_commit`](Self::stage_commit) — the same atomic pattern, for account-status
+    /// transitions rather than commits). The caller runs `activate_account`/`deactivate_account`
+    /// against `tx` first and only calls this once it knows the transition actually happened.
+    pub async fn stage_account(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        did: String,
+        active: bool,
+        status: Option<String>,
+    ) -> Result<PendingAccount<'_>, FirehoseError> {
+        let guard = self.emit_lock.lock().await;
+        let time = now_rfc3339();
+        let blob = {
+            let stored = StoredAccountRef {
+                did: &did,
+                time: &time,
+                active,
+                status: status.as_deref(),
+            };
+            serde_ipld_dagcbor::to_vec(&stored).map_err(|e| FirehoseError::Encode(e.to_string()))?
+        };
+        let seq = self.last_seq.load(Ordering::Acquire) + 1;
+        crate::db::firehose_seq::insert_event(&mut **tx, seq, &did, "account", &blob, &time)
+            .await?;
+
+        Ok(PendingAccount {
+            firehose: self,
+            seq,
+            time,
+            did,
+            active,
+            status,
+            _guard: guard,
+        })
+    }
+}
+
+/// A `#commit` event whose `repo_seq` row is already inserted into the caller's open transaction
+/// (via [`Firehose::stage_commit`]) but not yet committed or broadcast.
+///
+/// The caller must commit its transaction (which includes this row) and then call [`finish`]
+/// — only on that success path — to advance the sequence counter and broadcast the event.
+/// Dropping this handle without finishing (e.g. because the caller rolled the transaction back
+/// instead) releases `emit_lock` without advancing `last_seq`, so the seq is retried by the next
+/// emit, exactly as an outright `emit_commit` failure would.
+#[must_use = "a staged commit does nothing until the caller commits its transaction and calls `finish`"]
+pub struct PendingCommit<'f> {
+    firehose: &'f Firehose,
+    seq: u64,
+    time: String,
+    input: CommitInput,
+    _guard: tokio::sync::MutexGuard<'f, ()>,
+}
+
+impl PendingCommit<'_> {
+    /// Confirm the event: advance the sequence counter and broadcast it to live subscribers.
+    ///
+    /// Call this **only** after the caller's transaction (which already carries this event's
+    /// `repo_seq` row) has committed successfully — calling it before or instead of a real commit
+    /// would broadcast an event with no durable backing.
+    pub fn finish(self) {
+        self.firehose.last_seq.store(self.seq, Ordering::Release);
+        let event = FirehoseEvent::Commit(Arc::new(CommitEvent {
+            seq: self.seq,
+            time: self.time,
+            repo: self.input.repo,
+            commit: self.input.commit,
+            rev: self.input.rev,
+            since: self.input.since,
+            ops: self.input.ops,
+            blocks: self.input.blocks,
+        }));
+        let _ = self.firehose.tx.send(event);
+    }
+}
+
+/// The `#account` analogue of [`PendingCommit`] — see its docs for the commit/finish contract.
+#[must_use = "a staged account event does nothing until the caller commits its transaction and calls `finish`"]
+pub struct PendingAccount<'f> {
+    firehose: &'f Firehose,
+    seq: u64,
+    time: String,
+    did: String,
+    active: bool,
+    status: Option<String>,
+    _guard: tokio::sync::MutexGuard<'f, ()>,
+}
+
+impl PendingAccount<'_> {
+    /// Confirm the event: advance the sequence counter and broadcast it to live subscribers.
+    /// Call this only after the caller's transaction has committed successfully (see
+    /// [`PendingCommit::finish`]).
+    pub fn finish(self) {
+        self.firehose.last_seq.store(self.seq, Ordering::Release);
+        let event = FirehoseEvent::Account(Arc::new(AccountEvent {
+            seq: self.seq,
+            time: self.time,
+            did: self.did,
+            active: self.active,
+            status: self.status,
+        }));
+        let _ = self.firehose.tx.send(event);
     }
 }
 
@@ -1343,5 +1500,171 @@ mod tests {
         };
         assert_eq!(last.seq, 10);
         assert_eq!(slow.try_recv().unwrap_err(), TryRecvError::Empty);
+    }
+
+    // ── stage_commit / stage_account (atomic staging, MM-205) ─────────────────
+
+    /// Seed a minimal `accounts` row so a test can mutate it inside the same transaction as a
+    /// staged event, to observe whether that write survives a commit or a rollback.
+    async fn insert_account(db: &SqlitePool, did: &str, repo_root_cid: &str) {
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, repo_root_cid, created_at, updated_at) \
+             VALUES (?, ?, NULL, ?, datetime('now'), datetime('now'))",
+        )
+        .bind(did)
+        .bind(format!("{did}@example.com"))
+        .bind(repo_root_cid)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn stage_commit_persists_and_broadcasts_only_after_finish() {
+        let fh = test_firehose().await;
+        let mut rx = fh.subscribe();
+        insert_account(&fh.db, "did:plc:a", "old-root").await;
+
+        let mut tx = fh.db.begin().await.unwrap();
+        sqlx::query("UPDATE accounts SET repo_root_cid = 'new-root' WHERE did = 'did:plc:a'")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let pending = fh
+            .stage_commit(&mut tx, commit_input("did:plc:a"))
+            .await
+            .unwrap();
+
+        // Before commit/finish: nothing durable yet, seq unadvanced, no broadcast.
+        assert_eq!(fh.current_seq(), 0, "seq must not advance before finish");
+        assert!(rx.try_recv().is_err(), "must not broadcast before finish");
+
+        tx.commit().await.unwrap();
+        pending.finish();
+
+        assert_eq!(fh.current_seq(), 1, "finish must advance seq after commit");
+        assert!(
+            matches!(rx.try_recv(), Ok(FirehoseEvent::Commit(_))),
+            "finish must broadcast the event"
+        );
+        let root: String =
+            sqlx::query_scalar("SELECT repo_root_cid FROM accounts WHERE did = 'did:plc:a'")
+                .fetch_one(&fh.db)
+                .await
+                .unwrap();
+        assert_eq!(root, "new-root");
+    }
+
+    #[tokio::test]
+    async fn stage_commit_failure_rolls_back_the_callers_write_in_the_same_transaction() {
+        // MM-205: a simulated `repo_seq` insert failure must not leave the caller's other write
+        // (here, the repo-root CAS) committed with no corresponding durable firehose row.
+        let fh = test_firehose().await;
+        insert_account(&fh.db, "did:plc:a", "old-root").await;
+
+        // Simulate a sequencer write failure: drop `repo_seq` so the insert inside `stage_commit`
+        // fails with a real DB error instead of a contrived one.
+        sqlx::query("DROP TABLE repo_seq")
+            .execute(&fh.db)
+            .await
+            .unwrap();
+
+        let mut tx = fh.db.begin().await.unwrap();
+        sqlx::query("UPDATE accounts SET repo_root_cid = 'new-root' WHERE did = 'did:plc:a'")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let result = fh.stage_commit(&mut tx, commit_input("did:plc:a")).await;
+        assert!(
+            matches!(result, Err(FirehoseError::Db(_))),
+            "the repo_seq insert must fail with a DB error"
+        );
+
+        // Never committed: dropping `tx` here rolls back the accounts UPDATE too, exactly as the
+        // production call sites rely on (`?` early-return before an explicit commit).
+        drop(tx);
+
+        let root: String =
+            sqlx::query_scalar("SELECT repo_root_cid FROM accounts WHERE did = 'did:plc:a'")
+                .fetch_one(&fh.db)
+                .await
+                .unwrap();
+        assert_eq!(
+            root, "old-root",
+            "a failed firehose insert must roll back the caller's write, not leave it committed \
+             with no corresponding durable event"
+        );
+        assert_eq!(
+            fh.current_seq(),
+            0,
+            "seq must not advance on a failed stage"
+        );
+    }
+
+    #[tokio::test]
+    async fn stage_account_persists_and_broadcasts_only_after_finish() {
+        let fh = test_firehose().await;
+        let mut rx = fh.subscribe();
+        insert_account(&fh.db, "did:plc:a", "root").await;
+
+        let mut tx = fh.db.begin().await.unwrap();
+        sqlx::query("UPDATE accounts SET deactivated_at = datetime('now') WHERE did = 'did:plc:a'")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let pending = fh
+            .stage_account(
+                &mut tx,
+                "did:plc:a".to_string(),
+                false,
+                Some("deactivated".to_string()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(fh.current_seq(), 0, "seq must not advance before finish");
+        assert!(rx.try_recv().is_err(), "must not broadcast before finish");
+
+        tx.commit().await.unwrap();
+        pending.finish();
+
+        assert_eq!(fh.current_seq(), 1);
+        let FirehoseEvent::Account(event) = rx.try_recv().unwrap() else {
+            panic!("expected an #account event");
+        };
+        assert!(!event.active);
+        assert_eq!(event.status.as_deref(), Some("deactivated"));
+    }
+
+    #[tokio::test]
+    async fn stage_account_failure_rolls_back_the_callers_write_in_the_same_transaction() {
+        let fh = test_firehose().await;
+        insert_account(&fh.db, "did:plc:a", "root").await;
+        sqlx::query("DROP TABLE repo_seq")
+            .execute(&fh.db)
+            .await
+            .unwrap();
+
+        let mut tx = fh.db.begin().await.unwrap();
+        sqlx::query("UPDATE accounts SET deactivated_at = datetime('now') WHERE did = 'did:plc:a'")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let result = fh
+            .stage_account(&mut tx, "did:plc:a".to_string(), false, None)
+            .await;
+        assert!(matches!(result, Err(FirehoseError::Db(_))));
+
+        drop(tx);
+
+        let deactivated_at: Option<String> =
+            sqlx::query_scalar("SELECT deactivated_at FROM accounts WHERE did = 'did:plc:a'")
+                .fetch_one(&fh.db)
+                .await
+                .unwrap();
+        assert_eq!(
+            deactivated_at, None,
+            "a failed firehose insert must roll back the status transition too"
+        );
     }
 }
