@@ -1892,19 +1892,30 @@ mod tests {
 
     #[tokio::test]
     async fn stage_sync_rejects_oversized_blocks_and_rolls_back() {
-        // A staged over-cap `#sync` must fail the whole transaction rather than persist an
-        // invalid frame — here the chained account write must roll back with it.
+        // A staged over-cap `#sync` must fail the whole transaction rather than persist an invalid
+        // frame — the chained account write must roll back with it, leaving no durable trace. Seed
+        // a genuinely-deactivated account so the in-transaction reactivation is a real change whose
+        // rollback is observable in the DB afterward.
         let fh = test_firehose().await;
         insert_account(&fh.db, "did:plc:a", "root").await;
+        sqlx::query("UPDATE accounts SET deactivated_at = datetime('now') WHERE did = 'did:plc:a'")
+            .execute(&fh.db)
+            .await
+            .unwrap();
+        let before_deactivated_at: Option<String> =
+            sqlx::query_scalar("SELECT deactivated_at FROM accounts WHERE did = 'did:plc:a'")
+                .fetch_one(&fh.db)
+                .await
+                .unwrap();
 
+        // Acquire the sequencer lock *before* opening the transaction, per `lock_emit`'s contract.
+        let emit_guard = fh.lock_emit().await;
         let mut tx = fh.db.begin().await.unwrap();
         sqlx::query("UPDATE accounts SET deactivated_at = NULL WHERE did = 'did:plc:a'")
             .execute(&mut *tx)
             .await
             .unwrap();
-        let account = fh
-            .lock_emit()
-            .await
+        let account = emit_guard
             .stage_account(&mut tx, "did:plc:a".to_string(), true, None)
             .await
             .unwrap();
@@ -1915,7 +1926,24 @@ mod tests {
             matches!(result, Err(FirehoseError::Encode(_))),
             "an over-cap staged #sync must be rejected"
         );
+
+        // The failed stage takes the whole transaction down with it (via `?`/Drop): the
+        // reactivation rolls back, no `repo_seq` row lands, and the sequencer counter is untouched.
         drop(tx);
+        let after_deactivated_at: Option<String> =
+            sqlx::query_scalar("SELECT deactivated_at FROM accounts WHERE did = 'did:plc:a'")
+                .fetch_one(&fh.db)
+                .await
+                .unwrap();
+        assert_eq!(
+            after_deactivated_at, before_deactivated_at,
+            "the reactivation must roll back with the rejected #sync"
+        );
+        assert_eq!(
+            crate::db::firehose_seq::max_seq(&fh.db).await.unwrap(),
+            0,
+            "no repo_seq row must persist"
+        );
         assert_eq!(
             fh.current_seq(),
             0,
