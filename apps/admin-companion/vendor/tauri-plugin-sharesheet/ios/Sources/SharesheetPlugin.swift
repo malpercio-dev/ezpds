@@ -53,7 +53,10 @@ class SharesheetPlugin: Plugin {
       // anchors the popover; fall back to the presenter's view when the webview
       // is unavailable rather than force-unwrapping it.
       if let popover = activityViewController.popoverPresentationController {
-        let sourceView = self.webview ?? presenter.view
+        // The explicit `UIView` type forces the non-optional `??` overload: with
+        // `presenter.view` being `UIView!`, an inferred type would resolve to
+        // `UIView?` and `.bounds` below would not type-check.
+        let sourceView: UIView = self.webview ?? presenter.view
         popover.sourceView = sourceView
         popover.sourceRect = CGRect(
           x: sourceView.bounds.midX, y: sourceView.bounds.midY, width: 0, height: 0)
