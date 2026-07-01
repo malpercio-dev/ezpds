@@ -155,6 +155,30 @@ fn unix_now_secs() -> i64 {
         .unwrap_or(0)
 }
 
+/// Which credential authenticated an admin request — the master (break-glass) token, or a
+/// specific companion-app device. Returned by [`require_admin`]/[`require_admin_json`] so a
+/// caller that logs the action (e.g. `updateSubjectStatus`) can record *who* performed it, not
+/// just *that* someone with valid admin credentials did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdminActor {
+    /// Authenticated via the shared master Bearer token (break-glass / CI path).
+    MasterToken,
+    /// Authenticated via a specific companion-app device's signed request; carries the
+    /// device's server-assigned id.
+    Device(String),
+}
+
+impl AdminActor {
+    /// Render as a single string for structured log fields — `"master-token"` or
+    /// `"device:<id>"`.
+    pub fn as_log_str(&self) -> std::borrow::Cow<'_, str> {
+        match self {
+            Self::MasterToken => std::borrow::Cow::Borrowed("master-token"),
+            Self::Device(id) => std::borrow::Cow::Owned(format!("device:{id}")),
+        }
+    }
+}
+
 /// Gate an admin endpoint: accept the master Bearer token **or** a verified,
 /// non-replayed device signature.
 ///
@@ -164,19 +188,22 @@ fn unix_now_secs() -> i64 {
 /// break-glass / CI path unchanged. `method` and `path` are the request's HTTP method
 /// and path (no query) — they are bound into the signature so a signature minted for
 /// one route cannot authorize another. `body` is the exact request body bytes.
+///
+/// Returns which credential authenticated the request ([`AdminActor`]) so callers that log the
+/// action can record the acting admin, not just that authentication succeeded.
 pub async fn require_admin(
     method: &str,
     path: &str,
     headers: &HeaderMap,
     body: &[u8],
     state: &AppState,
-) -> Result<(), ApiError> {
+) -> Result<AdminActor, ApiError> {
     // The master token is the root of trust / break-glass path: accept it whenever it
     // is valid, regardless of any (possibly malformed) device headers, so the
     // "master token OR device signature" contract holds even if both are present.
     let token_result = require_admin_token(headers, state);
     if token_result.is_ok() {
-        return Ok(());
+        return Ok(AdminActor::MasterToken);
     }
 
     // Otherwise a request carrying the device header is verified as a device signed
@@ -184,7 +211,7 @@ pub async fn require_admin(
     if headers.contains_key(ADMIN_DEVICE_HEADER) {
         verify_admin_device_request(method, path, headers, body, &state.db).await
     } else {
-        token_result
+        Err(token_result.unwrap_err())
     }
 }
 
@@ -196,15 +223,15 @@ pub async fn require_admin(
 /// body with `Json::from_bytes`, so they preserve the same rejection statuses as
 /// before device-signature support was added.
 ///
-/// Returns `Err(Response)` on auth failure (401/403) or a non-JSON content type
-/// (415); `Ok(())` to proceed with body parsing.
+/// Returns `Err(Response)` on auth failure (401/403) or a non-JSON content type (415);
+/// `Ok(AdminActor)` (see [`require_admin`]) to proceed with body parsing.
 pub async fn require_admin_json(
     method: &str,
     path: &str,
     headers: &HeaderMap,
     body: &[u8],
     state: &AppState,
-) -> Result<(), Response> {
+) -> Result<AdminActor, Response> {
     // The media-type guard runs first: it is cheap and side-effect-free, whereas
     // `require_admin` may consume a nonce and bump `last_seen_at`. Checking it first
     // means a wrong `Content-Type` returns 415 without burning a nonce (which would
@@ -219,8 +246,7 @@ pub async fn require_admin_json(
     }
     require_admin(method, path, headers, body, state)
         .await
-        .map_err(IntoResponse::into_response)?;
-    Ok(())
+        .map_err(IntoResponse::into_response)
 }
 
 /// Verify a device signed admin request against its stored public key.
@@ -237,7 +263,7 @@ async fn verify_admin_device_request(
     headers: &HeaderMap,
     body: &[u8],
     db: &sqlx::SqlitePool,
-) -> Result<(), ApiError> {
+) -> Result<AdminActor, ApiError> {
     use crate::db::admin_devices::{get_device, insert_nonce_if_absent, touch_last_seen};
 
     let device_id = header_str(headers, ADMIN_DEVICE_HEADER).ok_or_else(invalid_admin_signature)?;
@@ -300,7 +326,7 @@ async fn verify_admin_device_request(
         tracing::warn!(error = %e, device_id, "failed to bump admin device last_seen_at");
     }
 
-    Ok(())
+    Ok(AdminActor::Device(device_id.to_string()))
 }
 
 /// The single generic 401 message for every admin-device registration auth failure.
@@ -1147,9 +1173,11 @@ mod require_admin_tests {
             axum::http::header::AUTHORIZATION,
             "Bearer secret".parse().unwrap(),
         );
-        require_admin(METHOD, PATH, &headers, BODY, &state)
+        let actor = require_admin(METHOD, PATH, &headers, BODY, &state)
             .await
             .expect("master token must authorize");
+        assert_eq!(actor, AdminActor::MasterToken);
+        assert_eq!(actor.as_log_str(), "master-token");
     }
 
     #[tokio::test]
@@ -1206,9 +1234,11 @@ mod require_admin_tests {
             "nonce-ok",
             BODY,
         );
-        require_admin(METHOD, PATH, &headers, BODY, &state)
+        let actor = require_admin(METHOD, PATH, &headers, BODY, &state)
             .await
             .expect("a valid device signature must authorize");
+        assert_eq!(actor, AdminActor::Device(device_id.clone()));
+        assert_eq!(actor.as_log_str(), format!("device:{device_id}"));
     }
 
     #[tokio::test]

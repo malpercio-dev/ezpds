@@ -74,7 +74,7 @@ pub async fn update_subject_status(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<UpdateSubjectStatusResponse>, Response> {
-    require_admin_json(method.as_str(), uri.path(), &headers, &body, &state).await?;
+    let actor = require_admin_json(method.as_str(), uri.path(), &headers, &body, &state).await?;
 
     let payload: UpdateSubjectStatusBody = serde_json::from_slice(&body).map_err(|e| {
         ApiError::new(
@@ -128,6 +128,7 @@ pub async fn update_subject_status(
                 did = %did,
                 applied,
                 status = ?lifecycle.as_status_str(),
+                actor = %actor.as_log_str(),
                 "updateSubjectStatus: takedown already at requested value; no event emitted"
             );
         }
@@ -146,7 +147,12 @@ pub async fn update_subject_status(
                 ApiError::new(ErrorCode::InternalError, "failed to update account status").into_response()
             })?;
             pending.finish();
-            tracing::info!(did = %did, applied, "account takedown status updated");
+            tracing::info!(
+                did = %did,
+                applied,
+                actor = %actor.as_log_str(),
+                "account takedown status updated"
+            );
         }
     }
 
