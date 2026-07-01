@@ -17,9 +17,15 @@ signed App Store IPA and uploads it to **TestFlight**; you install/update the ap
 TestFlight app on your device.
 
 ```
-  git push main ──►  Actions: ci.yml          →  Railway: PDS staging/production   (Linux)
-                └─►  Actions: ios-testflight   →  TestFlight                        (macOS)
+  git push main ──►  Actions: ci.yml             →  Railway: PDS staging/production   (Linux)
+                ├─►  Actions: ios-testflight      →  TestFlight: Obsign               (macOS)
+                └─►  Actions: admin-testflight    →  TestFlight: Admin Companion      (macOS)
 ```
+
+There are **two** iOS apps, each with its own macOS lane and TestFlight app: the
+`identity-wallet` (Obsign) wallet and the `admin-companion` operator console. The runbook
+below covers the wallet end-to-end; the [Admin Companion lane](#admin-companion-lane-second-ios-app)
+section documents the (small) delta for the second app.
 
 The two lanes never overlap: the PDS lane proves the shared Rust core is correct on Linux
 and ships the server; the iOS lane only proves the iOS-specific surface (cross-compile →
@@ -105,9 +111,15 @@ Each run on `macos-26`:
    a signed IPA at `src-tauri/gen/apple/build/arm64/*.ipa`.
 6. `just ios-upload` → `xcrun altool --upload-app` sends it to TestFlight.
 
-Automatic signing (vs. fastlane match) is possible **because** distribution is
-TestFlight: the API key lets Xcode create/download the App Store cert + provisioning
-profile on the fly, so there are no certificates or profiles to store or rotate.
+Signing is **explicit, not automatic**. Tauri's automatic iOS signing emits an
+`Apple Distribution: Tauri (unset)` placeholder that App Store Connect rejects (tauri#11092),
+so the pipeline signs with a stored Apple Distribution cert + App Store profile
+(`IOS_CERTIFICATE` / `IOS_MOBILE_PROVISION`); the App Store Connect API key (`APPLE_API_*`)
+is **upload-only** — it authenticates `altool`, not the signature. The cert and profile are
+therefore two artifacts you store as secrets and renew when Apple expires them (both are
+annual). A credential manager such as `fastlane match` could automate that rotation across
+both apps, but it adds a Ruby toolchain plus some Tauri-signing glue — not worth it at this
+scale.
 
 ## Local Usage (escape hatch)
 
@@ -169,10 +181,45 @@ for the first time inside a CI log.
   pinning to commit SHAs is the stricter supply-chain posture; consider it once the
   pipeline is stable.
 
+## Admin Companion lane (second iOS app)
+
+The operator console (`apps/admin-companion/`, bundle id `dev.malpercio.admincompanion`)
+ships through its own macOS lane,
+[`.github/workflows/admin-testflight.yml`](../.github/workflows/admin-testflight.yml) — a
+near-clone of the wallet workflow driven by `admin-*` recipes (`just admin-ipa`,
+`just admin-upload`, `just admin-release`). It triggers on push to `main` under
+`apps/admin-companion/**` (plus the shared `crates/**`, `Cargo.toml`, `Cargo.lock`,
+`rust-toolchain.toml`) and on manual `workflow_dispatch`.
+
+**Reused as-is** (team-wide; already configured for the wallet): the Apple Distribution
+cert (`IOS_CERTIFICATE` / `IOS_CERTIFICATE_PASSWORD`), the App Store Connect API key
+(`APPLE_API_ISSUER` / `APPLE_API_KEY` / `APPLE_API_KEY_B64`), and `APPLE_DEVELOPMENT_TEAM`.
+
+**New, one-time, for this app:**
+
+1. **App ID** — register `dev.malpercio.admincompanion` at Certificates, Identifiers & Profiles.
+2. **App Store Connect app record** — New App with that bundle ID (its own name + SKU), then
+   add yourself as an internal tester (TestFlight tab).
+3. **App Store provisioning profile** — a Distribution profile bound to the new App ID,
+   signed by the **same** Apple Distribution cert from the wallet setup. A profile is
+   per-bundle-id, so it cannot be shared with identity-wallet — this is the one artifact
+   that must be minted fresh.
+4. **GitHub secret `IOS_MOBILE_PROVISION_ADMIN`** — base64 of that profile
+   (`base64 -i *.mobileprovision | pbcopy`). The workflow maps this secret into the
+   `IOS_MOBILE_PROVISION` env var Tauri reads, so the admin build signs with the admin
+   profile while the wallet lane keeps using its own `IOS_MOBILE_PROVISION` secret.
+
+Everything else is identical — Patch F (`libapp.a` strip), the build-number stamp, the
+`ITSAppUsesNonExemptEncryption=false` plist, and the Rosetta `brew` shim — so the
+[Gotchas](#gotchas--verification) above apply unchanged (admin-companion links only
+`SystemConfiguration`, not `AuthenticationServices`, since it has no OAuth auth-session).
+Do the **first build locally** the same way: `just admin-release` on your Mac, with the
+admin profile's base64 in `IOS_MOBILE_PROVISION`, before trusting the cloud job.
+
 ## Relationship to the PDS lane
 
-The two lanes share the repo but never overlap. A push to `main` fires both
-`.github/workflows/ci.yml` (PDS test gate → Railway deploys staging) and this
-`ios-testflight.yml` (iOS → TestFlight); production PDS deploys are driven separately by
-advancing the `production` branch to a release tag. See [`docs/deploy.md`](deploy.md) for
-the PDS side.
+The lanes share the repo but never overlap. A push to `main` fires
+`.github/workflows/ci.yml` (PDS test gate → Railway deploys staging) plus, when their
+paths match, the two iOS lanes (`ios-testflight.yml` and `admin-testflight.yml` → their
+respective TestFlight apps); production PDS deploys are driven separately by advancing the
+`production` branch to a release tag. See [`docs/deploy.md`](deploy.md) for the PDS side.

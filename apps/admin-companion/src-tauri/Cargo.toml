@@ -47,7 +47,10 @@ security-framework = { workspace = true, features = ["OSX_10_12"] }
 [target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
 tauri-plugin-barcode-scanner = "2"
 tauri-plugin-biometric = "2"
-tauri-plugin-sharesheet = "0.0.1"
+# Vendored (see vendor/tauri-plugin-sharesheet/VENDORED.md): the sole crates.io release injects
+# an unused Group Activities entitlement in its build.rs that fails App Store export; our fork
+# strips it. The npm guest API (@buildyourwebapp/tauri-plugin-sharesheet) stays from the registry.
+tauri-plugin-sharesheet = { path = "../vendor/tauri-plugin-sharesheet" }
 
 [build-dependencies]
 tauri-build = { workspace = true, features = [] }

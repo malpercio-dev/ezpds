@@ -1,0 +1,160 @@
+name: Admin Companion · TestFlight
+
+# The macOS half of CI for the second iOS app (the operator console). The PDS test gate
+# runs on Linux (.github/workflows/ci.yml) and cannot build a Tauri iOS app — `cargo tauri
+# ios build` needs macOS + Xcode — so the admin-companion build lives here, alongside the
+# identity-wallet lane (.github/workflows/ios-testflight.yml). GitHub-hosted macOS runners
+# are free for public repos.
+#
+# Flow: regenerate the (gitignored) Xcode project -> re-apply the admin-postinit
+# patches -> stamp a unique build number -> build a signed App Store IPA -> upload
+# to TestFlight. Signing is explicit, driven by an Apple Distribution cert/profile;
+# upload uses an App Store Connect API key.
+#
+# One-time setup (App Store Connect app record, the admin provisioning profile +
+# IOS_MOBILE_PROVISION_ADMIN secret): see docs/ios-cicd.md.
+
+on:
+  push:
+    branches: [main]
+    # Skip rebuilds for changes that cannot affect the app. crates/** is included
+    # because the app links shared workspace crates.
+    paths:
+      - "apps/admin-companion/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/admin-testflight.yml"
+  workflow_dispatch:
+
+# Public repo + signing secrets: this workflow must never run for pull_request
+# events, so a fork PR cannot exfiltrate the Apple key. push + workflow_dispatch
+# only — both are gated to collaborators with write access.
+permissions:
+  contents: read
+
+concurrency:
+  group: admin-testflight-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  testflight:
+    name: Build & upload to TestFlight
+    # macos-26 ships Xcode 26 / iOS 26 SDK — Apple rejects uploads built with older SDKs,
+    # and it matches the local macOS 26 / Xcode 26 dev environment. Apple Silicon native.
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      # SIGNING — explicit cert + App Store profile. Tauri's *automatic* iOS signing emits
+      # an "Apple Distribution: Tauri (unset)" placeholder that App Store Connect rejects
+      # (tauri#11092), so we sign with a real cert/profile. Tauri reads these base64 strings
+      # directly from the environment (no decode step needed).
+      #
+      # The cert (IOS_CERTIFICATE/_PASSWORD) is team-wide and shared with the identity-wallet
+      # lane, but the App Store *profile* is bound to one bundle id — so the env var Tauri
+      # reads (IOS_MOBILE_PROVISION) is sourced from the admin-specific secret
+      # IOS_MOBILE_PROVISION_ADMIN (the profile for dev.malpercio.admincompanion).
+      IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
+      IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+      IOS_MOBILE_PROVISION: ${{ secrets.IOS_MOBILE_PROVISION_ADMIN }}
+      # UPLOAD — App Store Connect API key (Key ID + Issuer ID; the .p8 is written from
+      # APPLE_API_KEY_B64 in the Decode step). Team ID also feeds Tauri's signing config.
+      # All three are team-wide and shared with the identity-wallet lane.
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install frontend dependencies
+        working-directory: apps/admin-companion
+        run: pnpm install --frozen-lockfile
+
+      # rust-toolchain.toml pins the channel AND lists aarch64-apple-ios, so a bare
+      # `rustup toolchain install` (run at repo root) provisions both. The explicit
+      # `target add` is belt-and-suspenders in case the runner's default toolchain wins.
+      - name: Rust toolchain + iOS target
+        run: |
+          rustup toolchain install --no-self-update
+          rustup target add aarch64-apple-ios
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      - name: Install Tauri CLI
+        # Pin to the 2.x line so a future tauri-cli 3.x can't silently break the build.
+        run: cargo binstall -y --locked tauri-cli --version '^2'
+
+      - name: Decode App Store Connect API key (.p8)
+        # Secret is passed via env (not inline ${{ }}) so it never lands in argv/logs.
+        env:
+          APPLE_API_KEY_B64: ${{ secrets.APPLE_API_KEY_B64 }}
+        run: |
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          KEY_PATH="$HOME/.appstoreconnect/private_keys/AuthKey_${APPLE_API_KEY}.p8"
+          # python (not `base64 --decode`): the runner ships BSD base64, whose decode
+          # flag is -D, not GNU's --decode; b64decode also tolerates the newlines that
+          # `base64 -i` inserts. Reads the secret from env, never from argv.
+          KEY_PATH="$KEY_PATH" python3 -c "import base64,os; open(os.environ['KEY_PATH'],'wb').write(base64.b64decode(os.environ['APPLE_API_KEY_B64']))"
+          # Tauri reads APPLE_API_KEY_PATH for signing; altool finds the key by ID
+          # in ~/.appstoreconnect/private_keys, so writing it there satisfies both.
+          echo "APPLE_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+
+      # The Tauri CLI runs x86_64 (Rosetta) on the arm64 runner, so every `brew` it shells
+      # out to (cargo-mobile2 installs xcodegen, libimobiledevice, ios-deploy, ...) is
+      # refused: "Cannot install under Rosetta 2 in ARM default prefix". Shim `brew` to
+      # always re-exec under arm64 — fixes all of cargo-mobile2's brew calls at once,
+      # rather than pre-installing each dep (tauri#11244, cargo-mobile2#291).
+      - name: Force Homebrew under arm64 (Tauri CLI runs under Rosetta)
+        run: |
+          mkdir -p "$RUNNER_TEMP/arm64-shims"
+          cat > "$RUNNER_TEMP/arm64-shims/brew" <<'SH'
+          #!/bin/bash
+          exec arch -arm64 /opt/homebrew/bin/brew "$@"
+          SH
+          chmod +x "$RUNNER_TEMP/arm64-shims/brew"
+          echo "$RUNNER_TEMP/arm64-shims" >> "$GITHUB_PATH"
+
+      # gen/apple is gitignored — regenerate it from scratch, then re-apply the
+      # pbxproj/project.yml patches (sandbox, Run Script env, SystemConfiguration
+      # framework, libapp.a strip).
+      - name: Generate the Xcode project
+        working-directory: apps/admin-companion
+        run: cargo tauri ios init
+
+      - name: Re-apply admin-postinit patches
+        run: just admin-postinit
+
+      # TestFlight rejects duplicate build numbers and the app version is pinned at
+      # 0.1.0, so derive a unique, monotonic CFBundleVersion from the CI run number.
+      # $GITHUB_RUN_NUMBER is a built-in env var — no untrusted ${{ }} in the shell.
+      - name: Stamp a unique TestFlight build number
+        run: |
+          conf="apps/admin-companion/src-tauri/tauri.conf.json"
+          tmp="$(mktemp)"
+          jq --arg bv "$GITHUB_RUN_NUMBER" '.bundle.iOS.bundleVersion = $bv' "$conf" > "$tmp"
+          mv "$tmp" "$conf"
+          echo "CFBundleVersion -> $GITHUB_RUN_NUMBER"
+
+      - name: Build signed IPA
+        run: just admin-ipa
+
+      - name: Upload to TestFlight
+        run: just admin-upload
