@@ -83,15 +83,22 @@ pub async fn get_blocks_for_account(
         return Ok(Vec::new());
     }
 
-    let placeholders = vec!["?"; cids.len()].join(",");
-    let sql = format!(
-        "SELECT * FROM blocks WHERE account_did = ? AND cid IN ({placeholders}) ORDER BY cid"
-    );
-    let mut query = sqlx::query_as::<_, BlockRow>(&sql).bind(account_did);
-    for cid in cids {
-        query = query.bind(cid);
+    let mut rows = Vec::new();
+    // Batch to stay well under SQLite's bound-parameter limit. Each chunk uses one extra bound
+    // parameter for `account_did`, so 500 CID binds leaves generous headroom.
+    for chunk in cids.chunks(500) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql = format!(
+            "SELECT * FROM blocks WHERE account_did = ? AND cid IN ({placeholders}) ORDER BY cid"
+        );
+        let mut query = sqlx::query_as::<_, BlockRow>(&sql).bind(account_did);
+        for cid in chunk {
+            query = query.bind(cid);
+        }
+        rows.extend(query.fetch_all(pool).await?);
     }
-    query.fetch_all(pool).await
+    rows.sort_unstable_by(|a, b| a.cid.cmp(&b.cid));
+    Ok(rows)
 }
 
 /// Delete all blocks for an account.
@@ -447,6 +454,32 @@ mod tests {
         assert_eq!(
             cids,
             vec!["bafkrialice1".to_string(), "bafkrialice2".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn get_blocks_for_account_chunks_large_requests() {
+        let pool = test_pool().await;
+        insert_test_account(&pool, "did:plc:alice").await;
+
+        put_block(&pool, "bafkriowned0501", "did:plc:alice", b"\xa1a")
+            .await
+            .unwrap();
+        put_block(&pool, "bafkriowned1001", "did:plc:alice", b"\xa1b")
+            .await
+            .unwrap();
+
+        let mut cids: Vec<String> = (0..1200).map(|i| format!("bafkrimissing{i:04}")).collect();
+        cids[501] = "bafkriowned0501".to_string();
+        cids[1001] = "bafkriowned1001".to_string();
+
+        let rows = get_blocks_for_account(&pool, "did:plc:alice", &cids)
+            .await
+            .unwrap();
+        let cids: Vec<_> = rows.into_iter().map(|row| row.cid).collect();
+        assert_eq!(
+            cids,
+            vec!["bafkriowned0501".to_string(), "bafkriowned1001".to_string()]
         );
     }
 
