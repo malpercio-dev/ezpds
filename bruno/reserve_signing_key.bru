@@ -1,0 +1,17 @@
+meta {
+  name: Reserve Signing Key
+  type: http
+  seq: 67
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.server.reserveSigningKey
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "did": "{{did}}"
+  }
+}

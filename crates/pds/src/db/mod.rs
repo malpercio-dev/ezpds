@@ -167,6 +167,10 @@ static MIGRATIONS: &[Migration] = &[
         version: 31,
         sql: include_str!("migrations/V031__app_passwords.sql"),
     },
+    Migration {
+        version: 32,
+        sql: include_str!("migrations/V032__reserved_signing_keys.sql"),
+    },
 ];
 
 /// Open a WAL-mode SQLite connection pool with a maximum of 1 connection.
@@ -498,6 +502,53 @@ mod tests {
             MIGRATIONS.len() as i64,
             "schema_migrations must have one row per migration in MIGRATIONS"
         );
+    }
+
+    /// V032 creates a reserved_signing_keys table for standard account-migration key reservations.
+    #[tokio::test]
+    async fn v032_reserved_signing_keys_table_shape() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        let columns: Vec<(i64, String, String, i64, Option<String>, i64)> =
+            sqlx::query_as("PRAGMA table_info(reserved_signing_keys)")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        let names: Vec<&str> = columns
+            .iter()
+            .map(|(_, name, _, _, _, _)| name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "id",
+                "did",
+                "key_type",
+                "public_key",
+                "private_key_encrypted",
+                "created_at"
+            ],
+            "reserved_signing_keys must have the expected columns"
+        );
+
+        sqlx::query(
+            "INSERT INTO reserved_signing_keys \
+             (id, did, key_type, public_key, private_key_encrypted, created_at) \
+             VALUES ('did:key:z1', 'did:plc:reserved', 'p256', 'pub', 'enc', datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let duplicate = sqlx::query(
+            "INSERT INTO reserved_signing_keys \
+             (id, did, key_type, public_key, private_key_encrypted, created_at) \
+             VALUES ('did:key:z2', 'did:plc:reserved', 'p256', 'pub2', 'enc2', datetime('now'))",
+        )
+        .execute(&pool)
+        .await;
+        assert!(duplicate.is_err(), "DID-keyed reservations must be unique");
     }
 
     /// Running migrations twice must not drop or recreate V002 tables.

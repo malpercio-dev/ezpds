@@ -69,6 +69,7 @@ use crate::routes::put_record::put_record;
 use crate::routes::refresh_session::refresh_session;
 use crate::routes::register_device::register_device;
 use crate::routes::request_password_reset::request_password_reset;
+use crate::routes::reserve_signing_key::reserve_signing_key;
 use crate::routes::reset_password::reset_password;
 use crate::routes::resolve_handle::resolve_handle_handler;
 use crate::routes::resolve_identity::{
@@ -274,6 +275,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/xrpc/com.atproto.admin.getSubjectStatus",
             get(get_subject_status),
+        )
+        .route(
+            "/xrpc/com.atproto.server.reserveSigningKey",
+            post(reserve_signing_key),
         )
         .route(
             "/xrpc/com.atproto.identity.resolveHandle",
