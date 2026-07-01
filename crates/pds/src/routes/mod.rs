@@ -5,6 +5,7 @@ pub mod admin_devices;
 pub mod apply_writes;
 pub mod atproto_did;
 pub(crate) mod auth;
+pub mod check_account_status;
 pub mod claim_codes;
 pub mod create_account;
 pub mod create_did;

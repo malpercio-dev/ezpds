@@ -1,0 +1,19 @@
+meta {
+  name: Check Account Status (checkAccountStatus)
+  type: http
+  seq: 59
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.server.checkAccountStatus
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
