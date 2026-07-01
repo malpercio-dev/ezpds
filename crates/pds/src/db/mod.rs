@@ -1,5 +1,6 @@
 pub mod accounts;
 pub mod admin_devices;
+pub mod app_passwords;
 pub mod blobs;
 pub mod blocks;
 pub mod dids;
@@ -161,6 +162,10 @@ static MIGRATIONS: &[Migration] = &[
     Migration {
         version: 30,
         sql: include_str!("migrations/V030__transfer_complete_audit.sql"),
+    },
+    Migration {
+        version: 31,
+        sql: include_str!("migrations/V031__app_passwords.sql"),
     },
 ];
 

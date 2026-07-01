@@ -18,7 +18,8 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::auth::extract_bearer_token;
 use crate::auth::jwt::{
-    issue_access_jwt, issue_refresh_jwt, parse_scope, verify_refresh_token, AuthScope,
+    app_pass_scope, issue_access_jwt, issue_refresh_jwt, parse_scope, verify_refresh_token,
+    AuthScope, SCOPE_ACCESS,
 };
 
 // ── Response type ────────────────────────────────────────────────────────────
@@ -61,9 +62,11 @@ pub async fn refresh_session(
 
     // --- Look up the refresh token in the DB ---
     // `next_jti IS NULL` is not checked here — we need the row regardless to detect replays.
-    type RefreshRow = (String, String, Option<String>); // (did, session_id, next_jti)
+    // `app_password_name` carries the app-pass identity forward so the rotated session keeps its
+    // (limited) scope rather than silently escalating to full access.
+    type RefreshRow = (String, String, Option<String>, Option<String>); // (did, session_id, next_jti, app_password_name)
     let row: Option<RefreshRow> = sqlx::query_as(
-        "SELECT did, session_id, next_jti FROM refresh_tokens \
+        "SELECT did, session_id, next_jti, app_password_name FROM refresh_tokens \
          WHERE jti = ? AND expires_at > datetime('now')",
     )
     .bind(&jti)
@@ -74,7 +77,7 @@ pub async fn refresh_session(
         ApiError::new(ErrorCode::InternalError, "internal error")
     })?;
 
-    let (did, session_id, next_jti) = row.ok_or_else(|| {
+    let (did, session_id, next_jti, app_password_name) = row.ok_or_else(|| {
         ApiError::new(
             ErrorCode::InvalidToken,
             "refresh token not found or expired",
@@ -140,7 +143,20 @@ pub async fn refresh_session(
         .unwrap_or(&state.config.public_url)
         .to_string();
 
-    let new_access_jwt = issue_access_jwt(&state.jwt_secret, &did, &aud, now)?;
+    // An app-pass session stays app-pass on refresh; re-derive the privilege from the stored
+    // app password (defaulting to non-privileged if it was revoked out from under the session).
+    let session_scope = match &app_password_name {
+        Some(name) => {
+            let privileged =
+                crate::db::app_passwords::app_password_privileged(&state.db, &did, name)
+                    .await?
+                    .unwrap_or(false);
+            app_pass_scope(privileged)
+        }
+        None => SCOPE_ACCESS,
+    };
+
+    let new_access_jwt = issue_access_jwt(&state.jwt_secret, &did, &aud, now, session_scope)?;
     let new_refresh_jti = Uuid::new_v4().to_string();
     let new_refresh_jwt = issue_refresh_jwt(&state.jwt_secret, &did, &aud, &new_refresh_jti, now)?;
 
@@ -151,12 +167,13 @@ pub async fn refresh_session(
     })?;
 
     sqlx::query(
-        "INSERT INTO refresh_tokens (jti, did, session_id, expires_at, created_at) \
-         VALUES (?, ?, ?, datetime('now', '+90 days'), datetime('now'))",
+        "INSERT INTO refresh_tokens (jti, did, session_id, expires_at, app_password_name, created_at) \
+         VALUES (?, ?, ?, datetime('now', '+90 days'), ?, datetime('now'))",
     )
     .bind(&new_refresh_jti)
     .bind(&did)
     .bind(&session_id)
+    .bind(app_password_name.as_deref())
     .execute(&mut *tx)
     .await
     .map_err(|e| {
@@ -725,5 +742,89 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let json = body_json(response).await;
         assert_eq!(json["error"]["code"], "AUTHENTICATION_REQUIRED");
+    }
+
+    // ── App-password scope preservation ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn app_password_session_refresh_preserves_app_pass_scope_and_name() {
+        use crate::routes::test_utils::seed_app_password;
+
+        let state = test_state().await;
+        insert_account_with_password(
+            &state.db,
+            "did:plc:app",
+            "app.test.example.com",
+            "app@example.com",
+            "mainpass",
+        )
+        .await;
+        seed_app_password(
+            &state.db,
+            "did:plc:app",
+            "cli",
+            "abcd-efgh-ijkl-mnop",
+            false,
+        )
+        .await;
+        let secret = state.jwt_secret;
+        let db = state.db.clone();
+
+        // Log in with the app password, then refresh.
+        let tokens = create_session_tokens(&state, "did:plc:app", "abcd-efgh-ijkl-mnop").await;
+        let refresh_jwt = tokens["refreshJwt"].as_str().unwrap().to_string();
+
+        let response = app(state)
+            .oneshot(post_refresh_session(&refresh_jwt))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+
+        // New access token keeps the app-pass scope (not silently upgraded to full access).
+        let access_claims = decode_jwt(json["accessJwt"].as_str().unwrap(), &secret);
+        assert_eq!(access_claims["scope"], "com.atproto.appPass");
+
+        // Rotated refresh token still carries the app password name.
+        let new_jti = decode_jwt(json["refreshJwt"].as_str().unwrap(), &secret)["jti"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let name: Option<String> =
+            sqlx::query_scalar("SELECT app_password_name FROM refresh_tokens WHERE jti = ?")
+                .bind(&new_jti)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(name.as_deref(), Some("cli"));
+    }
+
+    #[tokio::test]
+    async fn privileged_app_password_session_refresh_stays_privileged() {
+        use crate::routes::test_utils::seed_app_password;
+
+        let state = test_state().await;
+        insert_account_with_password(
+            &state.db,
+            "did:plc:pv",
+            "pv.test.example.com",
+            "pv@example.com",
+            "mainpass",
+        )
+        .await;
+        seed_app_password(&state.db, "did:plc:pv", "dm", "priv-priv-priv-priv", true).await;
+        let secret = state.jwt_secret;
+
+        let tokens = create_session_tokens(&state, "did:plc:pv", "priv-priv-priv-priv").await;
+        let refresh_jwt = tokens["refreshJwt"].as_str().unwrap().to_string();
+
+        let response = app(state)
+            .oneshot(post_refresh_session(&refresh_jwt))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        let access_claims = decode_jwt(json["accessJwt"].as_str().unwrap(), &secret);
+        assert_eq!(access_claims["scope"], "com.atproto.appPassPrivileged");
     }
 }

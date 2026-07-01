@@ -28,6 +28,7 @@ use crate::routes::atproto_did::atproto_did_handler;
 use crate::routes::check_account_status::check_account_status;
 use crate::routes::claim_codes::claim_codes;
 use crate::routes::create_account::create_account;
+use crate::routes::create_app_password::create_app_password;
 use crate::routes::create_did::create_did_handler;
 use crate::routes::create_handle::create_handle_handler;
 use crate::routes::create_mobile_account::create_mobile_account;
@@ -51,6 +52,7 @@ use crate::routes::get_repo_signing_key::get_repo_signing_key;
 use crate::routes::get_service_auth::get_service_auth;
 use crate::routes::get_session::get_session;
 use crate::routes::health::health;
+use crate::routes::list_app_passwords::list_app_passwords_handler;
 use crate::routes::list_blobs::list_blobs;
 use crate::routes::list_records::list_records;
 use crate::routes::list_repos::list_repos;
@@ -68,6 +70,7 @@ use crate::routes::register_device::register_device;
 use crate::routes::request_password_reset::request_password_reset;
 use crate::routes::reset_password::reset_password;
 use crate::routes::resolve_handle::resolve_handle_handler;
+use crate::routes::revoke_app_password::revoke_app_password;
 use crate::routes::static_assets::static_handler;
 use crate::routes::sync_get_latest_commit::sync_get_latest_commit;
 use crate::routes::sync_get_record::sync_get_record;
@@ -237,6 +240,18 @@ pub fn app(state: AppState) -> Router {
             get(check_account_status),
         )
         .route(
+            "/xrpc/com.atproto.server.createAppPassword",
+            post(create_app_password),
+        )
+        .route(
+            "/xrpc/com.atproto.server.listAppPasswords",
+            get(list_app_passwords_handler),
+        )
+        .route(
+            "/xrpc/com.atproto.server.revokeAppPassword",
+            post(revoke_app_password),
+        )
+        .route(
             "/xrpc/com.atproto.server.requestPasswordReset",
             post(request_password_reset),
         )
@@ -343,24 +358,37 @@ async fn xrpc_handler(
     auth: Result<crate::auth::extractors::AuthenticatedUser, ApiError>,
     req: axum::extract::Request,
 ) -> Response {
+    use crate::auth::jwt::AuthScope;
     use crate::routes::service_proxy::proxy_xrpc;
 
+    // The third tuple element marks the chat (direct-message) service, which requires a
+    // privileged credential.
     let upstream = if method.starts_with("app.bsky.") {
-        Some((&state.config.appview.url, &state.config.appview.did))
+        Some((&state.config.appview.url, &state.config.appview.did, false))
     } else if method.starts_with("chat.bsky.") {
-        Some((&state.config.chat.url, &state.config.chat.did))
+        Some((&state.config.chat.url, &state.config.chat.did, true))
     } else {
         None
     };
 
     match upstream {
-        Some((url, proxy_did)) => {
+        Some((url, proxy_did, is_chat)) => {
             // The proxy mints a service-auth JWT signed by the *authenticated user's* repo key,
             // so the user DID — not just a pass/fail gate result — has to flow into `proxy_xrpc`.
             let user = match auth {
                 Ok(user) => user,
                 Err(rejection) => return rejection.into_response(),
             };
+            // Direct messages require a privileged credential: full access or a *privileged*
+            // app password. A plain `com.atproto.appPass` session must not reach the chat
+            // service — this is what the app-password privileged flag gates.
+            if is_chat && user.scope == AuthScope::AppPass {
+                return ApiError::new(
+                    ErrorCode::Forbidden,
+                    "this app password lacks the privileged scope required for chat access",
+                )
+                .into_response();
+            }
             proxy_xrpc(&state, url, proxy_did, &method, &user.did, req).await
         }
         None => ApiError::new(
@@ -497,6 +525,35 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    }
+
+    #[tokio::test]
+    async fn non_privileged_app_password_cannot_reach_chat_proxy() {
+        // A plain `com.atproto.appPass` session must be refused before any request reaches the
+        // chat (DM) service — only full access or a privileged app password may. The refusal
+        // happens at the proxy gate, so no account/repo key setup is needed.
+        let state = test_state().await;
+        let token = crate::routes::test_utils::app_pass_jwt(&state.jwt_secret, "did:plc:x", false);
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/chat.bsky.convo.sendMessage")
+                    .header("Authorization", format!("Bearer {token}"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "FORBIDDEN");
     }
 
     #[tokio::test]

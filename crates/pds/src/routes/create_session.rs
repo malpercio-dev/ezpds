@@ -1,9 +1,11 @@
 // pattern: Imperative Shell
 //
 // Gathers: JSON body {identifier, password}, DB pool, jwt_secret, config, rate-limit state
-// Processes: rate limit gate → identifier resolution → password verification →
-//            JWT issuance → session + refresh_token DB insert
-// Returns: JSON {accessJwt, refreshJwt, handle, did, email} on success; ApiError on failure
+// Processes: rate limit gate → identifier resolution → main-password then app-password
+//            verification (selecting the session scope) → JWT issuance → session +
+//            refresh_token DB insert (tagged with the app password name, if any)
+// Returns: JSON {accessJwt, refreshJwt, handle, did, email?} on success; ApiError on failure.
+//          email is omitted for app-password sessions.
 //
 // Implements: POST /xrpc/com.atproto.server.createSession
 
@@ -16,10 +18,11 @@ use uuid::Uuid;
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::jwt::{issue_access_jwt, issue_refresh_jwt};
+use crate::auth::jwt::{app_pass_scope, issue_access_jwt, issue_refresh_jwt, SCOPE_ACCESS};
 use crate::auth::password::{verify_password, VerifyResult};
 use crate::auth::rate_limit::{clear_failures, is_rate_limited, record_failure};
 use crate::db::accounts::resolve_identifier;
+use crate::db::app_passwords::list_verify_candidates;
 
 // ── Request / Response types ─────────────────────────────────────────────────
 
@@ -37,7 +40,38 @@ pub struct CreateSessionResponse {
     refresh_jwt: String,
     handle: String,
     did: String,
-    email: String,
+    /// Omitted for app-password sessions: a limited credential does not see the account email
+    /// (matching atproto, whose `createSession` returns email only for full account sessions).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    email: Option<String>,
+}
+
+/// An app password matched during `createSession`: its name and whether it is privileged.
+struct MatchedAppPassword {
+    name: String,
+    privileged: bool,
+}
+
+/// Try `password` against each of the account's stored app passwords, returning the first
+/// match. A revoked app password is absent from the candidate set, so it can no longer
+/// authenticate — satisfying "revoked passwords stop authenticating".
+async fn match_app_password(
+    db: &sqlx::SqlitePool,
+    did: &str,
+    password: &str,
+) -> Result<Option<MatchedAppPassword>, ApiError> {
+    for candidate in list_verify_candidates(db, did).await? {
+        if matches!(
+            verify_password(&candidate.password_hash, password),
+            VerifyResult::Ok
+        ) {
+            return Ok(Some(MatchedAppPassword {
+                name: candidate.name,
+                privileged: candidate.privileged,
+            }));
+        }
+    }
+    Ok(None)
 }
 
 // ── Handler ──────────────────────────────────────────────────────────────────
@@ -68,28 +102,22 @@ pub async fn create_session(
     // --- Resolve identifier and verify password ---
     // Both "account not found" and "wrong password" surface as the same error to prevent
     // user enumeration via distinguishable error messages.
+    //
+    // Verification order: try the main account password first; a correct one yields a
+    // full-access session. Otherwise fall back to the account's app passwords — a match yields
+    // an app-password-scoped session (privileged or not) and tags the session with the app
+    // password's name so refresh/revocation can track it. Only if neither matches is it a
+    // failure. Mobile accounts (no main password) can still authenticate via an app password.
     let account_opt = resolve_identifier(&state.db, &payload.identifier).await?;
 
-    let account = match account_opt {
+    let (account, session_scope, app_password_name) = match account_opt {
         Some(row) => {
-            let result = match row.password_hash.as_deref() {
-                // Mobile accounts (NULL or empty password_hash) cannot use createSession.
+            let main_result = match row.password_hash.as_deref() {
                 None | Some("") => VerifyResult::WrongPassword,
                 Some(h) => verify_password(h, &payload.password),
             };
-            match result {
-                VerifyResult::Ok => {}
-                VerifyResult::WrongPassword => {
-                    let mut attempts = crate::auth::validation::lock_failed_login_attempts(
-                        &state.failed_login_attempts,
-                        None,
-                    )?;
-                    record_failure(&mut attempts, &payload.identifier);
-                    return Err(ApiError::new(
-                        ErrorCode::AuthenticationRequired,
-                        "invalid identifier or password",
-                    ));
-                }
+            match main_result {
+                VerifyResult::Ok => (row, SCOPE_ACCESS, None),
                 VerifyResult::CorruptHash => {
                     tracing::error!(
                         identifier = %payload.identifier,
@@ -97,8 +125,25 @@ pub async fn create_session(
                     );
                     return Err(ApiError::new(ErrorCode::InternalError, "internal error"));
                 }
+                VerifyResult::WrongPassword => {
+                    match match_app_password(&state.db, &row.did, &payload.password).await? {
+                        Some(matched) => {
+                            (row, app_pass_scope(matched.privileged), Some(matched.name))
+                        }
+                        None => {
+                            let mut attempts = crate::auth::validation::lock_failed_login_attempts(
+                                &state.failed_login_attempts,
+                                None,
+                            )?;
+                            record_failure(&mut attempts, &payload.identifier);
+                            return Err(ApiError::new(
+                                ErrorCode::AuthenticationRequired,
+                                "invalid identifier or password",
+                            ));
+                        }
+                    }
+                }
             }
-            row
         }
         None => {
             let mut attempts = crate::auth::validation::lock_failed_login_attempts(
@@ -131,7 +176,7 @@ pub async fn create_session(
         .unwrap_or(&state.config.public_url)
         .to_string();
 
-    let access_jwt = issue_access_jwt(&state.jwt_secret, &account.did, &aud, now)?;
+    let access_jwt = issue_access_jwt(&state.jwt_secret, &account.did, &aud, now, session_scope)?;
 
     let refresh_jti = Uuid::new_v4().to_string();
     let refresh_jwt = issue_refresh_jwt(&state.jwt_secret, &account.did, &aud, &refresh_jti, now)?;
@@ -156,13 +201,17 @@ pub async fn create_session(
         ApiError::new(ErrorCode::InternalError, "failed to create session")
     })?;
 
+    // Tag the refresh token with the app password name (NULL for a full-access session) so
+    // rotation preserves the app-pass scope and revoking the app password can find and delete
+    // its sessions.
     sqlx::query(
-        "INSERT INTO refresh_tokens (jti, did, session_id, expires_at, created_at) \
-         VALUES (?, ?, ?, datetime('now', '+90 days'), datetime('now'))",
+        "INSERT INTO refresh_tokens (jti, did, session_id, expires_at, app_password_name, created_at) \
+         VALUES (?, ?, ?, datetime('now', '+90 days'), ?, datetime('now'))",
     )
     .bind(&refresh_jti)
     .bind(&account.did)
     .bind(&session_id)
+    .bind(app_password_name.as_deref())
     .execute(&mut *tx)
     .await
     .map_err(|e| {
@@ -193,6 +242,13 @@ pub async fn create_session(
         .handle
         .unwrap_or_else(|| "handle.invalid".to_string());
 
+    // Full-access sessions see the account email; app-password sessions do not.
+    let email = if app_password_name.is_some() {
+        None
+    } else {
+        Some(account.email)
+    };
+
     Ok((
         StatusCode::OK,
         Json(CreateSessionResponse {
@@ -200,7 +256,7 @@ pub async fn create_session(
             refresh_jwt,
             handle,
             did: account.did,
-            email: account.email,
+            email,
         }),
     ))
 }
@@ -217,7 +273,7 @@ mod tests {
 
     use crate::app::{app, test_state};
     use crate::auth::rate_limit::RATE_LIMIT_MAX_FAILURES;
-    use crate::routes::test_utils::{body_json, insert_account_with_password};
+    use crate::routes::test_utils::{body_json, insert_account_with_password, seed_app_password};
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -578,5 +634,212 @@ mod tests {
             StatusCode::UNAUTHORIZED,
             "counter must have been cleared by the successful login"
         );
+    }
+
+    // ── App-password login ────────────────────────────────────────────────────
+
+    /// Decode an HS256 access JWT (no audience validation) and return its `scope` claim.
+    fn decode_scope(token: &str, secret: &[u8; 32]) -> String {
+        let mut v = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
+        v.validate_aud = false;
+        v.set_required_spec_claims(&["exp", "sub"]);
+        jsonwebtoken::decode::<serde_json::Value>(
+            token,
+            &jsonwebtoken::DecodingKey::from_secret(secret),
+            &v,
+        )
+        .unwrap()
+        .claims["scope"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn app_password_login_succeeds_with_app_pass_scope() {
+        let state = test_state().await;
+        insert_account_with_password(
+            &state.db,
+            "did:plc:alice",
+            "alice.test.example.com",
+            "alice@example.com",
+            "mainpass",
+        )
+        .await;
+        seed_app_password(
+            &state.db,
+            "did:plc:alice",
+            "cli",
+            "abcd-efgh-ijkl-mnop",
+            false,
+        )
+        .await;
+        let secret = state.jwt_secret;
+
+        let response = app(state)
+            .oneshot(post_create_session("did:plc:alice", "abcd-efgh-ijkl-mnop"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(
+            decode_scope(json["accessJwt"].as_str().unwrap(), &secret),
+            "com.atproto.appPass"
+        );
+        // App-password sessions do not receive the account email.
+        assert!(
+            json.get("email").is_none(),
+            "email must be omitted for app-pass sessions"
+        );
+        assert_eq!(json["did"], "did:plc:alice");
+    }
+
+    #[tokio::test]
+    async fn privileged_app_password_login_has_privileged_scope() {
+        let state = test_state().await;
+        insert_account_with_password(
+            &state.db,
+            "did:plc:priv",
+            "priv.test.example.com",
+            "priv@example.com",
+            "mainpass",
+        )
+        .await;
+        seed_app_password(&state.db, "did:plc:priv", "dm", "priv-priv-priv-priv", true).await;
+        let secret = state.jwt_secret;
+
+        let response = app(state)
+            .oneshot(post_create_session("did:plc:priv", "priv-priv-priv-priv"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(
+            decode_scope(json["accessJwt"].as_str().unwrap(), &secret),
+            "com.atproto.appPassPrivileged"
+        );
+    }
+
+    #[tokio::test]
+    async fn main_password_login_keeps_full_access_scope_and_email() {
+        // With an app password also present, the main password must still yield a full-access
+        // session with the email — the app-pass fallback only fires when the main password fails.
+        let state = test_state().await;
+        insert_account_with_password(
+            &state.db,
+            "did:plc:full",
+            "full.test.example.com",
+            "full@example.com",
+            "mainpass",
+        )
+        .await;
+        seed_app_password(
+            &state.db,
+            "did:plc:full",
+            "cli",
+            "abcd-efgh-ijkl-mnop",
+            false,
+        )
+        .await;
+        let secret = state.jwt_secret;
+
+        let response = app(state)
+            .oneshot(post_create_session("did:plc:full", "mainpass"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(
+            decode_scope(json["accessJwt"].as_str().unwrap(), &secret),
+            "com.atproto.access"
+        );
+        assert_eq!(json["email"], "full@example.com");
+    }
+
+    #[tokio::test]
+    async fn wrong_app_password_returns_401() {
+        let state = test_state().await;
+        insert_account_with_password(
+            &state.db,
+            "did:plc:w",
+            "w.test.example.com",
+            "w@example.com",
+            "mainpass",
+        )
+        .await;
+        seed_app_password(&state.db, "did:plc:w", "cli", "abcd-efgh-ijkl-mnop", false).await;
+
+        let response = app(state)
+            .oneshot(post_create_session("did:plc:w", "not-the-right-secret"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn mobile_account_can_login_with_app_password() {
+        // A mobile account has a NULL password_hash (no main password) but can still
+        // authenticate with an app password.
+        let state = test_state().await;
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES ('did:plc:mobile', 'mobile@example.com', NULL, datetime('now'), datetime('now'))",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+        seed_app_password(
+            &state.db,
+            "did:plc:mobile",
+            "cli",
+            "abcd-efgh-ijkl-mnop",
+            false,
+        )
+        .await;
+        let secret = state.jwt_secret;
+
+        let response = app(state)
+            .oneshot(post_create_session("did:plc:mobile", "abcd-efgh-ijkl-mnop"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(
+            decode_scope(json["accessJwt"].as_str().unwrap(), &secret),
+            "com.atproto.appPass"
+        );
+    }
+
+    #[tokio::test]
+    async fn app_password_session_tags_refresh_token_with_name() {
+        let state = test_state().await;
+        insert_account_with_password(
+            &state.db,
+            "did:plc:nm",
+            "nm.test.example.com",
+            "nm@example.com",
+            "mainpass",
+        )
+        .await;
+        seed_app_password(&state.db, "did:plc:nm", "cli", "abcd-efgh-ijkl-mnop", false).await;
+        let db = state.db.clone();
+
+        let response = app(state)
+            .oneshot(post_create_session("did:plc:nm", "abcd-efgh-ijkl-mnop"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let name: Option<String> = sqlx::query_scalar(
+            "SELECT app_password_name FROM refresh_tokens WHERE did = 'did:plc:nm'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(name.as_deref(), Some("cli"));
     }
 }

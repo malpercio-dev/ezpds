@@ -13,7 +13,6 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
-use crate::auth::jwt::AuthScope;
 use crate::db::accounts::get_session_account;
 
 #[derive(Serialize)]
@@ -35,8 +34,10 @@ pub async fn get_session(
     user: AuthenticatedUser,
     State(state): State<AppState>,
 ) -> Result<Json<GetSessionResponse>, ApiError> {
-    // Only access-scope tokens are valid; refresh tokens must not be accepted.
-    if user.scope != AuthScope::Access {
+    // Any access-level token is valid here (full access or an app password); only refresh
+    // tokens must be rejected. App-password clients (e.g. goat) call getSession right after
+    // logging in to confirm their identity, so they must be admitted.
+    if !user.scope.is_access() {
         return Err(ApiError::new(
             ErrorCode::InvalidToken,
             "access token required",
@@ -433,7 +434,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn app_pass_token_returns_401() {
+    async fn app_pass_token_returns_session_info() {
+        // App-password sessions are access-level: getSession must admit them (matching
+        // atproto's `accessStandard`) so app-password clients can confirm their identity.
         let state = test_state().await;
         insert_account(
             &state.db,
@@ -449,26 +452,33 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let token = encode(
-            &Header::new(Algorithm::HS256),
-            &serde_json::json!({
-                "scope": "com.atproto.appPass",
-                "sub": "did:plc:apppass",
-                "iat": now,
-                "exp": now + 7200_u64,
-            }),
-            &EncodingKey::from_secret(&state.jwt_secret),
-        )
-        .unwrap();
 
-        let response = app(state)
-            .oneshot(get_session_request(&token))
-            .await
+        for scope in ["com.atproto.appPass", "com.atproto.appPassPrivileged"] {
+            let token = encode(
+                &Header::new(Algorithm::HS256),
+                &serde_json::json!({
+                    "scope": scope,
+                    "sub": "did:plc:apppass",
+                    "iat": now,
+                    "exp": now + 7200_u64,
+                }),
+                &EncodingKey::from_secret(&state.jwt_secret),
+            )
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+            let response = app(state.clone())
+                .oneshot(get_session_request(&token))
+                .await
+                .unwrap();
+
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "scope {scope} must be admitted"
+            );
+            let json = body_json(response).await;
+            assert_eq!(json["did"], "did:plc:apppass");
+        }
     }
 
     #[tokio::test]
