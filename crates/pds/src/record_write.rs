@@ -447,12 +447,11 @@ pub async fn commit_repo_write(
     // Notify crawlers only once the firehose event has actually been finished: when diff/CAR
     // assembly failed (`pending` is `None`) there is nothing to notify them about yet, and the
     // relay would rather learn about this commit from a later one's event than crawl early and
-    // find nothing new.
+    // find nothing new. The notify itself is deferred past the rev-tag attempt below so a
+    // crawler it wakes can't race ahead of `since` tagging and see an incomplete delta.
+    let notify_crawlers = pending.is_some();
     if let Some(pending) = pending {
         pending.finish();
-        // New content is live: notify configured crawlers (relays/BGSes) so they pull it
-        // promptly. Fire-and-forget and rate-limited — never blocks the commit.
-        state.crawlers.notify();
     }
 
     // Best-effort, independent of the firehose durability guarantee above: an untagged block
@@ -462,6 +461,13 @@ pub async fn commit_repo_write(
         {
             tracing::warn!(error = %e, did = %did, "failed to tag commit block revisions (non-fatal)");
         }
+    }
+
+    if notify_crawlers {
+        // New content is live and the rev tag has been attempted: notify configured crawlers
+        // (relays/BGSes) so they pull it promptly. Fire-and-forget and rate-limited — never
+        // blocks the commit.
+        state.crawlers.notify();
     }
 
     Ok(())
