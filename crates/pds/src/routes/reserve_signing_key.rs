@@ -55,9 +55,9 @@ pub async fn reserve_signing_key(
                 signing_key: existing.key_id,
             }));
         }
-    } else {
-        check_anonymous_reservation_limit(&state, &headers)?;
     }
+
+    check_anonymous_reservation_limit(&state, &headers)?;
 
     let key = generate_reserved_key(&state)?;
     let inserted = insert_reserved_repo_key(&state.db, did, &key)
@@ -212,38 +212,13 @@ fn generate_reserved_key(state: &AppState) -> Result<RepoSigningKey, ApiError> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
-    use zeroize::Zeroizing;
 
-    use common::Sensitive;
-
-    use crate::app::{app, test_state, AppState};
+    use crate::app::{app, test_state};
     use crate::auth::rate_limit::RATE_LIMIT_MAX_FAILURES;
-
-    async fn state_with_master_key() -> AppState {
-        let base = test_state().await;
-        let mut config = (*base.config).clone();
-        config.signing_key_master_key = Some(Sensitive(Zeroizing::new([7u8; 32])));
-        AppState {
-            config: Arc::new(config),
-            db: base.db,
-            http_client: base.http_client,
-            dns_provider: base.dns_provider,
-            txt_resolver: base.txt_resolver,
-            well_known_resolver: base.well_known_resolver,
-            jwt_secret: base.jwt_secret,
-            oauth_signing_keypair: base.oauth_signing_keypair,
-            dpop_nonces: base.dpop_nonces,
-            failed_login_attempts: base.failed_login_attempts,
-            firehose: base.firehose,
-            crawlers: base.crawlers,
-            iroh: base.iroh,
-        }
-    }
+    use crate::routes::test_utils::state_with_master_key;
 
     fn post_req(body: serde_json::Value) -> Request<Body> {
         post_req_from(body, None)
@@ -344,6 +319,43 @@ mod tests {
 
         let other_caller = app
             .oneshot(post_req_from(serde_json::json!({}), Some("203.0.113.2")))
+            .await
+            .unwrap();
+        assert_eq!(other_caller.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn fresh_did_reservations_are_rate_limited_per_caller() {
+        let state = state_with_master_key().await;
+        let app = app(state);
+
+        for n in 0..RATE_LIMIT_MAX_FAILURES {
+            let resp = app
+                .clone()
+                .oneshot(post_req_from(
+                    serde_json::json!({"did": format!("did:plc:fresh{n}")}),
+                    Some("203.0.113.1"),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
+
+        let limited = app
+            .clone()
+            .oneshot(post_req_from(
+                serde_json::json!({"did":"did:plc:freshlimited"}),
+                Some("203.0.113.1"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        let other_caller = app
+            .oneshot(post_req_from(
+                serde_json::json!({"did":"did:plc:freshother"}),
+                Some("203.0.113.2"),
+            ))
             .await
             .unwrap();
         assert_eq!(other_caller.status(), StatusCode::OK);
