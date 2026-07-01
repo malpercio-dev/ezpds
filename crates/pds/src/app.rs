@@ -270,11 +270,11 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/xrpc/com.atproto.repo.uploadBlob", post(upload_blob))
         .route("/xrpc/com.atproto.sync.getBlob", get(get_blob))
+        .route("/xrpc/com.atproto.sync.getBlocks", get(sync_get_blocks))
         .route(
             "/xrpc/com.atproto.sync.getLatestCommit",
             get(sync_get_latest_commit),
         )
-        .route("/xrpc/com.atproto.sync.getBlocks", get(sync_get_blocks))
         .route("/xrpc/com.atproto.sync.getRecord", get(sync_get_record))
         .route("/xrpc/com.atproto.sync.getRepo", get(get_repo))
         .route(

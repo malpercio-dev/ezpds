@@ -9,6 +9,8 @@
 //! different account is treated as missing ([`ErrorCode::BlockNotFound`]), the same answer the
 //! reference PDS's per-actor block store gives for a CID it does not hold.
 
+use std::collections::HashMap;
+
 use axum::extract::{RawQuery, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -92,22 +94,27 @@ pub async fn sync_get_blocks(
     requested.sort();
     requested.dedup();
 
-    // Fetch each block, scoped to this account. A block that is absent OR belongs to another
-    // account is collected as missing — both surface as `BlockNotFound`, so a caller cannot use
-    // a foreign repo's DID to probe whether a CID is stored anywhere on the PDS.
+    // Fetch all requested blocks in one account-scoped DB query. A block that is absent OR
+    // belongs to another account is missing from this result set — both surface as
+    // `BlockNotFound`, so a caller cannot use a foreign repo's DID to probe whether a CID is
+    // stored anywhere on the PDS.
+    let requested_strings: Vec<String> = requested.iter().map(Cid::to_string).collect();
+    let rows = crate::db::blocks::get_blocks_for_account(&state.db, did, &requested_strings)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, did = %did, "failed to query blocks");
+            ApiError::new(ErrorCode::InternalError, "failed to get blocks")
+        })?;
+    let mut rows_by_cid: HashMap<String, Vec<u8>> =
+        rows.into_iter().map(|row| (row.cid, row.bytes)).collect();
+
     let mut blocks: Vec<(Cid, Vec<u8>)> = Vec::with_capacity(requested.len());
     let mut missing: Vec<String> = Vec::new();
     for cid in &requested {
-        match crate::db::blocks::get_block(&state.db, &cid.to_string()).await {
-            Ok(Some(row)) if row.account_did == *did => blocks.push((*cid, row.bytes)),
-            Ok(_) => missing.push(cid.to_string()),
-            Err(e) => {
-                tracing::error!(error = %e, did = %did, cid = %cid, "failed to query block");
-                return Err(ApiError::new(
-                    ErrorCode::InternalError,
-                    "failed to get blocks",
-                ));
-            }
+        let cid_str = cid.to_string();
+        match rows_by_cid.remove(&cid_str) {
+            Some(bytes) => blocks.push((*cid, bytes)),
+            None => missing.push(cid_str),
         }
     }
 

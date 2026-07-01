@@ -70,6 +70,30 @@ pub async fn has_block(pool: &SqlitePool, cid: &str) -> Result<bool, sqlx::Error
     Ok(row.0)
 }
 
+/// Fetch multiple blocks that belong to a specific account.
+///
+/// Used by `com.atproto.sync.getBlocks`: missing CIDs and CIDs owned by another account are both
+/// omitted from the returned rows so the caller can report them uniformly as `BlockNotFound`.
+pub async fn get_blocks_for_account(
+    pool: &SqlitePool,
+    account_did: &str,
+    cids: &[String],
+) -> Result<Vec<BlockRow>, sqlx::Error> {
+    if cids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = vec!["?"; cids.len()].join(",");
+    let sql = format!(
+        "SELECT * FROM blocks WHERE account_did = ? AND cid IN ({placeholders}) ORDER BY cid"
+    );
+    let mut query = sqlx::query_as::<_, BlockRow>(&sql).bind(account_did);
+    for cid in cids {
+        query = query.bind(cid);
+    }
+    query.fetch_all(pool).await
+}
+
 /// Delete all blocks for an account.
 ///
 /// Returns the number of blocks removed.
@@ -389,6 +413,41 @@ mod tests {
             .unwrap()
             .expect("bob block");
         assert_eq!(bob_block.account_did, "did:plc:bob");
+    }
+
+    #[tokio::test]
+    async fn get_blocks_for_account_returns_only_owned_requested_blocks() {
+        let pool = test_pool().await;
+        insert_test_account(&pool, "did:plc:alice").await;
+        insert_test_account(&pool, "did:plc:bob").await;
+
+        put_block(&pool, "bafkrialice1", "did:plc:alice", b"\xa1alice1")
+            .await
+            .unwrap();
+        put_block(&pool, "bafkrialice2", "did:plc:alice", b"\xa1alice2")
+            .await
+            .unwrap();
+        put_block(&pool, "bafkribob", "did:plc:bob", b"\xa1bob")
+            .await
+            .unwrap();
+
+        let rows = get_blocks_for_account(
+            &pool,
+            "did:plc:alice",
+            &[
+                "bafkrialice2".to_string(),
+                "bafkribob".to_string(),
+                "bafkrimissing".to_string(),
+                "bafkrialice1".to_string(),
+            ],
+        )
+        .await
+        .unwrap();
+        let cids: Vec<_> = rows.into_iter().map(|row| row.cid).collect();
+        assert_eq!(
+            cids,
+            vec!["bafkrialice1".to_string(), "bafkrialice2".to_string()]
+        );
     }
 
     #[tokio::test]
