@@ -189,6 +189,47 @@ where
     build_car(store, root_cid, blocks.into_iter().collect()).await
 }
 
+/// Build a CARv1 file with NO declared root (an empty `roots` array, matching the reference
+/// PDS's `blocksToCarStream(null, …)`) from already-fetched `(cid, bytes)` pairs.
+///
+/// Backs `com.atproto.sync.getBlocks`: a caller asks for specific block CIDs (intermediate MST
+/// nodes, records) and the response CAR carries exactly those blocks without asserting any
+/// root — unlike `getRepo`/`getRecord` CARs whose declared root is the signed commit. A
+/// consumer reads the blocks by the CIDs it asked for, not by walking from a root.
+///
+/// The caller is responsible for ownership scoping (the blocks belong to the requested repo)
+/// and for detecting any requested CIDs that are absent — this function only frames the blocks
+/// it is handed, in deterministic CID order with entries deduplicated. Each block's multihash
+/// must be SHA2-256 (the only multihash ezpds stores; enforced by `SqliteBlockStore`), so the
+/// CID `write_block` recomputes from `bytes` matches the requested `cid`.
+pub async fn build_blocks_car(mut blocks: Vec<(Cid, Vec<u8>)>) -> Result<Vec<u8>, CarExportError> {
+    // Deterministic order: CID lexicographic. No root-first sort — there is no declared root.
+    blocks.sort_by_key(|(c, _)| *c);
+    blocks.dedup_by_key(|(c, _)| *c);
+
+    let mut car_buf = Vec::new();
+    {
+        let mut car: CarStore<Cursor<&mut Vec<u8>>> =
+            CarStore::create_with_roots(Cursor::new(&mut car_buf), [])
+                .await
+                .map_err(|e| CarExportError::BlockStore(format!("create blocks CAR: {e}")))?;
+
+        for (cid, bytes) in blocks {
+            let written = car
+                .write_block(cid.codec(), SHA2_256, &bytes)
+                .await
+                .map_err(|e| CarExportError::BlockStore(format!("write block {cid}: {e}")))?;
+            if written != cid {
+                return Err(CarExportError::BlockStore(format!(
+                    "block bytes do not hash to requested CID {cid}"
+                )));
+            }
+        }
+    }
+
+    Ok(car_buf)
+}
+
 /// CARv1 header shape, serialized as DAG-CBOR. Mirrors the `{version, roots}` field order
 /// of the header `CarStore` writes, so a hand-streamed CAR (see [`car_v1_header`]) is parsed
 /// identically by `CarStore::open` and by any other CARv1 reader.
