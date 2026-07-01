@@ -20,6 +20,8 @@ on:
       - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      # The build/upload delegate to `just ios-*`, so a recipe change can break the lane.
+      - "justfile"
       - "rust-toolchain.toml"
       - ".github/workflows/ios-testflight.yml"
   workflow_dispatch:

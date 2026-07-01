@@ -172,3 +172,13 @@ export async function scanQrCode(): Promise<string> {
   const result = await scan({ windowed: true, formats: [Format.QRCode] });
   return result.content;
 }
+
+/**
+ * Stop an in-progress {@link scanQrCode}. The pending `scan()` settles, so its
+ * caller's `finally` runs and scan mode tears down. Mobile-only and best-effort:
+ * off-device the plugin isn't present, so callers should ignore a rejection.
+ */
+export async function cancelQrScan(): Promise<void> {
+  const { cancel } = await import('@tauri-apps/plugin-barcode-scanner');
+  await cancel();
+}
