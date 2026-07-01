@@ -191,6 +191,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolve_did_maps_plc_gone_to_did_deactivated() {
+        let mock_server = MockServer::start().await;
+        let did = "did:plc:deactivatedidentity12345";
+
+        Mock::given(method("GET"))
+            .and(path(format!("/{did}")))
+            .respond_with(ResponseTemplate::new(410))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let state = test_state_with_plc_url(mock_server.uri()).await;
+        let response = app(state)
+            .oneshot(get(format!(
+                "/xrpc/com.atproto.identity.resolveDid?did={}",
+                query_encode(did)
+            )))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::GONE);
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["code"], "DidDeactivated");
+    }
+
+    #[tokio::test]
+    async fn resolve_did_error_preview_handles_multibyte_response_body() {
+        let mock_server = MockServer::start().await;
+        let did = "did:plc:unicodeerroridentity1234";
+
+        Mock::given(method("GET"))
+            .and(path(format!("/{did}")))
+            .respond_with(ResponseTemplate::new(503).set_body_string("é".repeat(600)))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let state = test_state_with_plc_url(mock_server.uri()).await;
+        let response = app(state)
+            .oneshot(get(format!(
+                "/xrpc/com.atproto.identity.resolveDid?did={}",
+                query_encode(did)
+            )))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["code"], "PLC_DIRECTORY_ERROR");
+    }
+
+    #[tokio::test]
     async fn resolve_did_returns_cached_did_web_document() {
         let state = test_state().await;
         let did = "did:web:alice.example.com";

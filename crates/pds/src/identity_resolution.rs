@@ -4,6 +4,8 @@
 // actual handle/DID lookup here so resolveHandle, resolveIdentity, refreshIdentity, and resolveDid
 // all use the same local → network fallback rules.
 
+use std::net::IpAddr;
+
 use common::{ApiError, ErrorCode};
 use serde_json::Value;
 
@@ -148,10 +150,15 @@ async fn resolve_plc_did_document(state: &AppState, did: &str) -> Result<Value, 
         return Err(ApiError::new(ErrorCode::DidNotFound, "DID not found"));
     }
 
+    if response.status() == reqwest::StatusCode::GONE {
+        tracing::debug!(did = %did, "DID deactivated in plc.directory");
+        return Err(ApiError::new(ErrorCode::DidDeactivated, "DID deactivated"));
+    }
+
     if !response.status().is_success() {
         let status = response.status();
         let body_preview = response.text().await.unwrap_or_default();
-        let truncated = &body_preview[..body_preview.len().min(500)];
+        let truncated = safe_body_preview(&body_preview);
         tracing::error!(did = %did, status = %status, response_body = %truncated, "plc.directory returned error");
         return Err(ApiError::new(
             ErrorCode::PlcDirectoryError,
@@ -184,10 +191,15 @@ async fn resolve_web_did_document(state: &AppState, did: &str) -> Result<Value, 
         return Err(ApiError::new(ErrorCode::DidNotFound, "DID not found"));
     }
 
+    if response.status() == reqwest::StatusCode::GONE {
+        tracing::debug!(did = %did, "DID deactivated at did:web endpoint");
+        return Err(ApiError::new(ErrorCode::DidDeactivated, "DID deactivated"));
+    }
+
     if !response.status().is_success() {
         let status = response.status();
         let body_preview = response.text().await.unwrap_or_default();
-        let truncated = &body_preview[..body_preview.len().min(500)];
+        let truncated = safe_body_preview(&body_preview);
         tracing::error!(did = %did, status = %status, response_body = %truncated, "did:web endpoint returned error");
         return Err(ApiError::new(
             ErrorCode::PlcDirectoryError,
@@ -210,6 +222,10 @@ fn validate_did_doc_id(doc: Value, did: &str, error_code: ErrorCode) -> Result<V
         tracing::warn!(did = %did, doc_id = ?doc.get("id"), "DID document id mismatch");
         Err(ApiError::new(error_code, "DID document id mismatch"))
     }
+}
+
+fn safe_body_preview(body: &str) -> String {
+    body.chars().take(500).collect()
 }
 
 fn did_web_document_url(did: &str) -> Result<String, ApiError> {
@@ -239,6 +255,7 @@ fn did_web_document_url(did: &str) -> Result<String, ApiError> {
         ));
     };
     if host.is_empty()
+        || forbidden_did_web_authority(host)
         || segments.iter().any(|segment| {
             segment.is_empty()
                 || segment.contains('/')
@@ -261,6 +278,23 @@ fn did_web_document_url(did: &str) -> Result<String, ApiError> {
     }
 }
 
+fn forbidden_did_web_authority(authority: &str) -> bool {
+    if authority.contains('@') || authority.contains('[') || authority.contains(']') {
+        return true;
+    }
+
+    let host = match authority.rsplit_once(':') {
+        Some((host, port)) if !port.is_empty() && port.chars().all(|ch| ch.is_ascii_digit()) => {
+            host
+        }
+        Some(_) => return true,
+        None => authority,
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+
+    host == "localhost" || host.ends_with(".localhost") || host.parse::<IpAddr>().is_ok()
+}
+
 fn also_known_as_handles(did_doc: &Value) -> Vec<String> {
     did_doc
         .get("alsoKnownAs")
@@ -275,7 +309,7 @@ fn also_known_as_handles(did_doc: &Value) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::did_web_document_url;
+    use super::{did_web_document_url, safe_body_preview};
 
     #[test]
     fn did_web_url_uses_well_known_for_bare_domain() {
@@ -304,5 +338,22 @@ mod tests {
     #[test]
     fn did_web_url_rejects_path_separator_inside_segment() {
         assert!(did_web_document_url("did:web:example.com:%2Fadmin").is_err());
+    }
+
+    #[test]
+    fn did_web_url_rejects_userinfo_loopback_and_ip_literals() {
+        assert!(did_web_document_url("did:web:user%40example.com").is_err());
+        assert!(did_web_document_url("did:web:localhost").is_err());
+        assert!(did_web_document_url("did:web:sub.localhost").is_err());
+        assert!(did_web_document_url("did:web:127.0.0.1").is_err());
+        assert!(did_web_document_url("did:web:10.0.0.1%3A8443").is_err());
+        assert!(did_web_document_url("did:web:%5B%3A%3A1%5D").is_err());
+    }
+
+    #[test]
+    fn safe_body_preview_truncates_on_char_boundary() {
+        let preview = safe_body_preview(&"é".repeat(600));
+        assert_eq!(preview.chars().count(), 500);
+        assert!(preview.is_char_boundary(preview.len()));
     }
 }
