@@ -6,8 +6,12 @@
 
 // Implements: POST /xrpc/com.atproto.server.reserveSigningKey
 
-use axum::{extract::State, http::HeaderMap, response::Json};
+use axum::{
+    extract::{connect_info::ConnectInfo, State},
+    response::Json,
+};
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 
 use common::{ApiError, ErrorCode};
 
@@ -34,7 +38,7 @@ const ANONYMOUS_RESERVE_SIGNING_KEY_LIMIT: &str = "reserveSigningKey:<anonymous>
 
 pub async fn reserve_signing_key(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    remote_addr: Option<ConnectInfo<SocketAddr>>,
     Json(request): Json<ReserveSigningKeyRequest>,
 ) -> Result<Json<ReserveSigningKeyResponse>, ApiError> {
     let did = request
@@ -57,7 +61,7 @@ pub async fn reserve_signing_key(
         }
     }
 
-    check_anonymous_reservation_limit(&state, &headers)?;
+    check_anonymous_reservation_limit(&state, remote_addr.as_ref())?;
 
     let key = generate_reserved_key(&state)?;
     let inserted = insert_reserved_repo_key(&state.db, did, &key)
@@ -149,9 +153,9 @@ fn is_valid_did_syntax(did: &str) -> bool {
 
 fn check_anonymous_reservation_limit(
     state: &AppState,
-    headers: &HeaderMap,
+    remote_addr: Option<&ConnectInfo<SocketAddr>>,
 ) -> Result<(), ApiError> {
-    let limiter_key = anonymous_reservation_limiter_key(headers);
+    let limiter_key = anonymous_reservation_limiter_key(remote_addr);
     let mut attempts = lock_failed_login_attempts(
         &state.failed_login_attempts,
         Some("reserve_signing_key_anonymous"),
@@ -166,18 +170,11 @@ fn check_anonymous_reservation_limit(
     Ok(())
 }
 
-fn anonymous_reservation_limiter_key(headers: &HeaderMap) -> String {
-    let caller = header_value(headers, "x-forwarded-for")
-        .and_then(|value| value.split(',').next().map(str::trim))
-        .filter(|value| !value.is_empty())
-        .or_else(|| header_value(headers, "x-real-ip"))
-        .or_else(|| header_value(headers, "forwarded"))
-        .unwrap_or("unknown");
+fn anonymous_reservation_limiter_key(remote_addr: Option<&ConnectInfo<SocketAddr>>) -> String {
+    let caller = remote_addr
+        .map(|ConnectInfo(addr)| format!("peer:{}", addr.ip()))
+        .unwrap_or_else(|| "peer:unknown".to_string());
     format!("{ANONYMOUS_RESERVE_SIGNING_KEY_LIMIT}:{caller}")
-}
-
-fn header_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
-    headers.get(name)?.to_str().ok()
 }
 
 fn generate_reserved_key(state: &AppState) -> Result<RepoSigningKey, ApiError> {
@@ -213,7 +210,9 @@ fn generate_reserved_key(state: &AppState) -> Result<RepoSigningKey, ApiError> {
 #[cfg(test)]
 mod tests {
     use axum::body::Body;
+    use axum::extract::connect_info::ConnectInfo;
     use axum::http::{Request, StatusCode};
+    use std::net::{IpAddr, SocketAddr};
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
@@ -224,15 +223,18 @@ mod tests {
         post_req_from(body, None)
     }
 
-    fn post_req_from(body: serde_json::Value, forwarded_for: Option<&str>) -> Request<Body> {
-        let mut builder = Request::builder()
+    fn post_req_from(body: serde_json::Value, caller_ip: Option<&str>) -> Request<Body> {
+        let mut req = Request::builder()
             .method("POST")
             .uri("/xrpc/com.atproto.server.reserveSigningKey")
-            .header("content-type", "application/json");
-        if let Some(forwarded_for) = forwarded_for {
-            builder = builder.header("x-forwarded-for", forwarded_for);
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        if let Some(caller_ip) = caller_ip {
+            let addr = SocketAddr::new(caller_ip.parse::<IpAddr>().unwrap(), 49152);
+            req.extensions_mut().insert(ConnectInfo(addr));
         }
-        builder.body(Body::from(body.to_string())).unwrap()
+        req
     }
 
     async fn body_json(resp: axum::response::Response) -> serde_json::Value {

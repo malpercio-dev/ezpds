@@ -277,17 +277,20 @@ async fn run() -> anyhow::Result<()> {
         tracing::info!("iroh accept loop started");
     }
 
-    axum::serve(listener, app::app(state))
-        .with_graceful_shutdown(async {
-            if let Err(e) = shutdown_signal().await {
-                tracing::error!(error = %e, "signal handler error");
-            }
-        })
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "axum server exited with error");
-            anyhow::anyhow!("server error: {e}")
-        })?;
+    axum::serve(
+        listener,
+        app::app(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(async {
+        if let Err(e) = shutdown_signal().await {
+            tracing::error!(error = %e, "signal handler error");
+        }
+    })
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "axum server exited with error");
+        anyhow::anyhow!("server error: {e}")
+    })?;
 
     // The HTTP server has stopped. Close the Iroh endpoint so in-flight connections drain and
     // the accept loop exits cleanly (accept() yields None once the endpoint is closed).
