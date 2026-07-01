@@ -157,8 +157,7 @@ async fn resolve_plc_did_document(state: &AppState, did: &str) -> Result<Value, 
 
     if !response.status().is_success() {
         let status = response.status();
-        let body_preview = response.text().await.unwrap_or_default();
-        let truncated = safe_body_preview(&body_preview);
+        let truncated = bounded_body_preview(response).await;
         tracing::error!(did = %did, status = %status, response_body = %truncated, "plc.directory returned error");
         return Err(ApiError::new(
             ErrorCode::PlcDirectoryError,
@@ -198,8 +197,7 @@ async fn resolve_web_did_document(state: &AppState, did: &str) -> Result<Value, 
 
     if !response.status().is_success() {
         let status = response.status();
-        let body_preview = response.text().await.unwrap_or_default();
-        let truncated = safe_body_preview(&body_preview);
+        let truncated = bounded_body_preview(response).await;
         tracing::error!(did = %did, status = %status, response_body = %truncated, "did:web endpoint returned error");
         return Err(ApiError::new(
             ErrorCode::PlcDirectoryError,
@@ -222,6 +220,22 @@ fn validate_did_doc_id(doc: Value, did: &str, error_code: ErrorCode) -> Result<V
         tracing::warn!(did = %did, doc_id = ?doc.get("id"), "DID document id mismatch");
         Err(ApiError::new(error_code, "DID document id mismatch"))
     }
+}
+
+const ERROR_BODY_PREVIEW_BYTES: usize = 2048;
+
+async fn bounded_body_preview(mut response: reqwest::Response) -> String {
+    let mut body = Vec::new();
+    while body.len() < ERROR_BODY_PREVIEW_BYTES {
+        let chunk = match response.chunk().await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) | Err(_) => break,
+        };
+        let remaining = ERROR_BODY_PREVIEW_BYTES - body.len();
+        body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+    }
+
+    safe_body_preview(&String::from_utf8_lossy(&body))
 }
 
 fn safe_body_preview(body: &str) -> String {
@@ -284,9 +298,7 @@ fn forbidden_did_web_authority(authority: &str) -> bool {
     }
 
     let host = match authority.rsplit_once(':') {
-        Some((host, port)) if !port.is_empty() && port.chars().all(|ch| ch.is_ascii_digit()) => {
-            host
-        }
+        Some((host, port)) if !host.is_empty() && port.parse::<u16>().is_ok() => host,
         Some(_) => return true,
         None => authority,
     };
@@ -348,6 +360,8 @@ mod tests {
         assert!(did_web_document_url("did:web:127.0.0.1").is_err());
         assert!(did_web_document_url("did:web:10.0.0.1%3A8443").is_err());
         assert!(did_web_document_url("did:web:%5B%3A%3A1%5D").is_err());
+        assert!(did_web_document_url("did:web:%3A443").is_err());
+        assert!(did_web_document_url("did:web:example.com%3A99999").is_err());
     }
 
     #[test]
