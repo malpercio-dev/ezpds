@@ -168,6 +168,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `get_service_auth.rs` | `GET /xrpc/com.atproto.server.getServiceAuth` — mint a short-lived ES256 inter-service auth JWT (signed by the account's repo key) for a requested `aud` service; optional `lxm` (method binding) and `exp` (absolute, ≤1h with `lxm`, ≤60s without). Shares the mint helper with `service_proxy.rs` |
 | `update_subject_status.rs` | `POST /xrpc/com.atproto.admin.updateSubjectStatus` — apply/clear an account-level takedown (`subject` as `com.atproto.admin.defs#repoRef`, `takedown` as `#statusAttr`; record/blob subjects and the `deactivated` field are unsupported). Admin-authed via `require_admin_json`. Emits an `#account` firehose event on a real transition, reflecting the account's full derived lifecycle |
 | `get_subject_status.rs` | `GET /xrpc/com.atproto.admin.getSubjectStatus` — report an account's current takedown status. Admin-authed via `require_admin` |
+| `admin_subject_defs.rs` | Shared `com.atproto.admin.defs` response view types (`RepoRefView`, `StatusAttrView`) for `update_subject_status.rs`/`get_subject_status.rs` (Functional Core, no handler) — same non-handler-support-file pattern as `oauth_templates.rs` |
 | `refresh_session.rs` | `POST /xrpc/com.atproto.server.refreshSession` |
 | `request_password_reset.rs` | `POST /xrpc/com.atproto.server.requestPasswordReset` |
 | `reset_password.rs` | `POST /xrpc/com.atproto.server.resetPassword` |

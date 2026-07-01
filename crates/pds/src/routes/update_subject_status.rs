@@ -22,6 +22,7 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::auth::validation::is_valid_did;
 use crate::db::accounts::{set_account_takedown, TakedownStateChange};
+use crate::routes::admin_subject_defs::{RepoRefView, StatusAttrView};
 use crate::routes::auth::require_admin_json;
 
 /// `com.atproto.admin.defs#repoRef` — the only subject type this endpoint accepts. Record- and
@@ -48,18 +49,6 @@ struct UpdateSubjectStatusBody {
     /// has its own endpoint (`deactivateAccount`), and an admin-driven deactivation is not part
     /// of this issue's scope.
     takedown: Option<StatusAttrInput>,
-}
-
-#[derive(Serialize)]
-struct RepoRefView {
-    #[serde(rename = "$type")]
-    type_: &'static str,
-    did: String,
-}
-
-#[derive(Serialize)]
-struct StatusAttrView {
-    applied: bool,
 }
 
 #[derive(Serialize)]

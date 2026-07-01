@@ -2,6 +2,7 @@ pub mod account_storage;
 pub mod account_usage;
 pub mod activate_account;
 pub mod admin_devices;
+mod admin_subject_defs;
 pub mod apply_writes;
 pub mod atproto_did;
 pub(crate) mod auth;
