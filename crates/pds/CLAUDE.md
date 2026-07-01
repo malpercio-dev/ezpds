@@ -106,6 +106,7 @@ and async query functions; no business logic lives here.
 |---|---|
 | `mod.rs` | `open_pool`, `run_migrations`, `DbError`, `is_unique_violation` |
 | `accounts.rs` | `AccountRow` + `resolve_identifier` (handle/DID→account); `SessionAccountRow` + `get_session_account` (DID→account+handle+DID doc); `resolve_by_email` (email→account); `account_is_active`, `deactivate_account`/`activate_account` (flip `deactivated_at`, report the transition); `get_repo_write_state` + `advance_repo_root_if_active` (repo-write preconditions and the commit CAS); `get_account_overview` + `account_last_active` (operator usage/storage lookups — unfiltered by deactivation); `AccountLifecycle` + `get_repo_status`/`list_repos` (derive `active`/`status` from the `deactivated_at`/`suspended_at`/`taken_down_at` columns for the public sync endpoints) |
+| `app_passwords.rs` | app-password store (V031): `insert_app_password` (409 on duplicate name), `list_app_passwords` (metadata, no hash), `list_verify_candidates` (hash + privilege for `createSession`), `app_password_privileged` (privilege re-derivation for `refreshSession`). Revocation's multi-table delete lives in `routes/revoke_app_password.rs` |
 | `blocks.rs` | content-addressed repo-block store + `SqliteBlockStore` adapter; `account_block_stats` (block count, total bytes, distinct-rev commit count for the usage endpoint) |
 | `blobs.rs` | blob metadata store; `account_storage_bytes`, `account_blob_metrics`, `account_largest_blob` (blob-storage metrics) |
 | `oauth.rs` | OAuth client lookup, auth code storage, token management |
@@ -135,7 +136,10 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `oauth_jwks.rs` | `GET /oauth/jwks` |
 | `oauth_templates.rs` | Pure HTML rendering helpers (Functional Core, no handler) |
 | `static_assets.rs` | `GET /static/*path` — embedded brand fonts (woff2/ttf via `include_bytes!`) and future web-UI assets |
-| `create_session.rs` | `POST /xrpc/com.atproto.server.createSession` |
+| `create_session.rs` | `POST /xrpc/com.atproto.server.createSession` — password auth. Verifies the main account password first (→ full `com.atproto.access`); on mismatch (or a mobile account with no main password) falls back to the account's app passwords (→ `com.atproto.appPass`/`com.atproto.appPassPrivileged`, email omitted from the response, refresh token tagged with the app password name) |
+| `create_app_password.rs` | `POST /xrpc/com.atproto.server.createAppPassword` — mint a named app password (optionally `privileged`); returns the generated `xxxx-xxxx-xxxx-xxxx` secret once. Requires full access scope (app-pass tokens rejected); duplicate name → 409 |
+| `list_app_passwords.rs` | `GET /xrpc/com.atproto.server.listAppPasswords` — list an account's app passwords (name/createdAt/privileged, never the secret). Requires full access scope |
+| `revoke_app_password.rs` | `POST /xrpc/com.atproto.server.revokeAppPassword` — delete a named app password and its refresh tokens/sessions atomically (idempotent 200). Requires full access scope |
 | `get_session.rs` | `GET /xrpc/com.atproto.server.getSession` |
 | `get_service_auth.rs` | `GET /xrpc/com.atproto.server.getServiceAuth` — mint a short-lived ES256 inter-service auth JWT (signed by the account's repo key) for a requested `aud` service; optional `lxm` (method binding) and `exp` (absolute, ≤1h with `lxm`, ≤60s without). Shares the mint helper with `service_proxy.rs` |
 | `refresh_session.rs` | `POST /xrpc/com.atproto.server.refreshSession` |
@@ -158,7 +162,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `get_device_pds.rs` | `GET /v1/devices/:id/pds` |
 | `describe_server.rs` | `GET /xrpc/com.atproto.server.describeServer` |
 | `describe_repo.rs` | `GET /xrpc/com.atproto.repo.describeRepo` |
-| `service_proxy.rs` | `GET/POST /xrpc/app.bsky.*` and `GET/POST /xrpc/chat.bsky.*` — catch-all proxy forwarding unhandled `app.bsky.*` NSIDs to the configured AppView and `chat.bsky.*` NSIDs (direct messages) to the configured chat service |
+| `service_proxy.rs` | `GET/POST /xrpc/app.bsky.*` and `GET/POST /xrpc/chat.bsky.*` — catch-all proxy forwarding unhandled `app.bsky.*` NSIDs to the configured AppView and `chat.bsky.*` NSIDs (direct messages) to the configured chat service. The `chat.bsky.*` branch (in `app.rs::xrpc_handler`) requires a privileged credential — full access or a *privileged* app password; a plain `com.atproto.appPass` session is refused with 403 |
 | `get_preferences.rs` | `GET /xrpc/app.bsky.actor.getPreferences` — local preference read (stored on the PDS, not proxied; registered ahead of the catch-all) |
 | `put_preferences.rs` | `POST /xrpc/app.bsky.actor.putPreferences` — local preference write (overwrites the stored blob entirely; registered ahead of the catch-all) |
 | `resolve_handle.rs` | `GET /xrpc/com.atproto.identity.resolveHandle` |

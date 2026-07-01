@@ -12,6 +12,34 @@ pub enum AuthScope {
     Access,
     Refresh,
     AppPass,
+    AppPassPrivileged,
+}
+
+impl AuthScope {
+    /// Whether this is an access-level scope — a full-access token *or* an app-password
+    /// token (privileged or not). Only [`AuthScope::Refresh`] is not access-level.
+    ///
+    /// Endpoints that merely read/act on behalf of the session (e.g. `getSession`) accept any
+    /// access-level scope; account-management endpoints (create/revoke app passwords, change
+    /// handle, deactivate) require full [`AuthScope::Access`] and reject app-password scopes.
+    pub fn is_access(&self) -> bool {
+        matches!(
+            self,
+            AuthScope::Access | AuthScope::AppPass | AuthScope::AppPassPrivileged
+        )
+    }
+}
+
+/// The `scope` claim string for a full-access session token.
+pub(crate) const SCOPE_ACCESS: &str = "com.atproto.access";
+
+/// The `scope` claim string for an app-password session, selected by privilege.
+pub(crate) fn app_pass_scope(privileged: bool) -> &'static str {
+    if privileged {
+        "com.atproto.appPassPrivileged"
+    } else {
+        "com.atproto.appPass"
+    }
 }
 
 /// Claims decoded from the server-issued access/refresh JWT.
@@ -134,6 +162,7 @@ pub fn parse_scope(scope: &str) -> Result<AuthScope, ApiError> {
         "com.atproto.access" => Ok(AuthScope::Access),
         "com.atproto.refresh" => Ok(AuthScope::Refresh),
         "com.atproto.appPass" => Ok(AuthScope::AppPass),
+        "com.atproto.appPassPrivileged" => Ok(AuthScope::AppPassPrivileged),
         _ => Err(ApiError::new(
             ErrorCode::InvalidToken,
             "unrecognised token scope",
@@ -290,7 +319,7 @@ const REFRESH_TOKEN_TTL_SECS: u64 = 90 * 24 * 60 * 60; // 90 days
 
 #[derive(Serialize)]
 struct LegacyAccessClaims {
-    scope: &'static str,
+    scope: String,
     sub: String,
     aud: String,
     iat: u64,
@@ -307,17 +336,34 @@ struct LegacyRefreshClaims {
     exp: u64,
 }
 
-/// Sign an HS256 access JWT (scope: com.atproto.access) with a 2-hour lifetime.
+/// Sign an HS256 access JWT with a 2-hour lifetime.
+///
+/// `scope` is the access-level scope claim to embed — [`SCOPE_ACCESS`] for a full session, or
+/// the app-pass scope from [`app_pass_scope`] for an app-password session. Any other scope
+/// (e.g. a refresh scope) is rejected here rather than trusted to every call site, so the
+/// "an access token only ever carries an access-level scope" invariant stays centralized.
 pub(crate) fn issue_access_jwt(
     secret: &[u8; 32],
     did: &str,
     aud: &str,
     now: u64,
+    scope: &str,
 ) -> Result<String, ApiError> {
+    if scope != SCOPE_ACCESS && scope != app_pass_scope(false) && scope != app_pass_scope(true) {
+        tracing::error!(
+            scope,
+            "attempted to issue an access JWT with a non-access scope"
+        );
+        return Err(ApiError::new(
+            ErrorCode::InternalError,
+            "failed to issue token",
+        ));
+    }
+
     encode(
         &Header::new(Algorithm::HS256),
         &LegacyAccessClaims {
-            scope: "com.atproto.access",
+            scope: scope.to_string(),
             sub: did.to_string(),
             aud: aud.to_string(),
             iat: now,
@@ -434,5 +480,24 @@ mod tests {
         );
         assert_eq!(claims["iss"], "did:plc:abc123");
         assert_eq!(claims["exp"], 1_060);
+    }
+
+    /// `issue_access_jwt` accepts only access-level scopes; a refresh (or any other) scope is
+    /// refused centrally so no call site can accidentally mint a 2-hour token with the wrong scope.
+    #[test]
+    fn issue_access_jwt_rejects_non_access_scope() {
+        let secret = [0u8; 32];
+        for scope in [SCOPE_ACCESS, app_pass_scope(false), app_pass_scope(true)] {
+            assert!(
+                issue_access_jwt(&secret, "did:plc:x", "aud", 1_000, scope).is_ok(),
+                "access-level scope {scope} must be accepted"
+            );
+        }
+        for scope in ["com.atproto.refresh", "com.atproto.access.bogus", ""] {
+            assert!(
+                issue_access_jwt(&secret, "did:plc:x", "aud", 1_000, scope).is_err(),
+                "non-access scope {scope:?} must be rejected"
+            );
+        }
     }
 }

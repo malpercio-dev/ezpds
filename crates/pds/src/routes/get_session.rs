@@ -2,7 +2,8 @@
 //
 // Gathers: AuthenticatedUser (JWT extractor), DB pool via AppState
 // Processes: scope validation → account + DID doc lookup
-// Returns: JSON {did, handle, email, emailConfirmed, didDoc} on success; ApiError on failure
+// Returns: JSON {did, handle, email?, emailConfirmed, didDoc} on success; ApiError on failure.
+//          email is omitted for app-password sessions (limited credentials don't see it).
 //
 // Implements: GET /xrpc/com.atproto.server.getSession
 
@@ -21,7 +22,10 @@ use crate::db::accounts::get_session_account;
 pub struct GetSessionResponse {
     pub did: String,
     pub handle: String,
-    pub email: String,
+    /// Omitted for app-password sessions — a limited credential does not see the account email,
+    /// matching `createSession`, which only returns it for full account sessions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
     pub email_confirmed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub did_doc: Option<serde_json::Value>,
@@ -35,8 +39,10 @@ pub async fn get_session(
     user: AuthenticatedUser,
     State(state): State<AppState>,
 ) -> Result<Json<GetSessionResponse>, ApiError> {
-    // Only access-scope tokens are valid; refresh tokens must not be accepted.
-    if user.scope != AuthScope::Access {
+    // Any access-level token is valid here (full access or an app password); only refresh
+    // tokens must be rejected. App-password clients (e.g. goat) call getSession right after
+    // logging in to confirm their identity, so they must be admitted.
+    if !user.scope.is_access() {
         return Err(ApiError::new(
             ErrorCode::InvalidToken,
             "access token required",
@@ -63,10 +69,17 @@ pub async fn get_session(
         .handle
         .unwrap_or_else(|| "handle.invalid".to_string());
 
+    // Full-access sessions see the account email; app-password sessions do not (mirrors
+    // createSession, so an app password can't recover the email getSession would otherwise leak).
+    let email = match user.scope {
+        AuthScope::Access => Some(account.email),
+        _ => None,
+    };
+
     Ok(Json(GetSessionResponse {
         did: account.did,
         handle,
-        email: account.email,
+        email,
         email_confirmed: account.email_confirmed,
         did_doc,
     }))
@@ -433,7 +446,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn app_pass_token_returns_401() {
+    async fn app_pass_token_returns_session_info() {
+        // App-password sessions are access-level: getSession must admit them (matching
+        // atproto's `accessStandard`) so app-password clients can confirm their identity.
         let state = test_state().await;
         insert_account(
             &state.db,
@@ -449,26 +464,37 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let token = encode(
-            &Header::new(Algorithm::HS256),
-            &serde_json::json!({
-                "scope": "com.atproto.appPass",
-                "sub": "did:plc:apppass",
-                "iat": now,
-                "exp": now + 7200_u64,
-            }),
-            &EncodingKey::from_secret(&state.jwt_secret),
-        )
-        .unwrap();
 
-        let response = app(state)
-            .oneshot(get_session_request(&token))
-            .await
+        for scope in ["com.atproto.appPass", "com.atproto.appPassPrivileged"] {
+            let token = encode(
+                &Header::new(Algorithm::HS256),
+                &serde_json::json!({
+                    "scope": scope,
+                    "sub": "did:plc:apppass",
+                    "iat": now,
+                    "exp": now + 7200_u64,
+                }),
+                &EncodingKey::from_secret(&state.jwt_secret),
+            )
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+            let response = app(state.clone())
+                .oneshot(get_session_request(&token))
+                .await
+                .unwrap();
+
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "scope {scope} must be admitted"
+            );
+            let json = body_json(response).await;
+            assert_eq!(json["did"], "did:plc:apppass");
+            assert!(
+                json.get("email").is_none(),
+                "app-pass getSession ({scope}) must omit email"
+            );
+        }
     }
 
     #[tokio::test]

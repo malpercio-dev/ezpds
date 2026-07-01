@@ -189,7 +189,14 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        issue_access_jwt(&state.jwt_secret, did, &state.config.public_url, now).unwrap()
+        issue_access_jwt(
+            &state.jwt_secret,
+            did,
+            &state.config.public_url,
+            now,
+            "com.atproto.access",
+        )
+        .unwrap()
     }
 
     /// Helper: create a test state with a small max_blob_size (100 bytes).

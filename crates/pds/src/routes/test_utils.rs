@@ -338,6 +338,62 @@ pub(crate) fn access_jwt(secret: &[u8; 32], sub: &str) -> String {
     .unwrap()
 }
 
+/// Mint a short-lived HS256 access JWT with an app-password scope (`com.atproto.appPass` or,
+/// when `privileged`, `com.atproto.appPassPrivileged`) for `sub`. Used by tests that exercise
+/// the app-password scope gates.
+pub(crate) fn app_pass_jwt(secret: &[u8; 32], sub: &str, privileged: bool) -> String {
+    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let scope = if privileged {
+        "com.atproto.appPassPrivileged"
+    } else {
+        "com.atproto.appPass"
+    };
+    encode(
+        &Header::new(Algorithm::HS256),
+        &serde_json::json!({
+            "scope": scope,
+            "sub": sub,
+            "iat": now,
+            "exp": now + 7200_u64,
+        }),
+        &EncodingKey::from_secret(secret),
+    )
+    .unwrap()
+}
+
+/// Insert an app password for `did` with an argon2id hash of `password` (production parameters).
+/// Used by tests that exercise app-password login/list/revoke without minting via the endpoint.
+pub async fn seed_app_password(
+    db: &sqlx::SqlitePool,
+    did: &str,
+    name: &str,
+    password: &str,
+    privileged: bool,
+) {
+    let salt = SaltString::generate(&mut OsRng);
+    let hash = Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .unwrap()
+        .to_string();
+
+    sqlx::query(
+        "INSERT INTO app_passwords (did, name, password_hash, privileged, created_at) \
+         VALUES (?, ?, ?, ?, datetime('now'))",
+    )
+    .bind(did)
+    .bind(name)
+    .bind(&hash)
+    .bind(i64::from(privileged))
+    .execute(db)
+    .await
+    .unwrap();
+}
+
 /// Deserialise a response body as `serde_json::Value`, consuming the response.
 pub async fn body_json(response: axum::response::Response) -> serde_json::Value {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
