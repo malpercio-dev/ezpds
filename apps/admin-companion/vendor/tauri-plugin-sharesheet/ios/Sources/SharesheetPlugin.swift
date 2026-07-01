@@ -16,7 +16,7 @@ struct SharesheetOptions: Decodable {
 }
 
 class SharesheetPlugin: Plugin {
-  var webview: WKWebView!
+  var webview: WKWebView?
   public override func load(webview: WKWebView) {
     self.webview = webview
   }
@@ -25,18 +25,41 @@ class SharesheetPlugin: Plugin {
     let args = try invoke.parseArgs(SharesheetOptions.self)
 
     DispatchQueue.main.async {
-      let activityViewController = UIActivityViewController(activityItems: [args.text], applicationActivities: nil)
-      
-      // Display as popover on iPad as required by apple
-      activityViewController.popoverPresentationController?.sourceView = self.webview // display as a popover on ipad
-      activityViewController.popoverPresentationController?.sourceRect = CGRect(
-        x: self.webview.bounds.midX,
-        y: self.webview.bounds.midY,
-        width: CGFloat(Float(0.0)),
-        height: CGFloat(Float(0.0))
-      )
+      // Fail fast when there is no view controller to present from. Without a
+      // presenter the sheet can never open, and silently returning would strand
+      // the JS `await share(text)` promise forever. Rejecting lets the caller's
+      // catch run and fall back to copy-only.
+      guard let presenter = self.manager.viewController else {
+        invoke.reject("No view controller available to present the share sheet")
+        return
+      }
 
-      self.manager.viewController?.present(activityViewController, animated: true, completion: nil)
+      let activityViewController = UIActivityViewController(
+        activityItems: [args.text], applicationActivities: nil)
+
+      // Always settle the invoke when the sheet finishes so the JS promise never
+      // hangs: reject on an activity error, resolve otherwise. A user dismissal
+      // (completed == false) is a successful round-trip, so it resolves too.
+      activityViewController.completionWithItemsHandler = { _, _, _, activityError in
+        if let activityError = activityError {
+          invoke.reject(
+            "Share sheet failed: \(activityError.localizedDescription)", error: activityError)
+        } else {
+          invoke.resolve()
+        }
+      }
+
+      // Display as a popover on iPad as required by Apple. The source view only
+      // anchors the popover; fall back to the presenter's view when the webview
+      // is unavailable rather than force-unwrapping it.
+      if let popover = activityViewController.popoverPresentationController {
+        let sourceView = self.webview ?? presenter.view
+        popover.sourceView = sourceView
+        popover.sourceRect = CGRect(
+          x: sourceView.bounds.midX, y: sourceView.bounds.midY, width: 0, height: 0)
+      }
+
+      presenter.present(activityViewController, animated: true, completion: nil)
     }
   }
 }
