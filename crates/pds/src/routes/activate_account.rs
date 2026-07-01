@@ -46,7 +46,9 @@ pub async fn activate_account_handler(
 
     // Open a transaction so the status transition and its firehose `#account` event (if any)
     // commit atomically — a durable status change must never end up without a corresponding
-    // durable firehose row (see MM-205 / `Firehose::stage_account`).
+    // durable firehose row (see `Firehose::stage_account`). The sequencer lock is acquired
+    // *before* the transaction, per `Firehose::lock_emit`'s lock/connection-ordering contract.
+    let emit_guard = state.firehose.lock_emit().await;
     let mut tx = state.db.begin().await.map_err(|e| {
         tracing::error!(error = %e, did = %user.did, "failed to open activate transaction");
         ApiError::new(ErrorCode::InternalError, "failed to activate account")
@@ -70,8 +72,7 @@ pub async fn activate_account_handler(
         }
         // Real transition: tell subscribers the repo is active again so they resume serving it.
         AccountStateChange::Changed => {
-            let pending = state
-                .firehose
+            let pending = emit_guard
                 .stage_account(&mut tx, user.did.clone(), true, None)
                 .await
                 .map_err(|e| {

@@ -25,6 +25,16 @@
 //! broadcast* so events are delivered in strictly increasing `seq` order and the persisted log is
 //! a dense prefix (no holes a failed insert could leave). The lock is held across the DB write, so
 //! it is a `tokio::sync::Mutex`, not a `std::sync::Mutex`.
+//!
+//! **Lock/connection ordering.** The PDS's DB pool serves a single connection (see
+//! `db::open_pool`), so a task holding an open transaction holds that connection until it
+//! commits or rolls back. `emit_commit`/`emit_account`/`emit_identity` acquire `emit_lock`
+//! *before* touching the pool for their `repo_seq` insert. A caller that instead wants to insert
+//! that row into its *own* transaction (`EmitGuard::stage_commit`/`stage_account`) must acquire
+//! the same lock first too — via [`Firehose::lock_emit`], *before* opening that transaction —
+//! for the same reason: otherwise one path could hold the connection while waiting on
+//! `emit_lock` and the other could hold `emit_lock` while waiting on that same connection,
+//! deadlocking both.
 
 // Dead code allow: a few accessors (`subscriber_count`, the `at_uri`/`as_str` wire helpers) are
 // exercised only by this module's unit tests and the `subscribeRepos` handler's tests.
@@ -587,32 +597,62 @@ impl Firehose {
         Ok(seq)
     }
 
+    /// Acquire the sequencer lock ahead of a transaction that may call
+    /// [`EmitGuard::stage_commit`]/[`EmitGuard::stage_account`].
+    ///
+    /// **Must** be acquired *before* `db.begin()` for any transaction that might stage an event.
+    /// `emit_commit`/`emit_account`/`emit_identity` acquire `emit_lock` first and only then touch
+    /// the (single-connection) pool for their `repo_seq` insert; a transaction that instead opens
+    /// first and acquires the lock afterward can deadlock one of those against it — the
+    /// transaction holds the pool's sole connection while waiting on the lock, and the other path
+    /// holds the lock while waiting on that same connection. Acquiring the lock first, and holding
+    /// it for the whole transaction (via the returned guard, threaded through to
+    /// [`PendingCommit`]/[`PendingAccount`]), keeps every path that touches both resources in the
+    /// same order.
+    pub async fn lock_emit(&self) -> EmitGuard<'_> {
+        EmitGuard {
+            firehose: self,
+            _guard: self.emit_lock.lock().await,
+        }
+    }
+}
+
+/// Proof that the caller holds [`Firehose`]'s sequencer lock, acquired via
+/// [`Firehose::lock_emit`] *before* opening the transaction that will call
+/// [`stage_commit`](Self::stage_commit)/[`stage_account`](Self::stage_account) — see that
+/// method's docs for why the ordering matters. Consumed by `stage_commit`/`stage_account`, which
+/// carry it forward into the returned `Pending*` handle so the lock stays held until the caller
+/// commits and finishes (or drops it, aborting).
+pub struct EmitGuard<'f> {
+    firehose: &'f Firehose,
+    _guard: tokio::sync::MutexGuard<'f, ()>,
+}
+
+impl<'f> EmitGuard<'f> {
     /// Stage a `#commit` event's row into the caller's already-open transaction, without
     /// committing or broadcasting yet.
     ///
-    /// This is the atomic counterpart to [`emit_commit`](Self::emit_commit): the caller runs its
-    /// own transactional write (the repo-root CAS) against `tx` *before* calling this, so by the
-    /// time it's called the caller has already decided the write should land. `stage_commit` then
+    /// This is the atomic counterpart to [`Firehose::emit_commit`]: the caller runs its own
+    /// transactional write (the repo-root CAS) against `tx` *before* calling this, so by the time
+    /// it's called the caller has already decided the write should land. `stage_commit` then
     /// assigns the event's `seq` and inserts its `repo_seq` row into that same `tx`, so the row
     /// commits (or rolls back) together with the caller's write — a failed insert here rolls
     /// `tx` back via `Drop`, taking the caller's write with it, rather than leaving a durable
-    /// commit with no corresponding firehose row. Held under `emit_lock` until the returned
-    /// [`PendingCommit`] is finished (or dropped), so seq assignment stays monotonic/dense even
-    /// though the transaction now spans the caller's write too.
+    /// commit with no corresponding firehose row.
     ///
     /// The caller must `tx.commit()` and then call [`PendingCommit::finish`] — only after a
     /// successful commit — to advance the sequence counter and broadcast the event. Dropping the
     /// returned handle without finishing never advances `last_seq` or broadcasts, so an aborted
     /// write (caller rolls back instead of committing) leaves the sequence untouched, exactly
-    /// like a rejected [`emit_commit`](Self::emit_commit).
+    /// like a rejected [`Firehose::emit_commit`].
     pub async fn stage_commit(
-        &self,
+        self,
         tx: &mut Transaction<'_, Sqlite>,
         input: CommitInput,
-    ) -> Result<PendingCommit<'_>, FirehoseError> {
+    ) -> Result<PendingCommit<'f>, FirehoseError> {
         validate_commit_cids(&input)?;
 
-        let guard = self.emit_lock.lock().await;
+        let firehose = self.firehose;
         let time = now_rfc3339();
         let blob = {
             let stored = StoredCommitRef {
@@ -626,16 +666,16 @@ impl Firehose {
             };
             serde_ipld_dagcbor::to_vec(&stored).map_err(|e| FirehoseError::Encode(e.to_string()))?
         };
-        let seq = self.last_seq.load(Ordering::Acquire) + 1;
+        let seq = firehose.last_seq.load(Ordering::Acquire) + 1;
         crate::db::firehose_seq::insert_event(&mut **tx, seq, &input.repo, "commit", &blob, &time)
             .await?;
 
         Ok(PendingCommit {
-            firehose: self,
+            firehose,
             seq,
             time,
             input,
-            _guard: guard,
+            _guard: self,
         })
     }
 
@@ -644,13 +684,13 @@ impl Firehose {
     /// transitions rather than commits). The caller runs `activate_account`/`deactivate_account`
     /// against `tx` first and only calls this once it knows the transition actually happened.
     pub async fn stage_account(
-        &self,
+        self,
         tx: &mut Transaction<'_, Sqlite>,
         did: String,
         active: bool,
         status: Option<String>,
-    ) -> Result<PendingAccount<'_>, FirehoseError> {
-        let guard = self.emit_lock.lock().await;
+    ) -> Result<PendingAccount<'f>, FirehoseError> {
+        let firehose = self.firehose;
         let time = now_rfc3339();
         let blob = {
             let stored = StoredAccountRef {
@@ -661,18 +701,18 @@ impl Firehose {
             };
             serde_ipld_dagcbor::to_vec(&stored).map_err(|e| FirehoseError::Encode(e.to_string()))?
         };
-        let seq = self.last_seq.load(Ordering::Acquire) + 1;
+        let seq = firehose.last_seq.load(Ordering::Acquire) + 1;
         crate::db::firehose_seq::insert_event(&mut **tx, seq, &did, "account", &blob, &time)
             .await?;
 
         Ok(PendingAccount {
-            firehose: self,
+            firehose,
             seq,
             time,
             did,
             active,
             status,
-            _guard: guard,
+            _guard: self,
         })
     }
 }
@@ -691,7 +731,7 @@ pub struct PendingCommit<'f> {
     seq: u64,
     time: String,
     input: CommitInput,
-    _guard: tokio::sync::MutexGuard<'f, ()>,
+    _guard: EmitGuard<'f>,
 }
 
 impl PendingCommit<'_> {
@@ -725,7 +765,7 @@ pub struct PendingAccount<'f> {
     did: String,
     active: bool,
     status: Option<String>,
-    _guard: tokio::sync::MutexGuard<'f, ()>,
+    _guard: EmitGuard<'f>,
 }
 
 impl PendingAccount<'_> {
@@ -1502,7 +1542,7 @@ mod tests {
         assert_eq!(slow.try_recv().unwrap_err(), TryRecvError::Empty);
     }
 
-    // ── stage_commit / stage_account (atomic staging, MM-205) ─────────────────
+    // ── stage_commit / stage_account (atomic staging) ─────────────────────────
 
     /// Seed a minimal `accounts` row so a test can mutate it inside the same transaction as a
     /// staged event, to observe whether that write survives a commit or a rollback.
@@ -1531,6 +1571,8 @@ mod tests {
             .await
             .unwrap();
         let pending = fh
+            .lock_emit()
+            .await
             .stage_commit(&mut tx, commit_input("did:plc:a"))
             .await
             .unwrap();
@@ -1557,7 +1599,7 @@ mod tests {
 
     #[tokio::test]
     async fn stage_commit_failure_rolls_back_the_callers_write_in_the_same_transaction() {
-        // MM-205: a simulated `repo_seq` insert failure must not leave the caller's other write
+        // A simulated `repo_seq` insert failure must not leave the caller's other write
         // (here, the repo-root CAS) committed with no corresponding durable firehose row.
         let fh = test_firehose().await;
         insert_account(&fh.db, "did:plc:a", "old-root").await;
@@ -1574,7 +1616,11 @@ mod tests {
             .execute(&mut *tx)
             .await
             .unwrap();
-        let result = fh.stage_commit(&mut tx, commit_input("did:plc:a")).await;
+        let result = fh
+            .lock_emit()
+            .await
+            .stage_commit(&mut tx, commit_input("did:plc:a"))
+            .await;
         assert!(
             matches!(result, Err(FirehoseError::Db(_))),
             "the repo_seq insert must fail with a DB error"
@@ -1613,6 +1659,8 @@ mod tests {
             .await
             .unwrap();
         let pending = fh
+            .lock_emit()
+            .await
             .stage_account(
                 &mut tx,
                 "did:plc:a".to_string(),
@@ -1651,6 +1699,8 @@ mod tests {
             .await
             .unwrap();
         let result = fh
+            .lock_emit()
+            .await
             .stage_account(&mut tx, "did:plc:a".to_string(), false, None)
             .await;
         assert!(matches!(result, Err(FirehoseError::Db(_))));
@@ -1666,5 +1716,61 @@ mod tests {
             deactivated_at, None,
             "a failed firehose insert must roll back the status transition too"
         );
+    }
+
+    #[tokio::test]
+    async fn staged_and_plain_emit_do_not_deadlock_concurrently() {
+        // Regression: `emit_identity`/`emit_commit`/`emit_account` acquire `emit_lock` *before*
+        // touching the single-connection pool. A staged path that instead opened its transaction
+        // first (taking the pool's sole connection) and only then acquired `emit_lock` could
+        // deadlock against one of those: the staged task would hold the connection while waiting
+        // on the lock, and the plain task would hold the lock while waiting on the connection.
+        // `lock_emit()` must be acquired before `db.begin()` to keep both paths in the same order
+        // (see `Firehose::lock_emit`'s docs) — run them concurrently and require the pair to
+        // finish well inside a generous timeout.
+        let fh = std::sync::Arc::new(test_firehose().await);
+        insert_account(&fh.db, "did:plc:a", "root").await;
+
+        let staged = {
+            let fh = fh.clone();
+            tokio::spawn(async move {
+                let emit_guard = fh.lock_emit().await;
+                let mut tx = fh.db.begin().await.unwrap();
+                // Yield so the concurrent plain emit below has a chance to be mid-flight,
+                // widening the interleaving window this test is meant to exercise.
+                tokio::task::yield_now().await;
+                sqlx::query(
+                    "UPDATE accounts SET repo_root_cid = 'new-root' WHERE did = 'did:plc:a'",
+                )
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+                let pending = emit_guard
+                    .stage_commit(&mut tx, commit_input("did:plc:a"))
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                pending.finish();
+            })
+        };
+
+        let plain = {
+            let fh = fh.clone();
+            tokio::spawn(async move {
+                fh.emit_identity(
+                    "did:plc:a".to_string(),
+                    Some("alice.example.com".to_string()),
+                )
+                .await
+                .unwrap();
+            })
+        };
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            staged.await.unwrap();
+            plain.await.unwrap();
+        })
+        .await
+        .expect("a staged commit and a concurrent plain emit must not deadlock");
     }
 }

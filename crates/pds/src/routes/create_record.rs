@@ -139,7 +139,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
-    /// MM-205 regression: a simulated `repo_seq` insert failure must not leave a committed
+    /// Regression: a simulated `repo_seq` insert failure must not leave a committed
     /// repo-root advance without a corresponding durable firehose row. Dropping the `repo_seq`
     /// table makes the sequencer's insert fail with a real DB error; the whole write transaction
     /// (which now also carries the repo-root CAS) must roll back, so the write fails outright and

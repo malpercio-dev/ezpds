@@ -303,9 +303,9 @@ pub async fn write_record(
 
 /// Advance the repo root (optimistic-concurrency CAS) and, while both the previous and new block
 /// sets are still present, stage the corresponding firehose `#commit` event in the *same*
-/// transaction as the CAS — so the two commit or roll back together and a durable commit can
-/// never end up without a corresponding durable `repo_seq` row (see [`crate::firehose`]'s module
-/// docs and `Firehose::stage_commit`).
+/// transaction as the CAS when the diff CAR can be assembled — so the two commit or roll back
+/// together once staging is attempted (see [`crate::firehose`]'s module docs and
+/// `Firehose::stage_commit`).
 ///
 /// Returns [`ErrorCode::Conflict`] when the CAS didn't land — the repo moved, or the account was
 /// deactivated, since the caller last read `expected_root` — mirroring
@@ -378,6 +378,9 @@ pub async fn commit_repo_write(
         None => None,
     };
 
+    // Acquired *before* opening the transaction below — see `Firehose::lock_emit`'s docs for why
+    // that order matters on this crate's single-connection pool.
+    let emit_guard = state.firehose.lock_emit().await;
     let mut tx = state.db.begin().await.map_err(|e| {
         tracing::error!(error = %e, did = %did, "failed to open write transaction");
         ApiError::new(ErrorCode::InternalError, "failed to write record")
@@ -406,8 +409,7 @@ pub async fn commit_repo_write(
 
     let pending = match blocks {
         Some(blocks) => {
-            let staged = state
-                .firehose
+            let staged = emit_guard
                 .stage_commit(
                     &mut tx,
                     crate::firehose::CommitInput {
@@ -423,10 +425,10 @@ pub async fn commit_repo_write(
             match staged {
                 Ok(pending) => Some(pending),
                 Err(e) => {
-                    // Dropping `tx` here (via the early return) rolls back the CAS too: per
-                    // MM-205, a commit must not land without a corresponding durable firehose row,
-                    // so a failure to stage that row fails the whole write rather than dropping
-                    // the event best-effort.
+                    // Dropping `tx` here (via the early return) rolls back the CAS too: a commit
+                    // must not land without a corresponding durable firehose row, so a failure to
+                    // stage that row fails the whole write rather than dropping the event
+                    // best-effort.
                     tracing::error!(error = %e, did = %did, "failed to stage firehose commit event");
                     return Err(ApiError::new(
                         ErrorCode::InternalError,
