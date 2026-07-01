@@ -444,8 +444,15 @@ pub async fn commit_repo_write(
         tracing::error!(error = %e, did = %did, "failed to commit repo write transaction");
         ApiError::new(ErrorCode::InternalError, "failed to write record")
     })?;
+    // Notify crawlers only once the firehose event has actually been finished: when diff/CAR
+    // assembly failed (`pending` is `None`) there is nothing to notify them about yet, and the
+    // relay would rather learn about this commit from a later one's event than crawl early and
+    // find nothing new.
     if let Some(pending) = pending {
         pending.finish();
+        // New content is live: notify configured crawlers (relays/BGSes) so they pull it
+        // promptly. Fire-and-forget and rate-limited — never blocks the commit.
+        state.crawlers.notify();
     }
 
     // Best-effort, independent of the firehose durability guarantee above: an untagged block
@@ -456,10 +463,6 @@ pub async fn commit_repo_write(
             tracing::warn!(error = %e, did = %did, "failed to tag commit block revisions (non-fatal)");
         }
     }
-
-    // New content is live: notify configured crawlers (relays/BGSes) so they pull it promptly.
-    // Fire-and-forget and rate-limited — never blocks the commit.
-    state.crawlers.notify();
 
     Ok(())
 }
