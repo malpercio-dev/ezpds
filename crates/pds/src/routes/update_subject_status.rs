@@ -25,11 +25,20 @@ use crate::db::accounts::{set_account_takedown, TakedownStateChange};
 use crate::routes::admin_subject_defs::{RepoRefView, StatusAttrView};
 use crate::routes::auth::require_admin_json;
 
+/// `subject` is a lexicon union (`com.atproto.admin.defs#repoRef` | `com.atproto.repo.strongRef`
+/// | `com.atproto.repo.strongRef` blob variant); `$type` is the discriminant. ezpds only
+/// implements the `repoRef` (account-level) arm, so `$type` is required and checked explicitly
+/// rather than inferred from which fields happen to be present — a body that merely has a `did`
+/// field is not necessarily a `repoRef`.
+const REPO_REF_TYPE: &str = "com.atproto.admin.defs#repoRef";
+
 /// `com.atproto.admin.defs#repoRef` — the only subject type this endpoint accepts. Record- and
 /// blob-level takedown (the reference PDS's other subject kinds) are not modelled here; ezpds
 /// only tracks lifecycle state per-account.
 #[derive(Deserialize)]
 struct RepoRefSubject {
+    #[serde(rename = "$type")]
+    type_: String,
     did: String,
 }
 
@@ -84,6 +93,13 @@ pub async fn update_subject_status(
         .into_response()
     })?;
 
+    if payload.subject.type_ != REPO_REF_TYPE {
+        return Err(ApiError::new(
+            ErrorCode::InvalidRequest,
+            format!("subject.$type must be {REPO_REF_TYPE}"),
+        )
+        .into_response());
+    }
     if !is_valid_did(&payload.subject.did) {
         return Err(
             ApiError::new(ErrorCode::InvalidRequest, "subject.did is not a valid DID")
@@ -251,7 +267,7 @@ mod tests {
         let mut rx = state.firehose.subscribe();
 
         let body = serde_json::json!({
-            "subject": {"did": "did:plc:usstd2"},
+            "subject": {"$type": "com.atproto.admin.defs#repoRef", "did": "did:plc:usstd2"},
             "takedown": {"applied": false},
         })
         .to_string();
@@ -276,7 +292,7 @@ mod tests {
         let mut rx = state.firehose.subscribe();
 
         let body = serde_json::json!({
-            "subject": {"did": "did:plc:usstd3"},
+            "subject": {"$type": "com.atproto.admin.defs#repoRef", "did": "did:plc:usstd3"},
             "takedown": {"applied": true},
         })
         .to_string();
@@ -304,7 +320,7 @@ mod tests {
         insert_account(&state.db, "did:plc:usstd4", "usstd4@example.com").await;
 
         let body = serde_json::json!({
-            "subject": {"did": "did:plc:usstd4"},
+            "subject": {"$type": "com.atproto.admin.defs#repoRef", "did": "did:plc:usstd4"},
         })
         .to_string();
         let response = app(state)
@@ -319,7 +335,44 @@ mod tests {
         let state = test_state_with_admin_token().await;
 
         let body = serde_json::json!({
-            "subject": {"did": "not-a-did"},
+            "subject": {"$type": "com.atproto.admin.defs#repoRef", "did": "not-a-did"},
+            "takedown": {"applied": true},
+        })
+        .to_string();
+        let response = app(state)
+            .oneshot(request(&body, Some("test-admin-token")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn wrong_subject_type_returns_400() {
+        // subject.$type is a required discriminant — a strongRef-shaped (or merely
+        // mistyped) subject must be rejected, not silently treated as a repoRef because it
+        // happens to also carry a `did` field.
+        let state = test_state_with_admin_token().await;
+        insert_account(&state.db, "did:plc:usstd7", "usstd7@example.com").await;
+
+        let body = serde_json::json!({
+            "subject": {"$type": "com.atproto.repo.strongRef", "did": "did:plc:usstd7"},
+            "takedown": {"applied": true},
+        })
+        .to_string();
+        let response = app(state)
+            .oneshot(request(&body, Some("test-admin-token")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn missing_subject_type_returns_400() {
+        let state = test_state_with_admin_token().await;
+        insert_account(&state.db, "did:plc:usstd8", "usstd8@example.com").await;
+
+        let body = serde_json::json!({
+            "subject": {"did": "did:plc:usstd8"},
             "takedown": {"applied": true},
         })
         .to_string();
@@ -335,7 +388,7 @@ mod tests {
         let state = test_state_with_admin_token().await;
 
         let body = serde_json::json!({
-            "subject": {"did": "did:plc:usstdghost"},
+            "subject": {"$type": "com.atproto.admin.defs#repoRef", "did": "did:plc:usstdghost"},
             "takedown": {"applied": true},
         })
         .to_string();
@@ -380,7 +433,7 @@ mod tests {
         };
 
         let body = serde_json::json!({
-            "subject": {"did": did},
+            "subject": {"$type": "com.atproto.admin.defs#repoRef", "did": did},
             "takedown": {"applied": true},
         })
         .to_string();
