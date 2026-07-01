@@ -6,7 +6,7 @@
 
 // Implements: POST /xrpc/com.atproto.server.reserveSigningKey
 
-use axum::{extract::State, response::Json};
+use axum::{extract::State, http::HeaderMap, response::Json};
 use serde::{Deserialize, Serialize};
 
 use common::{ApiError, ErrorCode};
@@ -34,6 +34,7 @@ const ANONYMOUS_RESERVE_SIGNING_KEY_LIMIT: &str = "reserveSigningKey:<anonymous>
 
 pub async fn reserve_signing_key(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<ReserveSigningKeyRequest>,
 ) -> Result<Json<ReserveSigningKeyResponse>, ApiError> {
     let did = request
@@ -55,7 +56,7 @@ pub async fn reserve_signing_key(
             }));
         }
     } else {
-        check_anonymous_reservation_limit(&state)?;
+        check_anonymous_reservation_limit(&state, &headers)?;
     }
 
     let key = generate_reserved_key(&state)?;
@@ -119,9 +120,15 @@ fn is_valid_did_syntax(did: &str) -> bool {
     }
 
     let mut bytes = method_specific_id.bytes().peekable();
+    let mut ended_with_separator = true;
     while let Some(byte) = bytes.next() {
         match byte {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'-' | b'_' | b':' => {}
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'-' | b'_' => {
+                ended_with_separator = false;
+            }
+            b':' => {
+                ended_with_separator = true;
+            }
             b'%' => {
                 let Some(high) = bytes.next() else {
                     return false;
@@ -132,26 +139,45 @@ fn is_valid_did_syntax(did: &str) -> bool {
                 if !high.is_ascii_hexdigit() || !low.is_ascii_hexdigit() {
                     return false;
                 }
+                ended_with_separator = false;
             }
             _ => return false,
         }
     }
-    true
+    !ended_with_separator
 }
 
-fn check_anonymous_reservation_limit(state: &AppState) -> Result<(), ApiError> {
+fn check_anonymous_reservation_limit(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<(), ApiError> {
+    let limiter_key = anonymous_reservation_limiter_key(headers);
     let mut attempts = lock_failed_login_attempts(
         &state.failed_login_attempts,
         Some("reserve_signing_key_anonymous"),
     )?;
-    if is_rate_limited(&mut attempts, ANONYMOUS_RESERVE_SIGNING_KEY_LIMIT) {
+    if is_rate_limited(&mut attempts, &limiter_key) {
         return Err(ApiError::new(
             ErrorCode::RateLimited,
             "too many anonymous signing key reservations",
         ));
     }
-    record_failure(&mut attempts, ANONYMOUS_RESERVE_SIGNING_KEY_LIMIT);
+    record_failure(&mut attempts, &limiter_key);
     Ok(())
+}
+
+fn anonymous_reservation_limiter_key(headers: &HeaderMap) -> String {
+    let caller = header_value(headers, "x-forwarded-for")
+        .and_then(|value| value.split(',').next().map(str::trim))
+        .filter(|value| !value.is_empty())
+        .or_else(|| header_value(headers, "x-real-ip"))
+        .or_else(|| header_value(headers, "forwarded"))
+        .unwrap_or("unknown");
+    format!("{ANONYMOUS_RESERVE_SIGNING_KEY_LIMIT}:{caller}")
+}
+
+fn header_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers.get(name)?.to_str().ok()
 }
 
 fn generate_reserved_key(state: &AppState) -> Result<RepoSigningKey, ApiError> {
@@ -220,12 +246,18 @@ mod tests {
     }
 
     fn post_req(body: serde_json::Value) -> Request<Body> {
-        Request::builder()
+        post_req_from(body, None)
+    }
+
+    fn post_req_from(body: serde_json::Value, forwarded_for: Option<&str>) -> Request<Body> {
+        let mut builder = Request::builder()
             .method("POST")
             .uri("/xrpc/com.atproto.server.reserveSigningKey")
-            .header("content-type", "application/json")
-            .body(Body::from(body.to_string()))
-            .unwrap()
+            .header("content-type", "application/json");
+        if let Some(forwarded_for) = forwarded_for {
+            builder = builder.header("x-forwarded-for", forwarded_for);
+        }
+        builder.body(Body::from(body.to_string())).unwrap()
     }
 
     async fn body_json(resp: axum::response::Response) -> serde_json::Value {
@@ -290,21 +322,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn anonymous_reservations_are_rate_limited() {
+    async fn anonymous_reservations_are_rate_limited_per_caller() {
         let state = state_with_master_key().await;
         let app = app(state);
 
         for _ in 0..RATE_LIMIT_MAX_FAILURES {
             let resp = app
                 .clone()
-                .oneshot(post_req(serde_json::json!({})))
+                .oneshot(post_req_from(serde_json::json!({}), Some("203.0.113.1")))
                 .await
                 .unwrap();
             assert_eq!(resp.status(), StatusCode::OK);
         }
 
-        let resp = app.oneshot(post_req(serde_json::json!({}))).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        let limited = app
+            .clone()
+            .oneshot(post_req_from(serde_json::json!({}), Some("203.0.113.1")))
+            .await
+            .unwrap();
+        assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        let other_caller = app
+            .oneshot(post_req_from(serde_json::json!({}), Some("203.0.113.2")))
+            .await
+            .unwrap();
+        assert_eq!(other_caller.status(), StatusCode::OK);
     }
 
     #[tokio::test]
@@ -312,7 +354,14 @@ mod tests {
         let state = state_with_master_key().await;
         let app = app(state);
 
-        for did in ["not a did", "did:", "did::", "did:plc:", "did:PLC:abc"] {
+        for did in [
+            "not a did",
+            "did:",
+            "did::",
+            "did:plc:",
+            "did:plc:abc:",
+            "did:PLC:abc",
+        ] {
             let resp = app
                 .clone()
                 .oneshot(post_req(serde_json::json!({"did": did})))
