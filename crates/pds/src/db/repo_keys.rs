@@ -94,6 +94,73 @@ where
     Ok(())
 }
 
+/// Store a standard account-migration signing-key reservation.
+///
+/// Returns `true` when this call inserted a fresh reservation. When `did` is
+/// `Some`, the database enforces one reservation per DID; duplicate DID inserts
+/// return `false` so callers can re-read and return the existing key.
+pub async fn insert_reserved_repo_key(
+    pool: &SqlitePool,
+    did: Option<&str>,
+    key: &RepoSigningKey,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "INSERT INTO reserved_signing_keys \
+         (id, did, key_type, public_key, private_key_encrypted, created_at) \
+         VALUES (?, ?, 'p256', ?, ?, datetime('now')) \
+         ON CONFLICT(did) DO NOTHING",
+    )
+    .bind(&key.key_id)
+    .bind(did)
+    .bind(&key.public_key)
+    .bind(&key.private_key_encrypted)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// Fetch a reserved account-migration signing key by migrating DID.
+pub async fn get_reserved_repo_key_by_did(
+    pool: &SqlitePool,
+    did: &str,
+) -> Result<Option<RepoSigningKey>, sqlx::Error> {
+    let row: Option<(String, String, String)> = sqlx::query_as(
+        "SELECT id, public_key, private_key_encrypted FROM reserved_signing_keys \
+         WHERE did = ? LIMIT 1",
+    )
+    .bind(did)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(
+        |(key_id, public_key, private_key_encrypted)| RepoSigningKey {
+            key_id,
+            public_key,
+            private_key_encrypted,
+        },
+    ))
+}
+
+/// Fetch a reserved account-migration signing key by did:key id.
+pub async fn get_reserved_repo_key_by_id(
+    pool: &SqlitePool,
+    key_id: &str,
+) -> Result<Option<RepoSigningKey>, sqlx::Error> {
+    let row: Option<(String, String, String)> = sqlx::query_as(
+        "SELECT id, public_key, private_key_encrypted FROM reserved_signing_keys \
+         WHERE id = ? LIMIT 1",
+    )
+    .bind(key_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(
+        |(key_id, public_key, private_key_encrypted)| RepoSigningKey {
+            key_id,
+            public_key,
+            private_key_encrypted,
+        },
+    ))
+}
+
 /// Fetch the per-account signing key for a promoted DID (used to sign commits).
 pub async fn get_signing_key_by_did(
     pool: &SqlitePool,
@@ -187,6 +254,45 @@ mod tests {
 
         let got = get_pending_repo_key(&pool, "acct-2").await.unwrap();
         assert_eq!(got, None);
+    }
+
+    #[tokio::test]
+    async fn insert_reserved_repo_key_is_idempotent_by_did() {
+        let pool = test_pool().await;
+        let key = sample_key();
+        assert!(
+            insert_reserved_repo_key(&pool, Some("did:plc:migrating"), &key)
+                .await
+                .unwrap()
+        );
+
+        let other = RepoSigningKey {
+            key_id: "did:key:zOtherReservedKey".to_string(),
+            public_key: "zOtherPublicKey".to_string(),
+            private_key_encrypted: "b3RoZXItZW5jcnlwdGVk".to_string(),
+        };
+        assert!(
+            !insert_reserved_repo_key(&pool, Some("did:plc:migrating"), &other)
+                .await
+                .unwrap()
+        );
+
+        let got = get_reserved_repo_key_by_did(&pool, "did:plc:migrating")
+            .await
+            .unwrap();
+        assert_eq!(got, Some(key));
+    }
+
+    #[tokio::test]
+    async fn reserved_repo_key_can_be_fetched_by_id() {
+        let pool = test_pool().await;
+        let key = sample_key();
+        insert_reserved_repo_key(&pool, None, &key).await.unwrap();
+
+        let got = get_reserved_repo_key_by_id(&pool, &key.key_id)
+            .await
+            .unwrap();
+        assert_eq!(got, Some(key));
     }
 
     #[tokio::test]

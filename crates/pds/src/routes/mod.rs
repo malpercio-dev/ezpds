@@ -51,6 +51,7 @@ pub mod put_record;
 pub mod refresh_session;
 pub mod register_device;
 pub mod request_password_reset;
+pub mod reserve_signing_key;
 pub mod reset_password;
 pub mod resolve_handle;
 pub mod resolve_identity;
