@@ -20,6 +20,17 @@ crate — which carries the offending `build.rs` — is vendored; the npm guest 
   *"requires a provisioning profile with the Group Activities feature."* Removing it lets the
   profile stay minimal (the app declares no special capabilities). The `share_text` command is
   unaffected — the entitlement was over-declared by the plugin author.
+- **`ios/Sources/SharesheetPlugin.swift`**: made the `shareText` handler always settle the Tauri
+  `Invoke`. Upstream presents the `UIActivityViewController` but never calls `invoke.resolve()` /
+  `invoke.reject()`, so the guest-side `await share(text)` in `src/lib/share.ts` hangs forever on
+  iOS. The fix (a) rejects up front when `manager.viewController` is `nil` (no presenter → the sheet
+  can never open) instead of silently no-op-ing, (b) attaches a `completionWithItemsHandler` that
+  rejects on an activity error and resolves otherwise (a user dismissal counts as a successful
+  round-trip), and (c) makes `webview` a plain optional and falls back to the presenter's view for
+  the iPad popover anchor rather than force-unwrapping an implicitly-unwrapped `WKWebView!`. Flagged
+  by CodeRabbit on PR #70 (upstream code, so out of scope for that PR). Verified on-device via the
+  claim-code Share on the Home screen (host CI can't compile this iOS-gated, workspace-excluded
+  crate).
 - **`Cargo.toml`**: added `publish = false` (private fork — must never be released to crates.io
   under the upstream's name/metadata).
 - **Pruned** the non-build files (`guest-js/`, `package.json`, `pnpm-lock.yaml`, the JS build
@@ -38,5 +49,6 @@ source is the only reliable fix — a `just admin-postinit` step would be clobbe
 itself.
 
 To update: no upstream update exists as of this writing (v0.0.1 is the only release). If one
-appears, re-copy from it, re-apply the `build.rs` entitlement removal + `publish = false`, and
-re-audit `build.rs` + `ios/Sources/SharesheetPlugin.swift`.
+appears, re-copy from it, re-apply the `build.rs` entitlement removal + `publish = false` + the
+`SharesheetPlugin.swift` invoke-settle fix, and re-audit `build.rs` +
+`ios/Sources/SharesheetPlugin.swift`.
