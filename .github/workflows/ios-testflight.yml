@@ -6,7 +6,7 @@ name: iOS · TestFlight
 #
 # Flow: regenerate the (gitignored) Xcode project -> re-apply the ios-postinit
 # patches -> stamp a unique build number -> build a signed App Store IPA -> upload
-# to TestFlight. Code signing is automatic, driven by an App Store Connect API key.
+# to TestFlight. Code signing is explicit (cert + App Store profile); the API key is upload-only.
 #
 # One-time setup (mirror, App Store Connect, secrets): see docs/ios-cicd.md.
 
@@ -41,21 +41,16 @@ jobs:
     # and it matches the local macOS 26 / Xcode 26 dev environment. Apple Silicon native.
     runs-on: macos-26
     timeout-minutes: 60
-    env:
-      # SIGNING — explicit cert + App Store profile. Tauri's *automatic* iOS signing emits
-      # an "Apple Distribution: Tauri (unset)" placeholder that App Store Connect rejects
-      # (tauri#11092), so we sign with a real cert/profile. Tauri reads these base64 strings
-      # directly from the environment (no decode step needed).
-      IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
-      IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
-      IOS_MOBILE_PROVISION: ${{ secrets.IOS_MOBILE_PROVISION }}
-      # UPLOAD — App Store Connect API key (Key ID + Issuer ID; the .p8 is written from
-      # APPLE_API_KEY_B64 in the Decode step). Team ID also feeds Tauri's signing config.
-      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-      APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+    # Signing/API secrets are scoped to the individual steps that use them (Decode, Build,
+    # Upload) instead of declared job-wide, so they are absent from the environment of the
+    # third-party install steps (pnpm install, cargo binstall) that execute untrusted
+    # lifecycle/installer code — limiting blast radius if a dependency is compromised.
     steps:
       - uses: actions/checkout@v4
+        # Don't persist the job token in .git/config where later steps could read it
+        # (zizmor `artipacked`); nothing here pushes back to the repo.
+        with:
+          persist-credentials: false
 
       - name: Install just
         uses: extractions/setup-just@v2
@@ -93,8 +88,9 @@ jobs:
         run: cargo binstall -y --locked tauri-cli --version '^2'
 
       - name: Decode App Store Connect API key (.p8)
-        # Secret is passed via env (not inline ${{ }}) so it never lands in argv/logs.
+        # Secrets are passed via env (not inline ${{ }}) so they never land in argv/logs.
         env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_B64: ${{ secrets.APPLE_API_KEY_B64 }}
         run: |
           mkdir -p "$HOME/.appstoreconnect/private_keys"
@@ -144,7 +140,22 @@ jobs:
           echo "CFBundleVersion -> $GITHUB_RUN_NUMBER"
 
       - name: Build signed IPA
+        # SIGNING — explicit cert + App Store profile (Tauri's automatic signing emits an
+        # "Apple Distribution: Tauri (unset)" placeholder App Store rejects, tauri#11092).
+        # The APPLE_* vars also feed the app-store-connect export. Scoped to this step.
+        env:
+          IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_MOBILE_PROVISION: ${{ secrets.IOS_MOBILE_PROVISION }}
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
         run: just ios-ipa
 
       - name: Upload to TestFlight
+        # altool authenticates with the App Store Connect API key (ID + issuer); the .p8
+        # was written to ~/.appstoreconnect/private_keys in the Decode step.
+        env:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
         run: just ios-upload
