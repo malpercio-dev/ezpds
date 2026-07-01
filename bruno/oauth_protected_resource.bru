@@ -1,0 +1,15 @@
+meta {
+  name: OAuth Protected Resource Metadata
+  type: http
+  seq: 69
+}
+
+get {
+  url: {{baseUrl}}/.well-known/oauth-protected-resource
+  body: none
+  auth: none
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}

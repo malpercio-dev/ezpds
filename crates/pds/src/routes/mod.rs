@@ -42,6 +42,7 @@ pub mod oauth_authorize;
 pub mod oauth_client_metadata;
 pub mod oauth_jwks;
 pub mod oauth_par;
+pub mod oauth_protected_resource;
 pub mod oauth_server_metadata;
 pub(super) mod oauth_templates;
 pub mod oauth_token;

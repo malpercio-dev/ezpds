@@ -61,6 +61,7 @@ use crate::routes::oauth_authorize::{get_authorization, post_authorization};
 use crate::routes::oauth_client_metadata::oauth_client_metadata;
 use crate::routes::oauth_jwks::oauth_jwks;
 use crate::routes::oauth_par::post_par;
+use crate::routes::oauth_protected_resource::oauth_protected_resource_metadata;
 use crate::routes::oauth_server_metadata::oauth_server_metadata;
 use crate::routes::oauth_token::post_token;
 use crate::routes::provisioning_session::create_provisioning_session;
@@ -200,6 +201,10 @@ pub struct AppState {
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/.well-known/atproto-did", get(atproto_did_handler))
+        .route(
+            "/.well-known/oauth-protected-resource",
+            get(oauth_protected_resource_metadata),
+        )
         .route(
             "/.well-known/oauth-authorization-server",
             get(oauth_server_metadata),
