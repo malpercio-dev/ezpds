@@ -31,8 +31,9 @@ pub struct CheckAccountStatusResponse {
     /// The repo's commit revision (TID), or `null` when there is no repo.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repo_rev: Option<String>,
-    /// Number of blocks (MST nodes + records) in the repo.
-    pub repo_blocks: i64,
+    /// Total blocks stored for this DID in the block store — includes MST nodes, records,
+    /// commits, and any orphaned blocks from incomplete writes not yet cleaned up.
+    pub stored_blocks: i64,
     /// Number of records indexed in the repo (total record count across all collections).
     pub indexed_records: usize,
     /// Number of private state values (ezpds does not use private state — always 0).
@@ -116,7 +117,7 @@ pub async fn check_account_status(
             valid_did,
             repo_commit,
             repo_rev,
-            repo_blocks,
+            stored_blocks: repo_blocks,
             indexed_records,
             private_state_values: 0,
             expected_blobs,
@@ -126,12 +127,17 @@ pub async fn check_account_status(
         .into_response())
 }
 
-/// Open the repo at `head` and return `(record_count, distinct_blob_ref_cids_count)`.
+/// Open the repo at `head`, walk every MST key, count records, and extract distinct blob
+/// CIDs from record values.
 ///
-/// Walks every MST key in a single pass: counts records and, for each record, inspects its
-/// Ipld value for blob references (`{"$type": "blob", "ref": {"$link": "<cid>"}}`).
-/// The blob-ref walk is recursive through nested maps/arrays so deeply-embedded blobs
-/// (e.g. embeds inside embeds) are counted.
+/// Returns `(record_count, blob_cid_count)`.
+///
+/// # Performance
+///
+/// We walk the MST once to collect all `(key, cid)` entries, then read each record block
+/// directly from the block store via [`crate::db::blocks::get_block`]. Each record read is a
+/// single-row `SELECT BY cid` — O(1) per record — instead of calling `Repository::get_raw_cid`
+/// which re-walks the entire MST for every record (O(N²) total).
 async fn count_records_and_blob_refs(
     state: &AppState,
     did: &str,
@@ -142,19 +148,14 @@ async fn count_records_and_blob_refs(
         ApiError::new(ErrorCode::InternalError, "invalid repo root CID")
     })?;
 
+    // Open the repo just to walk the MST and collect (key, cid) entries.
     let block_store = SqliteBlockStore::new(state.db.clone(), did.to_string());
     let mut repo = Repository::open(block_store, root_cid).await.map_err(|e| {
         tracing::error!(error = %e, did = %did, "failed to open repo");
         ApiError::new(ErrorCode::InternalError, "failed to open repo")
     })?;
 
-    let mut record_count = 0usize;
-    let mut blob_cids: HashSet<String> = HashSet::new();
-
-    // Collect entries into a vec first, then process them — this avoids holding both the
-    // tree stream and the repo borrow (needed for `get_raw_cid`) simultaneously, which
-    // `entries_prefixed`'s `&mut self` on the tree would otherwise prevent.
-    let entries: Vec<(String, repo_engine::Cid)> = {
+    let entries: Vec<(String, String)> = {
         let mut tree = repo.tree();
         let mut stream = Box::pin(tree.entries_prefixed(""));
         let mut entries = Vec::new();
@@ -163,26 +164,42 @@ async fn count_records_and_blob_refs(
                 tracing::error!(error = %e, did = %did, "failed to iterate MST");
                 ApiError::new(ErrorCode::InternalError, "failed to iterate MST")
             })?;
-            entries.push((key, cid));
+            entries.push((key, cid.to_string()));
         }
         entries
     };
+    // Drop tree/repo — we only need the block store from here on.
 
-    for (key, cid) in entries {
+    let mut record_count = 0usize;
+    let mut blob_cids: HashSet<String> = HashSet::new();
+
+    for (key, cid_str) in entries {
         // Count records: MST keys are `<collection>/<rkey>`.
-        if key.contains('/') {
-            record_count += 1;
+        if !key.contains('/') {
+            continue;
+        }
+        record_count += 1;
 
-            // Read the record's Ipld value and walk it for blob refs.
-            let value: Option<Ipld> = repo.get_raw_cid(cid).await.map_err(|e| {
-                tracing::error!(error = %e, did = %did, key = %key, "failed to read record block");
+        // Read the record block directly from the DB (O(1) SELECT BY cid) instead of
+        // calling `Repository::get_raw_cid` which does an O(N) MST walk per record.
+        let row = crate::db::blocks::get_block(&state.db, &cid_str)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, did = %did, cid = %cid_str, "failed to read block");
                 ApiError::new(ErrorCode::InternalError, "failed to read record block")
+            })?
+            .ok_or_else(|| {
+                // Tree referenced a CID that doesn't exist — repo corruption.
+                tracing::error!(did = %did, cid = %cid_str, key = %key, "MST entry references missing block");
+                ApiError::new(ErrorCode::InternalError, "repo integrity error")
             })?;
 
-            if let Some(ipld) = value {
-                collect_blob_cids(&ipld, &mut blob_cids);
-            }
-        }
+        let ipld: Ipld = serde_ipld_dagcbor::from_slice(&row.bytes).map_err(|e| {
+            tracing::error!(error = %e, did = %did, cid = %cid_str, "failed to decode DAG-CBOR");
+            ApiError::new(ErrorCode::InternalError, "failed to decode record")
+        })?;
+
+        collect_blob_cids(&ipld, &mut blob_cids);
     }
 
     Ok((record_count, blob_cids.len()))
