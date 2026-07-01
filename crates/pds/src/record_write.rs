@@ -202,9 +202,11 @@ pub async fn write_record(
         ApiError::new(ErrorCode::InternalError, "failed to write record")
     })?;
 
-    // Capture the pre-write revision: it becomes the firehose event's `since` (the commit
-    // this one supersedes).
+    // Capture the pre-write revision and MST root: they become the firehose event's `since` (the
+    // commit this one supersedes) and Sync v1.1 `prevData` (the previous commit's MST root CID,
+    // the inductive-validation anchor). Both must be read *before* the write mutates the repo.
     let prev_rev = repo.commit().rev().as_str().to_string();
+    let prev_data = repo.commit().data().to_string();
 
     // Enforce explicit swapCommit/swapRecord preconditions (ATProto optimistic concurrency)
     // before mutating anything, so a stale client fails with InvalidSwap rather than racing.
@@ -288,6 +290,7 @@ pub async fn write_record(
         repo.root(),
         new_rev,
         Some(prev_rev),
+        Some(prev_data),
         vec![op],
         &root_cid_str,
     )
@@ -333,6 +336,7 @@ pub async fn commit_repo_write(
     new_root: repo_engine::Cid,
     new_rev: String,
     prev_rev: Option<String>,
+    prev_data: Option<String>,
     ops: Vec<crate::firehose::RepoOp>,
     expected_root: &str,
 ) -> Result<(), ApiError> {
@@ -418,6 +422,7 @@ pub async fn commit_repo_write(
                         commit: new_root_str,
                         rev: new_rev.clone(),
                         since: prev_rev,
+                        prev_data,
                         ops,
                         blocks,
                     },

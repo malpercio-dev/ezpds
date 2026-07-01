@@ -177,6 +177,14 @@ pub async fn create_did_handler(
     // previous commit to diff against), so the genesis `#commit` frame's CARv1 payload can be
     // built directly from these in-memory blocks — no block-store round trip needed.
     let genesis_car = build_genesis_car(genesis_root, &genesis_blocks);
+    // A `#sync` state assertion carrying just the signed genesis commit block, staged atomically
+    // with the account so a relay can anchor to this fresh host's head (Sync v1.1). The commit
+    // block is always in the freshly-built genesis blocks, so `None` is an internal invariant break.
+    let genesis_sync_car =
+        build_commit_block_car(genesis_root, &genesis_blocks).ok_or_else(|| {
+            tracing::error!(did = %did, "genesis commit block missing from built blocks");
+            ApiError::new(ErrorCode::InternalError, "failed to build genesis repo")
+        })?;
 
     // Phase 3: Pre-store DID and Shamir shares for retry resilience, then POST to plc.directory.
     // Shares are generated once and stored alongside pending_did so that retries return the
@@ -212,6 +220,7 @@ pub async fn create_did_handler(
         &genesis_rev,
         &genesis_blocks,
         genesis_car,
+        genesis_sync_car,
     )
     .await?;
 
@@ -540,6 +549,7 @@ async fn promote_account(
     genesis_rev: &str,
     genesis_blocks: &[(repo_engine::Cid, Vec<u8>)],
     genesis_car: Vec<u8>,
+    genesis_sync_car: Vec<u8>,
 ) -> Result<(), ApiError> {
     let did_document_str = serde_json::to_string(did_document).map_err(|e| {
         tracing::error!(error = %e, "failed to serialize DID document");
@@ -631,6 +641,11 @@ async fn promote_account(
     // repo root recorded on `accounts` with no corresponding firehose row would be the same
     // "durable write, silently dropped event" hazard `record_write::commit_repo_write` avoids
     // for ordinary record writes.
+    // Stage the genesis `#commit` and, chained after it in the same transaction and under the same
+    // sequencer lock, a Sync v1.1 `#sync` state assertion (carrying just the signed commit block).
+    // The reference PDS emits `#sync` on account activation; for a fresh account, genesis *is* that
+    // activation, so a relay learns this host's authoritative head atomically with the repo it
+    // describes. `prev_data` is `None` — the genesis commit has no predecessor.
     let pending_commit = emit_guard
         .stage_commit(
             &mut tx,
@@ -639,12 +654,26 @@ async fn promote_account(
                 commit: genesis_root.to_string(),
                 rev: genesis_rev.to_string(),
                 since: None,
+                prev_data: None,
                 ops: Vec::new(),
                 blocks: genesis_car,
             },
         )
         .await
         .inspect_err(|e| tracing::error!(error = %e, did = %did, "failed to stage genesis firehose commit event"))
+        .map_err(|_| {
+            ApiError::new(ErrorCode::InternalError, "failed to sequence genesis repo")
+        })?
+        .stage_sync(
+            &mut tx,
+            crate::firehose::SyncInput {
+                did: did.to_string(),
+                rev: genesis_rev.to_string(),
+                blocks: genesis_sync_car,
+            },
+        )
+        .await
+        .inspect_err(|e| tracing::error!(error = %e, did = %did, "failed to stage genesis firehose sync event"))
         .map_err(|_| {
             ApiError::new(ErrorCode::InternalError, "failed to sequence genesis repo")
         })?;
@@ -675,8 +704,9 @@ async fn promote_account(
         .inspect_err(|e| tracing::error!(error = %e, "failed to commit promotion transaction"))
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to commit transaction"))?;
 
-    // Only now that the transaction (which already carries the genesis commit's `repo_seq`
-    // row) has committed successfully: advance the sequence counter and broadcast the event.
+    // Only now that the transaction (which already carries the genesis commit's and the `#sync`'s
+    // `repo_seq` rows) has committed successfully: advance the sequence counter past both and
+    // broadcast the `#commit` then the `#sync`.
     pending_commit.finish();
 
     // Emit the `#account` (active) frame separately, best-effort, once the account and its
@@ -719,6 +749,23 @@ fn build_genesis_car(root: repo_engine::Cid, blocks: &[(repo_engine::Cid, Vec<u8
         car.extend_from_slice(&repo_engine::car_v1_block_frame(*cid, bytes));
     }
     car
+}
+
+/// Build the CARv1 bytes for a `#sync` frame: a single-root CAR (root = the signed `commit` CID)
+/// carrying just the commit block. Sync v1.1 `#sync.blocks` asserts the current repo head, so a
+/// relay only needs the signed commit block to re-anchor — not the whole repo — and the lexicon
+/// caps the field at 10 KB. Returns `None` if the commit block is somehow absent from `blocks`
+/// (a genesis-build invariant violation the caller reports as an internal error).
+fn build_commit_block_car(
+    commit: repo_engine::Cid,
+    blocks: &[(repo_engine::Cid, Vec<u8>)],
+) -> Option<Vec<u8>> {
+    let bytes = blocks
+        .iter()
+        .find_map(|(cid, bytes)| (*cid == commit).then_some(bytes))?;
+    let mut car = repo_engine::car_v1_header(commit);
+    car.extend_from_slice(&repo_engine::car_v1_block_frame(commit, bytes));
+    Some(car)
 }
 
 /// Construct a minimal DID Core document from a verified genesis operation.
@@ -1050,9 +1097,9 @@ mod tests {
             "genesis blocks must be persisted (commit + MST node); got {block_count}"
         );
 
-        // A fresh account must self-announce — genesis #commit then #account (active) sequenced
-        // to the firehose, so a never-crawled host doesn't stay invisible to the relay until
-        // its first record write.
+        // A fresh account must self-announce — genesis #commit, a Sync v1.1 #sync head assertion,
+        // then #account (active) sequenced to the firehose, so a never-crawled host doesn't stay
+        // invisible to the relay until its first record write.
         use crate::firehose::FirehoseEvent;
         let FirehoseEvent::Commit(commit_event) = fh_rx
             .try_recv()
@@ -1063,6 +1110,10 @@ mod tests {
         assert_eq!(commit_event.repo, did);
         assert_eq!(commit_event.commit, repo_root.clone().unwrap());
         assert!(commit_event.since.is_none(), "genesis commit has no since");
+        assert!(
+            commit_event.prev_data.is_none(),
+            "genesis commit has no prevData"
+        );
         assert!(
             commit_event.ops.is_empty(),
             "genesis commit carries no record ops"
@@ -1075,11 +1126,28 @@ mod tests {
         assert_eq!(roots.len(), 1);
         assert_eq!(roots[0].to_string(), commit_event.commit);
 
+        // The genesis #sync asserts the same head, carrying a CAR whose sole root is the commit.
+        let FirehoseEvent::Sync(sync_event) = fh_rx
+            .try_recv()
+            .expect("a genesis #sync event must follow the commit")
+        else {
+            panic!("expected a #sync event second");
+        };
+        assert_eq!(sync_event.did, did);
+        assert_eq!(sync_event.rev, commit_event.rev);
+        let sync_car =
+            atrium_repo::blockstore::CarStore::open(std::io::Cursor::new(&sync_event.blocks))
+                .await
+                .expect("#sync blocks must be a valid CAR");
+        let sync_roots: Vec<_> = sync_car.roots().collect();
+        assert_eq!(sync_roots.len(), 1);
+        assert_eq!(sync_roots[0].to_string(), commit_event.commit);
+
         let FirehoseEvent::Account(account_event) = fh_rx
             .try_recv()
-            .expect("an #account event must follow the genesis commit")
+            .expect("an #account event must follow the genesis #sync")
         else {
-            panic!("expected an #account event second");
+            panic!("expected an #account event third");
         };
         assert_eq!(account_event.did, did);
         assert!(account_event.active, "fresh account should be active");

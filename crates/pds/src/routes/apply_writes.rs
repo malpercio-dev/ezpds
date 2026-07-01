@@ -224,8 +224,10 @@ pub async fn apply_writes(
         ApiError::new(ErrorCode::InternalError, "failed to apply writes")
     })?;
 
-    // Capture the pre-write revision for the firehose event's `since`.
+    // Capture the pre-write revision and MST root for the firehose event's `since` and Sync v1.1
+    // `prevData` (the previous commit's MST root CID) — both read before the batch mutates the repo.
     let prev_rev = repo.commit().rev().as_str().to_string();
+    let prev_data = repo.commit().data().to_string();
 
     // Load the signing key for this account.
     let master_key: &[u8; 32] = state
@@ -295,6 +297,7 @@ pub async fn apply_writes(
         repo.root(),
         new_rev,
         Some(prev_rev),
+        Some(prev_data),
         fh_ops,
         &root_cid_str,
     )

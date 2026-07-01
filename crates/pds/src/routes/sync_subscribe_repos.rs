@@ -34,6 +34,7 @@ use tokio::sync::broadcast::error::RecvError;
 use crate::app::AppState;
 use crate::firehose::{
     AccountEvent, CommitEvent, FirehoseEvent, IdentityEvent, SubscribeOutcome, Subscription,
+    SyncEvent,
 };
 use repo_engine::Cid;
 
@@ -186,6 +187,7 @@ async fn send_event(sender: &mut SplitSink<WebSocket, Message>, event: &Firehose
         },
         FirehoseEvent::Account(account) => encode_account_frame(account),
         FirehoseEvent::Identity(identity) => encode_identity_frame(identity),
+        FirehoseEvent::Sync(sync) => encode_sync_frame(sync),
     };
     send_message(sender, Message::Binary(frame)).await
 }
@@ -218,10 +220,12 @@ struct ErrorHeader {
 
 /// The `#commit` message body, encoded as DAG-CBOR per com.atproto.sync.subscribeRepos.
 ///
-/// `commit` and each op `cid` are [`Cid`]s, which serialize as DAG-CBOR tag-42 links; `blocks`
-/// is the CARv1 byte string of the blocks introduced by this commit. `rebase`/`tooBig` are
-/// retained for wire compatibility and always `false` (this PDS never emits oversized or
-/// rebase commits).
+/// `commit`, `prevData`, and each op `cid` are [`Cid`]s, which serialize as DAG-CBOR tag-42 links;
+/// `blocks` is the CARv1 byte string of the blocks introduced by this commit. `prevData` is Sync
+/// v1.1's inductive-validation anchor (the previous commit's MST root), carried as a nullable link
+/// — present-and-null for the genesis commit. `blobs` is the DEPRECATED new-blob list, always
+/// emitted empty per the current lexicon. `rebase`/`tooBig` are retained for wire compatibility and
+/// always `false` (this PDS never emits oversized or rebase commits).
 #[derive(Serialize)]
 struct CommitBody<'a> {
     seq: u64,
@@ -232,6 +236,8 @@ struct CommitBody<'a> {
     commit: Cid,
     rev: &'a str,
     since: Option<&'a str>,
+    #[serde(rename = "prevData")]
+    prev_data: Option<Cid>,
     #[serde(with = "serde_bytes")]
     blocks: &'a [u8],
     ops: Vec<RepoOpWire<'a>>,
@@ -253,6 +259,13 @@ struct RepoOpWire<'a> {
 fn encode_commit_frame(commit: &CommitEvent) -> Result<Vec<u8>, String> {
     let commit_cid = Cid::try_from(commit.commit.as_str())
         .map_err(|e| format!("invalid commit CID {:?}: {e}", commit.commit))?;
+
+    let prev_data = match &commit.prev_data {
+        Some(s) => Some(
+            Cid::try_from(s.as_str()).map_err(|e| format!("invalid prevData CID {s:?}: {e}"))?,
+        ),
+        None => None,
+    };
 
     let mut ops = Vec::with_capacity(commit.ops.len());
     for op in &commit.ops {
@@ -281,6 +294,7 @@ fn encode_commit_frame(commit: &CommitEvent) -> Result<Vec<u8>, String> {
         commit: commit_cid,
         rev: &commit.rev,
         since: commit.since.as_deref(),
+        prev_data,
         blocks: &commit.blocks,
         ops,
         blobs: Vec::new(),
@@ -364,6 +378,39 @@ fn encode_identity_frame(identity: &IdentityEvent) -> Vec<u8> {
     frame
 }
 
+/// The `#sync` message body, encoded as DAG-CBOR per com.atproto.sync.subscribeRepos.
+///
+/// `blocks` is a CARv1 byte string carrying the signed commit block (its declared root is the
+/// current commit), not a CID link — so, like `#account`, every field is a plain scalar or byte
+/// string and encoding is infallible.
+#[derive(Serialize)]
+struct SyncBody<'a> {
+    seq: u64,
+    did: &'a str,
+    #[serde(with = "serde_bytes")]
+    blocks: &'a [u8],
+    rev: &'a str,
+    time: &'a str,
+}
+
+/// Encode a [`SyncEvent`] into a complete firehose frame: the `#sync` header concatenated with the
+/// DAG-CBOR body. Infallible for the same reason as [`encode_account_frame`] — no CID parsing.
+fn encode_sync_frame(sync: &SyncEvent) -> Vec<u8> {
+    let header = MessageHeader { op: 1, t: "#sync" };
+    let body = SyncBody {
+        seq: sync.seq,
+        did: &sync.did,
+        blocks: &sync.blocks,
+        rev: &sync.rev,
+        time: &sync.time,
+    };
+
+    let mut frame = serde_ipld_dagcbor::to_vec(&header).expect("#sync header must encode");
+    let body_bytes = serde_ipld_dagcbor::to_vec(&body).expect("#sync body must encode");
+    frame.extend_from_slice(&body_bytes);
+    frame
+}
+
 /// Encode an error frame: the `{op: -1}` header concatenated with `{error, message}`.
 fn encode_error_frame(error: &str, message: &str) -> Vec<u8> {
     #[derive(Serialize)]
@@ -396,6 +443,9 @@ mod tests {
             commit: "bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uwrf3e2o6cw3djmprrm".to_string(),
             rev: "3krev".to_string(),
             since: Some("3kprev".to_string()),
+            prev_data: Some(
+                "bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uwrf3e2o6cw3djmprrm".to_string(),
+            ),
             ops: vec![RepoOp {
                 action: OpAction::Create,
                 collection: "app.bsky.feed.post".to_string(),
@@ -485,6 +535,43 @@ mod tests {
     }
 
     #[test]
+    fn commit_frame_carries_prev_data_link_and_empty_blobs() {
+        // Sync v1.1: prevData is a tag-42 CID link, and the deprecated `blobs` list is empty.
+        let event = sample_commit();
+        let frame = encode_commit_frame(&event).unwrap();
+        let (_, body) = decode_frame(&frame);
+
+        match map_get(&body, "prevData") {
+            Ipld::Link(cid) => {
+                assert_eq!(cid.to_string(), event.prev_data.unwrap())
+            }
+            other => panic!("prevData must be a CID link, got {other:?}"),
+        }
+        assert_eq!(
+            map_get(&body, "blobs"),
+            &Ipld::List(Vec::new()),
+            "deprecated blobs list must be emitted empty"
+        );
+    }
+
+    #[test]
+    fn genesis_commit_frame_encodes_null_prev_data() {
+        // A first commit has no predecessor: prevData is present-and-null, not omitted.
+        let mut event = sample_commit();
+        event.prev_data = None;
+        let frame = encode_commit_frame(&event).unwrap();
+        let (_, body) = decode_frame(&frame);
+        assert_eq!(map_get(&body, "prevData"), &Ipld::Null);
+    }
+
+    #[test]
+    fn invalid_prev_data_cid_is_an_error_not_a_panic() {
+        let mut event = sample_commit();
+        event.prev_data = Some("not-a-cid".to_string());
+        assert!(encode_commit_frame(&event).is_err());
+    }
+
+    #[test]
     fn delete_op_encodes_null_cid() {
         let mut event = sample_commit();
         event.ops = vec![RepoOp {
@@ -564,6 +651,7 @@ mod tests {
                 commit: TEST_CID.to_string(),
                 rev: "3krev".to_string(),
                 since: None,
+                prev_data: None,
                 ops: Vec::new(),
                 blocks: vec![1, 2, 3],
             })
@@ -909,6 +997,103 @@ mod tests {
             map_get(&body, "did"),
             &Ipld::String("did:plc:grace".to_string())
         );
+    }
+
+    // ── encode_sync_frame tests ──────────────────────────────────────────────────
+
+    fn sample_sync() -> SyncEvent {
+        SyncEvent {
+            seq: 12,
+            time: "2026-07-01T00:00:00.000Z".to_string(),
+            did: "did:plc:alice".to_string(),
+            rev: "3ksync".to_string(),
+            blocks: vec![0xCA, 0xFE, 0xBA, 0xBE],
+        }
+    }
+
+    #[test]
+    fn sync_frame_header_is_op1_sync() {
+        let frame = encode_sync_frame(&sample_sync());
+        let (header, _) = decode_frame(&frame);
+        assert_eq!(map_get(&header, "op"), &Ipld::Integer(1));
+        assert_eq!(map_get(&header, "t"), &Ipld::String("#sync".to_string()));
+    }
+
+    #[test]
+    fn sync_frame_body_carries_expected_fields() {
+        let event = sample_sync();
+        let frame = encode_sync_frame(&event);
+        let (_, body) = decode_frame(&frame);
+
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(12));
+        assert_eq!(
+            map_get(&body, "did"),
+            &Ipld::String("did:plc:alice".to_string())
+        );
+        assert_eq!(map_get(&body, "rev"), &Ipld::String("3ksync".to_string()));
+        assert_eq!(
+            map_get(&body, "time"),
+            &Ipld::String("2026-07-01T00:00:00.000Z".to_string())
+        );
+        // `blocks` is a byte string (the commit-block CAR), not an array of integers.
+        assert_eq!(
+            map_get(&body, "blocks"),
+            &Ipld::Bytes(vec![0xCA, 0xFE, 0xBA, 0xBE])
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_streams_sync_event_with_correct_wire_format() {
+        use crate::firehose::SyncInput;
+        let (url, firehose) = spawn_server().await;
+        let (mut ws, _resp) = connect_async(&url).await.expect("ws connect");
+        await_subscribers(&firehose, 1).await;
+
+        let seq = firehose
+            .emit_sync(SyncInput {
+                did: "did:plc:zoe".to_string(),
+                rev: "3kzoe".to_string(),
+                blocks: vec![1, 2, 3, 4],
+            })
+            .await
+            .expect("emit sync");
+
+        let (header, body) = decode_frame(&next_binary(&mut ws).await);
+        assert_eq!(map_get(&header, "op"), &Ipld::Integer(1));
+        assert_eq!(map_get(&header, "t"), &Ipld::String("#sync".to_string()));
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(seq as i128));
+        assert_eq!(
+            map_get(&body, "did"),
+            &Ipld::String("did:plc:zoe".to_string())
+        );
+        assert_eq!(map_get(&body, "rev"), &Ipld::String("3kzoe".to_string()));
+        assert_eq!(map_get(&body, "blocks"), &Ipld::Bytes(vec![1, 2, 3, 4]));
+    }
+
+    #[tokio::test]
+    async fn websocket_sync_event_is_replayed_by_cursor() {
+        use crate::firehose::SyncInput;
+        let (url, firehose) = spawn_server().await;
+
+        // Emit a #sync event before subscribing.
+        let seq = firehose
+            .emit_sync(SyncInput {
+                did: "did:plc:yan".to_string(),
+                rev: "3kyan".to_string(),
+                blocks: vec![9, 9, 9],
+            })
+            .await
+            .expect("emit sync");
+
+        // Subscribe from cursor 0 (before seq 1): the #sync event must be replayed from the log.
+        let (mut ws, _resp) = connect_async(format!("{url}?cursor=0"))
+            .await
+            .expect("ws connect");
+
+        let (header, body) = decode_frame(&next_binary(&mut ws).await);
+        assert_eq!(map_get(&header, "t"), &Ipld::String("#sync".to_string()));
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(seq as i128));
+        assert_eq!(map_get(&body, "blocks"), &Ipld::Bytes(vec![9, 9, 9]));
     }
 
     #[test]

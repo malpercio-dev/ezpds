@@ -713,6 +713,89 @@ mod tests {
         assert_eq!(roots[0].to_string(), event.commit);
     }
 
+    #[tokio::test]
+    async fn consecutive_commits_carry_chained_prev_data() {
+        // Sync v1.1 inductive validation: each commit's `prevData` must be the MST root (`data`)
+        // of the commit it supersedes. Across two consecutive writes, commit N+1's `prevData` must
+        // equal commit N's MST root, and the first write's `prevData` the seeded genesis root's.
+        use crate::firehose::FirehoseEvent;
+
+        let (state, did) = setup_account_with_repo().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        let db = state.db.clone();
+        let mut rx = state.firehose.subscribe();
+        let app = crate::app::app(state);
+
+        // The repo head (a genesis commit) before either write: its MST root is the first
+        // write's expected `prevData`.
+        let genesis_head: String =
+            sqlx::query_scalar("SELECT repo_root_cid FROM accounts WHERE did = ?")
+                .bind(&did)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        let mst_root = |cid: String| {
+            let db = db.clone();
+            let did = did.clone();
+            async move {
+                let store = crate::db::blocks::SqliteBlockStore::new(db, did);
+                let cid = repo_engine::Cid::try_from(cid.as_str()).unwrap();
+                let repo = repo_engine::Repository::open(store, cid).await.unwrap();
+                repo.commit().data().to_string()
+            }
+        };
+        let genesis_data = mst_root(genesis_head).await;
+
+        let write = |rkey: &str| {
+            let token = token.clone();
+            let did = did.clone();
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/xrpc/com.atproto.repo.createRecord")
+                .header("Content-Type", "application/json")
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::from(
+                    serde_json::to_string(&serde_json::json!({
+                        "repo": did,
+                        "collection": "app.bsky.feed.post",
+                        "rkey": rkey,
+                        "record": {"text": rkey}
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap()
+        };
+
+        // First write, then capture commit 1's MST root *before* the second write — post-commit GC
+        // reclaims the superseded commit's blocks, so commit 1's root is only readable while it is
+        // still the repo head.
+        let r1 = app.clone().oneshot(write("one")).await.unwrap();
+        assert_eq!(r1.status(), StatusCode::OK);
+        let FirehoseEvent::Commit(c1) = rx.try_recv().expect("first commit") else {
+            panic!("expected a #commit event");
+        };
+        assert_eq!(
+            c1.prev_data.as_deref(),
+            Some(genesis_data.as_str()),
+            "first commit's prevData must be the genesis MST root"
+        );
+        let c1_data = mst_root(c1.commit.clone()).await;
+
+        let r2 = app.oneshot(write("two")).await.unwrap();
+        assert_eq!(r2.status(), StatusCode::OK);
+        let FirehoseEvent::Commit(c2) = rx.try_recv().expect("second commit") else {
+            panic!("expected a #commit event");
+        };
+        // Second write supersedes the first: its prevData is commit 1's MST root, and its `since`
+        // the first commit's rev.
+        assert_eq!(
+            c2.prev_data.as_deref(),
+            Some(c1_data.as_str()),
+            "second commit's prevData must be the first commit's MST root"
+        );
+        assert_eq!(c2.since.as_deref(), Some(c1.rev.as_str()));
+    }
+
     #[test]
     fn generate_tid_produces_valid_format() {
         let tid = repo_engine::generate_tid();
