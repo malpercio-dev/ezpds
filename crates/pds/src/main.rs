@@ -15,6 +15,7 @@ mod dns;
 mod firehose;
 mod firehose_gc;
 mod handle;
+mod identity_resolution;
 mod iroh_tunnel;
 mod record_write;
 mod routes;

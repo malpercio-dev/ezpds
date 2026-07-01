@@ -40,6 +40,12 @@ pub enum ErrorCode {
     ClaimCodeRedeemed,
     /// The DID has already been fully promoted to an active account.
     DidAlreadyExists,
+    /// A DID resolution process confirmed that there is no current DID.
+    #[serde(rename = "DidNotFound")]
+    DidNotFound,
+    /// A DID previously existed but has been deactivated.
+    #[serde(rename = "DidDeactivated")]
+    DidDeactivated,
     /// The external PLC directory returned a non-success response.
     PlcDirectoryError,
     /// A configured DNS provider returned an error when creating a subdomain record.
@@ -116,6 +122,8 @@ impl ErrorCode {
             ErrorCode::InvalidHandle => 400,
             ErrorCode::ClaimCodeRedeemed => 409,
             ErrorCode::DidAlreadyExists => 409,
+            ErrorCode::DidNotFound => 404,
+            ErrorCode::DidDeactivated => 410,
             ErrorCode::PlcDirectoryError => 502,
             ErrorCode::DnsError => 502,
             ErrorCode::HandleNotFound => 404,
@@ -270,6 +278,17 @@ mod tests {
     }
 
     #[test]
+    fn did_resolution_errors_serialize_as_pascal_case() {
+        let err = ApiError::new(ErrorCode::DidNotFound, "DID not found");
+        let actual = serde_json::to_value(ApiErrorEnvelope { error: err }).unwrap();
+        assert_eq!(actual["error"]["code"], "DidNotFound");
+
+        let err = ApiError::new(ErrorCode::DidDeactivated, "DID deactivated");
+        let actual = serde_json::to_value(ApiErrorEnvelope { error: err }).unwrap();
+        assert_eq!(actual["error"]["code"], "DidDeactivated");
+    }
+
+    #[test]
     fn omits_details_when_absent() {
         let err = ApiError::new(ErrorCode::Forbidden, "access denied");
         let actual = serde_json::to_value(ApiErrorEnvelope { error: err }).unwrap();
@@ -295,6 +314,8 @@ mod tests {
             (ErrorCode::InvalidHandle, 400),
             (ErrorCode::ClaimCodeRedeemed, 409),
             (ErrorCode::DidAlreadyExists, 409),
+            (ErrorCode::DidNotFound, 404),
+            (ErrorCode::DidDeactivated, 410),
             (ErrorCode::PlcDirectoryError, 502),
             (ErrorCode::DnsError, 502),
             (ErrorCode::HandleNotFound, 404),

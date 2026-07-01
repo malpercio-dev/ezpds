@@ -70,6 +70,9 @@ use crate::routes::register_device::register_device;
 use crate::routes::request_password_reset::request_password_reset;
 use crate::routes::reset_password::reset_password;
 use crate::routes::resolve_handle::resolve_handle_handler;
+use crate::routes::resolve_identity::{
+    refresh_identity_handler, resolve_did_handler, resolve_identity_handler,
+};
 use crate::routes::revoke_app_password::revoke_app_password;
 use crate::routes::static_assets::static_handler;
 use crate::routes::sync_get_blocks::sync_get_blocks;
@@ -263,6 +266,18 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/xrpc/com.atproto.identity.resolveHandle",
             get(resolve_handle_handler),
+        )
+        .route(
+            "/xrpc/com.atproto.identity.resolveDid",
+            get(resolve_did_handler),
+        )
+        .route(
+            "/xrpc/com.atproto.identity.resolveIdentity",
+            get(resolve_identity_handler),
+        )
+        .route(
+            "/xrpc/com.atproto.identity.refreshIdentity",
+            post(refresh_identity_handler),
         )
         .route(
             "/xrpc/com.atproto.identity.updateHandle",
