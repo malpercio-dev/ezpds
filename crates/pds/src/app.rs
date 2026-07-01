@@ -51,6 +51,7 @@ use crate::routes::get_repo::get_repo;
 use crate::routes::get_repo_signing_key::get_repo_signing_key;
 use crate::routes::get_service_auth::get_service_auth;
 use crate::routes::get_session::get_session;
+use crate::routes::get_subject_status::get_subject_status;
 use crate::routes::health::health;
 use crate::routes::list_app_passwords::list_app_passwords_handler;
 use crate::routes::list_blobs::list_blobs;
@@ -84,6 +85,7 @@ use crate::routes::transfer_accept::transfer_accept;
 use crate::routes::transfer_complete::transfer_complete;
 use crate::routes::transfer_initiate::transfer_initiate;
 use crate::routes::update_handle::update_handle_handler;
+use crate::routes::update_subject_status::update_subject_status;
 use crate::routes::upload_blob::upload_blob;
 use crate::well_known::WellKnownResolver;
 
@@ -262,6 +264,16 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/xrpc/com.atproto.server.resetPassword",
             post(reset_password),
+        )
+        // Operator/moderation surface: account-level takedown. Admin-authed (master token or
+        // signed companion-app device request), unlike every other com.atproto.* route above.
+        .route(
+            "/xrpc/com.atproto.admin.updateSubjectStatus",
+            post(update_subject_status),
+        )
+        .route(
+            "/xrpc/com.atproto.admin.getSubjectStatus",
+            get(get_subject_status),
         )
         .route(
             "/xrpc/com.atproto.identity.resolveHandle",

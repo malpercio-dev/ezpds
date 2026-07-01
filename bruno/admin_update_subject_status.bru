@@ -1,0 +1,59 @@
+meta {
+  name: Admin Update Subject Status (admin.updateSubjectStatus)
+  type: http
+  seq: 67
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.admin.updateSubjectStatus
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+body:json {
+  {
+    "subject": {
+      "$type": "com.atproto.admin.defs#repoRef",
+      "did": "{{did}}"
+    },
+    "takedown": {
+      "applied": true
+    }
+  }
+}
+
+vars:pre-request {
+  did: did:plc:example
+}
+
+docs {
+  # POST /xrpc/com.atproto.admin.updateSubjectStatus
+
+  Apply or clear an account-level takedown. Admin-authed: the master token (shown
+  here) **or** an active operator companion-app device's signed request.
+
+  Request:
+  - `subject` — `com.atproto.admin.defs#repoRef` (`{$type, did}`). Record- and
+    blob-level subjects are not supported; ezpds only tracks lifecycle state
+    per-account.
+  - `takedown` — `com.atproto.admin.defs#statusAttr` (`{applied}`). Required; `ref`
+    is accepted for lexicon conformance but not persisted (no storage column).
+    `deactivated` is intentionally unsupported here — self-service deactivation
+    already has its own endpoint (`deactivateAccount`).
+
+  Response: the resulting `subject`/`takedown` status.
+
+  A taken-down account is rejected by the repo-write gate, `getSession`,
+  `createSession`, and the provisioning session login, exactly like a
+  self-service deactivation — and reports `active: false, status: "takendown"`
+  from `sync.getRepoStatus`. A real transition emits an `#account` firehose
+  event; the `active`/`status` reflect the account's full derived lifecycle
+  (takendown > suspended > deactivated precedence), since clearing a takedown
+  does not necessarily mean the account is active again. Idempotent: re-applying
+  (or re-clearing) an already-applied (or already-clear) takedown is a 200 no-op
+  that emits nothing. An unknown DID is a 404.
+}

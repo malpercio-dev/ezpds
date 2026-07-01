@@ -187,10 +187,11 @@ pub async fn apply_writes(
         })?
         .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
 
-    // A deactivated account is read-only: no writes until reactivated. Checked right after account
-    // existence — before the repo-root lookup — so a deactivated account is a 403 even if it never
-    // created a repo; only a truly missing account (handled above) is a 404. The CAS below also
-    // carries `deactivated_at IS NULL` to close the gap between this check and commit.
+    // A deactivated, suspended, or taken-down account is read-only: no writes until reactivated
+    // or the moderation action is cleared. Checked right after account existence — before the
+    // repo-root lookup — so a non-active account is a 403 even if it never created a repo; only a
+    // truly missing account (handled above) is a 404. The CAS below also carries the same
+    // lifecycle guard to close the gap between this check and commit.
     if !write_state.active {
         return Err(ApiError::new(
             ErrorCode::Forbidden,

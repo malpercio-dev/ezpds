@@ -30,7 +30,8 @@ pub(crate) struct SessionAccountRow {
 
 /// Fetch account info needed for `getSession` by DID.
 ///
-/// Returns `None` when the DID is not found or the account is deactivated.
+/// Returns `None` when the DID is not found or the account is not active (deactivated,
+/// suspended, or taken down).
 pub(crate) async fn get_session_account(
     db: &sqlx::SqlitePool,
     did: &str,
@@ -42,7 +43,8 @@ pub(crate) async fn get_session_account(
          FROM accounts a \
          LEFT JOIN handles h ON h.did = a.did \
          LEFT JOIN did_documents d ON d.did = a.did \
-         WHERE a.did = ? AND a.deactivated_at IS NULL \
+         WHERE a.did = ? AND a.deactivated_at IS NULL AND a.suspended_at IS NULL \
+           AND a.taken_down_at IS NULL \
          LIMIT 1",
     )
     .bind(did)
@@ -64,22 +66,27 @@ pub(crate) async fn get_session_account(
     ))
 }
 
-/// Return `true` when an active (non-deactivated) account exists for `did`.
+/// Return `true` when an active account exists for `did` (not deactivated, suspended, or
+/// taken down).
 ///
 /// Used by handlers that authenticate via JWT but still need to reject tokens whose
-/// underlying account has since been deactivated or removed — e.g. `getPreferences`,
-/// which otherwise has no reason to read the `accounts` table. Mirrors the
-/// `deactivated_at IS NULL` guard that `get_session_account` applies.
+/// underlying account has since lost active status or been removed — e.g. `getPreferences`,
+/// which otherwise has no reason to read the `accounts` table. Mirrors the lifecycle guard
+/// that `get_session_account` applies.
 pub(crate) async fn account_is_active(db: &sqlx::SqlitePool, did: &str) -> Result<bool, ApiError> {
-    let row: Option<(i64,)> =
-        sqlx::query_as("SELECT 1 FROM accounts WHERE did = ? AND deactivated_at IS NULL LIMIT 1")
-            .bind(did)
-            .fetch_optional(db)
-            .await
-            .map_err(|e| {
-                tracing::error!(did = %did, error = %e, "DB error checking account active state");
-                ApiError::new(ErrorCode::InternalError, "failed to load account")
-            })?;
+    let row: Option<(i64,)> = sqlx::query_as(
+        "SELECT 1 FROM accounts \
+         WHERE did = ? AND deactivated_at IS NULL AND suspended_at IS NULL \
+           AND taken_down_at IS NULL \
+         LIMIT 1",
+    )
+    .bind(did)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| {
+        tracing::error!(did = %did, error = %e, "DB error checking account active state");
+        ApiError::new(ErrorCode::InternalError, "failed to load account")
+    })?;
 
     Ok(row.is_some())
 }
@@ -203,6 +210,95 @@ pub(crate) async fn activate_account(
     })
 }
 
+/// Outcome of [`set_account_takedown`], carrying the account's full derived lifecycle after the
+/// write rather than just whether the takedown dimension itself changed.
+///
+/// Clearing a takedown does not necessarily return the account to `Active`: `suspended_at` or
+/// `deactivated_at` may still be set, and the caller's firehose `#account` event must reflect
+/// the account's true resulting state (per the takendown > suspended > deactivated precedence),
+/// not just this call's own dimension.
+pub(crate) enum TakedownStateChange {
+    /// No account row matched the DID.
+    NotFound,
+    /// The takedown flag was already at the requested value; nothing meaningful changed. The
+    /// carried lifecycle still reflects the account's current (unaffected) state.
+    Unchanged(AccountLifecycle),
+    /// `taken_down_at` transitioned (set or cleared). The carried lifecycle is the account's
+    /// state immediately after this write.
+    Changed(AccountLifecycle),
+}
+
+/// Apply or clear an account takedown, flipping `taken_down_at`.
+///
+/// Backs `com.atproto.admin.updateSubjectStatus`'s `takedown` field: `applied = true` sets
+/// `taken_down_at` (only if not already set); `applied = false` clears it (only if currently
+/// set). The transition result is derived from the write itself, mirroring
+/// [`deactivate_account`]/[`activate_account`] — a conditional UPDATE flips the column and
+/// reports [`TakedownStateChange::Changed`]; a redundant call (already at the target value)
+/// reports [`TakedownStateChange::Unchanged`]. Either way the row is read back afterward to
+/// derive the account's full [`AccountLifecycle`], since a lone `taken_down_at` flip does not
+/// determine the resulting `active`/`status` when `suspended_at`/`deactivated_at` may also be
+/// set.
+///
+/// Takes the caller's open transaction (see [`deactivate_account`]) so the status transition and
+/// its firehose `#account` event commit atomically.
+pub(crate) async fn set_account_takedown(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    did: &str,
+    applied: bool,
+) -> Result<TakedownStateChange, ApiError> {
+    let map_err = |e: sqlx::Error| {
+        tracing::error!(did = %did, error = %e, "DB error setting account takedown");
+        ApiError::new(ErrorCode::InternalError, "failed to update account status")
+    };
+
+    let transitioned = if applied {
+        sqlx::query(
+            "UPDATE accounts \
+             SET taken_down_at = datetime('now'), updated_at = datetime('now') \
+             WHERE did = ? AND taken_down_at IS NULL",
+        )
+        .bind(did)
+    } else {
+        sqlx::query(
+            "UPDATE accounts SET taken_down_at = NULL, updated_at = datetime('now') \
+             WHERE did = ? AND taken_down_at IS NOT NULL",
+        )
+        .bind(did)
+    }
+    .execute(&mut **tx)
+    .await
+    .map_err(&map_err)?;
+
+    let changed = transitioned.rows_affected() == 1;
+
+    // (deactivated_at, suspended_at, taken_down_at) — read back regardless of whether this call
+    // itself changed anything, so the caller always gets an accurate resulting lifecycle.
+    type Row = (Option<String>, Option<String>, Option<String>);
+    let row: Option<Row> = sqlx::query_as(
+        "SELECT deactivated_at, suspended_at, taken_down_at FROM accounts WHERE did = ?",
+    )
+    .bind(did)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(&map_err)?;
+
+    let Some((deactivated_at, suspended_at, taken_down_at)) = row else {
+        return Ok(TakedownStateChange::NotFound);
+    };
+    let lifecycle = AccountLifecycle::from_timestamps(
+        deactivated_at.as_deref(),
+        suspended_at.as_deref(),
+        taken_down_at.as_deref(),
+    );
+
+    Ok(if changed {
+        TakedownStateChange::Changed(lifecycle)
+    } else {
+        TakedownStateChange::Unchanged(lifecycle)
+    })
+}
+
 /// Classification of a `pending_accounts` UNIQUE constraint violation.
 ///
 /// Produced by [`classify_pending_account_conflict`] so callers don't repeat the
@@ -304,33 +400,51 @@ pub(crate) async fn account_last_active(
 
 /// Repo write preconditions for an account: its repo root CID and active status, fetched in one
 /// query. Backs the create/put/delete/applyWrites paths, which need both the CAS root and the
-/// deactivation gate — reading them together avoids a second round-trip against `accounts` and
+/// lifecycle gate — reading them together avoids a second round-trip against `accounts` and
 /// narrows the window between the active check and the commit CAS.
 pub(crate) struct RepoWriteState {
     /// Stored repo root commit CID, or `None` when the account exists but has no repo yet.
     pub(crate) repo_root_cid: Option<String>,
-    /// `true` when `deactivated_at` is NULL.
+    /// `true` when the account is not deactivated, suspended, or taken down.
     pub(crate) active: bool,
 }
 
 /// Fetch the repo root CID and active status for `did` in a single query.
 ///
 /// Returns `None` when no account row exists for `did` (the caller maps this to a 404, the same
-/// as a `None` `repo_root_cid`). `active` is derived from `deactivated_at`.
+/// as a `None` `repo_root_cid`). `active` is derived from `deactivated_at`/`suspended_at`/
+/// `taken_down_at` via [`AccountLifecycle`] — a takedown or suspension closes the repo to writes
+/// exactly like a self-service deactivation.
 pub(crate) async fn get_repo_write_state(
     db: &sqlx::SqlitePool,
     did: &str,
 ) -> Result<Option<RepoWriteState>, sqlx::Error> {
-    let row: Option<(Option<String>, Option<String>)> =
-        sqlx::query_as("SELECT repo_root_cid, deactivated_at FROM accounts WHERE did = ?")
-            .bind(did)
-            .fetch_optional(db)
-            .await?;
+    // (repo_root_cid, deactivated_at, suspended_at, taken_down_at)
+    type Row = (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+    let row: Option<Row> = sqlx::query_as(
+        "SELECT repo_root_cid, deactivated_at, suspended_at, taken_down_at \
+         FROM accounts WHERE did = ?",
+    )
+    .bind(did)
+    .fetch_optional(db)
+    .await?;
 
-    Ok(row.map(|(repo_root_cid, deactivated_at)| RepoWriteState {
-        repo_root_cid,
-        active: deactivated_at.is_none(),
-    }))
+    Ok(row.map(
+        |(repo_root_cid, deactivated_at, suspended_at, taken_down_at)| RepoWriteState {
+            repo_root_cid,
+            active: AccountLifecycle::from_timestamps(
+                deactivated_at.as_deref(),
+                suspended_at.as_deref(),
+                taken_down_at.as_deref(),
+            )
+            .is_active(),
+        },
+    ))
 }
 
 /// Advance an account's repo root with optimistic concurrency, only while it is still active.
@@ -338,11 +452,11 @@ pub(crate) async fn get_repo_write_state(
 /// The commit compare-and-swap shared by every write path (`createRecord`/`putRecord` via
 /// `record_write`, `deleteRecord`, `applyWrites`): set `repo_root_cid`/`repo_rev` to the new
 /// values, but only if the persisted root still equals `expected_root` *and* the account is not
-/// deactivated. Returns `true` when the swap landed (exactly one row updated) and `false` when it
-/// did not — a concurrent write moved the root, or the account was deactivated between the
-/// caller's active check and this commit. Callers map `false` to a 409 conflict. Single
-/// statement, so no transaction is opened here — generic over the executor so the caller can run
-/// it inside a transaction that also stages the firehose `#commit` row (see
+/// deactivated, suspended, or taken down. Returns `true` when the swap landed (exactly one row
+/// updated) and `false` when it did not — a concurrent write moved the root, or the account lost
+/// active status between the caller's active check and this commit. Callers map `false` to a 409
+/// conflict. Single statement, so no transaction is opened here — generic over the executor so
+/// the caller can run it inside a transaction that also stages the firehose `#commit` row (see
 /// `record_write::commit_repo_write`), making the CAS and the event commit atomically.
 pub(crate) async fn advance_repo_root_if_active<'e, E>(
     executor: E,
@@ -356,7 +470,8 @@ where
 {
     let updated = sqlx::query(
         "UPDATE accounts SET repo_root_cid = ?, repo_rev = ? \
-         WHERE did = ? AND repo_root_cid = ? AND deactivated_at IS NULL",
+         WHERE did = ? AND repo_root_cid = ? AND deactivated_at IS NULL \
+           AND suspended_at IS NULL AND taken_down_at IS NULL",
     )
     .bind(new_root)
     .bind(new_rev)
@@ -542,10 +657,10 @@ pub(crate) async fn get_repo_status(
     ))
 }
 
-/// Resolve an email address to an active (non-deactivated) account.
+/// Resolve an email address to an active account (not deactivated, suspended, or taken down).
 ///
 /// Used by the provisioning session login endpoint (`POST /v1/accounts/sessions`).
-/// Returns `None` when not found or deactivated; `Err` only on DB errors.
+/// Returns `None` when not found or not active; `Err` only on DB errors.
 pub(crate) async fn resolve_by_email(
     db: &sqlx::SqlitePool,
     email: &str,
@@ -554,7 +669,8 @@ pub(crate) async fn resolve_by_email(
         "SELECT a.did, a.password_hash, h.handle \
          FROM accounts a \
          LEFT JOIN handles h ON h.did = a.did \
-         WHERE a.email = ? AND a.deactivated_at IS NULL \
+         WHERE a.email = ? AND a.deactivated_at IS NULL AND a.suspended_at IS NULL \
+           AND a.taken_down_at IS NULL \
          LIMIT 1",
     )
     .bind(email)
@@ -575,9 +691,9 @@ pub(crate) async fn resolve_by_email(
     }))
 }
 
-/// Resolve a handle or DID to an active (non-deactivated) account.
+/// Resolve a handle or DID to an active account (not deactivated, suspended, or taken down).
 ///
-/// Returns `None` when not found; `Err` only on DB errors.
+/// Returns `None` when not found or not active; `Err` only on DB errors.
 pub(crate) async fn resolve_identifier(
     db: &sqlx::SqlitePool,
     identifier: &str,
@@ -587,7 +703,8 @@ pub(crate) async fn resolve_identifier(
             "SELECT a.email, a.password_hash, h.handle \
              FROM accounts a \
              LEFT JOIN handles h ON h.did = a.did \
-             WHERE a.did = ? AND a.deactivated_at IS NULL \
+             WHERE a.did = ? AND a.deactivated_at IS NULL AND a.suspended_at IS NULL \
+               AND a.taken_down_at IS NULL \
              LIMIT 1",
         )
         .bind(identifier)
@@ -609,7 +726,8 @@ pub(crate) async fn resolve_identifier(
             "SELECT a.did, a.email, a.password_hash, h.handle \
              FROM handles h \
              JOIN accounts a ON a.did = h.did \
-             WHERE h.handle = ? AND a.deactivated_at IS NULL \
+             WHERE h.handle = ? AND a.deactivated_at IS NULL AND a.suspended_at IS NULL \
+               AND a.taken_down_at IS NULL \
              LIMIT 1",
         )
         .bind(identifier)
@@ -1212,5 +1330,223 @@ mod tests {
             "deactivation must not clear repo_root_cid"
         );
         assert!(!state.active);
+    }
+
+    // ── get_repo_write_state / advance_repo_root_if_active lifecycle enforcement ──────────────
+
+    #[tokio::test]
+    async fn get_repo_write_state_suspended_account_is_not_active() {
+        let db = test_pool().await;
+        insert_account(&db, "did:plc:gs_susp").await;
+        set_lifecycle_column(&db, "did:plc:gs_susp", "suspended_at").await;
+
+        let state = get_repo_write_state(&db, "did:plc:gs_susp")
+            .await
+            .unwrap()
+            .expect("account exists");
+        assert!(
+            !state.active,
+            "a suspended account must report active=false"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_repo_write_state_takendown_account_is_not_active() {
+        let db = test_pool().await;
+        insert_account(&db, "did:plc:gs_td").await;
+        set_lifecycle_column(&db, "did:plc:gs_td", "taken_down_at").await;
+
+        let state = get_repo_write_state(&db, "did:plc:gs_td")
+            .await
+            .unwrap()
+            .expect("account exists");
+        assert!(
+            !state.active,
+            "a taken-down account must report active=false"
+        );
+    }
+
+    #[tokio::test]
+    async fn advance_repo_root_if_active_rejects_suspended_account() {
+        let db = test_pool().await;
+        let cid = "bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uwrf3e2o6cw3djmprrm";
+        insert_account_with_repo(&db, "did:plc:cas_susp", cid).await;
+        set_lifecycle_column(&db, "did:plc:cas_susp", "suspended_at").await;
+
+        let swapped =
+            advance_repo_root_if_active(&db, "did:plc:cas_susp", "new-root", "rev-1", cid)
+                .await
+                .unwrap();
+        assert!(
+            !swapped,
+            "the commit CAS must not advance the root for a suspended account"
+        );
+    }
+
+    #[tokio::test]
+    async fn advance_repo_root_if_active_rejects_takendown_account() {
+        let db = test_pool().await;
+        let cid = "bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uwrf3e2o6cw3djmprrm";
+        insert_account_with_repo(&db, "did:plc:cas_td", cid).await;
+        set_lifecycle_column(&db, "did:plc:cas_td", "taken_down_at").await;
+
+        let swapped = advance_repo_root_if_active(&db, "did:plc:cas_td", "new-root", "rev-1", cid)
+            .await
+            .unwrap();
+        assert!(
+            !swapped,
+            "the commit CAS must not advance the root for a taken-down account"
+        );
+    }
+
+    // ── login/session lifecycle enforcement ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn resolve_identifier_by_did_excludes_suspended_account() {
+        let db = test_pool().await;
+        insert_account(&db, "did:plc:ri_susp").await;
+        set_lifecycle_column(&db, "did:plc:ri_susp", "suspended_at").await;
+
+        assert!(resolve_identifier(&db, "did:plc:ri_susp")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_identifier_by_did_excludes_takendown_account() {
+        let db = test_pool().await;
+        insert_account(&db, "did:plc:ri_td").await;
+        set_lifecycle_column(&db, "did:plc:ri_td", "taken_down_at").await;
+
+        assert!(resolve_identifier(&db, "did:plc:ri_td")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn get_session_account_excludes_takendown_account() {
+        let db = test_pool().await;
+        insert_account(&db, "did:plc:gsa_td").await;
+        set_lifecycle_column(&db, "did:plc:gsa_td", "taken_down_at").await;
+
+        assert!(get_session_account(&db, "did:plc:gsa_td")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn account_is_active_false_for_suspended_and_takendown() {
+        let db = test_pool().await;
+        insert_account(&db, "did:plc:aia_susp").await;
+        set_lifecycle_column(&db, "did:plc:aia_susp", "suspended_at").await;
+        assert!(!account_is_active(&db, "did:plc:aia_susp").await.unwrap());
+
+        insert_account(&db, "did:plc:aia_td").await;
+        set_lifecycle_column(&db, "did:plc:aia_td", "taken_down_at").await;
+        assert!(!account_is_active(&db, "did:plc:aia_td").await.unwrap());
+    }
+
+    // ── set_account_takedown ───────────────────────────────────────────────────────────────────
+
+    /// Run [`set_account_takedown`] in its own committed transaction (see [`deactivate`]).
+    async fn set_takedown(db: &sqlx::SqlitePool, did: &str, applied: bool) -> TakedownStateChange {
+        let mut tx = db.begin().await.unwrap();
+        let result = set_account_takedown(&mut tx, did, applied).await.unwrap();
+        tx.commit().await.unwrap();
+        result
+    }
+
+    #[tokio::test]
+    async fn set_account_takedown_applies_to_active_account() {
+        let db = test_pool().await;
+        insert_account(&db, "did:plc:td_a").await;
+
+        let result = set_takedown(&db, "did:plc:td_a", true).await;
+        assert!(matches!(
+            result,
+            TakedownStateChange::Changed(AccountLifecycle::TakenDown)
+        ));
+
+        let taken_down_at: Option<String> =
+            sqlx::query_scalar("SELECT taken_down_at FROM accounts WHERE did = ?")
+                .bind("did:plc:td_a")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(taken_down_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn set_account_takedown_reapplying_is_unchanged() {
+        let db = test_pool().await;
+        insert_account(&db, "did:plc:td_b").await;
+        set_takedown(&db, "did:plc:td_b", true).await;
+
+        let result = set_takedown(&db, "did:plc:td_b", true).await;
+        assert!(matches!(
+            result,
+            TakedownStateChange::Unchanged(AccountLifecycle::TakenDown)
+        ));
+    }
+
+    #[tokio::test]
+    async fn set_account_takedown_clears_and_returns_active() {
+        let db = test_pool().await;
+        insert_account(&db, "did:plc:td_c").await;
+        set_takedown(&db, "did:plc:td_c", true).await;
+
+        let result = set_takedown(&db, "did:plc:td_c", false).await;
+        assert!(matches!(
+            result,
+            TakedownStateChange::Changed(AccountLifecycle::Active)
+        ));
+
+        let taken_down_at: Option<String> =
+            sqlx::query_scalar("SELECT taken_down_at FROM accounts WHERE did = ?")
+                .bind("did:plc:td_c")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(taken_down_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn set_account_takedown_clearing_reveals_underlying_suspension() {
+        // Clearing a takedown must not report Active if the account is still suspended — the
+        // caller's #account event has to reflect the true resulting lifecycle, not just this
+        // call's own dimension.
+        let db = test_pool().await;
+        insert_account(&db, "did:plc:td_d").await;
+        set_lifecycle_column(&db, "did:plc:td_d", "suspended_at").await;
+        set_takedown(&db, "did:plc:td_d", true).await;
+
+        let result = set_takedown(&db, "did:plc:td_d", false).await;
+        assert!(matches!(
+            result,
+            TakedownStateChange::Changed(AccountLifecycle::Suspended)
+        ));
+    }
+
+    #[tokio::test]
+    async fn set_account_takedown_clearing_when_not_applied_is_unchanged() {
+        let db = test_pool().await;
+        insert_account(&db, "did:plc:td_e").await;
+
+        let result = set_takedown(&db, "did:plc:td_e", false).await;
+        assert!(matches!(
+            result,
+            TakedownStateChange::Unchanged(AccountLifecycle::Active)
+        ));
+    }
+
+    #[tokio::test]
+    async fn set_account_takedown_missing_did_returns_not_found() {
+        let db = test_pool().await;
+
+        let result = set_takedown(&db, "did:plc:td_ghost", true).await;
+        assert!(matches!(result, TakedownStateChange::NotFound));
     }
 }

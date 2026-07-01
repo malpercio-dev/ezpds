@@ -1,0 +1,41 @@
+meta {
+  name: Admin Get Subject Status (admin.getSubjectStatus)
+  type: http
+  seq: 68
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.admin.getSubjectStatus?did={{did}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+params:query {
+  did: {{did}}
+}
+
+vars:pre-request {
+  did: did:plc:example
+}
+
+docs {
+  # GET /xrpc/com.atproto.admin.getSubjectStatus
+
+  Report an account's current takedown status. Admin-authed: the master token
+  (shown here) **or** an active operator companion-app device's signed request.
+
+  Query:
+  - `did` — the subject account. Only the `com.atproto.admin.defs#repoRef`
+    subject kind (account-level) is supported.
+
+  Response:
+  - `subject` — `{$type: "com.atproto.admin.defs#repoRef", did}`.
+  - `takedown` — `{applied}`, `true` only when the account is currently taken
+    down (not merely suspended or deactivated).
+
+  A non-existent DID is a 404; an invalid DID is a 400.
+}
