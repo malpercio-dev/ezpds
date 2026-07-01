@@ -75,6 +75,7 @@ use crate::routes::sync_subscribe_repos::subscribe_repos;
 use crate::routes::transfer_accept::transfer_accept;
 use crate::routes::transfer_complete::transfer_complete;
 use crate::routes::transfer_initiate::transfer_initiate;
+use crate::routes::update_handle::update_handle_handler;
 use crate::routes::upload_blob::upload_blob;
 use crate::well_known::WellKnownResolver;
 
@@ -241,6 +242,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/xrpc/com.atproto.identity.resolveHandle",
             get(resolve_handle_handler),
+        )
+        .route(
+            "/xrpc/com.atproto.identity.updateHandle",
+            post(update_handle_handler),
         )
         .route("/xrpc/com.atproto.repo.uploadBlob", post(upload_blob))
         .route("/xrpc/com.atproto.sync.getBlob", get(get_blob))

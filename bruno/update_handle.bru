@@ -1,0 +1,42 @@
+meta {
+  name: Update Handle (updateHandle)
+  type: http
+  seq: 58
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.identity.updateHandle
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+body:json {
+  {
+    "handle": "{{newHandle}}"
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  accessJwt:
+  newHandle: bob.example.com
+}
+
+docs {
+  Changes the authenticated account's handle. Validates the new handle resolves back to the
+  caller's DID (local DB → DNS TXT → well-known), then swaps the handles table row and updates
+  the DID document's `alsoKnownAs`. Emits an `#identity` firehose frame so relays/AppViews
+  re-resolve the new handle.
+
+  Requires a full access-scope token. Returns 200 with an empty body `{}`.
+
+  Errors:
+  - 400 INVALID_HANDLE: handle format is invalid (e.g. bare label)
+  - 400 HANDLE_RESOLUTION_FAILED: new handle does not resolve to the authenticated DID
+  - 401 INVALID_TOKEN: missing, expired, or wrong-scope token
+  - 409 HANDLE_TAKEN: new handle is already owned by a different account
+}
