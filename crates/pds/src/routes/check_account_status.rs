@@ -83,7 +83,7 @@ pub async fn check_account_status(
 
     // ── 3. Repo block count ───────────────────────────────────────────────
 
-    let repo_blocks = crate::db::blocks::account_block_stats(&state.db, did)
+    let stored_blocks = crate::db::blocks::account_block_stats(&state.db, did)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, "failed to fetch block stats");
@@ -117,7 +117,7 @@ pub async fn check_account_status(
             valid_did,
             repo_commit,
             repo_rev,
-            stored_blocks: repo_blocks,
+            stored_blocks,
             indexed_records,
             private_state_values: 0,
             expected_blobs,
