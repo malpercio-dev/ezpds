@@ -15,5 +15,3 @@ CREATE TABLE reserved_signing_keys (
     created_at            TEXT NOT NULL,
     PRIMARY KEY (id)
 );
-
-CREATE INDEX idx_reserved_signing_keys_did ON reserved_signing_keys (did);

@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
+use crate::auth::rate_limit::{is_rate_limited, record_failure};
+use crate::auth::validation::lock_failed_login_attempts;
 use crate::db::repo_keys::{
     get_reserved_repo_key_by_did, insert_reserved_repo_key, RepoSigningKey,
 };
@@ -27,6 +29,8 @@ pub struct ReserveSigningKeyRequest {
 pub struct ReserveSigningKeyResponse {
     signing_key: String,
 }
+
+const ANONYMOUS_RESERVE_SIGNING_KEY_LIMIT: &str = "reserveSigningKey:<anonymous>";
 
 pub async fn reserve_signing_key(
     State(state): State<AppState>,
@@ -50,6 +54,8 @@ pub async fn reserve_signing_key(
                 signing_key: existing.key_id,
             }));
         }
+    } else {
+        check_anonymous_reservation_limit(&state)?;
     }
 
     let key = generate_reserved_key(&state)?;
@@ -61,7 +67,10 @@ pub async fn reserve_signing_key(
         })?;
 
     if !inserted {
-        let did = did.expect("only DID-keyed reservations can conflict");
+        let did = did.ok_or_else(|| {
+            tracing::error!("reserved signing-key insert conflicted without a DID");
+            ApiError::new(ErrorCode::InternalError, "failed to reserve signing key")
+        })?;
         let existing = get_reserved_repo_key_by_did(&state.db, did)
             .await
             .map_err(|e| {
@@ -83,7 +92,7 @@ pub async fn reserve_signing_key(
 }
 
 fn validate_did(did: &str) -> Result<(), ApiError> {
-    if did.starts_with("did:") && !did.chars().any(char::is_whitespace) {
+    if is_valid_did_syntax(did) {
         return Ok(());
     }
 
@@ -91,6 +100,58 @@ fn validate_did(did: &str) -> Result<(), ApiError> {
         ErrorCode::InvalidRequest,
         "did must be a valid DID string",
     ))
+}
+
+fn is_valid_did_syntax(did: &str) -> bool {
+    let Some(rest) = did.strip_prefix("did:") else {
+        return false;
+    };
+    let Some((method, method_specific_id)) = rest.split_once(':') else {
+        return false;
+    };
+    if method.is_empty()
+        || method_specific_id.is_empty()
+        || !method
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    {
+        return false;
+    }
+
+    let mut bytes = method_specific_id.bytes().peekable();
+    while let Some(byte) = bytes.next() {
+        match byte {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'-' | b'_' | b':' => {}
+            b'%' => {
+                let Some(high) = bytes.next() else {
+                    return false;
+                };
+                let Some(low) = bytes.next() else {
+                    return false;
+                };
+                if !high.is_ascii_hexdigit() || !low.is_ascii_hexdigit() {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
+fn check_anonymous_reservation_limit(state: &AppState) -> Result<(), ApiError> {
+    let mut attempts = lock_failed_login_attempts(
+        &state.failed_login_attempts,
+        Some("reserve_signing_key_anonymous"),
+    )?;
+    if is_rate_limited(&mut attempts, ANONYMOUS_RESERVE_SIGNING_KEY_LIMIT) {
+        return Err(ApiError::new(
+            ErrorCode::RateLimited,
+            "too many anonymous signing key reservations",
+        ));
+    }
+    record_failure(&mut attempts, ANONYMOUS_RESERVE_SIGNING_KEY_LIMIT);
+    Ok(())
 }
 
 fn generate_reserved_key(state: &AppState) -> Result<RepoSigningKey, ApiError> {
@@ -135,6 +196,7 @@ mod tests {
     use common::Sensitive;
 
     use crate::app::{app, test_state, AppState};
+    use crate::auth::rate_limit::RATE_LIMIT_MAX_FAILURES;
 
     async fn state_with_master_key() -> AppState {
         let base = test_state().await;
@@ -228,16 +290,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn anonymous_reservations_are_rate_limited() {
+        let state = state_with_master_key().await;
+        let app = app(state);
+
+        for _ in 0..RATE_LIMIT_MAX_FAILURES {
+            let resp = app
+                .clone()
+                .oneshot(post_req(serde_json::json!({})))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
+
+        let resp = app.oneshot(post_req(serde_json::json!({}))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
     async fn invalid_did_returns_400() {
         let state = state_with_master_key().await;
         let app = app(state);
 
-        let resp = app
-            .oneshot(post_req(serde_json::json!({"did":"not a did"})))
-            .await
-            .unwrap();
+        for did in ["not a did", "did:", "did::", "did:plc:", "did:PLC:abc"] {
+            let resp = app
+                .clone()
+                .oneshot(post_req(serde_json::json!({"did": did})))
+                .await
+                .unwrap();
 
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "did={did}");
+        }
     }
 
     #[tokio::test]
