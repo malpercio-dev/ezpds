@@ -5,7 +5,7 @@
 // V028__repo_seq.sql for the schema rationale; the sequencer that drives these queries lives
 // in `firehose.rs`.
 
-use sqlx::SqlitePool;
+use sqlx::{Sqlite, SqlitePool};
 
 /// One persisted firehose event, as read back for cursor replay.
 ///
@@ -37,14 +37,21 @@ pub async fn max_seq(db: &SqlitePool) -> Result<u64, sqlx::Error> {
 /// not consume a number; the caller persists *before* broadcasting, so every value visible to
 /// a live subscriber is already durable here. A duplicate `seq` is a sequencer bug and surfaces
 /// as a PRIMARY KEY violation rather than being silently ignored.
-pub async fn insert_event(
-    db: &SqlitePool,
+///
+/// Generic over the executor so the sequencer can insert this row into a caller-owned
+/// transaction (making it commit atomically with, e.g., the repo-root CAS) as well as against
+/// the bare pool.
+pub async fn insert_event<'e, E>(
+    executor: E,
     seq: u64,
     did: &str,
     event_type: &str,
     event: &[u8],
     sequenced_at: &str,
-) -> Result<(), sqlx::Error> {
+) -> Result<(), sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     // `seq` is assigned by our own sequencer and never legitimately exceeds i64::MAX, but reject
     // rather than silently wrap (a wrapped negative would corrupt the ordering the PK enforces).
     let seq = i64::try_from(seq)
@@ -58,7 +65,7 @@ pub async fn insert_event(
     .bind(event_type)
     .bind(event)
     .bind(sequenced_at)
-    .execute(db)
+    .execute(executor)
     .await?;
     Ok(())
 }

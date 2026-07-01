@@ -4,6 +4,7 @@
 // returns plain data structs. No business logic — callers decide what to do with the result.
 
 use common::{ApiError, ErrorCode};
+use sqlx::Sqlite;
 
 /// Flat account row returned by `resolve_identifier`.
 pub(crate) struct AccountRow {
@@ -103,11 +104,13 @@ pub(crate) enum AccountStateChange {
 /// derived from the writes themselves, not a pre-read: a conditional UPDATE flips an *active*
 /// account and reports [`AccountStateChange::Changed`]; if nothing flipped, a second UPDATE
 /// refreshes `delete_after` on an already-deactivated account (preserving the original
-/// `deactivated_at`) and reports `Unchanged`, or matches nothing and reports `NotFound`. The two
-/// statements run in one transaction so the outcome is atomic. `accounts` is the only table
-/// touched, so opening a transaction here is within the single-table allowance.
+/// `deactivated_at`) and reports `Unchanged`, or matches nothing and reports `NotFound`.
+///
+/// Takes the caller's open transaction rather than opening its own: the route handler commits it
+/// only after also deciding whether to stage a firehose `#account` event in the same transaction
+/// (on `Changed`), so the status transition and the event either land together or not at all.
 pub(crate) async fn deactivate_account(
-    db: &sqlx::SqlitePool,
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
     did: &str,
     delete_after: Option<&str>,
 ) -> Result<AccountStateChange, ApiError> {
@@ -115,8 +118,6 @@ pub(crate) async fn deactivate_account(
         tracing::error!(did = %did, error = %e, "DB error deactivating account");
         ApiError::new(ErrorCode::InternalError, "failed to deactivate account")
     };
-
-    let mut tx = db.begin().await.map_err(&map_err)?;
 
     // Transition: only an active account (deactivated_at IS NULL) flips here, so rows_affected == 1
     // means this call performed the real active → deactivated transition.
@@ -127,12 +128,11 @@ pub(crate) async fn deactivate_account(
     )
     .bind(delete_after)
     .bind(did)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await
     .map_err(&map_err)?;
 
     if transitioned.rows_affected() == 1 {
-        tx.commit().await.map_err(&map_err)?;
         return Ok(AccountStateChange::Changed);
     }
 
@@ -143,11 +143,9 @@ pub(crate) async fn deactivate_account(
     )
     .bind(delete_after)
     .bind(did)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await
     .map_err(&map_err)?;
-
-    tx.commit().await.map_err(&map_err)?;
 
     Ok(if refreshed.rows_affected() == 1 {
         AccountStateChange::Unchanged
@@ -164,8 +162,11 @@ pub(crate) async fn deactivate_account(
 /// already-active account (`Unchanged`, no firehose event) from a missing one (`NotFound`). A
 /// stale read there can only yield `Unchanged`/`NotFound` — both no-emit outcomes — so it cannot
 /// cause a spurious `#account` event.
+///
+/// Takes the caller's open transaction (see [`deactivate_account`]) rather than the pool, so a
+/// `Changed` outcome can stage a firehose `#account` event in the same transaction before commit.
 pub(crate) async fn activate_account(
-    db: &sqlx::SqlitePool,
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
     did: &str,
 ) -> Result<AccountStateChange, ApiError> {
     let map_err = |e: sqlx::Error| {
@@ -181,7 +182,7 @@ pub(crate) async fn activate_account(
          WHERE did = ? AND deactivated_at IS NOT NULL",
     )
     .bind(did)
-    .execute(db)
+    .execute(&mut **tx)
     .await
     .map_err(&map_err)?;
 
@@ -191,7 +192,7 @@ pub(crate) async fn activate_account(
 
     let exists: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM accounts WHERE did = ? LIMIT 1")
         .bind(did)
-        .fetch_optional(db)
+        .fetch_optional(&mut **tx)
         .await
         .map_err(&map_err)?;
 
@@ -339,15 +340,20 @@ pub(crate) async fn get_repo_write_state(
 /// values, but only if the persisted root still equals `expected_root` *and* the account is not
 /// deactivated. Returns `true` when the swap landed (exactly one row updated) and `false` when it
 /// did not — a concurrent write moved the root, or the account was deactivated between the
-/// caller's active check and this commit. Callers map `false` to a 409 conflict. Single-table, so
-/// no transaction is opened here.
-pub(crate) async fn advance_repo_root_if_active(
-    db: &sqlx::SqlitePool,
+/// caller's active check and this commit. Callers map `false` to a 409 conflict. Single
+/// statement, so no transaction is opened here — generic over the executor so the caller can run
+/// it inside a transaction that also stages the firehose `#commit` row (see
+/// `record_write::commit_repo_write`), making the CAS and the event commit atomically.
+pub(crate) async fn advance_repo_root_if_active<'e, E>(
+    executor: E,
     did: &str,
     new_root: &str,
     new_rev: &str,
     expected_root: &str,
-) -> Result<bool, sqlx::Error> {
+) -> Result<bool, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     let updated = sqlx::query(
         "UPDATE accounts SET repo_root_cid = ?, repo_rev = ? \
          WHERE did = ? AND repo_root_cid = ? AND deactivated_at IS NULL",
@@ -356,7 +362,7 @@ pub(crate) async fn advance_repo_root_if_active(
     .bind(new_rev)
     .bind(did)
     .bind(expected_root)
-    .execute(db)
+    .execute(executor)
     .await?;
 
     Ok(updated.rows_affected() == 1)
@@ -664,6 +670,31 @@ mod tests {
         .unwrap();
     }
 
+    /// Run [`deactivate_account`] in its own committed transaction — production callers hold the
+    /// transaction open to also stage a firehose event, but these tests only exercise the DB
+    /// state transition, so wrapping and committing here keeps the individual test bodies calling
+    /// it exactly as before the tx-taking signature change.
+    async fn deactivate(
+        db: &sqlx::SqlitePool,
+        did: &str,
+        delete_after: Option<&str>,
+    ) -> AccountStateChange {
+        let mut tx = db.begin().await.unwrap();
+        let result = deactivate_account(&mut tx, did, delete_after)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        result
+    }
+
+    /// Run [`activate_account`] in its own committed transaction (see [`deactivate`]).
+    async fn activate(db: &sqlx::SqlitePool, did: &str) -> AccountStateChange {
+        let mut tx = db.begin().await.unwrap();
+        let result = activate_account(&mut tx, did).await.unwrap();
+        tx.commit().await.unwrap();
+        result
+    }
+
     // ── deactivate_account ────────────────────────────────────────────────────
 
     #[tokio::test]
@@ -671,9 +702,7 @@ mod tests {
         let db = test_pool().await;
         insert_account(&db, "did:plc:a").await;
 
-        let result = deactivate_account(&db, "did:plc:a", None)
-            .await
-            .expect("no DB error");
+        let result = deactivate(&db, "did:plc:a", None).await;
         assert!(
             matches!(result, AccountStateChange::Changed),
             "first deactivation must return Changed"
@@ -685,7 +714,7 @@ mod tests {
         let db = test_pool().await;
         insert_account(&db, "did:plc:b").await;
 
-        deactivate_account(&db, "did:plc:b", None).await.unwrap();
+        deactivate(&db, "did:plc:b", None).await;
 
         let deactivated_at: Option<String> =
             sqlx::query_scalar("SELECT deactivated_at FROM accounts WHERE did = ?")
@@ -704,9 +733,7 @@ mod tests {
         let db = test_pool().await;
         insert_account(&db, "did:plc:c").await;
 
-        deactivate_account(&db, "did:plc:c", Some("2030-01-01T00:00:00Z"))
-            .await
-            .unwrap();
+        deactivate(&db, "did:plc:c", Some("2030-01-01T00:00:00Z")).await;
 
         let stored: Option<String> =
             sqlx::query_scalar("SELECT delete_after FROM accounts WHERE did = ?")
@@ -726,7 +753,7 @@ mod tests {
         let db = test_pool().await;
         insert_account(&db, "did:plc:d").await;
 
-        deactivate_account(&db, "did:plc:d", None).await.unwrap();
+        deactivate(&db, "did:plc:d", None).await;
 
         let stored: Option<String> =
             sqlx::query_scalar("SELECT delete_after FROM accounts WHERE did = ?")
@@ -742,10 +769,8 @@ mod tests {
         let db = test_pool().await;
         insert_account(&db, "did:plc:e").await;
 
-        deactivate_account(&db, "did:plc:e", None).await.unwrap();
-        let result = deactivate_account(&db, "did:plc:e", None)
-            .await
-            .expect("no DB error");
+        deactivate(&db, "did:plc:e", None).await;
+        let result = deactivate(&db, "did:plc:e", None).await;
         assert!(
             matches!(result, AccountStateChange::Unchanged),
             "re-deactivating an already-deactivated account must return Unchanged"
@@ -757,7 +782,7 @@ mod tests {
         let db = test_pool().await;
         insert_account(&db, "did:plc:f").await;
 
-        deactivate_account(&db, "did:plc:f", None).await.unwrap();
+        deactivate(&db, "did:plc:f", None).await;
 
         // Pin the deactivation instant to a known sentinel so the assertion does not depend on
         // `datetime('now')`'s one-second granularity (which a short sleep could not outrun).
@@ -771,9 +796,7 @@ mod tests {
 
         // Re-deactivate with a new delete_after: the transition path must not fire, so the
         // original deactivated_at sentinel must survive untouched.
-        deactivate_account(&db, "did:plc:f", Some("2031-06-01T00:00:00Z"))
-            .await
-            .unwrap();
+        deactivate(&db, "did:plc:f", Some("2031-06-01T00:00:00Z")).await;
         let deactivated_at: Option<String> =
             sqlx::query_scalar("SELECT deactivated_at FROM accounts WHERE did = ?")
                 .bind("did:plc:f")
@@ -793,12 +816,8 @@ mod tests {
         let db = test_pool().await;
         insert_account(&db, "did:plc:g").await;
 
-        deactivate_account(&db, "did:plc:g", Some("2030-01-01T00:00:00Z"))
-            .await
-            .unwrap();
-        deactivate_account(&db, "did:plc:g", Some("2031-06-15T12:00:00Z"))
-            .await
-            .unwrap();
+        deactivate(&db, "did:plc:g", Some("2030-01-01T00:00:00Z")).await;
+        deactivate(&db, "did:plc:g", Some("2031-06-15T12:00:00Z")).await;
 
         let stored: Option<String> =
             sqlx::query_scalar("SELECT delete_after FROM accounts WHERE did = ?")
@@ -817,9 +836,7 @@ mod tests {
     async fn deactivate_missing_did_returns_not_found() {
         let db = test_pool().await;
 
-        let result = deactivate_account(&db, "did:plc:ghost", None)
-            .await
-            .expect("no DB error");
+        let result = deactivate(&db, "did:plc:ghost", None).await;
         assert!(
             matches!(result, AccountStateChange::NotFound),
             "a DID with no account row must return NotFound"
@@ -832,11 +849,9 @@ mod tests {
     async fn activate_deactivated_account_returns_changed() {
         let db = test_pool().await;
         insert_account(&db, "did:plc:h").await;
-        deactivate_account(&db, "did:plc:h", None).await.unwrap();
+        deactivate(&db, "did:plc:h", None).await;
 
-        let result = activate_account(&db, "did:plc:h")
-            .await
-            .expect("no DB error");
+        let result = activate(&db, "did:plc:h").await;
         assert!(
             matches!(result, AccountStateChange::Changed),
             "activating a deactivated account must return Changed"
@@ -847,9 +862,9 @@ mod tests {
     async fn activate_clears_deactivated_at() {
         let db = test_pool().await;
         insert_account(&db, "did:plc:i").await;
-        deactivate_account(&db, "did:plc:i", None).await.unwrap();
+        deactivate(&db, "did:plc:i", None).await;
 
-        activate_account(&db, "did:plc:i").await.unwrap();
+        activate(&db, "did:plc:i").await;
 
         let deactivated_at: Option<String> =
             sqlx::query_scalar("SELECT deactivated_at FROM accounts WHERE did = ?")
@@ -867,11 +882,9 @@ mod tests {
     async fn activate_clears_delete_after() {
         let db = test_pool().await;
         insert_account(&db, "did:plc:j").await;
-        deactivate_account(&db, "did:plc:j", Some("2030-01-01T00:00:00Z"))
-            .await
-            .unwrap();
+        deactivate(&db, "did:plc:j", Some("2030-01-01T00:00:00Z")).await;
 
-        activate_account(&db, "did:plc:j").await.unwrap();
+        activate(&db, "did:plc:j").await;
 
         let delete_after: Option<String> =
             sqlx::query_scalar("SELECT delete_after FROM accounts WHERE did = ?")
@@ -890,9 +903,7 @@ mod tests {
         let db = test_pool().await;
         insert_account(&db, "did:plc:k").await;
 
-        let result = activate_account(&db, "did:plc:k")
-            .await
-            .expect("no DB error");
+        let result = activate(&db, "did:plc:k").await;
         assert!(
             matches!(result, AccountStateChange::Unchanged),
             "activating an already-active account must return Unchanged"
@@ -903,9 +914,7 @@ mod tests {
     async fn activate_missing_did_returns_not_found() {
         let db = test_pool().await;
 
-        let result = activate_account(&db, "did:plc:ghost2")
-            .await
-            .expect("no DB error");
+        let result = activate(&db, "did:plc:ghost2").await;
         assert!(
             matches!(result, AccountStateChange::NotFound),
             "a DID with no account row must return NotFound"
@@ -916,13 +925,13 @@ mod tests {
     async fn activate_makes_account_is_active_return_true() {
         let db = test_pool().await;
         insert_account(&db, "did:plc:l").await;
-        deactivate_account(&db, "did:plc:l", None).await.unwrap();
+        deactivate(&db, "did:plc:l", None).await;
         assert!(
             !account_is_active(&db, "did:plc:l").await.unwrap(),
             "account_is_active must be false after deactivation"
         );
 
-        activate_account(&db, "did:plc:l").await.unwrap();
+        activate(&db, "did:plc:l").await;
         assert!(
             account_is_active(&db, "did:plc:l").await.unwrap(),
             "account_is_active must be true after activation"
@@ -960,7 +969,7 @@ mod tests {
         // deactivated account.
         let db = test_pool().await;
         insert_account(&db, "did:plc:ovde").await;
-        deactivate_account(&db, "did:plc:ovde", None).await.unwrap();
+        deactivate(&db, "did:plc:ovde", None).await;
 
         assert!(get_account_overview(&db, "did:plc:ovde")
             .await
@@ -1031,7 +1040,7 @@ mod tests {
     async fn get_repo_write_state_deactivated_account_is_not_active() {
         let db = test_pool().await;
         insert_account(&db, "did:plc:n").await;
-        deactivate_account(&db, "did:plc:n", None).await.unwrap();
+        deactivate(&db, "did:plc:n", None).await;
 
         let state = get_repo_write_state(&db, "did:plc:n")
             .await
@@ -1191,7 +1200,7 @@ mod tests {
         let db = test_pool().await;
         let cid = "bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uwrf3e2o6cw3djmprrm";
         insert_account_with_repo(&db, "did:plc:q", cid).await;
-        deactivate_account(&db, "did:plc:q", None).await.unwrap();
+        deactivate(&db, "did:plc:q", None).await;
 
         let state = get_repo_write_state(&db, "did:plc:q")
             .await

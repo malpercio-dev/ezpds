@@ -80,32 +80,52 @@ pub async fn deactivate_account_handler(
 
     let delete_after = parse_optional_delete_after(&body)?;
 
-    match deactivate_account(&state.db, &user.did, delete_after.as_deref()).await? {
+    // Open a transaction so the status transition and its firehose `#account` event (if any)
+    // commit atomically — a durable status change must never end up without a corresponding
+    // durable firehose row (see `Firehose::stage_account`). The sequencer lock is acquired
+    // *before* the transaction, per `Firehose::lock_emit`'s lock/connection-ordering contract.
+    let emit_guard = state.firehose.lock_emit().await;
+    let mut tx = state.db.begin().await.map_err(|e| {
+        tracing::error!(error = %e, did = %user.did, "failed to open deactivate transaction");
+        ApiError::new(ErrorCode::InternalError, "failed to deactivate account")
+    })?;
+
+    match deactivate_account(&mut tx, &user.did, delete_after.as_deref()).await? {
         // A valid JWT is not enough: the account row must still exist. `NotFound` means it was
         // removed out from under an otherwise-valid token, mirroring `getPreferences`.
         AccountStateChange::NotFound => {
+            tx.rollback().await.ok();
             tracing::warn!(did = %user.did, "deactivateAccount: account not found");
             return Err(ApiError::new(ErrorCode::InvalidToken, "account not found"));
         }
-        // Already deactivated: idempotent no-op. Don't re-emit a status-quo `#account` event.
+        // Already deactivated: idempotent no-op. Don't re-emit a status-quo `#account` event, but
+        // still commit — a re-deactivation refreshes `delete_after`.
         AccountStateChange::Unchanged => {
+            tx.commit().await.map_err(|e| {
+                tracing::error!(error = %e, did = %user.did, "failed to commit deactivate (no-op) transaction");
+                ApiError::new(ErrorCode::InternalError, "failed to deactivate account")
+            })?;
             tracing::debug!(did = %user.did, "deactivateAccount: already deactivated; no event emitted");
         }
         // Real transition: tell subscribers the repo is no longer active so they stop serving it.
         AccountStateChange::Changed => {
-            if let Err(e) = state
-                .firehose
-                .emit_account(
+            let pending = emit_guard
+                .stage_account(
+                    &mut tx,
                     user.did.clone(),
                     false,
                     Some(STATUS_DEACTIVATED.to_string()),
                 )
                 .await
-            {
-                // The status change is already durable in `accounts`; a failed firehose write is
-                // logged and dropped rather than failing the request.
-                tracing::warn!(error = %e, did = %user.did, "failed to sequence #account deactivation (non-fatal)");
-            }
+                .map_err(|e| {
+                    tracing::error!(error = %e, did = %user.did, "failed to stage #account deactivation event");
+                    ApiError::new(ErrorCode::InternalError, "failed to deactivate account")
+                })?;
+            tx.commit().await.map_err(|e| {
+                tracing::error!(error = %e, did = %user.did, "failed to commit deactivate transaction");
+                ApiError::new(ErrorCode::InternalError, "failed to deactivate account")
+            })?;
+            pending.finish();
             tracing::info!(
                 did = %user.did,
                 scheduled_deletion = delete_after.is_some(),

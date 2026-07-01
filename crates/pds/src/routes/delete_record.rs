@@ -140,30 +140,11 @@ pub async fn delete_record(
 
     // Advance the root with optimistic concurrency (see putRecord for rationale). The shared
     // helper folds the deactivation guard into the CAS so an account deactivated after the
-    // `get_repo_write_state` check above cannot have this delete land.
-    let new_root = repo.root().to_string();
+    // `get_repo_write_state` check above cannot have this delete land, and commits the CAS
+    // atomically with the firehose `#commit` event (the diff CAR needs the prior block set, so
+    // this must run before GC). This also stamps the commit's blocks with its revision for
+    // getRepo?since.
     let new_rev = repo.commit().rev().as_str().to_string();
-    let advanced = crate::db::accounts::advance_repo_root_if_active(
-        &state.db,
-        did,
-        &new_root,
-        &new_rev,
-        &root_cid_str,
-    )
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, did = %did, "failed to update repo root CID");
-        ApiError::new(ErrorCode::InternalError, "failed to delete record")
-    })?;
-    if !advanced {
-        return Err(ApiError::new(
-            ErrorCode::Conflict,
-            "repository was modified concurrently; retry against the current root",
-        ));
-    }
-
-    // Emit the firehose `#commit` event before GC (the diff CAR needs the prior block set). This
-    // also stamps the commit's blocks with its revision for getRepo?since.
     let op = crate::firehose::RepoOp {
         action: crate::firehose::OpAction::Delete,
         collection: collection.clone(),
@@ -171,7 +152,7 @@ pub async fn delete_record(
         cid: None,
         value: None,
     };
-    crate::record_write::emit_firehose_commit(
+    crate::record_write::commit_repo_write(
         &state,
         did,
         root_cid,
@@ -179,8 +160,9 @@ pub async fn delete_record(
         new_rev,
         Some(prev_rev),
         vec![op],
+        &root_cid_str,
     )
-    .await;
+    .await?;
 
     // Best-effort GC: reclaim blocks superseded by this commit (non-fatal on error).
     if let Err(e) = crate::record_write::gc_repo_blocks(&state.db, did, repo.root()).await {

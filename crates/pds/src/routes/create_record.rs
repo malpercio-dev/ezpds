@@ -139,6 +139,66 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
+    /// Regression: a simulated `repo_seq` insert failure must not leave a committed
+    /// repo-root advance without a corresponding durable firehose row. Dropping the `repo_seq`
+    /// table makes the sequencer's insert fail with a real DB error; the whole write transaction
+    /// (which now also carries the repo-root CAS) must roll back, so the write fails outright and
+    /// the repo root is left exactly where it was — not advanced with a silently-dropped event.
+    #[tokio::test]
+    async fn create_record_rolls_back_the_repo_root_advance_when_the_firehose_insert_fails() {
+        let (state, did) = setup_account_with_repo().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+
+        let root_before: String =
+            sqlx::query_scalar("SELECT repo_root_cid FROM accounts WHERE did = ?")
+                .bind(&did)
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+
+        // Simulate a sequencer write failure: the `repo_seq` insert inside the same transaction
+        // as the repo-root CAS now fails with a real DB error.
+        sqlx::query("DROP TABLE repo_seq")
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        let app = crate::app::app(state.clone());
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri("/xrpc/com.atproto.repo.createRecord")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({
+                    "repo": did,
+                    "collection": "app.bsky.feed.post",
+                    "rkey": "shouldnotland",
+                    "record": {"text": "hi"}
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "a failed firehose insert must fail the whole write, not silently drop the event"
+        );
+
+        let root_after: String =
+            sqlx::query_scalar("SELECT repo_root_cid FROM accounts WHERE did = ?")
+                .bind(&did)
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(
+            root_before, root_after,
+            "the repo-root CAS must have rolled back along with the failed firehose insert"
+        );
+    }
+
     #[tokio::test]
     async fn create_record_with_explicit_rkey_returns_uri_and_cid() {
         let (state, did) = setup_account_with_repo().await;
