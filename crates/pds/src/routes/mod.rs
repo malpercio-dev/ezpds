@@ -51,6 +51,7 @@ pub mod register_device;
 pub mod request_password_reset;
 pub mod reset_password;
 pub mod resolve_handle;
+pub mod resolve_identity;
 pub mod revoke_app_password;
 pub mod service_proxy;
 pub mod static_assets;

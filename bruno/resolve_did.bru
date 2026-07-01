@@ -1,0 +1,30 @@
+meta {
+  name: Resolve DID (resolveDid)
+  type: http
+  seq: 64
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.identity.resolveDid?did={{did}}
+  body: none
+  auth: none
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  did: did:plc:example1234567890123456789
+}
+
+docs {
+  Resolves a DID to its full DID document.
+
+  Returns 200 JSON:
+  {
+    "didDoc": { ... }
+  }
+
+  Errors:
+  - 400 INVALID_CLAIM: DID parameter is structurally invalid
+  - 404 DidNotFound: DID does not currently resolve
+  - 502 PLC_DIRECTORY_ERROR: upstream DID resolution failed
+}

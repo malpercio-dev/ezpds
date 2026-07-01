@@ -1,0 +1,39 @@
+meta {
+  name: Refresh Identity (refreshIdentity)
+  type: http
+  seq: 66
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.identity.refreshIdentity
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "identifier": "{{identifier}}"
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  identifier: alice.example.com
+}
+
+docs {
+  Requests identity re-resolution for a handle or DID and returns identity info.
+  ezpds does not require authentication for this endpoint.
+
+  Returns the same response shape as resolveIdentity:
+  {
+    "did": "did:...",
+    "handle": "alice.example.com",
+    "didDoc": { ... }
+  }
+
+  Errors:
+  - 404 HANDLE_NOT_FOUND: handle does not resolve to any DID
+  - 404 DidNotFound: DID does not currently resolve
+  - 502 PLC_DIRECTORY_ERROR: upstream DID resolution failed
+}

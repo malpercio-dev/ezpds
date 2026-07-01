@@ -12,6 +12,7 @@ use common::{ApiError, ErrorCode};
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
+use crate::identity_resolution::resolve_handle_to_did;
 
 #[derive(Deserialize)]
 pub struct ResolveHandleQuery {
@@ -27,65 +28,11 @@ pub async fn resolve_handle_handler(
     State(state): State<AppState>,
     Query(params): Query<ResolveHandleQuery>,
 ) -> Result<Json<ResolveHandleResponse>, ApiError> {
-    // 1. Check local handles table.
-    let row: Option<(String,)> = sqlx::query_as("SELECT did FROM handles WHERE handle = ?")
-        .bind(&params.handle)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, handle = %params.handle, "failed to query handle");
-            ApiError::new(ErrorCode::InternalError, "handle lookup failed")
-        })?;
+    let Some(did) = resolve_handle_to_did(&state, &params.handle).await? else {
+        return Err(ApiError::new(ErrorCode::HandleNotFound, "handle not found"));
+    };
 
-    if let Some((did,)) = row {
-        return Ok(Json(ResolveHandleResponse { did }));
-    }
-
-    // 2. DNS TXT fallback: look for `did=<did>` in `_atproto.<handle>` records.
-    //
-    // A DNS error (timeout / SERVFAIL / transport) is not "handle definitely absent" — log it and
-    // fall through to the next method (HTTP well-known), then 404, exactly as the well-known step
-    // below does. (NXDOMAIN / NODATA is already mapped to an empty list by the resolver, not an
-    // error.) Aborting with a 500 here would both break the fallback chain and surface transient
-    // DNS failures as server errors.
-    if let Some(resolver) = &state.txt_resolver {
-        let name = format!("_atproto.{}", params.handle);
-        match resolver.txt_lookup(&name).await {
-            Ok(records) => {
-                for record in records {
-                    if let Some(did) = record.strip_prefix("did=") {
-                        return Ok(Json(ResolveHandleResponse {
-                            did: did.to_string(),
-                        }));
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    handle = %params.handle,
-                    "DNS TXT lookup failed; falling through to well-known"
-                );
-            }
-        }
-    }
-
-    // 3. HTTP well-known fallback: GET https://<handle>/.well-known/atproto-did
-    if let Some(resolver) = &state.well_known_resolver {
-        match resolver.resolve(&params.handle).await {
-            Ok(Some(did)) => return Ok(Json(ResolveHandleResponse { did })),
-            Ok(None) => {}
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    handle = %params.handle,
-                    "HTTP well-known lookup failed"
-                );
-            }
-        }
-    }
-
-    Err(ApiError::new(ErrorCode::HandleNotFound, "handle not found"))
+    Ok(Json(ResolveHandleResponse { did }))
 }
 
 #[cfg(test)]
