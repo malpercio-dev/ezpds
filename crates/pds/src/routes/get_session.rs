@@ -2,7 +2,8 @@
 //
 // Gathers: AuthenticatedUser (JWT extractor), DB pool via AppState
 // Processes: scope validation → account + DID doc lookup
-// Returns: JSON {did, handle, email, emailConfirmed, didDoc} on success; ApiError on failure
+// Returns: JSON {did, handle, email?, emailConfirmed, didDoc} on success; ApiError on failure.
+//          email is omitted for app-password sessions (limited credentials don't see it).
 //
 // Implements: GET /xrpc/com.atproto.server.getSession
 
@@ -13,6 +14,7 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
+use crate::auth::jwt::AuthScope;
 use crate::db::accounts::get_session_account;
 
 #[derive(Serialize)]
@@ -20,7 +22,10 @@ use crate::db::accounts::get_session_account;
 pub struct GetSessionResponse {
     pub did: String,
     pub handle: String,
-    pub email: String,
+    /// Omitted for app-password sessions — a limited credential does not see the account email,
+    /// matching `createSession`, which only returns it for full account sessions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
     pub email_confirmed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub did_doc: Option<serde_json::Value>,
@@ -64,10 +69,17 @@ pub async fn get_session(
         .handle
         .unwrap_or_else(|| "handle.invalid".to_string());
 
+    // Full-access sessions see the account email; app-password sessions do not (mirrors
+    // createSession, so an app password can't recover the email getSession would otherwise leak).
+    let email = match user.scope {
+        AuthScope::Access => Some(account.email),
+        _ => None,
+    };
+
     Ok(Json(GetSessionResponse {
         did: account.did,
         handle,
-        email: account.email,
+        email,
         email_confirmed: account.email_confirmed,
         did_doc,
     }))
@@ -478,6 +490,10 @@ mod tests {
             );
             let json = body_json(response).await;
             assert_eq!(json["did"], "did:plc:apppass");
+            assert!(
+                json.get("email").is_none(),
+                "app-pass getSession ({scope}) must omit email"
+            );
         }
     }
 

@@ -188,6 +188,20 @@ pub async fn create_session(
         ApiError::new(ErrorCode::InternalError, "failed to create session")
     })?;
 
+    // Re-check the matched app password still exists on the transaction's connection before
+    // minting a session. `match_app_password` verified it before this transaction began; a
+    // concurrent `revokeAppPassword` could have deleted it in between. Because the pool holds a
+    // single connection, this recheck and the revoke transaction are serialized — if the row is
+    // gone here, revocation won already, so the session must not be created.
+    if let Some(name) = app_password_name.as_deref() {
+        if !crate::db::app_passwords::app_password_exists(&mut *tx, &account.did, name).await? {
+            return Err(ApiError::new(
+                ErrorCode::AuthenticationRequired,
+                "invalid identifier or password",
+            ));
+        }
+    }
+
     sqlx::query(
         "INSERT INTO sessions (id, did, device_id, token_hash, created_at, expires_at) \
          VALUES (?, ?, NULL, NULL, datetime('now'), datetime('now', '+90 days'))",

@@ -125,6 +125,32 @@ pub(crate) async fn list_verify_candidates(
         .collect())
 }
 
+/// Whether the named app password still exists for `did`. Generic over the executor so it can
+/// run inside a transaction: `createSession` re-checks existence on the transaction's connection
+/// after verifying the password, closing the window where a concurrent `revokeAppPassword` could
+/// otherwise let a just-revoked credential still mint a session.
+pub(crate) async fn app_password_exists<'e, E>(
+    executor: E,
+    did: &str,
+    name: &str,
+) -> Result<bool, ApiError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    let row: Option<(i64,)> =
+        sqlx::query_as("SELECT 1 FROM app_passwords WHERE did = ? AND name = ?")
+            .bind(did)
+            .bind(name)
+            .fetch_optional(executor)
+            .await
+            .map_err(|e| {
+                tracing::error!(did = %did, error = %e, "DB error checking app password existence");
+                ApiError::new(ErrorCode::InternalError, "failed to verify credentials")
+            })?;
+
+    Ok(row.is_some())
+}
+
 /// Look up whether the named app password is privileged. `None` when no such app password
 /// exists (e.g. it was revoked). Used by `refreshSession` to re-derive the app-pass scope
 /// when rotating a session's tokens.

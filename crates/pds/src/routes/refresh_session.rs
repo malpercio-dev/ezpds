@@ -144,13 +144,17 @@ pub async fn refresh_session(
         .to_string();
 
     // An app-pass session stays app-pass on refresh; re-derive the privilege from the stored
-    // app password (defaulting to non-privileged if it was revoked out from under the session).
+    // app password. A missing row means the app password was revoked out from under the session
+    // (defence in depth — revoke also deletes the refresh tokens), so refuse to rotate rather
+    // than keep a revoked credential alive.
     let session_scope = match &app_password_name {
         Some(name) => {
             let privileged =
                 crate::db::app_passwords::app_password_privileged(&state.db, &did, name)
                     .await?
-                    .unwrap_or(false);
+                    .ok_or_else(|| {
+                        ApiError::new(ErrorCode::InvalidToken, "app password revoked")
+                    })?;
             app_pass_scope(privileged)
         }
         None => SCOPE_ACCESS,
@@ -826,5 +830,46 @@ mod tests {
         let json = body_json(response).await;
         let access_claims = decode_jwt(json["accessJwt"].as_str().unwrap(), &secret);
         assert_eq!(access_claims["scope"], "com.atproto.appPassPrivileged");
+    }
+
+    #[tokio::test]
+    async fn refresh_aborts_when_app_password_deleted() {
+        use crate::routes::test_utils::seed_app_password;
+
+        let state = test_state().await;
+        insert_account_with_password(
+            &state.db,
+            "did:plc:gone",
+            "gone.test.example.com",
+            "gone@example.com",
+            "mainpass",
+        )
+        .await;
+        seed_app_password(
+            &state.db,
+            "did:plc:gone",
+            "cli",
+            "abcd-efgh-ijkl-mnop",
+            false,
+        )
+        .await;
+
+        let tokens = create_session_tokens(&state, "did:plc:gone", "abcd-efgh-ijkl-mnop").await;
+        let refresh_jwt = tokens["refreshJwt"].as_str().unwrap().to_string();
+
+        // Delete only the app_passwords row (leave the refresh token) to exercise the
+        // missing-app-password guard directly, independent of revoke's token cleanup.
+        sqlx::query("DELETE FROM app_passwords WHERE did = 'did:plc:gone' AND name = 'cli'")
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        let response = app(state)
+            .oneshot(post_refresh_session(&refresh_jwt))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
     }
 }

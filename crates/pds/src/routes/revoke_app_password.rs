@@ -259,7 +259,7 @@ mod tests {
             &state.db,
             "did:plc:alice",
             "keep",
-            "1111-1111-1111-1111",
+            "keep-keep-keep-keep",
             false,
         )
         .await;
@@ -267,7 +267,7 @@ mod tests {
             &state.db,
             "did:plc:alice",
             "drop",
-            "2222-2222-2222-2222",
+            "drop-drop-drop-drop",
             false,
         )
         .await;
@@ -283,12 +283,12 @@ mod tests {
 
         // "keep" still authenticates; "drop" does not.
         let keep = app(state.clone())
-            .oneshot(post_create_session("did:plc:alice", "1111-1111-1111-1111"))
+            .oneshot(post_create_session("did:plc:alice", "keep-keep-keep-keep"))
             .await
             .unwrap();
         assert_eq!(keep.status(), StatusCode::OK);
         let drop = app(state)
-            .oneshot(post_create_session("did:plc:alice", "2222-2222-2222-2222"))
+            .oneshot(post_create_session("did:plc:alice", "drop-drop-drop-drop"))
             .await
             .unwrap();
         assert_eq!(drop.status(), StatusCode::UNAUTHORIZED);

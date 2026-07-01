@@ -136,7 +136,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `oauth_jwks.rs` | `GET /oauth/jwks` |
 | `oauth_templates.rs` | Pure HTML rendering helpers (Functional Core, no handler) |
 | `static_assets.rs` | `GET /static/*path` — embedded brand fonts (woff2/ttf via `include_bytes!`) and future web-UI assets |
-| `create_session.rs` | `POST /xrpc/com.atproto.server.createSession` — password auth. Verifies the main account password first (→ full `com.atproto.access`); on mismatch (or a mobile account with no main password) falls back to the account's app passwords (→ `com.atproto.appPass`/`appPassPrivileged`, email omitted from the response, refresh token tagged with the app password name) |
+| `create_session.rs` | `POST /xrpc/com.atproto.server.createSession` — password auth. Verifies the main account password first (→ full `com.atproto.access`); on mismatch (or a mobile account with no main password) falls back to the account's app passwords (→ `com.atproto.appPass`/`com.atproto.appPassPrivileged`, email omitted from the response, refresh token tagged with the app password name) |
 | `create_app_password.rs` | `POST /xrpc/com.atproto.server.createAppPassword` — mint a named app password (optionally `privileged`); returns the generated `xxxx-xxxx-xxxx-xxxx` secret once. Requires full access scope (app-pass tokens rejected); duplicate name → 409 |
 | `list_app_passwords.rs` | `GET /xrpc/com.atproto.server.listAppPasswords` — list an account's app passwords (name/createdAt/privileged, never the secret). Requires full access scope |
 | `revoke_app_password.rs` | `POST /xrpc/com.atproto.server.revokeAppPassword` — delete a named app password and its refresh tokens/sessions atomically (idempotent 200). Requires full access scope |

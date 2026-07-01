@@ -339,8 +339,9 @@ struct LegacyRefreshClaims {
 /// Sign an HS256 access JWT with a 2-hour lifetime.
 ///
 /// `scope` is the access-level scope claim to embed — [`SCOPE_ACCESS`] for a full session, or
-/// the app-pass scope from [`app_pass_scope`] for an app-password session. Callers must not
-/// pass a refresh scope here.
+/// the app-pass scope from [`app_pass_scope`] for an app-password session. Any other scope
+/// (e.g. a refresh scope) is rejected here rather than trusted to every call site, so the
+/// "an access token only ever carries an access-level scope" invariant stays centralized.
 pub(crate) fn issue_access_jwt(
     secret: &[u8; 32],
     did: &str,
@@ -348,6 +349,17 @@ pub(crate) fn issue_access_jwt(
     now: u64,
     scope: &str,
 ) -> Result<String, ApiError> {
+    if scope != SCOPE_ACCESS && scope != app_pass_scope(false) && scope != app_pass_scope(true) {
+        tracing::error!(
+            scope,
+            "attempted to issue an access JWT with a non-access scope"
+        );
+        return Err(ApiError::new(
+            ErrorCode::InternalError,
+            "failed to issue token",
+        ));
+    }
+
     encode(
         &Header::new(Algorithm::HS256),
         &LegacyAccessClaims {
@@ -468,5 +480,24 @@ mod tests {
         );
         assert_eq!(claims["iss"], "did:plc:abc123");
         assert_eq!(claims["exp"], 1_060);
+    }
+
+    /// `issue_access_jwt` accepts only access-level scopes; a refresh (or any other) scope is
+    /// refused centrally so no call site can accidentally mint a 2-hour token with the wrong scope.
+    #[test]
+    fn issue_access_jwt_rejects_non_access_scope() {
+        let secret = [0u8; 32];
+        for scope in [SCOPE_ACCESS, app_pass_scope(false), app_pass_scope(true)] {
+            assert!(
+                issue_access_jwt(&secret, "did:plc:x", "aud", 1_000, scope).is_ok(),
+                "access-level scope {scope} must be accepted"
+            );
+        }
+        for scope in ["com.atproto.refresh", "com.atproto.access.bogus", ""] {
+            assert!(
+                issue_access_jwt(&secret, "did:plc:x", "aud", 1_000, scope).is_err(),
+                "non-access scope {scope:?} must be rejected"
+            );
+        }
     }
 }
