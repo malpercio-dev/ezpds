@@ -1980,14 +1980,14 @@ mod tests {
         let mut rx = fh.subscribe();
         insert_account(&fh.db, "did:plc:a", "root").await;
 
+        // Acquire the sequencer lock *before* opening the transaction, per `lock_emit`'s contract.
+        let emit_guard = fh.lock_emit().await;
         let mut tx = fh.db.begin().await.unwrap();
         sqlx::query("UPDATE accounts SET deactivated_at = NULL WHERE did = 'did:plc:a'")
             .execute(&mut *tx)
             .await
             .unwrap();
-        let pending = fh
-            .lock_emit()
-            .await
+        let pending = emit_guard
             .stage_account(&mut tx, "did:plc:a".to_string(), true, None)
             .await
             .unwrap()
