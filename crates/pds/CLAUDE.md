@@ -44,8 +44,12 @@ its first record write; it then emits a best-effort `#account` (active) frame an
 `crawlers.notify()` once that transaction has committed. Account-status changes emit a separate
 `#account` frame instead of a `#commit`: `activate_account.rs`/`deactivate_account.rs` stage one
 via `Firehose::stage_account` (active=false/`deactivated` or active=true) **only on a real status
-transition** — a redundant no-op activate/deactivate returns 200 and emits nothing. The `#account`
-frame shares the same sequencer so account frames are ordered relative to commits.
+transition** — a redundant no-op activate/deactivate returns 200 and emits nothing.
+`update_subject_status.rs` (`com.atproto.admin.updateSubjectStatus`) stages the same kind of frame
+for an admin-driven takedown/clear, but derives `active`/`status` from the account's full
+`AccountLifecycle` after the write rather than assuming its own dimension won — clearing a
+takedown on a still-suspended account must report `suspended`, not `active`. The `#account` frame
+shares the same sequencer so account frames are ordered relative to commits.
 
 **Durability and atomicity.** `Firehose::emit_commit`/`emit_account` persist each event to
 `repo_seq` (via `db::firehose_seq`) **before** broadcasting it, all under one async `emit_lock`
@@ -125,7 +129,7 @@ and async query functions; no business logic lives here.
 | File | Contents |
 |---|---|
 | `mod.rs` | `open_pool`, `run_migrations`, `DbError`, `is_unique_violation` |
-| `accounts.rs` | `AccountRow` + `resolve_identifier` (handle/DID→account); `SessionAccountRow` + `get_session_account` (DID→account+handle+DID doc); `resolve_by_email` (email→account); `account_is_active`, `deactivate_account`/`activate_account` (flip `deactivated_at`, report the transition); `get_repo_write_state` + `advance_repo_root_if_active` (repo-write preconditions and the commit CAS); `get_account_overview` + `account_last_active` (operator usage/storage lookups — unfiltered by deactivation); `AccountLifecycle` + `get_repo_status`/`list_repos` (derive `active`/`status` from the `deactivated_at`/`suspended_at`/`taken_down_at` columns for the public sync endpoints) |
+| `accounts.rs` | `AccountRow` + `resolve_identifier` (handle/DID→account); `SessionAccountRow` + `get_session_account` (DID→account+handle+DID doc); `resolve_by_email` (email→account); `account_is_active`, `deactivate_account`/`activate_account` (flip `deactivated_at`, report the transition); `get_repo_write_state` + `advance_repo_root_if_active` (repo-write preconditions and the commit CAS); `get_account_overview` + `account_last_active` (operator usage/storage lookups — unfiltered by deactivation); `AccountLifecycle` + `get_repo_status`/`list_repos` (derive `active`/`status` from the `deactivated_at`/`suspended_at`/`taken_down_at` columns for the public sync endpoints); `set_account_takedown` + `TakedownStateChange` (flip `taken_down_at`, returning the account's full derived lifecycle so the caller's firehose event reflects takendown/suspended/deactivated precedence, not just the takedown dimension). All lifecycle-gated lookups (`get_session_account`, `resolve_identifier`, `resolve_by_email`, `account_is_active`, `get_repo_write_state`, `advance_repo_root_if_active`) now require `deactivated_at`/`suspended_at`/`taken_down_at` all NULL — a suspension or takedown closes logins and repo writes exactly like a self-service deactivation |
 | `app_passwords.rs` | app-password store (V031): `insert_app_password` (409 on duplicate name), `list_app_passwords` (metadata, no hash), `list_verify_candidates` (hash + privilege for `createSession`), `app_password_privileged` (privilege re-derivation for `refreshSession`). Revocation's multi-table delete lives in `routes/revoke_app_password.rs` |
 | `blocks.rs` | content-addressed repo-block store + `SqliteBlockStore` adapter; `account_block_stats` (block count, total bytes, distinct-rev commit count for the usage endpoint) |
 | `blobs.rs` | blob metadata store; `account_storage_bytes`, `account_blob_metrics`, `account_largest_blob` (blob-storage metrics) |
@@ -162,6 +166,8 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `revoke_app_password.rs` | `POST /xrpc/com.atproto.server.revokeAppPassword` — delete a named app password and its refresh tokens/sessions atomically (idempotent 200). Requires full access scope |
 | `get_session.rs` | `GET /xrpc/com.atproto.server.getSession` |
 | `get_service_auth.rs` | `GET /xrpc/com.atproto.server.getServiceAuth` — mint a short-lived ES256 inter-service auth JWT (signed by the account's repo key) for a requested `aud` service; optional `lxm` (method binding) and `exp` (absolute, ≤1h with `lxm`, ≤60s without). Shares the mint helper with `service_proxy.rs` |
+| `update_subject_status.rs` | `POST /xrpc/com.atproto.admin.updateSubjectStatus` — apply/clear an account-level takedown (`subject` as `com.atproto.admin.defs#repoRef`, `takedown` as `#statusAttr`; record/blob subjects and the `deactivated` field are unsupported). Admin-authed via `require_admin_json`. Emits an `#account` firehose event on a real transition, reflecting the account's full derived lifecycle |
+| `get_subject_status.rs` | `GET /xrpc/com.atproto.admin.getSubjectStatus` — report an account's current takedown status. Admin-authed via `require_admin` |
 | `refresh_session.rs` | `POST /xrpc/com.atproto.server.refreshSession` |
 | `request_password_reset.rs` | `POST /xrpc/com.atproto.server.requestPasswordReset` |
 | `reset_password.rs` | `POST /xrpc/com.atproto.server.resetPassword` |

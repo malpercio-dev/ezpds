@@ -173,11 +173,12 @@ pub async fn write_record(
         })?
         .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
 
-    // A deactivated account is read-only: its repo reports a deactivated status and accepts no
-    // writes until reactivated (com.atproto.server.activateAccount). Checked right after account
-    // existence — before the repo-root lookup — so a deactivated account is a 403 even if it never
-    // created a repo; only a truly missing account (handled above) is a 404. The CAS below also
-    // carries `deactivated_at IS NULL` to close the gap between this check and commit.
+    // A deactivated, suspended, or taken-down account is read-only: its repo reports a non-active
+    // status and accepts no writes until reactivated (com.atproto.server.activateAccount) or the
+    // moderation action is cleared. Checked right after account existence — before the repo-root
+    // lookup — so a non-active account is a 403 even if it never created a repo; only a truly
+    // missing account (handled above) is a 404. The CAS below also carries the same lifecycle
+    // guard to close the gap between this check and commit.
     if !write_state.active {
         return Err(ApiError::new(
             ErrorCode::Forbidden,
@@ -256,12 +257,12 @@ pub async fn write_record(
     // Advance the repo root with optimistic concurrency: only if it hasn't moved since we read
     // it. If a concurrent write advanced it first, that write wins and we return 409 so the
     // client retries against the new root (rather than silently clobbering the other commit).
-    // The new blocks we wrote are orphaned and GC-able. `deactivated_at IS NULL` folds the
-    // deactivation guard into the commit CAS: the `account_is_active` check above and this swap
-    // are not atomic, so an account deactivated in between would otherwise still commit
-    // (deactivation leaves `repo_root_cid` untouched, so the CAS would match). Requiring the
-    // account to still be active here blocks that write — it surfaces as a concurrent-
-    // modification conflict rather than landing on a deactivated repo.
+    // The new blocks we wrote are orphaned and GC-able. The lifecycle guard folds the
+    // deactivation/suspension/takedown check into the commit CAS: the active check above and this
+    // swap are not atomic, so an account that lost active status in between would otherwise still
+    // commit (a status change leaves `repo_root_cid` untouched, so the CAS would match). Requiring
+    // the account to still be active here blocks that write — it surfaces as a concurrent-
+    // modification conflict rather than landing on a non-active repo.
     //
     // The CAS and the firehose `#commit` event commit atomically (see `commit_repo_write`), while
     // both the previous and new block sets are still present (the diff CAR is computed against

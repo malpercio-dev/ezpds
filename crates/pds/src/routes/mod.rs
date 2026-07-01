@@ -31,6 +31,7 @@ pub mod get_repo;
 pub mod get_repo_signing_key;
 pub mod get_service_auth;
 pub mod get_session;
+pub mod get_subject_status;
 pub mod health;
 pub mod list_app_passwords;
 pub mod list_blobs;
@@ -64,6 +65,7 @@ pub mod transfer_accept;
 pub mod transfer_complete;
 pub mod transfer_initiate;
 pub mod update_handle;
+pub mod update_subject_status;
 pub mod upload_blob;
 
 mod code_gen;
