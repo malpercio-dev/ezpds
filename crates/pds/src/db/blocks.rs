@@ -70,6 +70,37 @@ pub async fn has_block(pool: &SqlitePool, cid: &str) -> Result<bool, sqlx::Error
     Ok(row.0)
 }
 
+/// Fetch multiple blocks that belong to a specific account.
+///
+/// Used by `com.atproto.sync.getBlocks`: missing CIDs and CIDs owned by another account are both
+/// omitted from the returned rows so the caller can report them uniformly as `BlockNotFound`.
+pub async fn get_blocks_for_account(
+    pool: &SqlitePool,
+    account_did: &str,
+    cids: &[String],
+) -> Result<Vec<BlockRow>, sqlx::Error> {
+    if cids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut rows = Vec::new();
+    // Batch to stay well under SQLite's bound-parameter limit. Each chunk uses one extra bound
+    // parameter for `account_did`, so 500 CID binds leaves generous headroom.
+    for chunk in cids.chunks(500) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql = format!(
+            "SELECT * FROM blocks WHERE account_did = ? AND cid IN ({placeholders}) ORDER BY cid"
+        );
+        let mut query = sqlx::query_as::<_, BlockRow>(&sql).bind(account_did);
+        for cid in chunk {
+            query = query.bind(cid);
+        }
+        rows.extend(query.fetch_all(pool).await?);
+    }
+    rows.sort_unstable_by(|a, b| a.cid.cmp(&b.cid));
+    Ok(rows)
+}
+
 /// Delete all blocks for an account.
 ///
 /// Returns the number of blocks removed.
@@ -389,6 +420,67 @@ mod tests {
             .unwrap()
             .expect("bob block");
         assert_eq!(bob_block.account_did, "did:plc:bob");
+    }
+
+    #[tokio::test]
+    async fn get_blocks_for_account_returns_only_owned_requested_blocks() {
+        let pool = test_pool().await;
+        insert_test_account(&pool, "did:plc:alice").await;
+        insert_test_account(&pool, "did:plc:bob").await;
+
+        put_block(&pool, "bafkrialice1", "did:plc:alice", b"\xa1alice1")
+            .await
+            .unwrap();
+        put_block(&pool, "bafkrialice2", "did:plc:alice", b"\xa1alice2")
+            .await
+            .unwrap();
+        put_block(&pool, "bafkribob", "did:plc:bob", b"\xa1bob")
+            .await
+            .unwrap();
+
+        let rows = get_blocks_for_account(
+            &pool,
+            "did:plc:alice",
+            &[
+                "bafkrialice2".to_string(),
+                "bafkribob".to_string(),
+                "bafkrimissing".to_string(),
+                "bafkrialice1".to_string(),
+            ],
+        )
+        .await
+        .unwrap();
+        let cids: Vec<_> = rows.into_iter().map(|row| row.cid).collect();
+        assert_eq!(
+            cids,
+            vec!["bafkrialice1".to_string(), "bafkrialice2".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn get_blocks_for_account_chunks_large_requests() {
+        let pool = test_pool().await;
+        insert_test_account(&pool, "did:plc:alice").await;
+
+        put_block(&pool, "bafkriowned0501", "did:plc:alice", b"\xa1a")
+            .await
+            .unwrap();
+        put_block(&pool, "bafkriowned1001", "did:plc:alice", b"\xa1b")
+            .await
+            .unwrap();
+
+        let mut cids: Vec<String> = (0..1200).map(|i| format!("bafkrimissing{i:04}")).collect();
+        cids[501] = "bafkriowned0501".to_string();
+        cids[1001] = "bafkriowned1001".to_string();
+
+        let rows = get_blocks_for_account(&pool, "did:plc:alice", &cids)
+            .await
+            .unwrap();
+        let cids: Vec<_> = rows.into_iter().map(|row| row.cid).collect();
+        assert_eq!(
+            cids,
+            vec!["bafkriowned0501".to_string(), "bafkriowned1001".to_string()]
+        );
     }
 
     #[tokio::test]

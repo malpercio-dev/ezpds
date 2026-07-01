@@ -1,0 +1,33 @@
+meta {
+  name: Sync Get Blocks (CAR)
+  type: http
+  seq: 63
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.sync.getBlocks?did={{did}}&cids={{cid1}}&cids={{cid2}}
+  body: none
+  auth: none
+}
+
+params:query {
+  did: {{did}}
+  cids: {{cid1}}
+  cids: {{cid2}}
+}
+
+docs {
+  Returns a CARv1 file (Content-Type: application/vnd.ipld.car) carrying exactly the requested
+  repo blocks (intermediate MST nodes and/or records), addressed by CID. Unauthenticated.
+
+  - The CAR's roots array is EMPTY (no declared root) — this matches the reference PDS
+    (blocksToCarStream(null, ...)). A consumer reads the blocks by the CIDs it asked for, not by
+    walking from a root. This differs from getRepo/getRecord CARs, whose declared root is the
+    signed commit.
+  - `did` is the repo's DID. Unknown DID/account -> 404.
+  - `cids` is a repeated query parameter: `?cids=<cid1>&cids=<cid2>&...`. The response carries
+    exactly the requested blocks in CID order, deduplicated.
+  - A requested CID that is absent from the repo, or that belongs to a different account, is a
+    BlockNotFound error: all such CIDs are reported at once, so the request is all-or-nothing.
+  - A malformed CID, an empty cids list, or an invalid DID -> 400.
+}

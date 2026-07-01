@@ -79,6 +79,11 @@ pub enum ErrorCode {
     /// Returned by `com.atproto.identity.updateHandle` when the proposed handle
     /// cannot be validated against the caller's identity.
     HandleResolutionFailed,
+    /// A requested block CID was not found in the repo, or did not belong to it. Backs
+    /// `com.atproto.sync.getBlocks`. Serialized as `"BlockNotFound"` (PascalCase) to match the
+    /// lexicon's error name and the AT Protocol XRPC error format.
+    #[serde(rename = "BlockNotFound")]
+    BlockNotFound,
     // TODO: add remaining codes from Appendix A as endpoints are implemented:
     // 400: INVALID_DOCUMENT, INVALID_PROOF, INVALID_ENDPOINT, INVALID_CONFIRMATION
     // 401: INVALID_CREDENTIALS
@@ -122,6 +127,7 @@ impl ErrorCode {
             ErrorCode::InvalidSwap => 409,
             ErrorCode::InvalidRequest => 400,
             ErrorCode::HandleResolutionFailed => 400,
+            ErrorCode::BlockNotFound => 400,
         }
     }
 }
@@ -298,6 +304,7 @@ mod tests {
             (ErrorCode::PayloadTooLarge, 413),
             (ErrorCode::InvalidRequest, 400),
             (ErrorCode::HandleResolutionFailed, 400),
+            (ErrorCode::BlockNotFound, 400),
         ];
         for (code, expected) in cases {
             assert_eq!(code.status_code(), expected, "wrong status for {code:?}");
