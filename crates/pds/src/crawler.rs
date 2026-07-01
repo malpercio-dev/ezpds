@@ -137,7 +137,7 @@ impl CrawlerNotifier {
         for attempt in 1..=self.max_attempts {
             match self.client.post(&endpoint).json(&body).send().await {
                 Ok(resp) if resp.status().is_success() => {
-                    tracing::debug!(crawler = %base_url, "requestCrawl accepted");
+                    tracing::info!(crawler = %base_url, "requestCrawl accepted");
                     return;
                 }
                 // A 4xx means the request itself is wrong or unauthorised: the crawler has
