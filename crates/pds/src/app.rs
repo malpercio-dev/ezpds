@@ -196,6 +196,11 @@ pub struct AppState {
     /// Bound Iroh QUIC endpoint, when `[iroh] enabled`. `None` when the tunnel is disabled.
     /// Handlers read `iroh.node_id` to advertise the pds's node id. Shared via Arc.
     pub iroh: Option<Arc<crate::iroh_tunnel::IrohState>>,
+    /// Test-only relaxation of the `atproto-proxy` SSRF guard
+    /// (`identity_resolution::resolve_atproto_proxy_target`): when `true`, a loopback address is
+    /// accepted alongside public ones, so tests can proxy to a local `wiremock` server standing in
+    /// for a labeler. Always `false` in the real server (`main.rs`) — only `test_state()` sets it.
+    pub allow_loopback_proxy_targets: bool,
 }
 
 /// Build the Axum router with middleware and routes.
@@ -398,20 +403,31 @@ pub fn app(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// The three upstream namespaces the catch-all XRPC handler proxies to. `AppView` and `Chat`
+/// forward to one configured default each; `Moderation` has no single upstream (the client picks
+/// which labeler to report to), so its target is resolved per-request from the `atproto-proxy`
+/// header.
+enum ProxyUpstream {
+    AppView,
+    Chat,
+    Moderation,
+}
+
 /// Catch-all XRPC handler.
 ///
 /// `app.bsky.*` NSIDs with no local handler are forwarded to the configured AppView (feeds,
 /// notifications, search); `chat.bsky.*` NSIDs are forwarded to the configured chat service
-/// (direct messages) — both via [`service_proxy`]. Any other unrecognised NSID returns
-/// `MethodNotImplemented`.
+/// (direct messages); `com.atproto.moderation.*` NSIDs (e.g. `createReport`) are forwarded to
+/// whichever labeler the client names via the `atproto-proxy` header — all three via
+/// [`service_proxy`]. Any other unrecognised NSID returns `MethodNotImplemented`.
 ///
-/// Both proxied namespaces are forwarded *on behalf of an authenticated user*, so the caller's
-/// session is validated locally (the `AuthenticatedUser` extractor) before anything leaves the
-/// PDS; the proxy then mints a fresh ES256 service-auth JWT signed by that user's repo key for
-/// the upstream to verify (the caller's PDS session token is never forwarded). Unauthenticated
-/// callers are rejected here rather than at the upstream. The auth check is scoped to the proxy
-/// branches: an unrecognised NSID still returns `501` without an auth challenge, so probing for
-/// supported methods does not require credentials.
+/// All three proxied namespaces are forwarded *on behalf of an authenticated user*, so the
+/// caller's session is validated locally (the `AuthenticatedUser` extractor) before anything
+/// leaves the PDS; the proxy then mints a fresh ES256 service-auth JWT signed by that user's repo
+/// key for the upstream to verify (the caller's PDS session token is never forwarded).
+/// Unauthenticated callers are rejected here rather than at the upstream. The auth check is
+/// scoped to the proxy branches: an unrecognised NSID still returns `501` without an auth
+/// challenge, so probing for supported methods does not require credentials.
 ///
 /// Axum gives static path segments priority over parameterised ones, so specific routes
 /// registered for individual NSIDs will match before this catch-all.
@@ -422,44 +438,94 @@ async fn xrpc_handler(
     req: axum::extract::Request,
 ) -> Response {
     use crate::auth::jwt::AuthScope;
+    use crate::identity_resolution::{resolve_atproto_proxy_target, ModerationProxyGuard};
     use crate::routes::service_proxy::proxy_xrpc;
 
-    // The third tuple element marks the chat (direct-message) service, which requires a
-    // privileged credential.
     let upstream = if method.starts_with("app.bsky.") {
-        Some((&state.config.appview.url, &state.config.appview.did, false))
+        Some(ProxyUpstream::AppView)
     } else if method.starts_with("chat.bsky.") {
-        Some((&state.config.chat.url, &state.config.chat.did, true))
+        Some(ProxyUpstream::Chat)
+    } else if method.starts_with("com.atproto.moderation.") {
+        Some(ProxyUpstream::Moderation)
     } else {
         None
     };
 
-    match upstream {
-        Some((url, proxy_did, is_chat)) => {
-            // The proxy mints a service-auth JWT signed by the *authenticated user's* repo key,
-            // so the user DID — not just a pass/fail gate result — has to flow into `proxy_xrpc`.
-            let user = match auth {
-                Ok(user) => user,
-                Err(rejection) => return rejection.into_response(),
-            };
-            // Direct messages require a privileged credential: full access or a *privileged*
-            // app password. A plain `com.atproto.appPass` session must not reach the chat
-            // service — this is what the app-password privileged flag gates.
-            if is_chat && user.scope == AuthScope::AppPass {
-                return ApiError::new(
-                    ErrorCode::Forbidden,
-                    "this app password lacks the privileged scope required for chat access",
-                )
-                .into_response();
-            }
-            proxy_xrpc(&state, url, proxy_did, &method, &user.did, req).await
-        }
-        None => ApiError::new(
+    let Some(upstream) = upstream else {
+        return ApiError::new(
             ErrorCode::MethodNotImplemented,
             format!("XRPC method {method:?} is not implemented"),
         )
-        .into_response(),
+        .into_response();
+    };
+
+    // The proxy mints a service-auth JWT signed by the *authenticated user's* repo key, so the
+    // user DID — not just a pass/fail gate result — has to flow into `proxy_xrpc`.
+    let user = match auth {
+        Ok(user) => user,
+        Err(rejection) => return rejection.into_response(),
+    };
+
+    // Direct messages require a privileged credential: full access or a *privileged* app
+    // password. A plain `com.atproto.appPass` session must not reach the chat service — this is
+    // what the app-password privileged flag gates.
+    if matches!(upstream, ProxyUpstream::Chat) && user.scope == AuthScope::AppPass {
+        return ApiError::new(
+            ErrorCode::Forbidden,
+            "this app password lacks the privileged scope required for chat access",
+        )
+        .into_response();
     }
+
+    let (url, proxy_did, guard) = match upstream {
+        ProxyUpstream::AppView => (
+            state.config.appview.url.clone(),
+            state.config.appview.did.clone(),
+            None,
+        ),
+        ProxyUpstream::Chat => (
+            state.config.chat.url.clone(),
+            state.config.chat.did.clone(),
+            None,
+        ),
+        ProxyUpstream::Moderation => {
+            let header_value = req
+                .headers()
+                .get("atproto-proxy")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            let Some(header_value) = header_value else {
+                return ApiError::new(
+                    ErrorCode::InvalidRequest,
+                    "atproto-proxy header is required to proxy com.atproto.moderation.* methods",
+                )
+                .into_response();
+            };
+            match resolve_atproto_proxy_target(&state, &header_value).await {
+                // Always a guard, whether or not the host needed DNS pinning: the caller-
+                // controlled target still requires the redirect-disabled hardened client.
+                Ok(target) => (
+                    target.url,
+                    target.header_value,
+                    Some(ModerationProxyGuard {
+                        pinned: target.pinned,
+                    }),
+                ),
+                Err(err) => return err.into_response(),
+            }
+        }
+    };
+
+    proxy_xrpc(
+        &state,
+        &url,
+        &proxy_did,
+        &method,
+        &user.did,
+        guard.as_ref(),
+        req,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -563,6 +629,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
             &[],
         )),
         iroh: None,
+        allow_loopback_proxy_targets: true,
     }
 }
 

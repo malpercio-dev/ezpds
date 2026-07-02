@@ -1,10 +1,13 @@
 // pattern: Imperative Shell
 //
 // Gathers: an incoming XRPC request (method, query, headers, body) bound for an upstream
-//          atproto service — the AppView for `app.bsky.*`, the chat service for `chat.bsky.*`
+//          atproto service — the AppView for `app.bsky.*`, the chat service for `chat.bsky.*`,
+//          or a client-named labeler for `com.atproto.moderation.*`
 // Processes: mints a fresh ES256 service-auth JWT (signed by the account's repo key) and
 //            forwards the request to the given upstream under that token
 // Returns: the upstream's status, content-type, and streamed response body
+
+use std::borrow::Cow;
 
 use axum::{
     body::Body,
@@ -15,6 +18,7 @@ use axum::{
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
+use crate::identity_resolution::ModerationProxyGuard;
 
 /// Maximum buffered request body when proxying to an upstream service. `app.bsky.*` and
 /// `chat.bsky.*` procedures carry small JSON payloads (preferences, mutes, message sends);
@@ -30,7 +34,8 @@ fn is_length_limit_error(err: &axum::Error) -> bool {
         .unwrap_or(false)
 }
 
-/// Forward an XRPC request to an upstream atproto service (the AppView or the chat service).
+/// Forward an XRPC request to an upstream atproto service (the AppView, the chat service, or a
+/// labeler/moderation service).
 ///
 /// `upstream_url` is the service base URL (no trailing slash) and `proxy_did` is its service
 /// DID, sent as the `atproto-proxy` header so the upstream knows the request arrives on the
@@ -40,12 +45,23 @@ fn is_length_limit_error(err: &axum::Error) -> bool {
 /// caller's own PDS session token is **not** forwarded (the AppView can't verify it). The
 /// upstream status, content type, and body are streamed straight back; a failure to reach the
 /// upstream maps to `503`, while upstream error *responses* (4xx/5xx) are passed through verbatim.
+///
+/// `moderation_guard` is `Some` only for the `com.atproto.moderation.*` branch, whose target host
+/// was resolved and SSRF-validated from a caller-controlled DID document
+/// (`identity_resolution::resolve_atproto_proxy_target`). When present, the outbound request is
+/// sent on a one-off hardened client (see `build_moderation_client`) rather than
+/// `state.http_client`: redirects are disabled, since the SSRF check only inspects the first URL
+/// and a malicious labeler could otherwise 3xx its way onto a private address; when the host was
+/// a domain name, DNS resolution is additionally pinned to exactly the addresses already
+/// validated, so the client can't re-resolve at connect time and land on an address that was
+/// never checked.
 pub async fn proxy_xrpc(
     state: &AppState,
     upstream_url: &str,
     proxy_did: &str,
     nsid: &str,
     did: &str,
+    moderation_guard: Option<&ModerationProxyGuard>,
     req: Request,
 ) -> Response {
     // Preserve the original query string verbatim so upstream query params survive the hop.
@@ -55,6 +71,14 @@ pub async fn proxy_xrpc(
         .map(|q| format!("?{q}"))
         .unwrap_or_default();
     let target = format!("{upstream_url}/xrpc/{nsid}{query}");
+
+    let client: Cow<'_, reqwest::Client> = match moderation_guard {
+        Some(guard) => match build_moderation_client(guard) {
+            Ok(client) => Cow::Owned(client),
+            Err(err) => return err.into_response(),
+        },
+        None => Cow::Borrowed(&state.http_client),
+    };
 
     let (parts, body) = req.into_parts();
 
@@ -89,7 +113,7 @@ pub async fn proxy_xrpc(
 
     // reqwest 0.12 and axum 0.7 share the same `http` crate, so `Method` and `HeaderValue` are
     // identical types and move across the boundary without conversion.
-    let mut outbound = state.http_client.request(parts.method, &target);
+    let mut outbound = client.request(parts.method, &target);
 
     // Pass content-type and the client's content-negotiation preference through; the inbound
     // Authorization is intentionally DROPPED and replaced with the minted service-auth JWT. Host,
@@ -123,10 +147,18 @@ pub async fn proxy_xrpc(
     let status =
         StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let content_type = upstream.headers().get(header::CONTENT_TYPE).cloned();
+    // A 3xx is passed through, not followed (see `build_moderation_client`), but is useless to
+    // the caller without its Location — forward it so "passed through verbatim" actually holds.
+    let location = upstream.headers().get(header::LOCATION).cloned();
 
     let mut builder = Response::builder().status(status);
     if let Some(content_type) = content_type {
         builder = builder.header(header::CONTENT_TYPE, content_type);
+    }
+    if status.is_redirection() {
+        if let Some(location) = location {
+            builder = builder.header(header::LOCATION, location);
+        }
     }
 
     match builder.body(Body::from_stream(upstream.bytes_stream())) {
@@ -136,6 +168,34 @@ pub async fn proxy_xrpc(
             ApiError::new(ErrorCode::InternalError, "proxy response build failed").into_response()
         }
     }
+}
+
+/// Build a one-off HTTP client hardened for proxying to a caller-controlled
+/// `com.atproto.moderation.*` target.
+///
+/// Always disables redirects: `resolve_atproto_proxy_target`'s SSRF check only inspects the
+/// *first* URL, so a malicious labeler returning a 3xx to a private/loopback/metadata address
+/// would otherwise sail straight past it — `state.http_client` and a naive pinned client both
+/// follow redirects by default. When `guard.pinned` is present (the host was a domain name), DNS
+/// resolution for that domain is additionally overridden to exactly the addresses already
+/// validated: without this, `proxy_xrpc` would hand the *domain* to the client, which re-resolves
+/// it independently at connect time, and a second DNS answer (attacker-controlled, or simply a
+/// changed record between validation and connection) could point at an address that was never
+/// checked.
+fn build_moderation_client(guard: &ModerationProxyGuard) -> Result<reqwest::Client, ApiError> {
+    let mut builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none());
+    if let Some(pin) = &guard.pinned {
+        builder = builder.resolve_to_addrs(&pin.domain, &pin.addrs);
+    }
+    builder.build().map_err(|e| {
+        tracing::error!(error = %e, "failed to build moderation proxy client");
+        ApiError::new(
+            ErrorCode::InternalError,
+            "failed to prepare proxied request",
+        )
+    })
 }
 
 /// Mint a fresh ES256 service-auth JWT for proxying `nsid` to `proxy_did` on behalf of `did`.
@@ -779,5 +839,244 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // --- com.atproto.moderation.* proxy (client-named labeler via atproto-proxy header) ---
+
+    // Unlike app.bsky.*/chat.bsky.*, moderation has no single configured upstream: the client
+    // names the labeler to report to via the atproto-proxy header, and the pds resolves that
+    // DID's advertised service endpoint before forwarding.
+    async fn state_with_master_key_and_repo() -> AppState {
+        let base = test_state().await;
+        let mut config = (*base.config).clone();
+        with_master_key(&mut config);
+        seed_repo_key(&base.db).await;
+        AppState {
+            config: Arc::new(config),
+            ..base
+        }
+    }
+
+    #[tokio::test]
+    async fn proxies_create_report_to_labeler_named_by_atproto_proxy_header() {
+        let server = MockServer::start().await;
+        let state = state_with_master_key_and_repo().await;
+        crate::routes::test_utils::seed_did_document(
+            &state.db,
+            "did:plc:labeler123",
+            serde_json::json!({
+                "id": "did:plc:labeler123",
+                "service": [{
+                    "id": "#atproto_labeler",
+                    "type": "AtprotoLabeler",
+                    "serviceEndpoint": server.uri(),
+                }],
+            }),
+        )
+        .await;
+        let auth = bearer(&state);
+
+        Mock::given(method("POST"))
+            .and(path("/xrpc/com.atproto.moderation.createReport"))
+            .and(header(
+                "atproto-proxy",
+                "did:plc:labeler123#atproto_labeler",
+            ))
+            .and(body_json(serde_json::json!({
+                "reasonType": "com.atproto.moderation.defs#reasonSpam",
+                "subject": {
+                    "$type": "com.atproto.admin.defs#repoRef",
+                    "did": "did:plc:abc123",
+                },
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 1,
+                "reasonType": "com.atproto.moderation.defs#reasonSpam",
+                "subject": { "$type": "com.atproto.admin.defs#repoRef", "did": "did:plc:abc123" },
+                "reportedBy": "did:plc:tester",
+                "createdAt": "2026-07-02T00:00:00.000Z",
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.moderation.createReport")
+                    .header("authorization", auth)
+                    .header("content-type", "application/json")
+                    .header("atproto-proxy", "did:plc:labeler123#atproto_labeler")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "reasonType": "com.atproto.moderation.defs#reasonSpam",
+                            "subject": {
+                                "$type": "com.atproto.admin.defs#repoRef",
+                                "did": "did:plc:abc123",
+                            },
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["id"], 1);
+    }
+
+    // A labeler's 3xx must be passed straight back to the caller, never followed — the SSRF guard
+    // (`resolve_atproto_proxy_target`) only validates the *first* URL, so an unvalidated redirect
+    // target must never be dereferenced by the PDS itself. No `Location` mock is even mounted for
+    // the redirect's own target: if the client followed it, the request would either 404 against
+    // this same mock server (proving a follow happened) or hang/fail against nothing at all.
+    #[tokio::test]
+    async fn create_report_does_not_follow_redirect_from_labeler() {
+        let server = MockServer::start().await;
+        let state = state_with_master_key_and_repo().await;
+        crate::routes::test_utils::seed_did_document(
+            &state.db,
+            "did:plc:labeler123",
+            serde_json::json!({
+                "id": "did:plc:labeler123",
+                "service": [{
+                    "id": "#atproto_labeler",
+                    "type": "AtprotoLabeler",
+                    "serviceEndpoint": server.uri(),
+                }],
+            }),
+        )
+        .await;
+        let auth = bearer(&state);
+
+        Mock::given(method("POST"))
+            .and(path("/xrpc/com.atproto.moderation.createReport"))
+            .respond_with(
+                ResponseTemplate::new(302).insert_header("location", "http://169.254.169.254/"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.moderation.createReport")
+                    .header("authorization", auth)
+                    .header("content-type", "application/json")
+                    .header("atproto-proxy", "did:plc:labeler123#atproto_labeler")
+                    .body(Body::from(
+                        r#"{"reasonType":"com.atproto.moderation.defs#reasonSpam","subject":{}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // The mock's own 302 is what must come back — proof the PDS didn't chase the Location.
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::LOCATION)
+                .unwrap(),
+            "http://169.254.169.254/"
+        );
+    }
+
+    // No mock is mounted: if the request escaped without a resolved target, there'd be nothing to
+    // prove a clean 400 short-circuited the proxy — the absence of a listener would surface as a
+    // different failure. A missing header must fail before any DID resolution is attempted.
+    #[tokio::test]
+    async fn create_report_without_atproto_proxy_header_is_rejected() {
+        let state = state_with_master_key_and_repo().await;
+        let auth = bearer(&state);
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.moderation.createReport")
+                    .header("authorization", auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"reasonType":"com.atproto.moderation.defs#reasonSpam","subject":{}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "InvalidRequest");
+    }
+
+    // A resolvable DID that doesn't advertise the requested service id must not silently proxy
+    // to nothing — the caller gets a clear 503, not the labeler's default endpoint or a panic.
+    #[tokio::test]
+    async fn create_report_targeting_unknown_service_id_is_rejected() {
+        let state = state_with_master_key_and_repo().await;
+        crate::routes::test_utils::seed_did_document(
+            &state.db,
+            "did:plc:labeler123",
+            serde_json::json!({
+                "id": "did:plc:labeler123",
+                "service": [{
+                    "id": "#atproto_pds",
+                    "type": "AtprotoPersonalDataServer",
+                    "serviceEndpoint": "https://pds.example.com",
+                }],
+            }),
+        )
+        .await;
+        let auth = bearer(&state);
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.moderation.createReport")
+                    .header("authorization", auth)
+                    .header("content-type", "application/json")
+                    .header("atproto-proxy", "did:plc:labeler123#atproto_labeler")
+                    .body(Body::from(
+                        r#"{"reasonType":"com.atproto.moderation.defs#reasonSpam","subject":{}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn create_report_without_auth_is_rejected() {
+        let state = state_with_master_key_and_repo().await;
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.moderation.createReport")
+                    .header("atproto-proxy", "did:plc:labeler123#atproto_labeler")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }

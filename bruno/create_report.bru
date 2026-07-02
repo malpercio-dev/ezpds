@@ -1,0 +1,45 @@
+meta {
+  name: Create Report (createReport, moderation proxy)
+  type: http
+  seq: 75
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.moderation.createReport
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+headers {
+  atproto-proxy: {{labelerDid}}
+}
+
+body:json {
+  {
+    "reasonType": "com.atproto.moderation.defs#reasonSpam",
+    "subject": {
+      "$type": "com.atproto.admin.defs#repoRef",
+      "did": "did:plc:abc123"
+    }
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  labelerDid: did:plc:ar7c4by46qjdydhdevvrndac#atproto_labeler
+}
+
+docs {
+  Proxies `com.atproto.moderation.createReport` to whichever labeler the caller names via the
+  `atproto-proxy` header (`<did>#<serviceId>`, e.g. Bluesky's default moderation service). Unlike
+  `app.bsky.*`/`chat.bsky.*` (proxied to one configured default), moderation has no single
+  upstream — the pds resolves the named DID's document and looks up its `service` entry matching
+  the header's fragment, then forwards the report there under a freshly-minted service-auth JWT.
+
+  The header is required: an unrecognised or missing `atproto-proxy` returns 400. A DID that
+  resolves but doesn't advertise the requested service returns 503.
+}
