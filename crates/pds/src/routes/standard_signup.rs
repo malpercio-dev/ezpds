@@ -315,10 +315,13 @@ fn map_mint_error(error: MintClaimCodesError) -> ApiError {
             tracing::error!(error = %e, "failed to insert invite claim codes");
             ApiError::new(ErrorCode::InternalError, "failed to store invite codes")
         }
-        MintClaimCodesError::Exhausted => ApiError::new(
-            ErrorCode::InternalError,
-            "failed to generate unique invite codes after retries",
-        ),
+        MintClaimCodesError::Exhausted => {
+            tracing::error!("failed to generate unique invite codes after retries");
+            ApiError::new(
+                ErrorCode::InternalError,
+                "failed to generate unique invite codes after retries",
+            )
+        }
     }
 }
 
