@@ -2,7 +2,9 @@
 //
 // Shared ATProto identity-resolution helpers. Routes gather query/body parameters and delegate the
 // actual handle/DID lookup here so resolveHandle, resolveIdentity, refreshIdentity, and resolveDid
-// all use the same local → network fallback rules.
+// all use the same local → network fallback rules. Also resolves a caller-supplied `atproto-proxy`
+// header to an upstream service endpoint, for XRPC namespaces with no single configured default
+// (see `resolve_atproto_proxy_target`, used by the `com.atproto.moderation.*` proxy branch).
 
 use std::net::IpAddr;
 
@@ -132,6 +134,59 @@ pub async fn verified_handle_for_identifier(
     } else {
         Ok(INVALID_HANDLE.to_string())
     }
+}
+
+/// Resolve an inbound `atproto-proxy` header (`<did>#<serviceId>`) to the upstream service it
+/// names.
+///
+/// Unlike `app.bsky.*`/`chat.bsky.*` — which proxy to one configured default (the AppView / chat
+/// service) — a namespace like `com.atproto.moderation.*` has no single upstream: the client picks
+/// which labeler to report to via this header. Resolves the DID document, then looks up a
+/// `service` entry whose `id` matches the header's fragment (either the abbreviated `#serviceId`
+/// form or the fully-qualified `did#serviceId` form — both appear in the wild).
+///
+/// Returns `(endpoint_url, header_value)` on success — the header value is echoed back verbatim
+/// as the outbound `atproto-proxy` header so the upstream sees the same target the client asked
+/// for; `proxy_xrpc` strips the `#fragment` itself when minting the service-auth JWT's `aud`.
+pub async fn resolve_atproto_proxy_target(
+    state: &AppState,
+    header_value: &str,
+) -> Result<(String, String), ApiError> {
+    let (did, service_id) = header_value.split_once('#').ok_or_else(|| {
+        ApiError::new(
+            ErrorCode::InvalidRequest,
+            "atproto-proxy header must be of the form did#serviceId",
+        )
+    })?;
+    if !did.starts_with("did:") || service_id.is_empty() {
+        return Err(ApiError::new(
+            ErrorCode::InvalidRequest,
+            "atproto-proxy header must be of the form did#serviceId",
+        ));
+    }
+
+    let doc = resolve_did_document(state, did).await?;
+    let abbreviated_id = format!("#{service_id}");
+    let endpoint = doc
+        .get("service")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|entry| {
+            matches!(entry.get("id").and_then(Value::as_str), Some(id) if id == abbreviated_id || id == header_value)
+        })
+        .and_then(|entry| entry.get("serviceEndpoint"))
+        .and_then(Value::as_str)
+        .filter(|endpoint| endpoint.starts_with("https://") || endpoint.starts_with("http://"))
+        .ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::ServiceUnavailable,
+                "atproto-proxy target does not advertise a usable service endpoint",
+            )
+        })?
+        .to_string();
+
+    Ok((endpoint, header_value.to_string()))
 }
 
 async fn resolve_plc_did_document(state: &AppState, did: &str) -> Result<Value, ApiError> {
@@ -321,7 +376,90 @@ fn also_known_as_handles(did_doc: &Value) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{did_web_document_url, safe_body_preview};
+    use super::{did_web_document_url, resolve_atproto_proxy_target, safe_body_preview};
+    use crate::app::test_state;
+    use crate::routes::test_utils::seed_did_document;
+
+    #[tokio::test]
+    async fn resolves_service_by_abbreviated_id() {
+        let state = test_state().await;
+        seed_did_document(
+            &state.db,
+            "did:plc:labeler123",
+            serde_json::json!({
+                "id": "did:plc:labeler123",
+                "service": [{
+                    "id": "#atproto_labeler",
+                    "type": "AtprotoLabeler",
+                    "serviceEndpoint": "https://mod.example.com",
+                }],
+            }),
+        )
+        .await;
+
+        let (endpoint, header_value) =
+            resolve_atproto_proxy_target(&state, "did:plc:labeler123#atproto_labeler")
+                .await
+                .unwrap();
+        assert_eq!(endpoint, "https://mod.example.com");
+        assert_eq!(header_value, "did:plc:labeler123#atproto_labeler");
+    }
+
+    #[tokio::test]
+    async fn resolves_service_by_fully_qualified_id() {
+        let state = test_state().await;
+        seed_did_document(
+            &state.db,
+            "did:plc:labeler123",
+            serde_json::json!({
+                "id": "did:plc:labeler123",
+                "service": [{
+                    "id": "did:plc:labeler123#atproto_labeler",
+                    "type": "AtprotoLabeler",
+                    "serviceEndpoint": "https://mod.example.com",
+                }],
+            }),
+        )
+        .await;
+
+        let (endpoint, _) =
+            resolve_atproto_proxy_target(&state, "did:plc:labeler123#atproto_labeler")
+                .await
+                .unwrap();
+        assert_eq!(endpoint, "https://mod.example.com");
+    }
+
+    #[tokio::test]
+    async fn rejects_header_missing_fragment() {
+        let state = test_state().await;
+        let err = resolve_atproto_proxy_target(&state, "did:plc:labeler123")
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code(), 400);
+    }
+
+    #[tokio::test]
+    async fn rejects_non_http_service_endpoint() {
+        let state = test_state().await;
+        seed_did_document(
+            &state.db,
+            "did:plc:labeler123",
+            serde_json::json!({
+                "id": "did:plc:labeler123",
+                "service": [{
+                    "id": "#atproto_labeler",
+                    "type": "AtprotoLabeler",
+                    "serviceEndpoint": "ftp://mod.example.com",
+                }],
+            }),
+        )
+        .await;
+
+        let err = resolve_atproto_proxy_target(&state, "did:plc:labeler123#atproto_labeler")
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code(), 503);
+    }
 
     #[test]
     fn did_web_url_uses_well_known_for_bare_domain() {

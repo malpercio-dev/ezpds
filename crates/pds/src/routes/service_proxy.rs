@@ -1,7 +1,8 @@
 // pattern: Imperative Shell
 //
 // Gathers: an incoming XRPC request (method, query, headers, body) bound for an upstream
-//          atproto service — the AppView for `app.bsky.*`, the chat service for `chat.bsky.*`
+//          atproto service — the AppView for `app.bsky.*`, the chat service for `chat.bsky.*`,
+//          or a client-named labeler for `com.atproto.moderation.*`
 // Processes: mints a fresh ES256 service-auth JWT (signed by the account's repo key) and
 //            forwards the request to the given upstream under that token
 // Returns: the upstream's status, content-type, and streamed response body
@@ -30,7 +31,8 @@ fn is_length_limit_error(err: &axum::Error) -> bool {
         .unwrap_or(false)
 }
 
-/// Forward an XRPC request to an upstream atproto service (the AppView or the chat service).
+/// Forward an XRPC request to an upstream atproto service (the AppView, the chat service, or a
+/// labeler/moderation service).
 ///
 /// `upstream_url` is the service base URL (no trailing slash) and `proxy_did` is its service
 /// DID, sent as the `atproto-proxy` header so the upstream knows the request arrives on the
@@ -779,5 +781,184 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // --- com.atproto.moderation.* proxy (client-named labeler via atproto-proxy header) ---
+
+    // Unlike app.bsky.*/chat.bsky.*, moderation has no single configured upstream: the client
+    // names the labeler to report to via the atproto-proxy header, and the pds resolves that
+    // DID's advertised service endpoint before forwarding.
+    async fn state_with_master_key_and_repo() -> AppState {
+        let base = test_state().await;
+        let mut config = (*base.config).clone();
+        with_master_key(&mut config);
+        seed_repo_key(&base.db).await;
+        AppState {
+            config: Arc::new(config),
+            ..base
+        }
+    }
+
+    #[tokio::test]
+    async fn proxies_create_report_to_labeler_named_by_atproto_proxy_header() {
+        let server = MockServer::start().await;
+        let state = state_with_master_key_and_repo().await;
+        crate::routes::test_utils::seed_did_document(
+            &state.db,
+            "did:plc:labeler123",
+            serde_json::json!({
+                "id": "did:plc:labeler123",
+                "service": [{
+                    "id": "#atproto_labeler",
+                    "type": "AtprotoLabeler",
+                    "serviceEndpoint": server.uri(),
+                }],
+            }),
+        )
+        .await;
+        let auth = bearer(&state);
+
+        Mock::given(method("POST"))
+            .and(path("/xrpc/com.atproto.moderation.createReport"))
+            .and(header(
+                "atproto-proxy",
+                "did:plc:labeler123#atproto_labeler",
+            ))
+            .and(body_json(serde_json::json!({
+                "reasonType": "com.atproto.moderation.defs#reasonSpam",
+                "subject": {
+                    "$type": "com.atproto.admin.defs#repoRef",
+                    "did": "did:plc:abc123",
+                },
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 1,
+                "reasonType": "com.atproto.moderation.defs#reasonSpam",
+                "subject": { "$type": "com.atproto.admin.defs#repoRef", "did": "did:plc:abc123" },
+                "reportedBy": "did:plc:tester",
+                "createdAt": "2026-07-02T00:00:00.000Z",
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.moderation.createReport")
+                    .header("authorization", auth)
+                    .header("content-type", "application/json")
+                    .header("atproto-proxy", "did:plc:labeler123#atproto_labeler")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "reasonType": "com.atproto.moderation.defs#reasonSpam",
+                            "subject": {
+                                "$type": "com.atproto.admin.defs#repoRef",
+                                "did": "did:plc:abc123",
+                            },
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["id"], 1);
+    }
+
+    // No mock is mounted: if the request escaped without a resolved target, there'd be nothing to
+    // prove a clean 400 short-circuited the proxy — the absence of a listener would surface as a
+    // different failure. A missing header must fail before any DID resolution is attempted.
+    #[tokio::test]
+    async fn create_report_without_atproto_proxy_header_is_rejected() {
+        let state = state_with_master_key_and_repo().await;
+        let auth = bearer(&state);
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.moderation.createReport")
+                    .header("authorization", auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"reasonType":"com.atproto.moderation.defs#reasonSpam","subject":{}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "InvalidRequest");
+    }
+
+    // A resolvable DID that doesn't advertise the requested service id must not silently proxy
+    // to nothing — the caller gets a clear 503, not the labeler's default endpoint or a panic.
+    #[tokio::test]
+    async fn create_report_targeting_unknown_service_id_is_rejected() {
+        let state = state_with_master_key_and_repo().await;
+        crate::routes::test_utils::seed_did_document(
+            &state.db,
+            "did:plc:labeler123",
+            serde_json::json!({
+                "id": "did:plc:labeler123",
+                "service": [{
+                    "id": "#atproto_pds",
+                    "type": "AtprotoPersonalDataServer",
+                    "serviceEndpoint": "https://pds.example.com",
+                }],
+            }),
+        )
+        .await;
+        let auth = bearer(&state);
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.moderation.createReport")
+                    .header("authorization", auth)
+                    .header("content-type", "application/json")
+                    .header("atproto-proxy", "did:plc:labeler123#atproto_labeler")
+                    .body(Body::from(
+                        r#"{"reasonType":"com.atproto.moderation.defs#reasonSpam","subject":{}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn create_report_without_auth_is_rejected() {
+        let state = state_with_master_key_and_repo().await;
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.moderation.createReport")
+                    .header("atproto-proxy", "did:plc:labeler123#atproto_labeler")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }
