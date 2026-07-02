@@ -438,7 +438,7 @@ async fn xrpc_handler(
     req: axum::extract::Request,
 ) -> Response {
     use crate::auth::jwt::AuthScope;
-    use crate::identity_resolution::resolve_atproto_proxy_target;
+    use crate::identity_resolution::{resolve_atproto_proxy_target, ModerationProxyGuard};
     use crate::routes::service_proxy::proxy_xrpc;
 
     let upstream = if method.starts_with("app.bsky.") {
@@ -477,7 +477,7 @@ async fn xrpc_handler(
         .into_response();
     }
 
-    let (url, proxy_did, pinned) = match upstream {
+    let (url, proxy_did, guard) = match upstream {
         ProxyUpstream::AppView => (
             state.config.appview.url.clone(),
             state.config.appview.did.clone(),
@@ -502,7 +502,15 @@ async fn xrpc_handler(
                 .into_response();
             };
             match resolve_atproto_proxy_target(&state, &header_value).await {
-                Ok(target) => (target.url, target.header_value, target.pinned),
+                // Always a guard, whether or not the host needed DNS pinning: the caller-
+                // controlled target still requires the redirect-disabled hardened client.
+                Ok(target) => (
+                    target.url,
+                    target.header_value,
+                    Some(ModerationProxyGuard {
+                        pinned: target.pinned,
+                    }),
+                ),
                 Err(err) => return err.into_response(),
             }
         }
@@ -514,7 +522,7 @@ async fn xrpc_handler(
         &proxy_did,
         &method,
         &user.did,
-        pinned.as_ref(),
+        guard.as_ref(),
         req,
     )
     .await

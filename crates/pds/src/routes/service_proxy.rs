@@ -18,7 +18,7 @@ use axum::{
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::identity_resolution::PinnedResolution;
+use crate::identity_resolution::ModerationProxyGuard;
 
 /// Maximum buffered request body when proxying to an upstream service. `app.bsky.*` and
 /// `chat.bsky.*` procedures carry small JSON payloads (preferences, mutes, message sends);
@@ -46,19 +46,22 @@ fn is_length_limit_error(err: &axum::Error) -> bool {
 /// upstream status, content type, and body are streamed straight back; a failure to reach the
 /// upstream maps to `503`, while upstream error *responses* (4xx/5xx) are passed through verbatim.
 ///
-/// `pinned` is `Some` only for the `com.atproto.moderation.*` branch, whose target host was
-/// resolved and SSRF-validated from a caller-controlled DID document
+/// `moderation_guard` is `Some` only for the `com.atproto.moderation.*` branch, whose target host
+/// was resolved and SSRF-validated from a caller-controlled DID document
 /// (`identity_resolution::resolve_atproto_proxy_target`). When present, the outbound request is
-/// sent on a one-off client pinned to exactly those validated addresses (see
-/// `build_pinned_client`) rather than `state.http_client`, so the HTTP client can't re-resolve
-/// the domain at connect time and land on an address that was never checked.
+/// sent on a one-off hardened client (see `build_moderation_client`) rather than
+/// `state.http_client`: redirects are disabled, since the SSRF check only inspects the first URL
+/// and a malicious labeler could otherwise 3xx its way onto a private address; when the host was
+/// a domain name, DNS resolution is additionally pinned to exactly the addresses already
+/// validated, so the client can't re-resolve at connect time and land on an address that was
+/// never checked.
 pub async fn proxy_xrpc(
     state: &AppState,
     upstream_url: &str,
     proxy_did: &str,
     nsid: &str,
     did: &str,
-    pinned: Option<&PinnedResolution>,
+    moderation_guard: Option<&ModerationProxyGuard>,
     req: Request,
 ) -> Response {
     // Preserve the original query string verbatim so upstream query params survive the hop.
@@ -69,8 +72,8 @@ pub async fn proxy_xrpc(
         .unwrap_or_default();
     let target = format!("{upstream_url}/xrpc/{nsid}{query}");
 
-    let client: Cow<'_, reqwest::Client> = match pinned {
-        Some(pin) => match build_pinned_client(pin) {
+    let client: Cow<'_, reqwest::Client> = match moderation_guard {
+        Some(guard) => match build_moderation_client(guard) {
             Ok(client) => Cow::Owned(client),
             Err(err) => return err.into_response(),
         },
@@ -159,23 +162,32 @@ pub async fn proxy_xrpc(
     }
 }
 
-/// Build a one-off HTTP client whose DNS resolution for `pin.domain` is overridden to exactly
-/// `pin.addrs` — the addresses `resolve_atproto_proxy_target` already validated as public.
+/// Build a one-off HTTP client hardened for proxying to a caller-controlled
+/// `com.atproto.moderation.*` target.
 ///
-/// Without this, `proxy_xrpc` would hand the *domain* to `state.http_client`, which re-resolves
-/// it independently at connect time; a second DNS answer (attacker-controlled, or simply a
-/// changed record between validation and connection) could then point at a private address that
-/// was never checked. Pinning closes that gap: the client can only ever connect to one of the
-/// addresses this request's validation already approved.
-fn build_pinned_client(pin: &PinnedResolution) -> Result<reqwest::Client, ApiError> {
-    reqwest::Client::builder()
+/// Always disables redirects: `resolve_atproto_proxy_target`'s SSRF check only inspects the
+/// *first* URL, so a malicious labeler returning a 3xx to a private/loopback/metadata address
+/// would otherwise sail straight past it — `state.http_client` and a naive pinned client both
+/// follow redirects by default. When `guard.pinned` is present (the host was a domain name), DNS
+/// resolution for that domain is additionally overridden to exactly the addresses already
+/// validated: without this, `proxy_xrpc` would hand the *domain* to the client, which re-resolves
+/// it independently at connect time, and a second DNS answer (attacker-controlled, or simply a
+/// changed record between validation and connection) could point at an address that was never
+/// checked.
+fn build_moderation_client(guard: &ModerationProxyGuard) -> Result<reqwest::Client, ApiError> {
+    let mut builder = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
-        .resolve_to_addrs(&pin.domain, &pin.addrs)
-        .build()
-        .map_err(|e| {
-            tracing::error!(error = %e, domain = %pin.domain, "failed to build pinned proxy client");
-            ApiError::new(ErrorCode::InternalError, "failed to prepare proxied request")
-        })
+        .redirect(reqwest::redirect::Policy::none());
+    if let Some(pin) = &guard.pinned {
+        builder = builder.resolve_to_addrs(&pin.domain, &pin.addrs);
+    }
+    builder.build().map_err(|e| {
+        tracing::error!(error = %e, "failed to build moderation proxy client");
+        ApiError::new(
+            ErrorCode::InternalError,
+            "failed to prepare proxied request",
+        )
+    })
 }
 
 /// Mint a fresh ES256 service-auth JWT for proxying `nsid` to `proxy_did` on behalf of `did`.
@@ -909,6 +921,59 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["id"], 1);
+    }
+
+    // A labeler's 3xx must be passed straight back to the caller, never followed — the SSRF guard
+    // (`resolve_atproto_proxy_target`) only validates the *first* URL, so an unvalidated redirect
+    // target must never be dereferenced by the PDS itself. No `Location` mock is even mounted for
+    // the redirect's own target: if the client followed it, the request would either 404 against
+    // this same mock server (proving a follow happened) or hang/fail against nothing at all.
+    #[tokio::test]
+    async fn create_report_does_not_follow_redirect_from_labeler() {
+        let server = MockServer::start().await;
+        let state = state_with_master_key_and_repo().await;
+        crate::routes::test_utils::seed_did_document(
+            &state.db,
+            "did:plc:labeler123",
+            serde_json::json!({
+                "id": "did:plc:labeler123",
+                "service": [{
+                    "id": "#atproto_labeler",
+                    "type": "AtprotoLabeler",
+                    "serviceEndpoint": server.uri(),
+                }],
+            }),
+        )
+        .await;
+        let auth = bearer(&state);
+
+        Mock::given(method("POST"))
+            .and(path("/xrpc/com.atproto.moderation.createReport"))
+            .respond_with(
+                ResponseTemplate::new(302).insert_header("location", "http://169.254.169.254/"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.moderation.createReport")
+                    .header("authorization", auth)
+                    .header("content-type", "application/json")
+                    .header("atproto-proxy", "did:plc:labeler123#atproto_labeler")
+                    .body(Body::from(
+                        r#"{"reasonType":"com.atproto.moderation.defs#reasonSpam","subject":{}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // The mock's own 302 is what must come back — proof the PDS didn't chase the Location.
+        assert_eq!(response.status(), StatusCode::FOUND);
     }
 
     // No mock is mounted: if the request escaped without a resolved target, there'd be nothing to

@@ -151,6 +151,18 @@ pub struct ProxyTarget {
     pub pinned: Option<PinnedResolution>,
 }
 
+/// Marks a `proxy_xrpc` call as targeting a caller-controlled destination
+/// (`com.atproto.moderation.*`), so it must go through a hardened client: redirects disabled (a
+/// malicious labeler can't 3xx its way onto a private/loopback address past the SSRF check that
+/// only inspects the *first* URL) and, when the host was a domain name, DNS resolution pinned to
+/// the addresses `resolve_atproto_proxy_target` already validated. `app.bsky.*`/`chat.bsky.*`
+/// requests pass `None` for this and use the shared `state.http_client` unchanged — their
+/// upstream is admin-configured, not caller-controlled, so neither concern applies.
+#[derive(Debug)]
+pub struct ModerationProxyGuard {
+    pub pinned: Option<PinnedResolution>,
+}
+
 /// A domain name plus the specific addresses an outbound connection to it must be pinned to.
 #[derive(Debug)]
 pub struct PinnedResolution {
@@ -271,10 +283,17 @@ async fn validate_proxy_endpoint(
         }
         url::Host::Domain(domain) => {
             let domain = domain.to_string();
-            let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((domain.as_str(), port))
-                .await
-                .map_err(|_| bad_target())?
-                .collect();
+            // The domain comes from a caller-chosen DID document, so a resolver that's slow (or
+            // made slow on purpose) must not be able to tie up request handling indefinitely —
+            // bound it well under the outbound HTTP client's own 10s timeout.
+            let addrs: Vec<std::net::SocketAddr> = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                tokio::net::lookup_host((domain.as_str(), port)),
+            )
+            .await
+            .map_err(|_| bad_target())?
+            .map_err(|_| bad_target())?
+            .collect();
             if addrs.is_empty() || !addrs.iter().all(|addr| ip_allowed(addr.ip())) {
                 return Err(bad_target());
             }
@@ -306,7 +325,9 @@ fn is_global_ipv4(ip: std::net::Ipv4Addr) -> bool {
         || ip.is_documentation()
         || ip.is_unspecified()
         || ip.is_multicast()
-        || is_shared_address_space(ip))
+        || is_shared_address_space(ip)
+        || is_benchmark_address_space(ip)
+        || is_reserved_ipv4(ip))
 }
 
 /// `100.64.0.0/10` (RFC 6598 carrier-grade NAT) — not covered by `Ipv4Addr::is_private`.
@@ -315,11 +336,30 @@ fn is_shared_address_space(ip: std::net::Ipv4Addr) -> bool {
     a == 100 && (b & 0b1100_0000) == 0b0100_0000
 }
 
+/// `198.18.0.0/15` (RFC 2544 network-device benchmarking) — not covered by
+/// `Ipv4Addr::is_documentation`.
+fn is_benchmark_address_space(ip: std::net::Ipv4Addr) -> bool {
+    let [a, b, ..] = ip.octets();
+    a == 198 && (b & 0xfe) == 18
+}
+
+/// `240.0.0.0/4` ("Class E", reserved for future use) plus the all-ones broadcast address's
+/// neighborhood — not covered by `Ipv4Addr::is_broadcast` (which only matches
+/// `255.255.255.255` exactly).
+fn is_reserved_ipv4(ip: std::net::Ipv4Addr) -> bool {
+    ip.octets()[0] >= 240
+}
+
 fn is_global_ipv6(ip: std::net::Ipv6Addr) -> bool {
     if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {
         return false;
     }
-    let first_segment = ip.segments()[0];
+    let segments = ip.segments();
+    // 2001:db8::/32 — documentation range (RFC 3849).
+    if segments[0] == 0x2001 && segments[1] == 0x0db8 {
+        return false;
+    }
+    let first_segment = segments[0];
     // fc00::/7 — unique local addresses (RFC 4193).
     if (first_segment & 0xfe00) == 0xfc00 {
         return false;
@@ -663,7 +703,9 @@ mod tests {
             "192.168.1.5",     // RFC 1918 private
             "169.254.169.254", // cloud-metadata (link-local range)
             "100.64.0.5",      // RFC 6598 carrier-grade NAT
+            "198.18.0.1",      // RFC 2544 benchmarking
             "0.0.0.0",         // unspecified
+            "240.0.0.1",       // reserved ("Class E")
             "255.255.255.255", // broadcast
         ] {
             let err = validate_proxy_endpoint(&format!("http://{host}"), false)
@@ -679,6 +721,7 @@ mod tests {
             "[::1]",                // loopback
             "[fc00::1]",            // unique-local (RFC 4193)
             "[fe80::1]",            // link-local
+            "[2001:db8::1]",        // documentation (RFC 3849)
             "[::ffff:127.0.0.1]",   // IPv4-mapped loopback — must not bypass the IPv4 checks
             "[::ffff:169.254.1.1]", // IPv4-mapped link-local/metadata range
         ] {
@@ -689,15 +732,17 @@ mod tests {
         }
     }
 
-    // The only test that touches live DNS: confirms the domain-resolution branch actually wires
-    // up (pins to the addresses it validated), not just the IP-literal fast path exercised above.
+    // Confirms the domain-resolution branch actually wires up (pins to the addresses it
+    // validated), not just the IP-literal fast path exercised above. Uses `localhost` under the
+    // loopback relaxation rather than a real external domain, so the test stays hermetic — no
+    // live DNS/network dependency.
     #[tokio::test]
-    async fn resolves_and_pins_a_real_domain() {
-        let pinned = validate_proxy_endpoint("https://example.com", false)
+    async fn resolves_and_pins_a_domain_name() {
+        let pinned = validate_proxy_endpoint("http://localhost:80", true)
             .await
             .unwrap()
-            .expect("example.com is a domain name, not an IP literal");
-        assert_eq!(pinned.domain, "example.com");
+            .expect("localhost is a domain name, not an IP literal");
+        assert_eq!(pinned.domain, "localhost");
         assert!(!pinned.addrs.is_empty());
     }
 
