@@ -245,14 +245,21 @@ impl MultiWindowLimiter {
                 reset_after_secs: binding_reset,
             }
         } else {
+            // Never hand back 0 on a rejection: a client that retries immediately would just be
+            // rejected again. When no in-window sample could set a reset — e.g. a single op costs
+            // more than the whole budget (a misconfiguration): the request is permanently
+            // inadmissible — fall back to the longest window rather than a 1-second busy-retry.
+            let fallback = self.max_window.as_secs().max(1);
+            let reset_after_secs = if rejection_reset == 0 {
+                fallback
+            } else {
+                rejection_reset.min(fallback)
+            };
             RateLimitDecision {
                 allowed: false,
                 limit: binding_limit,
                 remaining: 0,
-                // Never hand back 0 on a rejection: a client that retries immediately would just be
-                // rejected again. Fall back to the longest window if no sample sets a reset (e.g. a
-                // single op costs more than the whole budget — a misconfiguration, but bounded).
-                reset_after_secs: rejection_reset.max(1).min(self.max_window.as_secs().max(1)),
+                reset_after_secs,
             }
         }
     }
@@ -376,6 +383,17 @@ mod window_tests {
         assert!(!d.allowed);
         // cost-1 sample expires at t0+300 (200s away); cost-4 sample at t1+300 (300s away). Freeing
         // 3 points needs the cost-4 sample, so reset must be ~300, not the oldest's ~200.
+        assert_eq!(d.reset_after_secs, 300);
+    }
+
+    #[test]
+    fn cost_exceeding_budget_falls_back_to_longest_window() {
+        // A single op costing more than the whole budget is permanently inadmissible; with no
+        // in-window sample to time against, the reset must fall back to the longest window (not 1s).
+        let mut l = MultiWindowLimiter::new([win(60, 5), win(300, 20)]);
+        let now = Instant::now();
+        let d = l.check("k", 10, now);
+        assert!(!d.allowed);
         assert_eq!(d.reset_after_secs, 300);
     }
 
