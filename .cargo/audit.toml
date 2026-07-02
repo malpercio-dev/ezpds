@@ -8,6 +8,14 @@
 #   exists upstream. `rsa` is pulled in only transitively by sqlx-macros' compile-time
 #   MySQL backend; the pds is sqlite-only, so `rsa` is never exercised at runtime.
 #   Revisit when a fixed `rsa` release is published.
+#
+# RUSTSEC-2026-0194 / RUSTSEC-2026-0195 — quadratic runtime / unbounded namespace-
+#   allocation DoS in `quick-xml`'s `NsReader`. No reachable fixed release yet: `plist`
+#   (the only consumer in this tree) requires `quick-xml ^0.39.2` even at its newest
+#   release (1.9.0), which is below the fixed `>=0.41.0`. `plist` itself is pulled in
+#   only by `netdev`/`netwatch`/`iroh` (macOS-only network-interface enumeration) and by
+#   `tauri` (the iOS app shells) — neither is part of the deployed Linux PDS binary.
+#   Revisit when `plist` bumps its `quick-xml` requirement.
 
 [advisories]
-ignore = ["RUSTSEC-2023-0071"]
+ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0194", "RUSTSEC-2026-0195"]
