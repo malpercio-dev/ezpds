@@ -63,11 +63,13 @@ impl Config {
     ///
     /// Returns the configured `server_did` verbatim when present. Otherwise derives a
     /// `did:web` DID from the hostname in `public_url` as a placeholder until the
-    /// server mints a real DID.
+    /// server mints a real DID. A port's `:` is percent-encoded per the did:web
+    /// method spec (`did:web:host%3A8080`), since a raw colon reads as a path
+    /// segment separator in DID syntax.
     pub fn resolve_server_did(&self) -> String {
         match &self.server_did {
             Some(did) => did.clone(),
-            None => format!("did:web:{}", self.public_host()),
+            None => format!("did:web:{}", self.public_host().replace(':', "%3A")),
         }
     }
 }
@@ -1059,6 +1061,17 @@ mod tests {
     fn resolve_server_did_derives_did_web_from_public_url() {
         let config = validate_and_build(minimal_raw()).unwrap();
         assert_eq!(config.resolve_server_did(), "did:web:pds.example.com");
+    }
+
+    #[test]
+    fn resolve_server_did_percent_encodes_port() {
+        let mut raw = minimal_raw();
+        raw.public_url = Some("https://pds.example.com:8443".to_string());
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(
+            config.resolve_server_did(),
+            "did:web:pds.example.com%3A8443"
+        );
     }
 
     #[test]
