@@ -38,7 +38,7 @@ understand why the architecture is the way it is.
 | [0001](0001-client-held-rotation-key-custody.md) | Accepted | The user's wallet holds `rotationKeys[0]`; the PDS holds `rotationKeys[1]` |
 | [0002](0002-wallet-authorized-account-migration.md) | Proposed | Account migration is wallet-authorized by default, with a PDS-signed interop fallback |
 | [0003](0003-did-plc-as-did-method.md) | Accepted | `did:plc` as the DID method (not `did:web`/`did:key`) |
-| [0004](0004-pds-signed-repo-commits.md) | Accepted | The PDS signs repo commits; the device constructs unsigned commits |
+| [0004](0004-pds-signed-repo-commits.md) | Accepted | The PDS holds the repo signing key and signs commits |
 | [0005](0005-functional-core-imperative-shell.md) | Accepted | Functional Core / Imperative Shell workspace architecture |
 | [0006](0006-oauth-callback-via-aswebauthenticationsession.md) | Accepted | OAuth callback via ASWebAuthenticationSession (vendored plugin), not deep links |
 | [0007](0007-mobile-only-pds-is-full-pds.md) | Accepted | Mobile-only phase — the PDS is a full PDS (four-phase device model) |
