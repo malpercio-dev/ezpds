@@ -395,7 +395,11 @@ mod tests {
                 .unwrap()
         };
         // Exhaust the cap, then the throttled response must still carry the CORS allow-origin header.
-        let _ = router.clone().oneshot(cors_req("203.0.113.5")).await.unwrap();
+        let _ = router
+            .clone()
+            .oneshot(cors_req("203.0.113.5"))
+            .await
+            .unwrap();
         let resp = router.oneshot(cors_req("203.0.113.5")).await.unwrap();
         assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
         assert!(
