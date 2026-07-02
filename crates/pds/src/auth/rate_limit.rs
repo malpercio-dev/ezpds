@@ -172,53 +172,67 @@ impl MultiWindowLimiter {
             }
         }
 
-        // Evaluate every window; track the most-constrained one (least headroom) for the headers
-        // and whether any window forbids the request.
+        // Evaluate every window. Track the most-constrained one (least headroom) for the
+        // allowed-path headers, whether any window forbids the request, and — across *rejecting*
+        // windows — how long until the request could actually be admitted.
         let mut allowed = true;
         let mut binding_limit = u64::MAX;
         let mut binding_remaining = u64::MAX;
         let mut binding_reset = 0u64;
+        let mut rejection_reset = 0u64;
 
         for w in &self.windows {
             let cutoff = now.checked_sub(w.window);
+            let counts = |ts: Instant| match cutoff {
+                Some(c) => ts >= c,
+                // Window longer than the process has been up: everything counts.
+                None => true,
+            };
             // Consumed points within this window, and the oldest in-window sample (its expiry sets
-            // the reset time for this window).
+            // the reset time reported while the window still has headroom).
             let mut consumed = 0u64;
-            let mut oldest_in_window: Option<Instant> = None;
+            let mut oldest_reset = 0u64;
+            let mut oldest_seen = false;
             for &(ts, points) in deque.iter() {
-                let in_window = match cutoff {
-                    Some(c) => ts >= c,
-                    // Window longer than the process has been up: everything counts.
-                    None => true,
-                };
-                if in_window {
+                if counts(ts) {
                     consumed = consumed.saturating_add(points);
-                    if oldest_in_window.is_none() {
-                        oldest_in_window = Some(ts);
+                    if !oldest_seen {
+                        oldest_reset = w.window.saturating_sub(now.duration_since(ts)).as_secs();
+                        oldest_seen = true;
                     }
                 }
             }
 
             let remaining_before = w.max_points.saturating_sub(consumed);
-            if consumed.saturating_add(cost) > w.max_points {
+            let over_by = consumed.saturating_add(cost).saturating_sub(w.max_points);
+            if over_by > 0 {
                 allowed = false;
+                // Retry time for this window = when enough of the oldest samples expire to free
+                // `over_by` points. Walking oldest→newest and stopping once that much has expired
+                // matters for weighted costs: the single oldest sample may not free enough on its
+                // own. The overall retry is the max across all rejecting windows.
+                let mut freed = 0u64;
+                let mut retry = oldest_reset;
+                for &(ts, points) in deque.iter() {
+                    if !counts(ts) {
+                        continue;
+                    }
+                    retry = w.window.saturating_sub(now.duration_since(ts)).as_secs();
+                    freed = freed.saturating_add(points);
+                    if freed >= over_by {
+                        break;
+                    }
+                }
+                rejection_reset = rejection_reset.max(retry);
             }
-
-            // Seconds until this window frees the oldest in-window sample (i.e. capacity opens).
-            let reset = oldest_in_window
-                .map(|ts| {
-                    let elapsed = now.duration_since(ts);
-                    w.window.saturating_sub(elapsed).as_secs()
-                })
-                .unwrap_or(0);
 
             // The binding window is the one with the least headroom; on ties the tighter reset wins.
             if remaining_before < binding_remaining
-                || (remaining_before == binding_remaining && reset > binding_reset)
+                || (remaining_before == binding_remaining && oldest_reset > binding_reset)
             {
                 binding_limit = w.max_points;
                 binding_remaining = remaining_before;
-                binding_reset = reset;
+                binding_reset = oldest_reset;
             }
         }
 
@@ -238,7 +252,7 @@ impl MultiWindowLimiter {
                 // Never hand back 0 on a rejection: a client that retries immediately would just be
                 // rejected again. Fall back to the longest window if no sample sets a reset (e.g. a
                 // single op costs more than the whole budget — a misconfiguration, but bounded).
-                reset_after_secs: binding_reset.max(1).min(self.max_window.as_secs().max(1)),
+                reset_after_secs: rejection_reset.max(1).min(self.max_window.as_secs().max(1)),
             }
         }
     }
@@ -346,6 +360,23 @@ mod window_tests {
             "idle keys should be evicted, tracked {}",
             l.tracked_keys()
         );
+    }
+
+    #[test]
+    fn weighted_rejection_reset_reflects_capacity_needed() {
+        // 5-point window: a cost-1 sample at t0, then a cost-4 sample at t0+100 fills it. A cost-3
+        // request at t0+100 is over by 3; the oldest (cost-1) sample expiring only frees 1 point,
+        // so the retry must wait for the cost-4 sample too — its later expiry, not the oldest's.
+        let mut l = MultiWindowLimiter::new([win(300, 5)]);
+        let t0 = Instant::now();
+        assert!(l.check("k", 1, t0).allowed);
+        let t1 = t0 + Duration::from_secs(100);
+        assert!(l.check("k", 4, t1).allowed);
+        let d = l.check("k", 3, t1);
+        assert!(!d.allowed);
+        // cost-1 sample expires at t0+300 (200s away); cost-4 sample at t1+300 (300s away). Freeing
+        // 3 points needs the cost-4 sample, so reset must be ~300, not the oldest's ~200.
+        assert_eq!(d.reset_after_secs, 300);
     }
 
     #[test]

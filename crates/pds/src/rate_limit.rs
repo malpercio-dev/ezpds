@@ -25,7 +25,7 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use axum::{
     extract::{ConnectInfo, Request, State},
@@ -141,13 +141,16 @@ impl RateLimiterState {
         if decision.allowed {
             Ok(())
         } else {
+            // Carry the same Retry-After / RateLimit-* headers the middleware sets, so a client
+            // hitting the write budget learns when to retry (the error envelope alone can't).
             Err(ApiError::new(
                 ErrorCode::RateLimited,
-                format!(
-                    "repo write rate limit exceeded; retry in ~{}s",
-                    decision.reset_after_secs
-                ),
-            ))
+                "repo write rate limit exceeded; slow down and retry later",
+            )
+            .with_header("retry-after", decision.reset_after_secs.to_string())
+            .with_header("ratelimit-limit", decision.limit.to_string())
+            .with_header("ratelimit-remaining", decision.remaining.to_string())
+            .with_header("ratelimit-reset", decision.reset_after_secs.to_string()))
         }
     }
 }
@@ -182,20 +185,17 @@ fn client_ip(headers: &HeaderMap, connect_info: Option<&ConnectInfo<SocketAddr>>
     "unknown".to_string()
 }
 
-/// Attach `RateLimit-Limit` / `RateLimit-Remaining` / `RateLimit-Reset` (unix seconds) to a
-/// response from a limiter decision. Best-effort: a clock read before `UNIX_EPOCH` (impossible in
-/// practice) simply reports the delta.
+/// Attach `RateLimit-Limit` / `RateLimit-Remaining` / `RateLimit-Reset` to a response from a
+/// limiter decision. `RateLimit-Reset` is a *delta-seconds* value (seconds until capacity frees),
+/// per the IETF `RateLimit` header fields draft, so it's consistent with `Retry-After` — not an
+/// absolute Unix timestamp.
 fn apply_rate_limit_headers(resp: &mut Response, decision: &RateLimitDecision) {
-    let now_unix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
     let headers = resp.headers_mut();
     headers.insert("ratelimit-limit", HeaderValue::from(decision.limit));
     headers.insert("ratelimit-remaining", HeaderValue::from(decision.remaining));
     headers.insert(
         "ratelimit-reset",
-        HeaderValue::from(now_unix + decision.reset_after_secs),
+        HeaderValue::from(decision.reset_after_secs),
     );
 }
 
