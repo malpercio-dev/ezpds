@@ -1,0 +1,701 @@
+/*
+ * ezpds marketing site — "The Sealed Credential" (Obsign) with a Brass Console
+ * (Custos) register scope.
+ *
+ * Tokens are forked from the two live app token layers:
+ *   apps/identity-wallet/src/lib/styles/tokens.css   (Obsign — the default register)
+ *   apps/admin-companion/src/lib/styles/tokens.css   (Brass Console — .register-custos)
+ * Values must not drift from those files; when a brief changes, re-fork.
+ *
+ * Web-scale derivation: the app scales are mobile-restrained (display 1.75rem).
+ * The web extends the same ~1.2 modular scale upward two steps for hero/section
+ * moments (2.1rem, 2.5rem) — fixed rem steps behind a media query, never fluid
+ * clamp() (the briefs' fixed-rem doctrine).
+ *
+ * Accessibility bar: WCAG 2.2 AAA targets; status never color alone; visible
+ * focus ring on every interactive element; prefers-reduced-motion honored.
+ */
+
+/* ── Self-hosted brand fonts (no runtime CDN) ─────────────────────────── */
+@font-face {
+  font-family: 'Public Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../fonts/PublicSans-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Public Sans';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('../fonts/PublicSans-Medium.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Public Sans';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('../fonts/PublicSans-SemiBold.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Public Sans';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('../fonts/PublicSans-Bold.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../fonts/JetBrainsMono-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('../fonts/JetBrainsMono-Medium.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Libre Caslon Display';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../fonts/LibreCaslonDisplay-Regular.ttf') format('truetype');
+}
+
+/* ── Tokens: Obsign, "The Sealed Credential" (default register) ───────── */
+:root {
+  --color-primary: oklch(0.46 0.105 62);
+  --color-primary-deep: oklch(0.38 0.09 60);
+  --color-accent: oklch(0.34 0.1 330);
+  --color-accent-deep: oklch(0.28 0.09 330);
+  --color-seal-pale: oklch(0.92 0.055 80);
+  --color-on-color: oklch(0.99 0.005 80);
+
+  --color-bg: oklch(1 0 0);
+  --color-surface: oklch(0.975 0.004 75);
+  --color-surface-sunk: oklch(0.955 0.005 75);
+  --color-ink: oklch(0.23 0.012 60);
+  --color-ink-soft: oklch(0.31 0.012 60);
+  --color-muted: oklch(0.42 0.012 60);
+  --color-line: oklch(0.9 0.004 75);
+
+  --color-safe: oklch(0.4 0.1 150);
+  --color-safe-surface: oklch(0.95 0.045 150);
+  --color-warning: oklch(0.42 0.1 60);
+  --color-warning-surface: oklch(0.95 0.055 75);
+  --color-critical: oklch(0.44 0.16 25);
+  --color-critical-surface: oklch(0.95 0.045 25);
+  --color-expired: oklch(0.42 0.02 25);
+  --color-expired-surface: oklch(0.95 0.004 25);
+
+  --color-focus-ring: var(--color-accent);
+
+  --font-display: 'Libre Caslon Display', Georgia, 'Times New Roman', serif;
+  --font-sans: 'Public Sans', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* App scale + two web extension steps (~1.2 ratio, fixed rem). */
+  --text-hero: 2.5rem;
+  --leading-hero: 1.12;
+  --text-display: 2.1rem;
+  --leading-display: 1.15;
+  --text-headline: 1.375rem;
+  --leading-headline: 1.25;
+  --text-title: 1.125rem;
+  --leading-title: 1.3;
+  --text-body: 1rem;
+  --leading-body: 1.6;
+  --text-label: 0.8125rem;
+  --leading-label: 1.3;
+  --text-data: 0.875rem;
+  --leading-data: 1.55;
+
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-2xl: 48px;
+  --space-3xl: 80px;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 9999px;
+
+  --ease-standard: cubic-bezier(0.22, 1, 0.36, 1);
+  --duration-base: 180ms;
+}
+
+/* ── Tokens: Custos, "The Brass Console" (scoped register) ────────────── */
+.register-custos {
+  --color-primary: oklch(0.72 0.12 80);
+  --color-primary-deep: oklch(0.7 0.13 78);
+  --color-on-primary: oklch(0.16 0.012 250);
+  --color-on-color: oklch(0.96 0.006 250);
+
+  --color-bg: oklch(0.18 0.012 250);
+  --color-surface: oklch(0.22 0.014 250);
+  --color-surface-sunk: oklch(0.26 0.015 250);
+  --color-ink: oklch(0.95 0.006 250);
+  --color-ink-soft: oklch(0.82 0.008 250);
+  --color-muted: oklch(0.73 0.01 250);
+  --color-line: oklch(0.34 0.012 250);
+
+  --color-safe: oklch(0.82 0.1 150);
+  --color-safe-surface: oklch(0.26 0.04 150);
+  --color-warning: oklch(0.82 0.1 50);
+  --color-warning-surface: oklch(0.26 0.04 50);
+  --color-critical: oklch(0.82 0.1 25);
+  --color-critical-surface: oklch(0.26 0.04 25);
+
+  /* Gold focus ring on the dark ground (the admin app's convention). */
+  --color-focus-ring: var(--color-primary);
+
+  /* Brass Console radii run a step tighter — a precision instrument. */
+  --radius-md: 6px;
+  --radius-lg: 10px;
+
+  background: var(--color-bg);
+  color: var(--color-ink);
+}
+
+/* ── Base ─────────────────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  color: var(--color-ink);
+  background: var(--color-bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The visible focus ring is a security feature, never removed. */
+:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+a {
+  color: var(--color-accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+a:hover {
+  color: var(--color-accent-deep);
+}
+.register-custos a {
+  color: var(--color-primary);
+}
+.register-custos a:hover {
+  color: oklch(0.78 0.13 82);
+}
+
+code,
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-data);
+  line-height: var(--leading-data);
+  word-break: break-all; /* the Literal-Truth rule: never truncate a key silently */
+}
+
+.container {
+  max-width: 66rem;
+  margin: 0 auto;
+  padding: 0 var(--space-lg);
+}
+
+.prose {
+  max-width: 68ch;
+}
+
+section {
+  padding: var(--space-3xl) 0;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  background: var(--color-bg);
+  color: var(--color-ink);
+  padding: var(--space-sm) var(--space-md);
+  z-index: 10;
+}
+.skip-link:focus-visible {
+  left: var(--space-md);
+  top: var(--space-md);
+}
+
+/* ── Header / nav ─────────────────────────────────────────────────────── */
+.site-header {
+  border-bottom: 1px solid var(--color-line);
+  background: var(--color-bg);
+}
+.site-header .container {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  min-height: 64px;
+}
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  color: var(--color-ink);
+  font-weight: 600;
+  font-size: var(--text-title);
+}
+.site-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--space-lg);
+}
+.site-nav a {
+  color: var(--color-ink-soft);
+  text-decoration: none;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  padding: var(--space-sm) 0;
+}
+.site-nav a:hover {
+  color: var(--color-ink);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+/* ── The seal mark (matches the wallet's SealEmblem) ──────────────────── */
+.seal {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-primary);
+  color: var(--color-on-color);
+  box-shadow:
+    inset 0 0 0 2px oklch(0.99 0.05 80 / 0.35),
+    inset 0 -3px 8px oklch(0.2 0.05 60 / 0.22);
+}
+.seal-sm {
+  width: 32px;
+  height: 32px;
+}
+.seal-lg {
+  width: 72px;
+  height: 72px;
+}
+
+/* ── Hero ─────────────────────────────────────────────────────────────── */
+.hero {
+  padding: var(--space-3xl) 0;
+  text-align: left;
+}
+.hero h1 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: var(--text-hero);
+  line-height: var(--leading-hero);
+  max-width: 22ch;
+  margin: var(--space-lg) 0 var(--space-md);
+}
+.hero .lede {
+  font-size: var(--text-title);
+  line-height: 1.55;
+  color: var(--color-ink-soft);
+  max-width: 58ch;
+}
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  margin-top: var(--space-xl);
+}
+.hero-honesty {
+  margin-top: var(--space-lg);
+  font-size: var(--text-label);
+  color: var(--color-muted);
+}
+
+/* ── Buttons ──────────────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  min-height: 44px;
+  padding: 12px 20px;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  font-family: var(--font-sans);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color var(--duration-base) var(--ease-standard);
+}
+.btn-primary {
+  background: var(--color-primary);
+  color: var(--color-on-color);
+}
+.btn-primary:hover {
+  background: var(--color-primary-deep);
+  color: var(--color-on-color);
+}
+.register-custos .btn-primary {
+  color: var(--color-on-primary);
+}
+.register-custos .btn-primary:hover {
+  background: oklch(0.78 0.13 82);
+  color: var(--color-on-primary);
+}
+.btn-secondary {
+  background: var(--color-surface);
+  color: var(--color-ink);
+  border-color: var(--color-line);
+}
+.btn-secondary:hover {
+  background: var(--color-surface-sunk);
+  color: var(--color-ink);
+}
+
+/* ── Sections ─────────────────────────────────────────────────────────── */
+.section-alt {
+  background: var(--color-surface);
+  border-top: 1px solid var(--color-line);
+  border-bottom: 1px solid var(--color-line);
+}
+h2 {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: var(--text-display);
+  line-height: var(--leading-display);
+  letter-spacing: -0.005em;
+  max-width: 28ch;
+  margin-bottom: var(--space-md);
+}
+h3 {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: var(--text-title);
+  line-height: var(--leading-title);
+  margin-bottom: var(--space-sm);
+}
+.section-intro {
+  color: var(--color-ink-soft);
+  max-width: 68ch;
+  margin-bottom: var(--space-xl);
+}
+.section-intro p + p,
+.prose p + p {
+  margin-top: var(--space-md);
+}
+
+/* ── Cards (flat at rest: parchment + hairline, no shadow) ────────────── */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr); /* a deliberate 2×2 — no orphan card */
+  gap: var(--space-lg);
+}
+@media (max-width: 720px) {
+  .card-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-lg);
+  padding: var(--space-lg);
+}
+.section-alt .card {
+  background: var(--color-bg);
+}
+.card p {
+  color: var(--color-ink-soft);
+  font-size: 0.9375rem;
+}
+.card .card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-md);
+  background: var(--color-seal-pale);
+  color: var(--color-ink);
+  margin-bottom: var(--space-md);
+}
+
+/* ── Key-fact panel (mono literal truth) ──────────────────────────────── */
+.keyfacts {
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-lg);
+  padding: var(--space-lg);
+  max-width: 34rem;
+}
+.keyfacts dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-sm) var(--space-lg);
+  align-items: baseline;
+}
+.keyfacts dt {
+  font-family: var(--font-mono);
+  font-size: var(--text-data);
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+.keyfacts dd {
+  font-family: var(--font-mono);
+  font-size: var(--text-data);
+  color: var(--color-ink);
+  overflow-wrap: break-word; /* prose values — break-all is only for literal keys */
+}
+
+/* ── Status badges (illustration of the wallet's urgency system) ──────── */
+.badge-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  margin-top: var(--space-lg);
+}
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  font-size: var(--text-label);
+  font-weight: 500;
+  line-height: var(--leading-label);
+}
+.badge .glyph {
+  font-family: var(--font-mono);
+}
+.badge-safe {
+  background: var(--color-safe-surface);
+  color: var(--color-safe);
+}
+.badge-warning {
+  background: var(--color-warning-surface);
+  color: var(--color-warning);
+}
+.badge-critical {
+  background: var(--color-critical-surface);
+  color: var(--color-critical);
+}
+.badge-expired {
+  background: var(--color-expired-surface);
+  color: var(--color-expired);
+}
+figure.badge-figure figcaption {
+  margin-top: var(--space-md);
+  font-size: var(--text-label);
+  color: var(--color-muted);
+  max-width: 60ch;
+}
+
+/* ── Plain-answers list ───────────────────────────────────────────────── */
+.answers {
+  display: grid;
+  gap: var(--space-lg);
+  max-width: 68ch;
+}
+.answers > div {
+  border-top: 1px solid var(--color-line);
+  padding-top: var(--space-lg);
+}
+.answers h3 {
+  margin-bottom: var(--space-xs);
+}
+.answers p {
+  color: var(--color-ink-soft);
+}
+
+/* ── Custos band / Brass Console surfaces ─────────────────────────────── */
+.register-custos section {
+  padding: var(--space-3xl) 0;
+}
+.prompt {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-size: 1.625rem;
+  line-height: 1.2;
+  letter-spacing: 0.02em;
+  color: var(--color-ink);
+}
+.prompt-glyph {
+  color: var(--color-primary);
+}
+.brand-mono {
+  font-family: var(--font-mono);
+  font-weight: 400;
+}
+/* Grotesk hero heading for the Brass Console register — outranks the default
+   register's `.hero h1` signet rule (mono, not serif, is the signet there). */
+.hero h1.hero-headline {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: var(--text-display);
+  line-height: var(--leading-display);
+  letter-spacing: -0.005em;
+  max-width: 26ch;
+  margin: var(--space-md) 0;
+}
+.section-tight {
+  padding-top: 0;
+}
+.footnote {
+  margin-top: var(--space-lg);
+  font-size: var(--text-label);
+  line-height: var(--leading-label);
+  color: var(--color-muted);
+}
+.register-custos h2,
+.register-custos h3 {
+  color: var(--color-ink);
+}
+.register-custos .section-intro,
+.register-custos p {
+  color: var(--color-ink-soft);
+}
+
+/* ls -l feature rows: dense, aligned, legible */
+.feature-rows {
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--color-surface);
+}
+.feature-rows > div {
+  display: grid;
+  grid-template-columns: 11rem 1fr;
+  gap: var(--space-md);
+  padding: var(--space-md) var(--space-lg);
+  align-items: baseline;
+}
+.feature-rows > div + div {
+  border-top: 1px solid var(--color-line);
+}
+.feature-rows dt {
+  font-family: var(--font-mono);
+  font-size: var(--text-data);
+  color: var(--color-primary);
+}
+.feature-rows dd {
+  color: var(--color-ink-soft);
+  font-size: 0.9375rem;
+}
+
+/* CodeOutput-style block */
+.code-output {
+  background: var(--color-surface-sunk);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+  padding: var(--space-md) var(--space-lg);
+  font-family: var(--font-mono);
+  font-size: var(--text-data);
+  line-height: 1.7;
+  color: var(--color-ink);
+  overflow-x: auto;
+}
+.code-output .out-dim {
+  color: var(--color-muted);
+}
+.code-output .out-glyph {
+  color: var(--color-primary);
+}
+
+/* Status chips (Brass Console) */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  font-family: var(--font-sans);
+  font-size: var(--text-label);
+  font-weight: 500;
+}
+.chip .glyph {
+  font-family: var(--font-mono);
+}
+.chip-safe {
+  background: var(--color-safe-surface);
+  color: var(--color-safe);
+}
+
+/* ── Footer ───────────────────────────────────────────────────────────── */
+.site-footer {
+  border-top: 1px solid var(--color-line);
+  padding: var(--space-2xl) 0;
+  font-size: var(--text-label);
+  color: var(--color-muted);
+}
+.site-footer .container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-md) var(--space-2xl);
+  justify-content: space-between;
+  align-items: baseline;
+}
+.site-footer a {
+  color: var(--color-muted);
+}
+.site-footer a:hover {
+  color: var(--color-ink);
+}
+.site-footer .foot-brands {
+  display: flex;
+  gap: var(--space-lg);
+}
+
+/* ── Small screens: step the extended scale down (fixed steps, no clamp) ── */
+@media (max-width: 640px) {
+  :root {
+    --text-hero: 2rem;
+    --text-display: 1.75rem;
+    --space-3xl: 56px;
+  }
+  .feature-rows > div {
+    grid-template-columns: 1fr;
+    gap: var(--space-xs);
+  }
+  .keyfacts dl {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+  .keyfacts dt {
+    margin-top: var(--space-sm);
+  }
+}
+
+/* ── Motion: state only, and only when the user allows it ─────────────── */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

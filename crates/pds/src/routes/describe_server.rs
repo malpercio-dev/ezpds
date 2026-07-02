@@ -40,24 +40,6 @@ struct Contact {
     email: Option<String>,
 }
 
-/// Resolve the DID to return in the `did` field.
-///
-/// Returns the configured `server_did` verbatim when present. Otherwise derives a `did:web`
-/// DID from the hostname in `public_url` as a placeholder until Wave 3 generates a real DID.
-fn resolve_did(server_did: &Option<String>, public_url: &str) -> String {
-    if let Some(did) = server_did {
-        return did.clone();
-    }
-    let host = public_url
-        .strip_prefix("https://")
-        .or_else(|| public_url.strip_prefix("http://"))
-        .unwrap_or(public_url)
-        .split('/')
-        .next()
-        .unwrap_or("");
-    format!("did:web:{host}")
-}
-
 pub async fn describe_server(State(state): State<AppState>) -> impl IntoResponse {
     let config = &state.config;
 
@@ -76,7 +58,7 @@ pub async fn describe_server(State(state): State<AppState>) -> impl IntoResponse
     });
 
     Json(DescribeServerResponse {
-        did: resolve_did(&config.server_did, &config.public_url),
+        did: config.resolve_server_did(),
         available_user_domains: config.available_user_domains.clone(),
         invite_code_required: config.invite_code_required,
         phone_verification_required: false,
@@ -156,27 +138,6 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(json["did"], "did:plc:configured123");
-    }
-
-    #[test]
-    fn resolve_did_returns_configured_did() {
-        let did = super::resolve_did(
-            &Some("did:plc:abc123".to_string()),
-            "https://pds.example.com",
-        );
-        assert_eq!(did, "did:plc:abc123");
-    }
-
-    #[test]
-    fn resolve_did_derives_did_web_from_public_url() {
-        let did = super::resolve_did(&None, "https://pds.example.com");
-        assert_eq!(did, "did:web:pds.example.com");
-    }
-
-    #[test]
-    fn resolve_did_did_web_strips_path() {
-        let did = super::resolve_did(&None, "https://pds.example.com/some/path");
-        assert_eq!(did, "did:web:pds.example.com");
     }
 
     #[tokio::test]

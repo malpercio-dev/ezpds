@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Obsign — hold the keys to your own identity</title>
+    <meta
+      name="description"
+      content="Obsign is an identity wallet for the AT Protocol. The keys that control your identity live in your device's Secure Enclave — not on someone else's server. Custos is its personal data server."
+    />
+    <link rel="stylesheet" href="assets/css/site.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='11' fill='%23a4741c'/%3E%3C/svg%3E"
+    />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <div class="container">
+        <a class="brand" href="/">
+          <span class="seal seal-sm" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+              <path d="m9 11.5 2 2 4-4" />
+            </svg>
+          </span>
+          Obsign
+        </a>
+        <nav class="site-nav" aria-label="Site">
+          <a href="#how">How it works</a>
+          <a href="#answers">Plain answers</a>
+          <a href="custos/">Custos</a>
+          <a href="https://github.com/malpercio-dev/ezpds">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main">
+      <!-- Hero: the one Libre Caslon Display moment on this screen (the Signet Rule). -->
+      <section class="hero">
+        <div class="container">
+          <span class="seal seal-lg" aria-hidden="true">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+              <path d="m9 11.5 2 2 4-4" />
+            </svg>
+          </span>
+          <h1>Hold the keys to your own identity.</h1>
+          <p class="lede">
+            Obsign is an identity wallet for the AT&nbsp;Protocol — the network behind
+            Bluesky. The keys that control your identity live in your device&rsquo;s
+            Secure&nbsp;Enclave, not on someone else&rsquo;s server. No platform, host,
+            or provider can take your identity, block your exit, or hold it hostage.
+          </p>
+          <div class="hero-actions">
+            <a class="btn btn-primary" href="https://github.com/malpercio-dev/ezpds">Get Obsign for iOS</a>
+            <a class="btn btn-secondary" href="custos/">Run your own server</a>
+          </div>
+          <p class="hero-honesty">
+            Open source. In development — iOS builds ship via TestFlight. No tokens, no
+            coins, nothing to buy.
+          </p>
+        </div>
+      </section>
+
+      <!-- The problem, stated honestly -->
+      <section class="section-alt" id="owned">
+        <div class="container">
+          <h2>Owned, not rented.</h2>
+          <div class="section-intro">
+            <p>
+              On the AT&nbsp;Protocol, your identity is a <code>did:plc</code> — and it is
+              controlled by whoever holds its <em>rotation keys</em>. On most hosts today,
+              that&rsquo;s the server. Your ability to leave, to recover from an attack, or
+              simply to stay yourself is a policy promise: real only for as long as your
+              host is honest, solvent, and online.
+            </p>
+            <p>
+              Obsign turns that promise into arithmetic. Your device holds the
+              highest-priority rotation key, so the final word on your identity is signed
+              by you — and only ever by you.
+            </p>
+          </div>
+          <div class="keyfacts">
+            <dl>
+              <dt>rotationKeys[0]</dt>
+              <dd>your device — Secure Enclave, non-extractable</dd>
+              <dt>rotationKeys[1]</dt>
+              <dd>your server — signs posts, can never outrank you</dd>
+              <dt>recovery window</dt>
+              <dd>72 hours, during which your key overrides any other</dd>
+              <dt>backup</dt>
+              <dd>your key, split 2-of-3 — no single custodian</dd>
+            </dl>
+          </div>
+        </div>
+      </section>
+
+      <!-- How it works -->
+      <section id="how">
+        <div class="container">
+          <h2>How Obsign defends an identity.</h2>
+          <p class="section-intro">
+            Set it up once, with care. After that, Obsign watches quietly — and if
+            something is wrong, it says so in plain words.
+          </p>
+          <div class="card-grid">
+            <div class="card">
+              <span class="card-icon" aria-hidden="true">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3" y="11" width="18" height="11" rx="2" />
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                </svg>
+              </span>
+              <h3>Sealed in your device</h3>
+              <p>
+                Your identity key is generated inside the Secure Enclave and never leaves
+                it. It signs identity operations only after you approve them — reviewed on
+                screen, confirmed with your biometrics.
+              </p>
+            </div>
+            <div class="card">
+              <span class="card-icon" aria-hidden="true">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="3" />
+                  <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+                </svg>
+              </span>
+              <h3>It keeps watch</h3>
+              <p>
+                Obsign monitors the public PLC directory for changes to your identity.
+                Every entry is verified against your own key — any operation you
+                didn&rsquo;t authorize raises an alarm that tells you exactly what changed.
+              </p>
+            </div>
+            <div class="card">
+              <span class="card-icon" aria-hidden="true">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="10" />
+                  <path d="M12 6v6l4 2" />
+                </svg>
+              </span>
+              <h3>72 hours to take it back</h3>
+              <p>
+                Inside the directory&rsquo;s recovery window, your device key outranks
+                every other key. One clear, reviewed action signs the override and
+                reclaims the identity — calmly, before the window closes.
+              </p>
+            </div>
+            <div class="card">
+              <span class="card-icon" aria-hidden="true">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 2v20" />
+                  <path d="M2 7l10 5 10-5" />
+                  <path d="M2 17l10-5 10 5" />
+                </svg>
+              </span>
+              <h3>Backup without a custodian</h3>
+              <p>
+                At setup, your key is split into three shares — iCloud Keychain, your
+                server&rsquo;s escrow, and a place you choose. Any two recover it; no
+                single share (and no single company) can.
+              </p>
+            </div>
+          </div>
+
+          <figure class="badge-figure">
+            <div class="badge-row" role="img" aria-label="The four identity states Obsign reports: Secure; Action needed; 41 hours 12 minutes remaining; Recovery window closed.">
+              <span class="badge badge-safe"><span class="glyph" aria-hidden="true">✓</span> Secure</span>
+              <span class="badge badge-warning"><span class="glyph" aria-hidden="true">△</span> Action needed</span>
+              <span class="badge badge-critical"><span class="glyph" aria-hidden="true">◆</span> 41h 12m remaining</span>
+              <span class="badge badge-expired"><span class="glyph" aria-hidden="true">⊘</span> Recovery window closed</span>
+            </div>
+            <figcaption>
+              The wallet&rsquo;s urgency states. Status is never color alone — every state
+              carries an icon, a label, and a position, so it can&rsquo;t be misread under
+              stress or with color-blindness.
+            </figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <!-- Credible exit -->
+      <section class="section-alt" id="exit">
+        <div class="container">
+          <h2>Leaving is allowed. That&rsquo;s the point.</h2>
+          <div class="prose">
+            <p>
+              Because you hold the top rotation key, moving your identity to a new host is
+              an operation <em>you</em> sign — it never requires your old server&rsquo;s
+              permission, cooperation, or continued existence. Credible exit stops being a
+              promise in a terms-of-service and becomes a property of the keys.
+            </p>
+            <p>
+              And nothing about this leaves the network behind: your server keeps a
+              lower-priority rotation key, so standard AT&nbsp;Protocol tooling and
+              ordinary migrations keep working exactly as they do everywhere else.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Plain answers -->
+      <section id="answers">
+        <div class="container">
+          <h2>Plain answers.</h2>
+          <div class="answers">
+            <div>
+              <h3>Is this a crypto thing?</h3>
+              <p>
+                No. There are no coins, no tokens, and nothing to buy or trade. A
+                <code>did:plc</code> is a public log of signed operations run for the
+                AT&nbsp;Protocol — not a blockchain. Obsign is a key holder, the way a
+                passport wallet holds a passport.
+              </p>
+            </div>
+            <div>
+              <h3>What if I lose my phone?</h3>
+              <p>
+                Your key is split 2-of-3 at setup: one share in iCloud Keychain, one held
+                in escrow by your server, one wherever you choose. Losing the phone loses
+                one share — any two remaining shares recover the key.
+              </p>
+            </div>
+            <div>
+              <h3>Do I need to understand the cryptography?</h3>
+              <p>
+                No — and you&rsquo;re never asked to. Obsign leads with plain human stakes.
+                But every screen keeps the machinery — the DIDs, the keys, the audit log —
+                one deliberate tap away, so you can verify anything yourself whenever you
+                want to.
+              </p>
+            </div>
+            <div>
+              <h3>What if this project disappears?</h3>
+              <p>
+                Your identity outlives it. It&rsquo;s a <code>did:plc</code> in the public
+                directory, your keys are on your device, and your server remains a
+                standard rotation key — so ordinary AT&nbsp;Protocol tooling can still
+                operate on your identity. All of this is open source.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Custos band: the operator's room in the same house -->
+      <div class="register-custos">
+        <section id="custos">
+          <div class="container">
+            <p class="prompt">custos <span class="prompt-glyph" aria-hidden="true">▸</span> the server side</p>
+            <h2>Run the room your identity lives in.</h2>
+            <p class="section-intro">
+              Custos is Obsign&rsquo;s personal data server — a complete AT&nbsp;Protocol
+              PDS in a single Rust binary. It hosts your repository, signs your posts, and
+              federates with the network. What it cannot do, by construction, is take your
+              identity: its key is ranked below yours.
+            </p>
+            <div class="hero-actions">
+              <a class="btn btn-primary" href="custos/">About Custos</a>
+              <a class="btn btn-secondary" href="https://github.com/malpercio-dev/ezpds">Source on GitHub</a>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <div class="container">
+        <div class="foot-brands">
+          <span>Obsign — the identity wallet</span>
+          <span>Custos — the personal data server</span>
+        </div>
+        <div>
+          <a href="https://github.com/malpercio-dev/ezpds">Open source (ezpds)</a>
+          · built on the <a href="https://atproto.com">AT&nbsp;Protocol</a>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>
