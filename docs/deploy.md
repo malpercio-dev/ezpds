@@ -123,9 +123,10 @@ The repo-root `railway.toml` is **PDS-specific** — it builds the `pds` binary 
   lookup to that subtree, so it uses `sites/marketing/{Dockerfile,railway.toml}` and never the
   root `railway.toml`. This is the whole isolation mechanism — get it right and the two services
   never collide.
-- **Watch Paths** = `sites/marketing/**`, so PDS-only changes don't rebuild the site. (Optionally
-  also add an *ignore* path of `sites/marketing/**` to the **PDS** service so a copy tweak doesn't
-  redeploy the PDS.)
+- **Watch Paths** = `sites/marketing/**`, so PDS-only changes don't rebuild the site. Watch Paths
+  are matched against **repo-root-relative** paths, so keep the `sites/marketing/` prefix even
+  though Root Directory is already set. (Optionally also add an *ignore* path of `sites/marketing/**`
+  to the **PDS** service so a copy tweak doesn't redeploy the PDS.)
 - **Wait for CI** — optional. `just ci-pds` doesn't test these files, so waiting adds no real
   safety; harmless if you'd rather keep all services uniformly gated.
 - **No volume, no environment variables.** Railway injects `PORT`; Caddy binds it.

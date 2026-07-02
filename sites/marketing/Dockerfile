@@ -20,5 +20,15 @@ COPY index.html /srv/index.html
 COPY custos /srv/custos
 COPY assets /srv/assets
 
+# Run as a non-root user, matching the repo's container security posture (the PDS
+# image runs as uid 10001; see docs/deploy.md → Security Posture). Caddy needs
+# write access to its XDG state dirs (/config, /data — declared by the base image)
+# even when only serving static files, so hand them to the runtime user. $PORT is
+# always > 1024 (8080 locally, Railway-injected in prod), so no privileged bind.
+RUN addgroup -S web && adduser -S -G web web \
+ && mkdir -p /config /data \
+ && chown -R web:web /srv /config /data
+USER web
+
 # Documentation only; the actual listen port comes from $PORT at runtime.
 EXPOSE 8080
