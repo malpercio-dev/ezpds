@@ -86,6 +86,9 @@ data-encoding = "2"
 sha2 = "0.10"
 zeroize = "1"
 urlencoding = "2"
+# URL parsing for the atproto-proxy SSRF guard (pds) — already resolved transitively via
+# reqwest; declared directly so `url::Host` is nameable for host-type matching.
+url = "2"
 subtle = "2"
 uuid = { version = "1", features = ["v4"] }
 

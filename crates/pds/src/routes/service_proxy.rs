@@ -7,6 +7,8 @@
 //            forwards the request to the given upstream under that token
 // Returns: the upstream's status, content-type, and streamed response body
 
+use std::borrow::Cow;
+
 use axum::{
     body::Body,
     extract::Request,
@@ -16,6 +18,7 @@ use axum::{
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
+use crate::identity_resolution::PinnedResolution;
 
 /// Maximum buffered request body when proxying to an upstream service. `app.bsky.*` and
 /// `chat.bsky.*` procedures carry small JSON payloads (preferences, mutes, message sends);
@@ -42,12 +45,20 @@ fn is_length_limit_error(err: &axum::Error) -> bool {
 /// caller's own PDS session token is **not** forwarded (the AppView can't verify it). The
 /// upstream status, content type, and body are streamed straight back; a failure to reach the
 /// upstream maps to `503`, while upstream error *responses* (4xx/5xx) are passed through verbatim.
+///
+/// `pinned` is `Some` only for the `com.atproto.moderation.*` branch, whose target host was
+/// resolved and SSRF-validated from a caller-controlled DID document
+/// (`identity_resolution::resolve_atproto_proxy_target`). When present, the outbound request is
+/// sent on a one-off client pinned to exactly those validated addresses (see
+/// `build_pinned_client`) rather than `state.http_client`, so the HTTP client can't re-resolve
+/// the domain at connect time and land on an address that was never checked.
 pub async fn proxy_xrpc(
     state: &AppState,
     upstream_url: &str,
     proxy_did: &str,
     nsid: &str,
     did: &str,
+    pinned: Option<&PinnedResolution>,
     req: Request,
 ) -> Response {
     // Preserve the original query string verbatim so upstream query params survive the hop.
@@ -57,6 +68,14 @@ pub async fn proxy_xrpc(
         .map(|q| format!("?{q}"))
         .unwrap_or_default();
     let target = format!("{upstream_url}/xrpc/{nsid}{query}");
+
+    let client: Cow<'_, reqwest::Client> = match pinned {
+        Some(pin) => match build_pinned_client(pin) {
+            Ok(client) => Cow::Owned(client),
+            Err(err) => return err.into_response(),
+        },
+        None => Cow::Borrowed(&state.http_client),
+    };
 
     let (parts, body) = req.into_parts();
 
@@ -91,7 +110,7 @@ pub async fn proxy_xrpc(
 
     // reqwest 0.12 and axum 0.7 share the same `http` crate, so `Method` and `HeaderValue` are
     // identical types and move across the boundary without conversion.
-    let mut outbound = state.http_client.request(parts.method, &target);
+    let mut outbound = client.request(parts.method, &target);
 
     // Pass content-type and the client's content-negotiation preference through; the inbound
     // Authorization is intentionally DROPPED and replaced with the minted service-auth JWT. Host,
@@ -138,6 +157,25 @@ pub async fn proxy_xrpc(
             ApiError::new(ErrorCode::InternalError, "proxy response build failed").into_response()
         }
     }
+}
+
+/// Build a one-off HTTP client whose DNS resolution for `pin.domain` is overridden to exactly
+/// `pin.addrs` — the addresses `resolve_atproto_proxy_target` already validated as public.
+///
+/// Without this, `proxy_xrpc` would hand the *domain* to `state.http_client`, which re-resolves
+/// it independently at connect time; a second DNS answer (attacker-controlled, or simply a
+/// changed record between validation and connection) could then point at a private address that
+/// was never checked. Pinning closes that gap: the client can only ever connect to one of the
+/// addresses this request's validation already approved.
+fn build_pinned_client(pin: &PinnedResolution) -> Result<reqwest::Client, ApiError> {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .resolve_to_addrs(&pin.domain, &pin.addrs)
+        .build()
+        .map_err(|e| {
+            tracing::error!(error = %e, domain = %pin.domain, "failed to build pinned proxy client");
+            ApiError::new(ErrorCode::InternalError, "failed to prepare proxied request")
+        })
 }
 
 /// Mint a fresh ES256 service-auth JWT for proxying `nsid` to `proxy_did` on behalf of `did`.

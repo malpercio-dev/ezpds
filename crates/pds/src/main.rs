@@ -239,6 +239,7 @@ async fn run() -> anyhow::Result<()> {
         firehose,
         crawlers,
         iroh,
+        allow_loopback_proxy_targets: false,
     };
 
     let listener = tokio::net::TcpListener::bind(&addr)

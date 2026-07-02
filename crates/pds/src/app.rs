@@ -196,6 +196,11 @@ pub struct AppState {
     /// Bound Iroh QUIC endpoint, when `[iroh] enabled`. `None` when the tunnel is disabled.
     /// Handlers read `iroh.node_id` to advertise the pds's node id. Shared via Arc.
     pub iroh: Option<Arc<crate::iroh_tunnel::IrohState>>,
+    /// Test-only relaxation of the `atproto-proxy` SSRF guard
+    /// (`identity_resolution::resolve_atproto_proxy_target`): when `true`, a loopback address is
+    /// accepted alongside public ones, so tests can proxy to a local `wiremock` server standing in
+    /// for a labeler. Always `false` in the real server (`main.rs`) — only `test_state()` sets it.
+    pub allow_loopback_proxy_targets: bool,
 }
 
 /// Build the Axum router with middleware and routes.
@@ -472,12 +477,17 @@ async fn xrpc_handler(
         .into_response();
     }
 
-    let (url, proxy_did) = match upstream {
+    let (url, proxy_did, pinned) = match upstream {
         ProxyUpstream::AppView => (
             state.config.appview.url.clone(),
             state.config.appview.did.clone(),
+            None,
         ),
-        ProxyUpstream::Chat => (state.config.chat.url.clone(), state.config.chat.did.clone()),
+        ProxyUpstream::Chat => (
+            state.config.chat.url.clone(),
+            state.config.chat.did.clone(),
+            None,
+        ),
         ProxyUpstream::Moderation => {
             let header_value = req
                 .headers()
@@ -492,13 +502,22 @@ async fn xrpc_handler(
                 .into_response();
             };
             match resolve_atproto_proxy_target(&state, &header_value).await {
-                Ok(target) => target,
+                Ok(target) => (target.url, target.header_value, target.pinned),
                 Err(err) => return err.into_response(),
             }
         }
     };
 
-    proxy_xrpc(&state, &url, &proxy_did, &method, &user.did, req).await
+    proxy_xrpc(
+        &state,
+        &url,
+        &proxy_did,
+        &method,
+        &user.did,
+        pinned.as_ref(),
+        req,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -602,6 +621,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
             &[],
         )),
         iroh: None,
+        allow_loopback_proxy_targets: true,
     }
 }
 

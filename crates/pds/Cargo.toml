@@ -28,6 +28,7 @@ tower-http = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 urlencoding = { workspace = true }
+url = { workspace = true }
 sqlx = { workspace = true }
 crypto = { workspace = true }
 repo-engine = { workspace = true }

@@ -159,6 +159,7 @@ mod tests {
             firehose: base.firehose,
             crawlers: base.crawlers,
             iroh: base.iroh,
+            allow_loopback_proxy_targets: base.allow_loopback_proxy_targets,
         }
     }
 
@@ -419,6 +420,7 @@ mod tests {
             firehose: base.firehose,
             crawlers: base.crawlers,
             iroh: base.iroh,
+            allow_loopback_proxy_targets: base.allow_loopback_proxy_targets,
         };
 
         let response = app(state)
