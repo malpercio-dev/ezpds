@@ -1,0 +1,15 @@
+# Railway config for the static marketing-site service.
+#
+# Used only when the service's Root Directory is set to `sites/marketing` (so
+# Railway resolves config + Dockerfile from here, not the repo root). Keeps this
+# service independent of the repo-root railway.toml, which builds the PDS.
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
+# Caddy serves the site root; a 200 there means the service is up.
+healthcheckPath = "/"
+healthcheckTimeout = 30

@@ -97,6 +97,64 @@ When `LITESTREAM_S3_BUCKET` is set on the production environment — together wi
 
 Rollback: because migrations are **forward-only** (no down-path), redeploying a previous `v*` tag is safe only when the schema change was backward-compatible (expand-contract). Otherwise, roll back by restoring the database from the Litestream replica (`litestream restore`) to a pre-promote point.
 
+## Marketing Site (static)
+
+The static marketing site (`sites/marketing/`, the Obsign + Custos pages) deploys as a
+**second Railway service in the same project** as the PDS — grouped together, but built and
+routed independently. It is a zero-build HTML/CSS/font bundle served by Caddy; there is no
+Rust, no database, and no secrets.
+
+### Config as code
+
+Everything build-related is committed under `sites/marketing/`:
+
+| File | Role |
+|------|------|
+| `Dockerfile` | `FROM caddy:2-alpine`; copies the site into `/srv` and the `Caddyfile` into place. No build stage. |
+| `Caddyfile` | Serves `/srv` on `$PORT`, gzip/zstd, clean URLs (`/custos/` → `custos/index.html`), immutable caching for `/assets/fonts/*` and short revalidation for HTML/CSS, plus `nosniff`/`Referrer-Policy`. |
+| `railway.toml` | Dockerfile builder + `healthcheckPath = "/"` (Caddy returns 200 at the root). |
+
+### The critical setting: Root Directory
+
+The repo-root `railway.toml` is **PDS-specific** — it builds the `pds` binary and health-checks
+`/xrpc/_health`. The marketing service must **not** inherit it. In the service's settings:
+
+- **Root Directory** = `sites/marketing`. This scopes Railway's build context *and* its config
+  lookup to that subtree, so it uses `sites/marketing/{Dockerfile,railway.toml}` and never the
+  root `railway.toml`. This is the whole isolation mechanism — get it right and the two services
+  never collide.
+- **Watch Paths** = `sites/marketing/**`, so PDS-only changes don't rebuild the site. (Optionally
+  also add an *ignore* path of `sites/marketing/**` to the **PDS** service so a copy tweak doesn't
+  redeploy the PDS.)
+- **Wait for CI** — optional. `just ci-pds` doesn't test these files, so waiting adds no real
+  safety; harmless if you'd rather keep all services uniformly gated.
+- **No volume, no environment variables.** Railway injects `PORT`; Caddy binds it.
+
+### Domain: `about.obsign.org`
+
+`obsign.org` + `*.obsign.org` are already Railway custom domains on the **PDS** service (DNS at
+Cloudflare). Because of the wildcard, `about.obsign.org` currently resolves to the PDS. To route
+it to the marketing service instead:
+
+1. In the **marketing** service → Settings → Networking, add the custom domain
+   `about.obsign.org`. An **exact** hostname on one service takes routing priority over a
+   **wildcard** (`*.obsign.org`) on another, so this steals just `about` without touching the
+   wildcard or the PDS.
+2. DNS: the `*.obsign.org` wildcard record already covers `about` at the DNS layer, so no new
+   Cloudflare record is strictly required. Adding an explicit `about` CNAME (matching however the
+   wildcard is proxied — keep the same orange/grey-cloud mode as the working wildcard) is clearer
+   and avoids surprises if the wildcard is ever narrowed.
+3. Verify: `curl -I https://about.obsign.org/` returns Caddy's 200 (not the PDS), and
+   `https://about.obsign.org/custos/` loads the Custos page. If it still hits the PDS, the exact
+   domain didn't register on the marketing service — re-check step 1.
+
+### Local check
+
+```sh
+docker build -t obsign-marketing sites/marketing
+docker run --rm -p 8080:8080 obsign-marketing   # then open http://localhost:8080
+```
+
 ## Colmena / NixOS oci-containers Deployment
 
 For self-hosted NixOS with colmena, use `nixosModules.default` from the flake:
