@@ -13,8 +13,9 @@ understand why the architecture is the way it is.
   ADRs.
 - **Numbered sequentially**, zero-padded: `0001-...`, `0002-...`. The number is
   permanent; the slug describes the decision.
-- **Status** is one of: `Proposed`, `Accepted`, `Deprecated`,
-  `Superseded by ADR-NNNN`.
+- **Status** is one of: `Proposed`, `Accepted`, `Deferred`, `Deprecated`,
+  `Superseded by ADR-NNNN`. (`Deferred` = decided in principle but intentionally
+  not scheduled; it waits on a named trigger.)
 - Record decisions that are *already embodied in the code* too — a decision
   doesn't have to be new to be worth recording. Backfilling the load-bearing
   ones gives future readers the "why".
