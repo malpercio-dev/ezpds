@@ -371,6 +371,16 @@ pub fn verify_service_auth_jwt(
     let signing_input = format!("{header_b64}.{payload_b64}");
     let sig_bytes = URL_SAFE_NO_PAD.decode(sig_b64).map_err(|_| invalid())?;
     let sig: [u8; 64] = sig_bytes.as_slice().try_into().map_err(|_| invalid())?;
+    // atproto requires low-S canonical ECDSA signatures. `p256`'s verify accepts a mathematically
+    // valid high-S signature, so reject the malleable high-S form here before verifying — matching
+    // what atproto verifiers (and our own `mint_service_auth_jwt`, which low-S normalizes) require.
+    let parsed = p256::ecdsa::Signature::from_slice(&sig).map_err(|_| invalid())?;
+    if parsed.normalize_s().is_some() {
+        return Err(ApiError::new(
+            ErrorCode::InvalidToken,
+            "service auth signature is not low-S canonical",
+        ));
+    }
     crypto::verify_p256_signature(atproto_key, signing_input.as_bytes(), &sig).map_err(|e| {
         tracing::debug!(error = %e, "service auth signature verification failed");
         ApiError::new(
@@ -584,6 +594,42 @@ mod tests {
         );
         assert_eq!(claims["iss"], "did:plc:abc123");
         assert_eq!(claims["exp"], 1_060);
+    }
+
+    /// `verify_service_auth_jwt` accepts a canonical low-S token (as minted) but rejects the
+    /// malleable high-S counterpart `(r, n - s)` — which is still a mathematically valid ECDSA
+    /// signature over the same message, so `p256`'s verify alone would accept it.
+    #[test]
+    fn verify_service_auth_jwt_accepts_low_s_rejects_high_s() {
+        let kp = crypto::generate_p256_keypair().unwrap();
+        let key = *kp.private_key_bytes;
+        let signer = repo_engine::CommitSigner::from_bytes(&key).unwrap();
+        let iss = "did:plc:issuer";
+        let aud = "did:web:me.example.com";
+        let lxm = "com.atproto.server.createAccount";
+        let token = mint_service_auth_jwt(|b| signer.sign(b), iss, aud, Some(lxm), 1_000, 4_000);
+
+        // Low-S (as minted) verifies.
+        assert!(
+            verify_service_auth_jwt(&token, iss, aud, lxm, &kp.key_id, 1_001).is_ok(),
+            "a canonical low-S token must verify"
+        );
+
+        // Flip to the high-S counterpart `(r, n - s)` and rebuild the token.
+        let parts: Vec<&str> = token.split('.').collect();
+        let raw = URL_SAFE_NO_PAD.decode(parts[2]).unwrap();
+        let low = Signature::from_slice(&raw).unwrap();
+        let low = low.normalize_s().unwrap_or(low);
+        let high = Signature::from_scalars(low.r().to_bytes(), (-*low.s()).to_bytes()).unwrap();
+        let high_token = format!(
+            "{}.{}.{}",
+            parts[0],
+            parts[1],
+            URL_SAFE_NO_PAD.encode(high.to_bytes())
+        );
+        let err = verify_service_auth_jwt(&high_token, iss, aud, lxm, &kp.key_id, 1_001)
+            .expect_err("a high-S signature must be rejected");
+        assert_eq!(err.status_code(), 401);
     }
 
     /// `issue_access_jwt` accepts only access-level scopes; a refresh (or any other) scope is
