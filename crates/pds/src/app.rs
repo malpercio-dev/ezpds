@@ -53,6 +53,7 @@ use crate::routes::get_service_auth::get_service_auth;
 use crate::routes::get_session::get_session;
 use crate::routes::get_subject_status::get_subject_status;
 use crate::routes::health::health;
+use crate::routes::landing::landing;
 use crate::routes::list_app_passwords::list_app_passwords_handler;
 use crate::routes::list_blobs::list_blobs;
 use crate::routes::list_records::list_records;
@@ -204,6 +205,7 @@ pub struct AppState {
 /// listener — callers can use `tower::ServiceExt::oneshot` to drive requests in tests.
 pub fn app(state: AppState) -> Router {
     Router::new()
+        .route("/", get(landing))
         .route("/.well-known/atproto-did", get(atproto_did_handler))
         .route(
             "/.well-known/oauth-protected-resource",

@@ -1,0 +1,15 @@
+meta {
+  name: Landing Page
+  type: http
+  seq: 75
+}
+
+get {
+  url: {{baseUrl}}/
+  body: none
+  auth: none
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}

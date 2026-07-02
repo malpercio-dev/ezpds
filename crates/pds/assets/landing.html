@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light" />
+  <title>{{host}} — a Custos personal data server</title>
+  <meta name="description" content="This is a Custos personal data server on the AT Protocol. Accounts here are created and defended with the Obsign identity wallet; their owners, not this server, hold the keys that control them." />
+  <style>
+    /* Visual system: "The Sealed Credential" (see DESIGN.md), matching the OAuth
+       consent page. Brand fonts come from this server's own /static/fonts route —
+       no third-party CDN. */
+    @font-face{font-family:'Public Sans';font-style:normal;font-weight:400;font-display:swap;src:url('/static/fonts/PublicSans-Regular.woff2') format('woff2')}
+    @font-face{font-family:'Public Sans';font-style:normal;font-weight:600;font-display:swap;src:url('/static/fonts/PublicSans-SemiBold.woff2') format('woff2')}
+    @font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400;font-display:swap;src:url('/static/fonts/JetBrainsMono-Regular.woff2') format('woff2')}
+    @font-face{font-family:'Libre Caslon Display';font-style:normal;font-weight:400;font-display:swap;src:url('/static/fonts/LibreCaslonDisplay-Regular.ttf') format('truetype')}
+    :root{
+      --serif:'Libre Caslon Display',Georgia,serif;
+      --sans:'Public Sans',system-ui,-apple-system,sans-serif;
+      --mono:'JetBrains Mono',ui-monospace,monospace;
+      --gold:oklch(0.46 0.105 62); --gold-deep:oklch(0.38 0.09 60);
+      --aubergine:oklch(0.34 0.10 330);
+      --ink:oklch(0.23 0.012 60); --ink-soft:oklch(0.31 0.012 60); --muted:oklch(0.40 0.012 60);
+      --bg:oklch(1 0 0); --parchment:oklch(0.975 0.004 75); --sunk:oklch(0.955 0.005 75);
+      --line:oklch(0.90 0.004 75); --on:oklch(0.99 0.005 80);
+      --safe:oklch(0.40 0.10 150); --safe-surface:oklch(0.95 0.045 150);
+      --crit:oklch(0.44 0.16 25); --crit-surface:oklch(0.95 0.045 25);
+      --info:oklch(0.42 0.07 250); --info-surface:oklch(0.95 0.030 250);
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: var(--sans);
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+      padding: 40px 20px 56px;
+    }
+    .page { max-width: 620px; margin: 0 auto; }
+    a { color: var(--aubergine); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+    a:hover { color: oklch(0.28 0.09 330); }
+    :focus-visible { outline: 2px solid var(--aubergine); outline-offset: 2px; border-radius: 4px; }
+    code { font-family: var(--mono); font-size: 0.875rem; word-break: break-all; }
+
+    .top { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; margin-bottom: 28px; }
+    .seal {
+      width: 56px; height: 56px; border-radius: 9999px;
+      background: var(--gold); color: var(--on);
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: inset 0 0 0 2px oklch(0.99 0.05 80 / 0.35), inset 0 -3px 8px oklch(0.2 0.05 60 / 0.22);
+    }
+    h1 { font-family: var(--serif); font-weight: 400; font-size: 1.75rem; line-height: 1.15; }
+    .sub { color: var(--ink-soft); max-width: 52ch; }
+
+    .card {
+      background: var(--parchment);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .card h2 { font-family: var(--sans); font-weight: 600; font-size: 1.125rem; line-height: 1.3; margin-bottom: 10px; }
+    .card p { color: var(--ink-soft); font-size: 0.9375rem; }
+    .card p + p { margin-top: 8px; }
+
+    .facts dl { display: grid; grid-template-columns: auto 1fr; gap: 8px 20px; align-items: baseline; }
+    .facts dt { font-family: var(--mono); font-size: 0.875rem; color: var(--muted); white-space: nowrap; }
+    .facts dd { font-family: var(--mono); font-size: 0.875rem; color: var(--ink); word-break: break-all; }
+    @media (max-width: 480px) {
+      .facts dl { grid-template-columns: 1fr; gap: 2px; }
+      .facts dt { margin-top: 8px; }
+    }
+
+    /* Status: color + glyph + text, never color alone */
+    .chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      border-radius: 4px; padding: 3px 10px;
+      font-family: var(--sans); font-size: 0.8125rem; font-weight: 500; line-height: 1.3;
+    }
+    .chip .glyph { font-family: var(--mono); }
+    .chip-info { background: var(--info-surface); color: var(--info); }
+    .chip-safe { background: var(--safe-surface); color: var(--safe); }
+    .chip-crit { background: var(--crit-surface); color: var(--crit); }
+
+    ul.endpoints { list-style: none; display: grid; gap: 8px; }
+    ul.endpoints li { display: grid; gap: 2px; }
+    ul.endpoints .what { font-size: 0.8125rem; font-weight: 500; color: var(--muted); }
+
+    .foot {
+      margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--line);
+      display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: space-between;
+      font-size: 0.8125rem; color: var(--muted);
+    }
+    .foot a { color: var(--muted); }
+    .foot a:hover { color: var(--ink); }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <div class="top">
+      <span class="seal" aria-hidden="true">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 11.5 2 2 4-4"/></svg>
+      </span>
+      <h1>This is a Custos personal data server.</h1>
+      <p class="sub">
+        It hosts personal data repositories on the AT&nbsp;Protocol. Accounts here are
+        created and defended with the <strong>Obsign</strong> identity wallet — and their
+        owners, not this server, hold the keys that control them.
+      </p>
+    </div>
+
+    <section class="card facts" aria-label="Instance details">
+      <h2>This instance</h2>
+      <dl>
+        <dt>server</dt>
+        <dd>{{host}}</dd>
+        <dt>did</dt>
+        <dd>{{did}}</dd>
+        <dt>version</dt>
+        <dd>custos v{{version}}</dd>
+        <dt>user domains</dt>
+        <dd>{{domains}}</dd>
+        <dt>signup</dt>
+        <dd>{{signup}}</dd>
+{{contact_row}}
+        <dt>status</dt>
+        <dd>
+          <span class="chip chip-info" id="status-chip">
+            <span class="glyph" aria-hidden="true" id="status-glyph">○</span>
+            <span id="status-text">see <code>/xrpc/_health</code></span>
+          </span>
+        </dd>
+      </dl>
+    </section>
+
+    <section class="card">
+      <h2>Joining this server</h2>
+      <p>
+        Accounts are created from the Obsign app with a claim code minted by this
+        server&rsquo;s operator. If you were invited, ask the operator for your code and
+        enter it in Obsign.
+      </p>
+      <p>
+        Your identity stays yours: your device holds the highest-priority rotation key,
+        and this server&rsquo;s key can never outrank it.
+      </p>
+    </section>
+
+    <section class="card">
+      <h2>For developers and operators</h2>
+      <ul class="endpoints">
+        <li>
+          <span class="what">server description</span>
+          <code><a href="/xrpc/com.atproto.server.describeServer">/xrpc/com.atproto.server.describeServer</a></code>
+        </li>
+        <li>
+          <span class="what">health</span>
+          <code><a href="/xrpc/_health">/xrpc/_health</a></code>
+        </li>
+        <li>
+          <span class="what">firehose (WebSocket)</span>
+          <code>/xrpc/com.atproto.sync.subscribeRepos</code>
+        </li>
+        <li>
+          <span class="what">OAuth authorization server metadata</span>
+          <code><a href="/.well-known/oauth-authorization-server">/.well-known/oauth-authorization-server</a></code>
+        </li>
+      </ul>
+    </section>
+
+    <footer class="foot">
+      <span>Powered by Custos — the sovereign PDS behind Obsign</span>
+      <span><a href="https://github.com/malpercio-dev/ezpds">Open source (ezpds)</a> · <a href="https://atproto.com">AT&nbsp;Protocol</a></span>
+    </footer>
+  </main>
+
+  <script>
+    // Progressive enhancement only: without JS the status row points at /xrpc/_health.
+    // Status is reported as glyph + text + color, never color alone.
+    (function () {
+      var chip = document.getElementById('status-chip');
+      var glyph = document.getElementById('status-glyph');
+      var text = document.getElementById('status-text');
+      fetch('/xrpc/_health')
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+        .then(function (res) {
+          if (res.ok && res.body && res.body.db === 'ok') {
+            chip.className = 'chip chip-safe';
+            glyph.textContent = '●';
+            text.textContent = 'online — db ok';
+          } else {
+            chip.className = 'chip chip-crit';
+            glyph.textContent = '!';
+            text.textContent = 'degraded — db error';
+          }
+        })
+        .catch(function () {
+          chip.className = 'chip chip-crit';
+          glyph.textContent = '!';
+          text.textContent = 'health check unreachable';
+        });
+    })();
+  </script>
+</body>
+</html>

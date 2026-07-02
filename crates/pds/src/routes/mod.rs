@@ -34,6 +34,7 @@ pub mod get_service_auth;
 pub mod get_session;
 pub mod get_subject_status;
 pub mod health;
+pub mod landing;
 pub mod list_app_passwords;
 pub mod list_blobs;
 pub mod list_records;
