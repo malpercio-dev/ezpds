@@ -1,6 +1,6 @@
 # ADR-NNNN: <short decision title>
 
-- **Status:** Proposed | Accepted | Deprecated | Superseded by ADR-NNNN
+- **Status:** Proposed | Accepted | Deferred | Deprecated | Superseded by ADR-NNNN
 - **Date:** YYYY-MM-DD
 - **Deciders:** <who>
 - **Related:** <ADRs, Linear issues, design plans, code>
