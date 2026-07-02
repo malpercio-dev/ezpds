@@ -1,0 +1,20 @@
+meta {
+  name: Get Account Invite Codes
+  type: http
+  seq: 72
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.server.getAccountInviteCodes?includeUsed=true&createAvailable=true
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+params:query {
+  includeUsed: true
+  createAvailable: true
+}

@@ -1,0 +1,11 @@
+meta {
+  name: Check Handle Availability
+  type: http
+  seq: 73
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.temp.checkHandleAvailability?handle={{handle}}
+  body: none
+  auth: none
+}

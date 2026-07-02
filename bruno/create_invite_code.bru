@@ -1,0 +1,21 @@
+meta {
+  name: Create Invite Code
+  type: http
+  seq: 70
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.server.createInviteCode
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+body:json {
+  {
+    "useCount": 1
+  }
+}
