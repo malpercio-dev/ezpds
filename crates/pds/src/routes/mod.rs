@@ -58,6 +58,7 @@ pub mod resolve_handle;
 pub mod resolve_identity;
 pub mod revoke_app_password;
 pub mod service_proxy;
+pub mod standard_signup;
 pub mod static_assets;
 pub mod sync_get_blocks;
 pub mod sync_get_latest_commit;

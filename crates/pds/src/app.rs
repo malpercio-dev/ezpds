@@ -77,6 +77,10 @@ use crate::routes::resolve_identity::{
     refresh_identity_handler, resolve_did_handler, resolve_identity_handler,
 };
 use crate::routes::revoke_app_password::revoke_app_password;
+use crate::routes::standard_signup::{
+    check_handle_availability, check_signup_queue, create_invite_code, create_invite_codes,
+    get_account_invite_codes,
+};
 use crate::routes::static_assets::static_handler;
 use crate::routes::sync_get_blocks::sync_get_blocks;
 use crate::routes::sync_get_latest_commit::sync_get_latest_commit;
@@ -284,6 +288,26 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/xrpc/com.atproto.server.reserveSigningKey",
             post(reserve_signing_key),
+        )
+        .route(
+            "/xrpc/com.atproto.server.createInviteCode",
+            post(create_invite_code),
+        )
+        .route(
+            "/xrpc/com.atproto.server.createInviteCodes",
+            post(create_invite_codes),
+        )
+        .route(
+            "/xrpc/com.atproto.server.getAccountInviteCodes",
+            get(get_account_invite_codes),
+        )
+        .route(
+            "/xrpc/com.atproto.temp.checkHandleAvailability",
+            get(check_handle_availability),
+        )
+        .route(
+            "/xrpc/com.atproto.temp.checkSignupQueue",
+            get(check_signup_queue),
         )
         .route(
             "/xrpc/com.atproto.identity.resolveHandle",
