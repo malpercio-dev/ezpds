@@ -73,6 +73,7 @@ pub mod update_subject_status;
 pub mod upload_blob;
 
 mod code_gen;
+mod preference_scope;
 pub(crate) mod uniqueness;
 
 #[cfg(test)]

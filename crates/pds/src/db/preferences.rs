@@ -1,5 +1,7 @@
 // pattern: Imperative Shell
 
+use sqlx::Sqlite;
+
 use common::{ApiError, ErrorCode};
 
 /// Fetch the locally-stored preferences blob for an account.
@@ -7,12 +9,16 @@ use common::{ApiError, ErrorCode};
 /// Returns `Some(json)` when the account has stored preferences and `None` when no row
 /// exists yet (a brand-new account). The stored value is the JSON-encoded `preferences`
 /// array exactly as written by `putPreferences`; callers parse it themselves so the DB
-/// layer stays free of business logic.
-pub async fn get_preferences(db: &sqlx::SqlitePool, did: &str) -> Result<Option<String>, ApiError> {
+/// layer stays free of business logic. Generic over the executor so `putPreferences` can
+/// read the prior blob and write the merged one inside the same transaction.
+pub async fn get_preferences<'e, E>(executor: E, did: &str) -> Result<Option<String>, ApiError>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     let row: Option<(String,)> =
         sqlx::query_as("SELECT preferences FROM account_preferences WHERE did = ?")
             .bind(did)
-            .fetch_optional(db)
+            .fetch_optional(executor)
             .await
             .map_err(|e| {
                 tracing::error!(did = %did, error = %e, "failed to load account preferences");
@@ -27,8 +33,13 @@ pub async fn get_preferences(db: &sqlx::SqlitePool, did: &str) -> Result<Option<
 /// `putPreferences` replaces the stored array in its entirety, so this upserts the single
 /// row keyed by `did`: a brand-new account gets an INSERT, an existing one has its blob and
 /// `updated_at` replaced. The `blob` is the already-serialized `preferences` array; the
-/// handler does the parsing and validation, keeping the DB layer free of business logic.
-pub async fn put_preferences(db: &sqlx::SqlitePool, did: &str, blob: &str) -> Result<(), ApiError> {
+/// handler does the parsing, scope filtering, and merging with any preserved entries,
+/// keeping the DB layer free of business logic. Generic over the executor so the handler can
+/// run the read-merge-write sequence inside one transaction.
+pub async fn put_preferences<'e, E>(executor: E, did: &str, blob: &str) -> Result<(), ApiError>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     sqlx::query(
         "INSERT INTO account_preferences (did, preferences, updated_at) \
          VALUES (?, ?, datetime('now')) \
@@ -38,7 +49,7 @@ pub async fn put_preferences(db: &sqlx::SqlitePool, did: &str, blob: &str) -> Re
     )
     .bind(did)
     .bind(blob)
-    .execute(db)
+    .execute(executor)
     .await
     .map_err(|e| {
         tracing::error!(did = %did, error = %e, "failed to store account preferences");
