@@ -28,6 +28,7 @@ use crate::routes::atproto_did::atproto_did_handler;
 use crate::routes::check_account_status::check_account_status;
 use crate::routes::claim_codes::claim_codes;
 use crate::routes::create_account::create_account;
+use crate::routes::create_account_xrpc::create_account as create_account_xrpc;
 use crate::routes::create_app_password::create_app_password;
 use crate::routes::create_did::create_did_handler;
 use crate::routes::create_handle::create_handle_handler;
@@ -236,6 +237,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/xrpc/com.atproto.server.describeServer",
             get(describe_server),
+        )
+        .route(
+            "/xrpc/com.atproto.server.createAccount",
+            post(create_account_xrpc),
         )
         .route(
             "/xrpc/com.atproto.server.createSession",

@@ -20,6 +20,7 @@ src/
   rate_limit.rs    — request rate-limiting middleware + shared limiter state (global IP, per-endpoint IP, per-account write points)
   iroh_tunnel.rs   — Iroh QUIC endpoint: NAT-traversing device↔pds tunnel (opt-in)
   record_write.rs  — shared repo write flow + firehose commit emission
+  genesis.rs       — shared did:plc genesis-op machinery (verify/validate, DID-doc + CAR builders, plc.directory POST), used by both create_did.rs and create_account_xrpc.rs
   handle.rs        — handle validation (structural + domain policy), shared by provisioning + handle routes
   auth/            — authentication primitives (no HTTP, no DB schema ownership)
   db/              — SQL query functions + migration runner (no business logic)
@@ -218,6 +219,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `create_did.rs` | `POST /v1/dids` |
 | `get_did.rs` | `GET /v1/dids/:did` |
 | `create_account.rs` | `POST /v1/accounts` |
+| `create_account_xrpc.rs` | `POST /xrpc/com.atproto.server.createAccount` — standard onboarding + migration. Two modes by `did` presence. New-account: requires a client-supplied self-signed `plcOp` (ezpds never mints a server-custodied DID; the reserved `#atproto` key must exist) → builds the genesis repo, submits to plc.directory, returns an active session + genesis `#commit`/`#sync`/`#account`. Migration (`did` set): authed by an old-PDS service-auth JWT verified against the DID's `#atproto` key → creates a deactivated, repo-less account (for later `importRepo`/`activateAccount`) + session. Invite codes enforced against `claim_codes` when `invite_code_required`. Shares genesis machinery via `genesis.rs` |
 | `create_handle.rs` | `POST /v1/handles` |
 | `delete_handle.rs` | `DELETE /v1/handles/:handle` |
 | `create_mobile_account.rs` | `POST /v1/accounts/mobile` |

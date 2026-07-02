@@ -9,6 +9,7 @@ pub(crate) mod auth;
 pub mod check_account_status;
 pub mod claim_codes;
 pub mod create_account;
+pub mod create_account_xrpc;
 pub mod create_app_password;
 pub mod create_did;
 pub mod create_handle;

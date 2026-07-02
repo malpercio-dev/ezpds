@@ -1,0 +1,35 @@
+meta {
+  name: Create Account XRPC (createAccount, new)
+  type: http
+  seq: 76
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.server.createAccount
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "handle": "alice.example.com",
+    "email": "alice@example.com",
+    "password": "hunter2hunter2",
+    "inviteCode": "{{inviteCode}}",
+    "plcOp": {}
+  }
+}
+
+docs {
+  New-account mode. ezpds never mints a server-custodied DID, so `plcOp` is REQUIRED: it must be a
+  self-signed did:plc genesis operation whose `rotationKeys[0]` is the client's own key and whose
+  `verificationMethods.atproto` is a key previously reserved via
+  `com.atproto.server.reserveSigningKey`. Replace the empty `plcOp` above with a real signed op.
+  `inviteCode` is only required when the server advertises `inviteCodeRequired: true` (see
+  describeServer). Returns `{ accessJwt, refreshJwt, handle, did, didDoc }` and an ACTIVE account.
+  Migrating an existing DID uses the "Create Account XRPC (createAccount, migration)" request.
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
