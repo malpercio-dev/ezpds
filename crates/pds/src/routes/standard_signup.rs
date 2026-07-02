@@ -18,7 +18,7 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
-use crate::code_gen::generate_code;
+use crate::db::claim_codes::{mint_claim_codes, MintClaimCodesError};
 use crate::routes::auth::require_admin_json;
 
 const MAX_INVITE_CODE_COUNT: u32 = 10;
@@ -170,7 +170,9 @@ async fn create_invite_code_inner(
     require_single_use(payload.use_count)?;
     reject_account_bound_invites(payload.for_account.as_deref())?;
 
-    let mut codes = mint_claim_codes(&state.db, 1, INVITE_CODE_EXPIRES_IN_HOURS).await?;
+    let mut codes = mint_claim_codes(&state.db, 1, INVITE_CODE_EXPIRES_IN_HOURS)
+        .await
+        .map_err(map_mint_error)?;
     let code = codes.pop().ok_or_else(|| {
         tracing::error!("claim-code mint returned an empty batch for createInviteCode");
         ApiError::new(ErrorCode::InternalError, "failed to mint invite code")
@@ -207,7 +209,9 @@ async fn create_invite_codes_inner(
     let accounts = vec![String::new()];
     let total = payload.code_count;
 
-    let mut minted = mint_claim_codes(&state.db, total, INVITE_CODE_EXPIRES_IN_HOURS).await?;
+    let mut minted = mint_claim_codes(&state.db, total, INVITE_CODE_EXPIRES_IN_HOURS)
+        .await
+        .map_err(map_mint_error)?;
     let mut codes = Vec::with_capacity(accounts.len());
     for account in accounts {
         let account_codes = minted.drain(..payload.code_count as usize).collect();
@@ -305,61 +309,17 @@ fn account_bound_invites_unsupported() -> ApiError {
     )
 }
 
-async fn mint_claim_codes(
-    db: &sqlx::SqlitePool,
-    count: u32,
-    expires_in_hours: u32,
-) -> Result<Vec<String>, ApiError> {
-    for attempt in 0..3_usize {
-        let codes = generate_unique_codes(count as usize);
-        match insert_claim_codes(db, &codes, expires_in_hours).await {
-            Ok(()) => return Ok(codes),
-            Err(e) if crate::db::is_unique_violation(&e) => {
-                tracing::warn!(attempt, "claim code uniqueness conflict; retrying");
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "failed to insert invite claim codes");
-                return Err(ApiError::new(
-                    ErrorCode::InternalError,
-                    "failed to store invite codes",
-                ));
-            }
+fn map_mint_error(error: MintClaimCodesError) -> ApiError {
+    match error {
+        MintClaimCodesError::Store(e) => {
+            tracing::error!(error = %e, "failed to insert invite claim codes");
+            ApiError::new(ErrorCode::InternalError, "failed to store invite codes")
         }
+        MintClaimCodesError::Exhausted => ApiError::new(
+            ErrorCode::InternalError,
+            "failed to generate unique invite codes after retries",
+        ),
     }
-
-    Err(ApiError::new(
-        ErrorCode::InternalError,
-        "failed to generate unique invite codes after retries",
-    ))
-}
-
-fn generate_unique_codes(count: usize) -> Vec<String> {
-    let mut codes = std::collections::HashSet::with_capacity(count);
-    while codes.len() < count {
-        codes.insert(generate_code());
-    }
-    codes.into_iter().collect()
-}
-
-async fn insert_claim_codes(
-    db: &sqlx::SqlitePool,
-    codes: &[String],
-    expires_in_hours: u32,
-) -> Result<(), sqlx::Error> {
-    let offset = format!("+{expires_in_hours} hours");
-    let mut tx = db.begin().await?;
-    for code in codes {
-        sqlx::query(
-            "INSERT INTO claim_codes (code, expires_at, created_at) \
-             VALUES (?, datetime('now', ?), datetime('now'))",
-        )
-        .bind(code)
-        .bind(&offset)
-        .execute(&mut *tx)
-        .await?;
-    }
-    tx.commit().await?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -428,6 +388,34 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn create_invite_code_requires_admin_auth_and_mints_nothing() {
+        let state = test_state_with_admin_token().await;
+        let db = state.db.clone();
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.server.createInviteCode")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(r#"{"useCount":1}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM claim_codes")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "unauthorized invite mint must not create claim codes"
+        );
     }
 
     #[tokio::test]

@@ -3,6 +3,7 @@ pub mod admin_devices;
 pub mod app_passwords;
 pub mod blobs;
 pub mod blocks;
+pub mod claim_codes;
 pub mod dids;
 pub mod firehose_seq;
 pub mod iroh_identity;
