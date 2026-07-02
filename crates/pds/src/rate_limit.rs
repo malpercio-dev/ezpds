@@ -24,7 +24,7 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::{
@@ -66,8 +66,10 @@ fn is_global_exempt(path: &str) -> bool {
 pub struct RateLimiterState {
     enabled: bool,
     global_ip: Mutex<MultiWindowLimiter>,
-    /// Per-endpoint IP limiters keyed by exact request path.
-    endpoints: HashMap<&'static str, Mutex<MultiWindowLimiter>>,
+    /// Per-endpoint IP limiters keyed by exact request path. Values are `Arc`-shared so several
+    /// paths that must draw from one budget (the account-creation entry points) can point at the
+    /// same limiter instance.
+    endpoints: HashMap<&'static str, Arc<Mutex<MultiWindowLimiter>>>,
     write_points: Mutex<MultiWindowLimiter>,
 }
 
@@ -76,22 +78,24 @@ impl RateLimiterState {
     /// [`MultiWindowLimiter::new`], which drops zero-max windows).
     pub fn new(cfg: &RateLimitConfig) -> Self {
         let per_5min = |max: u64| {
-            Mutex::new(MultiWindowLimiter::new([Window {
+            Arc::new(Mutex::new(MultiWindowLimiter::new([Window {
                 window: FIVE_MIN,
                 max_points: max,
-            }]))
+            }])))
         };
 
         // The account-creation cap applies to the reference XRPC path (not yet routed) and to the
-        // native provisioning routes that exist today. Each path gets its own budget instance;
-        // keying is by IP, so this simply caps new-account attempts per source from any entry point.
-        let mut endpoints: HashMap<&'static str, Mutex<MultiWindowLimiter>> = HashMap::new();
+        // native provisioning routes that exist today. All three share *one* limiter instance so the
+        // IP-keyed budget is enforced across every entry point — otherwise a client could triple its
+        // allowance by rotating between paths.
+        let mut endpoints: HashMap<&'static str, Arc<Mutex<MultiWindowLimiter>>> = HashMap::new();
+        let create_account = per_5min(cfg.create_account_per_5min);
         for path in [
             "/xrpc/com.atproto.server.createAccount",
             "/v1/accounts",
             "/v1/accounts/mobile",
         ] {
-            endpoints.insert(path, per_5min(cfg.create_account_per_5min));
+            endpoints.insert(path, create_account.clone());
         }
         endpoints.insert(
             "/xrpc/com.atproto.server.createSession",
@@ -376,6 +380,28 @@ mod tests {
         // A different IP is unaffected.
         let resp = router.oneshot(describe_req("203.0.113.2")).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn throttled_response_carries_cors_headers() {
+        // CORS is layered outside the rate limiter, so a cross-origin client can still read a 429.
+        let router = app(state_with_global_cap(1).await);
+        let cors_req = |ip: &str| {
+            Request::builder()
+                .uri("/xrpc/com.atproto.server.describeServer")
+                .header("x-forwarded-for", ip)
+                .header("origin", "https://example.com")
+                .body(Body::empty())
+                .unwrap()
+        };
+        // Exhaust the cap, then the throttled response must still carry the CORS allow-origin header.
+        let _ = router.clone().oneshot(cors_req("203.0.113.5")).await.unwrap();
+        let resp = router.oneshot(cors_req("203.0.113.5")).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(
+            resp.headers().contains_key("access-control-allow-origin"),
+            "429 must carry CORS headers so cross-origin clients can read it"
+        );
     }
 
     #[tokio::test]

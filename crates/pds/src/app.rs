@@ -404,15 +404,18 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/v1/repo-signing-key", get(get_repo_signing_key))
         .route("/static/*path", get(static_handler))
-        .layer(CorsLayer::permissive())
-        // Rate limiting runs for every route, inside the trace span so throttled requests are
-        // still traced. `from_fn_with_state` needs its own state clone (`with_state` below consumes
-        // the original).
+        // Layer order matters (axum applies the *last* `.layer` outermost). We want, outermost →
+        // inner: CORS, then Trace, then rate limiting. CORS must wrap the rate limiter so preflight
+        // `OPTIONS` are answered (and short-circuited) before any throttling, and so a 429 still
+        // carries the CORS headers a cross-origin client needs to read it. Trace stays outside the
+        // rate limiter so throttled requests are still traced. `from_fn_with_state` needs its own
+        // state clone (`with_state` below consumes the original).
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::rate_limit::rate_limit_middleware,
         ))
         .layer(TraceLayer::new_for_http().make_span_with(OtelMakeSpan))
+        .layer(CorsLayer::permissive())
         .with_state(state)
 }
 

@@ -76,16 +76,27 @@ pub(crate) struct RateLimitDecision {
     pub reset_after_secs: u64,
 }
 
+/// How many `check` calls between full sweeps of the `entries` map (see [`MultiWindowLimiter`]).
+const SWEEP_EVERY: u32 = 1024;
+
 /// A pure sliding-window rate limiter supporting several windows at once (e.g. an hourly *and* a
 /// daily budget for the same key). All state lives in `entries`; the caller owns it and passes the
 /// current `Instant` in, so this stays a Functional Core with no clock or I/O of its own.
 ///
 /// Each key maps to a deque of `(timestamp, cost)` samples ordered oldest-first. A `check` prunes
 /// everything older than the longest window, then evaluates every window against the survivors.
+///
+/// **Memory bound.** A key stays in the map until it is swept. A single key's own `check` prunes
+/// only that key, so an idle key (never checked again) would otherwise linger forever — and with
+/// client-controllable keys (IPs), that is a slow memory-exhaustion vector. Every `SWEEP_EVERY`
+/// checks the limiter drops every key whose samples have all expired, bounding the map to keys seen
+/// within roughly the last `max_window`. The cost is amortised O(1) per check.
 pub(crate) struct MultiWindowLimiter {
     windows: Vec<Window>,
     max_window: Duration,
     entries: HashMap<String, VecDeque<(Instant, u64)>>,
+    /// Checks since the last full sweep; triggers a sweep at [`SWEEP_EVERY`].
+    ops_since_sweep: u32,
 }
 
 impl MultiWindowLimiter {
@@ -102,7 +113,30 @@ impl MultiWindowLimiter {
             windows,
             max_window,
             entries: HashMap::new(),
+            ops_since_sweep: 0,
         }
+    }
+
+    /// Drop every key whose samples have all aged out of the longest window. Called periodically
+    /// from [`check`](Self::check) to keep the map bounded.
+    fn sweep(&mut self, now: Instant) {
+        let max_window = self.max_window;
+        self.entries.retain(|_, deque| {
+            while let Some(&(ts, _)) = deque.front() {
+                if now.duration_since(ts) > max_window {
+                    deque.pop_front();
+                } else {
+                    break;
+                }
+            }
+            !deque.is_empty()
+        });
+    }
+
+    /// Number of keys currently tracked (test-only; asserts the sweep actually evicts).
+    #[cfg(test)]
+    pub(crate) fn tracked_keys(&self) -> usize {
+        self.entries.len()
     }
 
     /// Evaluate `cost` points against `key` at `now`; record the sample when allowed.
@@ -118,6 +152,13 @@ impl MultiWindowLimiter {
                 remaining: 0,
                 reset_after_secs: 0,
             };
+        }
+
+        // Periodically evict fully-expired keys so the map can't grow without bound.
+        self.ops_since_sweep += 1;
+        if self.ops_since_sweep >= SWEEP_EVERY {
+            self.ops_since_sweep = 0;
+            self.sweep(now);
         }
 
         let deque = self.entries.entry(key.to_string()).or_default();
@@ -282,6 +323,29 @@ mod window_tests {
         let d = l.check("did", 1, now);
         assert!(!d.allowed);
         assert_eq!(d.limit, 3, "the daily window is the binding one");
+    }
+
+    #[test]
+    fn idle_keys_are_evicted_by_sweep() {
+        let mut l = MultiWindowLimiter::new([win(300, 100)]);
+        let start = Instant::now();
+        // Many distinct keys, all live at `start`.
+        for i in 0..2000 {
+            l.check(&format!("ip{i}"), 1, start);
+        }
+        // Advance past the window so every `start` key is expired, then drive enough fresh checks
+        // (> SWEEP_EVERY) to trigger a sweep.
+        let later = start + Duration::from_secs(301);
+        for i in 0..1100 {
+            l.check(&format!("fresh{i}"), 1, later);
+        }
+        // The 2000 idle keys must have been swept; only recent keys remain, well under the ~3100
+        // distinct keys ever seen.
+        assert!(
+            l.tracked_keys() < 2000,
+            "idle keys should be evicted, tracked {}",
+            l.tracked_keys()
+        );
     }
 
     #[test]
