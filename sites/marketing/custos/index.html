@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Custos — a personal data server whose users hold their own keys</title>
+    <meta
+      name="description"
+      content="Custos is a complete AT Protocol personal data server in a single Rust binary. It hosts repositories, signs posts, and federates — and by construction it can never take an identity from its users."
+    />
+    <link rel="stylesheet" href="../assets/css/site.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%23262b36'/%3E%3Ccircle cx='12' cy='12' r='6' fill='%23d4a844'/%3E%3C/svg%3E"
+    />
+  </head>
+  <body class="register-custos">
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <div class="container">
+        <a class="brand brand-mono" href="./">
+          custos <span class="prompt-glyph" aria-hidden="true">▸</span>
+        </a>
+        <nav class="site-nav" aria-label="Site">
+          <a href="../">Obsign</a>
+          <a href="#run">Run it</a>
+          <a href="https://github.com/malpercio-dev/ezpds">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main">
+      <!-- The mono prompt is the display moment on this surface (mono is the signet here). -->
+      <section class="hero">
+        <div class="container">
+          <p class="prompt">custos <span class="prompt-glyph" aria-hidden="true">▸</span> personal data server</p>
+          <h1 class="hero-headline">Powerful enough to run your presence. Unable to take your identity.</h1>
+          <p class="lede">
+            Custos is a complete AT&nbsp;Protocol PDS in a single Rust binary: it hosts
+            repositories, signs commits, serves the firehose, and federates with the
+            network. Its signing key sits at <code>rotationKeys[1]</code> — below the key
+            your users hold. A Custos instance can act <em>for</em> its users; it cannot
+            act <em>against</em> them.
+          </p>
+          <div class="hero-actions">
+            <a class="btn btn-primary" href="#run">Run it</a>
+            <a class="btn btn-secondary" href="https://github.com/malpercio-dev/ezpds">Read the source</a>
+          </div>
+          <p class="hero-honesty">
+            Open source, in active development. Reports the literal truth — including its
+            own limits.
+          </p>
+        </div>
+      </section>
+
+      <!-- What it does: dense, aligned, legible — the clarity of a good ls -l -->
+      <section id="what" class="section-tight">
+        <div class="container">
+          <h2>What it runs.</h2>
+          <dl class="feature-rows">
+            <div>
+              <dt>one binary</dt>
+              <dd>
+                Rust, one process, SQLite in a single file. No database server to run,
+                secure, or babysit.
+              </dd>
+            </div>
+            <div>
+              <dt>backup</dt>
+              <dd>
+                Litestream streams the database off-box continuously — point-in-time
+                recovery without a backup cron.
+              </dd>
+            </div>
+            <div>
+              <dt>deploy</dt>
+              <dd>
+                Ships as an OCI image built from the repo&rsquo;s Dockerfile. Runs
+                anywhere a container runs.
+              </dd>
+            </div>
+            <div>
+              <dt>federation</dt>
+              <dd>
+                Native firehose (<code>com.atproto.sync.subscribeRepos</code>), sync
+                serving, and outbound <code>requestCrawl</code> — accounts on Custos are
+                first-class citizens of the network.
+              </dd>
+            </div>
+            <div>
+              <dt>auth</dt>
+              <dd>
+                A full OAuth provider — PAR, DPoP-bound tokens, JWKS — plus app passwords
+                for legacy clients.
+              </dd>
+            </div>
+            <div>
+              <dt>accounts</dt>
+              <dd>
+                Claim codes minted by you, the operator. Nobody signs up on your box
+                unless you handed them a code.
+              </dd>
+            </div>
+            <div>
+              <dt>admin</dt>
+              <dd>
+                Administer from your pocket with the Admin Companion iOS app: every
+                request is signed by that phone&rsquo;s own Secure&nbsp;Enclave key, so
+                there is no replayable admin secret to lose with the device.
+              </dd>
+            </div>
+            <div>
+              <dt>custody seam</dt>
+              <dd>
+                Custos holds <code>rotationKeys[1]</code> and signs repo commits. Your
+                users&rsquo; wallets hold <code>rotationKeys[0]</code> and sign identity
+                operations. The server works; the user rules.
+              </dd>
+            </div>
+          </dl>
+        </div>
+      </section>
+
+      <!-- Run it -->
+      <section id="run" class="section-alt">
+        <div class="container">
+          <h2>Run it.</h2>
+          <p class="section-intro">
+            Build the image from source and point it at your public hostname. The
+            <code>justfile</code> in the repo carries the full local workflow; the deploy
+            guide covers staging, releases, and Litestream.
+          </p>
+          <pre class="code-output"><span class="out-dim">$</span> git clone https://github.com/malpercio-dev/ezpds
+<span class="out-dim">$</span> cd ezpds
+<span class="out-dim">$</span> docker build -t custos .
+<span class="out-dim">$</span> docker run -p 8080:8080 \
+    -e EZPDS_PUBLIC_URL=https://pds.example.com \
+    -e EZPDS_ADMIN_TOKEN=&lt;your-admin-token&gt; \
+    custos
+
+<span class="out-glyph">▸</span> custos <span class="out-dim">— listening on 0.0.0.0:8080</span></pre>
+          <p class="footnote">
+            Details, configuration reference, and the production checklist live in the
+            repository&rsquo;s <a href="https://github.com/malpercio-dev/ezpds/blob/main/docs/deploy.md">deploy guide</a>.
+          </p>
+        </div>
+      </section>
+
+      <!-- The honest relationship -->
+      <section id="relationship">
+        <div class="container">
+          <h2>The deal between Custos and its users.</h2>
+          <div class="prose">
+            <p>
+              A PDS necessarily holds its users&rsquo; data — that is its job. The Custos
+              bet is that it should hold their data <em>without holding their identity</em>.
+              Because each user&rsquo;s wallet key outranks the server&rsquo;s, a Custos
+              operator — even a compromised one — cannot rotate an identity away from its
+              owner, and every identity operation the server does sign is visible in the
+              public PLC log, monitored and reversible by the user&rsquo;s wallet inside
+              the 72-hour window.
+            </p>
+            <p>
+              That is the whole design: an operator powerful enough to run the service,
+              and structurally too weak to betray the people on it.
+            </p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="container">
+        <div class="foot-brands">
+          <span>Custos — the personal data server</span>
+          <a href="../">Obsign — the identity wallet</a>
+        </div>
+        <div>
+          <a href="https://github.com/malpercio-dev/ezpds">Open source (ezpds)</a>
+          · built on the <a href="https://atproto.com">AT&nbsp;Protocol</a>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>
