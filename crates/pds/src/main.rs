@@ -15,6 +15,7 @@ mod db;
 mod dns;
 mod firehose;
 mod firehose_gc;
+mod genesis;
 mod handle;
 mod identity_resolution;
 mod iroh_tunnel;

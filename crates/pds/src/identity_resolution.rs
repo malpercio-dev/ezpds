@@ -544,6 +544,27 @@ fn forbidden_did_web_authority(authority: &str) -> bool {
     host == "localhost" || host.ends_with(".localhost") || host.parse::<IpAddr>().is_ok()
 }
 
+/// Extract the account's `#atproto` repo signing key from a resolved DID document as a
+/// `did:key:` URI. Walks the W3C `verificationMethod` array for the entry whose `id` ends in
+/// `#atproto` and returns `did:key:{publicKeyMultibase}`. Returns `None` if absent or malformed.
+///
+/// Used by migration-mode `createAccount` to verify a foreign old-PDS-signed service-auth JWT
+/// against the migrating identity's own signing key.
+pub fn atproto_verification_key(did_doc: &Value) -> Option<crypto::DidKeyUri> {
+    did_doc
+        .get("verificationMethod")?
+        .as_array()?
+        .iter()
+        .find_map(|method| {
+            let id = method.get("id")?.as_str()?;
+            if !id.ends_with("#atproto") {
+                return None;
+            }
+            let multibase = method.get("publicKeyMultibase")?.as_str()?;
+            Some(crypto::DidKeyUri(format!("did:key:{multibase}")))
+        })
+}
+
 fn also_known_as_handles(did_doc: &Value) -> Vec<String> {
     did_doc
         .get("alsoKnownAs")

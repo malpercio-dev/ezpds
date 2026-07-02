@@ -1,0 +1,38 @@
+meta {
+  name: Create Account XRPC (createAccount, migration)
+  type: http
+  seq: 77
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.server.createAccount
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{serviceAuthJwt}}
+}
+
+body:json {
+  {
+    "handle": "alice.migrated.example",
+    "email": "alice@example.com",
+    "did": "{{migratingDid}}",
+    "inviteCode": "{{inviteCode}}"
+  }
+}
+
+docs {
+  Migration mode. Selected by the presence of `did` (an existing account being moved in). The
+  Authorization Bearer token is a service-auth JWT the OLD PDS minted (via
+  `com.atproto.server.getServiceAuth`, `aud` = this server's DID, `lxm` =
+  `com.atproto.server.createAccount`); this server verifies it against the DID's `#atproto` key.
+  Reserve a signing key for the DID first (`reserveSigningKey`). Creates a DEACTIVATED, repo-less
+  account and returns `{ accessJwt, refreshJwt, handle, did, didDoc }`. Follow with `importRepo`
+  then `activateAccount`. `inviteCode` is only required when `inviteCodeRequired: true`.
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}

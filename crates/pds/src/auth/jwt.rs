@@ -312,6 +312,110 @@ where
     format!("{signing_input}.{sig_b64}")
 }
 
+// ── Service-auth JWT verification (inbound: authenticating a foreign account) ─
+
+/// Claims decoded from an inbound service-auth JWT. All optional so a missing claim is a
+/// validation failure we control, not a deserialization error.
+#[derive(Debug, Deserialize)]
+struct ServiceAuthClaims {
+    iss: Option<String>,
+    aud: Option<String>,
+    exp: Option<u64>,
+    lxm: Option<String>,
+}
+
+/// Verify an inbound ES256 service-auth JWT — the counterpart to [`mint_service_auth_jwt`].
+///
+/// Used by migration-mode `createAccount` to authenticate a foreign account: the client
+/// presents a token the **old** PDS minted (signed with the account's `#atproto` repo key),
+/// and this server verifies it against that key resolved from the incoming DID's document.
+///
+/// Validates, independently of the signature: 3-part structure; header `alg == ES256`;
+/// `iss == expected_iss` (the migrating DID); `aud == expected_aud` (this server's DID);
+/// `exp` strictly in the future relative to `now`; and, when the token carries an `lxm`, that
+/// it equals `expected_lxm`. A method-unrestricted token (no `lxm`) is accepted — matching the
+/// reference PDS, whose `getServiceAuth` omits `lxm` when unrequested and caps such tokens'
+/// lifetime tightly. Signature verification is delegated to [`crypto::verify_p256_signature`]
+/// (ES256 = ECDSA-SHA256 over the exact `header.payload` bytes).
+pub fn verify_service_auth_jwt(
+    token: &str,
+    expected_iss: &str,
+    expected_aud: &str,
+    expected_lxm: &str,
+    atproto_key: &crypto::DidKeyUri,
+    now: u64,
+) -> Result<(), ApiError> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+    let invalid = || ApiError::new(ErrorCode::InvalidToken, "invalid service auth token");
+
+    let mut parts = token.split('.');
+    let header_b64 = parts.next().ok_or_else(invalid)?;
+    let payload_b64 = parts.next().ok_or_else(invalid)?;
+    let sig_b64 = parts.next().ok_or_else(invalid)?;
+    if parts.next().is_some() || sig_b64.is_empty() {
+        return Err(invalid());
+    }
+
+    // Header: require ES256 so a token can't downgrade the algorithm.
+    let header_bytes = URL_SAFE_NO_PAD.decode(header_b64).map_err(|_| invalid())?;
+    let header: serde_json::Value = serde_json::from_slice(&header_bytes).map_err(|_| invalid())?;
+    if header.get("alg").and_then(|v| v.as_str()) != Some("ES256") {
+        return Err(ApiError::new(
+            ErrorCode::InvalidToken,
+            "service auth token must be ES256",
+        ));
+    }
+
+    // Signature over the exact `header.payload` bytes, against the issuer's #atproto key.
+    let signing_input = format!("{header_b64}.{payload_b64}");
+    let sig_bytes = URL_SAFE_NO_PAD.decode(sig_b64).map_err(|_| invalid())?;
+    let sig: [u8; 64] = sig_bytes.as_slice().try_into().map_err(|_| invalid())?;
+    crypto::verify_p256_signature(atproto_key, signing_input.as_bytes(), &sig).map_err(|e| {
+        tracing::debug!(error = %e, "service auth signature verification failed");
+        ApiError::new(
+            ErrorCode::InvalidToken,
+            "service auth signature verification failed",
+        )
+    })?;
+
+    // Claims — validated independently of the signature.
+    let payload_bytes = URL_SAFE_NO_PAD.decode(payload_b64).map_err(|_| invalid())?;
+    let claims: ServiceAuthClaims =
+        serde_json::from_slice(&payload_bytes).map_err(|_| invalid())?;
+    if claims.iss.as_deref() != Some(expected_iss) {
+        return Err(ApiError::new(
+            ErrorCode::InvalidToken,
+            "service auth token issuer does not match the account DID",
+        ));
+    }
+    if claims.aud.as_deref() != Some(expected_aud) {
+        return Err(ApiError::new(
+            ErrorCode::InvalidToken,
+            "service auth token audience does not match this server",
+        ));
+    }
+    match claims.exp {
+        Some(exp) if exp > now => {}
+        Some(_) => {
+            return Err(ApiError::new(
+                ErrorCode::TokenExpired,
+                "service auth token has expired",
+            ))
+        }
+        None => return Err(invalid()),
+    }
+    if let Some(lxm) = claims.lxm.as_deref() {
+        if lxm != expected_lxm {
+            return Err(ApiError::new(
+                ErrorCode::InvalidToken,
+                "service auth token is not authorized for this method",
+            ));
+        }
+    }
+    Ok(())
+}
+
 // ── Legacy HS256 token issuance ───────────────────────────────────────────────
 
 const ACCESS_TOKEN_TTL_SECS: u64 = 2 * 60 * 60; // 2 hours
