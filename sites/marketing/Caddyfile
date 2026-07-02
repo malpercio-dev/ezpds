@@ -1,0 +1,30 @@
+{
+	# Railway terminates TLS at its edge (with Cloudflare in front of that), so
+	# Caddy serves plain HTTP on $PORT — no on-box certificates.
+	auto_https off
+	admin off
+}
+
+# Railway injects $PORT; default to 8080 for local `docker run`.
+:{$PORT:8080} {
+	root * /srv
+	encode zstd gzip
+
+	# Fonts are content-stable (their filenames change if the face changes), so
+	# they can be cached hard. Everything else (HTML, CSS) is revalidated so a
+	# copy or style edit goes live promptly — the CSS filename is not fingerprinted.
+	@immutable path /assets/fonts/*
+	header @immutable Cache-Control "public, max-age=31536000, immutable"
+	@revalidate not path /assets/fonts/*
+	header @revalidate Cache-Control "public, max-age=300, must-revalidate"
+
+	header {
+		-Server
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+	}
+
+	# Clean URLs: `/custos/` → custos/index.html, `/foo` → foo.html.
+	try_files {path} {path}/ {path}.html
+	file_server
+}

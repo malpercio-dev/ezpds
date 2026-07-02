@@ -44,8 +44,23 @@ fonts self-hosted in `assets/fonts/` (copied from
 
 ## Serving
 
-Any static file host. Locally:
+Any static file host — the site is plain HTML/CSS/fonts with no build step.
+
+Quick local preview:
 
 ```sh
 python3 -m http.server -d sites/marketing 8000
+```
+
+Production is a Caddy container (`Dockerfile` + `Caddyfile`) deployed as its own
+Railway service — a second service in the PDS's Railway project, scoped to this
+directory (`Root Directory = sites/marketing`) so it stays independent of the
+repo-root `railway.toml`. The `Caddyfile` handles gzip/zstd, clean URLs, and
+cache/security headers. Full setup — including pointing `about.obsign.org` at
+it — is in [docs/deploy.md](../../docs/deploy.md) → "Marketing Site". To run the
+container exactly as deployed:
+
+```sh
+docker build -t obsign-marketing sites/marketing
+docker run --rm -p 8080:8080 obsign-marketing   # http://localhost:8080
 ```
