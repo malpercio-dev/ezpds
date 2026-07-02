@@ -21,6 +21,7 @@ src/
   iroh_tunnel.rs   — Iroh QUIC endpoint: NAT-traversing device↔pds tunnel (opt-in)
   record_write.rs  — shared repo write flow + firehose commit emission
   genesis.rs       — shared did:plc genesis-op machinery (verify/validate, DID-doc + CAR builders, plc.directory POST), used by both create_did.rs and create_account_xrpc.rs
+  plc_ops.rs       — shared did:plc rotation/update-op machinery for the interop PLC-signing surface: fetch a DID's current PLC state (audit-log GET), render a DID doc from op fields, parse request verificationMethods/services; used by the identity.*PlcOperation routes
   handle.rs        — handle validation (structural + domain policy), shared by provisioning + handle routes
   auth/            — authentication primitives (no HTTP, no DB schema ownership)
   db/              — SQL query functions + migration runner (no business logic)
@@ -175,6 +176,7 @@ and async query functions; no business logic lives here.
 | `blobs.rs` | blob metadata store; `account_storage_bytes`, `account_blob_metrics`, `account_largest_blob` (blob-storage metrics) |
 | `oauth.rs` | OAuth client lookup, auth code storage, token management |
 | `password_reset.rs` | `insert_reset_token`, `get_reset_token`, `mark_reset_token_used`, `update_password_hash` |
+| `plc_operation_tokens.rs` | PLC-operation email-token store (V033): `insert_plc_operation_token` (1-hour TTL) + `consume_plc_operation_token` (atomic single-use, bound to `(token_hash, did)`), gating `signPlcOperation` on the interop migration path |
 | `preferences.rs` | `get_preferences` (DID→stored `app.bsky` preferences JSON blob); `put_preferences` (upsert the blob, overwriting any previous value). Both generic over the executor so `put_preferences.rs` can read-merge-write inside one transaction |
 | `repo_keys.rs` | Per-account repo signing keys: pending-account key storage for the mobile DID ceremony, reserved signing keys for standard account migration, promotion into DID-keyed `signing_keys`, and commit-signer lookup |
 | `transfers.rs` | Planned device-swap sessions (V027/V029/V030): `insert_transfer` opens a `pending` transfer for a DID, sweeping any expired active row first then letting the partial unique indexes reject a still-active duplicate (→ `DuplicateActive`, the 409 path) or an already-taken active code (→ `CodeCollision`, caller regenerates and retries). Transfer-accept query helpers store promoted-device credentials in `transfer_devices`; completion helpers revoke superseded sessions/transfer-device credentials and append `transfer_audit_events`. `transfer_device_token_exists` lets the `routes/auth.rs` device-token auth path accept those credentials later. Wired by `routes/transfer_initiate.rs`, the root `transfer.rs` accept/complete workflows, `routes/transfer_accept.rs`, `routes/transfer_complete.rs`, and `routes/auth.rs` |
@@ -239,6 +241,10 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `put_preferences.rs` | `POST /xrpc/app.bsky.actor.putPreferences` — local preference write (registered ahead of the catch-all). Any access-level token; a scope-limited partial replace — a full-access token overwrites the stored blob entirely, an app-password caller's write preserves any full-access-only entries it can't manage |
 | `preference_scope.rs` | Shared (non-handler) between the two: which preference `$type`s are full-access-only (`personalDetailsPref`), matching the reference PDS |
 | `resolve_handle.rs` | `GET /xrpc/com.atproto.identity.resolveHandle` |
+| `get_recommended_did_credentials.rs` | `GET /xrpc/com.atproto.identity.getRecommendedDidCredentials` — the DID-doc fields this PDS recommends a (new/migrating) account's PLC op contain: the PDS-held rotation key, `#atproto` verification method, handle(s), and this server's `atproto_pds` endpoint. Session-authed. Consumed by migrating clients (which put their device key ahead of the recommended key) and standard tooling (ADR-0002) |
+| `request_plc_operation_signature.rs` | `POST /xrpc/com.atproto.identity.requestPlcOperationSignature` — mint a single-use 1-hour email token authorizing a later `signPlcOperation` (interop migration path). Full-access-authed; email delivery stubbed (logged) pending MM-211 |
+| `sign_plc_operation.rs` | `POST /xrpc/com.atproto.identity.signPlcOperation` — sign a DID-repointing PLC op with the PDS-held rotation key and return it UNSUBMITTED; overlays request changes onto the DID's current plc.directory state, chains via `prev`. Two-factor: full-access session + single-use email token. Interop path (ADR-0002); the wallet signs its identity leg locally instead |
+| `submit_plc_operation.rs` | `POST /xrpc/com.atproto.identity.submitPlcOperation` — verify a signed PLC op (signature by a current rotation key + `prev` chains onto the head) then POST it to plc.directory and refresh the cached DID document. Full-access-authed. Interop path |
 | `sync_subscribe_repos.rs` | `GET /xrpc/com.atproto.sync.subscribeRepos` (WebSocket firehose) |
 | `claim_codes.rs` | Claim code management |
 | `get_pds_signing_key.rs` | `GET /v1/pds/keys` (deprecated alias: `GET /v1/relay/keys`) |

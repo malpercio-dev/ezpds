@@ -1,0 +1,44 @@
+meta {
+  name: Submit PLC Operation (submitPlcOperation)
+  type: http
+  seq: 81
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.identity.submitPlcOperation
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+body:json {
+  {
+    "operation": {}
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  accessJwt:
+}
+
+docs {
+  Validates a signed PLC operation and submits it to plc.directory, repointing the
+  authenticated account's DID. Provided for interop (ADR-0002); the wallet-authorized path
+  POSTs its operations to plc.directory directly.
+
+  Before submitting, the operation must be signed by one of the DID's CURRENT rotation keys
+  (fetched from plc.directory) and must chain onto the current head via `prev`. After a
+  successful submit the locally-cached DID document is refreshed. Set `operation` to the
+  object returned by `signPlcOperation`.
+
+  Requires a full access-scope token. Returns 200 with an empty body.
+
+  Errors:
+  - 401 INVALID_TOKEN: missing, expired, or wrong-scope token
+  - 400 INVALID_REQUEST: operation is unsigned by a current rotation key, or prev mismatch
+  - 502 PLC_DIRECTORY_ERROR: plc.directory unreachable or rejected the operation
+}

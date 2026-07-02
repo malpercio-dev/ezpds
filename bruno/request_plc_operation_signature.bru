@@ -1,0 +1,33 @@
+meta {
+  name: Request PLC Operation Signature (requestPlcOperationSignature)
+  type: http
+  seq: 79
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.identity.requestPlcOperationSignature
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  accessJwt:
+}
+
+docs {
+  Mints a single-use, 1-hour email token that authorizes a later `signPlcOperation` call —
+  the interop (PDS-signed) account-migration path (ADR-0002). Email delivery is stubbed
+  pending MM-211: the plaintext token is logged server-side (via `tracing::info!`) rather
+  than emailed.
+
+  Requires a full access-scope token. Returns 200 with an empty body.
+
+  Errors:
+  - 401 AUTHENTICATION_REQUIRED: missing Authorization header
+  - 401 INVALID_TOKEN: app-password / refresh-scope token (full access required)
+}

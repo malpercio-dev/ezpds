@@ -1,0 +1,51 @@
+meta {
+  name: Sign PLC Operation (signPlcOperation)
+  type: http
+  seq: 80
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.identity.signPlcOperation
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+body:json {
+  {
+    "token": "{{plcOperationToken}}",
+    "services": {
+      "atproto_pds": {
+        "type": "AtprotoPersonalDataServer",
+        "endpoint": "https://new-pds.example.com"
+      }
+    }
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  accessJwt:
+  plcOperationToken:
+}
+
+docs {
+  Signs a DID-repointing PLC operation on the authenticated account's behalf with the
+  PDS-held rotation key, and returns it UNSUBMITTED. The operation overlays the request's
+  changes (`rotationKeys`, `alsoKnownAs`, `verificationMethods`, `services` — all optional)
+  onto the DID's current PLC state (fetched from plc.directory) and chains onto the current
+  head via `prev`. The interop (PDS-signed) migration path (ADR-0002).
+
+  Two-factor auth: a full access-scope token AND the single-use `token` minted by
+  `requestPlcOperationSignature`. Returns 200 with `{ operation }`.
+
+  Errors:
+  - 401 INVALID_TOKEN: missing/expired/wrong-scope session, or missing/invalid PLC token
+  - 403 FORBIDDEN: this PDS holds no rotation key in the operation's rotationKeys
+  - 404 NOT_FOUND: no signing key registered for the account
+  - 502 PLC_DIRECTORY_ERROR: plc.directory unreachable or returned an error
+  - 503 SERVICE_UNAVAILABLE: signing-key master key not configured
+}

@@ -10,6 +10,7 @@ pub mod iroh_identity;
 pub mod jwt_secret;
 pub mod oauth;
 pub mod password_reset;
+pub mod plc_operation_tokens;
 pub mod preferences;
 pub mod repo_keys;
 pub mod transfers;
@@ -171,6 +172,10 @@ static MIGRATIONS: &[Migration] = &[
     Migration {
         version: 32,
         sql: include_str!("migrations/V032__reserved_signing_keys.sql"),
+    },
+    Migration {
+        version: 33,
+        sql: include_str!("migrations/V033__plc_operation_tokens.sql"),
     },
 ];
 

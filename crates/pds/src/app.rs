@@ -47,6 +47,7 @@ use crate::routes::get_device_pds::get_device_pds;
 use crate::routes::get_did::get_did_handler;
 use crate::routes::get_pds_signing_key::get_pds_signing_key;
 use crate::routes::get_preferences::get_preferences_handler;
+use crate::routes::get_recommended_did_credentials::get_recommended_did_credentials;
 use crate::routes::get_record::get_record;
 use crate::routes::get_repo::get_repo;
 use crate::routes::get_repo_signing_key::get_repo_signing_key;
@@ -72,6 +73,7 @@ use crate::routes::put_record::put_record;
 use crate::routes::refresh_session::refresh_session;
 use crate::routes::register_device::register_device;
 use crate::routes::request_password_reset::request_password_reset;
+use crate::routes::request_plc_operation_signature::request_plc_operation_signature;
 use crate::routes::reserve_signing_key::reserve_signing_key;
 use crate::routes::reset_password::reset_password;
 use crate::routes::resolve_handle::resolve_handle_handler;
@@ -79,11 +81,13 @@ use crate::routes::resolve_identity::{
     refresh_identity_handler, resolve_did_handler, resolve_identity_handler,
 };
 use crate::routes::revoke_app_password::revoke_app_password;
+use crate::routes::sign_plc_operation::sign_plc_operation;
 use crate::routes::standard_signup::{
     check_handle_availability, check_signup_queue, create_invite_code, create_invite_codes,
     get_account_invite_codes,
 };
 use crate::routes::static_assets::static_handler;
+use crate::routes::submit_plc_operation::submit_plc_operation;
 use crate::routes::sync_get_blocks::sync_get_blocks;
 use crate::routes::sync_get_latest_commit::sync_get_latest_commit;
 use crate::routes::sync_get_record::sync_get_record;
@@ -344,6 +348,22 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/xrpc/com.atproto.identity.updateHandle",
             post(update_handle_handler),
+        )
+        .route(
+            "/xrpc/com.atproto.identity.getRecommendedDidCredentials",
+            get(get_recommended_did_credentials),
+        )
+        .route(
+            "/xrpc/com.atproto.identity.requestPlcOperationSignature",
+            post(request_plc_operation_signature),
+        )
+        .route(
+            "/xrpc/com.atproto.identity.signPlcOperation",
+            post(sign_plc_operation),
+        )
+        .route(
+            "/xrpc/com.atproto.identity.submitPlcOperation",
+            post(submit_plc_operation),
         )
         .route("/xrpc/com.atproto.repo.uploadBlob", post(upload_blob))
         .route("/xrpc/com.atproto.sync.getBlob", get(get_blob))
