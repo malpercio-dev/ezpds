@@ -23,8 +23,8 @@ pub async fn landing(State(state): State<AppState>) -> Html<String> {
 
 /// Pure template render: substitute escaped instance facts into the embedded page.
 fn render_landing(config: &Config) -> String {
-    let host = host_of(&config.public_url);
-    let did = resolve_did(&config.server_did, &config.public_url);
+    let host = config.public_host();
+    let did = config.resolve_server_did();
     let domains = if config.available_user_domains.is_empty() {
         "none configured".to_string()
     } else {
@@ -46,34 +46,12 @@ fn render_landing(config: &Config) -> String {
     };
 
     LANDING_TEMPLATE
-        .replace("{{host}}", &html_escape(&host))
+        .replace("{{host}}", &html_escape(host))
         .replace("{{did}}", &html_escape(&did))
         .replace("{{version}}", env!("CARGO_PKG_VERSION"))
         .replace("{{domains}}", &html_escape(&domains))
         .replace("{{signup}}", signup)
         .replace("{{contact_row}}", &contact_row)
-}
-
-/// Extract the bare hostname from the configured public URL.
-fn host_of(public_url: &str) -> String {
-    public_url
-        .strip_prefix("https://")
-        .or_else(|| public_url.strip_prefix("http://"))
-        .unwrap_or(public_url)
-        .split('/')
-        .next()
-        .unwrap_or("")
-        .to_string()
-}
-
-/// Resolve the DID shown on the page: the configured `server_did` verbatim, else a
-/// `did:web` derived from the public URL's hostname. Mirrors the derivation in
-/// `describe_server.rs` (kept local — routes must not import from other routes).
-fn resolve_did(server_did: &Option<String>, public_url: &str) -> String {
-    match server_did {
-        Some(did) => did.clone(),
-        None => format!("did:web:{}", host_of(public_url)),
-    }
 }
 
 /// HTML-escape a string for safe embedding in HTML content or attribute values.
@@ -161,21 +139,5 @@ mod tests {
         let html = std::str::from_utf8(&body).unwrap();
 
         assert!(!html.contains("mailto:"));
-    }
-
-    #[test]
-    fn resolve_did_prefers_configured_did() {
-        assert_eq!(
-            super::resolve_did(&Some("did:plc:abc".to_string()), "https://x.example.com"),
-            "did:plc:abc"
-        );
-    }
-
-    #[test]
-    fn resolve_did_derives_did_web_and_strips_path() {
-        assert_eq!(
-            super::resolve_did(&None, "https://pds.example.com/some/path"),
-            "did:web:pds.example.com"
-        );
     }
 }

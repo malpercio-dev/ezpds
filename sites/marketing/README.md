@@ -46,6 +46,6 @@ fonts self-hosted in `assets/fonts/` (copied from
 
 Any static file host. Locally:
 
-```
+```sh
 python3 -m http.server -d sites/marketing 8000
 ```

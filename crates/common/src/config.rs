@@ -47,6 +47,31 @@ pub struct Config {
     pub plc_directory_url: String,
 }
 
+impl Config {
+    /// The bare hostname of the instance's public URL (scheme and path stripped).
+    pub fn public_host(&self) -> &str {
+        self.public_url
+            .strip_prefix("https://")
+            .or_else(|| self.public_url.strip_prefix("http://"))
+            .unwrap_or(&self.public_url)
+            .split('/')
+            .next()
+            .unwrap_or("")
+    }
+
+    /// The DID this server presents publicly (describeServer, the landing page).
+    ///
+    /// Returns the configured `server_did` verbatim when present. Otherwise derives a
+    /// `did:web` DID from the hostname in `public_url` as a placeholder until the
+    /// server mints a real DID.
+    pub fn resolve_server_did(&self) -> String {
+        match &self.server_did {
+            Some(did) => did.clone(),
+            None => format!("did:web:{}", self.public_host()),
+        }
+    }
+}
+
 /// Optional privacy/ToS links surfaced by `com.atproto.server.describeServer`.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct ServerLinksConfig {
@@ -1012,6 +1037,28 @@ mod tests {
     fn server_did_is_optional() {
         let config = validate_and_build(minimal_raw()).unwrap();
         assert!(config.server_did.is_none());
+    }
+
+    #[test]
+    fn public_host_strips_scheme_and_path() {
+        let mut raw = minimal_raw();
+        raw.public_url = Some("https://pds.example.com/some/path".to_string());
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.public_host(), "pds.example.com");
+    }
+
+    #[test]
+    fn resolve_server_did_prefers_configured_did() {
+        let mut raw = minimal_raw();
+        raw.server_did = Some("did:plc:abc123".to_string());
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.resolve_server_did(), "did:plc:abc123");
+    }
+
+    #[test]
+    fn resolve_server_did_derives_did_web_from_public_url() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert_eq!(config.resolve_server_did(), "did:web:pds.example.com");
     }
 
     #[test]
