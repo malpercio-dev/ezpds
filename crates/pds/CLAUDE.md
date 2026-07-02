@@ -17,6 +17,7 @@ src/
   firehose.rs      — persistent subscribeRepos event pipeline (durable sequencer + broadcast fan-out)
   firehose_gc.rs   — periodic `repo_seq` retention sweep (age/count pruning below the live frontier)
   crawler.rs       — outbound requestCrawl notifier (rate-limited, retrying, fire-and-forget)
+  rate_limit.rs    — request rate-limiting middleware + shared limiter state (global IP, per-endpoint IP, per-account write points)
   iroh_tunnel.rs   — Iroh QUIC endpoint: NAT-traversing device↔pds tunnel (opt-in)
   record_write.rs  — shared repo write flow + firehose commit emission
   handle.rs        — handle validation (structural + domain policy), shared by provisioning + handle routes
@@ -107,6 +108,29 @@ All outcomes are logged, never propagated — a commit never blocks on or fails 
 crawler. Configured via `[crawlers] urls = [...]` (default `["https://bsky.network"]`; empty
 disables) or `EZPDS_CRAWLERS`.
 
+### `rate_limit.rs`
+
+Reference-parity request rate limiting. The pure sliding-window algorithm (`MultiWindowLimiter`,
+supporting several windows per key with weighted "points") lives in `auth/rate_limit.rs` (Functional
+Core); this module is the Imperative Shell that owns the process-level `Mutex`-wrapped limiters and
+the Axum middleware. Three families, all off when `[rate_limit] enabled = false` (the test harness
+sets this):
+
+1. **Global per-IP** — 1 point/request keyed by client IP (leftmost `X-Forwarded-For`, else the TCP
+   peer), default 3000/5min. `com.atproto.sync.getRepo`, `subscribeRepos`, and `_health` are exempt
+   so relay backfill/firehose and platform health checks are never throttled.
+2. **Per-endpoint per-IP** — tighter caps on `createAccount`/`createSession`/`resetPassword`/
+   `updateHandle` (plus the native `/v1/accounts[/mobile]` signup routes), keyed by IP.
+3. **Per-account write points** — create=3/update=2/delete=1 over an hourly + daily window, charged
+   in `record_write::commit_repo_write` (the single choke point for all four repo-write routes),
+   keyed by the **authenticated** DID. Keying on the verified DID — not an unverified token subject —
+   is deliberate: otherwise anyone could drain a victim's budget.
+
+Rejections return `429` with the standard error envelope plus `RateLimit-Limit`/`-Remaining`/
+`-Reset` and `Retry-After`; successful requests carry the `RateLimit-*` headers of the tightest
+applicable limiter. All knobs are configurable via `[rate_limit]` in `pds.toml` / `EZPDS_RATE_LIMIT_*`
+(a knob of `0` disables that specific limiter).
+
 ### `iroh_tunnel.rs`
 
 The Iroh QUIC tunnel — a NAT-traversing endpoint devices dial by node id instead of by a
@@ -130,7 +154,7 @@ Pure authentication logic and middleware. Submodules:
 | `extractors.rs` | Imperative Shell | `AuthenticatedUser` axum extractor |
 | `jwt.rs` | Functional Core | JWT parsing, scope validation, access/refresh token verification, HS256 token issuance |
 | `password.rs` | Functional Core | `hash_password`, `verify_password` (argon2id) |
-| `rate_limit.rs` | Functional Core | Sliding-window login-failure rate limiter |
+| `rate_limit.rs` | Functional Core | Sliding-window login-failure limiter + generic multi-window points limiter (`MultiWindowLimiter`) used by the top-level `rate_limit.rs` middleware |
 | `signing_key.rs` | Imperative Shell | ES256 signing key load-or-create |
 | `bearer.rs` | Functional Core | Bearer token extraction from headers |
 

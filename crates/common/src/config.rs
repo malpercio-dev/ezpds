@@ -38,6 +38,8 @@ pub struct Config {
     pub appview: AppViewConfig,
     pub chat: ChatConfig,
     pub crawlers: CrawlersConfig,
+    /// Request rate-limiting knobs (global IP + per-endpoint IP + per-account write points).
+    pub rate_limit: RateLimitConfig,
     pub telemetry: TelemetryConfig,
     // Operator authentication for management endpoints (e.g., POST /v1/pds/keys).
     pub admin_token: Option<String>,
@@ -177,6 +179,100 @@ fn default_gc_interval_secs() -> u64 {
 
 fn default_temp_ttl_secs() -> u64 {
     6 * 60 * 60 // 6 hours
+}
+
+/// Request rate-limiting configuration (reference-parity limiter set).
+///
+/// Three limiter families protect a small host from abuse/runaway clients and keep it inside the
+/// relay-side host quotas:
+///
+/// 1. a **global per-IP** request cap (exempting sync backfill so a relay is never throttled),
+/// 2. **per-endpoint per-IP** caps on the sensitive auth/account endpoints, and
+/// 3. a **per-account repo-write "points"** budget (create=3, update=2, delete=1) over an hourly
+///    and a daily window, applied to the four repo-write routes.
+///
+/// The sliding windows themselves (5 minutes / 1 hour / 1 day) are AT Protocol conventions and are
+/// fixed in code; the point/request counts here are the operator-tunable knobs, defaulting to the
+/// reference PDS values. A knob set to `0` disables *that specific* limiter while leaving the
+/// others active. Set `enabled = false` to turn the whole subsystem off (the test harness does
+/// this so unit tests are not throttled).
+#[derive(Debug, Clone, Deserialize)]
+pub struct RateLimitConfig {
+    /// Master switch. When `false`, the middleware and write-point checks are pure pass-throughs.
+    /// Default: `true`.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Global requests per IP per 5 minutes (reference: 3000). `0` disables. The global limiter
+    /// exempts `com.atproto.sync.getRepo` and `com.atproto.sync.subscribeRepos` so relay backfill
+    /// and firehose consumption are never throttled.
+    #[serde(default = "default_global_ip_per_5min")]
+    pub global_ip_per_5min: u64,
+    /// `com.atproto.server.createAccount` requests per IP per 5 minutes (reference: 100). `0` disables.
+    #[serde(default = "default_create_account_per_5min")]
+    pub create_account_per_5min: u64,
+    /// `com.atproto.server.createSession` requests per IP per 5 minutes (reference: 30). `0` disables.
+    /// Complements the per-identifier failed-login sliding window already applied inside the handler.
+    #[serde(default = "default_create_session_per_5min")]
+    pub create_session_per_5min: u64,
+    /// `com.atproto.server.resetPassword` requests per IP per 5 minutes (reference: 50). `0` disables.
+    #[serde(default = "default_reset_password_per_5min")]
+    pub reset_password_per_5min: u64,
+    /// `com.atproto.identity.updateHandle` requests per IP per 5 minutes (reference: 10). `0` disables.
+    #[serde(default = "default_update_handle_per_5min")]
+    pub update_handle_per_5min: u64,
+    /// Repo-write points per account per hour (reference: 5000). `0` disables the hourly budget.
+    #[serde(default = "default_write_points_hourly")]
+    pub write_points_hourly: u64,
+    /// Repo-write points per account per day (reference: 35000). `0` disables the daily budget.
+    #[serde(default = "default_write_points_daily")]
+    pub write_points_daily: u64,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_true(),
+            global_ip_per_5min: default_global_ip_per_5min(),
+            create_account_per_5min: default_create_account_per_5min(),
+            create_session_per_5min: default_create_session_per_5min(),
+            reset_password_per_5min: default_reset_password_per_5min(),
+            update_handle_per_5min: default_update_handle_per_5min(),
+            write_points_hourly: default_write_points_hourly(),
+            write_points_daily: default_write_points_daily(),
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_global_ip_per_5min() -> u64 {
+    3000
+}
+
+fn default_create_account_per_5min() -> u64 {
+    100
+}
+
+fn default_create_session_per_5min() -> u64 {
+    30
+}
+
+fn default_reset_password_per_5min() -> u64 {
+    50
+}
+
+fn default_update_handle_per_5min() -> u64 {
+    10
+}
+
+fn default_write_points_hourly() -> u64 {
+    5000
+}
+
+fn default_write_points_daily() -> u64 {
+    35000
 }
 
 /// Stub for future OAuth configuration.
@@ -378,6 +474,8 @@ pub(crate) struct RawConfig {
     #[serde(default)]
     pub(crate) crawlers: CrawlersConfig,
     #[serde(default)]
+    pub(crate) rate_limit: RateLimitConfig,
+    #[serde(default)]
     pub(crate) telemetry: RawTelemetryConfig,
     pub(crate) admin_token: Option<String>,
     pub(crate) plc_directory_url: Option<String>,
@@ -531,6 +629,47 @@ pub(crate) fn apply_env_overrides(
             .filter(|s| !s.is_empty())
             .map(str::to_string)
             .collect();
+    }
+    // Rate-limit overrides. A small local helper keeps the repetitive u64 parse+error-wrap in one
+    // place; each knob is independent so a partial overlay (e.g. only the global cap) is fine.
+    if let Some(v) = env.get("EZPDS_RATE_LIMIT_ENABLED") {
+        raw.rate_limit.enabled = v.parse::<bool>().map_err(|e| {
+            ConfigError::Invalid(format!(
+                "EZPDS_RATE_LIMIT_ENABLED is not a valid boolean: '{v}': {e}"
+            ))
+        })?;
+    }
+    let parse_u64 = |name: &str, v: &str| -> Result<u64, ConfigError> {
+        v.parse::<u64>().map_err(|e| {
+            ConfigError::Invalid(format!(
+                "{name} is not a valid non-negative integer: '{v}': {e}"
+            ))
+        })
+    };
+    if let Some(v) = env.get("EZPDS_RATE_LIMIT_GLOBAL_IP_PER_5MIN") {
+        raw.rate_limit.global_ip_per_5min = parse_u64("EZPDS_RATE_LIMIT_GLOBAL_IP_PER_5MIN", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_RATE_LIMIT_CREATE_ACCOUNT_PER_5MIN") {
+        raw.rate_limit.create_account_per_5min =
+            parse_u64("EZPDS_RATE_LIMIT_CREATE_ACCOUNT_PER_5MIN", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_RATE_LIMIT_CREATE_SESSION_PER_5MIN") {
+        raw.rate_limit.create_session_per_5min =
+            parse_u64("EZPDS_RATE_LIMIT_CREATE_SESSION_PER_5MIN", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_RATE_LIMIT_RESET_PASSWORD_PER_5MIN") {
+        raw.rate_limit.reset_password_per_5min =
+            parse_u64("EZPDS_RATE_LIMIT_RESET_PASSWORD_PER_5MIN", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_RATE_LIMIT_UPDATE_HANDLE_PER_5MIN") {
+        raw.rate_limit.update_handle_per_5min =
+            parse_u64("EZPDS_RATE_LIMIT_UPDATE_HANDLE_PER_5MIN", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_RATE_LIMIT_WRITE_POINTS_HOURLY") {
+        raw.rate_limit.write_points_hourly = parse_u64("EZPDS_RATE_LIMIT_WRITE_POINTS_HOURLY", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_RATE_LIMIT_WRITE_POINTS_DAILY") {
+        raw.rate_limit.write_points_daily = parse_u64("EZPDS_RATE_LIMIT_WRITE_POINTS_DAILY", v)?;
     }
     if let Some(v) = env.get("EZPDS_ADMIN_TOKEN") {
         raw.admin_token = Some(v.clone());
@@ -689,6 +828,7 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         appview,
         chat,
         crawlers: raw.crawlers,
+        rate_limit: raw.rate_limit,
         telemetry,
         admin_token: raw.admin_token,
         signing_key_master_key: raw
@@ -1391,6 +1531,90 @@ mod tests {
         let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
         let config = validate_and_build(raw).unwrap();
         assert!(config.crawlers.urls.is_empty());
+    }
+
+    // --- rate limit config tests ---
+
+    #[test]
+    fn rate_limit_defaults_to_reference_values() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        let rl = &config.rate_limit;
+        assert!(rl.enabled);
+        assert_eq!(rl.global_ip_per_5min, 3000);
+        assert_eq!(rl.create_account_per_5min, 100);
+        assert_eq!(rl.create_session_per_5min, 30);
+        assert_eq!(rl.reset_password_per_5min, 50);
+        assert_eq!(rl.update_handle_per_5min, 10);
+        assert_eq!(rl.write_points_hourly, 5000);
+        assert_eq!(rl.write_points_daily, 35000);
+    }
+
+    #[test]
+    fn rate_limit_partial_toml_section_keeps_other_defaults() {
+        // Only `enabled` and one knob are set; every other knob must fall back to its default.
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [rate_limit]
+            enabled = false
+            global_ip_per_5min = 10
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert!(!config.rate_limit.enabled);
+        assert_eq!(config.rate_limit.global_ip_per_5min, 10);
+        assert_eq!(config.rate_limit.write_points_daily, 35000);
+    }
+
+    #[test]
+    fn env_override_rate_limit_fields() {
+        let env = HashMap::from([
+            ("EZPDS_RATE_LIMIT_ENABLED".to_string(), "false".to_string()),
+            (
+                "EZPDS_RATE_LIMIT_GLOBAL_IP_PER_5MIN".to_string(),
+                "1234".to_string(),
+            ),
+            (
+                "EZPDS_RATE_LIMIT_WRITE_POINTS_HOURLY".to_string(),
+                "42".to_string(),
+            ),
+            (
+                "EZPDS_RATE_LIMIT_WRITE_POINTS_DAILY".to_string(),
+                "99".to_string(),
+            ),
+        ]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert!(!config.rate_limit.enabled);
+        assert_eq!(config.rate_limit.global_ip_per_5min, 1234);
+        assert_eq!(config.rate_limit.write_points_hourly, 42);
+        assert_eq!(config.rate_limit.write_points_daily, 99);
+    }
+
+    #[test]
+    fn env_override_rate_limit_invalid_integer_returns_error() {
+        let env = HashMap::from([(
+            "EZPDS_RATE_LIMIT_GLOBAL_IP_PER_5MIN".to_string(),
+            "lots".to_string(),
+        )]);
+        let err = apply_env_overrides(minimal_raw(), &env).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err
+            .to_string()
+            .contains("EZPDS_RATE_LIMIT_GLOBAL_IP_PER_5MIN"));
+    }
+
+    #[test]
+    fn env_override_rate_limit_invalid_bool_returns_error() {
+        let env = HashMap::from([(
+            "EZPDS_RATE_LIMIT_ENABLED".to_string(),
+            "sometimes".to_string(),
+        )]);
+        let err = apply_env_overrides(minimal_raw(), &env).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("EZPDS_RATE_LIMIT_ENABLED"));
     }
 
     // --- appview config tests ---

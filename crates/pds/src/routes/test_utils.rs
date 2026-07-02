@@ -94,6 +94,7 @@ pub async fn test_state_with_admin_token() -> AppState {
         firehose: base.firehose,
         crawlers: base.crawlers,
         iroh: base.iroh,
+        rate_limiter: base.rate_limiter,
         allow_loopback_proxy_targets: base.allow_loopback_proxy_targets,
     }
 }
@@ -124,6 +125,7 @@ pub async fn state_with_master_key() -> AppState {
         firehose: base.firehose,
         crawlers: base.crawlers,
         iroh: base.iroh,
+        rate_limiter: base.rate_limiter,
         allow_loopback_proxy_targets: base.allow_loopback_proxy_targets,
     }
 }

@@ -197,6 +197,10 @@ pub struct AppState {
     /// Bound Iroh QUIC endpoint, when `[iroh] enabled`. `None` when the tunnel is disabled.
     /// Handlers read `iroh.node_id` to advertise the pds's node id. Shared via Arc.
     pub iroh: Option<Arc<crate::iroh_tunnel::IrohState>>,
+    /// Shared request rate-limiter state (global per-IP + per-endpoint per-IP + per-account write
+    /// points). The middleware in [`crate::rate_limit`] reads it per request; the repo-write path
+    /// charges write points through it. Shared via Arc.
+    pub rate_limiter: Arc<crate::rate_limit::RateLimiterState>,
     /// Test-only relaxation of the `atproto-proxy` SSRF guard
     /// (`identity_resolution::resolve_atproto_proxy_target`): when `true`, a loopback address is
     /// accepted alongside public ones, so tests can proxy to a local `wiremock` server standing in
@@ -401,6 +405,13 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/repo-signing-key", get(get_repo_signing_key))
         .route("/static/*path", get(static_handler))
         .layer(CorsLayer::permissive())
+        // Rate limiting runs for every route, inside the trace span so throttled requests are
+        // still traced. `from_fn_with_state` needs its own state clone (`with_state` below consumes
+        // the original).
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::rate_limit::rate_limit_middleware,
+        ))
         .layer(TraceLayer::new_for_http().make_span_with(OtelMakeSpan))
         .with_state(state)
 }
@@ -541,7 +552,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
     use crate::db::{open_pool, run_migrations};
     use common::{
         AppViewConfig, BlobsConfig, ChatConfig, CrawlersConfig, FirehoseConfig, IrohConfig,
-        OAuthConfig, TelemetryConfig,
+        OAuthConfig, RateLimitConfig, TelemetryConfig,
     };
     use p256::pkcs8::EncodePrivateKey;
     use rand_core::OsRng;
@@ -609,6 +620,12 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
             chat: ChatConfig::default(),
             // Tests must never make outbound crawl notifications.
             crawlers: CrawlersConfig { urls: vec![] },
+            // Rate limiting off by default in tests so unit tests are never throttled; the
+            // rate-limit tests opt back in by swapping `rate_limiter` on the returned state.
+            rate_limit: RateLimitConfig {
+                enabled: false,
+                ..RateLimitConfig::default()
+            },
             telemetry: TelemetryConfig::default(),
             admin_token: None,
             signing_key_master_key: None,
@@ -631,6 +648,10 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
             &[],
         )),
         iroh: None,
+        rate_limiter: Arc::new(crate::rate_limit::RateLimiterState::new(&RateLimitConfig {
+            enabled: false,
+            ..RateLimitConfig::default()
+        })),
         allow_loopback_proxy_targets: true,
     }
 }

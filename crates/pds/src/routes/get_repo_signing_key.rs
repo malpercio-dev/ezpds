@@ -121,6 +121,7 @@ mod tests {
             firehose: base.firehose,
             crawlers: base.crawlers,
             iroh: base.iroh,
+            rate_limiter: base.rate_limiter,
             allow_loopback_proxy_targets: base.allow_loopback_proxy_targets,
         }
     }

@@ -340,6 +340,19 @@ pub async fn commit_repo_write(
     ops: Vec<crate::firehose::RepoOp>,
     expected_root: &str,
 ) -> Result<(), ApiError> {
+    // Charge this commit against the account's repo-write point budget (create=3/update=2/delete=1)
+    // before doing any diff/CAR work, so an over-budget account is rejected cheaply. Keyed by the
+    // repo's DID, which every caller has already authenticated (the token subject must own `did`).
+    let write_cost: u64 = ops
+        .iter()
+        .map(|op| match op.action {
+            crate::firehose::OpAction::Create => crate::rate_limit::WRITE_COST_CREATE,
+            crate::firehose::OpAction::Update => crate::rate_limit::WRITE_COST_UPDATE,
+            crate::firehose::OpAction::Delete => crate::rate_limit::WRITE_COST_DELETE,
+        })
+        .sum();
+    state.rate_limiter.check_write_points(did, write_cost)?;
+
     let mut store = SqliteBlockStore::new(state.db.clone(), did.to_string());
 
     // The exact CID set this commit introduced drives two things, computed once here while both

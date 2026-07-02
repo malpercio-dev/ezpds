@@ -48,3 +48,16 @@ invite_code_required = true
 # Override with EZPDS_CRAWLERS (comma-separated URLs; empty disables).
 [crawlers]
 urls = []
+
+# Request rate limiting (reference-parity). Enabled by default with the reference PDS values
+# shown below; a knob of 0 disables that specific limiter. Every field is overridable via
+# EZPDS_RATE_LIMIT_* (e.g. EZPDS_RATE_LIMIT_ENABLED=false to turn the whole subsystem off).
+# [rate_limit]
+# enabled = true
+# global_ip_per_5min = 3000      # all requests, per client IP (sync.getRepo/subscribeRepos/_health exempt)
+# create_account_per_5min = 100  # per IP
+# create_session_per_5min = 30   # per IP
+# reset_password_per_5min = 50   # per IP
+# update_handle_per_5min = 10    # per IP
+# write_points_hourly = 5000     # per account (create=3, update=2, delete=1)
+# write_points_daily = 35000     # per account
