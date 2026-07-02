@@ -57,10 +57,18 @@ Managed by the Obsign identity-wallet app
   create flow signs the genesis op with the *global* device key before the DID
   exists, then `adopt_global_device_key` aliases the per-DID slot to it.
 - **Shamir recovery shares** — the crypto crate splits the device key 2-of-3
-  ([`split_secret`/`combine_shares`](../../crates/crypto/CLAUDE.md)). Share
-  *generation* runs during the DID ceremony (Share 1 → Keychain/iCloud, Share 3
-  → returned to the user). The full 2-of-3 recovery *ceremony* is future work
-  (see [`../data-migration-spec.md`](../data-migration-spec.md), v1.0).
+  ([`split_secret`/`combine_shares`](../../crates/crypto/CLAUDE.md)), matching
+  the mapping in ADR-0001:
+  - **Share 1 → iCloud Keychain** — the `POST /v1/dids` ceremony returns it and
+    the app stores it under `recovery-share-1` (auto-backed-up by iCloud).
+  - **Share 2 → PDS escrow** — retained server-side; the ceremony response
+    returns only Shares 1 and 3, so the PDS holds Share 2 and never exposes it
+    to the client.
+  - **Share 3 → the user** — returned by the ceremony for manual/offline backup.
+
+  Share *generation* runs during the DID ceremony; the full 2-of-3 recovery
+  *ceremony* (reconstruction) is future work (see
+  [`../data-migration-spec.md`](../data-migration-spec.md), v1.0).
 
 ## What the custody model buys us
 
