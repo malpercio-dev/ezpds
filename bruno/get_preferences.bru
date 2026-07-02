@@ -23,5 +23,7 @@ docs {
   Unlike most `app.bsky.*` methods, preferences are stored locally on the PDS (user data
   sovereignty) rather than proxied to the AppView, so this route is handled by the PDS itself
   and registered ahead of the catch-all proxy. A brand-new account with nothing stored returns
-  an empty array. Requires a full access-scope token; app-password tokens are rejected.
+  an empty array. Accepts any access-level token (full access or an app password, privileged
+  or not); an app-password caller never sees full-access-only preference types (e.g.
+  `personalDetailsPref`) even if the account has one stored.
 }

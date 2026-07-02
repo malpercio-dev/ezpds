@@ -1,7 +1,8 @@
 // pattern: Imperative Shell
 //
 // Gathers: AuthenticatedUser (JWT extractor), DB pool via AppState
-// Processes: scope validation → load the account's locally-stored preferences blob
+// Processes: scope validation → load the account's locally-stored preferences blob → strip
+//            full-access-only preference types for an app-password caller
 // Returns: JSON { preferences: [...] }; an empty array for accounts with none stored
 //
 // Implements: GET /xrpc/app.bsky.actor.getPreferences
@@ -17,6 +18,7 @@ use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
 use crate::db::accounts::account_is_active;
 use crate::db::preferences::get_preferences;
+use crate::routes::preference_scope::is_full_access_only_pref;
 
 #[derive(Serialize)]
 pub struct GetPreferencesResponse {
@@ -27,20 +29,24 @@ pub struct GetPreferencesResponse {
 ///
 /// Preferences are stored locally on the PDS for user data sovereignty rather than proxied
 /// to the AppView (unlike most `app.bsky.*` methods, which the catch-all forwards). A new
-/// account with nothing stored returns an empty array. Like `getSession`, only full
-/// access-scope tokens are accepted — app passwords cannot read preferences — and a token
-/// whose account has since been deactivated or removed is rejected even though the JWT is
-/// still cryptographically valid.
+/// account with nothing stored returns an empty array. Like `getSession`, any access-level
+/// token is accepted (full access or an app password), matching the reference PDS, but an
+/// app-password caller — privileged or not — never sees full-access-only preference types
+/// (e.g. `personalDetailsPref`, which can carry a birth date); those entries are filtered out
+/// of its response even though the same account stored them. A token whose account has since
+/// been deactivated or removed is rejected even though the JWT is still cryptographically
+/// valid.
 pub async fn get_preferences_handler(
     user: AuthenticatedUser,
     State(state): State<AppState>,
 ) -> Result<Json<GetPreferencesResponse>, ApiError> {
-    if user.scope != AuthScope::Access {
+    if !user.scope.is_access() {
         return Err(ApiError::new(
             ErrorCode::InvalidToken,
             "access token required",
         ));
     }
+    let has_access_full = user.scope == AuthScope::Access;
 
     // A valid JWT is not enough: reject tokens whose account has been deactivated or removed,
     // mirroring `getSession`. Without this an unexpired token would keep reading preferences
@@ -50,13 +56,23 @@ pub async fn get_preferences_handler(
         return Err(ApiError::new(ErrorCode::InvalidToken, "account not found"));
     }
 
-    let preferences: Vec<Value> = match get_preferences(&state.db, &user.did).await? {
+    let mut preferences: Vec<Value> = match get_preferences(&state.db, &user.did).await? {
         Some(blob) => serde_json::from_str(&blob).map_err(|e| {
             tracing::error!(did = %user.did, error = %e, "stored preferences blob is not valid JSON");
             ApiError::new(ErrorCode::InternalError, "stored preferences are corrupt")
         })?,
         None => Vec::new(),
     };
+
+    if !has_access_full {
+        preferences.retain(|pref| {
+            let ty = pref
+                .as_object()
+                .and_then(|obj| obj.get("$type"))
+                .and_then(Value::as_str);
+            !ty.is_some_and(is_full_access_only_pref)
+        });
+    }
 
     Ok(Json(GetPreferencesResponse { preferences }))
 }
@@ -241,9 +257,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn app_pass_token_returns_401() {
+    async fn app_pass_token_reads_non_privileged_preferences() {
         let state = test_state().await;
         insert_account(&state.db, "did:plc:apppass", "apppass@example.com").await;
+        let stored = serde_json::json!([
+            { "$type": "app.bsky.actor.defs#adultContentPref", "enabled": true }
+        ]);
+        insert_preferences(&state.db, "did:plc:apppass", &stored.to_string()).await;
         let token = scoped_jwt(&state.jwt_secret, "did:plc:apppass", "com.atproto.appPass");
 
         let response = app(state)
@@ -251,9 +271,61 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.status(), StatusCode::OK);
         let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+        assert_eq!(json["preferences"], stored);
+    }
+
+    #[tokio::test]
+    async fn app_pass_token_never_sees_personal_details_pref() {
+        let state = test_state().await;
+        insert_account(&state.db, "did:plc:hideprivate", "hideprivate@example.com").await;
+        let stored = serde_json::json!([
+            { "$type": "app.bsky.actor.defs#adultContentPref", "enabled": true },
+            { "$type": "app.bsky.actor.defs#personalDetailsPref", "birthDate": "1990-01-01" }
+        ]);
+        insert_preferences(&state.db, "did:plc:hideprivate", &stored.to_string()).await;
+
+        // A privileged app password is still not a full-access token — it must not see the
+        // personalDetailsPref entry either.
+        let token = scoped_jwt(
+            &state.jwt_secret,
+            "did:plc:hideprivate",
+            "com.atproto.appPassPrivileged",
+        );
+
+        let response = app(state)
+            .oneshot(get_preferences_request(&token))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(
+            json["preferences"],
+            serde_json::json!([{ "$type": "app.bsky.actor.defs#adultContentPref", "enabled": true }]),
+            "an app-password caller must never see personalDetailsPref"
+        );
+    }
+
+    #[tokio::test]
+    async fn full_access_token_sees_personal_details_pref() {
+        let state = test_state().await;
+        insert_account(&state.db, "did:plc:seeprivate", "seeprivate@example.com").await;
+        let stored = serde_json::json!([
+            { "$type": "app.bsky.actor.defs#personalDetailsPref", "birthDate": "1990-01-01" }
+        ]);
+        insert_preferences(&state.db, "did:plc:seeprivate", &stored.to_string()).await;
+        let token = access_jwt(&state.jwt_secret, "did:plc:seeprivate");
+
+        let response = app(state)
+            .oneshot(get_preferences_request(&token))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json["preferences"], stored);
     }
 
     #[tokio::test]

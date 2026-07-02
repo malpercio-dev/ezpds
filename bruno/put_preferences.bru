@@ -28,13 +28,17 @@ vars:pre-request {
 }
 
 docs {
-  Overwrites the authenticated account's `app.bsky` preferences in their entirety — the write
-  companion to getPreferences. Like getPreferences, preferences are stored locally on the PDS
-  (user data sovereignty) rather than proxied to the AppView, so this route is handled by the
-  PDS itself and registered ahead of the catch-all proxy. The body must be
-  `{ "preferences": [...] }`; a malformed body (not an object, missing the field, a non-object
-  entry, or an entry whose `$type` is missing, not a string, or outside the `app.bsky`
-  namespace) returns 400.
-  Requires a full access-scope token; app-password tokens are rejected. Returns 200 with an
-  empty body on success.
+  Writes the authenticated account's `app.bsky` preferences — the write companion to
+  getPreferences. Like getPreferences, preferences are stored locally on the PDS (user data
+  sovereignty) rather than proxied to the AppView, so this route is handled by the PDS itself
+  and registered ahead of the catch-all proxy. The body must be `{ "preferences": [...] }`; a
+  malformed body (not an object, missing the field, a non-object entry, or an entry whose
+  `$type` is missing, not a string, or outside the `app.bsky` namespace) returns 400, as does
+  an app-password caller submitting a full-access-only type (e.g. `personalDetailsPref`).
+
+  Accepts any access-level token (full access or an app password, privileged or not). The
+  write is a scope-limited partial replace: a full-access token still overwrites every stored
+  preference, but an app-password caller's write only replaces the types it's allowed to
+  manage, leaving any full-access-only preference (e.g. `personalDetailsPref`) already stored
+  by a full-access session untouched. Returns 200 with an empty body on success.
 }

@@ -2,8 +2,10 @@
 //
 // Gathers: AuthenticatedUser (JWT extractor), DB pool via AppState, raw JSON body
 // Processes: scope validation → account-active check → parse + validate the preferences
-//            array (each entry an object with an `app.bsky`-namespaced `$type`) → overwrite
-//            the account's locally-stored blob
+//            array (each entry an object with an `app.bsky`-namespaced `$type`, none of them
+//            full-access-only unless the caller has full access) → merge with any
+//            full-access-only entries the caller can't manage → overwrite the account's
+//            locally-stored blob
 // Returns: 200 (empty body) on success; 400 for a malformed request; 401 for a bad token
 //
 // Implements: POST /xrpc/app.bsky.actor.putPreferences
@@ -20,7 +22,8 @@ use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
 use crate::db::accounts::account_is_active;
-use crate::db::preferences::put_preferences;
+use crate::db::preferences::{get_preferences, put_preferences};
+use crate::routes::preference_scope::is_full_access_only_pref;
 
 #[derive(Deserialize)]
 struct PutPreferencesRequest {
@@ -39,26 +42,34 @@ fn is_app_bsky_namespace(ty: &str) -> bool {
 
 /// POST /xrpc/app.bsky.actor.putPreferences
 ///
-/// Overwrites the account's locally-stored `app.bsky` preferences in their entirety — the
-/// write companion to `getPreferences`. Preferences live on the PDS for user data
+/// The write companion to `getPreferences`. Preferences live on the PDS for user data
 /// sovereignty rather than being proxied to the AppView, so this route is registered ahead
-/// of the `app.bsky.*` catch-all. Like `getPreferences`, only full access-scope tokens are
-/// accepted (app passwords cannot write preferences), and a token whose account has since
-/// been deactivated or removed is rejected even though the JWT is still cryptographically
-/// valid. The body must be `{ "preferences": [ {…}, … ] }`; a malformed body — not an
-/// object, missing the field, a non-object entry, or an entry whose `$type` is missing or
-/// outside the `app.bsky` namespace — returns 400.
+/// of the `app.bsky.*` catch-all. Like `getPreferences`, any access-level token is accepted
+/// (full access or an app password), and a token whose account has since been deactivated or
+/// removed is rejected even though the JWT is still cryptographically valid. The body must be
+/// `{ "preferences": [ {…}, … ] }`; a malformed body — not an object, missing the field, a
+/// non-object entry, or an entry whose `$type` is missing or outside the `app.bsky` namespace
+/// — returns 400, as does an app-password caller submitting a full-access-only type (e.g.
+/// `personalDetailsPref`).
+///
+/// The write is a *scope-limited partial replace*, not a blind overwrite: it deletes only the
+/// preference types the caller's scope is allowed to manage and replaces those with the
+/// request's array, leaving any full-access-only entries the caller can't touch untouched. A
+/// full-access token can manage every type, so for it this is still a full overwrite; an
+/// app-password caller instead layers its write on top of whatever full-access-only
+/// preferences (e.g. `personalDetailsPref`) are already stored, rather than erasing them.
 pub async fn put_preferences_handler(
     user: AuthenticatedUser,
     State(state): State<AppState>,
     body: Bytes,
 ) -> Result<StatusCode, ApiError> {
-    if user.scope != AuthScope::Access {
+    if !user.scope.is_access() {
         return Err(ApiError::new(
             ErrorCode::InvalidToken,
             "access token required",
         ));
     }
+    let has_access_full = user.scope == AuthScope::Access;
 
     // A valid JWT is not enough: reject tokens whose account has been deactivated or removed,
     // mirroring `getPreferences`. Without this an unexpired token would keep writing
@@ -79,20 +90,28 @@ pub async fn put_preferences_handler(
     // be a JSON object carrying a string `$type` within the `app.bsky` namespace. The
     // reference PDS rejects anything else with InvalidRequest; matching it keeps a malformed
     // or out-of-namespace write from corrupting later reads (an empty array is valid and
-    // clears the stored preferences).
+    // clears the stored preferences). An app-password caller additionally cannot submit a
+    // full-access-only type — it may not see those entries, so it must not be able to set
+    // them either.
     for pref in &request.preferences {
         let ty = pref
             .as_object()
             .and_then(|obj| obj.get("$type"))
             .and_then(Value::as_str);
         match ty {
-            Some(ty) if is_app_bsky_namespace(ty) => {}
-            Some(_) => {
+            Some(ty) if !is_app_bsky_namespace(ty) => {
                 return Err(ApiError::new(
                     ErrorCode::InvalidRequest,
                     "preference $type must be in the app.bsky namespace",
                 ));
             }
+            Some(ty) if !has_access_full && is_full_access_only_pref(ty) => {
+                return Err(ApiError::new(
+                    ErrorCode::InvalidRequest,
+                    format!("do not have authorization to set preference type {ty}"),
+                ));
+            }
+            Some(_) => {}
             None => {
                 return Err(ApiError::new(
                     ErrorCode::InvalidRequest,
@@ -102,11 +121,49 @@ pub async fn put_preferences_handler(
         }
     }
 
+    // Read-merge-write inside one transaction: the single-connection pool serializes any
+    // concurrent request for this account behind the transaction, so the merge below can't
+    // race a concurrent write from another session.
+    let mut tx = state.db.begin().await.map_err(|e| {
+        tracing::error!(did = %user.did, error = %e, "putPreferences: failed to open transaction");
+        ApiError::new(ErrorCode::InternalError, "failed to store preferences")
+    })?;
+
+    // Preserve whichever stored entries this caller's scope can't manage — an app-password
+    // caller's write must not erase a full-access-only preference (e.g. `personalDetailsPref`)
+    // that a full-access session stored earlier. A full-access caller can manage everything, so
+    // nothing is preserved and this is a full overwrite, matching the previous behavior.
+    let preserved: Vec<Value> = if has_access_full {
+        Vec::new()
+    } else {
+        match get_preferences(&mut *tx, &user.did).await? {
+            Some(blob) => serde_json::from_str::<Vec<Value>>(&blob)
+                .map_err(|e| {
+                    tracing::error!(did = %user.did, error = %e, "stored preferences blob is not valid JSON");
+                    ApiError::new(ErrorCode::InternalError, "stored preferences are corrupt")
+                })?
+                .into_iter()
+                .filter(|pref| {
+                    let ty = pref.as_object().and_then(|obj| obj.get("$type")).and_then(Value::as_str);
+                    ty.is_some_and(is_full_access_only_pref)
+                })
+                .collect(),
+            None => Vec::new(),
+        }
+    };
+
+    let mut merged = preserved;
+    merged.extend(request.preferences);
     // `Value`'s Display impl is infallible, so serializing the array cannot fail here —
     // unlike the generic `serde_json::to_string`, which would force a dead error branch.
-    let blob = Value::Array(request.preferences).to_string();
+    let blob = Value::Array(merged).to_string();
 
-    put_preferences(&state.db, &user.did, &blob).await?;
+    put_preferences(&mut *tx, &user.did, &blob).await?;
+
+    tx.commit().await.map_err(|e| {
+        tracing::error!(did = %user.did, error = %e, "putPreferences: failed to commit transaction");
+        ApiError::new(ErrorCode::InternalError, "failed to store preferences")
+    })?;
 
     Ok(StatusCode::OK)
 }
@@ -486,22 +543,142 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn app_pass_token_returns_401() {
+    async fn app_pass_token_can_write_non_privileged_preferences() {
         let state = test_state().await;
         insert_account(&state.db, "did:plc:apppass", "apppass@example.com").await;
         let token = scoped_jwt(&state.jwt_secret, "did:plc:apppass", "com.atproto.appPass");
+        let prefs = serde_json::json!([
+            { "$type": "app.bsky.actor.defs#adultContentPref", "enabled": true }
+        ]);
+
+        let router = app(state);
+        let response = router
+            .clone()
+            .oneshot(put_request(
+                &token,
+                serde_json::json!({ "preferences": prefs }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = router.oneshot(get_request(&token)).await.unwrap();
+        let json = body_json(response).await;
+        assert_eq!(json["preferences"], prefs);
+    }
+
+    #[tokio::test]
+    async fn app_pass_token_cannot_set_personal_details_pref() {
+        let state = test_state().await;
+        insert_account(&state.db, "did:plc:setprivate", "setprivate@example.com").await;
+        let token = scoped_jwt(
+            &state.jwt_secret,
+            "did:plc:setprivate",
+            "com.atproto.appPass",
+        );
 
         let response = app(state)
             .oneshot(put_request(
                 &token,
-                serde_json::json!({ "preferences": [] }),
+                serde_json::json!({ "preferences": [
+                    { "$type": "app.bsky.actor.defs#personalDetailsPref", "birthDate": "1990-01-01" }
+                ] }),
             ))
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+        assert_eq!(json["error"]["code"], "InvalidRequest");
+    }
+
+    #[tokio::test]
+    async fn app_pass_write_preserves_existing_personal_details_pref() {
+        let state = test_state().await;
+        insert_account(&state.db, "did:plc:preserve", "preserve@example.com").await;
+        let full_token = access_jwt(&state.jwt_secret, "did:plc:preserve");
+        let app_pass_token =
+            scoped_jwt(&state.jwt_secret, "did:plc:preserve", "com.atproto.appPass");
+        let router = app(state);
+
+        // A full-access session stores a personalDetailsPref.
+        let personal = serde_json::json!(
+            { "$type": "app.bsky.actor.defs#personalDetailsPref", "birthDate": "1990-01-01" }
+        );
+        let response = router
+            .clone()
+            .oneshot(put_request(
+                &full_token,
+                serde_json::json!({ "preferences": [personal] }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // An app-password session writes an unrelated preference.
+        let adult_content = serde_json::json!(
+            { "$type": "app.bsky.actor.defs#adultContentPref", "enabled": true }
+        );
+        let response = router
+            .clone()
+            .oneshot(put_request(
+                &app_pass_token,
+                serde_json::json!({ "preferences": [adult_content] }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // The full-access view must still see both: its own overwrite scope covers everything,
+        // but the app-password write only replaced what it could manage.
+        let response = router.oneshot(get_request(&full_token)).await.unwrap();
+        let json = body_json(response).await;
+        let prefs = json["preferences"].as_array().unwrap();
+        assert_eq!(
+            prefs.len(),
+            2,
+            "the app-password write must not erase personalDetailsPref"
+        );
+        assert!(prefs.contains(&personal));
+        assert!(prefs.contains(&adult_content));
+    }
+
+    #[tokio::test]
+    async fn full_access_write_still_overwrites_personal_details_pref() {
+        let state = test_state().await;
+        insert_account(&state.db, "did:plc:overwrite", "overwrite@example.com").await;
+        let token = access_jwt(&state.jwt_secret, "did:plc:overwrite");
+        let router = app(state);
+
+        let first = serde_json::json!([
+            { "$type": "app.bsky.actor.defs#personalDetailsPref", "birthDate": "1990-01-01" }
+        ]);
+        router
+            .clone()
+            .oneshot(put_request(
+                &token,
+                serde_json::json!({ "preferences": first }),
+            ))
+            .await
+            .unwrap();
+
+        let second = serde_json::json!([{ "$type": "app.bsky.actor.defs#adultContentPref", "enabled": true }]);
+        let response = router
+            .clone()
+            .oneshot(put_request(
+                &token,
+                serde_json::json!({ "preferences": second }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = router.oneshot(get_request(&token)).await.unwrap();
+        let json = body_json(response).await;
+        assert_eq!(
+            json["preferences"], second,
+            "a full-access write must still fully overwrite, including personalDetailsPref"
+        );
     }
 
     #[tokio::test]

@@ -1,6 +1,6 @@
 # PDS Crate (Custos)
 
-Last verified: 2026-07-01
+Last verified: 2026-07-02
 
 ## Purpose
 
@@ -150,7 +150,7 @@ and async query functions; no business logic lives here.
 | `blobs.rs` | blob metadata store; `account_storage_bytes`, `account_blob_metrics`, `account_largest_blob` (blob-storage metrics) |
 | `oauth.rs` | OAuth client lookup, auth code storage, token management |
 | `password_reset.rs` | `insert_reset_token`, `get_reset_token`, `mark_reset_token_used`, `update_password_hash` |
-| `preferences.rs` | `get_preferences` (DID→stored `app.bsky` preferences JSON blob); `put_preferences` (upsert the blob, overwriting any previous value) |
+| `preferences.rs` | `get_preferences` (DID→stored `app.bsky` preferences JSON blob); `put_preferences` (upsert the blob, overwriting any previous value). Both generic over the executor so `put_preferences.rs` can read-merge-write inside one transaction |
 | `repo_keys.rs` | Per-account repo signing keys: pending-account key storage for the mobile DID ceremony, reserved signing keys for standard account migration, promotion into DID-keyed `signing_keys`, and commit-signer lookup |
 | `transfers.rs` | Planned device-swap sessions (V027/V029/V030): `insert_transfer` opens a `pending` transfer for a DID, sweeping any expired active row first then letting the partial unique indexes reject a still-active duplicate (→ `DuplicateActive`, the 409 path) or an already-taken active code (→ `CodeCollision`, caller regenerates and retries). Transfer-accept query helpers store promoted-device credentials in `transfer_devices`; completion helpers revoke superseded sessions/transfer-device credentials and append `transfer_audit_events`. `transfer_device_token_exists` lets the `routes/auth.rs` device-token auth path accept those credentials later. Wired by `routes/transfer_initiate.rs`, the root `transfer.rs` accept/complete workflows, `routes/transfer_accept.rs`, `routes/transfer_complete.rs`, and `routes/auth.rs` |
 | `firehose_seq.rs` | Persistent firehose event log (V028): `max_seq` (seed the sequencer on boot), `insert_event` (append one sequenced `#commit`/`#account`/`#identity`/`#sync` row with an explicit `seq`), `events_in_range(after, upper, limit)` (the cursor-replay page query). Consumed by `firehose.rs` (persist-before-broadcast) and `routes/sync_subscribe_repos.rs` (replay paging) |
@@ -209,8 +209,9 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `describe_server.rs` | `GET /xrpc/com.atproto.server.describeServer` |
 | `describe_repo.rs` | `GET /xrpc/com.atproto.repo.describeRepo` |
 | `service_proxy.rs` | `GET/POST /xrpc/app.bsky.*`, `GET/POST /xrpc/chat.bsky.*`, and `GET/POST /xrpc/com.atproto.moderation.*` — catch-all proxy forwarding unhandled `app.bsky.*` NSIDs to the configured AppView and `chat.bsky.*` NSIDs (direct messages) to the configured chat service. The `chat.bsky.*` branch (in `app.rs::xrpc_handler`) requires a privileged credential — full access or a *privileged* app password; a plain `com.atproto.appPass` session is refused with 403. `com.atproto.moderation.*` (e.g. `createReport`) has no single configured upstream — the client names the target labeler via the `atproto-proxy` header (`did#serviceId`), which `identity_resolution::resolve_atproto_proxy_target` resolves (DID document → matching `service` entry's `serviceEndpoint`) before proxying; a missing header is 400, an unresolvable target is 503. Since that target DID is caller-controlled, the resolved `serviceEndpoint` is SSRF-guarded (`identity_resolution::validate_proxy_endpoint`): rejects non-http(s) schemes, userinfo, query/fragment, and any host — IP literal or DNS-resolved — that isn't a public address (loopback/private/link-local incl. cloud-metadata/unique-local-IPv6/etc.); a resolved domain's addresses are pinned for the actual connection (`service_proxy::build_pinned_client`) so a second DNS answer at connect time can't substitute an unchecked address |
-| `get_preferences.rs` | `GET /xrpc/app.bsky.actor.getPreferences` — local preference read (stored on the PDS, not proxied; registered ahead of the catch-all) |
-| `put_preferences.rs` | `POST /xrpc/app.bsky.actor.putPreferences` — local preference write (overwrites the stored blob entirely; registered ahead of the catch-all) |
+| `get_preferences.rs` | `GET /xrpc/app.bsky.actor.getPreferences` — local preference read (stored on the PDS, not proxied; registered ahead of the catch-all). Any access-level token; an app-password caller never sees full-access-only preference types (`preference_scope.rs`) |
+| `put_preferences.rs` | `POST /xrpc/app.bsky.actor.putPreferences` — local preference write (registered ahead of the catch-all). Any access-level token; a scope-limited partial replace — a full-access token overwrites the stored blob entirely, an app-password caller's write preserves any full-access-only entries it can't manage |
+| `preference_scope.rs` | Shared (non-handler) between the two: which preference `$type`s are full-access-only (`personalDetailsPref`), matching the reference PDS |
 | `resolve_handle.rs` | `GET /xrpc/com.atproto.identity.resolveHandle` |
 | `sync_subscribe_repos.rs` | `GET /xrpc/com.atproto.sync.subscribeRepos` (WebSocket firehose) |
 | `claim_codes.rs` | Claim code management |
