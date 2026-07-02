@@ -160,6 +160,11 @@ pub struct ApiError {
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     details: Option<Value>,
+    /// Extra HTTP response headers to emit alongside the error body (e.g. `Retry-After` and the
+    /// `RateLimit-*` family on a 429). Never serialized into the JSON envelope; applied by the
+    /// axum `IntoResponse` impl. Header names must be valid lowercase HTTP field names.
+    #[serde(skip)]
+    headers: Vec<(&'static str, String)>,
 }
 
 impl ApiError {
@@ -168,11 +173,20 @@ impl ApiError {
             code,
             message: message.into(),
             details: None,
+            headers: Vec::new(),
         }
     }
 
     pub fn with_details(mut self, details: Value) -> Self {
         self.details = Some(details);
+        self
+    }
+
+    /// Attach an extra HTTP response header to this error (applied by `IntoResponse`). `name` must
+    /// be a valid lowercase HTTP header name; an invalid name or value is silently dropped when the
+    /// response is built rather than panicking.
+    pub fn with_header(mut self, name: &'static str, value: impl Into<String>) -> Self {
+        self.headers.push((name, value.into()));
         self
     }
 
@@ -193,19 +207,32 @@ struct ApiErrorEnvelope {
 mod axum_integration {
     use super::*;
     use axum::{
-        http::{header, StatusCode},
+        http::{header, HeaderName, HeaderValue, StatusCode},
         response::{IntoResponse, Response},
         Json,
     };
 
     impl IntoResponse for ApiError {
-        fn into_response(self) -> Response {
+        fn into_response(mut self) -> Response {
             let status = StatusCode::from_u16(self.code.status_code())
                 .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
+            // Take the extra headers out before `self` is moved into the JSON envelope.
+            let extra_headers = std::mem::take(&mut self.headers);
+
             match serde_json::to_vec(&ApiErrorEnvelope { error: self }) {
                 Ok(body) => {
-                    (status, [(header::CONTENT_TYPE, "application/json")], body).into_response()
+                    let mut response = (status, [(header::CONTENT_TYPE, "application/json")], body)
+                        .into_response();
+                    for (name, value) in extra_headers {
+                        if let (Ok(name), Ok(value)) = (
+                            HeaderName::from_bytes(name.as_bytes()),
+                            HeaderValue::from_str(&value),
+                        ) {
+                            response.headers_mut().insert(name, value);
+                        }
+                    }
+                    response
                 }
                 Err(err) => {
                     tracing::error!(error = %err, "failed to serialize ApiError");
@@ -349,6 +376,23 @@ mod tests {
             let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(json["error"]["code"], "NOT_FOUND");
             assert_eq!(json["error"]["message"], "not found");
+        }
+
+        #[tokio::test]
+        async fn into_response_emits_extra_headers() {
+            let err = ApiError::new(ErrorCode::RateLimited, "slow down")
+                .with_header("retry-after", "42")
+                .with_header("ratelimit-remaining", "0");
+            let response = err.into_response();
+            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+            assert_eq!(response.headers().get("retry-after").unwrap(), "42");
+            assert_eq!(response.headers().get("ratelimit-remaining").unwrap(), "0");
+            // The extra headers are not leaked into the JSON body.
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert!(json["error"].get("headers").is_none());
         }
     }
 }

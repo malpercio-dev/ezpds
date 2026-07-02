@@ -18,6 +18,7 @@ mod firehose_gc;
 mod handle;
 mod identity_resolution;
 mod iroh_tunnel;
+mod rate_limit;
 mod record_write;
 mod routes;
 mod telemetry;
@@ -225,6 +226,19 @@ async fn run() -> anyhow::Result<()> {
             .with_context(|| "failed to initialise firehose sequencer from the event log")?,
     );
 
+    // Build the rate limiter from config before `config` is moved into the AppState's Arc.
+    let rate_limiter = Arc::new(rate_limit::RateLimiterState::new(&config.rate_limit));
+    if config.rate_limit.enabled {
+        tracing::info!(
+            global_ip_per_5min = config.rate_limit.global_ip_per_5min,
+            write_points_hourly = config.rate_limit.write_points_hourly,
+            write_points_daily = config.rate_limit.write_points_daily,
+            "request rate limiting enabled"
+        );
+    } else {
+        tracing::warn!("request rate limiting is disabled");
+    }
+
     let state = app::AppState {
         config: Arc::new(config),
         db: pool,
@@ -239,6 +253,7 @@ async fn run() -> anyhow::Result<()> {
         firehose,
         crawlers,
         iroh,
+        rate_limiter,
         allow_loopback_proxy_targets: false,
     };
 
