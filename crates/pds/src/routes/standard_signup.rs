@@ -18,8 +18,8 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
+use crate::code_gen::generate_code;
 use crate::routes::auth::require_admin_json;
-use crate::routes::code_gen::generate_code;
 
 const MAX_INVITE_CODE_COUNT: u32 = 10;
 const INVITE_CODE_EXPIRES_IN_HOURS: u32 = 24;
@@ -243,7 +243,7 @@ pub async fn check_handle_availability(
 ) -> Result<Json<CheckHandleAvailabilityResponse>, ApiError> {
     let available = crate::handle::validate_handle(&params.handle, &state.config.available_user_domains)
         .is_ok()
-        && !crate::routes::uniqueness::handle_taken(&state.db, &params.handle)
+        && !crate::uniqueness::handle_taken(&state.db, &params.handle)
             .await
             .map_err(|e| {
                 tracing::error!(error = %e, handle = %params.handle, "failed to check handle availability");
