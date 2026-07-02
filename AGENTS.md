@@ -48,6 +48,7 @@ Release flow: `just set-version X.Y.Z` (PR) → merge → `just release` (cuts/p
 - `crates/crypto/` - Cryptographic operations (P-256 key generation, did:key derivation, AES-256-GCM encryption, did:plc genesis ops and verification)
 - `crates/common/` - Shared types and utilities
 - `nix/` - Nix deployment (module.nix: NixOS module for OCI container)
+- `sites/marketing/` - Static marketing site for Obsign + Custos (zero-build HTML/CSS; design derivation documented in its README)
 - `docs/` - Specs, design plans, implementation plans
 
 ## Mobile
