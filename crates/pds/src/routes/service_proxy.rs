@@ -147,10 +147,18 @@ pub async fn proxy_xrpc(
     let status =
         StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let content_type = upstream.headers().get(header::CONTENT_TYPE).cloned();
+    // A 3xx is passed through, not followed (see `build_moderation_client`), but is useless to
+    // the caller without its Location — forward it so "passed through verbatim" actually holds.
+    let location = upstream.headers().get(header::LOCATION).cloned();
 
     let mut builder = Response::builder().status(status);
     if let Some(content_type) = content_type {
         builder = builder.header(header::CONTENT_TYPE, content_type);
+    }
+    if status.is_redirection() {
+        if let Some(location) = location {
+            builder = builder.header(header::LOCATION, location);
+        }
     }
 
     match builder.body(Body::from_stream(upstream.bytes_stream())) {
@@ -974,6 +982,13 @@ mod tests {
 
         // The mock's own 302 is what must come back — proof the PDS didn't chase the Location.
         assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::LOCATION)
+                .unwrap(),
+            "http://169.254.169.254/"
+        );
     }
 
     // No mock is mounted: if the request escaped without a resolved target, there'd be nothing to
