@@ -569,17 +569,20 @@ pub(crate) fn per_did_sign_closure(
     use p256::ecdsa::{Signature, SigningKey};
 
     let account = device_key_account(did);
-    let private_bytes = crate::keychain::get_item(&account).map_err(|e| {
-        if crate::keychain::is_not_found(&e) {
-            PerDidSignError::DeviceKeyNotFound {
-                message: "device key not found in Keychain".to_string(),
+    // Hold the raw P-256 scalar in a Zeroizing buffer so it is scrubbed from the
+    // heap the moment `signing_key` has been reconstructed from it.
+    let private_bytes =
+        zeroize::Zeroizing::new(crate::keychain::get_item(&account).map_err(|e| {
+            if crate::keychain::is_not_found(&e) {
+                PerDidSignError::DeviceKeyNotFound {
+                    message: "device key not found in Keychain".to_string(),
+                }
+            } else {
+                PerDidSignError::SigningSetupFailed {
+                    message: format!("Keychain error: {e}"),
+                }
             }
-        } else {
-            PerDidSignError::SigningSetupFailed {
-                message: format!("Keychain error: {e}"),
-            }
-        }
-    })?;
+        })?);
 
     let signing_key = SigningKey::from_slice(&private_bytes).map_err(|_| {
         PerDidSignError::SigningSetupFailed {
