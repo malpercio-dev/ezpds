@@ -7,9 +7,11 @@ name: iOS · PR check
 # error on aarch64-apple-ios, a broken frontend) is discovered post-merge, inside a
 # signed release build. This lane needs NO secrets: it regenerates the Xcode project,
 # re-applies the postinit patches (each fails loudly on template drift), and
-# cross-compiles the app staticlib for the iOS device target — everything short of
-# xcodebuild archiving/signing. It also runs the frontend type-check and unit tests,
-# which the TestFlight lanes skip.
+# cross-compiles the app staticlib for the iOS device target, and runs the app's Rust
+# unit tests on the macOS host target (the only CI lane that can compile these crates —
+# the Linux ci-pds gate excludes them) — everything short of xcodebuild
+# archiving/signing. It also runs the frontend type-check and unit tests, which the
+# TestFlight lanes skip.
 
 on:
   pull_request:
@@ -48,12 +50,12 @@ jobs:
       matrix:
         app: [identity-wallet, admin-companion]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           # Exact pin — keep in lockstep with "packageManager" in apps/*/package.json
           # and the other workflows, so --frozen-lockfile can never fail on a pnpm
@@ -61,7 +63,7 @@ jobs:
           version: 9.15.9
 
       - name: Setup Node 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
 
@@ -74,8 +76,8 @@ jobs:
         run: pnpm run check
 
       - name: Unit tests (vitest)
-        # --if-present: identity-wallet has a vitest suite; admin-companion has no
-        # test script yet and should not fail this gate for that.
+        # Both apps carry a vitest suite; --if-present keeps the gate tolerant of a
+        # future app scaffold that hasn't grown a test script yet.
         working-directory: apps/${{ matrix.app }}
         run: pnpm run --if-present test
 
@@ -94,21 +96,21 @@ jobs:
           - app: admin-companion
             recipe: admin
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
 
       - name: Install just
-        uses: extractions/setup-just@v2
+        uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           # Exact pin — keep in lockstep with "packageManager" in apps/*/package.json.
           version: 9.15.9
 
       - name: Setup Node 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
 
@@ -125,7 +127,7 @@ jobs:
           rustup target add aarch64-apple-ios
 
       - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           # cache-bin: false — same footgun ci.yml already guards against: with the
           # default (true), rust-cache can restore the "tauri-cli is installed"
@@ -136,7 +138,7 @@ jobs:
 
       - name: Install cargo-binstall
         # Pinned release tag (not @main) — see the same pin in the TestFlight lanes.
-        uses: cargo-bins/cargo-binstall@v1.20.1
+        uses: cargo-bins/cargo-binstall@732870f031d2fb36309d0deaf36abcc704a7be65 # v1.20.1
 
       - name: Install Tauri CLI
         # Exact pin, same version as the TestFlight lanes: the postinit patches target

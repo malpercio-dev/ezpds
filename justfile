@@ -43,6 +43,13 @@ lock-check:
 bruno-check:
     scripts/bruno-parity.sh
 
+# Verify parity across the four vendored font copies (identity-wallet, admin-companion,
+# PDS assets, marketing site): a font file bundled under the same name in more than one
+# copy must be byte-identical everywhere, so a re-fetch or re-optimization of one copy
+# cannot silently fork the brand type. Each copy may bundle a subset of the families.
+font-check:
+    scripts/font-parity.sh
+
 # Verify the swift-rs --disable-sandbox fork ([patch.crates-io] in Cargo.toml) is both
 # DECLARED and ACTUALLY APPLIED (Cargo.lock resolves swift-rs from the path, not the
 # registry). Cargo silently stops applying a [patch] when a dependency bump requires a
@@ -52,7 +59,7 @@ swift-rs-check:
     scripts/swift-rs-patch-check.sh
 
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
-ci: fmt-check lock-check bruno-check swift-rs-check clippy test audit
+ci: fmt-check lock-check bruno-check font-check swift-rs-check clippy test audit
 
 # CI gate for the Linux pds pipeline (GitHub Actions, .github/workflows/ci.yml). Excludes the
 # iOS apps (identity-wallet, admin-companion), which need the Apple toolchain (security-framework)
@@ -60,6 +67,7 @@ ci: fmt-check lock-check bruno-check swift-rs-check clippy test audit
 ci-pds: fmt-check
     just lock-check
     just bruno-check
+    just font-check
     just swift-rs-check
     cargo clippy --workspace --exclude identity-wallet --exclude admin-companion --all-targets -- -D warnings
     cargo test --workspace --exclude identity-wallet --exclude admin-companion
@@ -255,14 +263,18 @@ ios-build: ios-check
 
 # PR-time iOS gate (.github/workflows/ios-pr-check.yml) — no signing, no secrets, no
 # xcodebuild archive. Builds the frontend (tauri's codegen embeds ../dist at compile
-# time) then cross-compiles the app's staticlib for the iOS device target. Via the
-# ios-check dependency this exercises the whole Apple/Rust seam a PR can break: the
-# tauri-cli template + postinit patches, the swift-rs fork (vendored plugin Swift
-# compilation), and the shared workspace crates on aarch64-apple-ios. Assumes the
-# Xcode project exists: run `cargo tauri ios init` + `just ios-postinit` first.
+# time), cross-compiles the app's staticlib for the iOS device target, then runs the
+# app's Rust unit tests on the macOS host target (the only CI lane that can compile
+# this crate — the Linux ci-pds gate excludes it). Via the ios-check dependency this
+# exercises the whole Apple/Rust seam a PR can break: the tauri-cli template +
+# postinit patches, the swift-rs fork (vendored plugin Swift compilation), and the
+# shared workspace crates on aarch64-apple-ios. The host test run deliberately does
+# NOT set EZPDS_IOS_BUILD (that would clobber CC/AR with iOS toolchain overrides).
+# Assumes the Xcode project exists: run `cargo tauri ios init` + `just ios-postinit` first.
 ios-pr-check: ios-check
     cd apps/identity-wallet && pnpm build
     cd apps/identity-wallet && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && cargo build --locked --lib --target aarch64-apple-ios -p identity-wallet
+    cargo test --locked -p identity-wallet
 
 # --- iOS release -> TestFlight (macOS + Xcode) ---
 # CI runs these on a GitHub macOS runner (.github/workflows/ios-testflight.yml);
@@ -360,11 +372,13 @@ admin-build: admin-check
     cd apps/admin-companion && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && cargo tauri ios build --debug
 
 # PR-time iOS gate for the admin console — same shape as `just ios-pr-check` (no
-# signing/secrets; frontend build + staticlib cross-compile for aarch64-apple-ios).
+# signing/secrets; frontend build + staticlib cross-compile for aarch64-apple-ios +
+# host-target Rust unit tests, which no other CI lane can compile).
 # Assumes the Xcode project exists: `cargo tauri ios init` + `just admin-postinit` first.
 admin-pr-check: admin-check
     cd apps/admin-companion && pnpm build
     cd apps/admin-companion && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && cargo build --locked --lib --target aarch64-apple-ios -p admin-companion
+    cargo test --locked -p admin-companion
 
 # --- admin-companion release -> TestFlight (macOS + Xcode) ---
 # CI runs these on a GitHub macOS runner (.github/workflows/admin-testflight.yml);

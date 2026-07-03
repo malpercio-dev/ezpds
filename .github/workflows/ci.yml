@@ -40,13 +40,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           # Read-only gate — never pushes — so don't leave the token in .git/config.
           persist-credentials: false
 
       - name: Install just
-        uses: extractions/setup-just@v2
+        uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
 
       # rust-toolchain.toml pins the exact channel (1.96.0) + rustfmt/clippy, so a bare
       # `rustup toolchain install` provisions everything ci-pds needs. SQLite is bundled
@@ -55,7 +55,7 @@ jobs:
         run: rustup toolchain install --no-self-update
 
       - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           # cache-bin: false — with the default (true), rust-cache caches ~/.cargo/bin together
           # with .crates2.json and can restore the "cargo-audit is installed" metadata WITHOUT the
@@ -66,7 +66,7 @@ jobs:
       - name: Install cargo-audit
         # Pinned release tag (not @main): a mutable branch ref would let upstream changes
         # land in every CI run with no reviewable version bump.
-        uses: cargo-bins/cargo-binstall@v1.20.1
+        uses: cargo-bins/cargo-binstall@732870f031d2fb36309d0deaf36abcc704a7be65 # v1.20.1
         # `&& cargo audit --version` verifies the binary is actually on PATH, so a future install
         # regression fails here with a clear message instead of deep inside `just ci-pds`.
       - run: cargo binstall -y --locked cargo-audit && cargo audit --version
@@ -84,7 +84,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           # Full history + tags so `git tag --points-at HEAD` can see the release tag.
           fetch-depth: 0
@@ -92,7 +92,7 @@ jobs:
           persist-credentials: false
 
       - name: Install just
-        uses: extractions/setup-just@v2
+        uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
 
       # cargo (for `cargo metadata`) comes from the pinned toolchain; jq is preinstalled
       # on ubuntu-latest. No build cache needed — this only reads metadata.

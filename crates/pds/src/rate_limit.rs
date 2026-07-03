@@ -222,10 +222,12 @@ fn rate_limited_response(decision: &RateLimitDecision, scope: &str) -> Response 
 /// write points are enforced deeper in the write path, not here (see the module docs).
 pub async fn rate_limit_middleware(
     State(state): State<AppState>,
-    connect_info: Option<ConnectInfo<SocketAddr>>,
     req: Request,
     next: Next,
 ) -> Response {
+    // axum 0.8 dropped the blanket `Option<T>` extractor; ConnectInfo lives in the
+    // request extensions, so read it there (absent under `oneshot` test harnesses).
+    let connect_info = req.extensions().get::<ConnectInfo<SocketAddr>>().copied();
     let limiter = &state.rate_limiter;
     if !limiter.enabled {
         return next.run(req).await;

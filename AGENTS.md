@@ -18,7 +18,8 @@ Last verified: 2026-06-30
 - `cargo clippy --workspace -- -D warnings` - Lint (warnings as errors)
 - `cargo fmt --all --check` - Check formatting
 - `just bruno-check` - Verify route ⇄ Bruno-collection parity (scripts/bruno-parity.sh)
-- `just ci` - Full local gate (fmt-check, lock-check, bruno-check, swift-rs-check, clippy, test, audit) — the same checks CI runs
+- `just font-check` - Verify the four vendored font copies haven't drifted (scripts/font-parity.sh; same-named font files must be byte-identical across copies)
+- `just ci` - Full local gate (fmt-check, lock-check, bruno-check, font-check, swift-rs-check, clippy, test, audit) — the same checks CI runs
 
 ## CI/CD
 
@@ -32,7 +33,7 @@ Release flow: `just set-version X.Y.Z` (PR) → merge → `just release` (cuts/p
 
 **iOS (`.github/workflows/ios-testflight.yml`).** Builds the `identity-wallet` Tauri app on a free public-repo `macos-26` runner and uploads to TestFlight on every push to `main` (App Store Connect API-key signing; never runs on `pull_request`, keeping secrets off fork PRs). The build/upload core is shared `just` recipes (`ios-ipa`, `ios-upload`, `ios-release`) usable locally. The **admin-companion** operator console ships through its own parallel lane — `.github/workflows/admin-testflight.yml` + `just admin-ipa`/`admin-upload`/`admin-release`, triggered on `apps/admin-companion/**` — reusing every signing secret except its own bundle-id-bound provisioning profile (`IOS_MOBILE_PROVISION_ADMIN`). See [docs/ios-cicd.md](docs/ios-cicd.md).
 
-**iOS PR gate (`.github/workflows/ios-pr-check.yml`).** Because the TestFlight lanes hold signing secrets and never run on `pull_request`, a secret-free PR lane validates both apps before merge: an ubuntu job runs the frontend type-check (`pnpm check`) and unit tests, and a `macos-26` job regenerates the Xcode project, re-applies the postinit patches (the patch-seam gate — each fails loudly on tauri-cli template drift), and cross-compiles the app staticlib for `aarch64-apple-ios` via `just ios-pr-check` / `just admin-pr-check` — everything short of xcodebuild archiving/signing.
+**iOS PR gate (`.github/workflows/ios-pr-check.yml`).** Because the TestFlight lanes hold signing secrets and never run on `pull_request`, a secret-free PR lane validates both apps before merge: an ubuntu job runs the frontend type-check (`pnpm check`) and unit tests, and a `macos-26` job regenerates the Xcode project, re-applies the postinit patches (the patch-seam gate — each fails loudly on tauri-cli template drift), cross-compiles the app staticlib for `aarch64-apple-ios`, and runs the app's Rust unit tests on the macOS host target (the only CI lane that can compile these crates) via `just ios-pr-check` / `just admin-pr-check` — everything short of xcodebuild archiving/signing.
 
 ## Dev Environment
 - Managed entirely by Nix flake + devenv; do not install tools globally

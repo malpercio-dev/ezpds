@@ -369,8 +369,7 @@ mod tests {
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         use base64::Engine;
         let val = req
-            .headers
-            .as_ref()?
+            .headers_vec()
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case("dpop"))
             .map(|(_, v)| v.as_str())?;
@@ -379,7 +378,7 @@ mod tests {
         serde_json::from_slice(&payload_bytes).ok()
     }
 
-    /// `when.matches()` predicate: DPoP proof must NOT contain an `ath` claim.
+    /// `when.is_true()` predicate: DPoP proof must NOT contain an `ath` claim.
     /// Used for refresh-grant requests where no access token is available yet.
     fn dpop_has_no_ath(req: &HttpMockRequest) -> bool {
         decode_dpop_payload(req)
@@ -387,7 +386,7 @@ mod tests {
             .unwrap_or(false)
     }
 
-    /// `when.matches()` predicate: DPoP proof must NOT contain a `nonce` claim.
+    /// `when.is_true()` predicate: DPoP proof must NOT contain a `nonce` claim.
     /// Used to match the first (pre-challenge) request in a nonce-retry scenario.
     fn dpop_has_no_nonce(req: &HttpMockRequest) -> bool {
         decode_dpop_payload(req)
@@ -430,7 +429,7 @@ mod tests {
         let mock_challenge = server.mock(|when, then| {
             when.method(GET)
                 .path("/resource")
-                .matches(dpop_has_no_nonce);
+                .is_true(dpop_has_no_nonce);
             then.status(400)
                 .header("DPoP-Nonce", "test-server-nonce")
                 .json_body(serde_json::json!({"error": "use_dpop_nonce"}));
@@ -537,7 +536,7 @@ mod tests {
         server.mock(|when, then| {
             when.method(POST)
                 .path("/oauth/token")
-                .matches(dpop_has_no_ath);
+                .is_true(dpop_has_no_ath);
             then.status(200).json_body(token_response_body());
         });
 
