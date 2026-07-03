@@ -5,6 +5,8 @@ use clap::Parser;
 use reqwest::Client;
 use std::{path::PathBuf, sync::Arc};
 
+mod account_delete;
+mod account_reaper;
 mod app;
 mod auth;
 mod blob_gc;
@@ -287,6 +289,17 @@ async fn run() -> anyhow::Result<()> {
         retention_secs = state.config.firehose.log_retention_secs,
         retention_count = state.config.firehose.log_retention_count,
         "firehose repo_seq retention sweep started"
+    );
+
+    // Spawn the scheduled-deletion reaper. Each pass permanently deletes accounts whose
+    // `deleteAfter` (set by deactivateAccount) has elapsed; like the GC tasks it is best-effort and
+    // runs for the life of the process, so the handle is dropped on shutdown rather than joined.
+    let reaper_interval =
+        std::time::Duration::from_secs(state.config.accounts.deletion_reaper_interval_secs);
+    let _account_reaper = account_reaper::spawn_account_reaper(state.clone(), reaper_interval);
+    tracing::info!(
+        interval_secs = state.config.accounts.deletion_reaper_interval_secs,
+        "scheduled account-deletion reaper started"
     );
 
     // Spawn the Iroh accept loop when the tunnel is enabled. Like the blob GC it is detached

@@ -39,6 +39,7 @@ use crate::routes::create_record::create_record;
 use crate::routes::create_session::create_session;
 use crate::routes::create_signing_key::create_signing_key;
 use crate::routes::deactivate_account::deactivate_account_handler;
+use crate::routes::delete_account::delete_account_handler;
 use crate::routes::delete_handle::delete_handle_handler;
 use crate::routes::delete_record::delete_record;
 use crate::routes::delete_session::delete_session;
@@ -76,6 +77,7 @@ use crate::routes::put_preferences::put_preferences_handler;
 use crate::routes::put_record::put_record;
 use crate::routes::refresh_session::refresh_session;
 use crate::routes::register_device::register_device;
+use crate::routes::request_account_delete::request_account_delete;
 use crate::routes::request_password_reset::request_password_reset;
 use crate::routes::request_plc_operation_signature::request_plc_operation_signature;
 use crate::routes::reserve_signing_key::reserve_signing_key;
@@ -278,6 +280,14 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/xrpc/com.atproto.server.deactivateAccount",
             post(deactivate_account_handler),
+        )
+        .route(
+            "/xrpc/com.atproto.server.requestAccountDelete",
+            post(request_account_delete),
+        )
+        .route(
+            "/xrpc/com.atproto.server.deleteAccount",
+            post(delete_account_handler),
         )
         .route(
             "/xrpc/com.atproto.server.checkAccountStatus",
@@ -655,6 +665,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
             contact: common::ContactConfig::default(),
             blobs: BlobsConfig::default(),
             firehose: FirehoseConfig::default(),
+            accounts: common::AccountsConfig::default(),
             oauth: OAuthConfig::default(),
             iroh: IrohConfig::default(),
             appview: AppViewConfig::default(),
