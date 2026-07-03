@@ -440,7 +440,7 @@ pub(crate) async fn get_account_overview(
 /// The timestamp of an account's most recent repo-block write or blob upload, or `None` when
 /// it has neither.
 ///
-/// `blocks.created_at` and `blobs.created_at` share the same `strftime('%Y-%m-%dT%H:%M:%fZ')`
+/// `block_owners.created_at` and `blobs.created_at` share the same `strftime('%Y-%m-%dT%H:%M:%fZ')`
 /// format, so the cross-table `MAX` is a valid lexicographic comparison. Callers fall back to
 /// the account's `created_at` when this is `None` (a freshly provisioned account with no repo
 /// and no blobs).
@@ -450,7 +450,7 @@ pub(crate) async fn account_last_active(
 ) -> Result<Option<String>, sqlx::Error> {
     let row: (Option<String>,) = sqlx::query_as(
         "SELECT MAX(ts) FROM ( \
-            SELECT created_at AS ts FROM blocks WHERE account_did = ? \
+            SELECT created_at AS ts FROM block_owners WHERE account_did = ? \
             UNION ALL \
             SELECT created_at AS ts FROM blobs WHERE account_did = ? \
          )",
@@ -1214,6 +1214,13 @@ mod tests {
         sqlx::query(
             "INSERT INTO blocks (cid, account_did, bytes, created_at) \
              VALUES ('bafblk', 'did:plc:la2', x'a100', '2026-01-01T00:00:00.000Z')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO block_owners (cid, account_did, created_at) \
+             VALUES ('bafblk', 'did:plc:la2', '2026-01-01T00:00:00.000Z')",
         )
         .execute(&db)
         .await

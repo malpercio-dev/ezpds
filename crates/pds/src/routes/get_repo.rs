@@ -480,7 +480,7 @@ mod tests {
         );
 
         let delta_cids: Vec<String> =
-            sqlx::query_scalar("SELECT cid FROM blocks WHERE account_did = ? AND rev > ?")
+            sqlx::query_scalar("SELECT cid FROM block_owners WHERE account_did = ? AND rev > ?")
                 .bind(&did)
                 .bind(&rev_a)
                 .fetch_all(&state.db)
@@ -542,7 +542,7 @@ mod tests {
 
         // A non-root block at the current rev — a genuine `since=current` CAR would exclude it.
         let other_block: String = sqlx::query_scalar(
-            "SELECT cid FROM blocks WHERE account_did = ? AND rev = ? AND cid != ?",
+            "SELECT cid FROM block_owners WHERE account_did = ? AND rev = ? AND cid != ?",
         )
         .bind(&did)
         .bind(&current_rev)
@@ -592,7 +592,7 @@ mod tests {
             .expect("the commit block must always be present");
 
         let other_block: String = sqlx::query_scalar(
-            "SELECT cid FROM blocks WHERE account_did = ? AND rev = ? AND cid != ?",
+            "SELECT cid FROM block_owners WHERE account_did = ? AND rev = ? AND cid != ?",
         )
         .bind(&did)
         .bind(&current_rev)

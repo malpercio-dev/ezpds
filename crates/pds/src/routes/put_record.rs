@@ -441,11 +441,12 @@ mod tests {
             assert_eq!(response.status(), StatusCode::OK);
         }
 
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM blocks WHERE account_did = ?")
-            .bind(&did)
-            .fetch_one(&db)
-            .await
-            .unwrap();
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM block_owners WHERE account_did = ?")
+                .bind(&did)
+                .fetch_one(&db)
+                .await
+                .unwrap();
         // With GC only the current commit + MST + record remain (a handful); without GC
         // this would grow ~linearly with the 8 updates.
         assert!(

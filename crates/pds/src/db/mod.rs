@@ -186,6 +186,10 @@ static MIGRATIONS: &[Migration] = &[
         version: 34,
         sql: include_str!("migrations/V034__account_deletion_tokens.sql"),
     },
+    Migration {
+        version: 35,
+        sql: include_str!("migrations/V035__block_owners.sql"),
+    },
 ];
 
 /// Open a WAL-mode SQLite connection pool with a maximum of 1 connection.

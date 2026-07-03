@@ -66,23 +66,14 @@ const DELETE_BY_DID: &[&str] = &[
     "DELETE FROM reserved_signing_keys WHERE did = ?",
 ];
 
-/// The account's rows in the content-addressed repo block store.
+/// The account's ownership rows in the content-addressed repo block store.
 ///
-/// **Known cross-account hazard.** `blocks` is keyed by `cid` *globally* (`cid` is the PRIMARY
-/// KEY; `account_did` records only whichever account wrote a given block *first*, and a repeat
-/// write of the same content is an `ON CONFLICT(cid) DO NOTHING` no-op). Byte-identical blocks
-/// shared across accounts — most visibly the empty-MST node every repo's tree references — are
-/// therefore stored once, owned by the first writer. A blanket `WHERE account_did = ?` can thus
-/// delete a block that another live account still references, corrupting that account's repo. This
-/// is the same account-scoped-deletion hazard the commit-time GC (`delete_unreachable_blocks`)
-/// already carries; the proper fix is a refcount-aware / per-account-copy block store, tracked as
-/// its own hardening task, not fixed ad hoc here. We accept the hazard for parity with the
-/// existing GC — and it is unavoidable regardless: `blocks.account_did` is
-/// `NOT NULL REFERENCES accounts(did)`, so these rows *must* be removed before the `accounts` row
-/// can be deleted at all. (`blobs`, which shares the same global-`cid` shape and hazard, is deleted
-/// separately via `DELETE ... RETURNING` so the reclaimed file list is atomic with the rows
-/// removed — see [`purge_account`].)
-const DELETE_BLOCKS: &str = "DELETE FROM blocks WHERE account_did = ?";
+/// `blocks` is keyed by `cid` globally and stores the physical bytes once. `block_owners` is the
+/// authoritative account-scoped metadata, so deletion removes this account's references and then
+/// reclaims only unowned, non-legacy physical bytes.
+const DELETE_BLOCKS: &str = "DELETE FROM block_owners WHERE account_did = ?";
+const DELETE_UNOWNED_BLOCKS: &str =
+    "DELETE FROM blocks WHERE legacy_protected = 0 AND NOT EXISTS (SELECT 1 FROM block_owners o WHERE o.cid = blocks.cid)";
 
 /// Permanently delete an account and everything it owns, atomically, and announce the removal on
 /// the firehose.
@@ -124,14 +115,16 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
         .execute(&mut *tx)
         .await
         .map_err(map_err)?;
+    sqlx::query(DELETE_UNOWNED_BLOCKS)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_err)?;
 
     // Delete the blob rows and capture their on-disk paths in the same statement, so the reclaim
     // list is exactly the set of rows removed — no pre-transaction snapshot that a racing upload
-    // could slip past. Files are removed after the transaction commits (below). Like `blocks`,
-    // `blobs` is a global-`cid` store (`account_did` = first writer), so this carries the same
-    // accepted cross-account hazard documented on `DELETE_BLOCKS`: a blob whose content another
-    // account also uploaded is removed here (file included). Removing the rows is likewise forced
-    // by the `NOT NULL REFERENCES accounts(did)` FK.
+    // could slip past. Files are removed after the transaction commits (below). Unlike repo
+    // blocks, blobs remain keyed directly by `(account_did, cid)` metadata, so blob deletion still
+    // removes this account's blob files.
     let blob_files: Vec<(String, String)> =
         sqlx::query_as("DELETE FROM blobs WHERE account_did = ? RETURNING cid, storage_path")
             .bind(did)
@@ -263,7 +256,10 @@ mod tests {
             row_count(&state.db, "account_preferences", "did", did).await,
             0
         );
-        assert_eq!(row_count(&state.db, "blocks", "account_did", did).await, 0);
+        assert_eq!(
+            row_count(&state.db, "block_owners", "account_did", did).await,
+            0
+        );
 
         // The firehose announced the deletion.
         let FirehoseEvent::Account(event) = rx.try_recv().unwrap() else {

@@ -128,11 +128,12 @@ pub async fn import_repo(
     })?;
 
     for (cid, bytes) in &imported.blocks {
+        let cid = cid.to_string();
         sqlx::query(
             "INSERT INTO blocks (cid, account_did, bytes, rev) VALUES (?, ?, ?, ?) \
              ON CONFLICT(cid) DO NOTHING",
         )
-        .bind(cid.to_string())
+        .bind(&cid)
         .bind(&did)
         .bind(bytes.as_slice())
         .bind(&imported.rev)
@@ -140,6 +141,19 @@ pub async fn import_repo(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, "failed to persist imported block");
+            ApiError::new(ErrorCode::InternalError, "failed to import repo")
+        })?;
+        sqlx::query(
+            "INSERT INTO block_owners (cid, account_did, rev) VALUES (?, ?, ?) \
+             ON CONFLICT(account_did, cid) DO UPDATE SET rev = excluded.rev",
+        )
+        .bind(&cid)
+        .bind(&did)
+        .bind(&imported.rev)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, did = %did, "failed to persist imported block owner");
             ApiError::new(ErrorCode::InternalError, "failed to import repo")
         })?;
     }
