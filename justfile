@@ -37,14 +37,30 @@ audit:
 lock-check:
     cargo metadata --locked --format-version 1 > /dev/null
 
+# Verify route ⇄ Bruno parity: every route registered in crates/pds/src/app.rs has a
+# matching request in bruno/, and no .bru targets a route that no longer exists. This
+# is the automated backstop for the "Mandatory" rule in AGENTS.md (Bruno API Collection).
+bruno-check:
+    scripts/bruno-parity.sh
+
+# Verify the swift-rs --disable-sandbox fork ([patch.crates-io] in Cargo.toml) is both
+# DECLARED and ACTUALLY APPLIED (Cargo.lock resolves swift-rs from the path, not the
+# registry). Cargo silently stops applying a [patch] when a dependency bump requires a
+# semver-incompatible swift-rs — this reads only Cargo.toml/Cargo.lock, so the Linux PR
+# gate catches that before it breaks the macOS build with an EPERM far from the cause.
+swift-rs-check:
+    scripts/swift-rs-patch-check.sh
+
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
-ci: fmt-check lock-check clippy test audit
+ci: fmt-check lock-check bruno-check swift-rs-check clippy test audit
 
 # CI gate for the Linux pds pipeline (GitHub Actions, .github/workflows/ci.yml). Excludes the
 # iOS apps (identity-wallet, admin-companion), which need the Apple toolchain (security-framework)
 # absent in CI; the mobile apps are built and checked via `just ios-*` / `just admin-*` on macOS.
 ci-pds: fmt-check
     just lock-check
+    just bruno-check
+    just swift-rs-check
     cargo clippy --workspace --exclude identity-wallet --exclude admin-companion --all-targets -- -D warnings
     cargo test --workspace --exclude identity-wallet --exclude admin-companion
     just audit
@@ -237,6 +253,17 @@ ios-dev device="": ios-check
 ios-build: ios-check
     cd apps/identity-wallet && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && cargo tauri ios build --debug
 
+# PR-time iOS gate (.github/workflows/ios-pr-check.yml) — no signing, no secrets, no
+# xcodebuild archive. Builds the frontend (tauri's codegen embeds ../dist at compile
+# time) then cross-compiles the app's staticlib for the iOS device target. Via the
+# ios-check dependency this exercises the whole Apple/Rust seam a PR can break: the
+# tauri-cli template + postinit patches, the swift-rs fork (vendored plugin Swift
+# compilation), and the shared workspace crates on aarch64-apple-ios. Assumes the
+# Xcode project exists: run `cargo tauri ios init` + `just ios-postinit` first.
+ios-pr-check: ios-check
+    cd apps/identity-wallet && pnpm build
+    cd apps/identity-wallet && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && cargo build --locked --lib --target aarch64-apple-ios -p identity-wallet
+
 # --- iOS release -> TestFlight (macOS + Xcode) ---
 # CI runs these on a GitHub macOS runner (.github/workflows/ios-testflight.yml);
 # they double as the local `just ios-release` escape hatch.
@@ -247,14 +274,49 @@ ios-build: ios-check
 # UPLOAD uses the App Store Connect API key: APPLE_API_KEY + APPLE_API_ISSUER and the
 # matching AuthKey_<id>.p8 in ~/.appstoreconnect/private_keys/. See docs/ios-cicd.md.
 
+# Shared implementation behind `ios-ipa`/`admin-ipa` (private): stamp a unique,
+# monotonic CFBundleVersion into the app's tauri.conf.json, build the signed App
+# Store IPA, and restore the config afterwards.
+#
+# BUILD NUMBER: TestFlight rejects duplicate CFBundleVersions and requires them to
+# increase, so CI and the local escape hatch must share ONE stamping scheme — stamping
+# only in the workflow (the old design) made a second local `just ios-release` collide
+# on the committed placeholder value. Default is UTC epoch seconds: unique, strictly
+# increasing across CI and local runs alike, immune to the reset a workflow-file rename
+# inflicts on GITHUB_RUN_NUMBER, and larger than any run number already uploaded (so
+# the changeover is monotonic).
+#
+# RESTORE is `git checkout` of the committed file, not a backup copy: a SIGKILL skips
+# the EXIT trap, and with a copy-based restore the next run would back up the
+# already-stamped file as its new "original", losing the committed value for good.
+# Because the git restore discards local edits to the file, the guard refuses to run
+# while tauri.conf.json has uncommitted changes.
+_ipa app_dir build_number:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Drop any stale .ipa first (e.g. a pre-rename artifact) so the upload recipes can't pick it up.
+    rm -f {{app_dir}}/src-tauri/gen/apple/build/arm64/*.ipa
+    conf="$(pwd)/{{app_dir}}/src-tauri/tauri.conf.json"
+    if ! git diff --quiet -- "$conf"; then
+      echo "✗ $conf has uncommitted changes — commit or stash them first" >&2
+      echo "  (the post-build restore is 'git checkout -- <conf>', which would discard them)" >&2
+      exit 1
+    fi
+    bv="{{build_number}}"
+    [ -n "$bv" ] || bv="$(date -u +%s)"
+    trap 'git checkout -- "$conf"' EXIT
+    tmp="$(mktemp)"
+    jq --arg bv "$bv" '.bundle.iOS.bundleVersion = $bv' "$conf" > "$tmp" && mv "$tmp" "$conf"
+    echo "CFBundleVersion -> $bv"
+    cd {{app_dir}} && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && cargo tauri ios build --export-method app-store-connect
+
 # Build a signed, App Store-method IPA (for TestFlight or the App Store). Assumes the
 # Xcode project exists: run `cargo tauri ios init` + `just ios-postinit` once first
 # (CI does both every run). NOTE: the --export-method token tracks Xcode's names
 # (`app-store-connect` on Xcode 15+); confirm once with `cargo tauri ios build --help`.
-ios-ipa: ios-check
-    # Drop any stale .ipa first (e.g. a pre-rename artifact) so `ios-upload` can't pick it up.
-    rm -f apps/identity-wallet/src-tauri/gen/apple/build/arm64/*.ipa
-    cd apps/identity-wallet && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && cargo tauri ios build --export-method app-store-connect
+# Build-number stamping: see `_ipa`. Override the default: `just ios-ipa 12345`.
+ios-ipa build_number="": ios-check
+    just _ipa apps/identity-wallet "{{build_number}}"
 
 # Upload the most recently built IPA to App Store Connect / TestFlight via altool.
 # Requires APPLE_API_KEY (key id) + APPLE_API_ISSUER (issuer id) in the environment
@@ -297,6 +359,13 @@ admin-dev device="": admin-check
 admin-build: admin-check
     cd apps/admin-companion && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && cargo tauri ios build --debug
 
+# PR-time iOS gate for the admin console — same shape as `just ios-pr-check` (no
+# signing/secrets; frontend build + staticlib cross-compile for aarch64-apple-ios).
+# Assumes the Xcode project exists: `cargo tauri ios init` + `just admin-postinit` first.
+admin-pr-check: admin-check
+    cd apps/admin-companion && pnpm build
+    cd apps/admin-companion && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && cargo build --locked --lib --target aarch64-apple-ios -p admin-companion
+
 # --- admin-companion release -> TestFlight (macOS + Xcode) ---
 # CI runs these on a GitHub macOS runner (.github/workflows/admin-testflight.yml);
 # they double as the local `just admin-release` escape hatch. Same signing model as
@@ -308,11 +377,10 @@ admin-build: admin-check
 
 # Build a signed, App Store-method IPA for the admin console. Assumes the Xcode
 # project exists: run `cargo tauri ios init` + `just admin-postinit` once first
-# (CI does both every run).
-admin-ipa: admin-check
-    # Drop any stale .ipa first so `admin-upload` can't pick it up.
-    rm -f apps/admin-companion/src-tauri/gen/apple/build/arm64/*.ipa
-    cd apps/admin-companion && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && cargo tauri ios build --export-method app-store-connect
+# (CI does both every run). Build-number stamping: see `_ipa`; override:
+# `just admin-ipa 12345`.
+admin-ipa build_number="": admin-check
+    just _ipa apps/admin-companion "{{build_number}}"
 
 # Upload the most recently built admin-companion IPA to App Store Connect / TestFlight
 # via altool. Requires APPLE_API_KEY (key id) + APPLE_API_ISSUER (issuer id) in the

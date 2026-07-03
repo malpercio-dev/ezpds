@@ -17,6 +17,12 @@ on:
     branches: [main]
   push:
     branches: [main, production]
+  # Weekly advisory-freshness run: `just ci-pds` includes `cargo audit`, which scans
+  # Cargo.lock against the RustSec DB — but between pushes an idle repo never re-scans,
+  # so a newly published advisory goes unnoticed until the next commit. This is also
+  # the re-check cadence for the accepted advisories in .cargo/audit.toml.
+  schedule:
+    - cron: "0 6 * * 1"
   workflow_dispatch:
 
 # Read-only: this workflow never deploys or touches secrets. Railway pulls and builds the
@@ -58,7 +64,9 @@ jobs:
           cache-bin: false
 
       - name: Install cargo-audit
-        uses: cargo-bins/cargo-binstall@main
+        # Pinned release tag (not @main): a mutable branch ref would let upstream changes
+        # land in every CI run with no reviewable version bump.
+        uses: cargo-bins/cargo-binstall@v1.20.1
         # `&& cargo audit --version` verifies the binary is actually on PATH, so a future install
         # regression fails here with a clear message instead of deep inside `just ci-pds`.
       - run: cargo binstall -y --locked cargo-audit && cargo audit --version

@@ -3,11 +3,17 @@
   packages = [
     pkgs.just
     pkgs.cargo-audit
+    # jq: used by just recipes (verify-release-tag, the ios-ipa/admin-ipa build-number
+    # stamp). CI runners preinstall it; the dev shell must provide it too.
+    pkgs.jq
     pkgs.sqlite
     pkgs.pkg-config
     pkgs.cargo-tauri
     pkgs.nodejs_22
-    pkgs.pnpm
+    # pnpm major pinned to 9 to match CI (pnpm/action-setup, version 9.15.9) and the
+    # "packageManager" field in apps/*/package.json — a different major regenerates
+    # pnpm-lock.yaml in a format that fails CI's `pnpm install --frozen-lockfile`.
+    pkgs.pnpm_9
     pkgs.rustup
     pkgs.shellcheck
   ];

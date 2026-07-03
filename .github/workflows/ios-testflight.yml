@@ -5,8 +5,9 @@ name: iOS · TestFlight
 # identity-wallet Tauri build lives here. GitHub-hosted macOS runners are free for public repos.
 #
 # Flow: regenerate the (gitignored) Xcode project -> re-apply the ios-postinit
-# patches -> stamp a unique build number -> build a signed App Store IPA -> upload
-# to TestFlight. Code signing is explicit (cert + App Store profile); the API key is upload-only.
+# patches -> build a signed App Store IPA (`just ios-ipa` stamps a unique build
+# number) -> upload to TestFlight. Code signing is explicit (cert + App Store
+# profile); the API key is upload-only.
 #
 # One-time setup (mirror, App Store Connect, secrets): see docs/ios-cicd.md.
 
@@ -22,6 +23,9 @@ on:
       - "Cargo.lock"
       # The build/upload delegate to `just ios-*`, so a recipe change can break the lane.
       - "justfile"
+      # The shared iOS toolchain/patch scripts live at the repo root (per-app
+      # scripts are thin wrappers), so changes there can break this lane too.
+      - "scripts/**"
       - "rust-toolchain.toml"
       - ".github/workflows/ios-testflight.yml"
   workflow_dispatch:
@@ -60,7 +64,10 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          # Exact pin — keep in lockstep with "packageManager" in apps/*/package.json
+          # and the other workflows, so --frozen-lockfile can never fail on a pnpm
+          # lockfile-format difference between local and CI.
+          version: 9.15.9
 
       - name: Setup Node 22
         uses: actions/setup-node@v4
@@ -81,13 +88,26 @@ jobs:
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
+        with:
+          # cache-bin: false — same footgun ci.yml already guards against: with the
+          # default (true), rust-cache can restore the "tauri-cli is installed"
+          # .crates2.json metadata WITHOUT the binary; `cargo binstall` then skips the
+          # install and `cargo tauri` is missing at use time. Cache the registry/git/
+          # target (the real speedup), never ~/.cargo/bin.
+          cache-bin: false
 
       - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@main
+        # Pinned release tag (not @main): a mutable branch ref would let upstream changes
+        # land in every CI run — on a runner that later holds the signing cert.
+        uses: cargo-bins/cargo-binstall@v1.20.1
 
       - name: Install Tauri CLI
-        # Pin to the 2.x line so a future tauri-cli 3.x can't silently break the build.
-        run: cargo binstall -y --locked tauri-cli --version '^2'
+        # Exact pin (was '^2'): the ios-postinit patches regex-edit the Xcode project
+        # template THIS CLI version generates, so a floating 2.x means two runs of the
+        # same commit can patch different templates. Bump deliberately, together with
+        # the other iOS lanes (admin-testflight.yml, ios-pr-check.yml) and the Nix dev
+        # shell's cargo-tauri (devenv.nix), and re-verify `just ios-postinit` applies.
+        run: cargo binstall -y --locked tauri-cli --version '2.11.4'
 
       - name: Decode App Store Connect API key (.p8)
         # Secrets are passed via env (not inline ${{ }}) so they never land in argv/logs.
@@ -130,17 +150,9 @@ jobs:
       - name: Re-apply ios-postinit patches
         run: just ios-postinit
 
-      # TestFlight rejects duplicate build numbers and the app version is pinned at
-      # 0.1.0, so derive a unique, monotonic CFBundleVersion from the CI run number.
-      # $GITHUB_RUN_NUMBER is a built-in env var — no untrusted ${{ }} in the shell.
-      - name: Stamp a unique TestFlight build number
-        run: |
-          conf="apps/identity-wallet/src-tauri/tauri.conf.json"
-          tmp="$(mktemp)"
-          jq --arg bv "$GITHUB_RUN_NUMBER" '.bundle.iOS.bundleVersion = $bv' "$conf" > "$tmp"
-          mv "$tmp" "$conf"
-          echo "CFBundleVersion -> $GITHUB_RUN_NUMBER"
-
+      # No build-number step here: `just ios-ipa` stamps a unique, monotonic
+      # CFBundleVersion (UTC epoch seconds) itself, so CI and the local
+      # `just ios-release` escape hatch share one scheme and can never collide.
       - name: Build signed IPA
         # SIGNING — explicit cert + App Store profile (Tauri's automatic signing emits an
         # "Apple Distribution: Tauri (unset)" placeholder App Store rejects, tauri#11092).

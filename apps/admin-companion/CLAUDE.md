@@ -117,13 +117,17 @@ Host build / tests (no Xcode): `cargo build -p admin-companion`, `cargo test -p 
 
 ## Key decisions
 
-- **Forked from identity-wallet, not shared.** The iOS toolchain *scripts*
-  (`scripts/ios-env.sh`, `ios-postinit.sh`, `ios-check.sh`) are copied (path-relative,
-  so they patch this app's own Xcode project) and the OKLCH token *architecture* is
-  forked — but the token *values*, components, and product/design briefs are this app's
-  own terminal-native register. See the root `apps/identity-wallet/CLAUDE.md` for the
-  full explanation of every iOS patch and the toolchain seam; it is the single source of
-  truth for those gotchas (this app reuses the same swift-rs `[patch.crates-io]`).
+- **Toolchain scripts are SHARED, design is forked.** The iOS toolchain scripts
+  (`scripts/ios-env.sh`, `ios-postinit.sh`, `ios-check.sh`) are thin wrappers over the
+  single shared implementation in the repo-root `scripts/ios/` (each wrapper pins this
+  app's dir, the `admin` recipe prefix, and its Patch E framework list — just
+  `SystemConfiguration`; no AuthenticationServices, this app has no in-app OAuth
+  plugin), so the patch logic can never diverge between the two app lanes again. The
+  OKLCH token *architecture* is forked from identity-wallet — but the token *values*,
+  components, and product/design briefs are this app's own terminal-native register.
+  See the root `apps/identity-wallet/CLAUDE.md` for the full explanation of every iOS
+  patch and the toolchain seam; it is the single source of truth for those gotchas
+  (this app reuses the same swift-rs `[patch.crates-io]`).
 - **Excluded from the Linux CI gate** (`just ci-pds`) like identity-wallet: it needs the
   Apple `security-framework` toolchain. Built/checked on macOS via `just admin-*`.
 - **Grotesk UI font is provisional** (system SF Pro via `--font-sans`) until the

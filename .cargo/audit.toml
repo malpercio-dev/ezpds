@@ -4,6 +4,12 @@
 # advisory with no fix and no rationale does not belong here — fix or remove the
 # dependency instead. Revisit accepted advisories whenever a fixed release ships.
 #
+# Re-check cadence: CI runs `cargo audit` on every PR/push AND on a weekly schedule
+# (.github/workflows/ci.yml `schedule:`), so new advisories surface within a week even
+# when the repo is idle. When the weekly run goes red, re-read the rationales below —
+# an ignored advisory whose blocking condition has cleared (e.g. `plist` bumping its
+# quick-xml requirement) must be un-ignored, not left to rot.
+#
 # RUSTSEC-2023-0071 — "Marvin Attack" timing side-channel in `rsa`. No fixed release
 #   exists upstream. `rsa` is pulled in only transitively by sqlx-macros' compile-time
 #   MySQL backend; the pds is sqlite-only, so `rsa` is never exercised at runtime.
