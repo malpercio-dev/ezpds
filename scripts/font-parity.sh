@@ -42,12 +42,18 @@ for dir in "${FONT_DIRS[@]}"; do
 done
 [ "$missing" -eq 0 ] || exit 1
 
+# sha256 tool: GNU coreutils' sha256sum (Linux CI, Nix shell) or stock macOS's
+# shasum — the dev shell does not pin coreutils, so `just ci` on a Mac needs this.
+# Both print "<hash>  <path>" lines, so the consumer below is tool-agnostic.
+sha256_cmd=(sha256sum)
+command -v sha256sum >/dev/null 2>&1 || sha256_cmd=(shasum -a 256)
+
 # Collect "<basename> <sha256> <path>" for every font file across the copies.
 records="$(
   for dir in "${FONT_DIRS[@]}"; do
     find "$dir" -maxdepth 1 -type f \
       \( -name '*.woff2' -o -name '*.woff' -o -name '*.ttf' -o -name '*.otf' \) \
-      -exec sha256sum {} +
+      -exec "${sha256_cmd[@]}" {} +
   done | while read -r hash path; do
     printf '%s %s %s\n' "$(basename "$path")" "$hash" "$path"
   done | sort
