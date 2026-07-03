@@ -41,18 +41,10 @@ pub async fn delete_handle_handler(
     // Step 1: Authenticate via session Bearer token.
     let session = require_session(&headers, &state.db).await?;
 
-    // Step 2: Fetch the handle row; 404 if it does not exist.
-    let row: Option<(String,)> = sqlx::query_as("SELECT did FROM handles WHERE handle = ?")
-        .bind(&handle)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, handle = %handle, "failed to fetch handle");
-            ApiError::new(ErrorCode::InternalError, "failed to look up handle")
-        })?;
-
-    let (owner_did,) =
-        row.ok_or_else(|| ApiError::new(ErrorCode::HandleNotFound, "handle not found"))?;
+    // Step 2: Fetch the handle owner; 404 if the handle does not exist.
+    let owner_did = crate::db::handles::resolve_handle(&state.db, &handle)
+        .await?
+        .ok_or_else(|| ApiError::new(ErrorCode::HandleNotFound, "handle not found"))?;
 
     // Step 3: Verify ownership — session DID must match the handle owner.
     if session.did != owner_did {

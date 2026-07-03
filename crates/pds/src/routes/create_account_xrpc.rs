@@ -659,15 +659,7 @@ async fn ensure_email_and_handle_free(
 
 /// Confirm the DID is not already a fully-provisioned account.
 async fn check_did_not_promoted(state: &AppState, did: &str) -> Result<(), ApiError> {
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM accounts WHERE did = ?)")
-        .bind(did)
-        .fetch_one(&state.db)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to check accounts existence");
-            ApiError::new(ErrorCode::InternalError, "database error")
-        })?;
-    if exists {
+    if crate::db::accounts::account_exists(&state.db, did).await? {
         return Err(ApiError::new(
             ErrorCode::DidAlreadyExists,
             "an account for this DID already exists",
@@ -686,17 +678,7 @@ async fn precheck_invite_code(state: &AppState, code: Option<&str>) -> Result<()
         .map(str::trim)
         .filter(|c| !c.is_empty())
         .ok_or_else(|| ApiError::new(ErrorCode::InvalidRequest, "an invite code is required"))?;
-    let valid: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM claim_codes \
-         WHERE code = ? AND redeemed_at IS NULL AND expires_at > datetime('now'))",
-    )
-    .bind(code)
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to validate invite code");
-        ApiError::new(ErrorCode::InternalError, "failed to validate invite code")
-    })?;
+    let valid = crate::db::claim_codes::claim_code_valid(&state.db, code).await?;
     if !valid {
         return Err(ApiError::new(
             ErrorCode::InvalidRequest,

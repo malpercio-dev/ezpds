@@ -36,6 +36,21 @@ pub async fn get_did_document(
     }
 }
 
+/// Whether a locally cached DID document exists for `did`. A cheaper existence probe than
+/// [`get_did_document`] — it never deserializes the document.
+pub async fn did_document_exists(db: &SqlitePool, did: &str) -> Result<bool, ApiError> {
+    let row: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM did_documents WHERE did = ? LIMIT 1")
+        .bind(did)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, did = %did, "failed to check DID document");
+            ApiError::new(ErrorCode::InternalError, "failed to check DID document")
+        })?;
+
+    Ok(row.is_some())
+}
+
 /// Fetch all handles for a DID and assemble them into `at://<handle>` form,
 /// suitable for a DID document's `alsoKnownAs` array.
 ///

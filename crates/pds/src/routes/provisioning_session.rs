@@ -116,19 +116,13 @@ pub async fn create_provisioning_session(
     let session_token = generate_token();
     let session_id = Uuid::new_v4().to_string();
 
-    sqlx::query(
-        "INSERT INTO sessions (id, did, device_id, token_hash, created_at, expires_at) \
-         VALUES (?, ?, NULL, ?, datetime('now'), datetime('now', '+1 year'))",
+    crate::db::sessions::insert_provisioning_session(
+        &state.db,
+        &session_id,
+        &account.did,
+        &session_token.hash,
     )
-    .bind(&session_id)
-    .bind(&account.did)
-    .bind(&session_token.hash)
-    .execute(&state.db)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to insert provisioning session");
-        ApiError::new(ErrorCode::InternalError, "failed to create session")
-    })?;
+    .await?;
 
     // Clear failure history only after the session is fully committed.
     // Doing this earlier would reset the counter even if the DB insert subsequently fails.

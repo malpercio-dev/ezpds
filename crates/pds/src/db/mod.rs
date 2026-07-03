@@ -6,13 +6,17 @@ pub mod blocks;
 pub mod claim_codes;
 pub mod dids;
 pub mod firehose_seq;
+pub mod handles;
 pub mod iroh_identity;
 pub mod jwt_secret;
 pub mod oauth;
 pub mod password_reset;
 pub mod plc_operation_tokens;
 pub mod preferences;
+pub mod refresh_tokens;
+pub mod relay_signing_keys;
 pub mod repo_keys;
+pub mod sessions;
 pub mod transfers;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};

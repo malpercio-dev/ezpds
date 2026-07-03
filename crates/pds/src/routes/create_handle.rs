@@ -74,18 +74,15 @@ pub async fn create_handle_handler(
             .map_err(|msg| ApiError::new(ErrorCode::InvalidHandle, msg))?;
 
     // Step 4: Insert the handle. A UNIQUE violation means the handle is already taken.
-    sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
-        .bind(&payload.handle)
-        .bind(&session.did)
-        .execute(&state.db)
-        .await
-        .map_err(|e| {
-            if crate::db::is_unique_violation(&e) {
-                return ApiError::new(ErrorCode::HandleTaken, "handle is already taken");
-            }
-            tracing::error!(error = %e, "failed to insert handle");
-            ApiError::new(ErrorCode::InternalError, "failed to register handle")
-        })?;
+    match crate::db::handles::insert_handle(&state.db, &payload.handle, &session.did).await? {
+        crate::db::handles::InsertHandleOutcome::Inserted => {}
+        crate::db::handles::InsertHandleOutcome::HandleTaken => {
+            return Err(ApiError::new(
+                ErrorCode::HandleTaken,
+                "handle is already taken",
+            ));
+        }
+    }
 
     // Step 4b: Update DID document alsoKnownAs to include the new handle.
     // Fetch all handles for this DID and update the document.

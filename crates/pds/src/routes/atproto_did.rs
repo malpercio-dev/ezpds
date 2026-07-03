@@ -9,7 +9,6 @@ use axum::{
     http::{header, StatusCode},
     response::{IntoResponse, Response},
 };
-use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 
@@ -17,22 +16,13 @@ pub async fn atproto_did_handler(Host(host): Host, State(state): State<AppState>
     // Strip port if present (e.g. "example.com:8080" → "example.com").
     let handle = host.split(':').next().unwrap_or(&host);
 
-    let row: Option<(String,)> = match sqlx::query_as("SELECT did FROM handles WHERE handle = ?")
-        .bind(handle)
-        .fetch_optional(&state.db)
-        .await
-    {
+    let row = match crate::db::handles::resolve_handle(&state.db, handle).await {
         Ok(row) => row,
-        Err(e) => {
-            tracing::error!(error = %e, handle = %handle, "DB error in well-known atproto-did");
-            return ApiError::new(ErrorCode::InternalError, "handle lookup failed").into_response();
-        }
+        Err(e) => return e.into_response(),
     };
 
     match row {
-        Some((did,)) => {
-            (StatusCode::OK, [(header::CONTENT_TYPE, "text/plain")], did).into_response()
-        }
+        Some(did) => (StatusCode::OK, [(header::CONTENT_TYPE, "text/plain")], did).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }

@@ -70,16 +70,7 @@ pub async fn check_account_status(
 
     // ── 2. DID document existence ─────────────────────────────────────────
 
-    let valid_did: bool =
-        sqlx::query_scalar::<_, i64>("SELECT 1 FROM did_documents WHERE did = ? LIMIT 1")
-            .bind(did)
-            .fetch_optional(&state.db)
-            .await
-            .map(|row| row.is_some())
-            .map_err(|e| {
-                tracing::error!(error = %e, did = %did, "failed to check DID document");
-                ApiError::new(ErrorCode::InternalError, "failed to check DID document")
-            })?;
+    let valid_did: bool = crate::db::dids::did_document_exists(&state.db, did).await?;
 
     // ── 3. Repo block count ───────────────────────────────────────────────
 

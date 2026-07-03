@@ -64,17 +64,9 @@ pub async fn update_handle_handler(
     // Step 2: Check whether the new handle is already owned locally, BEFORE any
     // external resolution. If the caller already owns it → no-op (idempotent).
     // If a different DID owns it → 409 immediately without hitting a resolver.
-    let existing_owner: Option<(String,)> =
-        sqlx::query_as("SELECT did FROM handles WHERE handle = ?")
-            .bind(&payload.handle)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, handle = %payload.handle, "failed to query handle");
-                ApiError::new(ErrorCode::InternalError, "handle lookup failed")
-            })?;
+    let existing_owner = crate::db::handles::resolve_handle(&state.db, &payload.handle).await?;
 
-    if let Some((owner_did,)) = existing_owner {
+    if let Some(owner_did) = existing_owner {
         if owner_did != *did {
             return Err(ApiError::new(
                 ErrorCode::HandleTaken,
@@ -200,16 +192,9 @@ async fn resolve_handle_for_update(
     handle: &str,
 ) -> Result<Option<String>, ApiError> {
     // 1. Check local handles table.
-    let row: Option<(String,)> = sqlx::query_as("SELECT did FROM handles WHERE handle = ?")
-        .bind(handle)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, handle = %handle, "failed to query handle");
-            ApiError::new(ErrorCode::InternalError, "handle lookup failed")
-        })?;
+    let row = crate::db::handles::resolve_handle(&state.db, handle).await?;
 
-    if let Some((did,)) = row {
+    if let Some(did) = row {
         return Ok(Some(did));
     }
 
