@@ -225,6 +225,56 @@ pub(crate) async fn activate_account(
     })
 }
 
+/// List the DIDs of accounts whose scheduled permanent-deletion time has arrived.
+///
+/// A `delete_after` is only ever set alongside `deactivated_at` (by `deactivateAccount`) and is
+/// cleared on reactivation, so a non-NULL `delete_after` in the past uniquely identifies an
+/// account that asked to be permanently deleted and whose grace window has elapsed. Backs the
+/// deletion reaper (`account_reaper.rs`). Unfiltered by lifecycle otherwise — the whole point is
+/// to act on deactivated accounts.
+///
+/// `delete_after` is stored verbatim as the client-supplied RFC 3339 string (with a `T`
+/// separator and a `Z`/offset), while `datetime('now')` renders `YYYY-MM-DD HH:MM:SS`. A raw text
+/// `<=` between those two formats is wrong — e.g. an instant earlier *today* sorts *after*
+/// `datetime('now')` because `'T'` (0x54) > `' '` (0x20) — so both sides are normalised through
+/// SQLite's `datetime()`, which parses the ISO-8601 form (converting any offset to UTC) into the
+/// same canonical shape before comparison.
+pub async fn accounts_due_for_deletion(db: &sqlx::SqlitePool) -> Result<Vec<String>, ApiError> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT did FROM accounts \
+         WHERE delete_after IS NOT NULL AND datetime(delete_after) <= datetime('now')",
+    )
+    .fetch_all(db)
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "DB error listing accounts due for deletion");
+        ApiError::new(ErrorCode::InternalError, "failed to list accounts")
+    })?;
+    Ok(rows.into_iter().map(|(did,)| did).collect())
+}
+
+/// Fetch an account's stored password hash by DID, **without** the lifecycle guard the login
+/// lookups apply — a deactivated account must still be resolvable here so it can be deleted.
+///
+/// Returns `None` when no account row exists for `did`; `Some(None)` when the account exists but
+/// has no main password (a mobile account); `Some(Some(hash))` otherwise. Backs
+/// `deleteAccount`, which authenticates by DID + password + email token rather than a session.
+pub async fn account_password_hash(
+    db: &sqlx::SqlitePool,
+    did: &str,
+) -> Result<Option<Option<String>>, ApiError> {
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT password_hash FROM accounts WHERE did = ?")
+            .bind(did)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "DB error fetching account password hash");
+                ApiError::new(ErrorCode::InternalError, "failed to look up account")
+            })?;
+    Ok(row.map(|(hash,)| hash))
+}
+
 /// Outcome of [`set_account_takedown`], carrying the account's full derived lifecycle after the
 /// write rather than just whether the takedown dimension itself changed.
 ///

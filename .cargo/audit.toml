@@ -22,6 +22,27 @@
 #   only by `netdev`/`netwatch`/`iroh` (macOS-only network-interface enumeration) and by
 #   `tauri` (the iOS app shells) — neither is part of the deployed Linux PDS binary.
 #   Revisit when `plist` bumps its `quick-xml` requirement.
+#
+# RUSTSEC-2024-0429 — unsoundness in `glib` 0.18's `VariantStrIter` iterator impls. The only
+#   consumer is the gtk-rs 0.18 stack (`glib` ← `atk`/`gdk`/`gtk` ← `muda`/`tao` ← `tauri`), which
+#   is pulled in exclusively by the `identity-wallet` / `admin-companion` Tauri desktop shells —
+#   never by the deployed Linux PDS binary. A fixed `glib` lives in the 0.19/0.20 line, which is a
+#   whole-tauri-stack bump outside this repo's control (tauri v2 pins gtk 0.18). Revisit when
+#   tauri's transitive gtk-rs requirement advances.
+#
+# RUSTSEC-2026-0097 — unsoundness in `rand` when a custom logger re-enters `rand::rng()`. The
+#   runtime `rand` copies used by the PDS/workspace are on patched releases (0.8.6 / 0.9.3 / 0.10.1).
+#   One unpatched copy remains — `rand 0.7.3` — and there is no patched 0.7.x release (fixes start at
+#   0.8.6). That copy is a *build-time* transitive of the Tauri toolchain only
+#   (`rand 0.7.3` ← `phf_generator 0.8` ← `phf_codegen` ← `selectors` ← `kuchikiki` ←
+#   `tauri-utils` build-deps), so it never ships in any binary and the reentrant-logger trigger is
+#   not reachable. Revisit when the tauri build stack drops `rand 0.7`.
 
 [advisories]
-ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0194", "RUSTSEC-2026-0195"]
+ignore = [
+    "RUSTSEC-2023-0071",
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+    "RUSTSEC-2024-0429",
+    "RUSTSEC-2026-0097",
+]

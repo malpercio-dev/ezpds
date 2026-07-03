@@ -33,6 +33,8 @@ pub struct Config {
     pub blobs: BlobsConfig,
     /// Persistent firehose event log (`repo_seq`) retention / pruning configuration.
     pub firehose: FirehoseConfig,
+    /// Account-lifecycle knobs (currently the scheduled-deletion reaper interval).
+    pub accounts: AccountsConfig,
     pub oauth: OAuthConfig,
     pub iroh: IrohConfig,
     pub appview: AppViewConfig,
@@ -163,6 +165,29 @@ fn default_firehose_gc_interval_secs() -> u64 {
 
 fn default_firehose_log_retention_secs() -> u64 {
     7 * 24 * 60 * 60 // 7 days
+}
+
+/// Account-lifecycle configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AccountsConfig {
+    /// How often the scheduled-deletion reaper runs, in seconds. The reaper permanently deletes
+    /// accounts whose `deleteAfter` instant (recorded by `com.atproto.server.deactivateAccount`)
+    /// has elapsed. Default: 3600 (1 hour). Must be > 0 (like the GC intervals, a zero period
+    /// would panic `tokio::time::interval`).
+    #[serde(default = "default_deletion_reaper_interval_secs")]
+    pub deletion_reaper_interval_secs: u64,
+}
+
+impl Default for AccountsConfig {
+    fn default() -> Self {
+        Self {
+            deletion_reaper_interval_secs: default_deletion_reaper_interval_secs(),
+        }
+    }
+}
+
+fn default_deletion_reaper_interval_secs() -> u64 {
+    60 * 60 // 1 hour
 }
 
 fn default_max_blob_size() -> u64 {
@@ -463,6 +488,8 @@ pub(crate) struct RawConfig {
     pub(crate) blobs: BlobsConfig,
     #[serde(default)]
     pub(crate) firehose: FirehoseConfig,
+    #[serde(default)]
+    pub(crate) accounts: AccountsConfig,
     #[serde(default)]
     pub(crate) oauth: OAuthConfig,
     #[serde(default)]
@@ -809,6 +836,12 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
                 .to_string(),
         ));
     }
+    if raw.accounts.deletion_reaper_interval_secs == 0 {
+        return Err(ConfigError::Invalid(
+            "accounts.deletion_reaper_interval_secs must be > 0 (tokio::time::interval panics on a zero period)"
+                .to_string(),
+        ));
+    }
 
     Ok(Config {
         bind_address,
@@ -823,6 +856,7 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         contact: raw.contact,
         blobs: raw.blobs,
         firehose: raw.firehose,
+        accounts: raw.accounts,
         oauth: raw.oauth,
         iroh: raw.iroh,
         appview,
@@ -965,6 +999,36 @@ mod tests {
 
             [firehose]
             gc_interval_secs = 0
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+    }
+
+    #[test]
+    fn accounts_section_defaults_when_absent() {
+        // No [accounts] section: the reaper interval falls back to the 1-hour default.
+        let raw: RawConfig = toml::from_str(
+            r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+        "#,
+        )
+        .unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.accounts.deletion_reaper_interval_secs, 60 * 60);
+    }
+
+    #[test]
+    fn accounts_deletion_reaper_interval_secs_zero_is_rejected() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [accounts]
+            deletion_reaper_interval_secs = 0
         "#;
         let raw: RawConfig = toml::from_str(toml).unwrap();
         let err = validate_and_build(raw).unwrap_err();

@@ -1,0 +1,43 @@
+meta {
+  name: Delete Account (deleteAccount)
+  type: http
+  seq: 85
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.server.deleteAccount
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "did": "{{did}}",
+    "password": "your-account-password",
+    "token": "token-from-requestAccountDelete"
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  Permanently deletes the account named by `did` after verifying its `password` and a single-use
+  email `token` (obtained from `requestAccountDelete`). This endpoint is NOT session-authenticated:
+  the did + password + token in the body are the credentials, so a user can delete an account they
+  can no longer log a session into.
+
+  On success every local trace of the account is removed — repo blocks/blobs (including on-disk
+  blob files), sessions, tokens, handles, DID-doc cache, preferences, app passwords, and the
+  account row — and an `#account` firehose frame (active=false, status="deleted") is broadcast so
+  relays drop the repo. The did:plc identity itself is left intact on plc.directory (the wallet
+  owns the rotation key and can tombstone or migrate it independently), matching ezpds's
+  wallet-native model.
+
+  Credential failures (unknown DID, no password on file, wrong password) return a uniform 401; an
+  invalid/expired token returns 401; a missing field returns 400. The 200 no-op applies only when
+  the account passes the password + token checks but is purged (by the scheduled-deletion reaper or
+  a racing duplicate request) before this handler's own delete runs — an account that is already
+  fully gone before the credential check instead returns 401.
+}

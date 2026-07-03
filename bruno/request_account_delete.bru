@@ -1,0 +1,32 @@
+meta {
+  name: Request Account Delete (requestAccountDelete)
+  type: http
+  seq: 84
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.server.requestAccountDelete
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  Mints a single-use, 1-hour email token that authorizes a later `deleteAccount` call. Deleting an
+  account is destructive and irreversible, so the user must prove control of the account email
+  before the deletion is honored — the token is the second factor alongside the account password
+  that `deleteAccount` checks.
+
+  Requires a full access-scope token (app-password tokens are rejected). Takes no body and returns
+  200 with an empty body.
+
+  Email delivery is stubbed repo-wide pending an outbound-email path: the plaintext token is
+  written to the server log via tracing rather than emailed.
+}

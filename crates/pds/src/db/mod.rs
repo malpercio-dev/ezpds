@@ -1,3 +1,4 @@
+pub mod account_deletion_tokens;
 pub mod accounts;
 pub mod admin_devices;
 pub mod app_passwords;
@@ -180,6 +181,10 @@ static MIGRATIONS: &[Migration] = &[
     Migration {
         version: 33,
         sql: include_str!("migrations/V033__plc_operation_tokens.sql"),
+    },
+    Migration {
+        version: 34,
+        sql: include_str!("migrations/V034__account_deletion_tokens.sql"),
     },
 ];
 
