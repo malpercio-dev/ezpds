@@ -24,6 +24,7 @@ mod iroh_tunnel;
 mod platform;
 mod plc_ops;
 mod rate_limit;
+mod read_after_write;
 mod record_write;
 mod routes;
 mod telemetry;
