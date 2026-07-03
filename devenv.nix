@@ -3,6 +3,9 @@
   packages = [
     pkgs.just
     pkgs.cargo-audit
+    # jq: used by just recipes (verify-release-tag, the ios-ipa/admin-ipa build-number
+    # stamp). CI runners preinstall it; the dev shell must provide it too.
+    pkgs.jq
     pkgs.sqlite
     pkgs.pkg-config
     pkgs.cargo-tauri

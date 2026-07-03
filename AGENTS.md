@@ -18,12 +18,12 @@ Last verified: 2026-06-30
 - `cargo clippy --workspace -- -D warnings` - Lint (warnings as errors)
 - `cargo fmt --all --check` - Check formatting
 - `just bruno-check` - Verify route ⇄ Bruno-collection parity (scripts/bruno-parity.sh)
-- `just ci` - Full local gate (fmt-check, lock-check, bruno-check, clippy, test, audit) — the same checks CI runs
+- `just ci` - Full local gate (fmt-check, lock-check, bruno-check, swift-rs-check, clippy, test, audit) — the same checks CI runs
 
 ## CI/CD
 CI runs on **GitHub Actions**, split into a Linux **PDS** lane and a macOS **iOS** lane (the iOS app needs macOS + Xcode that Linux runners lack). Deploys are **not** run by CI — they use **Railway's native GitHub integration**: Railway is connected to the repo and builds/deploys the `Dockerfile` itself, so there is **no `railway up` and no Railway token in CI**.
 
-**PDS (`.github/workflows/ci.yml`).** A `just ci-pds` test gate (the Linux gate — like `just ci` but `--exclude identity-wallet --exclude admin-companion`, since the iOS apps need the Apple/GTK toolchain absent in CI) runs on PRs to `main`, on push to `main`, and on push to `production`. Both Railway environments use "Wait for CI", so the green check is the deploy gate:
+**PDS (`.github/workflows/ci.yml`).** A `just ci-pds` test gate (the Linux gate — like `just ci` but `--exclude identity-wallet --exclude admin-companion`, since the iOS apps need the Apple/GTK toolchain absent in CI) runs on PRs to `main`, on push to `main`, on push to `production`, and on a weekly schedule (advisory freshness: `cargo audit` re-scans Cargo.lock against the RustSec DB even when the repo is idle — also the re-check cadence for `.cargo/audit.toml` ignores). A separate path-filtered **`nix-check.yml`** lane runs `nix flake check --impure --accept-flake-config` whenever `flake.nix`/`flake.lock`/`devenv.nix`/`nix/**` change, so a broken flake can no longer merge unnoticed. Both Railway environments use "Wait for CI", so the green check is the deploy gate:
 - **staging** — Railway watches `main`; merging a PR deploys staging.
 - **production** — Railway watches the `production` branch; promoting a release means advancing `production` to a `vX.Y.Z` tag (`just deploy-production <tag>`), never a `main` merge. A `verify-release` job on the `production` branch refuses any tip whose tag doesn't match the workspace version.
 
@@ -59,6 +59,7 @@ Release flow: `just set-version X.Y.Z` (PR) → merge → `just release` (cuts/p
 - `apps/identity-wallet/` — Tauri v2 iOS app (SvelteKit 2 + Svelte 5 frontend, Rust backend)
 - Developer setup and iOS workstation guide: see [`apps/identity-wallet/CLAUDE.md`](apps/identity-wallet/CLAUDE.md)
 - iOS build commands: `just ios-dev` / `just ios-build` (run from repo root; macOS + Xcode required). Toolchain resolved by `apps/identity-wallet/scripts/ios-env.sh`; patches re-applied via `just ios-postinit` after `cargo tauri ios init`.
+- The per-app `scripts/ios-{env,postinit,check}.sh` files are thin wrappers over ONE shared implementation in `scripts/ios/` (repo root) — each wrapper pins its app dir, recipe prefix, and Patch E framework list. Edit the shared scripts, never a wrapper copy.
 
 ## Design Context
 The repo has **two UI surfaces, each with its own scoped design brief.** Read the brief for the app you're working on before any frontend design/UX work, and target `/impeccable` at that app's path so it loads the right brief:

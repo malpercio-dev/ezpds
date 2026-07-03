@@ -7,9 +7,9 @@ name: Admin Companion · TestFlight
 # are free for public repos.
 #
 # Flow: regenerate the (gitignored) Xcode project -> re-apply the admin-postinit
-# patches -> stamp a unique build number -> build a signed App Store IPA -> upload
-# to TestFlight. Signing is explicit, driven by an Apple Distribution cert/profile;
-# upload uses an App Store Connect API key.
+# patches -> build a signed App Store IPA (`just admin-ipa` stamps a unique build
+# number) -> upload to TestFlight. Signing is explicit, driven by an Apple
+# Distribution cert/profile; upload uses an App Store Connect API key.
 #
 # One-time setup (App Store Connect app record, the admin provisioning profile +
 # IOS_MOBILE_PROVISION_ADMIN secret): see docs/ios-cicd.md.
@@ -26,6 +26,9 @@ on:
       - "Cargo.lock"
       # The build/upload delegate to `just admin-*`, so a recipe change can break the lane.
       - "justfile"
+      # The shared iOS toolchain/patch scripts live at the repo root (per-app
+      # scripts are thin wrappers), so changes there can break this lane too.
+      - "scripts/**"
       - "rust-toolchain.toml"
       - ".github/workflows/admin-testflight.yml"
   workflow_dispatch:
@@ -143,17 +146,9 @@ jobs:
       - name: Re-apply admin-postinit patches
         run: just admin-postinit
 
-      # TestFlight rejects duplicate build numbers and the app version is pinned at
-      # 0.1.0, so derive a unique, monotonic CFBundleVersion from the CI run number.
-      # $GITHUB_RUN_NUMBER is a built-in env var — no untrusted ${{ }} in the shell.
-      - name: Stamp a unique TestFlight build number
-        run: |
-          conf="apps/admin-companion/src-tauri/tauri.conf.json"
-          tmp="$(mktemp)"
-          jq --arg bv "$GITHUB_RUN_NUMBER" '.bundle.iOS.bundleVersion = $bv' "$conf" > "$tmp"
-          mv "$tmp" "$conf"
-          echo "CFBundleVersion -> $GITHUB_RUN_NUMBER"
-
+      # No build-number step here: `just admin-ipa` stamps a unique, monotonic
+      # CFBundleVersion (UTC epoch seconds) itself, so CI and the local
+      # `just admin-release` escape hatch share one scheme and can never collide.
       - name: Build signed IPA
         # SIGNING — explicit cert + App Store profile (Tauri's automatic signing emits an
         # "Apple Distribution: Tauri (unset)" placeholder App Store rejects, tauri#11092).

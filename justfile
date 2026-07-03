@@ -43,8 +43,16 @@ lock-check:
 bruno-check:
     scripts/bruno-parity.sh
 
+# Verify the swift-rs --disable-sandbox fork ([patch.crates-io] in Cargo.toml) is both
+# DECLARED and ACTUALLY APPLIED (Cargo.lock resolves swift-rs from the path, not the
+# registry). Cargo silently stops applying a [patch] when a dependency bump requires a
+# semver-incompatible swift-rs — this reads only Cargo.toml/Cargo.lock, so the Linux PR
+# gate catches that before it breaks the macOS build with an EPERM far from the cause.
+swift-rs-check:
+    scripts/swift-rs-patch-check.sh
+
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
-ci: fmt-check lock-check bruno-check clippy test audit
+ci: fmt-check lock-check bruno-check swift-rs-check clippy test audit
 
 # CI gate for the Linux pds pipeline (GitHub Actions, .github/workflows/ci.yml). Excludes the
 # iOS apps (identity-wallet, admin-companion), which need the Apple toolchain (security-framework)
@@ -52,6 +60,7 @@ ci: fmt-check lock-check bruno-check clippy test audit
 ci-pds: fmt-check
     just lock-check
     just bruno-check
+    just swift-rs-check
     cargo clippy --workspace --exclude identity-wallet --exclude admin-companion --all-targets -- -D warnings
     cargo test --workspace --exclude identity-wallet --exclude admin-companion
     just audit
@@ -269,9 +278,29 @@ ios-pr-check: ios-check
 # Xcode project exists: run `cargo tauri ios init` + `just ios-postinit` once first
 # (CI does both every run). NOTE: the --export-method token tracks Xcode's names
 # (`app-store-connect` on Xcode 15+); confirm once with `cargo tauri ios build --help`.
-ios-ipa: ios-check
+#
+# BUILD NUMBER: TestFlight rejects duplicate CFBundleVersions and requires them to
+# increase, so CI and the local escape hatch must share ONE stamping scheme — stamping
+# only in the workflow (the old design) made a second local `just ios-release` collide
+# on the committed placeholder value. Default is UTC epoch seconds: unique, strictly
+# increasing across CI and local runs alike, immune to the reset a workflow-file rename
+# inflicts on GITHUB_RUN_NUMBER, and larger than any run number already uploaded (so
+# the changeover is monotonic). Override with an explicit value: `just ios-ipa 12345`.
+# The stamp is written into tauri.conf.json for the build and restored on exit, so a
+# local run never leaves the working tree dirty.
+ios-ipa build_number="": ios-check
+    #!/usr/bin/env bash
+    set -euo pipefail
     # Drop any stale .ipa first (e.g. a pre-rename artifact) so `ios-upload` can't pick it up.
     rm -f apps/identity-wallet/src-tauri/gen/apple/build/arm64/*.ipa
+    conf="$(pwd)/apps/identity-wallet/src-tauri/tauri.conf.json"
+    bv="{{build_number}}"
+    [ -n "$bv" ] || bv="$(date -u +%s)"
+    cp "$conf" "$conf.orig"
+    trap 'mv "$conf.orig" "$conf"' EXIT
+    tmp="$(mktemp)"
+    jq --arg bv "$bv" '.bundle.iOS.bundleVersion = $bv' "$conf" > "$tmp" && mv "$tmp" "$conf"
+    echo "CFBundleVersion -> $bv"
     cd apps/identity-wallet && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && cargo tauri ios build --export-method app-store-connect
 
 # Upload the most recently built IPA to App Store Connect / TestFlight via altool.
@@ -333,10 +362,21 @@ admin-pr-check: admin-check
 
 # Build a signed, App Store-method IPA for the admin console. Assumes the Xcode
 # project exists: run `cargo tauri ios init` + `just admin-postinit` once first
-# (CI does both every run).
-admin-ipa: admin-check
+# (CI does both every run). BUILD NUMBER: same epoch-seconds stamping scheme as
+# `just ios-ipa` (see the comment there); override: `just admin-ipa 12345`.
+admin-ipa build_number="": admin-check
+    #!/usr/bin/env bash
+    set -euo pipefail
     # Drop any stale .ipa first so `admin-upload` can't pick it up.
     rm -f apps/admin-companion/src-tauri/gen/apple/build/arm64/*.ipa
+    conf="$(pwd)/apps/admin-companion/src-tauri/tauri.conf.json"
+    bv="{{build_number}}"
+    [ -n "$bv" ] || bv="$(date -u +%s)"
+    cp "$conf" "$conf.orig"
+    trap 'mv "$conf.orig" "$conf"' EXIT
+    tmp="$(mktemp)"
+    jq --arg bv "$bv" '.bundle.iOS.bundleVersion = $bv' "$conf" > "$tmp" && mv "$tmp" "$conf"
+    echo "CFBundleVersion -> $bv"
     cd apps/admin-companion && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && cargo tauri ios build --export-method app-store-connect
 
 # Upload the most recently built admin-companion IPA to App Store Connect / TestFlight

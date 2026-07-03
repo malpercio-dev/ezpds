@@ -110,11 +110,12 @@ Each run on `macos-26`:
 3. `cargo tauri ios init` regenerates the **gitignored** Xcode project, then
    `just ios-postinit` re-applies the pbxproj patches — including **Patch F**, which keeps
    the Rust staticlib `libapp.a` out of the app bundle (App Store rejects loose libraries).
-4. **Stamp** `bundle.iOS.bundleVersion = $GITHUB_RUN_NUMBER`. TestFlight rejects
-   duplicate build numbers and the app `version` is pinned at `0.1.0`, so the run
-   number supplies a unique, monotonic `CFBundleVersion`.
-5. `just ios-ipa` → `cargo tauri ios build --export-method app-store-connect` produces
-   a signed IPA at `src-tauri/gen/apple/build/arm64/*.ipa`.
+4. `just ios-ipa` **stamps** a unique, monotonic `bundle.iOS.bundleVersion` (UTC epoch
+   seconds; TestFlight rejects duplicate build numbers) and then runs
+   `cargo tauri ios build --export-method app-store-connect`, producing a signed IPA at
+   `src-tauri/gen/apple/build/arm64/*.ipa`. Because the stamp lives in the recipe (not
+   the workflow), a local `just ios-release` uses the same scheme and can never collide
+   with CI; the stamped `tauri.conf.json` is restored when the recipe exits.
 6. `just ios-upload` → `xcrun altool --upload-app` sends it to TestFlight.
 
 Signing is **explicit, not automatic**. Tauri's automatic iOS signing emits an

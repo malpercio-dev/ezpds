@@ -23,6 +23,9 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "justfile"
+      # The shared iOS toolchain/patch scripts live at the repo root (per-app
+      # scripts are thin wrappers), so changes there can break this lane too.
+      - "scripts/**"
       - "rust-toolchain.toml"
       - ".github/workflows/ios-pr-check.yml"
   workflow_dispatch:

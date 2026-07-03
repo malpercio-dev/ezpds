@@ -1,0 +1,59 @@
+name: Nix · flake check
+
+# Validates that the flake still evaluates: the devenv dev shell (the entire dev
+# environment) and nixosModules.default (a real deploy artifact, see nix/CLAUDE.md).
+# `just nix-check` has always existed as the local command; before this workflow no CI
+# lane ever ran it, so a broken flake.lock bump or module.nix typo surfaced only when
+# someone next entered `nix develop`. Path-filtered: only nix-related changes can break
+# flake evaluation, so only they pay the cost of this job.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "flake.nix"
+      - "flake.lock"
+      - "devenv.nix"
+      - "nix/**"
+      - ".github/workflows/nix-check.yml"
+  push:
+    branches: [main]
+    paths:
+      - "flake.nix"
+      - "flake.lock"
+      - "devenv.nix"
+      - "nix/**"
+      - ".github/workflows/nix-check.yml"
+  workflow_dispatch:
+
+# Read-only: evaluates the flake, never pushes or deploys.
+permissions:
+  contents: read
+
+concurrency:
+  group: nix-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nix-check:
+    name: nix flake check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          # The default read-only job token, only used to fetch github:-flake inputs
+          # without hitting anonymous API rate limits.
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Same command as the local `just nix-check` recipe. --accept-flake-config
+      # activates the flake's nixConfig binary caches (devenv.cachix.org), which is
+      # what keeps this from cold-building the world; --impure is required for
+      # devenv's CWD detection (same flags the dev shell uses).
+      - name: Validate flake (devShells + nixosModules)
+        run: nix flake check --impure --accept-flake-config
