@@ -23,22 +23,15 @@ pub struct GetPdsSigningKeyResponse {
 pub async fn get_pds_signing_key(
     State(state): State<AppState>,
 ) -> Result<Json<GetPdsSigningKeyResponse>, ApiError> {
-    let row: Option<(String, String, String)> = sqlx::query_as(
-        "SELECT id, public_key, algorithm \
-         FROM relay_signing_keys \
-         ORDER BY created_at DESC \
-         LIMIT 1",
-    )
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to query pds signing key");
-        ApiError::new(ErrorCode::InternalError, "failed to query signing key")
-    })?;
-
-    let (id, public_key, algorithm) = row.ok_or_else(|| {
-        ApiError::new(ErrorCode::ServiceUnavailable, "no signing key provisioned")
-    })?;
+    let crate::db::relay_signing_keys::RelaySigningKey {
+        id,
+        public_key,
+        algorithm,
+    } = crate::db::relay_signing_keys::latest_signing_key(&state.db)
+        .await?
+        .ok_or_else(|| {
+            ApiError::new(ErrorCode::ServiceUnavailable, "no signing key provisioned")
+        })?;
 
     Ok(Json(GetPdsSigningKeyResponse {
         key_id: id,

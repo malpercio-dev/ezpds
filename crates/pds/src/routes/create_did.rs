@@ -375,17 +375,7 @@ async fn pre_store_did_and_shares(
 
 /// Check if the DID is already fully promoted (Step 8).
 async fn check_already_promoted(db: &sqlx::SqlitePool, did: &str) -> Result<(), ApiError> {
-    let already_promoted: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM accounts WHERE did = ?)")
-            .bind(did)
-            .fetch_one(db)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "failed to check accounts existence");
-                ApiError::new(ErrorCode::InternalError, "database error")
-            })?;
-
-    if already_promoted {
+    if crate::db::accounts::account_exists(db, did).await? {
         return Err(ApiError::new(
             ErrorCode::DidAlreadyExists,
             "DID is already fully promoted",

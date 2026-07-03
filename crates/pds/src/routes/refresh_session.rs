@@ -64,25 +64,19 @@ pub async fn refresh_session(
     // `next_jti IS NULL` is not checked here — we need the row regardless to detect replays.
     // `app_password_name` carries the app-pass identity forward so the rotated session keeps its
     // (limited) scope rather than silently escalating to full access.
-    type RefreshRow = (String, String, Option<String>, Option<String>); // (did, session_id, next_jti, app_password_name)
-    let row: Option<RefreshRow> = sqlx::query_as(
-        "SELECT did, session_id, next_jti, app_password_name FROM refresh_tokens \
-         WHERE jti = ? AND expires_at > datetime('now')",
-    )
-    .bind(&jti)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "DB error looking up refresh token");
-        ApiError::new(ErrorCode::InternalError, "internal error")
-    })?;
-
-    let (did, session_id, next_jti, app_password_name) = row.ok_or_else(|| {
-        ApiError::new(
-            ErrorCode::InvalidToken,
-            "refresh token not found or expired",
-        )
-    })?;
+    let crate::db::refresh_tokens::ActiveRefreshToken {
+        did,
+        session_id,
+        next_jti,
+        app_password_name,
+    } = crate::db::refresh_tokens::get_active_refresh_token(&state.db, &jti)
+        .await?
+        .ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::InvalidToken,
+                "refresh token not found or expired",
+            )
+        })?;
 
     // --- Replay detection: next_jti being set means this token was already rotated ---
     if next_jti.is_some() {

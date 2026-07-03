@@ -1,8 +1,28 @@
 // pattern: Imperative Shell
 
+use common::{ApiError, ErrorCode};
 use sqlx::SqlitePool;
 
 use crate::code_gen::generate_code;
+
+/// Whether `code` is a currently-redeemable invite code (exists, unredeemed, unexpired). A
+/// preflight check only — the authoritative single-use redemption is an atomic UPDATE inside the
+/// account-creation transaction.
+pub async fn claim_code_valid(db: &SqlitePool, code: &str) -> Result<bool, ApiError> {
+    let valid: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM claim_codes \
+         WHERE code = ? AND redeemed_at IS NULL AND expires_at > datetime('now'))",
+    )
+    .bind(code)
+    .fetch_one(db)
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "failed to validate invite code");
+        ApiError::new(ErrorCode::InternalError, "failed to validate invite code")
+    })?;
+
+    Ok(valid)
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum MintClaimCodesError {

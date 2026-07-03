@@ -98,21 +98,14 @@ async fn create_signing_key_inner(
 
     // --- Persist to relay_signing_keys ---
     // created_at uses SQLite's datetime('now') to produce ISO 8601 UTC without a chrono dep.
-    sqlx::query(
-        "INSERT INTO relay_signing_keys \
-         (id, algorithm, public_key, private_key_encrypted, created_at) \
-         VALUES (?, ?, ?, ?, datetime('now'))",
+    crate::db::relay_signing_keys::insert_signing_key(
+        &state.db,
+        &keypair.key_id.to_string(),
+        "p256",
+        &keypair.public_key,
+        &private_key_encrypted,
     )
-    .bind(keypair.key_id.to_string())
-    .bind("p256")
-    .bind(&keypair.public_key)
-    .bind(&private_key_encrypted)
-    .execute(&state.db)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, key_id = %keypair.key_id, "failed to insert PDS signing key");
-        ApiError::new(ErrorCode::InternalError, "failed to store signing key")
-    })?;
+    .await?;
 
     Ok(Json(CreateSigningKeyResponse {
         key_id: keypair.key_id.to_string(),

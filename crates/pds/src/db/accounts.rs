@@ -28,6 +28,21 @@ pub(crate) struct SessionAccountRow {
     pub(crate) did_doc: Option<String>,
 }
 
+/// Whether a fully-provisioned account row exists for `did` (unfiltered by lifecycle). Used by the
+/// account-creation paths to reject a DID that has already been promoted.
+pub(crate) async fn account_exists(db: &sqlx::SqlitePool, did: &str) -> Result<bool, ApiError> {
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM accounts WHERE did = ?)")
+        .bind(did)
+        .fetch_one(db)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to check accounts existence");
+            ApiError::new(ErrorCode::InternalError, "database error")
+        })?;
+
+    Ok(exists)
+}
+
 /// Fetch account info needed for `getSession` by DID.
 ///
 /// Returns `None` when the DID is not found or the account is not active (deactivated,

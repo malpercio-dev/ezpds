@@ -45,15 +45,7 @@ pub async fn delete_session(
         .ok_or_else(|| ApiError::new(ErrorCode::InvalidToken, "invalid refresh token"))?;
 
     // --- Look up the token — no expiry filter, revocation must always work ---
-    let session_id: Option<String> =
-        sqlx::query_scalar("SELECT session_id FROM refresh_tokens WHERE jti = ?")
-            .bind(&jti)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "DB error looking up refresh token for deleteSession");
-                ApiError::new(ErrorCode::InternalError, "internal error")
-            })?;
+    let session_id = crate::db::refresh_tokens::session_id_for_jti(&state.db, &jti).await?;
 
     // Idempotent: token not found means already revoked — logout already done.
     let Some(session_id) = session_id else {
