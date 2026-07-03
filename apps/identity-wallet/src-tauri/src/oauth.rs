@@ -46,7 +46,7 @@ pub struct AppState {
     /// Uses tokio::sync::Mutex because recovery commands hold the lock across .await points.
     pub recovery_state: tokio::sync::Mutex<Option<crate::recovery::RecoveryState>>,
     /// Migration state persisted between build and submit of the self-signed identity leg.
-    /// The authenticated destination-PDS client is populated by the W1 orchestrator (MM-228);
+    /// The authenticated destination-PDS client is populated by the migration orchestrator;
     /// `build_migration_op_cmd` reads it, `submit_migration_op_cmd` consumes the signed op.
     /// Uses tokio::sync::Mutex because migration commands hold the lock across .await points.
     pub migration_state: tokio::sync::Mutex<Option<crate::migrate::MigrationState>>,

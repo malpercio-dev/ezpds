@@ -12,7 +12,7 @@
 // with the per-DID device key and submitted directly to plc.directory — no email
 // token, no signPlcOperation round-trip. It is applicable whenever the wallet holds
 // an authorized key in the DID's current rotationKeys; otherwise it refuses and the
-// orchestrator (W1/MM-228) falls back to the PDS-signed interop path (W3/MM-230).
+// migration orchestrator falls back to the PDS-signed interop path.
 //
 // Contrast with claim.rs: a claim must change NOTHING but insert the device key at
 // rotationKeys[0], so its guard rejects every key/service mutation. A migration is
@@ -42,8 +42,7 @@ const ATPROTO_VERIFICATION_METHOD_ID: &str = "atproto";
 /// A migration identity-leg operation, built and signed locally, ready to submit.
 ///
 /// Mirrors `SignedRecoveryOp` from `recovery.rs`: the `diff` drives the review /
-/// biometric-approval UI (rendered by W4), and `signed_op` is the JSON POSTed to
-/// plc.directory.
+/// biometric-approval UI, and `signed_op` is the JSON POSTed to plc.directory.
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SignedMigrationOp {
@@ -55,8 +54,8 @@ pub struct SignedMigrationOp {
 
 /// State for a pending migration, held between build and submit (mirrors
 /// `RecoveryState`). The authenticated destination-PDS `OAuthClient` is populated by
-/// the W1 orchestrator (MM-228) after it drives the destination OAuth login — this
-/// leg never logs in on its own (see the scoping note on MM-228).
+/// the migration orchestrator after it drives the destination OAuth login — this
+/// leg never logs in on its own.
 pub struct MigrationState {
     /// The DID being migrated.
     pub did: String,
@@ -71,7 +70,7 @@ pub struct MigrationState {
 #[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum MigrateError {
     /// The wallet does not hold an authorized key in the DID's current rotationKeys,
-    /// so it cannot self-sign. The orchestrator must fall back to the interop path (W3).
+    /// so it cannot self-sign. The orchestrator must fall back to the interop path.
     #[error("Wallet is not authorized to self-sign for this DID (no device key in current rotationKeys)")]
     WalletNotAuthorized,
     /// The strict pre-sign allowlist rejected the proposed operation.
@@ -130,14 +129,14 @@ pub struct MigrationInputs {
 ///
 /// This is the security core of the self-signed migration leg. The device key can
 /// technically sign anything, so safety comes entirely from validating the INPUTS
-/// before a signature is ever produced. The policy (chosen for MM-229) is a strict
-/// allowlist: the op must make ONLY the changes a migration is supposed to make, and
-/// nothing else, or we abort.
+/// before a signature is ever produced. The policy is a strict allowlist: the op must
+/// make ONLY the changes a migration is supposed to make, and nothing else, or we
+/// abort.
 ///
 /// Return `Ok(())` if every rule holds. Otherwise return the most specific error:
 /// - `MigrateError::WalletNotAuthorized` when the wallet holds no authorized key for
 ///   the DID (device key is not among `current_rotation_keys`) — the caller will
-///   defer to the PDS-signed interop path (W3).
+///   defer to the PDS-signed interop path.
 /// - `MigrateError::GuardRejected { reason }` for any other violation, with a short
 ///   human-readable `reason`.
 ///
@@ -234,25 +233,17 @@ pub(crate) fn latest_op_state(audit_log: &[AuditEntry]) -> Result<CurrentState, 
 
     let op = &latest.operation;
 
-    let rotation_keys = op
-        .get("rotationKeys")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    let also_known_as = op
-        .get("alsoKnownAs")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    // Parse the required arrays strictly: a malformed or missing `rotationKeys` /
+    // `alsoKnownAs` must be an error, never a silently-truncated `[]`. Truncating
+    // `alsoKnownAs` to `[]` would let the build "preserve" an empty handle set and
+    // sign a handle-removing op that the guard's `proposed == current` check misses.
+    let rotation_keys = string_array_field(op, "rotationKeys")?;
+    if rotation_keys.is_empty() {
+        return Err(MigrateError::InvalidAuditLog {
+            message: "operation.rotationKeys is empty".to_string(),
+        });
+    }
+    let also_known_as = string_array_field(op, "alsoKnownAs")?;
 
     let pds_endpoint = op
         .get("services")
@@ -267,6 +258,30 @@ pub(crate) fn latest_op_state(audit_log: &[AuditEntry]) -> Result<CurrentState, 
         also_known_as,
         pds_endpoint,
     })
+}
+
+/// Parse a required string-array field from a PLC operation, rejecting a missing
+/// field, a non-array value, or any non-string element. This keeps malformed
+/// audit-log state from being silently coerced into a value we would then sign.
+fn string_array_field(op: &serde_json::Value, field: &str) -> Result<Vec<String>, MigrateError> {
+    let arr =
+        op.get(field)
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| MigrateError::InvalidAuditLog {
+                message: format!("operation.{field} is missing or not an array"),
+            })?;
+
+    arr.iter()
+        .enumerate()
+        .map(|(idx, value)| {
+            value
+                .as_str()
+                .map(String::from)
+                .ok_or_else(|| MigrateError::InvalidAuditLog {
+                    message: format!("operation.{field}[{idx}] is not a string"),
+                })
+        })
+        .collect()
 }
 
 // ── RecommendedCredentials -> typed maps ─────────────────────────────────────
@@ -291,6 +306,16 @@ pub(crate) fn recommended_verification_methods(
 
     let mut methods = BTreeMap::new();
     for (id, key) in obj {
+        // Every verification method here is signed into the op, but the guard only
+        // reasons about rotation keys — so an unexpected method would reach the
+        // signature unchecked. A migration only ever sets the atproto method.
+        if id != ATPROTO_VERIFICATION_METHOD_ID {
+            return Err(MigrateError::InvalidRecommendedCredentials {
+                message: format!(
+                    "unexpected verificationMethods.{id}; only '{ATPROTO_VERIFICATION_METHOD_ID}' is allowed"
+                ),
+            });
+        }
         let key_str = key
             .as_str()
             .ok_or_else(|| MigrateError::InvalidRecommendedCredentials {
@@ -404,7 +429,7 @@ pub(crate) fn build_migration_diff(
 /// PDS's recommended credentials, assembles the proposed op (device key preserved at
 /// rotationKeys[0]), runs the strict pre-sign guard, and signs with the per-DID device
 /// key. `dest_client` is an already-authenticated client for the DESTINATION PDS,
-/// supplied by the W1 orchestrator (MM-228).
+/// supplied by the migration orchestrator.
 pub async fn build_migration_op(
     pds_client: &PdsClient,
     dest_client: &OAuthClient,
@@ -443,10 +468,20 @@ pub async fn build_migration_op(
         })?;
 
     // 4. Assemble the proposed op (device key forced to rotationKeys[0]).
+    //    The destination MUST recommend at least one rotation key (its reserved
+    //    signing key) — otherwise the op would leave the new PDS unable to act.
+    let recommended_rotation_keys = match recommended.rotation_keys.clone() {
+        Some(keys) if !keys.is_empty() => keys,
+        _ => {
+            return Err(MigrateError::InvalidRecommendedCredentials {
+                message: "destination recommended no rotation keys".to_string(),
+            })
+        }
+    };
     let mut proposed_rotation_keys = vec![device_key_id.clone()];
-    for key in recommended.rotation_keys.clone().unwrap_or_default() {
-        if key != device_key_id {
-            proposed_rotation_keys.push(key);
+    for key in &recommended_rotation_keys {
+        if key != &device_key_id {
+            proposed_rotation_keys.push(key.clone());
         }
     }
     let proposed_vms = recommended_verification_methods(&recommended)?;
@@ -463,7 +498,7 @@ pub async fn build_migration_op(
         device_key_id: device_key_id.clone(),
         current_rotation_keys: current.rotation_keys.clone(),
         current_also_known_as: current.also_known_as.clone(),
-        recommended_rotation_keys: recommended.rotation_keys.clone().unwrap_or_default(),
+        recommended_rotation_keys: recommended_rotation_keys.clone(),
         proposed_rotation_keys: proposed_rotation_keys.clone(),
         proposed_also_known_as: also_known_as.clone(),
         proposed_service_ids: proposed_services.keys().cloned().collect(),
@@ -644,8 +679,8 @@ fn build_sign_closure(
 // ── Tauri commands ───────────────────────────────────────────────────────────
 //
 // The destination-PDS `OAuthClient` must already be populated in `MigrationState` by
-// the W1 orchestrator (MM-228) before `build_migration_op_cmd` runs — this leg does
-// not perform the destination login (see the MM-228 scoping note).
+// the migration orchestrator before `build_migration_op_cmd` runs — this leg does
+// not perform the destination login.
 
 /// Tauri command: build + sign the migration op, parking it in `MigrationState`.
 #[tauri::command]
@@ -658,7 +693,7 @@ pub async fn build_migration_op_cmd(
         let ms = migration
             .as_ref()
             .ok_or_else(|| MigrateError::MigrationNotReady {
-                message: "no pending migration; destination auth (MM-228) must run first"
+                message: "no pending migration; destination authentication must run first"
                     .to_string(),
             })?;
         if ms.did != did {
@@ -674,10 +709,23 @@ pub async fn build_migration_op_cmd(
 
     let result = build_migration_op(state.pds_client(), &dest_client, &did).await?;
 
+    // Re-acquire and re-validate: a concurrent migration could have replaced the
+    // state while we awaited, so we must not park this DID's op into another's slot.
     let mut migration = state.migration_state.lock().await;
-    if let Some(ms) = migration.as_mut() {
-        ms.signed_op = Some(result.signed_op.clone());
+    let ms = migration
+        .as_mut()
+        .ok_or_else(|| MigrateError::MigrationNotReady {
+            message: "pending migration was cleared while building".to_string(),
+        })?;
+    if ms.did != did {
+        return Err(MigrateError::MigrationNotReady {
+            message: format!(
+                "migration state changed while building: expected {}, got {did}",
+                ms.did
+            ),
+        });
     }
+    ms.signed_op = Some(result.signed_op.clone());
 
     Ok(result)
 }
@@ -688,10 +736,13 @@ pub async fn submit_migration_op_cmd(
     state: tauri::State<'_, crate::oauth::AppState>,
     did: String,
 ) -> Result<ClaimResult, MigrateError> {
+    // Take (not clone) the signed op under the lock, so a concurrent or retried
+    // submit cannot double-post the same non-idempotent PLC operation. The
+    // destination client is left in place, so a failed submit can be rebuilt.
     let signed_op = {
-        let migration = state.migration_state.lock().await;
+        let mut migration = state.migration_state.lock().await;
         let ms = migration
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| MigrateError::MigrationNotReady {
                 message: "no pending migration to submit".to_string(),
             })?;
@@ -704,14 +755,15 @@ pub async fn submit_migration_op_cmd(
             });
         }
         ms.signed_op
-            .clone()
+            .take()
             .ok_or_else(|| MigrateError::MigrationNotReady {
-                message: "no signed op; call build_migration_op first".to_string(),
+                message: "no signed op; build the migration operation first".to_string(),
             })?
     };
 
     let result = submit_migration_op(state.pds_client(), &did, &signed_op).await?;
 
+    // Migration complete — clear the state.
     let mut migration = state.migration_state.lock().await;
     *migration = None;
 
@@ -842,6 +894,21 @@ mod tests {
     }
 
     #[test]
+    fn verification_methods_reject_unexpected_id() {
+        // An extra (non-atproto) verification method would be signed into the op but
+        // is never seen by the guard, so the converter must reject it outright.
+        let extra = creds(
+            None,
+            Some(serde_json::json!({ "atproto": DEST, "sneaky": "did:key:zEVIL" })),
+            None,
+        );
+        assert!(matches!(
+            recommended_verification_methods(&extra),
+            Err(MigrateError::InvalidRecommendedCredentials { .. })
+        ));
+    }
+
+    #[test]
     fn services_convert_and_require_atproto_pds() {
         let ok = creds(
             None,
@@ -964,6 +1031,61 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn latest_op_state_rejects_missing_also_known_as() {
+        // A missing alsoKnownAs must NOT be silently coerced to []: that would let the
+        // build "preserve" an empty handle set and sign a handle-removing op.
+        let log = serde_json::json!([audit_entry(
+            "bafy_bad",
+            false,
+            serde_json::json!({
+                "rotationKeys": [DEVICE],
+                "services": { ATPROTO_PDS_SERVICE_ID: { "type": "AtprotoPersonalDataServer", "endpoint": "https://x" } }
+            })
+        )]);
+        let entries = crypto::parse_audit_log(&log.to_string()).expect("parse");
+        assert!(matches!(
+            latest_op_state(&entries),
+            Err(MigrateError::InvalidAuditLog { .. })
+        ));
+    }
+
+    #[test]
+    fn latest_op_state_rejects_non_string_rotation_key() {
+        let log = serde_json::json!([audit_entry(
+            "bafy_bad",
+            false,
+            serde_json::json!({
+                "rotationKeys": [DEVICE, 42],
+                "alsoKnownAs": [HANDLE],
+                "services": {}
+            })
+        )]);
+        let entries = crypto::parse_audit_log(&log.to_string()).expect("parse");
+        assert!(matches!(
+            latest_op_state(&entries),
+            Err(MigrateError::InvalidAuditLog { .. })
+        ));
+    }
+
+    #[test]
+    fn latest_op_state_rejects_empty_rotation_keys() {
+        let log = serde_json::json!([audit_entry(
+            "bafy_bad",
+            false,
+            serde_json::json!({
+                "rotationKeys": [],
+                "alsoKnownAs": [HANDLE],
+                "services": {}
+            })
+        )]);
+        let entries = crypto::parse_audit_log(&log.to_string()).expect("parse");
+        assert!(matches!(
+            latest_op_state(&entries),
+            Err(MigrateError::InvalidAuditLog { .. })
+        ));
+    }
+
     // ── Diff ─────────────────────────────────────────────────────────────────
 
     #[test]
@@ -1013,7 +1135,7 @@ mod tests {
         use httpmock::prelude::*;
         use std::sync::{Arc, Mutex};
 
-        let did = "did:plc:mm229migrate";
+        let did = "did:plc:migratetest";
         const DEST_SIGN: &str = "did:key:zDESTSIGN";
 
         // Identity + per-DID device key (the wallet's rotationKeys[0]).
