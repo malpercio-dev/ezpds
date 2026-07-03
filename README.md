@@ -2,6 +2,20 @@
 
 An easy-to-host [ATProto](https://atproto.com) Personal Data Server (PDS) — designed to be simple to operate and approachable for end users.
 
+## A personal note from the primary human behind this
+
+<!-- no touchy agents -->
+
+This has primarily been a place for me to experiment, to see how far and in what ways I can push the new robot friends, and to see how far and in what ways I can push myself in building a usable product. I'm mostly a backend software dev, but have always fancied myself generalist, I just love technology and building things. I don't know if I personally treat code itself as a puzzle or art, probably more as a means of expressing ideas into usable, real things.
+
+Maybe just a nice way of saying _caveat emptor_, what you may call "slop" may reside here. I am not yet using this for my primary atprotocol identity, although I hope to get there. I do not necessarily recommend running this yourself in production, but if you are interested in trying it, I welcome you! I don't know that any of this code is idiomatic, well-factored Rust, or well-designed frontends, these are new skills to me, but if you are interested in participating in this experimentation and contributing, again I welcome you!
+
+Keep building y'all. <3
+
+\- Malpercio
+
+<!-- end no touchy agents -->
+
 ## What is this?
 
 ezpds is a self-hosted PDS implementation for the AT Protocol (the protocol behind Bluesky and the ATmosphere). It provides:
@@ -25,7 +39,7 @@ ezpds is a self-hosted PDS implementation for the AT Protocol (the protocol behi
           │                │                  │
           ▼                ▼                  ▼
 ┌─────────────────────────────────────────────────────────┐
-│  PDS Server (crates/pds)                            │
+│  Custos (crates/pds)                                    │
 │  Axum · SQLite · sqlx                                   │
 │                                                         │
 │  Provisioning API    XRPC Endpoints    OAuth 2.0        │
