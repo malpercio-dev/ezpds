@@ -72,8 +72,6 @@ const DELETE_BY_DID: &[&str] = &[
 /// authoritative account-scoped metadata, so deletion removes this account's references and then
 /// reclaims only unowned, non-legacy physical bytes.
 const DELETE_BLOCKS: &str = "DELETE FROM block_owners WHERE account_did = ?";
-const DELETE_UNOWNED_BLOCKS: &str =
-    "DELETE FROM blocks WHERE legacy_protected = 0 AND NOT EXISTS (SELECT 1 FROM block_owners o WHERE o.cid = blocks.cid)";
 
 /// Permanently delete an account and everything it owns, atomically, and announce the removal on
 /// the firehose.
@@ -110,13 +108,18 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
             .await
             .map_err(map_err)?;
     }
+    let block_cids: Vec<String> =
+        sqlx::query_scalar("SELECT cid FROM block_owners WHERE account_did = ?")
+            .bind(did)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(map_err)?;
     sqlx::query(DELETE_BLOCKS)
         .bind(did)
         .execute(&mut *tx)
         .await
         .map_err(map_err)?;
-    sqlx::query(DELETE_UNOWNED_BLOCKS)
-        .execute(&mut *tx)
+    crate::db::blocks::delete_unowned_unprotected_blocks_in_tx(&mut tx, &block_cids)
         .await
         .map_err(map_err)?;
 
@@ -221,6 +224,39 @@ mod tests {
             .unwrap()
     }
 
+    async fn block_exists(db: &sqlx::SqlitePool, cid: &str) -> bool {
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM blocks WHERE cid = ?)")
+            .bind(cid)
+            .fetch_one(db)
+            .await
+            .unwrap()
+    }
+
+    async fn insert_owned_block(
+        db: &sqlx::SqlitePool,
+        did: &str,
+        cid: &str,
+        bytes: &[u8],
+        legacy_protected: bool,
+    ) {
+        sqlx::query(
+            "INSERT INTO blocks (cid, account_did, bytes, legacy_protected) VALUES (?, ?, ?, ?)",
+        )
+        .bind(cid)
+        .bind(did)
+        .bind(bytes)
+        .bind(legacy_protected)
+        .execute(db)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO block_owners (cid, account_did) VALUES (?, ?)")
+            .bind(cid)
+            .bind(did)
+            .execute(db)
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn purge_removes_all_account_data_and_emits_deleted_frame() {
         let (state, _dir) = purge_state().await;
@@ -243,6 +279,18 @@ mod tests {
         .await
         .unwrap();
 
+        let other_did = "did:plc:purge-other";
+        seed_account_with_repo(&state.db, other_did).await;
+        insert_owned_block(&state.db, did, "bafpurgeowned", b"owned", false).await;
+        insert_owned_block(&state.db, did, "bafpurgeshared", b"shared", false).await;
+        insert_owned_block(&state.db, did, "bafpurgelegacy", b"legacy", true).await;
+        sqlx::query("INSERT INTO block_owners (cid, account_did) VALUES (?, ?)")
+            .bind("bafpurgeshared")
+            .bind(other_did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+
         let mut rx = state.firehose.subscribe();
         let outcome = purge_account(&state, did).await.unwrap();
         assert_eq!(outcome, PurgeOutcome::Deleted);
@@ -259,6 +307,18 @@ mod tests {
         assert_eq!(
             row_count(&state.db, "block_owners", "account_did", did).await,
             0
+        );
+        assert!(
+            !block_exists(&state.db, "bafpurgeowned").await,
+            "unshared, non-legacy physical bytes should be reclaimed"
+        );
+        assert!(
+            block_exists(&state.db, "bafpurgeshared").await,
+            "physical bytes still owned by another account must remain"
+        );
+        assert!(
+            block_exists(&state.db, "bafpurgelegacy").await,
+            "legacy-protected physical bytes must remain"
         );
 
         // The firehose announced the deletion.

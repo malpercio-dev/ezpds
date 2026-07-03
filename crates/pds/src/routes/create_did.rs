@@ -514,28 +514,15 @@ async fn promote_account(
     // transaction, so account + signing key + a complete repo all commit together.
     for (cid, bytes) in genesis_blocks {
         let cid = cid.to_string();
-        sqlx::query(
-            "INSERT INTO blocks (cid, account_did, bytes, rev) VALUES (?, ?, ?, ?) \
-             ON CONFLICT(cid) DO NOTHING",
+        crate::db::blocks::put_block_with_rev(
+            &mut tx,
+            &cid,
+            did,
+            bytes.as_slice(),
+            Some(genesis_rev),
         )
-        .bind(&cid)
-        .bind(did)
-        .bind(bytes.as_slice())
-        .bind(genesis_rev)
-        .execute(&mut *tx)
         .await
         .inspect_err(|e| tracing::error!(error = %e, "failed to insert genesis block"))
-        .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store genesis repo"))?;
-        sqlx::query(
-            "INSERT INTO block_owners (cid, account_did, rev) VALUES (?, ?, ?) \
-             ON CONFLICT(account_did, cid) DO UPDATE SET rev = excluded.rev",
-        )
-        .bind(&cid)
-        .bind(did)
-        .bind(genesis_rev)
-        .execute(&mut *tx)
-        .await
-        .inspect_err(|e| tracing::error!(error = %e, "failed to insert genesis block owner"))
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store genesis repo"))?;
     }
 

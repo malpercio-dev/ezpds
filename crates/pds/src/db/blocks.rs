@@ -14,7 +14,9 @@ use std::collections::HashSet;
 use atrium_repo::blockstore::{self, AsyncBlockStoreRead, AsyncBlockStoreWrite};
 use atrium_repo::Cid;
 use sha2::Digest;
-use sqlx::SqlitePool;
+use sqlx::{Sqlite, SqlitePool, Transaction};
+
+pub type SqliteTransaction<'a> = Transaction<'a, Sqlite>;
 
 /// Row returned from block lookups.
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -36,12 +38,22 @@ pub struct BlockRow {
 /// references the CID. Both inserts are idempotent: writing the same CID for the same account twice
 /// is a no-op (the block is content-addressed, so the bytes are identical).
 pub async fn put_block(
-    pool: &SqlitePool,
+    tx: &mut SqliteTransaction<'_>,
     cid: &str,
     account_did: &str,
     bytes: &[u8],
 ) -> Result<(), sqlx::Error> {
-    let mut tx = pool.begin().await?;
+    put_block_with_rev(tx, cid, account_did, bytes, None).await
+}
+
+/// Insert a block, record this account's ownership, and optionally stamp its commit revision.
+pub async fn put_block_with_rev(
+    tx: &mut SqliteTransaction<'_>,
+    cid: &str,
+    account_did: &str,
+    bytes: &[u8],
+    rev: Option<&str>,
+) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO blocks (cid, account_did, bytes)
          VALUES (?, ?, ?)
@@ -50,18 +62,30 @@ pub async fn put_block(
     .bind(cid)
     .bind(account_did)
     .bind(bytes)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
-    sqlx::query(
-        "INSERT INTO block_owners (cid, account_did)
-         VALUES (?, ?)
-         ON CONFLICT(account_did, cid) DO NOTHING",
-    )
-    .bind(cid)
-    .bind(account_did)
-    .execute(&mut *tx)
-    .await?;
-    tx.commit().await?;
+    if let Some(rev) = rev {
+        sqlx::query(
+            "INSERT INTO block_owners (cid, account_did, rev)
+             VALUES (?, ?, ?)
+             ON CONFLICT(account_did, cid) DO UPDATE SET rev = excluded.rev",
+        )
+        .bind(cid)
+        .bind(account_did)
+        .bind(rev)
+        .execute(&mut **tx)
+        .await?;
+    } else {
+        sqlx::query(
+            "INSERT INTO block_owners (cid, account_did)
+             VALUES (?, ?)
+             ON CONFLICT(account_did, cid) DO NOTHING",
+        )
+        .bind(cid)
+        .bind(account_did)
+        .execute(&mut **tx)
+        .await?;
+    }
     Ok(())
 }
 
@@ -180,6 +204,16 @@ async fn delete_unowned_unprotected_blocks(
     pool: &SqlitePool,
     cids: &[String],
 ) -> Result<u64, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let removed = delete_unowned_unprotected_blocks_in_tx(&mut tx, cids).await?;
+    tx.commit().await?;
+    Ok(removed)
+}
+
+pub async fn delete_unowned_unprotected_blocks_in_tx(
+    tx: &mut SqliteTransaction<'_>,
+    cids: &[String],
+) -> Result<u64, sqlx::Error> {
     let mut removed = 0u64;
     for chunk in cids.chunks(500) {
         let placeholders = vec!["?"; chunk.len()].join(",");
@@ -193,7 +227,7 @@ async fn delete_unowned_unprotected_blocks(
         for cid in chunk {
             q = q.bind(cid);
         }
-        removed += q.execute(pool).await?.rows_affected();
+        removed += q.execute(&mut **tx).await?.rows_affected();
     }
     Ok(removed)
 }
@@ -296,7 +330,7 @@ pub async fn account_block_stats(
 
 /// Adapter that implements atrium-repo's blockstore traits over SQLite.
 ///
-/// Each block is written via `db::blocks::put_block` and read via `db::blocks::get_block`.
+/// Each block is written via the tx-scoped block helpers and read via `db::blocks::get_block`.
 /// The CID is computed from `(codec, hash, contents)` using the same algorithm as
 /// atrium-repo's `MemoryBlockStore`.
 pub struct SqliteBlockStore {
@@ -349,7 +383,15 @@ impl AsyncBlockStoreWrite for SqliteBlockStore {
         let cid = Cid::new_v1(codec, mh);
 
         let cid_str = cid.to_string();
-        put_block(&self.pool, &cid_str, &self.account_did, contents)
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| blockstore::Error::Other(Box::new(e)))?;
+        put_block(&mut tx, &cid_str, &self.account_did, contents)
+            .await
+            .map_err(|e| blockstore::Error::Other(Box::new(e)))?;
+        tx.commit()
             .await
             .map_err(|e| blockstore::Error::Other(Box::new(e)))?;
 
@@ -392,6 +434,18 @@ mod tests {
         .unwrap()
     }
 
+    async fn put_test_block(
+        pool: &SqlitePool,
+        cid: &str,
+        account_did: &str,
+        bytes: &[u8],
+    ) -> Result<(), sqlx::Error> {
+        let mut tx = pool.begin().await?;
+        put_block(&mut tx, cid, account_did, bytes).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     #[tokio::test]
     async fn put_and_get_block() {
         let pool = test_pool().await;
@@ -400,7 +454,7 @@ mod tests {
         let cid = "bafkreitest123";
         let bytes = b"\xa1some dag-cbor";
 
-        put_block(&pool, cid, "did:plc:testblock", bytes)
+        put_test_block(&pool, cid, "did:plc:testblock", bytes)
             .await
             .unwrap();
 
@@ -428,11 +482,11 @@ mod tests {
         let cid = "bafkridup";
         let bytes = b"\xa1data";
 
-        put_block(&pool, cid, "did:plc:testblock", bytes)
+        put_test_block(&pool, cid, "did:plc:testblock", bytes)
             .await
             .unwrap();
         // Second write with same CID — must succeed silently.
-        put_block(&pool, cid, "did:plc:testblock", bytes)
+        put_test_block(&pool, cid, "did:plc:testblock", bytes)
             .await
             .unwrap();
 
@@ -463,7 +517,7 @@ mod tests {
         insert_test_account(&pool, "did:plc:testblock").await;
 
         let cid = "bafkrihas";
-        put_block(&pool, cid, "did:plc:testblock", b"\xa1x")
+        put_test_block(&pool, cid, "did:plc:testblock", b"\xa1x")
             .await
             .unwrap();
 
@@ -482,10 +536,10 @@ mod tests {
         insert_test_account(&pool, "did:plc:alice").await;
         insert_test_account(&pool, "did:plc:bob").await;
 
-        put_block(&pool, "bafkrialice", "did:plc:alice", b"\xa1alice")
+        put_test_block(&pool, "bafkrialice", "did:plc:alice", b"\xa1alice")
             .await
             .unwrap();
-        put_block(&pool, "bafkribob", "did:plc:bob", b"\xa1bob")
+        put_test_block(&pool, "bafkribob", "did:plc:bob", b"\xa1bob")
             .await
             .unwrap();
 
@@ -512,10 +566,10 @@ mod tests {
         insert_test_account(&pool, "did:plc:alice").await;
         insert_test_account(&pool, "did:plc:bob").await;
 
-        put_block(&pool, "bafshared", "did:plc:alice", b"\xa1shared")
+        put_test_block(&pool, "bafshared", "did:plc:alice", b"\xa1shared")
             .await
             .unwrap();
-        put_block(&pool, "bafshared", "did:plc:bob", b"\xa1shared")
+        put_test_block(&pool, "bafshared", "did:plc:bob", b"\xa1shared")
             .await
             .unwrap();
 
@@ -541,13 +595,13 @@ mod tests {
         insert_test_account(&pool, "did:plc:alice").await;
         insert_test_account(&pool, "did:plc:bob").await;
 
-        put_block(&pool, "bafkrialice1", "did:plc:alice", b"\xa1alice1")
+        put_test_block(&pool, "bafkrialice1", "did:plc:alice", b"\xa1alice1")
             .await
             .unwrap();
-        put_block(&pool, "bafkrialice2", "did:plc:alice", b"\xa1alice2")
+        put_test_block(&pool, "bafkrialice2", "did:plc:alice", b"\xa1alice2")
             .await
             .unwrap();
-        put_block(&pool, "bafkribob", "did:plc:bob", b"\xa1bob")
+        put_test_block(&pool, "bafkribob", "did:plc:bob", b"\xa1bob")
             .await
             .unwrap();
 
@@ -575,10 +629,10 @@ mod tests {
         let pool = test_pool().await;
         insert_test_account(&pool, "did:plc:alice").await;
 
-        put_block(&pool, "bafkriowned0501", "did:plc:alice", b"\xa1a")
+        put_test_block(&pool, "bafkriowned0501", "did:plc:alice", b"\xa1a")
             .await
             .unwrap();
-        put_block(&pool, "bafkriowned1001", "did:plc:alice", b"\xa1b")
+        put_test_block(&pool, "bafkriowned1001", "did:plc:alice", b"\xa1b")
             .await
             .unwrap();
 
@@ -603,7 +657,7 @@ mod tests {
 
         for i in 0..3 {
             let bytes = vec![0xa1, 0x64 + i as u8, 0x64, 0x61, 0x74, 0x61]; // dag-cbor-ish
-            put_block(&pool, &format!("bafkridel{i}"), "did:plc:delme", &bytes)
+            put_test_block(&pool, &format!("bafkridel{i}"), "did:plc:delme", &bytes)
                 .await
                 .unwrap();
         }
@@ -650,10 +704,10 @@ mod tests {
         insert_test_account(&pool, "did:plc:stats").await;
 
         // Two blocks tagged with one rev, one block with another, one still NULL.
-        put_block(&pool, "bafs1", "did:plc:stats", b"\xa1aa")
+        put_test_block(&pool, "bafs1", "did:plc:stats", b"\xa1aa")
             .await
             .unwrap(); // 3 bytes
-        put_block(&pool, "bafs2", "did:plc:stats", b"\xa1bbbb")
+        put_test_block(&pool, "bafs2", "did:plc:stats", b"\xa1bbbb")
             .await
             .unwrap(); // 5 bytes
         tag_blocks_rev(
@@ -664,13 +718,13 @@ mod tests {
         )
         .await
         .unwrap();
-        put_block(&pool, "bafs3", "did:plc:stats", b"\xa1c")
+        put_test_block(&pool, "bafs3", "did:plc:stats", b"\xa1c")
             .await
             .unwrap(); // 2 bytes
         tag_blocks_rev(&pool, "did:plc:stats", &["bafs3".to_string()], "3bbb")
             .await
             .unwrap();
-        put_block(&pool, "bafs4", "did:plc:stats", b"\xa1dddddd")
+        put_test_block(&pool, "bafs4", "did:plc:stats", b"\xa1dddddd")
             .await
             .unwrap(); // 7 bytes, NULL rev
 
@@ -686,10 +740,10 @@ mod tests {
         let pool = test_pool().await;
         insert_test_account(&pool, "did:plc:mine").await;
         insert_test_account(&pool, "did:plc:theirs").await;
-        put_block(&pool, "bafmine", "did:plc:mine", b"\xa1x")
+        put_test_block(&pool, "bafmine", "did:plc:mine", b"\xa1x")
             .await
             .unwrap();
-        put_block(&pool, "baftheirs", "did:plc:theirs", b"\xa1yyyy")
+        put_test_block(&pool, "baftheirs", "did:plc:theirs", b"\xa1yyyy")
             .await
             .unwrap();
 
@@ -702,13 +756,13 @@ mod tests {
     async fn delete_unreachable_keeps_reachable_blocks() {
         let pool = test_pool().await;
         insert_test_account(&pool, "did:plc:gc").await;
-        put_block(&pool, "bafkeep1", "did:plc:gc", b"\xa1a")
+        put_test_block(&pool, "bafkeep1", "did:plc:gc", b"\xa1a")
             .await
             .unwrap();
-        put_block(&pool, "bafkeep2", "did:plc:gc", b"\xa1b")
+        put_test_block(&pool, "bafkeep2", "did:plc:gc", b"\xa1b")
             .await
             .unwrap();
-        put_block(&pool, "bafgarbage", "did:plc:gc", b"\xa1c")
+        put_test_block(&pool, "bafgarbage", "did:plc:gc", b"\xa1c")
             .await
             .unwrap();
 
@@ -736,7 +790,7 @@ mod tests {
     async fn delete_unreachable_keeps_legacy_protected_physical_bytes() {
         let pool = test_pool().await;
         insert_test_account(&pool, "did:plc:legacy").await;
-        put_block(&pool, "baflegacy", "did:plc:legacy", b"\xa1legacy")
+        put_test_block(&pool, "baflegacy", "did:plc:legacy", b"\xa1legacy")
             .await
             .unwrap();
         sqlx::query("UPDATE blocks SET legacy_protected = 1 WHERE cid = 'baflegacy'")
@@ -762,10 +816,10 @@ mod tests {
         insert_test_account(&pool, "did:plc:alice").await;
         insert_test_account(&pool, "did:plc:bob").await;
 
-        put_block(&pool, "bafsharedgc", "did:plc:alice", b"\xa1shared")
+        put_test_block(&pool, "bafsharedgc", "did:plc:alice", b"\xa1shared")
             .await
             .unwrap();
-        put_block(&pool, "bafsharedgc", "did:plc:bob", b"\xa1shared")
+        put_test_block(&pool, "bafsharedgc", "did:plc:bob", b"\xa1shared")
             .await
             .unwrap();
 
@@ -792,7 +846,9 @@ mod tests {
         let pool = test_pool().await;
         insert_test_account(&pool, "did:plc:tag").await;
         for c in ["bafa", "bafb", "bafc"] {
-            put_block(&pool, c, "did:plc:tag", b"\xa1x").await.unwrap();
+            put_test_block(&pool, c, "did:plc:tag", b"\xa1x")
+                .await
+                .unwrap();
         }
 
         // Commit A tags only its two blocks; the third stays NULL (it belongs to no committed set).
@@ -824,7 +880,7 @@ mod tests {
     async fn tag_blocks_rev_restamps_reintroduced_block() {
         let pool = test_pool().await;
         insert_test_account(&pool, "did:plc:restamp").await;
-        put_block(&pool, "bafx", "did:plc:restamp", b"\xa1x")
+        put_test_block(&pool, "bafx", "did:plc:restamp", b"\xa1x")
             .await
             .unwrap();
 
@@ -850,20 +906,20 @@ mod tests {
     async fn list_block_cids_since_excludes_at_or_before_and_null() {
         let pool = test_pool().await;
         insert_test_account(&pool, "did:plc:since").await;
-        put_block(&pool, "bafold", "did:plc:since", b"\xa1a")
+        put_test_block(&pool, "bafold", "did:plc:since", b"\xa1a")
             .await
             .unwrap();
         tag_blocks_rev(&pool, "did:plc:since", &["bafold".to_string()], "3kkk")
             .await
             .unwrap();
-        put_block(&pool, "bafnew", "did:plc:since", b"\xa1b")
+        put_test_block(&pool, "bafnew", "did:plc:since", b"\xa1b")
             .await
             .unwrap();
         tag_blocks_rev(&pool, "did:plc:since", &["bafnew".to_string()], "3mmm")
             .await
             .unwrap();
         // A still-untagged (NULL rev) block must never appear in a since delta.
-        put_block(&pool, "bafnull", "did:plc:since", b"\xa1c")
+        put_test_block(&pool, "bafnull", "did:plc:since", b"\xa1c")
             .await
             .unwrap();
 
