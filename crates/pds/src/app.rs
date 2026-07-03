@@ -55,9 +55,11 @@ use crate::routes::get_service_auth::get_service_auth;
 use crate::routes::get_session::get_session;
 use crate::routes::get_subject_status::get_subject_status;
 use crate::routes::health::health;
+use crate::routes::import_repo::import_repo;
 use crate::routes::landing::landing;
 use crate::routes::list_app_passwords::list_app_passwords_handler;
 use crate::routes::list_blobs::list_blobs;
+use crate::routes::list_missing_blobs::list_missing_blobs;
 use crate::routes::list_records::list_records;
 use crate::routes::list_repos::list_repos;
 use crate::routes::oauth_authorize::{get_authorization, post_authorization};
@@ -385,6 +387,11 @@ pub fn app(state: AppState) -> Router {
             get(subscribe_repos),
         )
         .route("/xrpc/com.atproto.repo.applyWrites", post(apply_writes))
+        .route("/xrpc/com.atproto.repo.importRepo", post(import_repo))
+        .route(
+            "/xrpc/com.atproto.repo.listMissingBlobs",
+            get(list_missing_blobs),
+        )
         .route("/xrpc/com.atproto.repo.createRecord", post(create_record))
         .route("/xrpc/com.atproto.repo.getRecord", get(get_record))
         .route("/xrpc/com.atproto.repo.listRecords", get(list_records))

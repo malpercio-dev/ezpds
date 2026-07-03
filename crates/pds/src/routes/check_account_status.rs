@@ -199,54 +199,16 @@ async fn count_records_and_blob_refs(
             ApiError::new(ErrorCode::InternalError, "failed to decode record")
         })?;
 
-        collect_blob_cids(&ipld, &mut blob_cids);
+        // Blob-reference extraction is shared with `listMissingBlobs` (repo_engine); here we only
+        // need the distinct count, so collect the CIDs into a set.
+        blob_cids.extend(
+            repo_engine::record_blob_cids(&ipld)
+                .into_iter()
+                .map(|c| c.to_string()),
+        );
     }
 
     Ok((record_count, blob_cids.len()))
-}
-
-/// Recursively walk an [`Ipld`] value and collect all blob-reference CIDs into `out`.
-///
-/// A blob reference in an ATProto record is a map with `"$type": "blob"` whose `ref` key
-/// carries the CID. After `json_to_record_value`, `ref` is an `Ipld::Link` (not a nested
-/// map — `{"$link": "..."}` is canonicalized). We also handle the raw-map form for
-/// completeness. CID links and byte strings terminate recursion.
-fn collect_blob_cids(ipld: &Ipld, out: &mut HashSet<String>) {
-    match ipld {
-        Ipld::Map(map) => {
-            // Check for a blob reference: `{"$type": "blob", "ref": <cid-link>, ...}`.
-            if let Some(Ipld::String(typ)) = map.get("$type") {
-                if typ == "blob" {
-                    if let Some(link) = map.get("ref") {
-                        match link {
-                            // Canonical: `json_to_record_value` converts `{"$link": "..."}` to `Ipld::Link`.
-                            Ipld::Link(cid) => {
-                                out.insert(cid.to_string());
-                            }
-                            // Raw-JSON fallback: `ref` is still a map with a `$link` key.
-                            Ipld::Map(ref_map) => {
-                                if let Some(Ipld::Link(cid)) = ref_map.get("$link") {
-                                    out.insert(cid.to_string());
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            // Recurse into all map values — a blob could be nested inside an embed.
-            for v in map.values() {
-                collect_blob_cids(v, out);
-            }
-        }
-        Ipld::List(items) => {
-            for v in items {
-                collect_blob_cids(v, out);
-            }
-        }
-        // Scalars and links are leafs — no further recursion.
-        _ => {}
-    }
 }
 
 #[cfg(test)]

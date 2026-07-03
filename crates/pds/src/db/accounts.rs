@@ -483,6 +483,39 @@ where
     Ok(updated.rows_affected() == 1)
 }
 
+/// Set the repo root/rev of a **deactivated** account after an `importRepo`, atomically with the
+/// caller's block-insert transaction.
+///
+/// Unlike [`advance_repo_root_if_active`], the account must be **deactivated** (importing over a
+/// live repo is not supported) and there is no expected-root compare-and-swap — a migration
+/// target starts repo-less. The guard also rejects a suspended or taken-down account. Returns
+/// `true` when exactly one row was updated (the account was still deactivated at commit time),
+/// `false` otherwise — the caller maps `false` to a 409 (the account was activated concurrently).
+/// Single statement, so no transaction is opened here — generic over the executor so the caller
+/// can run it inside the transaction that persists the imported blocks.
+pub(crate) async fn set_repo_root_for_deactivated<'e, E>(
+    executor: E,
+    did: &str,
+    new_root: &str,
+    new_rev: &str,
+) -> Result<bool, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let updated = sqlx::query(
+        "UPDATE accounts SET repo_root_cid = ?, repo_rev = ? \
+         WHERE did = ? AND deactivated_at IS NOT NULL \
+           AND suspended_at IS NULL AND taken_down_at IS NULL",
+    )
+    .bind(new_root)
+    .bind(new_rev)
+    .bind(did)
+    .execute(executor)
+    .await?;
+
+    Ok(updated.rows_affected() == 1)
+}
+
 /// The moderation/lifecycle state of an account, derived from its nullable timestamp columns.
 ///
 /// Backs the `active` flag (and, for `getRepoStatus`, the `status` reason) of the public sync
