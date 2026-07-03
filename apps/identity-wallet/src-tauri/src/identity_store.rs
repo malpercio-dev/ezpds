@@ -581,10 +581,11 @@ pub(crate) fn per_did_sign_closure(
         }
     })?;
 
-    let signing_key =
-        SigningKey::from_slice(&private_bytes).map_err(|_| PerDidSignError::SigningSetupFailed {
+    let signing_key = SigningKey::from_slice(&private_bytes).map_err(|_| {
+        PerDidSignError::SigningSetupFailed {
             message: "invalid P-256 private key in Keychain".to_string(),
-        })?;
+        }
+    })?;
 
     Ok(move |data: &[u8]| -> Result<Vec<u8>, crypto::CryptoError> {
         let signature: Signature = signing_key.sign(data);
