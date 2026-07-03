@@ -427,6 +427,35 @@ impl<'f> ReplayReader<'f> {
 
         Ok(events)
     }
+
+    /// Own this reader while fetching the next replay page.
+    ///
+    /// This lets route code keep a single in-flight page-read future pinned across `select!`
+    /// iterations without borrowing the reader from an outer slot. When the future completes, the
+    /// caller gets the reader back with its updated cursor state and retention/replay lock still
+    /// intact.
+    pub async fn into_next_batch(mut self) -> (Self, Result<Vec<FirehoseEvent>, FirehoseError>) {
+        let result = self.next_batch().await;
+        (self, result)
+    }
+}
+
+#[cfg(test)]
+pub(crate) async fn collect_replay_seqs(
+    mut replay: Option<ReplayReader<'_>>,
+) -> Result<Vec<u64>, FirehoseError> {
+    let mut seqs = Vec::new();
+    let Some(reader) = replay.as_mut() else {
+        return Ok(seqs);
+    };
+    loop {
+        let batch = reader.next_batch().await?;
+        if batch.is_empty() {
+            break;
+        }
+        seqs.extend(batch.iter().map(FirehoseEvent::seq));
+    }
+    Ok(seqs)
 }
 
 /// The persistent firehose: a durable monotonic sequencer plus a broadcast fan-out.
@@ -1352,23 +1381,6 @@ mod tests {
         }
     }
 
-    async fn collect_replay(
-        mut replay: Option<ReplayReader<'_>>,
-    ) -> Result<Vec<u64>, FirehoseError> {
-        let mut seqs = Vec::new();
-        let Some(reader) = replay.as_mut() else {
-            return Ok(seqs);
-        };
-        loop {
-            let batch = reader.next_batch().await?;
-            if batch.is_empty() {
-                break;
-            }
-            seqs.extend(batch.iter().map(|e| e.seq()));
-        }
-        Ok(seqs)
-    }
-
     #[test]
     fn op_helpers_build_path_and_uri() {
         let op = RepoOp {
@@ -1516,7 +1528,7 @@ mod tests {
         };
 
         // The missed commits (seq 2, 3) come back paged from the durable log.
-        let seqs = collect_replay(sub.replay).await.unwrap();
+        let seqs = collect_replay_seqs(sub.replay).await.unwrap();
         assert_eq!(
             seqs,
             vec![2, 3],
@@ -1535,7 +1547,7 @@ mod tests {
             panic!("expected a subscription");
         };
         // Replay carries (cursor, upper] = (2, 5] from the durable log, oldest first.
-        let seqs = collect_replay(sub.replay).await.unwrap();
+        let seqs = collect_replay_seqs(sub.replay).await.unwrap();
         assert_eq!(seqs, vec![3, 4, 5]);
     }
 
@@ -1599,7 +1611,7 @@ mod tests {
         let SubscribeOutcome::Subscribed(sub) = fh.subscribe_from(Some(1)).await.unwrap() else {
             panic!("expected a subscription");
         };
-        let seqs = collect_replay(sub.replay).await.unwrap();
+        let seqs = collect_replay_seqs(sub.replay).await.unwrap();
         assert!(seqs.is_empty());
     }
 
@@ -1621,7 +1633,7 @@ mod tests {
             panic!("expected subscription setup to succeed before replay is drained");
         };
         assert!(
-            matches!(collect_replay(sub.replay).await, Err(FirehoseError::Decode(_))),
+            matches!(collect_replay_seqs(sub.replay).await, Err(FirehoseError::Decode(_))),
             "a mid-range gap in the durable replay range must fail closed, not silently skip the missing seq"
         );
     }
@@ -1645,7 +1657,7 @@ mod tests {
         let SubscribeOutcome::Subscribed(sub) = fh.subscribe_from(Some(0)).await.unwrap() else {
             panic!("cursor 0 below the pruned window must degrade, not fail");
         };
-        let seqs = collect_replay(sub.replay).await.unwrap();
+        let seqs = collect_replay_seqs(sub.replay).await.unwrap();
         assert_eq!(
             seqs,
             vec![3, 4, 5],
@@ -1656,7 +1668,7 @@ mod tests {
         let SubscribeOutcome::Subscribed(sub) = fh.subscribe_from(Some(3)).await.unwrap() else {
             panic!("cursor 3 is inside the retained window");
         };
-        assert_eq!(collect_replay(sub.replay).await.unwrap(), vec![4, 5]);
+        assert_eq!(collect_replay_seqs(sub.replay).await.unwrap(), vec![4, 5]);
     }
 
     #[tokio::test]
@@ -1678,7 +1690,7 @@ mod tests {
         };
         assert!(
             matches!(
-                collect_replay(sub.replay).await,
+                collect_replay_seqs(sub.replay).await,
                 Err(FirehoseError::Decode(_))
             ),
             "a gap at the cursor when a row exists at the cursor is mid-range, not a pruned prefix"

@@ -517,23 +517,6 @@ mod tests {
         assert_eq!(stats.pruned, 0);
     }
 
-    async fn collect_replay(
-        mut replay: Option<crate::firehose::ReplayReader<'_>>,
-    ) -> Result<Vec<u64>, crate::firehose::FirehoseError> {
-        let mut seqs = Vec::new();
-        let Some(reader) = replay.as_mut() else {
-            return Ok(seqs);
-        };
-        loop {
-            let batch = reader.next_batch().await?;
-            if batch.is_empty() {
-                break;
-            }
-            seqs.extend(batch.iter().map(crate::firehose::FirehoseEvent::seq));
-        }
-        Ok(seqs)
-    }
-
     // Replay-degradation contract: a cursor below the pruned window degrades to best-effort
     // rather than failing closed. Asserted in `firehose.rs`'s `ReplayReader` tests; this module
     // owns only the pruning, so it just verifies the suffix stays dense and the frontier intact.
@@ -555,7 +538,9 @@ mod tests {
         else {
             panic!("cursor 7 is inside the retained window");
         };
-        let seqs = collect_replay(sub.replay).await.unwrap();
+        let seqs = crate::firehose::collect_replay_seqs(sub.replay)
+            .await
+            .unwrap();
         assert_eq!(
             seqs,
             vec![8, 9, 10],
