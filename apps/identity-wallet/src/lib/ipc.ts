@@ -642,3 +642,53 @@ export const buildRecoveryOverride = (did: string, operationCid: string): Promis
  */
 export const submitRecoveryOverride = (did: string): Promise<ClaimResult> =>
   invoke('submit_recovery_override_cmd', { did });
+
+// ── migrate (self-signed identity leg) ────────────────────────────────────────
+
+/**
+ * Error returned by the self-signed migration identity-leg commands.
+ * Matches MigrateError enum in migrate.rs with #[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")].
+ *
+ * WALLET_NOT_AUTHORIZED is the signal to fall back to the PDS-signed interop path:
+ * the wallet holds no authorized key for this DID, so it cannot self-sign.
+ */
+export type MigrateError =
+  | { code: 'WALLET_NOT_AUTHORIZED' }
+  | { code: 'GUARD_REJECTED'; reason: string }
+  | { code: 'INVALID_RECOMMENDED_CREDENTIALS'; message: string }
+  | { code: 'INVALID_AUDIT_LOG'; message: string }
+  | { code: 'SIGNING_FAILED'; message: string }
+  | { code: 'PLC_DIRECTORY_ERROR'; message: string }
+  | { code: 'NETWORK_ERROR'; message: string }
+  | { code: 'IDENTITY_NOT_FOUND'; message: string }
+  | { code: 'MIGRATION_NOT_READY'; message: string };
+
+/**
+ * A locally-built, device-key-signed migration operation ready for review + submission.
+ * Matches SignedMigrationOp struct in migrate.rs with #[serde(rename_all = "camelCase")].
+ */
+export interface SignedMigrationOp {
+  /** Human-readable diff: the atproto_pds endpoint change plus the rotation-key swap. */
+  diff: OpDiff;
+  /** The signed PLC operation JSON, ready to POST to plc.directory. */
+  signedOp: Record<string, unknown>;
+}
+
+/**
+ * Build + locally sign the migration identity leg (repoint the DID to a new PDS).
+ *
+ * Requires the W1 orchestrator (MM-228) to have first authenticated to the destination
+ * PDS and populated MigrationState; otherwise this rejects with MIGRATION_NOT_READY.
+ * The built operation is parked in MigrationState for subsequent submitMigrationOp().
+ */
+export const buildMigrationOp = (did: string): Promise<SignedMigrationOp> =>
+  invoke('build_migration_op_cmd', { did });
+
+/**
+ * Submit the pending migration operation to plc.directory.
+ *
+ * Must be called after buildMigrationOp() — submits the stored signed operation,
+ * refreshes the cached PLC audit log + DID document, and returns the updated DID document.
+ */
+export const submitMigrationOp = (did: string): Promise<ClaimResult> =>
+  invoke('submit_migration_op_cmd', { did });

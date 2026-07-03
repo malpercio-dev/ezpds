@@ -45,6 +45,11 @@ pub struct AppState {
     /// Set by `build_recovery_override` after signing; used by `submit_recovery_override`.
     /// Uses tokio::sync::Mutex because recovery commands hold the lock across .await points.
     pub recovery_state: tokio::sync::Mutex<Option<crate::recovery::RecoveryState>>,
+    /// Migration state persisted between build and submit of the self-signed identity leg.
+    /// The authenticated destination-PDS client is populated by the W1 orchestrator (MM-228);
+    /// `build_migration_op_cmd` reads it, `submit_migration_op_cmd` consumes the signed op.
+    /// Uses tokio::sync::Mutex because migration commands hold the lock across .await points.
+    pub migration_state: tokio::sync::Mutex<Option<crate::migrate::MigrationState>>,
 }
 
 impl AppState {
@@ -57,6 +62,7 @@ impl AppState {
             pds_client: crate::pds_client::PdsClient::new(),
             claim_state: tokio::sync::Mutex::new(None),
             recovery_state: tokio::sync::Mutex::new(None),
+            migration_state: tokio::sync::Mutex::new(None),
         }
     }
 

@@ -4,6 +4,7 @@ pub mod home;
 pub mod http;
 pub mod identity_store;
 pub mod keychain;
+pub mod migrate;
 pub mod oauth;
 pub mod oauth_client;
 pub mod pds_client;
@@ -936,6 +937,8 @@ pub fn run() {
             plc_monitor::check_identity_status,
             recovery::build_recovery_override_cmd,
             recovery::submit_recovery_override_cmd,
+            migrate::build_migration_op_cmd,
+            migrate::submit_migration_op_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
