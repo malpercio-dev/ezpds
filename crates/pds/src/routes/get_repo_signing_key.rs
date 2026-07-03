@@ -16,8 +16,8 @@ use serde::Serialize;
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
+use crate::auth::guards::require_pending_session;
 use crate::db::repo_keys::{get_pending_repo_key, set_pending_repo_key, RepoSigningKey};
-use crate::routes::auth::require_pending_session;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

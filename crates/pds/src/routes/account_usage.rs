@@ -15,8 +15,8 @@ use common::{ApiError, ErrorCode};
 use repo_engine::Repository;
 
 use crate::app::AppState;
+use crate::auth::guards::require_admin_token;
 use crate::db::blocks::SqliteBlockStore;
-use crate::routes::auth::require_admin_token;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

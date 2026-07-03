@@ -19,9 +19,9 @@ use uuid::Uuid;
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
+use crate::auth::guards::require_session;
+use crate::code_gen::generate_code;
 use crate::db::transfers::{insert_transfer, InitiateOutcome};
-use crate::routes::auth::require_session;
-use crate::routes::code_gen::generate_code;
 
 /// Lifetime of a transfer code, in minutes. The canonical provisioning spec
 /// (`docs/provisioning-api-spec.md` §13) specifies 15 minutes; we follow the spec.

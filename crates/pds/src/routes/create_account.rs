@@ -17,8 +17,8 @@ use uuid::Uuid;
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::routes::auth::require_admin_token;
-use crate::routes::code_gen::generate_code;
+use crate::auth::guards::require_admin_token;
+use crate::code_gen::generate_code;
 
 const CLAIM_CODE_EXPIRES_IN_HOURS: u32 = 24;
 
@@ -63,7 +63,7 @@ pub async fn create_account(
     }
 
     // --- Email uniqueness: fast-path rejection before INSERT ---
-    if crate::routes::uniqueness::email_taken(&state.db, &payload.email)
+    if crate::uniqueness::email_taken(&state.db, &payload.email)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to check email uniqueness");
@@ -77,7 +77,7 @@ pub async fn create_account(
     }
 
     // --- Handle uniqueness: fast-path rejection before INSERT ---
-    if crate::routes::uniqueness::handle_taken(&state.db, &payload.handle)
+    if crate::uniqueness::handle_taken(&state.db, &payload.handle)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to check handle uniqueness");

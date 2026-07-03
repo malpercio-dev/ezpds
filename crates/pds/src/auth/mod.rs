@@ -1,5 +1,6 @@
 pub mod dpop;
 pub mod extractors;
+pub mod guards;
 pub mod jwt;
 pub mod password;
 pub mod rate_limit;

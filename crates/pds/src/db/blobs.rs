@@ -1,9 +1,5 @@
 // pattern: Imperative Shell
 
-// Dead code allow: these functions are consumed by routes that ship in subsequent issues
-// (getBlob, listBlobs, GC cleanup). All functions are tested here.
-#![allow(dead_code)]
-
 use sqlx::SqlitePool;
 
 /// Row returned from the `blobs` table.
@@ -14,8 +10,14 @@ pub struct BlobRow {
     pub mime_type: String,
     pub size_bytes: i64,
     pub storage_path: String,
+    // `ref_count`/`temp_until`/`created_at` are mapped from `SELECT *` so the row
+    // mirrors the table, but the blob read paths only consume the columns above.
+    // Reference-counting and the temp-blob sweep operate in SQL, not off the struct.
+    #[allow(dead_code)]
     pub ref_count: i64,
+    #[allow(dead_code)]
     pub temp_until: Option<String>,
+    #[allow(dead_code)]
     pub created_at: String,
 }
 
@@ -111,7 +113,9 @@ pub async fn get_blob_by_cid(pool: &SqlitePool, cid: &str) -> Result<Option<Blob
 
 /// Mark a blob as referenced: increment `ref_count` and clear `temp_until`.
 ///
-/// Called when a repo record references an already-uploaded blob.
+/// Intended for when a repo record references an already-uploaded blob; the
+/// blob-reference wiring is not in place yet, so no route calls this so far.
+#[allow(dead_code)]
 pub async fn mark_referenced(pool: &SqlitePool, cid: &str) -> Result<bool, sqlx::Error> {
     let result =
         sqlx::query("UPDATE blobs SET ref_count = ref_count + 1, temp_until = NULL WHERE cid = ?")

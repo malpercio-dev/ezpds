@@ -1,9 +1,5 @@
 // pattern: Imperative Shell
 
-// Dead code allow: these functions are consumed by routes that ship in subsequent phases
-// (getRepo, applyWrites, record CRUD). All functions are tested here.
-#![allow(dead_code)]
-
 //! Content-addressed block storage for ATProto repository blocks.
 //!
 //! Each block is a DAG-CBOR object (MST node or record) addressed by its CIDv1.
@@ -22,10 +18,13 @@ use sqlx::SqlitePool;
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct BlockRow {
     pub cid: String,
+    // Mapped from `SELECT *` so the row mirrors the table, but read only in SQL
+    // (queries filter on `account_did`); no caller reads it off the struct.
+    #[allow(dead_code)]
     pub account_did: String,
     pub bytes: Vec<u8>,
-    // Dead code allow: created_at is populated by the DB default and will be
-    // used when block lifecycle/GC is implemented.
+    // Populated by the DB default; the row carries it for schema fidelity but no
+    // caller reads it (block lifecycle/GC keys off reachability, not `created_at`).
     #[allow(dead_code)]
     pub created_at: String,
 }
@@ -62,6 +61,10 @@ pub async fn get_block(pool: &SqlitePool, cid: &str) -> Result<Option<BlockRow>,
 }
 
 /// Check whether a block exists.
+///
+/// Part of the block-store query surface; the live read paths currently fetch
+/// blocks directly rather than probe for existence, so no route calls this yet.
+#[allow(dead_code)]
 pub async fn has_block(pool: &SqlitePool, cid: &str) -> Result<bool, sqlx::Error> {
     let row: (bool,) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM blocks WHERE cid = ?)")
         .bind(cid)
@@ -103,7 +106,9 @@ pub async fn get_blocks_for_account(
 
 /// Delete all blocks for an account.
 ///
-/// Returns the number of blocks removed.
+/// Returns the number of blocks removed. Bulk account deletion is not yet a
+/// route; GC currently prunes per-reachability (`delete_unreachable_blocks`).
+#[allow(dead_code)]
 pub async fn delete_blocks_for_account(
     pool: &SqlitePool,
     account_did: &str,

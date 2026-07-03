@@ -29,8 +29,8 @@ use axum::{
 };
 
 use crate::app::AppState;
+use crate::auth::guards::require_session;
 use crate::db::dids::{fetch_also_known_as, update_also_known_as};
-use crate::routes::auth::require_session;
 use common::{ApiError, ErrorCode};
 
 pub async fn delete_handle_handler(

@@ -15,9 +15,9 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
+use crate::auth::guards::require_admin_json;
+use crate::code_gen::generate_code;
 use crate::db::is_unique_violation;
-use crate::routes::auth::require_admin_json;
-use crate::routes::code_gen::generate_code;
 
 const MAX_COUNT: u32 = 10;
 
@@ -498,11 +498,11 @@ mod tests {
 
     #[tokio::test]
     async fn signed_device_request_mints_a_code() {
-        use crate::db::admin_devices::{insert_device, NewAdminDevice};
-        use crate::routes::auth::{
+        use crate::auth::guards::{
             admin_request_sign_string, ADMIN_DEVICE_HEADER, ADMIN_NONCE_HEADER,
             ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
         };
+        use crate::db::admin_devices::{insert_device, NewAdminDevice};
         use std::time::{SystemTime, UNIX_EPOCH};
 
         // A state with NO master token: proves the device path is independent of it.
@@ -553,11 +553,11 @@ mod tests {
 
     #[tokio::test]
     async fn signed_device_request_with_tampered_body_is_rejected() {
-        use crate::db::admin_devices::{insert_device, NewAdminDevice};
-        use crate::routes::auth::{
+        use crate::auth::guards::{
             admin_request_sign_string, ADMIN_DEVICE_HEADER, ADMIN_NONCE_HEADER,
             ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
         };
+        use crate::db::admin_devices::{insert_device, NewAdminDevice};
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let state = test_state().await;
@@ -605,11 +605,11 @@ mod tests {
         // The media-type guard runs before signature verification, so a wrong
         // Content-Type returns 415 without burning the nonce — the corrected retry
         // with the same signed request (same nonce) must still succeed.
-        use crate::db::admin_devices::{insert_device, NewAdminDevice};
-        use crate::routes::auth::{
+        use crate::auth::guards::{
             admin_request_sign_string, ADMIN_DEVICE_HEADER, ADMIN_NONCE_HEADER,
             ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
         };
+        use crate::db::admin_devices::{insert_device, NewAdminDevice};
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let state = test_state().await;

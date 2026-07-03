@@ -20,10 +20,10 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
+use crate::auth::guards::require_admin_json;
 use crate::auth::validation::is_valid_did;
 use crate::db::accounts::{set_account_takedown, TakedownStateChange};
 use crate::routes::admin_subject_defs::{RepoRefView, StatusAttrView};
-use crate::routes::auth::require_admin_json;
 
 /// `subject` is a lexicon union (`com.atproto.admin.defs#repoRef` | `com.atproto.repo.strongRef`
 /// | `com.atproto.repo.strongRef` blob variant); `$type` is the discriminant. ezpds only

@@ -17,9 +17,9 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
+use crate::auth::guards::require_admin_json;
 use crate::auth::jwt::AuthScope;
 use crate::db::claim_codes::{mint_claim_codes, MintClaimCodesError};
-use crate::routes::auth::require_admin_json;
 
 const MAX_INVITE_CODE_COUNT: u32 = 10;
 const INVITE_CODE_EXPIRES_IN_HOURS: u32 = 24;

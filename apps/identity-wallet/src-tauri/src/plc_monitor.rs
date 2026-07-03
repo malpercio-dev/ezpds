@@ -239,6 +239,8 @@ pub async fn run_monitoring_loop(app_handle: tauri::AppHandle) {
         emit_if_alerts(&app_handle, &statuses);
     }
     // If the loop ever exits (shouldn't happen), log it so we know monitoring died.
+    // The `loop` above has no `break`, so control never falls through here — the
+    // allow keeps this defensive epilogue compiling as intentional dead code.
     #[allow(unreachable_code)]
     {
         tracing::error!("PLC monitoring loop exited unexpectedly");

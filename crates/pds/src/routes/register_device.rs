@@ -16,6 +16,7 @@ use uuid::Uuid;
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
+use crate::platform::Platform;
 use crate::token::generate_token;
 
 #[derive(Deserialize)]
@@ -65,32 +66,6 @@ pub async fn register_device(
             account_id,
         }),
     ))
-}
-
-/// Supported device platforms.
-///
-/// Deserialized from lowercase strings (`"ios"`, `"android"`, etc.) by serde.
-/// Stored as the same lowercase string in the database via `as_str()`.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum Platform {
-    Ios,
-    Android,
-    Macos,
-    Linux,
-    Windows,
-}
-
-impl Platform {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Platform::Ios => "ios",
-            Platform::Android => "android",
-            Platform::Macos => "macos",
-            Platform::Linux => "linux",
-            Platform::Windows => "windows",
-        }
-    }
 }
 
 /// Atomically redeem a claim code and register the device in a single transaction.
@@ -748,23 +723,5 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "INTERNAL_ERROR");
-    }
-
-    // ── Platform enum unit tests ────────────────────────────────────────────
-
-    #[test]
-    fn platform_deserializes_known_values() {
-        for p in ["ios", "android", "macos", "linux", "windows"] {
-            let result: Result<super::Platform, _> = serde_json::from_str(&format!("\"{p}\""));
-            assert!(result.is_ok(), "{p} must deserialize");
-        }
-    }
-
-    #[test]
-    fn platform_rejects_unknown_values() {
-        for p in ["plan9", "", "iOS", "Windows"] {
-            let result: Result<super::Platform, _> = serde_json::from_str(&format!("\"{p}\""));
-            assert!(result.is_err(), "{p} must be rejected");
-        }
     }
 }

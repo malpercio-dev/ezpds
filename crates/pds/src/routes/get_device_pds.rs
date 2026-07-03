@@ -14,7 +14,7 @@ use serde::Serialize;
 use common::ApiError;
 
 use crate::app::AppState;
-use crate::routes::auth::require_device_token;
+use crate::auth::guards::require_device_token;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
