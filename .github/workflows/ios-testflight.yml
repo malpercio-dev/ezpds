@@ -52,17 +52,17 @@ jobs:
     # third-party install steps (pnpm install, cargo binstall) that execute untrusted
     # lifecycle/installer code — limiting blast radius if a dependency is compromised.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         # Don't persist the job token in .git/config where later steps could read it
         # (zizmor `artipacked`); nothing here pushes back to the repo.
         with:
           persist-credentials: false
 
       - name: Install just
-        uses: extractions/setup-just@v2
+        uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           # Exact pin — keep in lockstep with "packageManager" in apps/*/package.json
           # and the other workflows, so --frozen-lockfile can never fail on a pnpm
@@ -70,7 +70,7 @@ jobs:
           version: 9.15.9
 
       - name: Setup Node 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
 
@@ -87,7 +87,7 @@ jobs:
           rustup target add aarch64-apple-ios
 
       - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           # cache-bin: false — same footgun ci.yml already guards against: with the
           # default (true), rust-cache can restore the "tauri-cli is installed"
@@ -99,7 +99,7 @@ jobs:
       - name: Install cargo-binstall
         # Pinned release tag (not @main): a mutable branch ref would let upstream changes
         # land in every CI run — on a runner that later holds the signing cert.
-        uses: cargo-bins/cargo-binstall@v1.20.1
+        uses: cargo-bins/cargo-binstall@732870f031d2fb36309d0deaf36abcc704a7be65 # v1.20.1
 
       - name: Install Tauri CLI
         # Exact pin (was '^2'): the ios-postinit patches regex-edit the Xcode project
