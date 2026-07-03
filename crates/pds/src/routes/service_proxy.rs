@@ -34,17 +34,10 @@ fn is_length_limit_error(err: &axum::Error) -> bool {
         .unwrap_or(false)
 }
 
-/// Forward an XRPC request to an upstream atproto service (the AppView, the chat service, or a
-/// labeler/moderation service).
-///
-/// `upstream_url` is the service base URL (no trailing slash) and `proxy_did` is its service
-/// DID, sent as the `atproto-proxy` header so the upstream knows the request arrives on the
-/// user's behalf via their PDS. `did` is the authenticated account DID. A fresh ES256
-/// service-auth JWT (signed by the account's `#atproto` repo key, `iss`=account DID,
-/// `aud`=service DID, `lxm`=method, 60s TTL) is minted and attached as the `Authorization`; the
-/// caller's own PDS session token is **not** forwarded (the AppView can't verify it). The
-/// upstream status, content type, and body are streamed straight back; a failure to reach the
-/// upstream maps to `503`, while upstream error *responses* (4xx/5xx) are passed through verbatim.
+/// Build and send the upstream XRPC request (query passthrough, body buffering with the
+/// MAX_PROXY_BODY cap, service-auth JWT mint, atproto-proxy header), returning the raw upstream
+/// response. Both `proxy_xrpc` (streaming) and `read_after_write::pipethrough_munged` (buffering)
+/// build on this so request construction never diverges.
 ///
 /// `moderation_guard` is `Some` only for the `com.atproto.moderation.*` branch, whose target host
 /// was resolved and SSRF-validated from a caller-controlled DID document
@@ -55,7 +48,7 @@ fn is_length_limit_error(err: &axum::Error) -> bool {
 /// a domain name, DNS resolution is additionally pinned to exactly the addresses already
 /// validated, so the client can't re-resolve at connect time and land on an address that was
 /// never checked.
-pub async fn proxy_xrpc(
+pub(crate) async fn proxy_request(
     state: &AppState,
     upstream_url: &str,
     proxy_did: &str,
@@ -63,7 +56,7 @@ pub async fn proxy_xrpc(
     did: &str,
     moderation_guard: Option<&ModerationProxyGuard>,
     req: Request,
-) -> Response {
+) -> Result<reqwest::Response, Response> {
     // Preserve the original query string verbatim so upstream query params survive the hop.
     let query = req
         .uri()
@@ -75,7 +68,7 @@ pub async fn proxy_xrpc(
     let client: Cow<'_, reqwest::Client> = match moderation_guard {
         Some(guard) => match build_moderation_client(guard) {
             Ok(client) => Cow::Owned(client),
-            Err(err) => return err.into_response(),
+            Err(err) => return Err(err.into_response()),
         },
         None => Cow::Borrowed(&state.http_client),
     };
@@ -90,15 +83,15 @@ pub async fn proxy_xrpc(
             // Only the former is a genuine 413; a broken stream is a 400 so the client isn't
             // misled into thinking its payload was too large.
             if is_length_limit_error(&err) {
-                return ApiError::new(
+                return Err(ApiError::new(
                     ErrorCode::PayloadTooLarge,
                     "request body exceeds the proxy limit",
                 )
-                .into_response();
+                .into_response());
             }
             tracing::warn!(error = %err, nsid, "failed to read request body while proxying XRPC");
-            return ApiError::new(ErrorCode::InvalidRequest, "failed to read request body")
-                .into_response();
+            return Err(ApiError::new(ErrorCode::InvalidRequest, "failed to read request body")
+                .into_response());
         }
     };
 
@@ -108,7 +101,7 @@ pub async fn proxy_xrpc(
     // third party holds).
     let service_jwt = match mint_service_auth(state, did, proxy_did, nsid).await {
         Ok(jwt) => jwt,
-        Err(resp) => return resp,
+        Err(resp) => return Err(resp),
     };
 
     // reqwest 0.12 and axum 0.7 share the same `http` crate, so `Method` and `HeaderValue` are
@@ -131,16 +124,42 @@ pub async fn proxy_xrpc(
         outbound = outbound.body(body_bytes);
     }
 
-    let upstream = match outbound.send().await {
-        Ok(resp) => resp,
+    match outbound.send().await {
+        Ok(resp) => Ok(resp),
         Err(err) => {
             tracing::warn!(error = %err, nsid, "upstream proxy request failed");
-            return ApiError::new(
+            Err(ApiError::new(
                 ErrorCode::ServiceUnavailable,
                 "failed to reach the upstream service",
             )
-            .into_response();
+            .into_response())
         }
+    }
+}
+
+/// Forward an XRPC request to an upstream atproto service (the AppView, the chat service, or a
+/// labeler/moderation service).
+///
+/// `upstream_url` is the service base URL (no trailing slash) and `proxy_did` is its service
+/// DID, sent as the `atproto-proxy` header so the upstream knows the request arrives on the
+/// user's behalf via their PDS. `did` is the authenticated account DID. A fresh ES256
+/// service-auth JWT (signed by the account's `#atproto` repo key, `iss`=account DID,
+/// `aud`=service DID, `lxm`=method, 60s TTL) is minted and attached as the `Authorization`; the
+/// caller's own PDS session token is **not** forwarded (the AppView can't verify it). The
+/// upstream status, content type, and body are streamed straight back; a failure to reach the
+/// upstream maps to `503`, while upstream error *responses* (4xx/5xx) are passed through verbatim.
+pub async fn proxy_xrpc(
+    state: &AppState,
+    upstream_url: &str,
+    proxy_did: &str,
+    nsid: &str,
+    did: &str,
+    moderation_guard: Option<&ModerationProxyGuard>,
+    req: Request,
+) -> Response {
+    let upstream = match proxy_request(state, upstream_url, proxy_did, nsid, did, moderation_guard, req).await {
+        Ok(resp) => resp,
+        Err(resp) => return resp,
     };
 
     // Map status and content-type, then stream the body through without buffering it.
@@ -207,7 +226,7 @@ fn build_moderation_client(guard: &ModerationProxyGuard) -> Result<reqwest::Clie
 /// AppView keys verification on the bare DID; the fragment belongs in the `atproto-proxy` header),
 /// `lxm` = the proxied method, 60s TTL. Returns the built error response on the unhappy paths
 /// (master key missing → 503, clock failure → 500, key load/decrypt failure → 500).
-async fn mint_service_auth(
+pub(crate) async fn mint_service_auth(
     state: &AppState,
     did: &str,
     proxy_did: &str,
