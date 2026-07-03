@@ -2,6 +2,7 @@
 
 /// One of the requester's records selected for merging, with the metadata a munge needs.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct RecordDescript {
     pub uri: String,
     pub cid: String,
@@ -13,13 +14,14 @@ pub struct RecordDescript {
 
 /// The requester's records written since the AppView's last-indexed rev.
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub struct LocalRecords {
     pub count: usize,
     pub profile: Option<RecordDescript>,
     pub posts: Vec<RecordDescript>,
 }
 
-/// Munge functions are modeled as `pub(crate) async fn(viewer, original, local, requester) -> serde_json::Value`
-/// dispatched by NSID in `pipethrough_munged`. Because Rust async closures are awkward as trait-object args,
-/// each munge is a standalone async function matched by a `match` statement on the method string in `mod.rs`.
-/// This allows munges to share code (helpers in this types module) without the overhead of boxed closures.
+// Munge functions are modeled as `pub(crate) async fn(viewer, original, local, requester) -> serde_json::Value`
+// dispatched by NSID in `pipethrough_munged`. Because Rust async closures are awkward as trait-object args,
+// each munge is a standalone async function matched by a `match` statement on the method string in `mod.rs`.
+// This allows munges to share code (helpers in this types module) without the overhead of boxed closures.

@@ -8,13 +8,14 @@ mod munge;
 mod types;
 mod viewer;
 
+#[allow(unused_imports)]
 pub use types::{LocalRecords, RecordDescript};
 
 use axum::{
     body::Body,
     extract::Request,
     http::header,
-    response::Response,
+    response::{IntoResponse, Response},
 };
 use common::{ApiError, ErrorCode};
 
@@ -51,7 +52,7 @@ pub(crate) async fn pipethrough_munged(
             .unwrap_or(axum::http::StatusCode::BAD_GATEWAY);
     let content_type = upstream.headers().get(header::CONTENT_TYPE).cloned();
 
-    let body_bytes = match axum::body::to_bytes(upstream.into_body(), usize::MAX).await {
+    let body_bytes = match upstream.bytes().await {
         Ok(bytes) => bytes,
         Err(err) => {
             tracing::error!(error = %err, nsid, "failed to read upstream response body");
