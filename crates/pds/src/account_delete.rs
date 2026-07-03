@@ -66,29 +66,27 @@ const DELETE_BY_DID: &[&str] = &[
     "DELETE FROM reserved_signing_keys WHERE did = ?",
 ];
 
-/// Child tables that key the account by an `account_did` column (the content-addressed
-/// per-account repo stores). Both are scoped by `account_did`, so the same logical block/blob
-/// owned by another account is a distinct row and is untouched.
-const DELETE_BY_ACCOUNT_DID: &[&str] = &[
-    "DELETE FROM blocks WHERE account_did = ?",
-    "DELETE FROM blobs WHERE account_did = ?",
-];
+/// The account's content-addressed repo block store, keyed by `account_did`. Scoped by
+/// `account_did`, so the same logical block owned by another account is a distinct row and is
+/// untouched. (`blobs` is deleted separately, via `DELETE ... RETURNING`, so the reclaimed file
+/// list is atomic with the rows actually removed — see [`purge_account`].)
+const DELETE_BLOCKS: &str = "DELETE FROM blocks WHERE account_did = ?";
 
 /// Permanently delete an account and everything it owns, atomically, and announce the removal on
 /// the firehose.
 ///
 /// Steps, in order:
-/// 1. Read the account's blob metadata **before** opening the transaction (the single-connection
-///    pool cannot serve a read while a transaction holds the connection), so the on-disk files can
-///    be reclaimed after commit.
-/// 2. Under the firehose sequencer lock (acquired before the transaction, per `lock_emit`'s
-///    ordering contract), open a transaction, delete every child table in FK order, then delete
-///    the `accounts` row.
-/// 3. If the `accounts` row did not exist, roll back and report [`PurgeOutcome::NotFound`] —
-///    idempotent, no frame emitted.
-/// 4. Otherwise stage an `#account` (`active=false`, `status="deleted"`) frame in the same
+/// 1. Under the firehose sequencer lock (acquired before the transaction, per `lock_emit`'s
+///    ordering contract), open a transaction and delete every child table in FK order — including
+///    the account's `blobs` rows via `DELETE ... RETURNING cid, storage_path`, so the list of
+///    files to reclaim is captured atomically with the rows actually deleted (a pre-transaction
+///    snapshot could miss a blob inserted by a concurrent upload in the window before the
+///    transaction, orphaning its file) — then delete the `accounts` row.
+/// 2. If the `accounts` row did not exist, roll back and report [`PurgeOutcome::NotFound`] —
+///    idempotent, no frame emitted, and the rolled-back blob deletes leave the files on disk.
+/// 3. Otherwise stage an `#account` (`active=false`, `status="deleted"`) frame in the same
 ///    transaction, commit, and broadcast it.
-/// 5. Best-effort: delete the account's blob files from disk (a failure here leaks a file for the
+/// 4. Best-effort: delete the reclaimed blob files from disk (a failure here leaks a file for the
 ///    blob GC / operator to reclaim later, but the account is already gone from the DB and
 ///    firehose, so it is logged, not propagated).
 pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, ApiError> {
@@ -97,12 +95,7 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
         ApiError::new(ErrorCode::InternalError, "failed to delete account")
     };
 
-    // Step 1: snapshot the blob files to reclaim, before the transaction takes the connection.
-    let blobs = crate::db::blobs::list_blobs_for_account(&state.db, did)
-        .await
-        .map_err(map_err)?;
-
-    // Step 2: acquire the sequencer lock *before* the transaction (see `Firehose::lock_emit`),
+    // Step 1: acquire the sequencer lock *before* the transaction (see `Firehose::lock_emit`),
     // then delete every child row and the account row atomically.
     let emit_guard = state.firehose.lock_emit().await;
     let mut tx = state.db.begin().await.map_err(map_err)?;
@@ -114,13 +107,21 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
             .await
             .map_err(map_err)?;
     }
-    for sql in DELETE_BY_ACCOUNT_DID {
-        sqlx::query(sql)
+    sqlx::query(DELETE_BLOCKS)
+        .bind(did)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_err)?;
+
+    // Delete the blob rows and capture their on-disk paths in the same statement, so the reclaim
+    // list is exactly the set of rows removed — no pre-transaction snapshot that a racing upload
+    // could slip past. Files are removed after the transaction commits (below).
+    let blob_files: Vec<(String, String)> =
+        sqlx::query_as("DELETE FROM blobs WHERE account_did = ? RETURNING cid, storage_path")
             .bind(did)
-            .execute(&mut *tx)
+            .fetch_all(&mut *tx)
             .await
             .map_err(map_err)?;
-    }
 
     let deleted = sqlx::query("DELETE FROM accounts WHERE did = ?")
         .bind(did)
@@ -128,7 +129,8 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
         .await
         .map_err(map_err)?;
 
-    // Step 3: the account didn't exist — idempotent no-op, emit nothing.
+    // Step 2: the account didn't exist — idempotent no-op, emit nothing. The rollback also undoes
+    // the blob-row deletes above, so their files are correctly left in place.
     if deleted.rows_affected() == 0 {
         tx.rollback().await.ok();
         tracing::debug!(did = %did, "deleteAccount: account not found; no-op");
@@ -152,28 +154,28 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
     tx.commit().await.map_err(map_err)?;
     pending.finish();
 
-    // Step 5: reclaim the on-disk blob files (best-effort; the DB row and firehose frame are the
+    // Step 4: reclaim the on-disk blob files (best-effort; the DB row and firehose frame are the
     // source of truth for "deleted", so a stray file is a leak to clean up, not a failure).
-    for blob in &blobs {
-        match crate::blob_store::delete_blob_file(&state.config.data_dir, &blob.storage_path) {
+    for (cid, storage_path) in &blob_files {
+        match crate::blob_store::delete_blob_file(&state.config.data_dir, storage_path) {
             Ok(true) => {}
             Ok(false) => tracing::warn!(
                 did = %did,
-                cid = %blob.cid,
-                path = %blob.storage_path,
+                cid = %cid,
+                path = %storage_path,
                 "deleteAccount: blob file already absent on disk"
             ),
             Err(e) => tracing::warn!(
                 did = %did,
-                cid = %blob.cid,
-                path = %blob.storage_path,
+                cid = %cid,
+                path = %storage_path,
                 error = %e,
                 "deleteAccount: failed to delete blob file; leaving it for blob GC"
             ),
         }
     }
 
-    tracing::info!(did = %did, blobs = blobs.len(), "account permanently deleted");
+    tracing::info!(did = %did, blobs = blob_files.len(), "account permanently deleted");
     Ok(PurgeOutcome::Deleted)
 }
 

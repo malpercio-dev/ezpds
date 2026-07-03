@@ -232,10 +232,17 @@ pub(crate) async fn activate_account(
 /// account that asked to be permanently deleted and whose grace window has elapsed. Backs the
 /// deletion reaper (`account_reaper.rs`). Unfiltered by lifecycle otherwise — the whole point is
 /// to act on deactivated accounts.
+///
+/// `delete_after` is stored verbatim as the client-supplied RFC 3339 string (with a `T`
+/// separator and a `Z`/offset), while `datetime('now')` renders `YYYY-MM-DD HH:MM:SS`. A raw text
+/// `<=` between those two formats is wrong — e.g. an instant earlier *today* sorts *after*
+/// `datetime('now')` because `'T'` (0x54) > `' '` (0x20) — so both sides are normalised through
+/// SQLite's `datetime()`, which parses the ISO-8601 form (converting any offset to UTC) into the
+/// same canonical shape before comparison.
 pub async fn accounts_due_for_deletion(db: &sqlx::SqlitePool) -> Result<Vec<String>, ApiError> {
     let rows: Vec<(String,)> = sqlx::query_as(
         "SELECT did FROM accounts \
-         WHERE delete_after IS NOT NULL AND delete_after <= datetime('now')",
+         WHERE delete_after IS NOT NULL AND datetime(delete_after) <= datetime('now')",
     )
     .fetch_all(db)
     .await

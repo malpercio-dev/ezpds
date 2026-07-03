@@ -49,8 +49,11 @@ fn invalid_credentials() -> ApiError {
 /// (`active=false`, `status="deleted"`) is broadcast so relays drop the repo. The did:plc identity
 /// itself is untouched (the wallet owns the rotation key), matching ezpds's wallet-native model.
 ///
-/// Credential failures return a uniform 401; a malformed body is 400. Deleting an
-/// already-deleted account (a race with the reaper or a duplicate request) is a 200 no-op.
+/// Credential failures return a uniform 401; a malformed body is 400. The 200 no-op applies only
+/// in the narrow window where the account passed the password + token checks but was purged (by the
+/// reaper or a racing duplicate request) before this handler's own delete ran — an account that is
+/// already fully gone before the credential check instead returns 401, since there is no password
+/// to verify against.
 pub async fn delete_account_handler(
     State(state): State<AppState>,
     Json(payload): Json<DeleteAccountRequest>,

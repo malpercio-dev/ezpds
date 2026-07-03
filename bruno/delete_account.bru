@@ -36,6 +36,8 @@ docs {
   wallet-native model.
 
   Credential failures (unknown DID, no password on file, wrong password) return a uniform 401; an
-  invalid/expired token returns 401; a missing field returns 400. Deleting an already-deleted
-  account (a race with the scheduled-deletion reaper or a duplicate request) is a 200 no-op.
+  invalid/expired token returns 401; a missing field returns 400. The 200 no-op applies only when
+  the account passes the password + token checks but is purged (by the scheduled-deletion reaper or
+  a racing duplicate request) before this handler's own delete runs — an account that is already
+  fully gone before the credential check instead returns 401.
 }

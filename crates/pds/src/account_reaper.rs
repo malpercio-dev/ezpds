@@ -130,6 +130,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reaps_account_due_earlier_today() {
+        // Boundary case: a `delete_after` earlier *today*, stored in RFC 3339 (with the `T`
+        // separator and a `Z`), must be reaped. A raw text comparison against `datetime('now')`
+        // (`YYYY-MM-DD HH:MM:SS`) would wrongly keep it, since `'T'` sorts after `' '`; the query
+        // normalises both sides through `datetime()` to avoid exactly that.
+        let state = test_state().await;
+        let one_minute_ago = (chrono::Utc::now() - chrono::Duration::minutes(1))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        insert_deactivated(&state.db, "did:plc:reaptoday", &one_minute_ago).await;
+
+        let stats = run_account_reaper(&state).await;
+        assert_eq!(stats.deleted, 1, "an instant earlier today is due");
+        assert!(!account_exists(&state.db, "did:plc:reaptoday").await);
+    }
+
+    #[tokio::test]
     async fn spares_accounts_with_a_future_delete_after() {
         let state = test_state().await;
         insert_deactivated(&state.db, "did:plc:reapfuture", "2999-01-01T00:00:00Z").await;
