@@ -47,9 +47,8 @@ pub(crate) async fn get_records_since_rev(
     };
 
     // 2. Decode each row and walk newest-first, stopping at rev <= header_rev.
-    // Collect distinct (collection, rkey) with their newest CommitEvent.
-    let mut touched: HashMap<(String, String), String> = HashMap::new(); // (coll, rkey) -> rev
-    let mut kept_time: Option<String> = None;
+    // Collect distinct (collection, rkey), keeping the newest CommitEvent.time per key.
+    let mut touched: HashMap<(String, String), (String, Cid)> = HashMap::new(); // (coll, rkey) -> (time, cid)
 
     for row in rows {
         let event = match crate::firehose::decode_stored_event(
@@ -75,9 +74,10 @@ pub(crate) async fn get_records_since_rev(
             let key = (op.collection.clone(), op.rkey.clone());
             // Keep the first (newest) occurrence since we're walking newest-first
             if let std::collections::hash_map::Entry::Vacant(e) = touched.entry(key) {
-                e.insert(event.rev.clone());
-                if kept_time.is_none() {
-                    kept_time = Some(event.time.clone());
+                if let Some(cid_str) = &op.cid {
+                    if let Ok(cid) = Cid::try_from(cid_str.as_str()) {
+                        e.insert((event.time.clone(), cid));
+                    }
                 }
             }
         }
@@ -117,7 +117,7 @@ pub(crate) async fn get_records_since_rev(
     let mut profile_val: Option<RecordDescript> = None;
     let mut posts: Vec<RecordDescript> = Vec::new();
 
-    for (collection, rkey) in touched.keys() {
+    for ((collection, rkey), (indexed_at_time, op_cid)) in touched.iter() {
         let record_path = format!("{}/{}", collection, rkey);
         let json_val = match repo_engine::get_record_json(&mut repo, &record_path).await {
             Ok(Some(val)) => val,
@@ -129,23 +129,12 @@ pub(crate) async fn get_records_since_rev(
             }
         };
 
-        // Get the record's CID
-        let cid = match repo_engine::get_record_cid(&mut repo, &record_path).await {
-            Ok(Some(cid)) => cid,
-            Ok(None) => continue, // Record was deleted; skip.
-            Err(err) => {
-                tracing::debug!(error = %err, collection, rkey, "failed to get record CID");
-                continue;
-            }
-        };
-
         let uri = format!("at://{}/{}/{}", did, collection, rkey);
-        let indexed_at = kept_time.clone().unwrap_or_default();
 
         let descript = RecordDescript {
             uri,
-            cid: cid.to_string(),
-            indexed_at,
+            cid: op_cid.to_string(),
+            indexed_at: indexed_at_time.clone(),
             record: json_val,
         };
 
@@ -272,6 +261,8 @@ pub(crate) async fn pipethrough_munged(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::routes::test_utils::{access_jwt, seed_account_with_repo, put_record_request, delete_record_request};
+    use tower::ServiceExt;
 
     #[test]
     fn local_lag_ms_returns_none_for_empty_records() {
@@ -391,5 +382,174 @@ mod tests {
         assert_eq!(local.count, 3);
         assert_eq!(local.posts.len(), 2);
         assert!(local.profile.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_get_records_since_rev_ac5_3_none_header_rev_returns_empty() {
+        let state = crate::routes::test_utils::state_with_master_key().await;
+        let did = "did:plc:test789";
+        seed_account_with_repo(&state.db, did).await;
+
+        let local = get_records_since_rev(&state, did, None).await;
+
+        assert_eq!(
+            local.count, 0,
+            "missing header_rev should return empty LocalRecords"
+        );
+        assert!(local.profile.is_none());
+        assert!(local.posts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_records_since_rev_ac5_1_returns_records_after_header_rev() {
+        let state = crate::routes::test_utils::state_with_master_key().await;
+        let did = "did:plc:test123";
+        seed_account_with_repo(&state.db, did).await;
+
+        let app = crate::app::app(state.clone());
+        let token = access_jwt(&state.jwt_secret, did);
+
+        let post_req_1 = put_record_request(
+            did,
+            "app.bsky.feed.post",
+            "post1",
+            serde_json::json!({ "record": { "text": "first post" } }),
+            Some(&token),
+        );
+
+        let _post1_resp = app.clone().oneshot(post_req_1).await.unwrap();
+
+        let post_req_2 = put_record_request(
+            did,
+            "app.bsky.feed.post",
+            "post2",
+            serde_json::json!({ "record": { "text": "second post" } }),
+            Some(&token),
+        );
+
+        let _post2_resp = app.clone().oneshot(post_req_2).await.unwrap();
+
+        let profile_req = put_record_request(
+            did,
+            "app.bsky.actor.profile",
+            "self",
+            serde_json::json!({ "record": { "displayName": "Test User" } }),
+            Some(&token),
+        );
+
+        let _profile_resp = app.clone().oneshot(profile_req).await.unwrap();
+
+        let local = get_records_since_rev(&state, did, Some("0")).await;
+
+        assert!(
+            local.count >= 3,
+            "should have at least 1 profile + 2 posts (got {})",
+            local.count
+        );
+        assert!(
+            local.profile.is_some(),
+            "should have profile, got: {:?}",
+            local.profile
+        );
+        assert!(
+            local.posts.len() >= 2,
+            "should have at least 2 posts (got {})",
+            local.posts.len()
+        );
+
+        if let Some(profile) = &local.profile {
+            assert!(profile.uri.contains("app.bsky.actor.profile"));
+            assert!(profile.uri.contains("self"));
+        }
+
+        for post in &local.posts {
+            assert!(post.uri.contains("app.bsky.feed.post"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_records_since_rev_ac5_2_excludes_deleted_records() {
+        let state = crate::routes::test_utils::state_with_master_key().await;
+        let did = "did:plc:test456";
+        seed_account_with_repo(&state.db, did).await;
+
+        let app = crate::app::app(state.clone());
+        let token = access_jwt(&state.jwt_secret, did);
+
+        let post_req = put_record_request(
+            did,
+            "app.bsky.feed.post",
+            "post_to_delete",
+            serde_json::json!({ "record": { "text": "will be deleted" } }),
+            Some(&token),
+        );
+
+        let _post_resp = app.clone().oneshot(post_req).await.unwrap();
+
+        let delete_req = delete_record_request(
+            did,
+            "app.bsky.feed.post",
+            "post_to_delete",
+            serde_json::json!({}),
+            Some(&token),
+        );
+
+        let _delete_resp = app.clone().oneshot(delete_req).await.unwrap();
+
+        let local = get_records_since_rev(&state, did, Some("0")).await;
+
+        assert_eq!(
+            local.count, 0,
+            "deleted record should not appear in local records"
+        );
+        assert!(local.posts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_records_since_rev_indexed_at_per_record() {
+        let state = crate::routes::test_utils::state_with_master_key().await;
+        let did = "did:plc:test_indexed_at";
+        seed_account_with_repo(&state.db, did).await;
+
+        let app = crate::app::app(state.clone());
+        let token = access_jwt(&state.jwt_secret, did);
+
+        let post_req = put_record_request(
+            did,
+            "app.bsky.feed.post",
+            "post1",
+            serde_json::json!({ "record": { "text": "first" } }),
+            Some(&token),
+        );
+
+        let _post_resp = app.clone().oneshot(post_req).await.unwrap();
+
+        let profile_req = put_record_request(
+            did,
+            "app.bsky.actor.profile",
+            "self",
+            serde_json::json!({ "record": { "displayName": "Test" } }),
+            Some(&token),
+        );
+
+        let _profile_resp = app.clone().oneshot(profile_req).await.unwrap();
+
+        let local = get_records_since_rev(&state, did, Some("0")).await;
+
+        assert!(local.count > 0);
+
+        if let Some(profile) = &local.profile {
+            assert!(
+                !profile.indexed_at.is_empty(),
+                "profile should have indexed_at"
+            );
+        }
+
+        for post in &local.posts {
+            assert!(
+                !post.indexed_at.is_empty(),
+                "post should have indexed_at"
+            );
+        }
     }
 }
