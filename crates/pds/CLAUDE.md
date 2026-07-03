@@ -23,7 +23,11 @@ src/
   genesis.rs       — shared did:plc genesis-op machinery (verify/validate, DID-doc + CAR builders, plc.directory POST), used by both create_did.rs and create_account_xrpc.rs
   plc_ops.rs       — shared did:plc rotation/update-op machinery for the interop PLC-signing surface: fetch a DID's current PLC state (audit-log GET), render a DID doc from op fields, parse request verificationMethods/services; used by the identity.*PlcOperation routes
   handle.rs        — handle validation (structural + domain policy), shared by provisioning + handle routes
-  auth/            — authentication primitives (no HTTP, no DB schema ownership)
+  token.rs         — bearer/device token generation + hashing (pure), shared by the auth guards and session-issuing routes
+  code_gen.rs      — random claim-code generation (pure), shared by claim-code + account-creation routes
+  uniqueness.rs    — email/handle pre-flight uniqueness DB checks, shared by the account-creation routes
+  platform.rs      — device `Platform` enum, shared by the device-registration routes
+  auth/            — authentication primitives + route guards (HTTP-aware, no DB schema ownership)
   db/              — SQL query functions + migration runner (no business logic)
   routes/          — HTTP handlers, one file per endpoint
 ```
@@ -154,6 +158,7 @@ Pure authentication logic and middleware. Submodules:
 |---|---|---|
 | `dpop.rs` | Mixed (unavoidable) | DPoP proof validation, nonce store |
 | `extractors.rs` | Imperative Shell | `AuthenticatedUser` axum extractor |
+| `guards.rs` | Imperative Shell | Route-level auth guards: `require_admin`/`require_admin_token`/`require_admin_json` (master token OR signed companion-device request), `require_session`, `require_pending_session`, `require_device_token`; the admin-device request-signing envelope + self-signature verification. Reads request headers and queries `sessions`/`devices`/`admin_devices`; owns no schema |
 | `jwt.rs` | Functional Core | JWT parsing, scope validation, access/refresh token verification, HS256 token issuance |
 | `password.rs` | Functional Core | `hash_password`, `verify_password` (argon2id) |
 | `rate_limit.rs` | Functional Core | Sliding-window login-failure limiter + generic multi-window points limiter (`MultiWindowLimiter`) used by the top-level `rate_limit.rs` middleware |
@@ -179,9 +184,9 @@ and async query functions; no business logic lives here.
 | `plc_operation_tokens.rs` | PLC-operation email-token store (V033): `insert_plc_operation_token` (1-hour TTL) + `consume_plc_operation_token` (atomic single-use, bound to `(token_hash, did)`), gating `signPlcOperation` on the interop migration path |
 | `preferences.rs` | `get_preferences` (DID→stored `app.bsky` preferences JSON blob); `put_preferences` (upsert the blob, overwriting any previous value). Both generic over the executor so `put_preferences.rs` can read-merge-write inside one transaction |
 | `repo_keys.rs` | Per-account repo signing keys: pending-account key storage for the mobile DID ceremony, reserved signing keys for standard account migration, promotion into DID-keyed `signing_keys`, and commit-signer lookup |
-| `transfers.rs` | Planned device-swap sessions (V027/V029/V030): `insert_transfer` opens a `pending` transfer for a DID, sweeping any expired active row first then letting the partial unique indexes reject a still-active duplicate (→ `DuplicateActive`, the 409 path) or an already-taken active code (→ `CodeCollision`, caller regenerates and retries). Transfer-accept query helpers store promoted-device credentials in `transfer_devices`; completion helpers revoke superseded sessions/transfer-device credentials and append `transfer_audit_events`. `transfer_device_token_exists` lets the `routes/auth.rs` device-token auth path accept those credentials later. Wired by `routes/transfer_initiate.rs`, the root `transfer.rs` accept/complete workflows, `routes/transfer_accept.rs`, `routes/transfer_complete.rs`, and `routes/auth.rs` |
+| `transfers.rs` | Planned device-swap sessions (V027/V029/V030): `insert_transfer` opens a `pending` transfer for a DID, sweeping any expired active row first then letting the partial unique indexes reject a still-active duplicate (→ `DuplicateActive`, the 409 path) or an already-taken active code (→ `CodeCollision`, caller regenerates and retries). Transfer-accept query helpers store promoted-device credentials in `transfer_devices`; completion helpers revoke superseded sessions/transfer-device credentials and append `transfer_audit_events`. `transfer_device_token_exists` lets the `auth/guards.rs` device-token auth path accept those credentials later. Wired by `routes/transfer_initiate.rs`, the root `transfer.rs` accept/complete workflows, `routes/transfer_accept.rs`, `routes/transfer_complete.rs`, and `auth/guards.rs` |
 | `firehose_seq.rs` | Persistent firehose event log (V028): `max_seq` (seed the sequencer on boot), `insert_event` (append one sequenced `#commit`/`#account`/`#identity`/`#sync` row with an explicit `seq`), `events_in_range(after, upper, limit)` (the cursor-replay page query). Consumed by `firehose.rs` (persist-before-broadcast) and `routes/sync_subscribe_repos.rs` (replay paging) |
-| `admin_devices.rs` | Operator companion app admin-device model (V025): pairing-code mint/consume (single-use), device insert/get/list/revoke (derived active status) + `touch_last_seen` (liveness bump on auth), nonce insert-if-absent + stale-nonce sweep (anti-replay). Pairing/register wired by `routes/admin_devices.rs`; the `require_admin` signed-request guard (`routes/auth.rs`) consumes `get_device`/`insert_nonce_if_absent`/`touch_last_seen`; the list/revoke routes (`routes/admin_devices.rs`) consume `list_devices`/`revoke_device`/`get_device` |
+| `admin_devices.rs` | Operator companion app admin-device model (V025): pairing-code mint/consume (single-use), device insert/get/list/revoke (derived active status) + `touch_last_seen` (liveness bump on auth), nonce insert-if-absent + stale-nonce sweep (anti-replay). Pairing/register wired by `routes/admin_devices.rs`; the `require_admin` signed-request guard (`auth/guards.rs`) consumes `get_device`/`insert_nonce_if_absent`/`touch_last_seen`; the list/revoke routes (`routes/admin_devices.rs`) consume `list_devices`/`revoke_device`/`get_device` |
 
 See [`src/db/CLAUDE.md`](src/db/CLAUDE.md) for migration history and invariants.
 
@@ -254,10 +259,6 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `activate_account.rs` | `POST /xrpc/com.atproto.server.activateAccount` (clear deactivation, emit `#account` firehose event on transition) |
 | `oauth_client_metadata.rs` | `GET /oauth/client-metadata.json` (OAuth client metadata per ATProto spec) |
 | `provisioning_session.rs` | Provisioning session creation (email + password → session token) |
-| `code_gen.rs` | Claim code generation (random alphanumeric codes) |
-| `uniqueness.rs` | Pre-flight uniqueness checks for email and handle (Functional Core) |
-| `auth.rs` | Route-level auth middleware (`require_admin` [master token OR device signature], `require_admin_token`, `require_pending_session`, `require_session`, `require_device_token`) |
-| `token.rs` | Bearer token generation helpers |
 | `test_utils.rs` | Test helpers (excluded from production builds) |
 
 ## Hard Rules

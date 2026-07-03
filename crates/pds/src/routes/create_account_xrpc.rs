@@ -37,7 +37,7 @@ use crate::db::repo_keys::{
     RepoSigningKey,
 };
 use crate::identity_resolution::{atproto_verification_key, resolve_did_document};
-use crate::routes::uniqueness::{email_taken, handle_taken};
+use crate::uniqueness::{email_taken, handle_taken};
 
 /// The lexicon method a migration service-auth token must authorize (when it carries an `lxm`).
 const CREATE_ACCOUNT_LXM: &str = "com.atproto.server.createAccount";

@@ -34,8 +34,8 @@ use axum::{extract::State, http::HeaderMap, Json};
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
+use crate::auth::guards::require_session;
 use crate::db::dids::{fetch_also_known_as, update_also_known_as};
-use crate::routes::auth::require_session;
 use common::{ApiError, ErrorCode};
 
 #[derive(Deserialize)]

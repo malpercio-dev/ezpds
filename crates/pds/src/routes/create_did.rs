@@ -58,9 +58,9 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::app::AppState;
+use crate::auth::guards::require_pending_session;
 use crate::auth::password::hash_password;
 use crate::db::is_unique_violation;
-use crate::routes::auth::require_pending_session;
 use crate::token::generate_token;
 use common::{ApiError, ErrorCode};
 

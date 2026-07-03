@@ -1,3 +1,5 @@
+// pattern: Imperative Shell
+//
 // DNS abstractions for handle management.
 //
 // DnsProvider — manages DNS records for handles:

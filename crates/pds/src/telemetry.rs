@@ -1,3 +1,5 @@
+// pattern: Imperative Shell
+
 use anyhow::Context;
 use common::TelemetryConfig;
 use opentelemetry::trace::TracerProvider as _;

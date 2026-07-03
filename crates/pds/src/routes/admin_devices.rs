@@ -25,12 +25,12 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
+use crate::auth::guards;
 use crate::db::admin_devices::{
     consume_pairing_code, get_device, get_pairing_code, insert_device, insert_pairing_code,
     list_devices, revoke_device, AdminDeviceRow, NewAdminDevice,
 };
 use crate::db::is_unique_violation;
-use crate::routes::auth;
 
 /// Default pairing-code lifetime: long enough to scan a QR, short enough that an
 /// unclaimed code's exposure window stays small. Mirrors the design's "~5 minutes".
@@ -71,7 +71,7 @@ pub async fn mint_pairing_code(
     Json(payload): Json<PairingCodeRequest>,
 ) -> Result<Json<PairingCodeResponse>, ApiError> {
     // Auth first, before validation, so unauthenticated callers learn nothing.
-    auth::require_admin_token(&headers, &state)?;
+    guards::require_admin_token(&headers, &state)?;
 
     if payload.expires_in_minutes < 1 || payload.expires_in_minutes > MAX_PAIRING_TTL_MINUTES {
         return Err(ApiError::new(
@@ -197,12 +197,12 @@ pub async fn register_admin_device(
             ApiError::new(ErrorCode::InternalError, "pairing lookup failed")
         })?;
     if !code_row.as_ref().is_some_and(|c| c.is_pending()) {
-        return Err(auth::invalid_registration_credentials());
+        return Err(guards::invalid_registration_credentials());
     }
 
     // --- Self-signature must verify against the supplied public key ---
     // Proves the caller holds the private key, not just a copied public key.
-    auth::verify_device_self_signature(
+    guards::verify_device_self_signature(
         &payload.pairing_code,
         &payload.public_key,
         payload.timestamp,
@@ -226,7 +226,7 @@ pub async fn register_admin_device(
             ApiError::new(ErrorCode::InternalError, "registration failed")
         })?;
     if !consumed {
-        return Err(auth::invalid_registration_credentials());
+        return Err(guards::invalid_registration_credentials());
     }
 
     insert_device(
@@ -306,7 +306,7 @@ pub struct ListDevicesResponse {
 /// `GET /v1/admin/devices` — list every registered companion-app device.
 ///
 /// Admin-authed: the master token **or** an active device's signed request
-/// ([`auth::require_admin`]). The signature binds the method, path, and (empty) body,
+/// ([`guards::require_admin`]). The signature binds the method, path, and (empty) body,
 /// so this read is gated by the same envelope as the write endpoints. Returns both
 /// active and revoked devices with a derived `status`, so the operator can audit and
 /// re-authorize devices that were cut off server-side.
@@ -317,7 +317,7 @@ pub async fn list_admin_devices(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<ListDevicesResponse>, Response> {
-    auth::require_admin(method.as_str(), uri.path(), &headers, &body, &state)
+    guards::require_admin(method.as_str(), uri.path(), &headers, &body, &state)
         .await
         .map_err(IntoResponse::into_response)?;
 
@@ -341,7 +341,7 @@ pub struct RevokeDeviceResponse {
 /// `POST /v1/admin/devices/:id/revoke` — revoke a companion-app device.
 ///
 /// Admin-authed: the master token **or** an active device's signed request
-/// ([`auth::require_admin`]) — a revoked device cannot reach this route (its own
+/// ([`guards::require_admin`]) — a revoked device cannot reach this route (its own
 /// signed requests are already denied with 403), so the caller is always the master
 /// token or another active device. The concrete `:id` is part of the signed path, so
 /// a signature minted to revoke one device cannot revoke another. A device may revoke
@@ -358,7 +358,7 @@ pub async fn revoke_admin_device(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<RevokeDeviceResponse>, Response> {
-    auth::require_admin(method.as_str(), uri.path(), &headers, &body, &state)
+    guards::require_admin(method.as_str(), uri.path(), &headers, &body, &state)
         .await
         .map_err(IntoResponse::into_response)?;
 
@@ -395,7 +395,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
-    use crate::routes::auth::device_registration_sign_string;
+    use crate::auth::guards::device_registration_sign_string;
     use crate::routes::test_utils::{body_json, test_state_with_admin_token};
 
     // ── Helpers ──────────────────────────────────────────────────────────────
@@ -419,7 +419,7 @@ mod tests {
         let json = body_json(response).await;
         assert_eq!(
             json["error"]["message"].as_str().unwrap(),
-            auth::INVALID_REGISTRATION_CREDENTIALS,
+            guards::INVALID_REGISTRATION_CREDENTIALS,
         );
     }
 
@@ -791,7 +791,7 @@ mod tests {
     // `get_device`, `insert_device`, `revoke_device`, and `NewAdminDevice` are already
     // in scope via `use super::*`; only the per-request signing helpers are pulled in.
 
-    use crate::routes::auth::{
+    use crate::auth::guards::{
         admin_request_sign_string, ADMIN_DEVICE_HEADER, ADMIN_NONCE_HEADER, ADMIN_SIGNATURE_HEADER,
         ADMIN_TIMESTAMP_HEADER,
     };

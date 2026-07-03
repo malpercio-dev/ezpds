@@ -1,3 +1,5 @@
+// pattern: Imperative Shell
+
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;

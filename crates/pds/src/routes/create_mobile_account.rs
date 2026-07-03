@@ -20,7 +20,7 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::handle::validate_handle;
-use crate::routes::register_device::Platform;
+use crate::platform::Platform;
 use crate::token::generate_token;
 
 #[derive(Deserialize)]
@@ -65,7 +65,7 @@ pub async fn create_mobile_account(
     }
 
     // --- Email uniqueness: fast-path rejection before INSERT ---
-    if crate::routes::uniqueness::email_taken(&state.db, &payload.email)
+    if crate::uniqueness::email_taken(&state.db, &payload.email)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to check email uniqueness");
@@ -79,7 +79,7 @@ pub async fn create_mobile_account(
     }
 
     // --- Handle uniqueness: fast-path rejection before INSERT ---
-    if crate::routes::uniqueness::handle_taken(&state.db, &payload.handle)
+    if crate::uniqueness::handle_taken(&state.db, &payload.handle)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to check handle uniqueness");

@@ -17,10 +17,10 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
+use crate::auth::guards::require_admin;
 use crate::auth::validation::is_valid_did;
 use crate::db::accounts::{get_repo_status, AccountLifecycle};
 use crate::routes::admin_subject_defs::{RepoRefView, StatusAttrView};
-use crate::routes::auth::require_admin;
 
 #[derive(Deserialize)]
 pub struct GetSubjectStatusParams {

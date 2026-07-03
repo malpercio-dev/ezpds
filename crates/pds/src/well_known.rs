@@ -1,3 +1,5 @@
+// pattern: Imperative Shell
+//
 // HTTP well-known abstraction for handle resolution.
 //
 // WellKnownResolver — resolves handles via GET https://<handle>/.well-known/atproto-did.

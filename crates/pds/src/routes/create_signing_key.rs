@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::routes::auth::require_admin_json;
+use crate::auth::guards::require_admin_json;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]

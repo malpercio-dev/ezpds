@@ -5,7 +5,6 @@ pub mod admin_devices;
 mod admin_subject_defs;
 pub mod apply_writes;
 pub mod atproto_did;
-pub(crate) mod auth;
 pub mod check_account_status;
 pub mod claim_codes;
 pub mod create_account;
@@ -78,9 +77,7 @@ pub mod update_handle;
 pub mod update_subject_status;
 pub mod upload_blob;
 
-mod code_gen;
 mod preference_scope;
-pub(crate) mod uniqueness;
 
 #[cfg(test)]
 pub(crate) mod test_utils;

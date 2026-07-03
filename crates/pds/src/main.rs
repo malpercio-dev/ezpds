@@ -19,6 +19,7 @@ mod genesis;
 mod handle;
 mod identity_resolution;
 mod iroh_tunnel;
+mod platform;
 mod plc_ops;
 mod rate_limit;
 mod record_write;
