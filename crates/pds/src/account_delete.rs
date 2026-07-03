@@ -66,10 +66,22 @@ const DELETE_BY_DID: &[&str] = &[
     "DELETE FROM reserved_signing_keys WHERE did = ?",
 ];
 
-/// The account's content-addressed repo block store, keyed by `account_did`. Scoped by
-/// `account_did`, so the same logical block owned by another account is a distinct row and is
-/// untouched. (`blobs` is deleted separately, via `DELETE ... RETURNING`, so the reclaimed file
-/// list is atomic with the rows actually removed — see [`purge_account`].)
+/// The account's rows in the content-addressed repo block store.
+///
+/// **Known cross-account hazard.** `blocks` is keyed by `cid` *globally* (`cid` is the PRIMARY
+/// KEY; `account_did` records only whichever account wrote a given block *first*, and a repeat
+/// write of the same content is an `ON CONFLICT(cid) DO NOTHING` no-op). Byte-identical blocks
+/// shared across accounts — most visibly the empty-MST node every repo's tree references — are
+/// therefore stored once, owned by the first writer. A blanket `WHERE account_did = ?` can thus
+/// delete a block that another live account still references, corrupting that account's repo. This
+/// is the same account-scoped-deletion hazard the commit-time GC (`delete_unreachable_blocks`)
+/// already carries; the proper fix is a refcount-aware / per-account-copy block store, tracked as
+/// its own hardening task, not fixed ad hoc here. We accept the hazard for parity with the
+/// existing GC — and it is unavoidable regardless: `blocks.account_did` is
+/// `NOT NULL REFERENCES accounts(did)`, so these rows *must* be removed before the `accounts` row
+/// can be deleted at all. (`blobs`, which shares the same global-`cid` shape and hazard, is deleted
+/// separately via `DELETE ... RETURNING` so the reclaimed file list is atomic with the rows
+/// removed — see [`purge_account`].)
 const DELETE_BLOCKS: &str = "DELETE FROM blocks WHERE account_did = ?";
 
 /// Permanently delete an account and everything it owns, atomically, and announce the removal on
@@ -115,7 +127,11 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
 
     // Delete the blob rows and capture their on-disk paths in the same statement, so the reclaim
     // list is exactly the set of rows removed — no pre-transaction snapshot that a racing upload
-    // could slip past. Files are removed after the transaction commits (below).
+    // could slip past. Files are removed after the transaction commits (below). Like `blocks`,
+    // `blobs` is a global-`cid` store (`account_did` = first writer), so this carries the same
+    // accepted cross-account hazard documented on `DELETE_BLOCKS`: a blob whose content another
+    // account also uploaded is removed here (file included). Removing the rows is likewise forced
+    // by the `NOT NULL REFERENCES accounts(did)` FK.
     let blob_files: Vec<(String, String)> =
         sqlx::query_as("DELETE FROM blobs WHERE account_did = ? RETURNING cid, storage_path")
             .bind(did)
