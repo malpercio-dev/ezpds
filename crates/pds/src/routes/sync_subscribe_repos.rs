@@ -9,8 +9,8 @@
 //! * `op = 1` is a message; `t` names the type (`#commit`).
 //! * `op = -1` is an error; the body carries `{error, message}` and the stream then closes.
 //!
-//! A `cursor` query parameter requests replay: the firehose materialises every event whose `seq`
-//! is greater than the cursor from its durable log (so replay survives a restart), and the handler
+//! A `cursor` query parameter requests replay: the firehose pages every event whose `seq` is
+//! greater than the cursor from its durable log (so replay survives a restart), and the handler
 //! sends those before streaming live events with no gap. A cursor ahead of the current sequence is
 //! rejected with a `FutureCursor` error frame. A
 //! subscriber that cannot keep up overflows the broadcast buffer, receives a
@@ -21,12 +21,14 @@
 //! replay backlog — and a peer that stops answering (no Pong within the read deadline) is
 //! dropped promptly, rather than only when the next Ping send happens to fail.
 
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::response::Response;
+use futures_util::future::{BoxFuture, FutureExt};
 use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -74,7 +76,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) 
 
     // Attach to the firehose under one lock: `subscribe_from` snapshots the live receiver and the
     // sequence frontier together (so a concurrent commit can't produce a spurious FutureCursor or
-    // slip an event past the boundary), then materialises the durable replay backlog for
+    // slip an event past the boundary), then returns a reader for the durable replay backlog for
     // `(cursor, upper]` from `repo_seq` — paged and density-checked in the firehose layer. The
     // live stream (`rx`) then carries everything with `seq > upper`, so replay and live are exactly
     // disjoint: no gap, no duplicate across the boundary.
@@ -111,21 +113,58 @@ async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) 
 
     // Replay the missed backlog oldest-first before any live event, then stream live. Both
     // phases share one `select!` so the heartbeat and the read-deadline / close detection stay
-    // live throughout — including during a long replay, the case a bare replay loop left silent.
-    let mut replay = replay.into_iter();
-    let mut replay_done = false;
+    // live throughout — including while replay pages are read from SQLite. The small in-memory
+    // queue holds at most one replay page, so an old cursor cannot materialise the whole backlog.
+    let mut replay = replay;
+    let mut replay_read: Option<BoxFuture<'_, _>> = None;
+    let mut replay_queue = VecDeque::new();
+    let mut replay_done = replay.is_none();
 
     loop {
+        if !replay_done && replay_queue.is_empty() && replay_read.is_none() {
+            let reader = replay
+                .take()
+                .expect("replay reader exists until replay is done");
+            replay_read = Some(reader.into_next_batch().boxed());
+        }
+
         tokio::select! {
             // While the backlog drains, the live branch below stays disabled so a newer commit
-            // can't overtake a buffered one; once `replay.next()` is exhausted we flip to live.
-            maybe_event = async { replay.next() }, if !replay_done => match maybe_event {
-                Some(event) => {
-                    if !send_event(&mut sender, &event).await {
+            // can't overtake a replayed one. Pull one decoded event from the current page at a
+            // time, giving the heartbeat/read branches a chance between sends.
+            maybe_event = async { replay_queue.pop_front() }, if !replay_done && !replay_queue.is_empty() => if let Some(event) = maybe_event {
+                if !send_event(&mut sender, &event).await {
+                    break;
+                }
+            },
+            batch = async {
+                replay_read
+                    .as_mut()
+                    .expect("replay read future exists while replay is not done")
+                    .await
+            }, if replay_read.is_some() => {
+                replay_read = None;
+                let (reader, result) = batch;
+                match result {
+                    Ok(events) if events.is_empty() => {
+                        replay_done = true;
+                        // Drop the reader promptly so its retention/replay lock is released before
+                        // live streaming begins.
+                        drop(reader);
+                        replay = None;
+                    }
+                    Ok(events) => {
+                        replay = Some(reader);
+                        replay_queue.extend(events);
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "failed to read firehose replay page; closing");
+                        let frame = encode_error_frame("InternalError", "failed to read replay backlog");
+                        let _ = send_message(&mut sender, Message::Binary(Bytes::from(frame))).await;
+                        let _ = tokio::time::timeout(READ_TIMEOUT, sender.close()).await;
                         break;
                     }
                 }
-                None => replay_done = true,
             },
             event = rx.recv(), if replay_done => match event {
                 Ok(event) => {

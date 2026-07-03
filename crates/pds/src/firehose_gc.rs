@@ -518,7 +518,7 @@ mod tests {
     }
 
     // Replay-degradation contract: a cursor below the pruned window degrades to best-effort
-    // rather than failing closed. Asserted in `firehose.rs`'s `read_replay` tests; this module
+    // rather than failing closed. Asserted in `firehose.rs`'s `ReplayReader` tests; this module
     // owns only the pruning, so it just verifies the suffix stays dense and the frontier intact.
     #[tokio::test]
     async fn gc_retained_suffix_is_dense_and_reaches_the_frontier() {
@@ -538,7 +538,9 @@ mod tests {
         else {
             panic!("cursor 7 is inside the retained window");
         };
-        let seqs: Vec<u64> = sub.replay.iter().map(|e| e.seq()).collect();
+        let seqs = crate::firehose::collect_replay_seqs(sub.replay)
+            .await
+            .unwrap();
         assert_eq!(
             seqs,
             vec![8, 9, 10],
