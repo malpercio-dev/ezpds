@@ -78,6 +78,15 @@ pub async fn import_repo(
             "account must be deactivated to import a repo",
         ));
     }
+    // Import is first-write-wins: reject up front if a repo has already been imported, so a retried
+    // or racing call cannot silently overwrite it. The `set_repo_root_for_deactivated` guard below
+    // re-checks this atomically at commit time, closing the gap against a concurrent import.
+    if write_state.repo_root_cid.is_some() {
+        return Err(ApiError::new(
+            ErrorCode::Conflict,
+            "account already has a repo",
+        ));
+    }
 
     // Read the full CAR body, enforcing the size cap.
     let car_bytes = axum::body::to_bytes(request.into_body(), MAX_IMPORT_CAR_BYTES)
@@ -148,10 +157,11 @@ pub async fn import_repo(
         ApiError::new(ErrorCode::InternalError, "failed to import repo")
     })?;
     if !updated {
-        // The account left the deactivated state between the precondition check and here.
+        // The account was activated or already had a repo imported between the precondition check
+        // above and this atomic guard.
         return Err(ApiError::new(
             ErrorCode::Conflict,
-            "account is no longer deactivated",
+            "account is no longer an empty deactivated repo target",
         ));
     }
 
@@ -262,11 +272,16 @@ mod tests {
         let state = state_with_master_key().await;
         let did = "did:plc:importgarbage";
         seed_account_with_repo(&state.db, did).await;
-        sqlx::query("UPDATE accounts SET deactivated_at = datetime('now') WHERE did = ?")
-            .bind(did)
-            .execute(&state.db)
-            .await
-            .unwrap();
+        // A real migration target is deactivated AND repo-less; clear the seeded repo so the CAR
+        // parse (not the repo-exists guard) is what rejects the request.
+        sqlx::query(
+            "UPDATE accounts SET deactivated_at = datetime('now'), repo_root_cid = NULL, \
+             repo_rev = NULL WHERE did = ?",
+        )
+        .bind(did)
+        .execute(&state.db)
+        .await
+        .unwrap();
         let token = access_jwt(&state.jwt_secret, did);
         let app = crate::app::app(state);
         let resp = app
@@ -328,5 +343,29 @@ mod tests {
         );
         let body = crate::routes::test_utils::body_json(r).await;
         assert_eq!(body["value"]["text"], "migrated");
+    }
+
+    #[tokio::test]
+    async fn reimport_over_existing_repo_returns_409() {
+        let state = state_with_master_key().await;
+        let did = "did:plc:importtwice";
+        seed_account_with_repo(&state.db, did).await;
+        let token = access_jwt(&state.jwt_secret, did);
+        let app = crate::app::app(state.clone());
+
+        let car = export_then_reset(&state, did).await;
+
+        // First import into the deactivated, repo-less account succeeds.
+        let r1 = app
+            .clone()
+            .oneshot(import_req(car.clone(), Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(r1.status(), StatusCode::OK);
+
+        // A second import (still deactivated, but now has a repo) is rejected — import is
+        // first-write-wins, never a silent overwrite.
+        let r2 = app.oneshot(import_req(car, Some(&token))).await.unwrap();
+        assert_eq!(r2.status(), StatusCode::CONFLICT);
     }
 }
