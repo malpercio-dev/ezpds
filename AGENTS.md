@@ -21,6 +21,7 @@ Last verified: 2026-06-30
 - `just ci` - Full local gate (fmt-check, lock-check, bruno-check, swift-rs-check, clippy, test, audit) — the same checks CI runs
 
 ## CI/CD
+
 CI runs on **GitHub Actions**, split into a Linux **PDS** lane and a macOS **iOS** lane (the iOS app needs macOS + Xcode that Linux runners lack). Deploys are **not** run by CI — they use **Railway's native GitHub integration**: Railway is connected to the repo and builds/deploys the `Dockerfile` itself, so there is **no `railway up` and no Railway token in CI**.
 
 **PDS (`.github/workflows/ci.yml`).** A `just ci-pds` test gate (the Linux gate — like `just ci` but `--exclude identity-wallet --exclude admin-companion`, since the iOS apps need the Apple/GTK toolchain absent in CI) runs on PRs to `main`, on push to `main`, on push to `production`, and on a weekly schedule (advisory freshness: `cargo audit` re-scans Cargo.lock against the RustSec DB even when the repo is idle — also the re-check cadence for `.cargo/audit.toml` ignores). A separate path-filtered **`nix-check.yml`** lane runs `nix flake check --impure --accept-flake-config` whenever `flake.nix`/`flake.lock`/`devenv.nix`/`nix/**` change, so a broken flake can no longer merge unnoticed. Both Railway environments use "Wait for CI", so the green check is the deploy gate:

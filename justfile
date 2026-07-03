@@ -274,10 +274,9 @@ ios-pr-check: ios-check
 # UPLOAD uses the App Store Connect API key: APPLE_API_KEY + APPLE_API_ISSUER and the
 # matching AuthKey_<id>.p8 in ~/.appstoreconnect/private_keys/. See docs/ios-cicd.md.
 
-# Build a signed, App Store-method IPA (for TestFlight or the App Store). Assumes the
-# Xcode project exists: run `cargo tauri ios init` + `just ios-postinit` once first
-# (CI does both every run). NOTE: the --export-method token tracks Xcode's names
-# (`app-store-connect` on Xcode 15+); confirm once with `cargo tauri ios build --help`.
+# Shared implementation behind `ios-ipa`/`admin-ipa` (private): stamp a unique,
+# monotonic CFBundleVersion into the app's tauri.conf.json, build the signed App
+# Store IPA, and restore the config afterwards.
 #
 # BUILD NUMBER: TestFlight rejects duplicate CFBundleVersions and requires them to
 # increase, so CI and the local escape hatch must share ONE stamping scheme — stamping
@@ -285,23 +284,39 @@ ios-pr-check: ios-check
 # on the committed placeholder value. Default is UTC epoch seconds: unique, strictly
 # increasing across CI and local runs alike, immune to the reset a workflow-file rename
 # inflicts on GITHUB_RUN_NUMBER, and larger than any run number already uploaded (so
-# the changeover is monotonic). Override with an explicit value: `just ios-ipa 12345`.
-# The stamp is written into tauri.conf.json for the build and restored on exit, so a
-# local run never leaves the working tree dirty.
-ios-ipa build_number="": ios-check
+# the changeover is monotonic).
+#
+# RESTORE is `git checkout` of the committed file, not a backup copy: a SIGKILL skips
+# the EXIT trap, and with a copy-based restore the next run would back up the
+# already-stamped file as its new "original", losing the committed value for good.
+# Because the git restore discards local edits to the file, the guard refuses to run
+# while tauri.conf.json has uncommitted changes.
+_ipa app_dir build_number:
     #!/usr/bin/env bash
     set -euo pipefail
-    # Drop any stale .ipa first (e.g. a pre-rename artifact) so `ios-upload` can't pick it up.
-    rm -f apps/identity-wallet/src-tauri/gen/apple/build/arm64/*.ipa
-    conf="$(pwd)/apps/identity-wallet/src-tauri/tauri.conf.json"
+    # Drop any stale .ipa first (e.g. a pre-rename artifact) so the upload recipes can't pick it up.
+    rm -f {{app_dir}}/src-tauri/gen/apple/build/arm64/*.ipa
+    conf="$(pwd)/{{app_dir}}/src-tauri/tauri.conf.json"
+    if ! git diff --quiet -- "$conf"; then
+      echo "✗ $conf has uncommitted changes — commit or stash them first" >&2
+      echo "  (the post-build restore is 'git checkout -- <conf>', which would discard them)" >&2
+      exit 1
+    fi
     bv="{{build_number}}"
     [ -n "$bv" ] || bv="$(date -u +%s)"
-    cp "$conf" "$conf.orig"
-    trap 'mv "$conf.orig" "$conf"' EXIT
+    trap 'git checkout -- "$conf"' EXIT
     tmp="$(mktemp)"
     jq --arg bv "$bv" '.bundle.iOS.bundleVersion = $bv' "$conf" > "$tmp" && mv "$tmp" "$conf"
     echo "CFBundleVersion -> $bv"
-    cd apps/identity-wallet && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && cargo tauri ios build --export-method app-store-connect
+    cd {{app_dir}} && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && cargo tauri ios build --export-method app-store-connect
+
+# Build a signed, App Store-method IPA (for TestFlight or the App Store). Assumes the
+# Xcode project exists: run `cargo tauri ios init` + `just ios-postinit` once first
+# (CI does both every run). NOTE: the --export-method token tracks Xcode's names
+# (`app-store-connect` on Xcode 15+); confirm once with `cargo tauri ios build --help`.
+# Build-number stamping: see `_ipa`. Override the default: `just ios-ipa 12345`.
+ios-ipa build_number="": ios-check
+    just _ipa apps/identity-wallet "{{build_number}}"
 
 # Upload the most recently built IPA to App Store Connect / TestFlight via altool.
 # Requires APPLE_API_KEY (key id) + APPLE_API_ISSUER (issuer id) in the environment
@@ -362,22 +377,10 @@ admin-pr-check: admin-check
 
 # Build a signed, App Store-method IPA for the admin console. Assumes the Xcode
 # project exists: run `cargo tauri ios init` + `just admin-postinit` once first
-# (CI does both every run). BUILD NUMBER: same epoch-seconds stamping scheme as
-# `just ios-ipa` (see the comment there); override: `just admin-ipa 12345`.
+# (CI does both every run). Build-number stamping: see `_ipa`; override:
+# `just admin-ipa 12345`.
 admin-ipa build_number="": admin-check
-    #!/usr/bin/env bash
-    set -euo pipefail
-    # Drop any stale .ipa first so `admin-upload` can't pick it up.
-    rm -f apps/admin-companion/src-tauri/gen/apple/build/arm64/*.ipa
-    conf="$(pwd)/apps/admin-companion/src-tauri/tauri.conf.json"
-    bv="{{build_number}}"
-    [ -n "$bv" ] || bv="$(date -u +%s)"
-    cp "$conf" "$conf.orig"
-    trap 'mv "$conf.orig" "$conf"' EXIT
-    tmp="$(mktemp)"
-    jq --arg bv "$bv" '.bundle.iOS.bundleVersion = $bv' "$conf" > "$tmp" && mv "$tmp" "$conf"
-    echo "CFBundleVersion -> $bv"
-    cd apps/admin-companion && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && cargo tauri ios build --export-method app-store-connect
+    just _ipa apps/admin-companion "{{build_number}}"
 
 # Upload the most recently built admin-companion IPA to App Store Connect / TestFlight
 # via altool. Requires APPLE_API_KEY (key id) + APPLE_API_ISSUER (issuer id) in the

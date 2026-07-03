@@ -45,7 +45,8 @@ jobs:
           persist-credentials: false
 
       - name: Install Nix
-        uses: cachix/install-nix-action@v31
+        # Exact pin (v31 is a moving major tag) — same discipline as the other lanes.
+        uses: cachix/install-nix-action@v31.10.6
         with:
           # The default read-only job token, only used to fetch github:-flake inputs
           # without hitting anonymous API rate limits.
