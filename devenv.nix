@@ -8,6 +8,9 @@
     pkgs.jq
     pkgs.sqlite
     pkgs.pkg-config
+    # cmake: builds aws-lc-sys, the crypto provider behind reqwest 0.13's rustls
+    # TLS backend (needed for host builds and the iOS cross-compile alike).
+    pkgs.cmake
     pkgs.cargo-tauri
     pkgs.nodejs_22
     # pnpm major pinned to 9 to match CI (pnpm/action-setup, version 9.15.9) and the

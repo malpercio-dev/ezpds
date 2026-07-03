@@ -58,3 +58,6 @@ apps/admin-companion/package-lock.json
 apps/identity-wallet/src-tauri/gen/
 apps/admin-companion/src-tauri/gen/
 .pi/extensions/*/node_modules/
+
+# Claude Code agent worktrees (session-local, never committed)
+.claude/worktrees/

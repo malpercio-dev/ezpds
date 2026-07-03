@@ -2,6 +2,9 @@
 
 # ---- build stage ----
 FROM rust:1-bookworm@sha256:19817ead3289c8c631c73df281e18b59b172f6a31f4f563290f69cddd06c30e9 AS build
+# cmake: required to build aws-lc-sys, the crypto provider behind reqwest 0.13's
+# rustls TLS backend (the rust image ships a C toolchain but not cmake).
+RUN apt-get update && apt-get install -y --no-install-recommends cmake && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 # Whole (ignore-trimmed) workspace — needed because cargo resolves all members
 # and the swift-rs [patch.crates-io] path even for `-p pds`.

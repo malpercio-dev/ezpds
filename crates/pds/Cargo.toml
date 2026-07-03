@@ -33,8 +33,9 @@ sqlx = { workspace = true }
 crypto = { workspace = true }
 repo-engine = { workspace = true }
 atrium-repo = { workspace = true }
-# rustls (not native-tls): no system OpenSSL needed in the container image.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+# rustls (not native-tls, via the workspace dep): no system OpenSSL needed in the
+# container image. stream: body streaming for the service proxy.
+reqwest = { workspace = true, features = ["stream"] }
 base64 = { workspace = true }
 rand_core = { workspace = true }
 data-encoding = { workspace = true }
