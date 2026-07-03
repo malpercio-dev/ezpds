@@ -162,7 +162,11 @@ impl<B> tower_http::trace::MakeSpan<B> for OtelMakeSpan {
         let parent_cx = opentelemetry::global::get_text_map_propagator(|p| {
             p.extract(&HeaderMapCarrier(request.headers()))
         });
-        span.set_parent(parent_cx);
+        // set_parent only errs when the span has no OTel layer attached (telemetry
+        // disabled) — the request must still be served, just without a joined trace.
+        if let Err(e) = span.set_parent(parent_cx) {
+            tracing::trace!(error = %e, "could not attach parent trace context to span");
+        }
         span
     }
 }

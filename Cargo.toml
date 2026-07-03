@@ -37,8 +37,9 @@ axum = "0.7"
 http-body-util = "0.1"
 
 # HTTP client (pds)
-# default-features = false: no OpenSSL; future crates must opt in to rustls-tls explicitly.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# default-features = false: no OpenSSL; future crates must opt in to rustls explicitly
+# (the TLS feature was named rustls-tls before reqwest 0.13).
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
@@ -61,13 +62,19 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # Observability
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tracing-opentelemetry = "0.29"
-opentelemetry = { version = "0.28", features = ["trace"] }
-opentelemetry-otlp = { version = "0.28", features = ["trace", "grpc-tonic"] }
-opentelemetry_sdk = { version = "0.28", features = ["rt-tokio", "trace"] }
+# The four OTel crates move in lockstep (tracing-opentelemetry releases track the
+# opentelemetry minor). 0.32 also unifies the workspace on reqwest 0.13 and tonic
+# 0.14/tower 0.5 — older opentelemetry pinned reqwest 0.12 and tonic 0.12, keeping
+# a second major of each compiled into every build.
+tracing-opentelemetry = "0.33"
+opentelemetry = { version = "0.32", features = ["trace"] }
+opentelemetry-otlp = { version = "0.32", features = ["trace", "grpc-tonic"] }
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio", "trace"] }
 
 # HTTP middleware
-tower-http = { version = "0.5", features = ["trace", "cors"] }
+# tower-http 0.6 (not 0.7): unifies with the 0.6.x already in the tree via tauri —
+# 0.7 would reintroduce a dual-major compile of tower-http instead of removing one.
+tower-http = { version = "0.6", features = ["trace", "cors"] }
 tower = { version = "0.5", features = ["util"] }
 
 # ATProto (repo-engine)

@@ -27,9 +27,10 @@ url = "2"
 # serde/serde_json are in workspace.dependencies (root Cargo.toml lines 30-32)
 serde = { workspace = true }
 serde_json = { workspace = true }
-# reqwest with default-features = false + rustls-tls: iOS has no OpenSSL; rustls is the only
-# option for TLS without adding system dependencies. default-features includes OpenSSL support.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# reqwest via the workspace dep (default-features = false + rustls): iOS has no OpenSSL;
+# rustls is the only option for TLS without adding system dependencies. form: the OAuth
+# PAR/token-exchange requests are form-encoded (feature-gated since reqwest 0.13).
+reqwest = { workspace = true, features = ["form"] }
 security-framework = { version = "3", features = ["OSX_10_12"] }
 thiserror = { workspace = true }
 crypto = { workspace = true }

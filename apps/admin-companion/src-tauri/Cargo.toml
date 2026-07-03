@@ -31,7 +31,7 @@ sha2 = { workspace = true }
 base64 = { workspace = true }
 # Per-request nonce (anti-replay) — a fresh UUID v4 per signed request.
 uuid = { workspace = true }
-# Relay HTTP client. default-features = false + rustls-tls: iOS has no OpenSSL, so rustls
+# Relay HTTP client. default-features = false + rustls: iOS has no OpenSSL, so rustls
 # is the only viable TLS backend (same rationale as identity-wallet's pds_client).
 reqwest = { workspace = true }
 # Secure Enclave + Keychain access (real-device and macOS/simulator software paths both
