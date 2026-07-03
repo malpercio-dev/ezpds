@@ -19,10 +19,10 @@ APP_RS="crates/pds/src/app.rs"
 BRUNO_DIR="bruno"
 
 # Routes that intentionally have no Bruno request. Keep this list short and justified.
-#   /static/*path — embedded static assets (fonts) for the landing page, not an API
-#                   endpoint a client would exercise from the collection.
+#   /static/{*path} — embedded static assets (fonts) for the landing page, not an API
+#                     endpoint a client would exercise from the collection.
 EXCLUDED_ROUTES=(
-  "/static/*path"
+  "/static/{*path}"
 )
 
 # --- extract route paths from app.rs -------------------------------------------------
@@ -51,7 +51,7 @@ if [ -z "$bru_paths" ]; then
 fi
 
 # --- segment-wise path matching -------------------------------------------------------
-# Wildcards: route `:seg` matches any one Bruno segment; route `*seg` (axum splat)
+# Wildcards: route `{seg}` matches any one Bruno segment; route `{*seg}` (axum splat)
 # matches one-or-more trailing segments; Bruno `{{var}}` or `:var` matches any one
 # route segment.
 matches() {
@@ -62,13 +62,13 @@ matches() {
   local i n=${#rs[@]} m=${#bs[@]}
   for ((i = 0; i < n; i++)); do
     local r="${rs[i]}"
-    if [[ "$r" == \** ]]; then
+    if [[ "$r" == "{*"* ]]; then
       # splat: consumes the rest, needs at least one segment left
       (( m > i )) && return 0 || return 1
     fi
     (( i < m )) || return 1
     local b="${bs[i]}"
-    [[ "$r" == :* ]] && continue
+    [[ "$r" == "{"*"}" ]] && continue
     [[ "$b" == \{\{*\}\} || "$b" == :* ]] && continue
     [ "$r" = "$b" ] || return 1
   done

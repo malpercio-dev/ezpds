@@ -23,6 +23,7 @@
 
 use std::time::{Duration, Instant};
 
+use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::response::Response;
@@ -82,7 +83,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) 
         Ok(SubscribeOutcome::FutureCursor { .. }) => {
             // A cursor ahead of everything we've emitted is a client error: refuse and close.
             let frame = encode_error_frame("FutureCursor", "cursor is in the future");
-            let _ = send_message(&mut sender, Message::Binary(frame)).await;
+            let _ = send_message(&mut sender, Message::Binary(Bytes::from(frame))).await;
             let _ = tokio::time::timeout(READ_TIMEOUT, sender.close()).await;
             return;
         }
@@ -92,7 +93,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) 
             // reconnects from its last good cursor.
             tracing::error!(error = %e, "failed to assemble firehose replay backlog; closing");
             let frame = encode_error_frame("InternalError", "failed to read replay backlog");
-            let _ = send_message(&mut sender, Message::Binary(frame)).await;
+            let _ = send_message(&mut sender, Message::Binary(Bytes::from(frame))).await;
             let _ = tokio::time::timeout(READ_TIMEOUT, sender.close()).await;
             return;
         }
@@ -137,7 +138,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) 
                         "ConsumerTooSlow",
                         "consumer fell too far behind the firehose; reconnect with your last cursor",
                     );
-                    let _ = send_message(&mut sender, Message::Binary(frame)).await;
+                    let _ = send_message(&mut sender, Message::Binary(Bytes::from(frame))).await;
                     let _ = tokio::time::timeout(READ_TIMEOUT, sender.close()).await;
                     break;
                 }
@@ -150,7 +151,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) 
                 if last_seen.elapsed() >= READ_TIMEOUT {
                     break;
                 }
-                if !send_message(&mut sender, Message::Ping(Vec::new())).await {
+                if !send_message(&mut sender, Message::Ping(Bytes::new())).await {
                     break;
                 }
             }
@@ -189,7 +190,7 @@ async fn send_event(sender: &mut SplitSink<WebSocket, Message>, event: &Firehose
         FirehoseEvent::Identity(identity) => encode_identity_frame(identity),
         FirehoseEvent::Sync(sync) => encode_sync_frame(sync),
     };
-    send_message(sender, Message::Binary(frame)).await
+    send_message(sender, Message::Binary(Bytes::from(frame))).await
 }
 
 /// Send one WebSocket message, bounding the write on [`READ_TIMEOUT`]. A peer that has stopped

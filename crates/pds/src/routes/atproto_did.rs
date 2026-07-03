@@ -1,18 +1,44 @@
 // pattern: Imperative Shell
 //
-// Gathers: Host header from request, DID from handles table
+// Gathers: request host (forwarded/Host header or URI authority), DID from handles table
 // Processes: none (handle → DID lookup is a direct DB read)
 // Returns: 200 text/plain with DID, or 404 if the host is not a registered handle
 
 use axum::{
-    extract::{Host, State},
-    http::{header, StatusCode},
+    extract::State,
+    http::{header, HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Response},
 };
 
 use crate::app::AppState;
 
-pub async fn atproto_did_handler(Host(host): Host, State(state): State<AppState>) -> Response {
+/// Resolve the host the client addressed: `X-Forwarded-Host` (stamped by the deploy
+/// proxy — trusted here because the PDS is only reachable through it) → `Host` header
+/// (HTTP/1.1) → URI authority (HTTP/2 carries `:authority` instead of a Host header).
+///
+/// This replaces axum's `Host` extractor, which 0.8 moved to axum-extra and is being
+/// removed upstream (tokio-rs/axum#3442): honouring a client-supplied
+/// `X-Forwarded-Host` is only safe behind a proxy that overwrites it, which is this
+/// deployment's topology (Railway) — a direct-exposure deployment would need to drop
+/// the forwarded lookup.
+fn request_host(headers: &HeaderMap, uri: &Uri) -> Option<String> {
+    headers
+        .get("x-forwarded-host")
+        .or_else(|| headers.get(header::HOST))
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
+        .or_else(|| uri.authority().map(|a| a.to_string()))
+}
+
+pub async fn atproto_did_handler(
+    headers: HeaderMap,
+    uri: Uri,
+    State(state): State<AppState>,
+) -> Response {
+    let Some(host) = request_host(&headers, &uri) else {
+        // No Host/:authority at all — not resolvable to a handle.
+        return StatusCode::BAD_REQUEST.into_response();
+    };
     // Strip port if present (e.g. "example.com:8080" → "example.com").
     let handle = host.split(':').next().unwrap_or(&host);
 
@@ -62,6 +88,48 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(std::str::from_utf8(&body).unwrap(), did);
+    }
+
+    #[tokio::test]
+    async fn forwarded_host_takes_precedence_over_host_header() {
+        let state = test_state().await;
+        let did = "did:plc:alice123456789012345678901";
+        seed_handle(&state.db, "alice.example.com", did).await;
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/atproto-did")
+                    .header("host", "internal.railway.local")
+                    .header("x-forwarded-host", "alice.example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(std::str::from_utf8(&body).unwrap(), did);
+    }
+
+    #[tokio::test]
+    async fn missing_host_returns_400() {
+        let state = test_state().await;
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/atproto-did")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

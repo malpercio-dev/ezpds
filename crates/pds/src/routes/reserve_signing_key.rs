@@ -7,7 +7,7 @@
 // Implements: POST /xrpc/com.atproto.server.reserveSigningKey
 
 use axum::{
-    extract::{connect_info::ConnectInfo, State},
+    extract::{connect_info::ConnectInfo, rejection::ExtensionRejection, State},
     response::Json,
 };
 use serde::{Deserialize, Serialize};
@@ -38,9 +38,12 @@ const ANONYMOUS_RESERVE_SIGNING_KEY_LIMIT: &str = "reserveSigningKey:<anonymous>
 
 pub async fn reserve_signing_key(
     State(state): State<AppState>,
-    remote_addr: Option<ConnectInfo<SocketAddr>>,
+    remote_addr: Result<ConnectInfo<SocketAddr>, ExtensionRejection>,
     Json(request): Json<ReserveSigningKeyRequest>,
 ) -> Result<Json<ReserveSigningKeyResponse>, ApiError> {
+    // axum 0.8 dropped the blanket `Option<T>` extractor; `Result` keeps the same
+    // "absent under `oneshot` test harnesses" tolerance ConnectInfo needs here.
+    let remote_addr = remote_addr.ok();
     let did = request
         .did
         .as_deref()

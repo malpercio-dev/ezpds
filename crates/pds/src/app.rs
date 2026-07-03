@@ -414,34 +414,34 @@ pub fn app(state: AppState) -> Router {
             "/xrpc/app.bsky.actor.putPreferences",
             post(put_preferences_handler),
         )
-        .route("/xrpc/:method", get(xrpc_handler).post(xrpc_handler))
+        .route("/xrpc/{method}", get(xrpc_handler).post(xrpc_handler))
         .route("/v1/accounts", post(create_account))
         .route("/v1/accounts/claim-codes", post(claim_codes))
         .route("/v1/accounts/mobile", post(create_mobile_account))
         .route("/v1/accounts/sessions", post(create_provisioning_session))
-        .route("/v1/accounts/:id/usage", get(account_usage))
-        .route("/v1/accounts/:id/storage", get(account_storage))
+        .route("/v1/accounts/{id}/usage", get(account_usage))
+        .route("/v1/accounts/{id}/storage", get(account_storage))
         .route("/v1/admin/pairing-codes", post(mint_pairing_code))
         .route(
             "/v1/admin/devices",
             post(register_admin_device).get(list_admin_devices),
         )
-        .route("/v1/admin/devices/:id/revoke", post(revoke_admin_device))
+        .route("/v1/admin/devices/{id}/revoke", post(revoke_admin_device))
         .route("/v1/devices", post(register_device))
-        .route("/v1/devices/:id/pds", get(get_device_pds))
+        .route("/v1/devices/{id}/pds", get(get_device_pds))
         .route("/v1/transfer/initiate", post(transfer_initiate))
         .route("/v1/transfer/accept", post(transfer_accept))
         .route("/v1/transfer/complete", post(transfer_complete))
         .route("/v1/dids", post(create_did_handler))
-        .route("/v1/dids/:did", get(get_did_handler))
+        .route("/v1/dids/{did}", get(get_did_handler))
         .route("/v1/handles", post(create_handle_handler))
-        .route("/v1/handles/:handle", delete(delete_handle_handler))
+        .route("/v1/handles/{handle}", delete(delete_handle_handler))
         .route(
             "/v1/pds/keys",
             get(get_pds_signing_key).post(create_signing_key),
         )
         .route("/v1/repo-signing-key", get(get_repo_signing_key))
-        .route("/static/*path", get(static_handler))
+        .route("/static/{*path}", get(static_handler))
         // Layer order matters (axum applies the *last* `.layer` outermost). We want, outermost →
         // inner: CORS, then Trace, then rate limiting. CORS must wrap the rate limiter so preflight
         // `OPTIONS` are answered (and short-circuited) before any throttling, and so a 429 still

@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 
-use axum::{async_trait, extract::FromRequestParts, http::request::Parts};
+use axum::{extract::FromRequestParts, http::request::Parts};
 use common::ApiError;
 
 use crate::app::AppState;
@@ -22,7 +22,6 @@ pub struct AuthenticatedUser {
     pub scope: AuthScope,
 }
 
-#[async_trait]
 impl FromRequestParts<AppState> for AuthenticatedUser {
     type Rejection = ApiError;
 
