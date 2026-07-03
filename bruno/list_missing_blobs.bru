@@ -1,0 +1,32 @@
+meta {
+  name: List Missing Blobs (listMissingBlobs)
+  type: http
+  seq: 83
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.repo.listMissingBlobs?limit=500
+  body: none
+  auth: bearer
+}
+
+params:query {
+  limit: 500
+  ~cursor:
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  List blob CIDs referenced by the authenticated account's records that have not yet been
+  uploaded — the account-migration blob-transfer checklist. Returns
+  { blobs: [{ cid, recordUri }], cursor? } ordered by CID with cursor pagination
+  (limit 1..=1000, default 500). Drive blob transfer by getBlob (old PDS) then uploadBlob
+  (new PDS) until this list is empty.
+}

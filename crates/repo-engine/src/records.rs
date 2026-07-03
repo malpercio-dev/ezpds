@@ -235,6 +235,57 @@ pub fn record_value_to_json(ipld: &Ipld) -> serde_json::Value {
     }
 }
 
+/// Collect the blob-reference CIDs contained in a single decoded record value.
+///
+/// An ATProto blob reference is a map `{"$type": "blob", "ref": <link>, ...}` whose `ref` is a
+/// CID link — canonically an [`Ipld::Link`] (the form produced when a record is stored via
+/// [`json_to_record_value`]), with a `{"$link": <link>}` map handled as a defensive fallback.
+/// The walk recurses into every nested map and list, so a blob embedded deep inside a record
+/// (e.g. `embed.images[].image`) is found. A CID may appear more than once if the same blob is
+/// referenced repeatedly; the caller deduplicates.
+///
+/// Used by `com.atproto.repo.listMissingBlobs` (the referenced-vs-uploaded diff) and
+/// `com.atproto.server.checkAccountStatus` (the expected-blob count) to derive a repo's blob
+/// references without re-encoding records.
+pub fn record_blob_cids(record: &Ipld) -> Vec<Cid> {
+    let mut out = Vec::new();
+    collect_blob_cids(record, &mut out);
+    out
+}
+
+fn collect_blob_cids(ipld: &Ipld, out: &mut Vec<Cid>) {
+    match ipld {
+        Ipld::Map(map) => {
+            if let Some(Ipld::String(typ)) = map.get("$type") {
+                if typ == "blob" {
+                    match map.get("ref") {
+                        // Canonical: `json_to_record_value` converts `{"$link": "..."}` to a link.
+                        Some(Ipld::Link(cid)) => out.push(*cid),
+                        // Fallback: `ref` is still a map with a `$link` link.
+                        Some(Ipld::Map(ref_map)) => {
+                            if let Some(Ipld::Link(cid)) = ref_map.get("$link") {
+                                out.push(*cid);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // Recurse into all map values — a blob could be nested inside an embed.
+            for v in map.values() {
+                collect_blob_cids(v, out);
+            }
+        }
+        Ipld::List(items) => {
+            for v in items {
+                collect_blob_cids(v, out);
+            }
+        }
+        // Scalars and links are leaves — no further recursion.
+        _ => {}
+    }
+}
+
 /// Write a record provided as JSON, converting it to the ATProto data model first.
 /// Returns the record block CID. Errors with `InvalidRecord` for floats or malformed
 /// `$link`/`$bytes`.
@@ -675,6 +726,31 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(canonical, raw_map);
+    }
+
+    #[test]
+    fn record_blob_cids_finds_nested_blob_refs() {
+        // A blob nested inside an embed, plus a non-blob $link that must NOT be collected.
+        let json = serde_json::json!({
+            "$type": "app.bsky.feed.post",
+            "text": "hi",
+            "embed": {
+                "images": [
+                    { "image": { "$type": "blob", "ref": { "$link": TEST_CID }, "mimeType": "image/png", "size": 1 } }
+                ]
+            },
+            "notablob": { "$link": TEST_CID }
+        });
+        let ipld = json_to_record_value(&json).unwrap();
+        let cids = record_blob_cids(&ipld);
+        assert_eq!(cids.len(), 1, "only the $type:blob ref is a blob CID");
+        assert_eq!(cids[0].to_string(), TEST_CID);
+    }
+
+    #[test]
+    fn record_blob_cids_empty_for_no_blobs() {
+        let ipld = json_to_record_value(&serde_json::json!({ "text": "no blobs here" })).unwrap();
+        assert!(record_blob_cids(&ipld).is_empty());
     }
 
     #[test]

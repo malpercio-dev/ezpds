@@ -111,6 +111,34 @@ pub async fn get_blob_by_cid(pool: &SqlitePool, cid: &str) -> Result<Option<Blob
         .await
 }
 
+/// Return which of `cids` already have a blob row for `account_did`.
+///
+/// Backs `com.atproto.repo.listMissingBlobs`: the repo's referenced blob CIDs minus this set is
+/// exactly the blobs still to be uploaded. Scoped by `account_did` to mirror
+/// `checkAccountStatus`'s imported-blob count. Batched to stay under SQLite's bound-parameter
+/// limit; an empty input yields an empty set.
+pub async fn present_cids(
+    pool: &SqlitePool,
+    account_did: &str,
+    cids: &[String],
+) -> Result<std::collections::HashSet<String>, sqlx::Error> {
+    let mut present = std::collections::HashSet::new();
+    if cids.is_empty() {
+        return Ok(present);
+    }
+    for chunk in cids.chunks(500) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql =
+            format!("SELECT cid FROM blobs WHERE account_did = ? AND cid IN ({placeholders})");
+        let mut q = sqlx::query_scalar::<_, String>(&sql).bind(account_did);
+        for cid in chunk {
+            q = q.bind(cid);
+        }
+        present.extend(q.fetch_all(pool).await?);
+    }
+    Ok(present)
+}
+
 /// Mark a blob as referenced: increment `ref_count` and clear `temp_until`.
 ///
 /// Intended for when a repo record references an already-uploaded blob; the

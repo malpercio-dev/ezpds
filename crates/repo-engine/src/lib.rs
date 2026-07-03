@@ -3,6 +3,7 @@
 // Functional Core — no HTTP, no DB schema ownership, no process-level state.
 
 pub mod car_export;
+pub mod car_import;
 pub mod genesis;
 pub mod mst;
 pub mod records;
@@ -21,12 +22,13 @@ pub use car_export::{
     collect_commit_diff_cids, collect_reachable_cids, export_commit_blocks_car,
     export_record_proof_car, export_repo_car, CarExportError,
 };
+pub use car_import::{import_repo_car, CarImportError, ImportedRepo};
 pub use genesis::{build_genesis_repo, create_genesis_repo, CapturingBlockStore, GenesisError};
 pub use records::{
     apply_writes, count_records, delete_record, generate_tid, get_record, get_record_cid,
     get_record_json, json_to_record_value, list_collections, list_records_json, put_record,
-    put_record_json, record_value_to_json, validate_collection, validate_record_path,
-    ListRecordsPage, ListedRecord, RecordError, WriteOp, WriteOutcome,
+    put_record_json, record_blob_cids, record_value_to_json, validate_collection,
+    validate_record_path, ListRecordsPage, ListedRecord, RecordError, WriteOp, WriteOutcome,
 };
 pub use signer::{CommitSigner, CommitSignerError};
 

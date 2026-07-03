@@ -1,0 +1,36 @@
+meta {
+  name: Import Repo (importRepo)
+  type: http
+  seq: 82
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.repo.importRepo
+  body: binary
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+headers {
+  Content-Type: application/vnd.ipld.car
+}
+
+body:binary {
+  @file: {{repoCarFilePath}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  repoCarFilePath: ./repo.car
+}
+
+docs {
+  Ingest a full repository CAR (as exported by com.atproto.sync.getRepo) into the
+  authenticated account during account migration. The account must be deactivated and the
+  CAR's commit DID must match the caller. Requires a full access-scope token and the
+  Content-Length header. Returns 200 with an empty body on success. Call activateAccount
+  afterwards to make the imported repo serveable.
+}
