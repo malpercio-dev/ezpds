@@ -197,6 +197,50 @@ pub async fn seed_account_with_repo(db: &sqlx::SqlitePool, did: &str) {
         .unwrap();
 }
 
+/// Insert an account + handle and promote a per-account signing key (private key encrypted
+/// with [`test_master_key`], so [`state_with_master_key`] can reload it to sign PLC operations).
+/// No repo is created — the account is just enough for the `identity.*` PLC-signing endpoints.
+/// Returns the signing key's `did:key` id.
+pub async fn seed_account_with_signing_key(
+    db: &sqlx::SqlitePool,
+    did: &str,
+    handle: &str,
+) -> String {
+    sqlx::query(
+        "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+         VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
+    )
+    .bind(did)
+    .bind(format!("{did}@example.com"))
+    .execute(db)
+    .await
+    .unwrap();
+
+    sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
+        .bind(handle)
+        .bind(did)
+        .execute(db)
+        .await
+        .unwrap();
+
+    let kp = crypto::generate_p256_keypair().unwrap();
+    let private_key_encrypted =
+        crypto::encrypt_private_key(&kp.private_key_bytes, &test_master_key()).unwrap();
+    crate::db::repo_keys::insert_did_signing_key(
+        db,
+        did,
+        &crate::db::repo_keys::RepoSigningKey {
+            key_id: kp.key_id.to_string(),
+            public_key: kp.public_key.clone(),
+            private_key_encrypted,
+        },
+    )
+    .await
+    .unwrap();
+
+    kp.key_id.to_string()
+}
+
 /// Insert a fully provisioned account row with an argon2id-hashed password and a handle.
 ///
 /// Used across route tests that exercise password authentication
