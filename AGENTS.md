@@ -18,7 +18,8 @@ Last verified: 2026-06-30
 - `cargo clippy --workspace -- -D warnings` - Lint (warnings as errors)
 - `cargo fmt --all --check` - Check formatting
 - `just bruno-check` - Verify route ⇄ Bruno-collection parity (scripts/bruno-parity.sh)
-- `just ci` - Full local gate (fmt-check, lock-check, bruno-check, swift-rs-check, clippy, test, audit) — the same checks CI runs
+- `just font-check` - Verify the four vendored font copies haven't drifted (scripts/font-parity.sh; same-named font files must be byte-identical across copies)
+- `just ci` - Full local gate (fmt-check, lock-check, bruno-check, font-check, swift-rs-check, clippy, test, audit) — the same checks CI runs
 
 ## CI/CD
 

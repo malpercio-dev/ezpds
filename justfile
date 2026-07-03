@@ -43,6 +43,13 @@ lock-check:
 bruno-check:
     scripts/bruno-parity.sh
 
+# Verify parity across the four vendored font copies (identity-wallet, admin-companion,
+# PDS assets, marketing site): a font file bundled under the same name in more than one
+# copy must be byte-identical everywhere, so a re-fetch or re-optimization of one copy
+# cannot silently fork the brand type. Each copy may bundle a subset of the families.
+font-check:
+    scripts/font-parity.sh
+
 # Verify the swift-rs --disable-sandbox fork ([patch.crates-io] in Cargo.toml) is both
 # DECLARED and ACTUALLY APPLIED (Cargo.lock resolves swift-rs from the path, not the
 # registry). Cargo silently stops applying a [patch] when a dependency bump requires a
@@ -52,7 +59,7 @@ swift-rs-check:
     scripts/swift-rs-patch-check.sh
 
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
-ci: fmt-check lock-check bruno-check swift-rs-check clippy test audit
+ci: fmt-check lock-check bruno-check font-check swift-rs-check clippy test audit
 
 # CI gate for the Linux pds pipeline (GitHub Actions, .github/workflows/ci.yml). Excludes the
 # iOS apps (identity-wallet, admin-companion), which need the Apple toolchain (security-framework)
@@ -60,6 +67,7 @@ ci: fmt-check lock-check bruno-check swift-rs-check clippy test audit
 ci-pds: fmt-check
     just lock-check
     just bruno-check
+    just font-check
     just swift-rs-check
     cargo clippy --workspace --exclude identity-wallet --exclude admin-companion --all-targets -- -D warnings
     cargo test --workspace --exclude identity-wallet --exclude admin-companion
