@@ -10,6 +10,7 @@ use serde::Serialize;
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
+use crate::db::relay_signing_keys::{latest_signing_key, RelaySigningKey};
 
 // Response uses camelCase per JSON API convention (keyId, publicKey).
 #[derive(Serialize)]
@@ -23,15 +24,13 @@ pub struct GetPdsSigningKeyResponse {
 pub async fn get_pds_signing_key(
     State(state): State<AppState>,
 ) -> Result<Json<GetPdsSigningKeyResponse>, ApiError> {
-    let crate::db::relay_signing_keys::RelaySigningKey {
+    let RelaySigningKey {
         id,
         public_key,
         algorithm,
-    } = crate::db::relay_signing_keys::latest_signing_key(&state.db)
-        .await?
-        .ok_or_else(|| {
-            ApiError::new(ErrorCode::ServiceUnavailable, "no signing key provisioned")
-        })?;
+    } = latest_signing_key(&state.db).await?.ok_or_else(|| {
+        ApiError::new(ErrorCode::ServiceUnavailable, "no signing key provisioned")
+    })?;
 
     Ok(Json(GetPdsSigningKeyResponse {
         key_id: id,
