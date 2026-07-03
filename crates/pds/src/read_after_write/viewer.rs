@@ -248,8 +248,8 @@ impl<'a> LocalViewer<'a> {
 
         Some(json!({
             "$type": "app.bsky.embed.recordWithMedia#view",
-            "record": record_view.get("record"),
-            "media": media_view.get("$type").is_some().then_some(media_view),
+            "record": record_view,
+            "media": media_view,
         }))
     }
 
@@ -270,8 +270,12 @@ impl<'a> LocalViewer<'a> {
             return QuoteMap::new();
         }
 
-        let uri_list: Vec<&str> = quote_uris.iter().map(|s| s.as_str()).collect();
-        let query = format!("uris={}", uri_list.join("&uris="));
+        // Limit to first 25 URIs to match AppView getPosts batch cap
+        let uri_list: Vec<&str> = quote_uris
+            .iter()
+            .take(25)
+            .map(|s| s.as_str())
+            .collect();
 
         let appview_url = &self.state.config.appview.url;
         let appview_did = &self.state.config.appview.did;
@@ -285,7 +289,13 @@ impl<'a> LocalViewer<'a> {
         .await
         {
             Ok(service_jwt) => {
-                let target = format!("{}/xrpc/app.bsky.feed.getPosts?{}", appview_url, query);
+                // Build URL-encoded query string with percent-encoded URIs
+                let query_parts: Vec<String> = uri_list
+                    .iter()
+                    .map(|uri| format!("uris={}", urlencoding::encode(uri)))
+                    .collect();
+                let query_string = query_parts.join("&");
+                let target = format!("{}/xrpc/app.bsky.feed.getPosts?{}", appview_url, query_string);
 
                 match self
                     .state
@@ -399,6 +409,38 @@ impl<'a> LocalViewer<'a> {
 mod tests {
     use super::*;
     use crate::app;
+
+    const TEST_DID: &str = "did:plc:tester";
+
+    /// Seed `TEST_DID` with an account row and a per-account repo signing key, encrypted under
+    /// the test master key. Required for service-auth JWT minting in hydrate_quotes.
+    async fn seed_repo_key(db: &sqlx::SqlitePool) {
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES (?, ?, 'hash', datetime('now'), datetime('now'))",
+        )
+        .bind(TEST_DID)
+        .bind(format!("{TEST_DID}@example.com"))
+        .execute(db)
+        .await
+        .unwrap();
+
+        let kp = crypto::generate_p256_keypair().unwrap();
+        let test_master_key = crate::routes::test_utils::test_master_key();
+        let private_key_encrypted =
+            crypto::encrypt_private_key(&kp.private_key_bytes, &test_master_key).unwrap();
+        crate::db::repo_keys::insert_did_signing_key(
+            db,
+            TEST_DID,
+            &crate::db::repo_keys::RepoSigningKey {
+                key_id: kp.key_id.to_string(),
+                public_key: kp.public_key.clone(),
+                private_key_encrypted,
+            },
+        )
+        .await
+        .unwrap();
+    }
 
     #[tokio::test]
     async fn profile_view_basic_includes_did() {
@@ -769,5 +811,156 @@ mod tests {
         viewer.insert_posts_in_feed(&mut feed, &posts, &quotes).await;
 
         assert_eq!(feed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn hydrate_quotes_fetches_from_appview_and_populates_map() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use crate::routes::test_utils::test_master_key;
+        use std::sync::Arc;
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/xrpc/app.bsky.feed.getPosts"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "posts": [
+                    {
+                        "uri": "at://did:plc:other/app.bsky.feed.post/xyz789",
+                        "cid": "bafy_quoted",
+                        "author": {
+                            "did": "did:plc:other",
+                            "handle": "other.bsky.social"
+                        },
+                        "record": {
+                            "$type": "app.bsky.feed.post",
+                            "text": "Original post"
+                        },
+                        "indexedAt": "2023-12-01T00:00:00.000Z",
+                        "likeCount": 5,
+                        "replyCount": 2,
+                        "repostCount": 1,
+                    }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let mut state = app::test_state().await;
+        seed_repo_key(&state.db).await;
+        let mut config = (*state.config).clone();
+        config.appview.url = server.uri();
+        config.signing_key_master_key = Some(common::Sensitive(zeroize::Zeroizing::new(
+            test_master_key(),
+        )));
+        state.config = Arc::new(config);
+
+        let viewer = LocalViewer::new(
+            &state,
+            TEST_DID.to_string(),
+            None,
+            None,
+        );
+
+        let post = RecordDescript {
+            uri: "at://did:plc:test/app.bsky.feed.post/abc123".to_string(),
+            cid: "bafy_post".to_string(),
+            indexed_at: "2024-01-01T00:00:00.000Z".to_string(),
+            record: json!({
+                "$type": "app.bsky.feed.post",
+                "text": "Quoting someone",
+                "embed": {
+                    "$type": "app.bsky.embed.record",
+                    "record": {
+                        "uri": "at://did:plc:other/app.bsky.feed.post/xyz789"
+                    }
+                }
+            }),
+        };
+
+        // Actually invoke hydrate_quotes to fetch from the mock AppView
+        let quotes = viewer.hydrate_quotes(std::slice::from_ref(&post)).await;
+
+        // Verify the map was populated from the getPosts response
+        assert!(
+            quotes.contains_key("at://did:plc:other/app.bsky.feed.post/xyz789"),
+            "hydrate_quotes must populate the map from getPosts response"
+        );
+        let quoted = &quotes["at://did:plc:other/app.bsky.feed.post/xyz789"];
+        assert_eq!(quoted["uri"], "at://did:plc:other/app.bsky.feed.post/xyz789");
+        assert_eq!(quoted["likeCount"], 5);
+
+        // Thread through post_view to verify embed rendering
+        let view = viewer.post_view(&post, &quotes).await;
+        assert_eq!(view["embed"]["record"]["$type"], "app.bsky.embed.record#viewRecord");
+    }
+
+    #[tokio::test]
+    async fn hydrate_quotes_degrades_to_empty_on_appview_5xx() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use crate::routes::test_utils::test_master_key;
+        use std::sync::Arc;
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/xrpc/app.bsky.feed.getPosts"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let mut state = app::test_state().await;
+        seed_repo_key(&state.db).await;
+        let mut config = (*state.config).clone();
+        config.appview.url = server.uri();
+        config.signing_key_master_key = Some(common::Sensitive(zeroize::Zeroizing::new(
+            test_master_key(),
+        )));
+        state.config = Arc::new(config);
+
+        let viewer = LocalViewer::new(
+            &state,
+            TEST_DID.to_string(),
+            None,
+            None,
+        );
+
+        let post = RecordDescript {
+            uri: "at://did:plc:test/app.bsky.feed.post/abc123".to_string(),
+            cid: "bafy_post".to_string(),
+            indexed_at: "2024-01-01T00:00:00.000Z".to_string(),
+            record: json!({
+                "$type": "app.bsky.feed.post",
+                "text": "Quoting someone",
+                "embed": {
+                    "$type": "app.bsky.embed.record",
+                    "record": {
+                        "uri": "at://did:plc:other/app.bsky.feed.post/xyz789"
+                    }
+                }
+            }),
+        };
+
+        // Call hydrate_quotes when AppView returns 5xx
+        let quotes = viewer.hydrate_quotes(std::slice::from_ref(&post)).await;
+
+        // QuoteMap must be empty, so the post degrades gracefully
+        assert!(quotes.is_empty(), "hydrate_quotes must return empty map on 5xx");
+
+        // Verify post still renders with viewNotFound embed
+        let view = viewer.post_view(&post, &quotes).await;
+        assert_eq!(view["embed"]["$type"], "app.bsky.embed.record#view");
+        assert_eq!(
+            view["embed"]["record"]["$type"],
+            "app.bsky.embed.record#viewNotFound"
+        );
+        assert_eq!(
+            view["embed"]["record"]["uri"],
+            "at://did:plc:other/app.bsky.feed.post/xyz789"
+        );
+        assert_eq!(view["embed"]["record"]["notFound"], true);
+        // Post itself renders with full postView shape
+        assert_eq!(view["$type"], "app.bsky.feed.defs#postView");
+        assert_eq!(view["uri"], "at://did:plc:test/app.bsky.feed.post/abc123");
     }
 }
