@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::claim::{ChangeType, ClaimResult, OpDiff, ServiceChange};
-use crate::identity_store::IdentityStore;
+use crate::identity_store::{IdentityStore, PerDidSignError};
 use crate::oauth_client::OAuthClient;
 use crate::pds_client::{get_recommended_did_credentials, PdsClient, RecommendedCredentials};
 use crypto::{AuditEntry, PlcService};
@@ -506,7 +506,12 @@ pub async fn build_migration_op(
     guard_migration_op(&inputs)?;
 
     // 6. Sign locally with the per-DID device key.
-    let sign_closure = build_sign_closure(did)?;
+    let sign_closure = crate::identity_store::per_did_sign_closure(did).map_err(|e| match e {
+        PerDidSignError::DeviceKeyNotFound { message } => {
+            MigrateError::IdentityNotFound { message }
+        }
+        PerDidSignError::SigningSetupFailed { message } => MigrateError::SigningFailed { message },
+    })?;
     let signed = crypto::build_did_plc_rotation_op(
         &current.prev_cid,
         proposed_rotation_keys.clone(),
@@ -586,93 +591,6 @@ pub async fn submit_migration_op(
 
     Ok(ClaimResult {
         updated_did_doc: did_doc,
-    })
-}
-
-// ── Per-DID device-key signing closure ───────────────────────────────────────
-//
-// Mirrors `recovery.rs::build_sign_closure` (per-DID device-key signing). Kept local
-// for module isolation, matching the repo's precedent of duplicating small per-DID
-// key primitives rather than cross-importing file-private helpers. Both paths return
-// a raw 64-byte low-S r||s signature.
-
-/// Software path (macOS / iOS simulator): read the P-256 scalar from Keychain.
-#[cfg(any(target_os = "macos", all(target_os = "ios", target_env = "sim")))]
-fn build_sign_closure(
-    did: &str,
-) -> Result<impl FnOnce(&[u8]) -> Result<Vec<u8>, crypto::CryptoError>, MigrateError> {
-    use p256::ecdsa::signature::Signer;
-    use p256::ecdsa::{Signature, SigningKey};
-
-    let account = format!("{did}:device-key");
-    let private_bytes = crate::keychain::get_item(&account).map_err(|e| {
-        if crate::keychain::is_not_found(&e) {
-            MigrateError::IdentityNotFound {
-                message: "device key not found in Keychain".to_string(),
-            }
-        } else {
-            MigrateError::SigningFailed {
-                message: format!("Keychain error: {e}"),
-            }
-        }
-    })?;
-
-    let signing_key =
-        SigningKey::from_slice(&private_bytes).map_err(|_| MigrateError::SigningFailed {
-            message: "invalid P-256 private key in Keychain".to_string(),
-        })?;
-
-    Ok(move |data: &[u8]| -> Result<Vec<u8>, crypto::CryptoError> {
-        let signature: Signature = signing_key.sign(data);
-        let signature = signature.normalize_s().unwrap_or(signature);
-        Ok(signature.to_bytes().to_vec())
-    })
-}
-
-/// Secure Enclave path (real iOS device): sign via the SE key looked up by app label.
-#[cfg(all(target_os = "ios", not(target_env = "sim")))]
-fn build_sign_closure(
-    did: &str,
-) -> Result<impl FnOnce(&[u8]) -> Result<Vec<u8>, crypto::CryptoError>, MigrateError> {
-    use p256::ecdsa::Signature;
-
-    let app_label_account = format!("{did}:device-key-app-label");
-    let app_label = crate::keychain::get_item(&app_label_account).map_err(|e| {
-        if crate::keychain::is_not_found(&e) {
-            MigrateError::IdentityNotFound {
-                message: "device key app label not found in Keychain".to_string(),
-            }
-        } else {
-            MigrateError::SigningFailed {
-                message: format!("Keychain error: {e}"),
-            }
-        }
-    })?;
-
-    Ok(move |data: &[u8]| -> Result<Vec<u8>, crypto::CryptoError> {
-        use security_framework::item::{ItemClass, ItemSearchOptions, Reference, SearchResult};
-        use security_framework::key::Algorithm;
-
-        let query_results = ItemSearchOptions::new()
-            .class(ItemClass::key())
-            .application_label(&app_label)
-            .load_refs(true)
-            .search()
-            .map_err(|e| crypto::CryptoError::PlcOperation(format!("SE key lookup failed: {e}")))?;
-
-        let sec_key = match query_results.into_iter().next() {
-            Some(SearchResult::Ref(Reference::Key(key))) => key,
-            _ => return Err(crypto::CryptoError::PlcOperation("SE key not found".into())),
-        };
-
-        let der_sig = sec_key
-            .create_signature(Algorithm::ECDSASignatureMessageX962SHA256, data)
-            .map_err(|e| crypto::CryptoError::PlcOperation(format!("SE signing failed: {e}")))?;
-
-        let sig = Signature::from_der(&der_sig)
-            .map_err(|e| crypto::CryptoError::PlcOperation(format!("DER decode failed: {e}")))?;
-        let sig = sig.normalize_s().unwrap_or(sig);
-        Ok(sig.to_bytes().to_vec())
     })
 }
 
