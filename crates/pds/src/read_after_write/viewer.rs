@@ -88,7 +88,7 @@ impl<'a> LocalViewer<'a> {
     }
 
     #[allow(dead_code)]
-    fn update_profile_detailed(&self, mut view: Value) -> Value {
+    pub(crate) fn update_profile_detailed(&self, mut view: Value) -> Value {
         view = self.update_profile_view(view);
 
         if let Some(ref profile) = self.profile {
