@@ -140,4 +140,24 @@ mod tests {
         let response = app(state).oneshot(get_req(None)).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
+
+    #[tokio::test]
+    async fn no_signing_key_returns_404() {
+        let state = test_state().await;
+        let did = "did:plc:nosigningkey11111111111111";
+        // Seed the account (and a session-authenticating JWT) but no signing_keys row.
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
+        )
+        .bind(did)
+        .bind(format!("{did}@example.com"))
+        .execute(&state.db)
+        .await
+        .unwrap();
+        let jwt = access_jwt(&[0x42u8; 32], did);
+
+        let response = app(state).oneshot(get_req(Some(&jwt))).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
 }

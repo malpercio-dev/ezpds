@@ -88,20 +88,8 @@ pub async fn sign_plc_operation(
     let current =
         fetch_current_plc_state(&state.http_client, &state.config.plc_directory_url, did).await?;
 
-    let rotation_keys = request.rotation_keys.unwrap_or(current.rotation_keys);
-    let also_known_as = request.also_known_as.unwrap_or(current.also_known_as);
-    let verification_methods = match request.verification_methods {
-        Some(v) => parse_verification_methods(&v)?,
-        None => current.verification_methods,
-    };
-    let services = match request.services {
-        Some(v) => parse_services(&v)?,
-        None => current.services,
-    };
-
     // Load + decrypt the PDS-held rotation/signing key. In ezpds this is the account's
-    // per-account key, placed at `rotationKeys[1]` in the genesis op — so it is authorized
-    // to sign as long as it is still present in the current rotation set.
+    // per-account key, placed at `rotationKeys[1]` in the genesis op.
     let master_key: &[u8; 32] = state
         .config
         .signing_key_master_key
@@ -125,13 +113,29 @@ pub async fn sign_plc_operation(
                 "no signing key is registered for this account",
             )
         })?;
-    if !rotation_keys.contains(&signing_key.key_id) {
+
+    // Authorize against the DID's CURRENT rotation set — a PLC op is valid iff signed by a key in
+    // the previous op's `rotationKeys`. Checking the request's (overlaid) rotationKeys instead would
+    // reject a valid migration that removes the PDS key from the *new* op, and would admit a request
+    // that adds the PDS key it doesn't actually hold (only to be rejected later at plc.directory).
+    if !current.rotation_keys.contains(&signing_key.key_id) {
         return Err(ApiError::new(
             ErrorCode::Forbidden,
-            "this PDS's rotation key is not in the operation's rotationKeys; \
-             it could not authorize the operation",
+            "this PDS does not hold a rotation key in the DID's current rotationKeys; \
+             it cannot sign an operation for this identity",
         ));
     }
+
+    let rotation_keys = request.rotation_keys.unwrap_or(current.rotation_keys);
+    let also_known_as = request.also_known_as.unwrap_or(current.also_known_as);
+    let verification_methods = match request.verification_methods {
+        Some(v) => parse_verification_methods(&v)?,
+        None => current.verification_methods,
+    };
+    let services = match request.services {
+        Some(v) => parse_services(&v)?,
+        None => current.services,
+    };
 
     let private_key = crypto::decrypt_private_key(&signing_key.private_key_encrypted, master_key)
         .map_err(|e| {
@@ -292,6 +296,47 @@ mod tests {
         let signed_op_str = serde_json::to_string(op).unwrap();
         crypto::verify_plc_operation(&signed_op_str, &[crypto::DidKeyUri(key_id)])
             .expect("operation signature must verify against the PDS rotation key");
+    }
+
+    /// Authorization is against the DID's CURRENT rotation set, not the request overlay: an op
+    /// that DROPS the PDS key from the *new* rotationKeys is still valid, because the PDS key is
+    /// still authorized to sign it (it's in the current op). This is a legitimate migration shape.
+    #[tokio::test]
+    async fn authorizes_op_that_removes_pds_key_from_new_rotation_set() {
+        let plc = MockServer::start().await;
+        let state = state_with_master_key_and_plc(plc.uri()).await;
+        let db = state.db.clone();
+        let did = "did:plc:signplc55555555555555555";
+        let key_id = seed_account_with_signing_key(&db, did, "erin.example.com").await;
+        mount_audit_log(
+            &plc,
+            did,
+            "erin.example.com",
+            &key_id,
+            &state.config.public_url,
+        )
+        .await;
+        let token = seed_token(&db, did).await;
+        let jwt = access_jwt(&[0x42u8; 32], did);
+
+        // New rotationKeys deliberately EXCLUDE the PDS key (only a fresh device key remains).
+        let new_device = crypto::generate_p256_keypair().unwrap();
+        let body = serde_json::json!({
+            "token": token,
+            "rotationKeys": [new_device.key_id.0],
+        });
+        let response = app(state)
+            .oneshot(post_req(Some(&jwt), body))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "removing the PDS key from the new op is authorized by the current rotation set"
+        );
+        let op = body_json(response).await["operation"].clone();
+        assert_eq!(op["rotationKeys"][0], new_device.key_id.0);
+        assert_eq!(op["rotationKeys"].as_array().unwrap().len(), 1);
     }
 
     #[tokio::test]

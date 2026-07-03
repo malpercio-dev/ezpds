@@ -8,8 +8,8 @@
 // account's behalf. The wallet-authorized path signs its identity leg locally and
 // never calls this.
 //
-// Email delivery is stubbed repo-wide (see `requestPasswordReset`) pending MM-211:
-// the plaintext token is logged via `tracing::info!` rather than emailed.
+// Email delivery is stubbed repo-wide (see `requestPasswordReset`) pending an outbound-email
+// path: the plaintext token is logged via `tracing::info!` rather than emailed.
 //
 // Gather:  AuthenticatedUser (full access token) → DID
 // Process: generate token → store hash (1h TTL) → "deliver" (log)
@@ -40,7 +40,7 @@ pub async fn request_plc_operation_signature(
     let token = generate_token();
     insert_plc_operation_token(&state.db, &user.did, &token.hash).await?;
 
-    // Stub delivery: log the plaintext token. MM-211 replaces this with real email.
+    // Stub delivery: log the plaintext token until an outbound-email path is implemented.
     tracing::info!(
         did = %user.did,
         plc_operation_token = %token.plaintext,
