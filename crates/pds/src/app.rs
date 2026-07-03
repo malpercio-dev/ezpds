@@ -477,6 +477,17 @@ enum ProxyUpstream {
     Moderation,
 }
 
+/// NSIDs that undergo read-after-write munging: the AppView response is buffered and merged
+/// with the requester's own unindexed records before returning.
+const READ_AFTER_WRITE_NSIDS: [&str; 6] = [
+    "app.bsky.actor.getProfile",
+    "app.bsky.actor.getProfiles",
+    "app.bsky.feed.getAuthorFeed",
+    "app.bsky.feed.getPostThread",
+    "app.bsky.feed.getTimeline",
+    "app.bsky.feed.getActorLikes",
+];
+
 /// Catch-all XRPC handler.
 ///
 /// `app.bsky.*` NSIDs with no local handler are forwarded to the configured AppView (feeds,
@@ -539,6 +550,15 @@ async fn xrpc_handler(
             "this app password lacks the privileged scope required for chat access",
         )
         .into_response();
+    }
+
+    // Branch read-after-write NSIDs to the buffered munged path before resolving the upstream
+    // target details. This branch requires AppView upstream; other upstreams go through the
+    // streaming proxy.
+    if matches!(upstream, ProxyUpstream::AppView)
+        && READ_AFTER_WRITE_NSIDS.contains(&method.as_str())
+    {
+        return crate::read_after_write::pipethrough_munged(&state, &method, &user.did, req).await;
     }
 
     let (url, proxy_did, guard) = match upstream {

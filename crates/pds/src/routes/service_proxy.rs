@@ -1098,4 +1098,43 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
+
+    // Integration test: verify read-after-write NSIDs are routed to the munged path and still
+    // return the AppView response verbatim in Phase 1 (before munging is wired).
+    #[tokio::test]
+    async fn read_after_write_nsids_return_appview_response_verbatim() {
+        let server = MockServer::start().await;
+        let expected_response = serde_json::json!({ "feed": [] });
+        Mock::given(method("GET"))
+            .and(path("/xrpc/app.bsky.feed.getTimeline"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(expected_response.clone())
+                    .append_header("content-type", "application/json"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let state = state_with_appview(&server.uri()).await;
+        let auth = bearer(&state);
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/xrpc/app.bsky.feed.getTimeline")
+                    .header("authorization", auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json, expected_response);
+    }
 }
