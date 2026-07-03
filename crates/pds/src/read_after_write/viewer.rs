@@ -753,6 +753,81 @@ mod tests {
         assert_eq!(view["embed"]["record"]["author"]["did"], "did:plc:other");
     }
 
+    // A recordWithMedia embed must nest a FULL app.bsky.embed.record#view under `record`
+    // (not the bare inner #viewRecord), alongside the hydrated media view. This guards the
+    // wrapper-preserving shape: recordWithMedia#view -> record#view -> #viewRecord.
+    #[tokio::test]
+    async fn record_with_media_embed_nests_full_record_view_and_media() {
+        let state = app::test_state().await;
+        let viewer = LocalViewer::new(&state, "did:plc:test".to_string(), None, None);
+
+        let quoted_uri = "at://did:plc:other/app.bsky.feed.post/xyz789";
+        let quoted_post_view = json!({
+            "uri": quoted_uri,
+            "cid": "bafy_quoted",
+            "author": { "did": "did:plc:other", "handle": "other.bsky.social" },
+            "record": { "$type": "app.bsky.feed.post", "text": "Original post" },
+            "indexedAt": "2023-12-01T00:00:00.000Z",
+            "likeCount": 5,
+            "replyCount": 2,
+            "repostCount": 1,
+        });
+
+        let mut quotes = QuoteMap::new();
+        quotes.insert(quoted_uri.to_string(), quoted_post_view);
+
+        let post = RecordDescript {
+            uri: "at://did:plc:test/app.bsky.feed.post/abc123".to_string(),
+            cid: "bafy_post".to_string(),
+            indexed_at: "2024-01-01T00:00:00.000Z".to_string(),
+            record: json!({
+                "$type": "app.bsky.feed.post",
+                "text": "Quoting with an image",
+                "embed": {
+                    "$type": "app.bsky.embed.recordWithMedia",
+                    "media": {
+                        "$type": "app.bsky.embed.images",
+                        "images": [{
+                            "image": {
+                                "$type": "blob",
+                                "ref": { "$link": "bafyimgcid" },
+                                "mimeType": "image/jpeg",
+                            },
+                            "alt": "a picture",
+                        }],
+                    },
+                    "record": {
+                        "$type": "app.bsky.embed.record",
+                        "record": { "uri": quoted_uri },
+                    },
+                }
+            }),
+        };
+
+        let view = viewer.post_view(&post, &quotes).await;
+
+        // Outer view is recordWithMedia#view.
+        assert_eq!(view["embed"]["$type"], "app.bsky.embed.recordWithMedia#view");
+        // `record` is the FULL record#view wrapper, not the stripped inner viewRecord.
+        assert_eq!(
+            view["embed"]["record"]["$type"],
+            "app.bsky.embed.record#view"
+        );
+        assert_eq!(
+            view["embed"]["record"]["record"]["$type"],
+            "app.bsky.embed.record#viewRecord"
+        );
+        assert_eq!(
+            view["embed"]["record"]["record"]["uri"],
+            quoted_uri
+        );
+        // `media` is the hydrated images#view.
+        assert_eq!(
+            view["embed"]["media"]["$type"],
+            "app.bsky.embed.images#view"
+        );
+    }
+
     #[tokio::test]
     async fn insert_posts_in_feed_maintains_chronological_order() {
         let state = app::test_state().await;
