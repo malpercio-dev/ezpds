@@ -15,8 +15,8 @@
 //
 // Gather:  AuthenticatedUser (full access) + JSON { token?, rotationKeys?, alsoKnownAs?,
 //          verificationMethods?, services? }
-// Process: consume email token → fetch current PLC state → overlay changes →
-//          load + decrypt the PDS rotation key → build + sign the operation
+// Process: validate email token → fetch current PLC state → overlay changes →
+//          load + decrypt the PDS rotation key → consume the token → build + sign the operation
 // Respond: { operation }
 
 use axum::{extract::State, response::Json};
@@ -27,7 +27,7 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
-use crate::db::plc_operation_tokens::consume_plc_operation_token;
+use crate::db::plc_operation_tokens::{consume_plc_operation_token, plc_operation_token_is_valid};
 use crate::db::repo_keys::get_signing_key_by_did;
 use crate::plc_ops::{fetch_current_plc_state, parse_services, parse_verification_methods};
 use crate::token::hash_bearer_token;
@@ -65,7 +65,10 @@ pub async fn sign_plc_operation(
     }
     let did = &user.did;
 
-    // Two-factor gate: consume the single-use email token that authorizes PDS signing.
+    // Two-factor gate: a full-access session (above) AND a single-use email token. We validate the
+    // token here without consuming it, then redeem it atomically at the very end — so a transient
+    // plc.directory outage or a downstream rejection doesn't burn a valid token and force the user
+    // through a fresh email round-trip. The final atomic consume still guarantees single-use.
     let token_plaintext = request
         .token
         .as_deref()
@@ -77,7 +80,7 @@ pub async fn sign_plc_operation(
             )
         })?;
     let token_hash = hash_bearer_token(token_plaintext)?;
-    if !consume_plc_operation_token(&state.db, did, &token_hash).await? {
+    if !plc_operation_token_is_valid(&state.db, did, &token_hash).await? {
         return Err(ApiError::new(
             ErrorCode::InvalidToken,
             "invalid or expired PLC operation token",
@@ -146,6 +149,16 @@ pub async fn sign_plc_operation(
         tracing::error!(error = %e, "invalid signing key bytes");
         ApiError::new(ErrorCode::InternalError, "failed to prepare signing key")
     })?;
+
+    // Redeem the token now that every fallible precondition has passed — the last step before
+    // signing. Atomic, so it still can't be spent twice even under concurrent requests. A racing
+    // request that consumed it between the pre-flight check and here fails closed with 401.
+    if !consume_plc_operation_token(&state.db, did, &token_hash).await? {
+        return Err(ApiError::new(
+            ErrorCode::InvalidToken,
+            "invalid or expired PLC operation token",
+        ));
+    }
 
     let signed = crypto::build_did_plc_rotation_op(
         &current.cid,
@@ -337,6 +350,47 @@ mod tests {
         let op = body_json(response).await["operation"].clone();
         assert_eq!(op["rotationKeys"][0], new_device.key_id.0);
         assert_eq!(op["rotationKeys"].as_array().unwrap().len(), 1);
+    }
+
+    /// A transient plc.directory failure must NOT burn the single-use token — the user should be
+    /// able to retry once plc.directory recovers, without a fresh email round-trip.
+    #[tokio::test]
+    async fn transient_plc_failure_preserves_token() {
+        let plc = MockServer::start().await;
+        let did = "did:plc:signplc66666666666666666";
+        // Audit-log fetch fails (500) → the sign flow aborts before consuming the token.
+        Mock::given(method("GET"))
+            .and(path(format!("/{did}/log/audit")))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&plc)
+            .await;
+        let state = state_with_master_key_and_plc(plc.uri()).await;
+        let db = state.db.clone();
+        seed_account_with_signing_key(&db, did, "frank.example.com").await;
+        let token = seed_token(&db, did).await;
+        let jwt = access_jwt(&[0x42u8; 32], did);
+
+        let response = app(state)
+            .oneshot(post_req(Some(&jwt), serde_json::json!({ "token": token })))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_GATEWAY,
+            "a plc.directory outage surfaces as 502"
+        );
+
+        // The token was NOT consumed — used_at is still NULL, so it can be retried.
+        let used_at: Option<String> =
+            sqlx::query_scalar("SELECT used_at FROM plc_operation_tokens WHERE did = ?")
+                .bind(did)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(
+            used_at.is_none(),
+            "a transient plc.directory failure must not burn the token"
+        );
     }
 
     #[tokio::test]

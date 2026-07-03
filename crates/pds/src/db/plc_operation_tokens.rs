@@ -42,6 +42,38 @@ pub async fn insert_plc_operation_token(
     Ok(())
 }
 
+/// Check — without consuming — whether a token is currently valid for `did`
+/// (exists, belongs to `did`, unexpired, unused).
+///
+/// This is the cheap pre-flight the `signPlcOperation` handler runs *before* the
+/// expensive plc.directory round-trip, so an obviously-bad token is rejected
+/// without wasted work. It does **not** guarantee single-use — the atomic
+/// [`consume_plc_operation_token`] at the end of the flow is what redeems the
+/// token exactly once, closing the window between this check and that consume.
+pub async fn plc_operation_token_is_valid(
+    db: &sqlx::SqlitePool,
+    did: &str,
+    token_hash: &str,
+) -> Result<bool, ApiError> {
+    let valid: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM plc_operation_tokens \
+         WHERE token_hash = ? AND did = ? \
+           AND used_at IS NULL AND expires_at > datetime('now'))",
+    )
+    .bind(token_hash)
+    .bind(did)
+    .fetch_one(db)
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "failed to check PLC operation token validity");
+        ApiError::new(
+            ErrorCode::InternalError,
+            "failed to check PLC operation token",
+        )
+    })?;
+    Ok(valid)
+}
+
 /// Atomically validate and consume a PLC-operation signature token for `did`.
 ///
 /// Returns `true` when the token existed, belonged to `did`, was unexpired, and
