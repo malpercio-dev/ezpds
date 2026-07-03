@@ -58,7 +58,9 @@ jobs:
           cache-bin: false
 
       - name: Install cargo-audit
-        uses: cargo-bins/cargo-binstall@main
+        # Pinned release tag (not @main): a mutable branch ref would let upstream changes
+        # land in every CI run with no reviewable version bump.
+        uses: cargo-bins/cargo-binstall@v1.20.1
         # `&& cargo audit --version` verifies the binary is actually on PATH, so a future install
         # regression fails here with a clear message instead of deep inside `just ci-pds`.
       - run: cargo binstall -y --locked cargo-audit && cargo audit --version

@@ -17,7 +17,8 @@ Last verified: 2026-06-30
 - `cargo test` - Run all tests
 - `cargo clippy --workspace -- -D warnings` - Lint (warnings as errors)
 - `cargo fmt --all --check` - Check formatting
-- `just ci` - Full local gate (fmt-check, lock-check, clippy, test, audit) — the same checks CI runs
+- `just bruno-check` - Verify route ⇄ Bruno-collection parity (scripts/bruno-parity.sh)
+- `just ci` - Full local gate (fmt-check, lock-check, bruno-check, clippy, test, audit) — the same checks CI runs
 
 ## CI/CD
 CI runs on **GitHub Actions**, split into a Linux **PDS** lane and a macOS **iOS** lane (the iOS app needs macOS + Xcode that Linux runners lack). Deploys are **not** run by CI — they use **Railway's native GitHub integration**: Railway is connected to the repo and builds/deploys the `Dockerfile` itself, so there is **no `railway up` and no Railway token in CI**.
@@ -29,6 +30,8 @@ CI runs on **GitHub Actions**, split into a Linux **PDS** lane and a macOS **iOS
 Release flow: `just set-version X.Y.Z` (PR) → merge → `just release` (cuts/pushes the `vX.Y.Z` tag) → `just deploy-production vX.Y.Z` (advances `production`). Litestream backs up the production SQLite DB. See [docs/deploy.md](docs/deploy.md).
 
 **iOS (`.github/workflows/ios-testflight.yml`).** Builds the `identity-wallet` Tauri app on a free public-repo `macos-26` runner and uploads to TestFlight on every push to `main` (App Store Connect API-key signing; never runs on `pull_request`, keeping secrets off fork PRs). The build/upload core is shared `just` recipes (`ios-ipa`, `ios-upload`, `ios-release`) usable locally. The **admin-companion** operator console ships through its own parallel lane — `.github/workflows/admin-testflight.yml` + `just admin-ipa`/`admin-upload`/`admin-release`, triggered on `apps/admin-companion/**` — reusing every signing secret except its own bundle-id-bound provisioning profile (`IOS_MOBILE_PROVISION_ADMIN`). See [docs/ios-cicd.md](docs/ios-cicd.md).
+
+**iOS PR gate (`.github/workflows/ios-pr-check.yml`).** Because the TestFlight lanes hold signing secrets and never run on `pull_request`, a secret-free PR lane validates both apps before merge: an ubuntu job runs the frontend type-check (`pnpm check`) and unit tests, and a `macos-26` job regenerates the Xcode project, re-applies the postinit patches (the patch-seam gate — each fails loudly on tauri-cli template drift), and cross-compiles the app staticlib for `aarch64-apple-ios` via `just ios-pr-check` / `just admin-pr-check` — everything short of xcodebuild archiving/signing.
 
 ## Dev Environment
 - Managed entirely by Nix flake + devenv; do not install tools globally
@@ -87,6 +90,7 @@ The two are **siblings** — shared security rigor (practice-what-you-preach, WC
 - `bruno/` - Bruno HTTP client collection for all PDS endpoints
 - Open in Bruno desktop app; select the `local` environment and set `adminToken` to your PDS admin token
 - **Mandatory:** When adding, removing, or changing any route (path, method, request body, response shape, auth), update the corresponding `.bru` file in `bruno/`. New routes get a new `.bru` file with the next `seq` number.
+- **CI-enforced (path coverage):** `just bruno-check` (`scripts/bruno-parity.sh`, part of `just ci`/`ci-pds`) fails the gate if a registered route has no matching `.bru` request or a `.bru` targets a removed route. It checks paths only — method/body/auth changes still rely on the rule above.
 
 ## Project Status / Planning
 - **Live status:** Linear is the source of truth. To see where the project stands, call `linear_wave_status` (team `MM`, `label_prefix: "Wave"`) — one call returns every wave with Done/In Progress/Backlog tallies and percent complete. Prefer this over manually scanning the backlog.
@@ -101,7 +105,7 @@ adding routes and DB queries.
 
 ## Conventions
 - Workspace-level dependency versions in root Cargo.toml; crates use `{ workspace = true }`
-- All crates share version (0.1.0) and edition (2021) via workspace.package
+- All crates share a single version (see `[workspace.package]` in Cargo.toml — bumped via `just set-version`) and edition (2021) via workspace.package
 - publish = false (not intended for crates.io)
 - **Dependency hygiene (CI-gated).** `just lock-check` (`cargo metadata --locked`) fails if `Cargo.lock` drifts from the manifests, so every dependency change surfaces as a reviewable `Cargo.lock` diff; `just audit` (`cargo audit`) scans the lockfile against the RustSec advisory DB on every CI run. Accepted/ignored advisories and their rationale live in [`.cargo/audit.toml`](.cargo/audit.toml) — never pass `--ignore` on the command line. When a PR adds or bumps a dependency, explain why in the PR description.
 - **No ticket or AC references in source code.** Do not add comments like `// MM-123`, `// AC2.1:`, or `// MM-84.AC3: description` to `.rs` files or CLAUDE.md files. Design plans and test plans in `docs/` are the right home for ticket traceability. Source code comments should describe *why* in terms of the system, not which ticket required it.

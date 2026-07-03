@@ -36,6 +36,12 @@ sign → package → ship).
 - **Workflow:** [`.github/workflows/ios-testflight.yml`](../.github/workflows/ios-testflight.yml)
 - **Shared recipes:** `just ios-ipa`, `just ios-upload`, `just ios-release` (the same
   commands CI runs; usable locally as an escape hatch).
+- **PR gate:** [`.github/workflows/ios-pr-check.yml`](../.github/workflows/ios-pr-check.yml)
+  runs on `pull_request` with **no secrets**: frontend type-check + unit tests (ubuntu) and,
+  on the same `macos-26` runner image, `cargo tauri ios init` → `just ios-postinit` /
+  `admin-postinit` (the patch-seam gate) → `just ios-pr-check` / `admin-pr-check`
+  (frontend build + staticlib cross-compile for `aarch64-apple-ios`). Everything short of
+  xcodebuild archiving/signing, so iOS breakage surfaces on the PR instead of post-merge.
 
 ## One-Time Setup
 

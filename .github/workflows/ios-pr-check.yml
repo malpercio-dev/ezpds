@@ -1,0 +1,162 @@
+name: iOS · PR check
+
+# PR-time validation for the two Tauri iOS apps. The TestFlight lanes
+# (ios-testflight.yml, admin-testflight.yml) run only on push to main — they hold
+# signing secrets and must never run for pull_request — so without this workflow every
+# iOS breakage (a tauri-cli template drift defeating a postinit patch, a Rust compile
+# error on aarch64-apple-ios, a broken frontend) is discovered post-merge, inside a
+# signed release build. This lane needs NO secrets: it regenerates the Xcode project,
+# re-applies the postinit patches (each fails loudly on template drift), and
+# cross-compiles the app staticlib for the iOS device target — everything short of
+# xcodebuild archiving/signing. It also runs the frontend type-check and unit tests,
+# which the TestFlight lanes skip.
+
+on:
+  pull_request:
+    branches: [main]
+    # Mirror the union of the two TestFlight lanes' path filters. crates/** is included
+    # because the apps link shared workspace crates.
+    paths:
+      - "apps/identity-wallet/**"
+      - "apps/admin-companion/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "justfile"
+      - "rust-toolchain.toml"
+      - ".github/workflows/ios-pr-check.yml"
+  workflow_dispatch:
+
+# Read-only: no signing, no upload, no secrets anywhere in this workflow.
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-pr-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend check (${{ matrix.app }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [identity-wallet, admin-companion]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          # Exact pin — keep in lockstep with "packageManager" in apps/*/package.json
+          # and the other workflows, so --frozen-lockfile can never fail on a pnpm
+          # major/minor lockfile-format difference between local and CI.
+          version: 9.15.9
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install frontend dependencies
+        working-directory: apps/${{ matrix.app }}
+        run: pnpm install --frozen-lockfile
+
+      - name: Type-check (svelte-check)
+        working-directory: apps/${{ matrix.app }}
+        run: pnpm run check
+
+      - name: Unit tests (vitest)
+        # --if-present: identity-wallet has a vitest suite; admin-companion has no
+        # test script yet and should not fail this gate for that.
+        working-directory: apps/${{ matrix.app }}
+        run: pnpm run --if-present test
+
+  ios-compile:
+    name: iOS compile (${{ matrix.app }})
+    # Same runner as the TestFlight lanes (Xcode 26 / iOS 26 SDK), so a runner-image or
+    # SDK problem surfaces here on a PR instead of post-merge in the release lane.
+    runs-on: macos-26
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - app: identity-wallet
+            recipe: ios
+          - app: admin-companion
+            recipe: admin
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          # Exact pin — keep in lockstep with "packageManager" in apps/*/package.json.
+          version: 9.15.9
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install frontend dependencies
+        working-directory: apps/${{ matrix.app }}
+        run: pnpm install --frozen-lockfile
+
+      # rust-toolchain.toml pins the channel AND lists aarch64-apple-ios, so a bare
+      # `rustup toolchain install` (run at repo root) provisions both. The explicit
+      # `target add` is belt-and-suspenders in case the runner's default toolchain wins.
+      - name: Rust toolchain + iOS target
+        run: |
+          rustup toolchain install --no-self-update
+          rustup target add aarch64-apple-ios
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-binstall
+        # Pinned release tag (not @main) — see the same pin in the TestFlight lanes.
+        uses: cargo-bins/cargo-binstall@v1.20.1
+
+      - name: Install Tauri CLI
+        # Exact pin, same version as the TestFlight lanes: the postinit patches target
+        # the Xcode project template THIS version generates, so a floating CLI version
+        # could pass here and fail there (or vice versa). Bump all lanes together.
+        run: cargo binstall -y --locked tauri-cli --version '2.11.4'
+
+      # The Tauri CLI runs x86_64 (Rosetta) on the arm64 runner, so every `brew` it
+      # shells out to (cargo-mobile2 installs xcodegen, ...) is refused: "Cannot install
+      # under Rosetta 2 in ARM default prefix". Shim `brew` to always re-exec under
+      # arm64 (tauri#11244, cargo-mobile2#291) — same shim as the TestFlight lanes.
+      - name: Force Homebrew under arm64 (Tauri CLI runs under Rosetta)
+        run: |
+          mkdir -p "$RUNNER_TEMP/arm64-shims"
+          cat > "$RUNNER_TEMP/arm64-shims/brew" <<'SH'
+          #!/bin/bash
+          exec arch -arm64 /opt/homebrew/bin/brew "$@"
+          SH
+          chmod +x "$RUNNER_TEMP/arm64-shims/brew"
+          echo "$RUNNER_TEMP/arm64-shims" >> "$GITHUB_PATH"
+
+      # gen/apple is gitignored — regenerate it, then re-apply the postinit patches.
+      # This is the actual patch-seam gate: postinit fails loudly if the generated
+      # template no longer matches what a patch expects.
+      - name: Generate the Xcode project
+        working-directory: apps/${{ matrix.app }}
+        run: cargo tauri ios init
+
+      - name: Re-apply postinit patches
+        run: just ${{ matrix.recipe }}-postinit
+
+      - name: Build frontend + cross-compile staticlib (aarch64-apple-ios)
+        run: just ${{ matrix.recipe }}-pr-check

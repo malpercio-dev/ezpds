@@ -1,0 +1,21 @@
+meta {
+  name: OAuth Client Metadata
+  type: http
+  seq: 82
+}
+
+get {
+  url: {{baseUrl}}/oauth/client-metadata.json
+  body: none
+  auth: none
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  Public OAuth client metadata document (ATProto OAuth): the wallet's client_id,
+  redirect URIs, grant/response types, scope, and DPoP requirement. client_id is
+  derived from the configured public URL.
+}
