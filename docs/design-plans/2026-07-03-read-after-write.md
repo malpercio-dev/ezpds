@@ -119,7 +119,7 @@ async fn munge(
 - **Catch-all interception ahead of the proxy.** `get_preferences.rs`/`put_preferences.rs` are registered ahead of the `/xrpc/{method}` catch-all so local handling wins over proxying. The six munged NSIDs use the same "handle locally before proxying" principle, expressed as a branch inside `xrpc_handler` (they share one handler shape, so a match set is cleaner than six route registrations).
 - **Service-auth minting.** `service_proxy.rs::mint_service_auth` (delegating to `auth::signing_key::mint_account_service_auth`) is reused verbatim for the shared inner proxy and for the quote-post `getPosts` hydration call — the same path `getServiceAuth` uses, so the three never drift.
 - **Repo reads.** `db::accounts::get_repo_root_cid` → `SqliteBlockStore::new(db, did)` → `repo_engine::Repository::open` → `repo_engine::get_record_json` / `list_records_json`, as used by `routes/get_record.rs` and `routes/list_records.rs`.
-- **Firehose log queries.** `db::firehose_seq` owns `repo_seq` reads (`events_in_range`, `decode_stored_event`); the new since-rev commit scan is added here, keeping SQL in `db/`.
+- **Firehose log queries.** `db::firehose_seq` owns `repo_seq` reads and the `StoredEventRow` shape (`events_in_range`); the new DID-scoped since-rev commit scan (`recent_commits_for_did`) is added here, keeping SQL in `db/`. The event *decoder* (`decode_stored_event`, returning a `CommitEvent` with `rev`/`time`/`ops`) lives in `crate::firehose`, not `db::firehose_seq`.
 - **Proxy integration tests.** `service_proxy.rs` tests (wiremock `MockServer`, `state_with_appview`, `seed_account_with_repo`, `bearer`) are the template for the munge integration tests.
 
 **Divergences from the reference, chosen deliberately:**
