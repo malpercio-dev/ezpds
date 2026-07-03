@@ -532,6 +532,122 @@ fn get_or_create_per_did_device_key(did: &str) -> Result<DevicePublicKey, Identi
     Ok(crate::device_key::make_device_public_key(&compressed))
 }
 
+// ── Per-DID device-key signing closure ─────────────────────────────────────────
+//
+// The read-side counterpart to `get_or_create_per_did_device_key`: it builds a
+// closure that signs CBOR bytes with a managed identity's device key. Both
+// `recovery.rs` and `migrate.rs` self-sign PLC operations with this key, so the
+// signing primitive lives here (the single owner of per-DID Keychain material)
+// rather than being copy-pasted into each command module.
+
+/// Error from constructing a per-DID device-key signing closure.
+///
+/// Neutral to any one command's error enum so a single implementation can serve
+/// both `recovery.rs` and `migrate.rs`; each caller translates this into its own
+/// module error. The two variants preserve the only distinction the callers make:
+/// a missing device key (a benign "identity not found") versus any other failure
+/// while loading the key or preparing the signer (a genuine signing failure).
+#[derive(Debug)]
+pub(crate) enum PerDidSignError {
+    /// The DID's device-key material is absent from the Keychain.
+    DeviceKeyNotFound { message: String },
+    /// Loading the key or preparing the signer failed for any other reason.
+    SigningSetupFailed { message: String },
+}
+
+/// Build a signing closure over a managed identity's per-DID device key.
+///
+/// Software path (macOS / iOS simulator): reads the raw P-256 private scalar from
+/// the Keychain and returns a closure that signs with RFC 6979 deterministic
+/// ECDSA, low-S normalized. The signature is a raw 64-byte `r || s` — the encoding
+/// plc.directory requires.
+#[cfg(any(target_os = "macos", all(target_os = "ios", target_env = "sim")))]
+pub(crate) fn per_did_sign_closure(
+    did: &str,
+) -> Result<impl FnOnce(&[u8]) -> Result<Vec<u8>, crypto::CryptoError>, PerDidSignError> {
+    use p256::ecdsa::signature::Signer;
+    use p256::ecdsa::{Signature, SigningKey};
+
+    let account = device_key_account(did);
+    // Hold the raw P-256 scalar in a Zeroizing buffer so it is scrubbed from the
+    // heap the moment `signing_key` has been reconstructed from it.
+    let private_bytes =
+        zeroize::Zeroizing::new(crate::keychain::get_item(&account).map_err(|e| {
+            if crate::keychain::is_not_found(&e) {
+                PerDidSignError::DeviceKeyNotFound {
+                    message: "device key not found in Keychain".to_string(),
+                }
+            } else {
+                PerDidSignError::SigningSetupFailed {
+                    message: format!("Keychain error: {e}"),
+                }
+            }
+        })?);
+
+    let signing_key = SigningKey::from_slice(&private_bytes).map_err(|_| {
+        PerDidSignError::SigningSetupFailed {
+            message: "invalid P-256 private key in Keychain".to_string(),
+        }
+    })?;
+
+    Ok(move |data: &[u8]| -> Result<Vec<u8>, crypto::CryptoError> {
+        let signature: Signature = signing_key.sign(data);
+        let signature = signature.normalize_s().unwrap_or(signature);
+        Ok(signature.to_bytes().to_vec())
+    })
+}
+
+/// Build a signing closure over a managed identity's per-DID device key.
+///
+/// Secure Enclave path (real iOS device): looks up the SE key by its stored app
+/// label and returns a closure that signs via the Secure Enclave. The signature is
+/// decoded from DER and returned as a raw 64-byte `r || s`, low-S normalized.
+#[cfg(all(target_os = "ios", not(target_env = "sim")))]
+pub(crate) fn per_did_sign_closure(
+    did: &str,
+) -> Result<impl FnOnce(&[u8]) -> Result<Vec<u8>, crypto::CryptoError>, PerDidSignError> {
+    use p256::ecdsa::Signature;
+
+    let app_label_account = device_key_app_label_account(did);
+    let app_label = crate::keychain::get_item(&app_label_account).map_err(|e| {
+        if crate::keychain::is_not_found(&e) {
+            PerDidSignError::DeviceKeyNotFound {
+                message: "device key app label not found in Keychain".to_string(),
+            }
+        } else {
+            PerDidSignError::SigningSetupFailed {
+                message: format!("Keychain error: {e}"),
+            }
+        }
+    })?;
+
+    Ok(move |data: &[u8]| -> Result<Vec<u8>, crypto::CryptoError> {
+        use security_framework::item::{ItemClass, ItemSearchOptions, Reference, SearchResult};
+        use security_framework::key::Algorithm;
+
+        let query_results = ItemSearchOptions::new()
+            .class(ItemClass::key())
+            .application_label(&app_label)
+            .load_refs(true)
+            .search()
+            .map_err(|e| crypto::CryptoError::PlcOperation(format!("SE key lookup failed: {e}")))?;
+
+        let sec_key = match query_results.into_iter().next() {
+            Some(SearchResult::Ref(Reference::Key(key))) => key,
+            _ => return Err(crypto::CryptoError::PlcOperation("SE key not found".into())),
+        };
+
+        let der_sig = sec_key
+            .create_signature(Algorithm::ECDSASignatureMessageX962SHA256, data)
+            .map_err(|e| crypto::CryptoError::PlcOperation(format!("SE signing failed: {e}")))?;
+
+        let sig = Signature::from_der(&der_sig)
+            .map_err(|e| crypto::CryptoError::PlcOperation(format!("DER decode failed: {e}")))?;
+        let sig = sig.normalize_s().unwrap_or(sig);
+        Ok(sig.to_bytes().to_vec())
+    })
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
