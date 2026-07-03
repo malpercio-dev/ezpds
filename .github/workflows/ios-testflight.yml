@@ -88,6 +88,13 @@ jobs:
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
+        with:
+          # cache-bin: false — same footgun ci.yml already guards against: with the
+          # default (true), rust-cache can restore the "tauri-cli is installed"
+          # .crates2.json metadata WITHOUT the binary; `cargo binstall` then skips the
+          # install and `cargo tauri` is missing at use time. Cache the registry/git/
+          # target (the real speedup), never ~/.cargo/bin.
+          cache-bin: false
 
       - name: Install cargo-binstall
         # Pinned release tag (not @main): a mutable branch ref would let upstream changes
