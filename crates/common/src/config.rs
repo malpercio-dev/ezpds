@@ -333,6 +333,11 @@ pub struct AppViewConfig {
     /// Service DID (with `#fragment`) of the AppView, sent as `atproto-proxy`.
     #[serde(default = "default_appview_did")]
     pub did: String,
+    /// Base URL of the AppView's image CDN (scheme + authority, no trailing slash),
+    /// used to build avatar/banner/embed-image URLs for the account's own not-yet-indexed
+    /// records. Defaults to Bluesky's public image CDN.
+    #[serde(default = "default_appview_cdn_url")]
+    pub cdn_url: String,
 }
 
 impl Default for AppViewConfig {
@@ -340,6 +345,7 @@ impl Default for AppViewConfig {
         Self {
             url: default_appview_url(),
             did: default_appview_did(),
+            cdn_url: default_appview_cdn_url(),
         }
     }
 }
@@ -350,6 +356,10 @@ fn default_appview_url() -> String {
 
 fn default_appview_did() -> String {
     "did:web:api.bsky.app#bsky_appview".to_string()
+}
+
+fn default_appview_cdn_url() -> String {
+    "https://cdn.bsky.app".to_string()
 }
 
 /// Bluesky chat (DM) service proxy configuration.
@@ -642,6 +652,9 @@ pub(crate) fn apply_env_overrides(
     if let Some(v) = env.get("EZPDS_APPVIEW_DID") {
         raw.appview.did = v.clone();
     }
+    if let Some(v) = env.get("EZPDS_APPVIEW_CDN_URL") {
+        raw.appview.cdn_url = v.clone();
+    }
     if let Some(v) = env.get("EZPDS_CHAT_URL") {
         raw.chat.url = v.clone();
     }
@@ -812,6 +825,10 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
     let appview = AppViewConfig {
         url: raw.appview.url.trim_end_matches('/').to_string(),
         did: raw.appview.did,
+        // Trim a trailing slash too: `cdn_url` is concatenated as `{cdn_url}/img/...` in
+        // LocalViewer::image_url, so a configured `https://cdn.bsky.app/` would otherwise
+        // produce `//img/...`. Matches the documented "no trailing slash" contract.
+        cdn_url: raw.appview.cdn_url.trim_end_matches('/').to_string(),
     };
 
     validate_proxy_url("chat.url", &raw.chat.url)?;

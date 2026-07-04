@@ -1,0 +1,41 @@
+meta {
+  name: Get Post Thread (app.bsky.feed.getPostThread)
+  type: http
+  seq: 88
+}
+
+get {
+  url: {{baseUrl}}/xrpc/app.bsky.feed.getPostThread?uri={{postUri}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+params:query {
+  uri: {{postUri}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  postUri: at://did:plc:example/app.bsky.feed.post/post123
+}
+
+docs {
+  # GET /xrpc/app.bsky.feed.getPostThread
+
+  Fetch a conversation thread rooted at a single post. **Read-after-write enabled:**
+  if the requested post URI is one of the requester's own unindexed local posts
+  (AppView returned NotFound), the thread is reconstructed locally and returned with
+  status 200 instead of 400. The requester's own unindexed replies are spliced into
+  the thread's `replies` field.
+
+  Query params:
+  - `uri` — post AT URI (required)
+  - `depth` — how deep to traverse the tree (default 6, max 1000)
+  - `parentHeight` — ancestor count to include above the root (default 80, max 1000)
+
+  Response carries `thread` (post + replies recursively) or error.
+}

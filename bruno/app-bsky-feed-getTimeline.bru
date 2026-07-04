@@ -1,0 +1,39 @@
+meta {
+  name: Get Timeline (app.bsky.feed.getTimeline)
+  type: http
+  seq: 86
+}
+
+get {
+  url: {{baseUrl}}/xrpc/app.bsky.feed.getTimeline?limit={{limit}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+params:query {
+  limit: {{limit}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  limit: 30
+}
+
+docs {
+  # GET /xrpc/app.bsky.feed.getTimeline
+
+  Fetch the home timeline feed. **Read-after-write enabled:** the authenticated requester's own
+  unindexed posts are injected at the top of the feed and the response carries an
+  `Atproto-Upstream-Lag` header (in milliseconds) when the AppView's indexed state is behind the
+  requester's local writes. Only the requester's own records are merged — never other accounts'.
+
+  Query params:
+  - `limit` — max feed entries (default 30, max 100)
+  - `cursor` — pagination cursor from a prior response
+
+  Response carries `feed` (array of feed items) and optional `cursor`.
+}

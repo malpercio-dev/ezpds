@@ -198,6 +198,25 @@ pub async fn events_in_range(
     .await
 }
 
+/// This DID's `commit` events, newest-first, capped at `limit`. Read-after-write walks these
+/// from the top and stops as soon as a commit's rev is at or below the AppView's indexed rev,
+/// so `limit` only bounds the pathological case (a burst of unindexed writes); a small value
+/// (e.g. 200) is ample given AppView lag is seconds.
+pub async fn recent_commits_for_did(
+    db: &SqlitePool,
+    did: &str,
+    limit: u32,
+) -> Result<Vec<StoredEventRow>, sqlx::Error> {
+    sqlx::query_as::<_, StoredEventRow>(
+        "SELECT seq, event_type, event FROM repo_seq \
+         WHERE did = ? AND event_type = 'commit' ORDER BY seq DESC LIMIT ?",
+    )
+    .bind(did)
+    .bind(limit)
+    .fetch_all(db)
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,5 +473,127 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].event_type, "account");
         assert_eq!(rows[0].event, vec![0xCA, 0xFE]);
+    }
+
+    #[tokio::test]
+    async fn recent_commits_for_did_returns_did_commits_newest_first() {
+        let db = pool().await;
+        let did_a = "did:plc:a";
+        let did_b = "did:plc:b";
+
+        // Insert commits and an account event for did_a
+        insert_event(
+            &db,
+            1,
+            did_a,
+            "commit",
+            &[0xCA, 0xFE],
+            "2026-06-30T00:00:00.000Z",
+        )
+        .await
+        .unwrap();
+        insert_event(
+            &db,
+            2,
+            did_a,
+            "account",
+            &[0xDE, 0xAD],
+            "2026-06-30T00:00:00.000Z",
+        )
+        .await
+        .unwrap();
+        insert_event(
+            &db,
+            3,
+            did_a,
+            "commit",
+            &[0xBE, 0xEF],
+            "2026-06-30T00:00:00.000Z",
+        )
+        .await
+        .unwrap();
+
+        // Insert commits for a different DID
+        insert_event(
+            &db,
+            4,
+            did_b,
+            "commit",
+            &[0xDA, 0x7A],
+            "2026-06-30T00:00:00.000Z",
+        )
+        .await
+        .unwrap();
+        insert_event(
+            &db,
+            5,
+            did_b,
+            "commit",
+            &[0xC0, 0xFF],
+            "2026-06-30T00:00:00.000Z",
+        )
+        .await
+        .unwrap();
+
+        // Query recent commits for did_a: should get only commits (not the account event),
+        // newest-first (3, 1)
+        let rows = recent_commits_for_did(&db, did_a, 100).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].seq, 3);
+        assert_eq!(rows[0].event_type, "commit");
+        assert_eq!(rows[1].seq, 1);
+        assert_eq!(rows[1].event_type, "commit");
+
+        // Query for did_b: should get its commits newest-first (5, 4)
+        let rows = recent_commits_for_did(&db, did_b, 100).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].seq, 5);
+        assert_eq!(rows[1].seq, 4);
+    }
+
+    #[tokio::test]
+    async fn recent_commits_for_did_respects_limit() {
+        let db = pool().await;
+        let did = "did:plc:a";
+
+        // Insert 5 commits
+        for seq in 1..=5 {
+            insert_event(
+                &db,
+                seq,
+                did,
+                "commit",
+                &[0xCA, 0xFE],
+                "2026-06-30T00:00:00.000Z",
+            )
+            .await
+            .unwrap();
+        }
+
+        // Query with limit 2: should get the 2 newest (5, 4)
+        let rows = recent_commits_for_did(&db, did, 2).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].seq, 5);
+        assert_eq!(rows[1].seq, 4);
+    }
+
+    #[tokio::test]
+    async fn recent_commits_for_did_returns_empty_for_nonexistent_did() {
+        let db = pool().await;
+        insert_event(
+            &db,
+            1,
+            "did:plc:a",
+            "commit",
+            &[0xCA, 0xFE],
+            "2026-06-30T00:00:00.000Z",
+        )
+        .await
+        .unwrap();
+
+        let rows = recent_commits_for_did(&db, "did:plc:nonexistent", 100)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 0);
     }
 }

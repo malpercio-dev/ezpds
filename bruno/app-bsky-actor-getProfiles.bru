@@ -1,0 +1,40 @@
+meta {
+  name: Get Profiles (app.bsky.actor.getProfiles)
+  type: http
+  seq: 91
+}
+
+get {
+  url: {{baseUrl}}/xrpc/app.bsky.actor.getProfiles?actors={{actor1}}&actors={{actor2}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+params:query {
+  actors: {{actor1}}
+  actors: {{actor2}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  actor1: {{userDid}}
+  actor2: did:plc:example
+}
+
+docs {
+  # GET /xrpc/app.bsky.actor.getProfiles
+
+  Fetch multiple users' profiles in a single request. **Read-after-write enabled:** the requester's
+  own profile entry (if present in the request) is overwritten with unindexed local profile changes.
+  Other users' profiles are passed through unchanged. The response carries an `Atproto-Upstream-Lag`
+  header if any local changes were injected.
+
+  Query params:
+  - `actors` — array of user DIDs or handles (required, max 25)
+
+  Response carries `profiles` (array of profile objects).
+}

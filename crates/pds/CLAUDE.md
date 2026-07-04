@@ -1,6 +1,6 @@
 # PDS Crate (Custos)
 
-Last verified: 2026-07-02
+Last verified: 2026-07-03
 
 ## Purpose
 
@@ -29,6 +29,7 @@ src/
   code_gen.rs      — random claim-code generation (pure), shared by claim-code + account-creation routes
   uniqueness.rs    — email/handle pre-flight uniqueness DB checks, shared by the account-creation routes
   platform.rs      — device `Platform` enum, shared by the device-registration routes
+  read_after_write/— buffered AppView response munge path for read-after-write: merges requester's unindexed records, rev-faithful selection via atproto-repo-rev, fallback ladder, Atproto-Upstream-Lag header
   auth/            — authentication primitives + route guards (HTTP-aware, no DB schema ownership)
   db/              — SQL query functions + migration runner (no business logic)
   routes/          — HTTP handlers, one file per endpoint
@@ -152,6 +153,39 @@ prove the bidirectional channel and serve as a liveness probe; the real repo-syn
 protocols register here later. Errors are logged, never propagated (one bad peer never stops
 the loop). The endpoint is closed on graceful shutdown, which ends the accept loop.
 
+### `read_after_write/`
+
+**Read-after-write:** Buffered munge path for six munged AppView NSIDs
+(`app.bsky.feed.getTimeline`, `getAuthorFeed`, `getPostThread`, `getActorLikes`,
+`app.bsky.actor.getProfile`, `getProfiles`). Merges the requester's unindexed records
+(fetched from the firehose event log via `get_records_since_rev`) into the AppView's indexed
+response. Selects records by comparing the AppView's `atproto-repo-rev` header to the account's
+current repo CID (`repo_seq`): records with `indexed_at` timestamps *after* the AppView's rev
+are included. The core `pipethrough_munged` handler implements the full fallback ladder:
+(1) upstream error → return error unchanged; (2) non-2xx → return buffered original (except
+`getPostThread` 400 NotFound, which triggers reconstruction); (3) JSON parse error → return buffered
+original; (4) empty LocalRecords → return buffered original with NO lag header; (5) munge/hydration
+errors → log and return buffered original (fallback to untouched upstream response). Response buffering
+is capped at 10 MiB; oversized responses trigger early bailout. The `Atproto-Upstream-Lag` header
+(milliseconds since the oldest merged record's indexed_at) is set only when local.count > 0.
+Submodules:
+
+| File | Purpose |
+|---|---|
+| `mod.rs` | `pipethrough_munged` handler, fallback ladder, buffering cap, response error handling, lag header calculation |
+| `munge.rs` | Per-NSID munges `get_timeline`, `get_author_feed`, `get_post_thread`, `get_actor_likes`, `get_profile`, `get_profiles` — injection/overwriting of the requester's records. `// pattern: Mixed (unavoidable)` (the feed/thread munges orchestrate async hydration through `LocalViewer`) |
+| `viewer.rs` | `LocalViewer`: hydrates local records as feed items / profile views with author/counts populated via AppView prefetch, renders quote embeds with appview-fetched URIs (falls back to `#viewNotFound` on errors) |
+| `types.rs` | `LocalRecords`, `RecordDescript` — structured container for unindexed records bucket by collection |
+
+The munge path shares `service_proxy::proxy_request` extraction with the streaming fast path
+(both mint service auth, both buffer request bodies up to MAX_PROXY_BODY, both forward query params).
+`mint_service_auth` is `pub(crate)` so `pipethrough_munged` can re-use the JWT minting logic.
+
+**Config:** The AppView is configured via `[appview]` in `pds.toml` (`EZPDS_APPVIEW_URL` env var,
+default `https://api.bsky.app`) and `EZPDS_APPVIEW_DID` (default `did:web:api.bsky.app#bsky_appview`).
+The optional `EZPDS_APPVIEW_CDN_URL` (default `https://cdn.bsky.app`) overrides the blob CDN
+endpoint in blob embed URLs (useful for egress-heavy testing with a local blobstore).
+
 ### `auth/`
 
 Pure authentication logic and middleware. Submodules:
@@ -247,7 +281,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `get_device_pds.rs` | `GET /v1/devices/:id/pds` |
 | `describe_server.rs` | `GET /xrpc/com.atproto.server.describeServer` |
 | `describe_repo.rs` | `GET /xrpc/com.atproto.repo.describeRepo` |
-| `service_proxy.rs` | `GET/POST /xrpc/app.bsky.*`, `GET/POST /xrpc/chat.bsky.*`, and `GET/POST /xrpc/com.atproto.moderation.*` — catch-all proxy forwarding unhandled `app.bsky.*` NSIDs to the configured AppView and `chat.bsky.*` NSIDs (direct messages) to the configured chat service. The `chat.bsky.*` branch (in `app.rs::xrpc_handler`) requires a privileged credential — full access or a *privileged* app password; a plain `com.atproto.appPass` session is refused with 403. `com.atproto.moderation.*` (e.g. `createReport`) has no single configured upstream — the client names the target labeler via the `atproto-proxy` header (`did#serviceId`), which `identity_resolution::resolve_atproto_proxy_target` resolves (DID document → matching `service` entry's `serviceEndpoint`) before proxying; a missing header is 400, an unresolvable target is 503. Since that target DID is caller-controlled, the resolved `serviceEndpoint` is SSRF-guarded (`identity_resolution::validate_proxy_endpoint`): rejects non-http(s) schemes, userinfo, query/fragment, and any host — IP literal or DNS-resolved — that isn't a public address (loopback/private/link-local incl. cloud-metadata/unique-local-IPv6/etc.); a resolved domain's addresses are pinned for the actual connection (`service_proxy::build_pinned_client`) so a second DNS answer at connect time can't substitute an unchecked address |
+| `service_proxy.rs` | `GET/POST /xrpc/app.bsky.*`, `GET/POST /xrpc/chat.bsky.*`, and `GET/POST /xrpc/com.atproto.moderation.*` — catch-all proxy with dual paths. The six **read-after-write NSIDs** (`app.bsky.feed.{getTimeline,getAuthorFeed,getPostThread,getActorLikes}` + `app.bsky.actor.{getProfile,getProfiles}`) are routed to `read_after_write::pipethrough_munged` (buffered munge path: merges requester's unindexed records, applies fallback ladder, emits `Atproto-Upstream-Lag` header); all other `app.bsky.*` NSIDs stream through `proxy_xrpc` (fast path: no buffering). `chat.bsky.*` NSIDs stream to the configured chat service (requires full access or *privileged* app password; plain `com.atproto.appPass` refused with 403). `com.atproto.moderation.*` (e.g. `createReport`) has no single configured upstream — the client names the target labeler via the `atproto-proxy` header (`did#serviceId`), which `identity_resolution::resolve_atproto_proxy_target` resolves (DID document → matching `service` entry's `serviceEndpoint`) before proxying; a missing header is 400, an unresolvable target is 503. Since that target DID is caller-controlled, the resolved `serviceEndpoint` is SSRF-guarded (`identity_resolution::validate_proxy_endpoint`): rejects non-http(s) schemes, userinfo, query/fragment, and any host — IP literal or DNS-resolved — that isn't a public address (loopback/private/link-local incl. cloud-metadata/unique-local-IPv6/etc.); a resolved domain's addresses are pinned for the actual connection (`service_proxy::build_pinned_client`) so a second DNS answer at connect time can't substitute an unchecked address. Both paths share `proxy_request` extraction (`mint_service_auth` is `pub(crate)`). |
 | `get_preferences.rs` | `GET /xrpc/app.bsky.actor.getPreferences` — local preference read (stored on the PDS, not proxied; registered ahead of the catch-all). Any access-level token; an app-password caller never sees full-access-only preference types (`preference_scope.rs`) |
 | `put_preferences.rs` | `POST /xrpc/app.bsky.actor.putPreferences` — local preference write (registered ahead of the catch-all). Any access-level token; a scope-limited partial replace — a full-access token overwrites the stored blob entirely, an app-password caller's write preserves any full-access-only entries it can't manage |
 | `preference_scope.rs` | Shared (non-handler) between the two: which preference `$type`s are full-access-only (`personalDetailsPref`), matching the reference PDS |
