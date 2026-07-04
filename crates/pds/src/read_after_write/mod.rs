@@ -418,6 +418,57 @@ mod tests {
         assert_eq!(local_lag_ms(&local), None);
     }
 
+    fn author_feed_request(query: &str) -> Request {
+        axum::http::Request::builder()
+            .uri(format!("/xrpc/app.bsky.feed.getAuthorFeed?{query}"))
+            .body(axum::body::Body::empty())
+            .unwrap()
+    }
+
+    #[test]
+    fn extract_actor_param_returns_did_for_author_feed() {
+        let req = author_feed_request("actor=did:plc:abc123");
+        assert_eq!(
+            extract_actor_param(&req, "app.bsky.feed.getAuthorFeed"),
+            Some("did:plc:abc123".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_actor_param_finds_actor_in_any_position() {
+        let req = author_feed_request("limit=30&actor=alice.bsky.social&cursor=xyz");
+        assert_eq!(
+            extract_actor_param(&req, "app.bsky.feed.getAuthorFeed"),
+            Some("alice.bsky.social".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_actor_param_returns_none_for_other_nsid() {
+        // Even with an actor param present, a non-getAuthorFeed NSID must not resolve it.
+        let req = axum::http::Request::builder()
+            .uri("/xrpc/app.bsky.feed.getTimeline?actor=did:plc:abc123")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(extract_actor_param(&req, "app.bsky.feed.getTimeline"), None);
+    }
+
+    #[test]
+    fn extract_actor_param_returns_none_when_absent() {
+        let req = author_feed_request("limit=30");
+        assert_eq!(extract_actor_param(&req, "app.bsky.feed.getAuthorFeed"), None);
+    }
+
+    #[test]
+    fn extract_actor_param_percent_decodes_value() {
+        // A handle encoded by the client must be decoded before the guard compares it.
+        let req = author_feed_request("actor=alice%40example.com");
+        assert_eq!(
+            extract_actor_param(&req, "app.bsky.feed.getAuthorFeed"),
+            Some("alice@example.com".to_string())
+        );
+    }
+
     #[test]
     fn local_lag_ms_returns_some_for_records_with_indexed_at() {
         // Use a known past timestamp

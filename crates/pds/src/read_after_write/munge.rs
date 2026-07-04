@@ -1,7 +1,11 @@
-// pattern: Functional Core
+// pattern: Mixed (unavoidable)
 //
 // Munging functions: transform the AppView response by merging the requester's own unindexed records.
-// Each munge is a pure transformation of the AppView response + local records → merged output.
+// The profile/likes munges and the `refresh_own_authored_items` / `is_actor_requester` helpers are
+// pure transformations of the AppView response + local records → merged output. The two feed-injection
+// paths (`get_timeline`, `get_author_feed`) are NOT pure: they orchestrate async hydration and
+// insertion through the `LocalViewer` (Imperative Shell), whose `hydrate_quotes` performs an outbound
+// service-auth'd `app.bsky.feed.getPosts` call. Hence the whole file is Mixed, not Functional Core.
 
 use serde_json::Value;
 use super::types::LocalRecords;
@@ -53,6 +57,9 @@ pub(crate) async fn get_timeline(
 ) -> Value {
     let quotes = viewer.hydrate_quotes(&local.posts).await;
 
+    // These two steps cover disjoint item sets: `refresh_own_authored_items` updates the author on
+    // items the AppView already returned, while `insert_posts_in_feed` builds fresh postViews for the
+    // requester's unindexed posts (which rev-selection guarantees are absent from the AppView page).
     refresh_own_authored_items(viewer, &mut original, requester);
 
     if let Some(feed_arr) = original.get_mut("feed").and_then(|v| v.as_array_mut()) {
@@ -92,6 +99,8 @@ pub(crate) async fn get_actor_likes(
     _local: &LocalRecords,
     requester: &str,
 ) -> Value {
+    // No insertion: likes are not the requester's own post records, so `_local` is intentionally
+    // unused. This only refreshes the author view on items the requester authored.
     refresh_own_authored_items(viewer, &mut original, requester);
     original
 }
