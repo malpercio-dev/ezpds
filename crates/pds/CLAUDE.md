@@ -173,7 +173,7 @@ Submodules:
 | File | Purpose |
 |---|---|
 | `mod.rs` | `pipethrough_munged` handler, fallback ladder, buffering cap, response error handling, lag header calculation |
-| `munge/*.rs` | NSIDs: `get_timeline`, `get_author_feed`, `get_post_thread`, `get_actor_likes`, `get_profile`, `get_profiles` — selection by requested entity, injection/overwriting of requester's records |
+| `munge.rs` | Per-NSID munges `get_timeline`, `get_author_feed`, `get_post_thread`, `get_actor_likes`, `get_profile`, `get_profiles` — injection/overwriting of the requester's records. `// pattern: Mixed (unavoidable)` (the feed/thread munges orchestrate async hydration through `LocalViewer`) |
 | `viewer.rs` | `LocalViewer`: hydrates local records as feed items / profile views with author/counts populated via AppView prefetch, renders quote embeds with appview-fetched URIs (falls back to `#viewNotFound` on errors) |
 | `types.rs` | `LocalRecords`, `RecordDescript` — structured container for unindexed records bucket by collection |
 
@@ -182,7 +182,7 @@ The munge path shares `service_proxy::proxy_request` extraction with the streami
 `mint_service_auth` is `pub(crate)` so `pipethrough_munged` can re-use the JWT minting logic.
 
 **Config:** The AppView is configured via `[appview]` in `pds.toml` (`EZPDS_APPVIEW_URL` env var,
-default `https://api.bsky.app`) and `EZPDS_APPVIEW_DID` (default `did:web:api.bsky.app`).
+default `https://api.bsky.app`) and `EZPDS_APPVIEW_DID` (default `did:web:api.bsky.app#bsky_appview`).
 The optional `EZPDS_APPVIEW_CDN_URL` (default `https://cdn.bsky.app`) overrides the blob CDN
 endpoint in blob embed URLs (useful for egress-heavy testing with a local blobstore).
 

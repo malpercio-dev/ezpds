@@ -7,9 +7,9 @@
 // insertion through the `LocalViewer` (Imperative Shell), whose `hydrate_quotes` performs an outbound
 // service-auth'd `app.bsky.feed.getPosts` call. Hence the whole file is Mixed, not Functional Core.
 
-use serde_json::Value;
 use super::types::LocalRecords;
 use super::viewer::LocalViewer;
+use serde_json::Value;
 
 pub(crate) async fn get_profile(
     viewer: &LocalViewer<'_>,
@@ -63,7 +63,9 @@ pub(crate) async fn get_timeline(
     refresh_own_authored_items(viewer, &mut original, requester);
 
     if let Some(feed_arr) = original.get_mut("feed").and_then(|v| v.as_array_mut()) {
-        viewer.insert_posts_in_feed(feed_arr, &local.posts, &quotes).await;
+        viewer
+            .insert_posts_in_feed(feed_arr, &local.posts, &quotes)
+            .await;
     }
 
     original
@@ -87,7 +89,9 @@ pub(crate) async fn get_author_feed(
     refresh_own_authored_items(viewer, &mut original, requester);
 
     if let Some(feed_arr) = original.get_mut("feed").and_then(|v| v.as_array_mut()) {
-        viewer.insert_posts_in_feed(feed_arr, &local.posts, &quotes).await;
+        viewer
+            .insert_posts_in_feed(feed_arr, &local.posts, &quotes)
+            .await;
     }
 
     original
@@ -123,7 +127,8 @@ pub(crate) async fn get_post_thread(
         if let Some(post) = thread.get_mut("post").and_then(|p| p.as_object_mut()) {
             if let Some(author) = post.get_mut("author").and_then(|a| a.as_object_mut()) {
                 if author.get("did").and_then(|d| d.as_str()).unwrap_or("") == requester {
-                    let author_view = viewer.update_profile_view_basic(serde_json::Value::Object(author.clone()));
+                    let author_view =
+                        viewer.update_profile_view_basic(serde_json::Value::Object(author.clone()));
                     *author = author_view.as_object().unwrap().clone();
                 }
             }
@@ -136,20 +141,33 @@ pub(crate) async fn get_post_thread(
         for local_post in &local.posts {
             // Check if this local post is a reply to something in the thread
             if let Some(reply) = local_post.record.get("reply") {
-                if let Some(parent_uri) = reply.get("parent").and_then(|p| p.get("uri")).and_then(|u| u.as_str()) {
+                if let Some(parent_uri) = reply
+                    .get("parent")
+                    .and_then(|p| p.get("uri"))
+                    .and_then(|u| u.as_str())
+                {
                     // Check if parent_uri is the focus post or any post in the thread
                     let mut is_reply_to_thread = false;
 
-                    if let Some(focus_post) = thread.get("post").and_then(|p| p.get("uri")).and_then(|u| u.as_str()) {
+                    if let Some(focus_post) = thread
+                        .get("post")
+                        .and_then(|p| p.get("uri"))
+                        .and_then(|u| u.as_str())
+                    {
                         if parent_uri == focus_post {
                             is_reply_to_thread = true;
                         }
                     }
 
                     if !is_reply_to_thread {
-                        if let Some(replies_arr) = thread.get("replies").and_then(|r| r.as_array()) {
+                        if let Some(replies_arr) = thread.get("replies").and_then(|r| r.as_array())
+                        {
                             for reply_item in replies_arr {
-                                if let Some(reply_post_uri) = reply_item.get("post").and_then(|p| p.get("uri")).and_then(|u| u.as_str()) {
+                                if let Some(reply_post_uri) = reply_item
+                                    .get("post")
+                                    .and_then(|p| p.get("uri"))
+                                    .and_then(|u| u.as_str())
+                                {
                                     if parent_uri == reply_post_uri {
                                         is_reply_to_thread = true;
                                         break;
@@ -180,9 +198,12 @@ pub(crate) async fn get_post_thread(
                 }
             } else {
                 // If no replies array exists, create one
-                thread.insert("replies".to_string(), serde_json::Value::Array(
-                    replies_to_add.into_iter().map(|(_, tp)| tp).collect()
-                ));
+                thread.insert(
+                    "replies".to_string(),
+                    serde_json::Value::Array(
+                        replies_to_add.into_iter().map(|(_, tp)| tp).collect(),
+                    ),
+                );
             }
         }
 
@@ -204,7 +225,11 @@ pub(crate) async fn get_post_thread(
             let mut local_replies = Vec::new();
             for potential_reply in &local.posts {
                 if let Some(reply) = potential_reply.record.get("reply") {
-                    if let Some(parent_uri) = reply.get("parent").and_then(|p| p.get("uri")).and_then(|u| u.as_str()) {
+                    if let Some(parent_uri) = reply
+                        .get("parent")
+                        .and_then(|p| p.get("uri"))
+                        .and_then(|u| u.as_str())
+                    {
                         if parent_uri == requested_uri {
                             let reply_view = viewer.post_view(potential_reply, &quotes).await;
                             let reply_post = serde_json::json!({
@@ -236,11 +261,7 @@ pub(crate) async fn get_post_thread(
 }
 
 /// Refresh the author view on any feed items authored by the requester, if a local profile exists.
-fn refresh_own_authored_items(
-    viewer: &LocalViewer<'_>,
-    original: &mut Value,
-    requester: &str,
-) {
+fn refresh_own_authored_items(viewer: &LocalViewer<'_>, original: &mut Value, requester: &str) {
     if let Some(feed_arr) = original.get_mut("feed").and_then(|v| v.as_array_mut()) {
         for item in feed_arr {
             if let Some(post) = item.get_mut("post") {
@@ -402,13 +423,11 @@ mod tests {
         let result = get_profiles(&viewer, original.clone(), &local, "did:plc:requester").await;
 
         assert_eq!(
-            result["profiles"][1],
-            original["profiles"][1],
+            result["profiles"][1], original["profiles"][1],
             "other profile should be unchanged"
         );
         assert_eq!(
-            result["profiles"][0]["displayName"],
-            "Local Requester",
+            result["profiles"][0]["displayName"], "Local Requester",
             "requester profile should be overwritten"
         );
     }
@@ -439,7 +458,12 @@ mod tests {
             .unwrap()
             .unwrap();
         let profile_val = local.profile.as_ref().map(|p| p.record.clone());
-        let viewer = super::super::viewer::LocalViewer::new(&state, did.to_string(), handle.handle, profile_val);
+        let viewer = super::super::viewer::LocalViewer::new(
+            &state,
+            did.to_string(),
+            handle.handle,
+            profile_val,
+        );
 
         let original_feed = json!({
             "feed": [
@@ -462,7 +486,10 @@ mod tests {
         let feed = result.get("feed").unwrap().as_array().unwrap();
 
         assert!(feed.len() > 1, "feed should have injected post");
-        assert_eq!(feed[0]["post"]["author"]["did"], did, "first item should be requester's post");
+        assert_eq!(
+            feed[0]["post"]["author"]["did"], did,
+            "first item should be requester's post"
+        );
         assert!(
             feed[0]["post"]["uri"].as_str().unwrap().contains("post1"),
             "injected post should be post1"
@@ -503,7 +530,12 @@ mod tests {
             .unwrap()
             .unwrap();
         let profile_val = local.profile.as_ref().map(|p| p.record.clone());
-        let viewer = super::super::viewer::LocalViewer::new(&state, did.to_string(), handle.handle, profile_val);
+        let viewer = super::super::viewer::LocalViewer::new(
+            &state,
+            did.to_string(),
+            handle.handle,
+            profile_val,
+        );
 
         let original_feed = json!({
             "feed": [
@@ -586,7 +618,12 @@ mod tests {
             .unwrap()
             .unwrap();
         let profile_val = local.profile.as_ref().map(|p| p.record.clone());
-        let viewer = super::super::viewer::LocalViewer::new(&state, did.to_string(), handle.handle, profile_val);
+        let viewer = super::super::viewer::LocalViewer::new(
+            &state,
+            did.to_string(),
+            handle.handle,
+            profile_val,
+        );
 
         let original_feed = json!({
             "feed": []
@@ -632,7 +669,12 @@ mod tests {
             .unwrap()
             .unwrap();
         let profile_val = local.profile.as_ref().map(|p| p.record.clone());
-        let viewer = super::super::viewer::LocalViewer::new(&state, requester.to_string(), handle.handle, profile_val);
+        let viewer = super::super::viewer::LocalViewer::new(
+            &state,
+            requester.to_string(),
+            handle.handle,
+            profile_val,
+        );
 
         let original_feed = json!({
             "feed": [
@@ -651,9 +693,19 @@ mod tests {
             ]
         });
 
-        let result = get_author_feed(&viewer, original_feed.clone(), &local, requester, Some(other)).await;
+        let result = get_author_feed(
+            &viewer,
+            original_feed.clone(),
+            &local,
+            requester,
+            Some(other),
+        )
+        .await;
 
-        assert_eq!(result, original_feed, "response should be unchanged when viewing another actor's feed");
+        assert_eq!(
+            result, original_feed,
+            "response should be unchanged when viewing another actor's feed"
+        );
     }
 
     #[tokio::test]
@@ -688,7 +740,12 @@ mod tests {
             .unwrap()
             .unwrap();
         let profile_val = local.profile.as_ref().map(|p| p.record.clone());
-        let viewer = super::super::viewer::LocalViewer::new(&state, requester.to_string(), handle.handle, profile_val);
+        let viewer = super::super::viewer::LocalViewer::new(
+            &state,
+            requester.to_string(),
+            handle.handle,
+            profile_val,
+        );
 
         let original_feed = json!({
             "feed": [
@@ -722,7 +779,11 @@ mod tests {
         let result = get_actor_likes(&viewer, original_feed.clone(), &local, requester).await;
         let feed = result.get("feed").unwrap().as_array().unwrap();
 
-        assert_eq!(feed.len(), 2, "feed length should be unchanged (no injection)");
+        assert_eq!(
+            feed.len(),
+            2,
+            "feed length should be unchanged (no injection)"
+        );
         assert_eq!(
             feed[1]["post"]["author"]["displayName"], "Fresh Display Name",
             "requester's author view should be refreshed"
@@ -760,7 +821,12 @@ mod tests {
             .unwrap()
             .unwrap();
         let profile_val = local.profile.as_ref().map(|p| p.record.clone());
-        let viewer = super::super::viewer::LocalViewer::new(&state, requester.to_string(), handle.handle, profile_val);
+        let viewer = super::super::viewer::LocalViewer::new(
+            &state,
+            requester.to_string(),
+            handle.handle,
+            profile_val,
+        );
 
         // The AppView returns a NotFound error for a post that is NOT in our local records
         let appview_error = json!({
@@ -770,7 +836,14 @@ mod tests {
         let requested_uri = format!("at://{}/app.bsky.feed.post/unknown_post", other);
 
         // Call get_post_thread with the NotFound error body and a requested_uri that doesn't exist locally
-        let result = get_post_thread(&viewer, appview_error.clone(), &local, requester, &requested_uri).await;
+        let result = get_post_thread(
+            &viewer,
+            appview_error.clone(),
+            &local,
+            requester,
+            &requested_uri,
+        )
+        .await;
 
         // The result should equal the original appview_error (unchanged)
         // because the requested_uri is not in our local posts

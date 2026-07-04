@@ -22,8 +22,8 @@ use std::collections::HashMap;
 
 use crate::app::AppState;
 use crate::db::blocks::SqliteBlockStore;
-use repo_engine::Repository;
 use atrium_repo::Cid;
+use repo_engine::Repository;
 
 /// Maximum size of a munged response body. AppView endpoints return modest JSON
 /// (typically < 1 MiB). This cap guards against unbounded buffering on broken upstream
@@ -56,18 +56,16 @@ pub(crate) async fn get_records_since_rev(
     let mut touched: HashMap<(String, String), (String, Cid)> = HashMap::new(); // (coll, rkey) -> (time, cid)
 
     for row in rows {
-        let event = match crate::firehose::decode_stored_event(
-            row.seq as u64,
-            &row.event_type,
-            &row.event,
-        ) {
-            Ok(crate::firehose::FirehoseEvent::Commit(c)) => c,
-            Ok(_) => continue, // Should not happen; we filtered for 'commit' in the query
-            Err(err) => {
-                tracing::debug!(error = %err, seq = row.seq, "failed to decode commit event");
-                continue; // best-effort: skip this record
-            }
-        };
+        let event =
+            match crate::firehose::decode_stored_event(row.seq as u64, &row.event_type, &row.event)
+            {
+                Ok(crate::firehose::FirehoseEvent::Commit(c)) => c,
+                Ok(_) => continue, // Should not happen; we filtered for 'commit' in the query
+                Err(err) => {
+                    tracing::debug!(error = %err, seq = row.seq, "failed to decode commit event");
+                    continue; // best-effort: skip this record
+                }
+            };
 
         // Stop if this commit's rev is at or below the header rev (string comparison: TIDs sort by time)
         if event.rev.as_str() <= header_rev {
@@ -212,15 +210,14 @@ fn local_lag_ms(local: &LocalRecords) -> Option<i64> {
 /// Extract a query parameter from the request URI by key.
 fn extract_query_param(req: &Request, key: &str) -> Option<String> {
     let uri = req.uri();
-    uri.query()
-        .and_then(|q| {
-            for pair in q.split('&') {
-                if let Some(value) = pair.strip_prefix(&format!("{}=", key)) {
-                    return Some(urlencoding::decode(value).ok()?.into_owned());
-                }
+    uri.query().and_then(|q| {
+        for pair in q.split('&') {
+            if let Some(value) = pair.strip_prefix(&format!("{}=", key)) {
+                return Some(urlencoding::decode(value).ok()?.into_owned());
             }
-            None
-        })
+        }
+        None
+    })
 }
 
 /// Extract the `actor` query param from the request for getAuthorFeed.
@@ -271,9 +268,8 @@ pub(crate) async fn pipethrough_munged(
     };
 
     // 1. Capture status, content-type, and atproto-repo-rev header
-    let status =
-        axum::http::StatusCode::from_u16(upstream.status().as_u16())
-            .unwrap_or(axum::http::StatusCode::BAD_GATEWAY);
+    let status = axum::http::StatusCode::from_u16(upstream.status().as_u16())
+        .unwrap_or(axum::http::StatusCode::BAD_GATEWAY);
     let content_type = upstream.headers().get(header::CONTENT_TYPE).cloned();
     let header_rev = upstream
         .headers()
@@ -477,7 +473,9 @@ pub(crate) async fn pipethrough_munged(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::routes::test_utils::{access_jwt, seed_account_with_repo, put_record_request, delete_record_request};
+    use crate::routes::test_utils::{
+        access_jwt, delete_record_request, put_record_request, seed_account_with_repo,
+    };
     use tower::ServiceExt;
 
     #[test]
@@ -524,7 +522,10 @@ mod tests {
     #[test]
     fn extract_actor_param_returns_none_when_absent() {
         let req = author_feed_request("limit=30");
-        assert_eq!(extract_actor_param(&req, "app.bsky.feed.getAuthorFeed"), None);
+        assert_eq!(
+            extract_actor_param(&req, "app.bsky.feed.getAuthorFeed"),
+            None
+        );
     }
 
     #[test]
@@ -554,7 +555,10 @@ mod tests {
 
         let lag = local_lag_ms(&local);
         assert!(lag.is_some(), "lag should be Some for a past timestamp");
-        assert!(lag.unwrap() > 0, "lag should be positive for a past timestamp");
+        assert!(
+            lag.unwrap() > 0,
+            "lag should be positive for a past timestamp"
+        );
     }
 
     #[test]
@@ -837,18 +841,15 @@ mod tests {
         }
 
         for post in &local.posts {
-            assert!(
-                !post.indexed_at.is_empty(),
-                "post should have indexed_at"
-            );
+            assert!(!post.indexed_at.is_empty(), "post should have indexed_at");
         }
     }
 
     #[tokio::test]
     async fn test_pipethrough_munged_ac2_1_stale_appview_plus_fresh_local_profile() {
+        use std::sync::Arc;
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
-        use std::sync::Arc;
 
         let server = MockServer::start().await;
         let old_rev = "0";
@@ -940,9 +941,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_pipethrough_munged_ac2_5_no_local_profile() {
+        use std::sync::Arc;
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
-        use std::sync::Arc;
 
         let server = MockServer::start().await;
         let fresh_rev = "bafy2bzaced7h";
@@ -1012,9 +1013,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_pipethrough_munged_ac2_2_getprofiles_overwrites_requester_only() {
+        use std::sync::Arc;
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
-        use std::sync::Arc;
 
         let server = MockServer::start().await;
         let old_rev = "0";
@@ -1109,9 +1110,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_pipethrough_munged_ac3_1_getpostthread_notfound_reconstructs() {
+        use std::sync::Arc;
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
-        use std::sync::Arc;
 
         let server = MockServer::start().await;
         let old_rev = "0";
@@ -1166,7 +1167,10 @@ mod tests {
 
         let req = axum::http::Request::builder()
             .method(axum::http::Method::POST)
-            .uri(format!("/xrpc/app.bsky.feed.getPostThread?uri={}", urlencoding::encode(&post_uri)))
+            .uri(format!(
+                "/xrpc/app.bsky.feed.getPostThread?uri={}",
+                urlencoding::encode(&post_uri)
+            ))
             .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {token}"))
             .body(axum::body::Body::from(""))
@@ -1175,7 +1179,11 @@ mod tests {
         let resp = pipethrough_munged(&state, "app.bsky.feed.getPostThread", did, req).await;
 
         // CRITICAL: Status must be 200, not 400
-        assert_eq!(resp.status(), axum::http::StatusCode::OK, "Response should be 200 OK when reconstructing NotFound thread");
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::OK,
+            "Response should be 200 OK when reconstructing NotFound thread"
+        );
 
         let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
@@ -1183,7 +1191,10 @@ mod tests {
         let munged: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
 
         // Verify the thread was reconstructed
-        assert!(munged.get("thread").is_some(), "thread field should be present");
+        assert!(
+            munged.get("thread").is_some(),
+            "thread field should be present"
+        );
         let thread = &munged["thread"];
         assert_eq!(thread["$type"], "app.bsky.feed.defs#threadViewPost");
         assert_eq!(thread["post"]["uri"], post_uri);
@@ -1197,9 +1208,9 @@ mod tests {
         // fall back to the original 400 + error body — the 200 override only applies when a thread
         // was actually reconstructed. The requester DOES have an unrelated local post (so the
         // count>0 gate is passed), which is exactly the state that surfaced the masking bug.
+        use std::sync::Arc;
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
-        use std::sync::Arc;
 
         let server = MockServer::start().await;
 
@@ -1279,9 +1290,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_pipethrough_munged_ac3_2_getpostthread_splices_own_replies() {
+        use std::sync::Arc;
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
-        use std::sync::Arc;
 
         let server = MockServer::start().await;
         let old_rev = "0";
@@ -1366,7 +1377,10 @@ mod tests {
 
         let req = axum::http::Request::builder()
             .method(axum::http::Method::POST)
-            .uri(format!("/xrpc/app.bsky.feed.getPostThread?uri={}", urlencoding::encode(parent_uri)))
+            .uri(format!(
+                "/xrpc/app.bsky.feed.getPostThread?uri={}",
+                urlencoding::encode(parent_uri)
+            ))
             .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {token}"))
             .body(axum::body::Body::from(""))
@@ -1383,7 +1397,10 @@ mod tests {
         // Verify the reply was spliced into replies
         assert!(munged["thread"]["replies"].is_array());
         let replies = munged["thread"]["replies"].as_array().unwrap();
-        assert!(!replies.is_empty(), "replies array should contain the local reply");
+        assert!(
+            !replies.is_empty(),
+            "replies array should contain the local reply"
+        );
 
         // Find our reply in the spliced replies
         let found_reply = replies.iter().any(|r| {
@@ -1399,9 +1416,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_pipethrough_munged_ac3_3_getpostthread_other_user_unchanged() {
+        use std::sync::Arc;
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
-        use std::sync::Arc;
 
         let server = MockServer::start().await;
         let fresh_rev = "bafy123";
@@ -1472,7 +1489,10 @@ mod tests {
 
         let req = axum::http::Request::builder()
             .method(axum::http::Method::POST)
-            .uri(format!("/xrpc/app.bsky.feed.getPostThread?uri={}", urlencoding::encode(other_post_uri)))
+            .uri(format!(
+                "/xrpc/app.bsky.feed.getPostThread?uri={}",
+                urlencoding::encode(other_post_uri)
+            ))
             .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {token}"))
             .body(axum::body::Body::from(""))
@@ -1488,17 +1508,27 @@ mod tests {
 
         // Verify response equals AppView body (no local replies spliced)
         assert_eq!(munged["thread"]["post"]["uri"], other_post_uri);
-        assert_eq!(munged["thread"]["post"]["author"]["did"], "did:plc:other_user");
-        assert_eq!(munged["thread"]["post"]["author"]["displayName"], "Other User");
+        assert_eq!(
+            munged["thread"]["post"]["author"]["did"],
+            "did:plc:other_user"
+        );
+        assert_eq!(
+            munged["thread"]["post"]["author"]["displayName"],
+            "Other User"
+        );
         assert!(munged["thread"]["replies"].is_array());
-        assert_eq!(munged["thread"]["replies"].as_array().unwrap().len(), 0, "No local replies should be added");
+        assert_eq!(
+            munged["thread"]["replies"].as_array().unwrap().len(),
+            0,
+            "No local replies should be added"
+        );
     }
 
     #[tokio::test]
     async fn test_pipethrough_munged_ac4_1_non_json_body_passthrough() {
+        use std::sync::Arc;
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
-        use std::sync::Arc;
 
         let server = MockServer::start().await;
         let old_rev = "0";
@@ -1570,9 +1600,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_pipethrough_munged_ac4_2_quote_post_with_failed_get_posts() {
+        use std::sync::Arc;
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
-        use std::sync::Arc;
 
         let server = MockServer::start().await;
         let old_rev = "0";
@@ -1685,9 +1715,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_pipethrough_munged_ac4_4_no_lag_when_current() {
+        use std::sync::Arc;
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
-        use std::sync::Arc;
 
         let server = MockServer::start().await;
         // Rev is at the current head — nothing unindexed

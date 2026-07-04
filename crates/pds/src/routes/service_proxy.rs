@@ -90,8 +90,10 @@ pub(crate) async fn proxy_request(
                 .into_response());
             }
             tracing::warn!(error = %err, nsid, "failed to read request body while proxying XRPC");
-            return Err(ApiError::new(ErrorCode::InvalidRequest, "failed to read request body")
-                .into_response());
+            return Err(
+                ApiError::new(ErrorCode::InvalidRequest, "failed to read request body")
+                    .into_response(),
+            );
         }
     };
 
@@ -157,7 +159,17 @@ pub async fn proxy_xrpc(
     moderation_guard: Option<&ModerationProxyGuard>,
     req: Request,
 ) -> Response {
-    let upstream = match proxy_request(state, upstream_url, proxy_did, nsid, did, moderation_guard, req).await {
+    let upstream = match proxy_request(
+        state,
+        upstream_url,
+        proxy_did,
+        nsid,
+        did,
+        moderation_guard,
+        req,
+    )
+    .await
+    {
         Ok(resp) => resp,
         Err(resp) => return resp,
     };
@@ -1109,12 +1121,10 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/xrpc/app.bsky.graph.getFollows"))
             .and(query_param("actor", "did:plc:abc123"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "subject": { "did": "did:plc:abc123", "handle": "test.bsky.social" },
-                    "follows": []
-                })),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "subject": { "did": "did:plc:abc123", "handle": "test.bsky.social" },
+                "follows": []
+            })))
             .expect(1)
             .mount(&server)
             .await;

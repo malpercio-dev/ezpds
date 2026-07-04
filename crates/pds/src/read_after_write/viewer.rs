@@ -143,11 +143,7 @@ impl<'a> LocalViewer<'a> {
     }
 
     #[allow(dead_code)]
-    pub(crate) async fn post_view(
-        &self,
-        post: &RecordDescript,
-        quotes: &QuoteMap,
-    ) -> Value {
+    pub(crate) async fn post_view(&self, post: &RecordDescript, quotes: &QuoteMap) -> Value {
         let mut view = json!({
             "$type": "app.bsky.feed.defs#postView",
             "uri": post.uri,
@@ -275,10 +271,7 @@ impl<'a> LocalViewer<'a> {
     }
 
     #[allow(dead_code)]
-    pub(crate) async fn hydrate_quotes(
-        &self,
-        posts: &[RecordDescript],
-    ) -> QuoteMap {
+    pub(crate) async fn hydrate_quotes(&self, posts: &[RecordDescript]) -> QuoteMap {
         let mut quote_uris = std::collections::HashSet::new();
 
         for post in posts {
@@ -292,11 +285,7 @@ impl<'a> LocalViewer<'a> {
         }
 
         // Limit to first 25 URIs to match AppView getPosts batch cap
-        let uri_list: Vec<&str> = quote_uris
-            .iter()
-            .take(25)
-            .map(|s| s.as_str())
-            .collect();
+        let uri_list: Vec<&str> = quote_uris.iter().take(25).map(|s| s.as_str()).collect();
 
         let appview_url = &self.state.config.appview.url;
         let appview_did = &self.state.config.appview.did;
@@ -316,7 +305,10 @@ impl<'a> LocalViewer<'a> {
                     .map(|uri| format!("uris={}", urlencoding::encode(uri)))
                     .collect();
                 let query_string = query_parts.join("&");
-                let target = format!("{}/xrpc/app.bsky.feed.getPosts?{}", appview_url, query_string);
+                let target = format!(
+                    "{}/xrpc/app.bsky.feed.getPosts?{}",
+                    appview_url, query_string
+                );
 
                 match self
                     .state
@@ -332,7 +324,8 @@ impl<'a> LocalViewer<'a> {
                             let mut map = QuoteMap::new();
                             if let Some(posts_arr) = body.get("posts").and_then(|v| v.as_array()) {
                                 for post_view in posts_arr {
-                                    if let Some(uri) = post_view.get("uri").and_then(|v| v.as_str()) {
+                                    if let Some(uri) = post_view.get("uri").and_then(|v| v.as_str())
+                                    {
                                         map.insert(uri.to_string(), post_view.clone());
                                     }
                                 }
@@ -391,8 +384,7 @@ impl<'a> LocalViewer<'a> {
         quotes: &QuoteMap,
     ) {
         let last_time = {
-            feed
-                .last()
+            feed.last()
                 .and_then(|item| item.get("post"))
                 .and_then(|post| post.get("indexedAt"))
                 .and_then(|t| t.as_str())
@@ -488,12 +480,7 @@ mod tests {
             }
         });
 
-        let viewer = LocalViewer::new(
-            &state,
-            "did:plc:test".to_string(),
-            None,
-            Some(profile),
-        );
+        let viewer = LocalViewer::new(&state, "did:plc:test".to_string(), None, Some(profile));
 
         let initial_view = json!({
             "did": "did:plc:test",
@@ -503,7 +490,10 @@ mod tests {
 
         let updated = viewer.update_profile_view_basic(initial_view);
         assert_eq!(updated["displayName"], "New Name");
-        assert!(updated["avatar"].as_str().unwrap().contains("bafy_avatar_new"));
+        assert!(updated["avatar"]
+            .as_str()
+            .unwrap()
+            .contains("bafy_avatar_new"));
         assert_eq!(updated["did"], "did:plc:test");
     }
 
@@ -564,12 +554,7 @@ mod tests {
             },
         });
 
-        let viewer = LocalViewer::new(
-            &state,
-            "did:plc:test".to_string(),
-            None,
-            Some(profile),
-        );
+        let viewer = LocalViewer::new(&state, "did:plc:test".to_string(), None, Some(profile));
 
         let initial_view = json!({
             "did": "did:plc:test",
@@ -620,12 +605,7 @@ mod tests {
     #[tokio::test]
     async fn post_view_hydrates_image_embed_locally() {
         let state = app::test_state().await;
-        let viewer = LocalViewer::new(
-            &state,
-            "did:plc:test".to_string(),
-            None,
-            None,
-        );
+        let viewer = LocalViewer::new(&state, "did:plc:test".to_string(), None, None);
 
         let post = RecordDescript {
             uri: "at://did:plc:test/app.bsky.feed.post/abc123".to_string(),
@@ -665,12 +645,7 @@ mod tests {
     #[tokio::test]
     async fn post_view_hydrates_external_embed_locally() {
         let state = app::test_state().await;
-        let viewer = LocalViewer::new(
-            &state,
-            "did:plc:test".to_string(),
-            None,
-            None,
-        );
+        let viewer = LocalViewer::new(&state, "did:plc:test".to_string(), None, None);
 
         let post = RecordDescript {
             uri: "at://did:plc:test/app.bsky.feed.post/abc123".to_string(),
@@ -708,12 +683,7 @@ mod tests {
     #[tokio::test]
     async fn record_embed_view_not_found_when_quote_missing() {
         let state = app::test_state().await;
-        let viewer = LocalViewer::new(
-            &state,
-            "did:plc:test".to_string(),
-            None,
-            None,
-        );
+        let viewer = LocalViewer::new(&state, "did:plc:test".to_string(), None, None);
 
         let post = RecordDescript {
             uri: "at://did:plc:test/app.bsky.feed.post/abc123".to_string(),
@@ -735,7 +705,10 @@ mod tests {
         let view = viewer.post_view(&post, &quotes).await;
 
         assert_eq!(view["embed"]["$type"], "app.bsky.embed.record#view");
-        assert_eq!(view["embed"]["record"]["$type"], "app.bsky.embed.record#viewNotFound");
+        assert_eq!(
+            view["embed"]["record"]["$type"],
+            "app.bsky.embed.record#viewNotFound"
+        );
         assert_eq!(
             view["embed"]["record"]["uri"],
             "at://did:plc:other/app.bsky.feed.post/xyz789"
@@ -746,12 +719,7 @@ mod tests {
     #[tokio::test]
     async fn record_embed_view_includes_post_when_quote_found() {
         let state = app::test_state().await;
-        let viewer = LocalViewer::new(
-            &state,
-            "did:plc:test".to_string(),
-            None,
-            None,
-        );
+        let viewer = LocalViewer::new(&state, "did:plc:test".to_string(), None, None);
 
         let quoted_post_view = json!({
             "uri": "at://did:plc:other/app.bsky.feed.post/xyz789",
@@ -795,7 +763,10 @@ mod tests {
         let view = viewer.post_view(&post, &quotes).await;
 
         assert_eq!(view["embed"]["$type"], "app.bsky.embed.record#view");
-        assert_eq!(view["embed"]["record"]["$type"], "app.bsky.embed.record#viewRecord");
+        assert_eq!(
+            view["embed"]["record"]["$type"],
+            "app.bsky.embed.record#viewRecord"
+        );
         assert_eq!(
             view["embed"]["record"]["uri"],
             "at://did:plc:other/app.bsky.feed.post/xyz789"
@@ -857,7 +828,10 @@ mod tests {
         let view = viewer.post_view(&post, &quotes).await;
 
         // Outer view is recordWithMedia#view.
-        assert_eq!(view["embed"]["$type"], "app.bsky.embed.recordWithMedia#view");
+        assert_eq!(
+            view["embed"]["$type"],
+            "app.bsky.embed.recordWithMedia#view"
+        );
         // `record` is the FULL record#view wrapper, not the stripped inner viewRecord.
         assert_eq!(
             view["embed"]["record"]["$type"],
@@ -867,10 +841,7 @@ mod tests {
             view["embed"]["record"]["record"]["$type"],
             "app.bsky.embed.record#viewRecord"
         );
-        assert_eq!(
-            view["embed"]["record"]["record"]["uri"],
-            quoted_uri
-        );
+        assert_eq!(view["embed"]["record"]["record"]["uri"], quoted_uri);
         // `media` is the hydrated images#view.
         assert_eq!(
             view["embed"]["media"]["$type"],
@@ -881,29 +852,24 @@ mod tests {
     #[tokio::test]
     async fn insert_posts_in_feed_maintains_chronological_order() {
         let state = app::test_state().await;
-        let viewer = LocalViewer::new(
-            &state,
-            "did:plc:test".to_string(),
-            None,
-            None,
-        );
+        let viewer = LocalViewer::new(&state, "did:plc:test".to_string(), None, None);
 
         let mut feed = vec![
             json!({"post": {"uri": "1", "indexedAt": "2024-01-03T00:00:00.000Z"}}),
             json!({"post": {"uri": "2", "indexedAt": "2024-01-01T00:00:00.000Z"}}),
         ];
 
-        let posts = vec![
-            RecordDescript {
-                uri: "at://did:plc:test/app.bsky.feed.post/new1".to_string(),
-                cid: "bafy_new1".to_string(),
-                indexed_at: "2024-01-02T00:00:00.000Z".to_string(),
-                record: json!({}),
-            },
-        ];
+        let posts = vec![RecordDescript {
+            uri: "at://did:plc:test/app.bsky.feed.post/new1".to_string(),
+            cid: "bafy_new1".to_string(),
+            indexed_at: "2024-01-02T00:00:00.000Z".to_string(),
+            record: json!({}),
+        }];
 
         let quotes = QuoteMap::new();
-        viewer.insert_posts_in_feed(&mut feed, &posts, &quotes).await;
+        viewer
+            .insert_posts_in_feed(&mut feed, &posts, &quotes)
+            .await;
 
         assert_eq!(feed.len(), 3);
         assert_eq!(feed[1]["post"]["indexedAt"], "2024-01-02T00:00:00.000Z");
@@ -912,38 +878,31 @@ mod tests {
     #[tokio::test]
     async fn insert_posts_in_feed_filters_old_posts() {
         let state = app::test_state().await;
-        let viewer = LocalViewer::new(
-            &state,
-            "did:plc:test".to_string(),
-            None,
-            None,
-        );
+        let viewer = LocalViewer::new(&state, "did:plc:test".to_string(), None, None);
 
-        let mut feed = vec![
-            json!({"post": {"uri": "1", "indexedAt": "2024-01-03T00:00:00.000Z"}}),
-        ];
+        let mut feed = vec![json!({"post": {"uri": "1", "indexedAt": "2024-01-03T00:00:00.000Z"}})];
 
-        let posts = vec![
-            RecordDescript {
-                uri: "at://did:plc:test/app.bsky.feed.post/old".to_string(),
-                cid: "bafy_old".to_string(),
-                indexed_at: "2024-01-02T00:00:00.000Z".to_string(),
-                record: json!({}),
-            },
-        ];
+        let posts = vec![RecordDescript {
+            uri: "at://did:plc:test/app.bsky.feed.post/old".to_string(),
+            cid: "bafy_old".to_string(),
+            indexed_at: "2024-01-02T00:00:00.000Z".to_string(),
+            record: json!({}),
+        }];
 
         let quotes = QuoteMap::new();
-        viewer.insert_posts_in_feed(&mut feed, &posts, &quotes).await;
+        viewer
+            .insert_posts_in_feed(&mut feed, &posts, &quotes)
+            .await;
 
         assert_eq!(feed.len(), 1);
     }
 
     #[tokio::test]
     async fn hydrate_quotes_fetches_from_appview_and_populates_map() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
         use crate::routes::test_utils::test_master_key;
         use std::sync::Arc;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -980,12 +939,7 @@ mod tests {
         )));
         state.config = Arc::new(config);
 
-        let viewer = LocalViewer::new(
-            &state,
-            TEST_DID.to_string(),
-            None,
-            None,
-        );
+        let viewer = LocalViewer::new(&state, TEST_DID.to_string(), None, None);
 
         let post = RecordDescript {
             uri: "at://did:plc:test/app.bsky.feed.post/abc123".to_string(),
@@ -1012,20 +966,26 @@ mod tests {
             "hydrate_quotes must populate the map from getPosts response"
         );
         let quoted = &quotes["at://did:plc:other/app.bsky.feed.post/xyz789"];
-        assert_eq!(quoted["uri"], "at://did:plc:other/app.bsky.feed.post/xyz789");
+        assert_eq!(
+            quoted["uri"],
+            "at://did:plc:other/app.bsky.feed.post/xyz789"
+        );
         assert_eq!(quoted["likeCount"], 5);
 
         // Thread through post_view to verify embed rendering
         let view = viewer.post_view(&post, &quotes).await;
-        assert_eq!(view["embed"]["record"]["$type"], "app.bsky.embed.record#viewRecord");
+        assert_eq!(
+            view["embed"]["record"]["$type"],
+            "app.bsky.embed.record#viewRecord"
+        );
     }
 
     #[tokio::test]
     async fn hydrate_quotes_degrades_to_empty_on_appview_5xx() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
         use crate::routes::test_utils::test_master_key;
         use std::sync::Arc;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -1043,12 +1003,7 @@ mod tests {
         )));
         state.config = Arc::new(config);
 
-        let viewer = LocalViewer::new(
-            &state,
-            TEST_DID.to_string(),
-            None,
-            None,
-        );
+        let viewer = LocalViewer::new(&state, TEST_DID.to_string(), None, None);
 
         let post = RecordDescript {
             uri: "at://did:plc:test/app.bsky.feed.post/abc123".to_string(),
@@ -1070,7 +1025,10 @@ mod tests {
         let quotes = viewer.hydrate_quotes(std::slice::from_ref(&post)).await;
 
         // QuoteMap must be empty, so the post degrades gracefully
-        assert!(quotes.is_empty(), "hydrate_quotes must return empty map on 5xx");
+        assert!(
+            quotes.is_empty(),
+            "hydrate_quotes must return empty map on 5xx"
+        );
 
         // Verify post still renders with viewNotFound embed
         let view = viewer.post_view(&post, &quotes).await;
