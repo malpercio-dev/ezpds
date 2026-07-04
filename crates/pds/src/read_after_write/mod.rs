@@ -204,22 +204,39 @@ fn local_lag_ms(local: &LocalRecords) -> Option<i64> {
     Some(duration.num_milliseconds())
 }
 
+/// Extract a query parameter from the request URI by key.
+fn extract_query_param(req: &Request, key: &str) -> Option<String> {
+    let uri = req.uri();
+    uri.query()
+        .and_then(|q| {
+            for pair in q.split('&') {
+                if let Some(value) = pair.strip_prefix(&format!("{}=", key)) {
+                    return Some(urlencoding::decode(value).ok()?.into_owned());
+                }
+            }
+            None
+        })
+}
+
 /// Extract the `actor` query param from the request for getAuthorFeed.
 fn extract_actor_param(req: &Request, nsid: &str) -> Option<String> {
     if nsid != "app.bsky.feed.getAuthorFeed" {
         return None;
     }
 
-    let uri = req.uri();
-    uri.query()
-        .and_then(|q| {
-            for pair in q.split('&') {
-                if let Some(value) = pair.strip_prefix("actor=") {
-                    return Some(urlencoding::decode(value).ok()?.into_owned());
-                }
-            }
-            None
-        })
+    extract_query_param(req, "actor")
+}
+
+/// Parse an XRPC error response body to extract the error code.
+/// Best-effort: returns None if parsing fails or the error code is not a string.
+fn parsed_error_code(bytes: &[u8]) -> Option<String> {
+    match serde_json::from_slice::<serde_json::Value>(bytes) {
+        Ok(val) => val
+            .get("error")
+            .and_then(|e| e.as_str())
+            .map(|s| s.to_string()),
+        Err(_) => None,
+    }
 }
 
 /// Proxy a munged NSID to the AppView, buffer the response, and merge the requester's own
@@ -231,6 +248,7 @@ pub(crate) async fn pipethrough_munged(
     req: Request,
 ) -> Response {
     let actor = extract_actor_param(&req, nsid);
+    let uri = extract_query_param(&req, "uri");
 
     let upstream = match crate::routes::service_proxy::proxy_request(
         state,
@@ -268,8 +286,13 @@ pub(crate) async fn pipethrough_munged(
         }
     };
 
-    // 3. If status is not success, return the buffered response unchanged
-    if !status.is_success() {
+    // 3. Check if this is a getPostThread NotFound that should be munged
+    let is_thread_not_found = nsid == "app.bsky.feed.getPostThread"
+        && status == axum::http::StatusCode::BAD_REQUEST
+        && parsed_error_code(&body_bytes) == Some("NotFound".to_string());
+
+    // 4. If status is not success and not a thread NotFound, return the buffered response unchanged
+    if !status.is_success() && !is_thread_not_found {
         let mut builder = Response::builder().status(status);
         if let Some(content_type) = content_type {
             builder = builder.header(header::CONTENT_TYPE, content_type);
@@ -365,6 +388,9 @@ pub(crate) async fn pipethrough_munged(
             munge::get_author_feed(&viewer, parsed, &local, did, actor.as_deref()).await
         }
         "app.bsky.feed.getActorLikes" => munge::get_actor_likes(&viewer, parsed, &local, did).await,
+        "app.bsky.feed.getPostThread" => {
+            munge::get_post_thread(&viewer, parsed, &local, did, uri.as_deref().unwrap_or("")).await
+        }
         // Other NSIDs: return parsed unchanged (filled in later phases)
         _ => parsed,
     };
@@ -388,7 +414,14 @@ pub(crate) async fn pipethrough_munged(
         }
     };
 
-    let mut builder = Response::builder().status(status);
+    // If we munged a NotFound thread successfully, override status to 200
+    let response_status = if is_thread_not_found && status.is_client_error() {
+        axum::http::StatusCode::OK
+    } else {
+        status
+    };
+
+    let mut builder = Response::builder().status(response_status);
     if let Some(content_type) = content_type {
         builder = builder.header(header::CONTENT_TYPE, content_type);
     }
@@ -581,6 +614,30 @@ mod tests {
         assert_eq!(local.count, 3);
         assert_eq!(local.posts.len(), 2);
         assert!(local.profile.is_some());
+    }
+
+    #[test]
+    fn parsed_error_code_extracts_valid_error() {
+        let body = br#"{"error":"NotFound","message":"not found"}"#;
+        assert_eq!(parsed_error_code(body), Some("NotFound".to_string()));
+    }
+
+    #[test]
+    fn parsed_error_code_returns_none_for_non_error_json() {
+        let body = br#"{"thread":null}"#;
+        assert_eq!(parsed_error_code(body), None);
+    }
+
+    #[test]
+    fn parsed_error_code_returns_none_for_garbage_bytes() {
+        let body = b"not json";
+        assert_eq!(parsed_error_code(body), None);
+    }
+
+    #[test]
+    fn parsed_error_code_returns_none_when_error_is_not_string() {
+        let body = br#"{"error":123}"#;
+        assert_eq!(parsed_error_code(body), None);
     }
 
     #[tokio::test]
@@ -1013,5 +1070,306 @@ mod tests {
             munged["profiles"][1]["displayName"], "Other Name",
             "other displayName should be unchanged"
         );
+    }
+
+    #[tokio::test]
+    async fn test_pipethrough_munged_ac3_1_getpostthread_notfound_reconstructs() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use std::sync::Arc;
+
+        let server = MockServer::start().await;
+        let old_rev = "0";
+
+        Mock::given(method("POST"))
+            .and(path("/xrpc/app.bsky.feed.getPostThread"))
+            .respond_with(
+                ResponseTemplate::new(400)
+                    .insert_header("atproto-repo-rev", old_rev)
+                    .set_body_json(serde_json::json!({
+                        "error": "NotFound",
+                        "message": "post not found"
+                    })),
+            )
+            .mount(&server)
+            .await;
+
+        let state = crate::routes::test_utils::state_with_master_key().await;
+        let did = "did:plc:test_ac3_1";
+        seed_account_with_repo(&state.db, did).await;
+
+        sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
+            .bind("test_ac3_1.bsky.social")
+            .bind(did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        let app = crate::app::app(state.clone());
+        let token = access_jwt(&state.jwt_secret, did);
+
+        let post_uri = format!("at://{}/app.bsky.feed.post/post123", did);
+        let post_req = put_record_request(
+            did,
+            "app.bsky.feed.post",
+            "post123",
+            serde_json::json!({
+                "record": {
+                    "text": "Just created this post",
+                    "createdAt": "2024-01-01T00:00:00.000Z"
+                }
+            }),
+            Some(&token),
+        );
+
+        let _post_resp = app.clone().oneshot(post_req).await.unwrap();
+
+        let mut state = state.clone();
+        let mut config = (*state.config).clone();
+        config.appview.url = server.uri();
+        state.config = Arc::new(config);
+
+        let req = axum::http::Request::builder()
+            .method(axum::http::Method::POST)
+            .uri(format!("/xrpc/app.bsky.feed.getPostThread?uri={}", urlencoding::encode(&post_uri)))
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(axum::body::Body::from(""))
+            .unwrap();
+
+        let resp = pipethrough_munged(&state, "app.bsky.feed.getPostThread", did, req).await;
+
+        // CRITICAL: Status must be 200, not 400
+        assert_eq!(resp.status(), axum::http::StatusCode::OK, "Response should be 200 OK when reconstructing NotFound thread");
+
+        let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let munged: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        // Verify the thread was reconstructed
+        assert!(munged.get("thread").is_some(), "thread field should be present");
+        let thread = &munged["thread"];
+        assert_eq!(thread["$type"], "app.bsky.feed.defs#threadViewPost");
+        assert_eq!(thread["post"]["uri"], post_uri);
+        assert_eq!(thread["post"]["author"]["did"], did);
+        assert_eq!(thread["post"]["record"]["text"], "Just created this post");
+    }
+
+    #[tokio::test]
+    async fn test_pipethrough_munged_ac3_2_getpostthread_splices_own_replies() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use std::sync::Arc;
+
+        let server = MockServer::start().await;
+        let old_rev = "0";
+        let parent_uri = "at://did:plc:other_user/app.bsky.feed.post/parent123";
+
+        Mock::given(method("POST"))
+            .and(path("/xrpc/app.bsky.feed.getPostThread"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("atproto-repo-rev", old_rev)
+                    .set_body_json(serde_json::json!({
+                        "thread": {
+                            "$type": "app.bsky.feed.defs#threadViewPost",
+                            "post": {
+                                "uri": parent_uri,
+                                "cid": "bafy_parent",
+                                "author": {
+                                    "did": "did:plc:other_user",
+                                    "handle": "other.bsky.social"
+                                },
+                                "record": {
+                                    "$type": "app.bsky.feed.post",
+                                    "text": "Parent post from other user",
+                                    "createdAt": "2024-01-01T00:00:00.000Z"
+                                },
+                                "indexedAt": "2024-01-01T00:00:00.000Z",
+                                "likeCount": 5,
+                                "replyCount": 0,
+                                "repostCount": 0
+                            },
+                            "replies": []
+                        }
+                    })),
+            )
+            .mount(&server)
+            .await;
+
+        let state = crate::routes::test_utils::state_with_master_key().await;
+        let did = "did:plc:test_ac3_2";
+        seed_account_with_repo(&state.db, did).await;
+
+        sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
+            .bind("test_ac3_2.bsky.social")
+            .bind(did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        let app = crate::app::app(state.clone());
+        let token = access_jwt(&state.jwt_secret, did);
+
+        // Write a local reply to the parent post
+        let reply_req = put_record_request(
+            did,
+            "app.bsky.feed.post",
+            "reply1",
+            serde_json::json!({
+                "record": {
+                    "text": "My reply to parent",
+                    "createdAt": "2024-01-02T00:00:00.000Z",
+                    "reply": {
+                        "root": {
+                            "uri": parent_uri,
+                            "cid": "bafy_parent"
+                        },
+                        "parent": {
+                            "uri": parent_uri,
+                            "cid": "bafy_parent"
+                        }
+                    }
+                }
+            }),
+            Some(&token),
+        );
+
+        let _reply_resp = app.clone().oneshot(reply_req).await.unwrap();
+
+        let mut state = state.clone();
+        let mut config = (*state.config).clone();
+        config.appview.url = server.uri();
+        state.config = Arc::new(config);
+
+        let req = axum::http::Request::builder()
+            .method(axum::http::Method::POST)
+            .uri(format!("/xrpc/app.bsky.feed.getPostThread?uri={}", urlencoding::encode(parent_uri)))
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(axum::body::Body::from(""))
+            .unwrap();
+
+        let resp = pipethrough_munged(&state, "app.bsky.feed.getPostThread", did, req).await;
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+
+        let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let munged: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        // Verify the reply was spliced into replies
+        assert!(munged["thread"]["replies"].is_array());
+        let replies = munged["thread"]["replies"].as_array().unwrap();
+        assert!(!replies.is_empty(), "replies array should contain the local reply");
+
+        // Find our reply in the spliced replies
+        let found_reply = replies.iter().any(|r| {
+            r.get("post")
+                .and_then(|p| p.get("record"))
+                .and_then(|rec| rec.get("text"))
+                .and_then(|t| t.as_str())
+                .map(|text| text.contains("My reply to parent"))
+                .unwrap_or(false)
+        });
+        assert!(found_reply, "local reply should appear in thread.replies");
+    }
+
+    #[tokio::test]
+    async fn test_pipethrough_munged_ac3_3_getpostthread_other_user_unchanged() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use std::sync::Arc;
+
+        let server = MockServer::start().await;
+        let fresh_rev = "bafy123";
+        let other_post_uri = "at://did:plc:other_user/app.bsky.feed.post/post456";
+
+        let appview_response = serde_json::json!({
+            "thread": {
+                "$type": "app.bsky.feed.defs#threadViewPost",
+                "post": {
+                    "uri": other_post_uri,
+                    "cid": "bafy_other",
+                    "author": {
+                        "did": "did:plc:other_user",
+                        "handle": "other.bsky.social",
+                        "displayName": "Other User"
+                    },
+                    "record": {
+                        "$type": "app.bsky.feed.post",
+                        "text": "Post from another user",
+                        "createdAt": "2024-01-01T00:00:00.000Z"
+                    },
+                    "indexedAt": "2024-01-01T00:00:00.000Z",
+                    "likeCount": 10,
+                    "replyCount": 2,
+                    "repostCount": 5
+                },
+                "replies": []
+            }
+        });
+
+        Mock::given(method("POST"))
+            .and(path("/xrpc/app.bsky.feed.getPostThread"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("atproto-repo-rev", fresh_rev)
+                    .set_body_json(appview_response.clone()),
+            )
+            .mount(&server)
+            .await;
+
+        let state = crate::routes::test_utils::state_with_master_key().await;
+        let did = "did:plc:test_ac3_3";
+        seed_account_with_repo(&state.db, did).await;
+
+        let app = crate::app::app(state.clone());
+        let token = access_jwt(&state.jwt_secret, did);
+
+        // Write a post (not a reply to the other user's post)
+        let post_req = put_record_request(
+            did,
+            "app.bsky.feed.post",
+            "post1",
+            serde_json::json!({
+                "record": {
+                    "text": "My own post, not a reply",
+                    "createdAt": "2024-01-02T00:00:00.000Z"
+                }
+            }),
+            Some(&token),
+        );
+
+        let _post_resp = app.clone().oneshot(post_req).await.unwrap();
+
+        let mut state = state.clone();
+        let mut config = (*state.config).clone();
+        config.appview.url = server.uri();
+        state.config = Arc::new(config);
+
+        let req = axum::http::Request::builder()
+            .method(axum::http::Method::POST)
+            .uri(format!("/xrpc/app.bsky.feed.getPostThread?uri={}", urlencoding::encode(other_post_uri)))
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(axum::body::Body::from(""))
+            .unwrap();
+
+        let resp = pipethrough_munged(&state, "app.bsky.feed.getPostThread", did, req).await;
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+
+        let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let munged: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        // Verify response equals AppView body (no local replies spliced)
+        assert_eq!(munged["thread"]["post"]["uri"], other_post_uri);
+        assert_eq!(munged["thread"]["post"]["author"]["did"], "did:plc:other_user");
+        assert_eq!(munged["thread"]["post"]["author"]["displayName"], "Other User");
+        assert!(munged["thread"]["replies"].is_array());
+        assert_eq!(munged["thread"]["replies"].as_array().unwrap().len(), 0, "No local replies should be added");
     }
 }
