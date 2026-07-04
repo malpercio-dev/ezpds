@@ -105,6 +105,27 @@ impl<'a> LocalViewer<'a> {
     }
 
     #[allow(dead_code)]
+    pub(crate) fn update_profile_view_basic(&self, mut view: Value) -> Value {
+        if let Some(ref profile) = self.profile {
+            if let Some(name) = profile.get("displayName").and_then(|v| v.as_str()) {
+                view["displayName"] = json!(name);
+            } else {
+                view.as_object_mut().map(|m| m.remove("displayName"));
+            }
+
+            if let Some(avatar_blob) = profile.get("avatar") {
+                if let Some(cid) = self.extract_blob_cid(avatar_blob) {
+                    view["avatar"] = json!(self.image_url("avatar", &cid));
+                }
+            } else {
+                view.as_object_mut().map(|m| m.remove("avatar"));
+            }
+        }
+
+        view
+    }
+
+    #[allow(dead_code)]
     fn image_url(&self, kind: &str, cid: &str) -> String {
         format!(
             "{}/img/{}/plain/{}/{}@jpeg",
@@ -455,6 +476,35 @@ mod tests {
         let view = viewer.profile_view_basic();
         assert_eq!(view["did"], "did:plc:test123");
         assert_eq!(view["handle"], "test.bsky.social");
+    }
+
+    #[tokio::test]
+    async fn update_profile_view_basic_overwrites_displayname_and_avatar() {
+        let state = app::test_state().await;
+        let profile = json!({
+            "displayName": "New Name",
+            "avatar": {
+                "ref": { "$link": "bafy_avatar_new" }
+            }
+        });
+
+        let viewer = LocalViewer::new(
+            &state,
+            "did:plc:test".to_string(),
+            None,
+            Some(profile),
+        );
+
+        let initial_view = json!({
+            "did": "did:plc:test",
+            "displayName": "Old Name",
+            "avatar": "old_url",
+        });
+
+        let updated = viewer.update_profile_view_basic(initial_view);
+        assert_eq!(updated["displayName"], "New Name");
+        assert!(updated["avatar"].as_str().unwrap().contains("bafy_avatar_new"));
+        assert_eq!(updated["did"], "did:plc:test");
     }
 
     #[tokio::test]

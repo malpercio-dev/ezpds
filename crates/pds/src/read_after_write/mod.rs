@@ -204,6 +204,24 @@ fn local_lag_ms(local: &LocalRecords) -> Option<i64> {
     Some(duration.num_milliseconds())
 }
 
+/// Extract the `actor` query param from the request for getAuthorFeed.
+fn extract_actor_param(req: &Request, nsid: &str) -> Option<String> {
+    if nsid != "app.bsky.feed.getAuthorFeed" {
+        return None;
+    }
+
+    let uri = req.uri();
+    uri.query()
+        .and_then(|q| {
+            for pair in q.split('&') {
+                if let Some(value) = pair.strip_prefix("actor=") {
+                    return Some(urlencoding::decode(value).ok()?.into_owned());
+                }
+            }
+            None
+        })
+}
+
 /// Proxy a munged NSID to the AppView, buffer the response, and merge the requester's own
 /// unindexed records. Best-effort: errors in munge steps fall back to the buffered original.
 pub(crate) async fn pipethrough_munged(
@@ -212,6 +230,8 @@ pub(crate) async fn pipethrough_munged(
     did: &str,
     req: Request,
 ) -> Response {
+    let actor = extract_actor_param(&req, nsid);
+
     let upstream = match crate::routes::service_proxy::proxy_request(
         state,
         &state.config.appview.url,
@@ -340,7 +360,12 @@ pub(crate) async fn pipethrough_munged(
     let munged = match nsid {
         "app.bsky.actor.getProfile" => munge::get_profile(&viewer, parsed, &local, did).await,
         "app.bsky.actor.getProfiles" => munge::get_profiles(&viewer, parsed, &local, did).await,
-        // Other NSIDs: return parsed unchanged (filled in Phases 5-6)
+        "app.bsky.feed.getTimeline" => munge::get_timeline(&viewer, parsed, &local, did).await,
+        "app.bsky.feed.getAuthorFeed" => {
+            munge::get_author_feed(&viewer, parsed, &local, did, actor.as_deref()).await
+        }
+        "app.bsky.feed.getActorLikes" => munge::get_actor_likes(&viewer, parsed, &local, did).await,
+        // Other NSIDs: return parsed unchanged (filled in later phases)
         _ => parsed,
     };
 
