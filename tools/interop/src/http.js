@@ -48,7 +48,15 @@ export async function request(url, options = {}) {
 
   for (let attempt = 0; ; attempt++) {
     await pace();
-    const res = await fetch(url, { method: options.method ?? 'GET', headers, body });
+    let res;
+    try {
+      res = await fetch(url, { method: options.method ?? 'GET', headers, body });
+    } catch (err) {
+      // Undici's bare "fetch failed" hides the useful part (ECONNREFUSED,
+      // proxy CONNECT denial, TLS failure) in err.cause.
+      const cause = err.cause?.message ?? err.cause?.code;
+      throw new Error(`${err.message} for ${new URL(url).host}${cause ? ` (${cause})` : ''}`, { cause: err });
+    }
 
     if (res.status === 429 && attempt < MAX_RATE_LIMIT_RETRIES) {
       const retryAfter = Number(res.headers.get('retry-after')) || 2 ** attempt * 2;

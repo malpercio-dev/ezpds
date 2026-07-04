@@ -16,7 +16,10 @@ export async function createRecord(name, collection, record, rkey) {
 }
 
 export async function getRecord(did, collection, rkey) {
-  return xrpc(BASE_URL, 'com.atproto.repo.getRecord', { params: { repo: did, collection, rkey } });
+  // The lexicon names this param `repo`, but ezpds's getRecord currently
+  // requires `did` (routes/get_record.rs). Send both — serde ignores the
+  // extra — so the CLI works against ezpds today and the spec shape.
+  return xrpc(BASE_URL, 'com.atproto.repo.getRecord', { params: { repo: did, did, collection, rkey } });
 }
 
 export async function listRecords(did, collection, params = {}) {
