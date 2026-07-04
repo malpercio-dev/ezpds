@@ -482,23 +482,58 @@ mod tests {
         let did_b = "did:plc:b";
 
         // Insert commits and an account event for did_a
-        insert_event(&db, 1, did_a, "commit", &[0xCA, 0xFE], "2026-06-30T00:00:00.000Z")
-            .await
-            .unwrap();
-        insert_event(&db, 2, did_a, "account", &[0xDE, 0xAD], "2026-06-30T00:00:00.000Z")
-            .await
-            .unwrap();
-        insert_event(&db, 3, did_a, "commit", &[0xBE, 0xEF], "2026-06-30T00:00:00.000Z")
-            .await
-            .unwrap();
+        insert_event(
+            &db,
+            1,
+            did_a,
+            "commit",
+            &[0xCA, 0xFE],
+            "2026-06-30T00:00:00.000Z",
+        )
+        .await
+        .unwrap();
+        insert_event(
+            &db,
+            2,
+            did_a,
+            "account",
+            &[0xDE, 0xAD],
+            "2026-06-30T00:00:00.000Z",
+        )
+        .await
+        .unwrap();
+        insert_event(
+            &db,
+            3,
+            did_a,
+            "commit",
+            &[0xBE, 0xEF],
+            "2026-06-30T00:00:00.000Z",
+        )
+        .await
+        .unwrap();
 
         // Insert commits for a different DID
-        insert_event(&db, 4, did_b, "commit", &[0xDA, 0x7A], "2026-06-30T00:00:00.000Z")
-            .await
-            .unwrap();
-        insert_event(&db, 5, did_b, "commit", &[0xC0, 0xFF], "2026-06-30T00:00:00.000Z")
-            .await
-            .unwrap();
+        insert_event(
+            &db,
+            4,
+            did_b,
+            "commit",
+            &[0xDA, 0x7A],
+            "2026-06-30T00:00:00.000Z",
+        )
+        .await
+        .unwrap();
+        insert_event(
+            &db,
+            5,
+            did_b,
+            "commit",
+            &[0xC0, 0xFF],
+            "2026-06-30T00:00:00.000Z",
+        )
+        .await
+        .unwrap();
 
         // Query recent commits for did_a: should get only commits (not the account event),
         // newest-first (3, 1)
@@ -523,9 +558,16 @@ mod tests {
 
         // Insert 5 commits
         for seq in 1..=5 {
-            insert_event(&db, seq, did, "commit", &[0xCA, 0xFE], "2026-06-30T00:00:00.000Z")
-                .await
-                .unwrap();
+            insert_event(
+                &db,
+                seq,
+                did,
+                "commit",
+                &[0xCA, 0xFE],
+                "2026-06-30T00:00:00.000Z",
+            )
+            .await
+            .unwrap();
         }
 
         // Query with limit 2: should get the 2 newest (5, 4)
