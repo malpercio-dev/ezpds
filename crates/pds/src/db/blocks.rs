@@ -3,41 +3,56 @@
 //! Content-addressed block storage for ATProto repository blocks.
 //!
 //! Each block is a DAG-CBOR object (MST node or record) addressed by its CIDv1.
-//! Blocks are scoped per account via `account_did` FK to `accounts`.
+//! Raw block bytes are stored once globally by CID; per-account ownership and revision metadata
+//! live in `block_owners` so account-scoped GC can drop one account's reference without deleting
+//! bytes another account still needs.
 //!
-//! Template: `db/blobs.rs` (content-addressed, `account_did` FK, `ON CONFLICT` idempotency).
+//! Template: `db/blobs.rs` (content-addressed storage, `ON CONFLICT` idempotency).
 
 use std::collections::HashSet;
 
 use atrium_repo::blockstore::{self, AsyncBlockStoreRead, AsyncBlockStoreWrite};
 use atrium_repo::Cid;
 use sha2::Digest;
-use sqlx::SqlitePool;
+use sqlx::{Sqlite, SqlitePool, Transaction};
 
-/// Row returned from the `blocks` table.
+pub type SqliteTransaction<'a> = Transaction<'a, Sqlite>;
+
+/// Row returned from block lookups.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct BlockRow {
     pub cid: String,
-    // Mapped from `SELECT *` so the row mirrors the table, but read only in SQL
-    // (queries filter on `account_did`); no caller reads it off the struct.
+    // For global lookups this is the legacy first-writer value from `blocks`; for account-scoped
+    // lookups this is projected from `block_owners`.
     #[allow(dead_code)]
     pub account_did: String,
     pub bytes: Vec<u8>,
-    // Populated by the DB default; the row carries it for schema fidelity but no
-    // caller reads it (block lifecycle/GC keys off reachability, not `created_at`).
+    // Populated by the DB default; account-scoped lookups project the ownership timestamp.
     #[allow(dead_code)]
     pub created_at: String,
 }
 
-/// Insert a new block.
+/// Insert a block and record this account's ownership.
 ///
-/// Uses `ON CONFLICT(cid) DO NOTHING` for idempotency: writing the same CID
-/// twice is a no-op (the block is content-addressed, so the bytes are identical).
+/// The physical bytes are keyed globally by CID, while `block_owners` records each account that
+/// references the CID. Both inserts are idempotent: writing the same CID for the same account twice
+/// is a no-op (the block is content-addressed, so the bytes are identical).
 pub async fn put_block(
-    pool: &SqlitePool,
+    tx: &mut SqliteTransaction<'_>,
     cid: &str,
     account_did: &str,
     bytes: &[u8],
+) -> Result<(), sqlx::Error> {
+    put_block_with_rev(tx, cid, account_did, bytes, None).await
+}
+
+/// Insert a block, record this account's ownership, and optionally stamp its commit revision.
+pub async fn put_block_with_rev(
+    tx: &mut SqliteTransaction<'_>,
+    cid: &str,
+    account_did: &str,
+    bytes: &[u8],
+    rev: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO blocks (cid, account_did, bytes)
@@ -47,8 +62,30 @@ pub async fn put_block(
     .bind(cid)
     .bind(account_did)
     .bind(bytes)
-    .execute(pool)
+    .execute(&mut **tx)
     .await?;
+    if let Some(rev) = rev {
+        sqlx::query(
+            "INSERT INTO block_owners (cid, account_did, rev)
+             VALUES (?, ?, ?)
+             ON CONFLICT(account_did, cid) DO UPDATE SET rev = excluded.rev",
+        )
+        .bind(cid)
+        .bind(account_did)
+        .bind(rev)
+        .execute(&mut **tx)
+        .await?;
+    } else {
+        sqlx::query(
+            "INSERT INTO block_owners (cid, account_did)
+             VALUES (?, ?)
+             ON CONFLICT(account_did, cid) DO NOTHING",
+        )
+        .bind(cid)
+        .bind(account_did)
+        .execute(&mut **tx)
+        .await?;
+    }
     Ok(())
 }
 
@@ -73,10 +110,11 @@ pub async fn has_block(pool: &SqlitePool, cid: &str) -> Result<bool, sqlx::Error
     Ok(row.0)
 }
 
-/// Fetch multiple blocks that belong to a specific account.
+/// Fetch multiple blocks that are owned by a specific account.
 ///
-/// Used by `com.atproto.sync.getBlocks`: missing CIDs and CIDs owned by another account are both
-/// omitted from the returned rows so the caller can report them uniformly as `BlockNotFound`.
+/// Used by `com.atproto.sync.getBlocks`: missing CIDs and CIDs without an ownership row for this
+/// account are both omitted from the returned rows so the caller can report them uniformly as
+/// `BlockNotFound`.
 pub async fn get_blocks_for_account(
     pool: &SqlitePool,
     account_did: &str,
@@ -92,7 +130,9 @@ pub async fn get_blocks_for_account(
     for chunk in cids.chunks(500) {
         let placeholders = vec!["?"; chunk.len()].join(",");
         let sql = format!(
-            "SELECT * FROM blocks WHERE account_did = ? AND cid IN ({placeholders}) ORDER BY cid"
+            "SELECT b.cid, o.account_did, b.bytes, o.created_at \
+             FROM block_owners o JOIN blocks b ON b.cid = o.cid \
+             WHERE o.account_did = ? AND o.cid IN ({placeholders}) ORDER BY b.cid"
         );
         let mut query = sqlx::query_as::<_, BlockRow>(&sql).bind(account_did);
         for cid in chunk {
@@ -104,33 +144,40 @@ pub async fn get_blocks_for_account(
     Ok(rows)
 }
 
-/// Delete all blocks for an account.
+/// Delete all block ownership rows for an account.
 ///
-/// Returns the number of blocks removed. Bulk account deletion is not yet a
-/// route; GC currently prunes per-reachability (`delete_unreachable_blocks`).
+/// Returns the number of account-owned block references removed. Global block bytes are deleted
+/// only when no owner remains and the row is not a legacy-protected migrated block.
 #[allow(dead_code)]
 pub async fn delete_blocks_for_account(
     pool: &SqlitePool,
     account_did: &str,
 ) -> Result<u64, sqlx::Error> {
-    let result = sqlx::query("DELETE FROM blocks WHERE account_did = ?")
+    let cids: Vec<String> =
+        sqlx::query_scalar("SELECT cid FROM block_owners WHERE account_did = ?")
+            .bind(account_did)
+            .fetch_all(pool)
+            .await?;
+    let result = sqlx::query("DELETE FROM block_owners WHERE account_did = ?")
         .bind(account_did)
         .execute(pool)
         .await?;
+    delete_unowned_unprotected_blocks(pool, &cids).await?;
     Ok(result.rows_affected())
 }
 
-/// Delete an account's blocks whose CID is NOT in `keep` (the reachable set).
+/// Delete an account's block ownership rows whose CID is NOT in `keep` (the reachable set).
 ///
-/// Returns the number of blocks reclaimed. The caller computes `keep` from the current
-/// repo root (`repo_engine::collect_reachable_cids`); everything else for the account is
-/// garbage (superseded MST nodes, orphans from conflicted writes).
+/// Returns the number of account-owned block references reclaimed. The caller computes `keep` from
+/// the current repo root (`repo_engine::collect_reachable_cids`); everything else for the account
+/// is garbage (superseded MST nodes, orphans from conflicted writes). Physical bytes are deleted
+/// only when no owner remains and the row is not a legacy-protected migrated block.
 pub async fn delete_unreachable_blocks(
     pool: &SqlitePool,
     account_did: &str,
     keep: &HashSet<String>,
 ) -> Result<u64, sqlx::Error> {
-    let all: Vec<String> = sqlx::query_scalar("SELECT cid FROM blocks WHERE account_did = ?")
+    let all: Vec<String> = sqlx::query_scalar("SELECT cid FROM block_owners WHERE account_did = ?")
         .bind(account_did)
         .fetch_all(pool)
         .await?;
@@ -140,19 +187,55 @@ pub async fn delete_unreachable_blocks(
     // Batch the deletes to stay well under SQLite's bound-parameter limit.
     for chunk in garbage.chunks(500) {
         let placeholders = vec!["?"; chunk.len()].join(",");
-        let sql = format!("DELETE FROM blocks WHERE account_did = ? AND cid IN ({placeholders})");
+        let sql =
+            format!("DELETE FROM block_owners WHERE account_did = ? AND cid IN ({placeholders})");
         let mut q = sqlx::query(&sql).bind(account_did);
         for cid in chunk {
             q = q.bind(*cid);
         }
         removed += q.execute(pool).await?.rows_affected();
+        let cleanup_cids: Vec<String> = chunk.iter().map(|cid| (*cid).clone()).collect();
+        delete_unowned_unprotected_blocks(pool, &cleanup_cids).await?;
     }
     Ok(removed)
 }
 
-/// Tag a specific set of an account's blocks with the revision of the commit that introduced them.
+async fn delete_unowned_unprotected_blocks(
+    pool: &SqlitePool,
+    cids: &[String],
+) -> Result<u64, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let removed = delete_unowned_unprotected_blocks_in_tx(&mut tx, cids).await?;
+    tx.commit().await?;
+    Ok(removed)
+}
+
+pub async fn delete_unowned_unprotected_blocks_in_tx(
+    tx: &mut SqliteTransaction<'_>,
+    cids: &[String],
+) -> Result<u64, sqlx::Error> {
+    let mut removed = 0u64;
+    for chunk in cids.chunks(500) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql = format!(
+            "DELETE FROM blocks \
+             WHERE legacy_protected = 0 \
+               AND cid IN ({placeholders}) \
+               AND NOT EXISTS (SELECT 1 FROM block_owners o WHERE o.cid = blocks.cid)"
+        );
+        let mut q = sqlx::query(&sql);
+        for cid in chunk {
+            q = q.bind(cid);
+        }
+        removed += q.execute(&mut **tx).await?.rows_affected();
+    }
+    Ok(removed)
+}
+
+/// Tag a specific set of an account's block ownership rows with the revision of the commit that
+/// introduced them.
 ///
-/// A write persists its new blocks (via `put_block`) with a NULL `rev` before the commit's
+/// A write persists its new ownership rows (via `put_block`) with a NULL `rev` before the commit's
 /// revision is final; once the root swap succeeds the caller stamps that commit's blocks with
 /// `rev`. The caller passes the *exact* CID set the commit added (`collect_commit_diff_cids`),
 /// not "every untagged block": two concurrent writes to the same repo have disjoint diff sets, so
@@ -172,8 +255,9 @@ pub async fn tag_blocks_rev(
     // Batch to stay well under SQLite's bound-parameter limit.
     for chunk in cids.chunks(500) {
         let placeholders = vec!["?"; chunk.len()].join(",");
-        let sql =
-            format!("UPDATE blocks SET rev = ? WHERE account_did = ? AND cid IN ({placeholders})");
+        let sql = format!(
+            "UPDATE block_owners SET rev = ? WHERE account_did = ? AND cid IN ({placeholders})"
+        );
         let mut q = sqlx::query(&sql).bind(rev).bind(account_did);
         for cid in chunk {
             q = q.bind(cid);
@@ -194,11 +278,13 @@ pub async fn list_block_cids_since(
     account_did: &str,
     since: &str,
 ) -> Result<Vec<String>, sqlx::Error> {
-    sqlx::query_scalar("SELECT cid FROM blocks WHERE account_did = ? AND rev > ? ORDER BY cid")
-        .bind(account_did)
-        .bind(since)
-        .fetch_all(pool)
-        .await
+    sqlx::query_scalar(
+        "SELECT cid FROM block_owners WHERE account_did = ? AND rev > ? ORDER BY cid",
+    )
+    .bind(account_did)
+    .bind(since)
+    .fetch_all(pool)
+    .await
 }
 
 /// Aggregate repo-block storage stats for a single account.
@@ -226,8 +312,8 @@ pub async fn account_block_stats(
     account_did: &str,
 ) -> Result<BlockStats, sqlx::Error> {
     let row: (i64, i64, i64) = sqlx::query_as(
-        "SELECT COUNT(*), COALESCE(SUM(LENGTH(bytes)), 0), COUNT(DISTINCT rev) \
-         FROM blocks WHERE account_did = ?",
+        "SELECT COUNT(*), COALESCE(SUM(LENGTH(b.bytes)), 0), COUNT(DISTINCT o.rev) \
+         FROM block_owners o JOIN blocks b ON b.cid = o.cid WHERE o.account_did = ?",
     )
     .bind(account_did)
     .fetch_one(pool)
@@ -244,7 +330,7 @@ pub async fn account_block_stats(
 
 /// Adapter that implements atrium-repo's blockstore traits over SQLite.
 ///
-/// Each block is written via `db::blocks::put_block` and read via `db::blocks::get_block`.
+/// Each block is written via the tx-scoped block helpers and read via `db::blocks::get_block`.
 /// The CID is computed from `(codec, hash, contents)` using the same algorithm as
 /// atrium-repo's `MemoryBlockStore`.
 pub struct SqliteBlockStore {
@@ -297,7 +383,15 @@ impl AsyncBlockStoreWrite for SqliteBlockStore {
         let cid = Cid::new_v1(codec, mh);
 
         let cid_str = cid.to_string();
-        put_block(&self.pool, &cid_str, &self.account_did, contents)
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| blockstore::Error::Other(Box::new(e)))?;
+        put_block(&mut tx, &cid_str, &self.account_did, contents)
+            .await
+            .map_err(|e| blockstore::Error::Other(Box::new(e)))?;
+        tx.commit()
             .await
             .map_err(|e| blockstore::Error::Other(Box::new(e)))?;
 
@@ -316,7 +410,7 @@ mod tests {
         pool
     }
 
-    /// Insert a test account (required for the FK on account_did).
+    /// Insert a test account (required for the FK on block_owners.account_did).
     async fn insert_test_account(pool: &SqlitePool, did: &str) {
         sqlx::query(
             "INSERT INTO accounts (did, email, password_hash, created_at, updated_at)
@@ -329,6 +423,29 @@ mod tests {
         .unwrap();
     }
 
+    async fn owner_exists(pool: &SqlitePool, did: &str, cid: &str) -> bool {
+        sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM block_owners WHERE account_did = ? AND cid = ?)",
+        )
+        .bind(did)
+        .bind(cid)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    async fn put_test_block(
+        pool: &SqlitePool,
+        cid: &str,
+        account_did: &str,
+        bytes: &[u8],
+    ) -> Result<(), sqlx::Error> {
+        let mut tx = pool.begin().await?;
+        put_block(&mut tx, cid, account_did, bytes).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     #[tokio::test]
     async fn put_and_get_block() {
         let pool = test_pool().await;
@@ -337,7 +454,7 @@ mod tests {
         let cid = "bafkreitest123";
         let bytes = b"\xa1some dag-cbor";
 
-        put_block(&pool, cid, "did:plc:testblock", bytes)
+        put_test_block(&pool, cid, "did:plc:testblock", bytes)
             .await
             .unwrap();
 
@@ -365,20 +482,33 @@ mod tests {
         let cid = "bafkridup";
         let bytes = b"\xa1data";
 
-        put_block(&pool, cid, "did:plc:testblock", bytes)
+        put_test_block(&pool, cid, "did:plc:testblock", bytes)
             .await
             .unwrap();
         // Second write with same CID — must succeed silently.
-        put_block(&pool, cid, "did:plc:testblock", bytes)
+        put_test_block(&pool, cid, "did:plc:testblock", bytes)
             .await
             .unwrap();
 
-        // Only one row exists.
+        // Only one physical block exists, with one ownership row.
         let block = get_block(&pool, cid)
             .await
             .unwrap()
             .expect("block must exist");
         assert_eq!(block.bytes, bytes);
+        let physical_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM blocks WHERE cid = ?")
+            .bind(cid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let owner_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM block_owners WHERE cid = ?")
+                .bind(cid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(physical_count, 1);
+        assert_eq!(owner_count, 1);
     }
 
     #[tokio::test]
@@ -387,7 +517,7 @@ mod tests {
         insert_test_account(&pool, "did:plc:testblock").await;
 
         let cid = "bafkrihas";
-        put_block(&pool, cid, "did:plc:testblock", b"\xa1x")
+        put_test_block(&pool, cid, "did:plc:testblock", b"\xa1x")
             .await
             .unwrap();
 
@@ -406,25 +536,57 @@ mod tests {
         insert_test_account(&pool, "did:plc:alice").await;
         insert_test_account(&pool, "did:plc:bob").await;
 
-        put_block(&pool, "bafkrialice", "did:plc:alice", b"\xa1alice")
+        put_test_block(&pool, "bafkrialice", "did:plc:alice", b"\xa1alice")
             .await
             .unwrap();
-        put_block(&pool, "bafkribob", "did:plc:bob", b"\xa1bob")
+        put_test_block(&pool, "bafkribob", "did:plc:bob", b"\xa1bob")
             .await
             .unwrap();
 
-        // Alice's block exists, Bob's block exists, but they're separate.
+        // Alice's block exists, Bob's block exists, and ownership is account-scoped.
         let alice_block = get_block(&pool, "bafkrialice")
             .await
             .unwrap()
             .expect("alice block");
         assert_eq!(alice_block.account_did, "did:plc:alice");
+        assert!(owner_exists(&pool, "did:plc:alice", "bafkrialice").await);
+        assert!(!owner_exists(&pool, "did:plc:bob", "bafkrialice").await);
 
         let bob_block = get_block(&pool, "bafkribob")
             .await
             .unwrap()
             .expect("bob block");
         assert_eq!(bob_block.account_did, "did:plc:bob");
+        assert!(owner_exists(&pool, "did:plc:bob", "bafkribob").await);
+    }
+
+    #[tokio::test]
+    async fn duplicate_cid_across_accounts_records_both_owners() {
+        let pool = test_pool().await;
+        insert_test_account(&pool, "did:plc:alice").await;
+        insert_test_account(&pool, "did:plc:bob").await;
+
+        put_test_block(&pool, "bafshared", "did:plc:alice", b"\xa1shared")
+            .await
+            .unwrap();
+        put_test_block(&pool, "bafshared", "did:plc:bob", b"\xa1shared")
+            .await
+            .unwrap();
+
+        let physical_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM blocks WHERE cid = ?")
+            .bind("bafshared")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(physical_count, 1, "bytes remain globally content-addressed");
+        assert!(owner_exists(&pool, "did:plc:alice", "bafshared").await);
+        assert!(owner_exists(&pool, "did:plc:bob", "bafshared").await);
+
+        let bob_rows = get_blocks_for_account(&pool, "did:plc:bob", &["bafshared".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(bob_rows.len(), 1);
+        assert_eq!(bob_rows[0].account_did, "did:plc:bob");
     }
 
     #[tokio::test]
@@ -433,13 +595,13 @@ mod tests {
         insert_test_account(&pool, "did:plc:alice").await;
         insert_test_account(&pool, "did:plc:bob").await;
 
-        put_block(&pool, "bafkrialice1", "did:plc:alice", b"\xa1alice1")
+        put_test_block(&pool, "bafkrialice1", "did:plc:alice", b"\xa1alice1")
             .await
             .unwrap();
-        put_block(&pool, "bafkrialice2", "did:plc:alice", b"\xa1alice2")
+        put_test_block(&pool, "bafkrialice2", "did:plc:alice", b"\xa1alice2")
             .await
             .unwrap();
-        put_block(&pool, "bafkribob", "did:plc:bob", b"\xa1bob")
+        put_test_block(&pool, "bafkribob", "did:plc:bob", b"\xa1bob")
             .await
             .unwrap();
 
@@ -467,10 +629,10 @@ mod tests {
         let pool = test_pool().await;
         insert_test_account(&pool, "did:plc:alice").await;
 
-        put_block(&pool, "bafkriowned0501", "did:plc:alice", b"\xa1a")
+        put_test_block(&pool, "bafkriowned0501", "did:plc:alice", b"\xa1a")
             .await
             .unwrap();
-        put_block(&pool, "bafkriowned1001", "did:plc:alice", b"\xa1b")
+        put_test_block(&pool, "bafkriowned1001", "did:plc:alice", b"\xa1b")
             .await
             .unwrap();
 
@@ -495,7 +657,7 @@ mod tests {
 
         for i in 0..3 {
             let bytes = vec![0xa1, 0x64 + i as u8, 0x64, 0x61, 0x74, 0x61]; // dag-cbor-ish
-            put_block(&pool, &format!("bafkridel{i}"), "did:plc:delme", &bytes)
+            put_test_block(&pool, &format!("bafkridel{i}"), "did:plc:delme", &bytes)
                 .await
                 .unwrap();
         }
@@ -505,12 +667,11 @@ mod tests {
             .unwrap();
         assert_eq!(removed, 3);
 
-        // All gone.
+        // Ownership rows are gone, and unshared physical bytes are reclaimed too.
         for i in 0..3 {
-            assert!(get_block(&pool, &format!("bafkridel{i}"))
-                .await
-                .unwrap()
-                .is_none());
+            let cid = format!("bafkridel{i}");
+            assert!(!owner_exists(&pool, "did:plc:delme", &cid).await);
+            assert!(get_block(&pool, &cid).await.unwrap().is_none());
         }
     }
 
@@ -543,10 +704,10 @@ mod tests {
         insert_test_account(&pool, "did:plc:stats").await;
 
         // Two blocks tagged with one rev, one block with another, one still NULL.
-        put_block(&pool, "bafs1", "did:plc:stats", b"\xa1aa")
+        put_test_block(&pool, "bafs1", "did:plc:stats", b"\xa1aa")
             .await
             .unwrap(); // 3 bytes
-        put_block(&pool, "bafs2", "did:plc:stats", b"\xa1bbbb")
+        put_test_block(&pool, "bafs2", "did:plc:stats", b"\xa1bbbb")
             .await
             .unwrap(); // 5 bytes
         tag_blocks_rev(
@@ -557,13 +718,13 @@ mod tests {
         )
         .await
         .unwrap();
-        put_block(&pool, "bafs3", "did:plc:stats", b"\xa1c")
+        put_test_block(&pool, "bafs3", "did:plc:stats", b"\xa1c")
             .await
             .unwrap(); // 2 bytes
         tag_blocks_rev(&pool, "did:plc:stats", &["bafs3".to_string()], "3bbb")
             .await
             .unwrap();
-        put_block(&pool, "bafs4", "did:plc:stats", b"\xa1dddddd")
+        put_test_block(&pool, "bafs4", "did:plc:stats", b"\xa1dddddd")
             .await
             .unwrap(); // 7 bytes, NULL rev
 
@@ -579,10 +740,10 @@ mod tests {
         let pool = test_pool().await;
         insert_test_account(&pool, "did:plc:mine").await;
         insert_test_account(&pool, "did:plc:theirs").await;
-        put_block(&pool, "bafmine", "did:plc:mine", b"\xa1x")
+        put_test_block(&pool, "bafmine", "did:plc:mine", b"\xa1x")
             .await
             .unwrap();
-        put_block(&pool, "baftheirs", "did:plc:theirs", b"\xa1yyyy")
+        put_test_block(&pool, "baftheirs", "did:plc:theirs", b"\xa1yyyy")
             .await
             .unwrap();
 
@@ -595,13 +756,13 @@ mod tests {
     async fn delete_unreachable_keeps_reachable_blocks() {
         let pool = test_pool().await;
         insert_test_account(&pool, "did:plc:gc").await;
-        put_block(&pool, "bafkeep1", "did:plc:gc", b"\xa1a")
+        put_test_block(&pool, "bafkeep1", "did:plc:gc", b"\xa1a")
             .await
             .unwrap();
-        put_block(&pool, "bafkeep2", "did:plc:gc", b"\xa1b")
+        put_test_block(&pool, "bafkeep2", "did:plc:gc", b"\xa1b")
             .await
             .unwrap();
-        put_block(&pool, "bafgarbage", "did:plc:gc", b"\xa1c")
+        put_test_block(&pool, "bafgarbage", "did:plc:gc", b"\xa1c")
             .await
             .unwrap();
 
@@ -612,10 +773,72 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(removed, 1, "only the unreachable block is reclaimed");
-        assert!(get_block(&pool, "bafkeep1").await.unwrap().is_some());
-        assert!(get_block(&pool, "bafkeep2").await.unwrap().is_some());
-        assert!(get_block(&pool, "bafgarbage").await.unwrap().is_none());
+        assert_eq!(
+            removed, 1,
+            "only the unreachable ownership row is reclaimed"
+        );
+        assert!(owner_exists(&pool, "did:plc:gc", "bafkeep1").await);
+        assert!(owner_exists(&pool, "did:plc:gc", "bafkeep2").await);
+        assert!(!owner_exists(&pool, "did:plc:gc", "bafgarbage").await);
+        assert!(
+            get_block(&pool, "bafgarbage").await.unwrap().is_none(),
+            "unshared physical bytes are reclaimed with the ownership row"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_unreachable_keeps_legacy_protected_physical_bytes() {
+        let pool = test_pool().await;
+        insert_test_account(&pool, "did:plc:legacy").await;
+        put_test_block(&pool, "baflegacy", "did:plc:legacy", b"\xa1legacy")
+            .await
+            .unwrap();
+        sqlx::query("UPDATE blocks SET legacy_protected = 1 WHERE cid = 'baflegacy'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let removed = delete_unreachable_blocks(&pool, "did:plc:legacy", &HashSet::new())
+            .await
+            .unwrap();
+
+        assert_eq!(removed, 1);
+        assert!(!owner_exists(&pool, "did:plc:legacy", "baflegacy").await);
+        assert!(
+            get_block(&pool, "baflegacy").await.unwrap().is_some(),
+            "migrated physical bytes are retained because hidden historic owners may exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_unreachable_shared_cid_preserves_other_account_owner() {
+        let pool = test_pool().await;
+        insert_test_account(&pool, "did:plc:alice").await;
+        insert_test_account(&pool, "did:plc:bob").await;
+
+        put_test_block(&pool, "bafsharedgc", "did:plc:alice", b"\xa1shared")
+            .await
+            .unwrap();
+        put_test_block(&pool, "bafsharedgc", "did:plc:bob", b"\xa1shared")
+            .await
+            .unwrap();
+
+        let removed = delete_unreachable_blocks(&pool, "did:plc:alice", &HashSet::new())
+            .await
+            .unwrap();
+
+        assert_eq!(removed, 1);
+        assert!(!owner_exists(&pool, "did:plc:alice", "bafsharedgc").await);
+        assert!(owner_exists(&pool, "did:plc:bob", "bafsharedgc").await);
+        assert_eq!(
+            get_blocks_for_account(&pool, "did:plc:bob", &["bafsharedgc".to_string()])
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "Bob's account-scoped read still sees the shared block after Alice GC"
+        );
+        assert!(get_block(&pool, "bafsharedgc").await.unwrap().is_some());
     }
 
     #[tokio::test]
@@ -623,7 +846,9 @@ mod tests {
         let pool = test_pool().await;
         insert_test_account(&pool, "did:plc:tag").await;
         for c in ["bafa", "bafb", "bafc"] {
-            put_block(&pool, c, "did:plc:tag", b"\xa1x").await.unwrap();
+            put_test_block(&pool, c, "did:plc:tag", b"\xa1x")
+                .await
+                .unwrap();
         }
 
         // Commit A tags only its two blocks; the third stays NULL (it belongs to no committed set).
@@ -655,7 +880,7 @@ mod tests {
     async fn tag_blocks_rev_restamps_reintroduced_block() {
         let pool = test_pool().await;
         insert_test_account(&pool, "did:plc:restamp").await;
-        put_block(&pool, "bafx", "did:plc:restamp", b"\xa1x")
+        put_test_block(&pool, "bafx", "did:plc:restamp", b"\xa1x")
             .await
             .unwrap();
 
@@ -681,20 +906,20 @@ mod tests {
     async fn list_block_cids_since_excludes_at_or_before_and_null() {
         let pool = test_pool().await;
         insert_test_account(&pool, "did:plc:since").await;
-        put_block(&pool, "bafold", "did:plc:since", b"\xa1a")
+        put_test_block(&pool, "bafold", "did:plc:since", b"\xa1a")
             .await
             .unwrap();
         tag_blocks_rev(&pool, "did:plc:since", &["bafold".to_string()], "3kkk")
             .await
             .unwrap();
-        put_block(&pool, "bafnew", "did:plc:since", b"\xa1b")
+        put_test_block(&pool, "bafnew", "did:plc:since", b"\xa1b")
             .await
             .unwrap();
         tag_blocks_rev(&pool, "did:plc:since", &["bafnew".to_string()], "3mmm")
             .await
             .unwrap();
         // A still-untagged (NULL rev) block must never appear in a since delta.
-        put_block(&pool, "bafnull", "did:plc:since", b"\xa1c")
+        put_test_block(&pool, "bafnull", "did:plc:since", b"\xa1c")
             .await
             .unwrap();
 

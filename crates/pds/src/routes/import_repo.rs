@@ -128,15 +128,14 @@ pub async fn import_repo(
     })?;
 
     for (cid, bytes) in &imported.blocks {
-        sqlx::query(
-            "INSERT INTO blocks (cid, account_did, bytes, rev) VALUES (?, ?, ?, ?) \
-             ON CONFLICT(cid) DO NOTHING",
+        let cid = cid.to_string();
+        crate::db::blocks::put_block_with_rev(
+            &mut tx,
+            &cid,
+            &did,
+            bytes.as_slice(),
+            Some(&imported.rev),
         )
-        .bind(cid.to_string())
-        .bind(&did)
-        .bind(bytes.as_slice())
-        .bind(&imported.rev)
-        .execute(&mut *tx)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, "failed to persist imported block");

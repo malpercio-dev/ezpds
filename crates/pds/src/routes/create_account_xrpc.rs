@@ -327,15 +327,14 @@ async fn promote_new_account(
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store signing key"))?;
 
     for (cid, bytes) in p.genesis_blocks {
-        sqlx::query(
-            "INSERT INTO blocks (cid, account_did, bytes, rev) VALUES (?, ?, ?, ?) \
-             ON CONFLICT(cid) DO NOTHING",
+        let cid = cid.to_string();
+        crate::db::blocks::put_block_with_rev(
+            &mut tx,
+            &cid,
+            p.did,
+            bytes.as_slice(),
+            Some(p.genesis_rev),
         )
-        .bind(cid.to_string())
-        .bind(p.did)
-        .bind(bytes.as_slice())
-        .bind(p.genesis_rev)
-        .execute(&mut *tx)
         .await
         .inspect_err(|e| tracing::error!(error = %e, "failed to insert genesis block"))
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store genesis repo"))?;

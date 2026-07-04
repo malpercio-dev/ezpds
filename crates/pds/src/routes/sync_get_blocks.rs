@@ -174,7 +174,7 @@ mod tests {
 
     /// All block CIDs currently stored for `did` (commit, MST nodes, record blocks).
     async fn stored_cids(state: &AppState, did: &str) -> Vec<String> {
-        sqlx::query_scalar("SELECT cid FROM blocks WHERE account_did = ? ORDER BY cid")
+        sqlx::query_scalar("SELECT cid FROM block_owners WHERE account_did = ? ORDER BY cid")
             .bind(did)
             .fetch_all(&state.db)
             .await
