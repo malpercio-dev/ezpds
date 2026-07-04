@@ -58,6 +58,16 @@ font-check:
 swift-rs-check:
     scripts/swift-rs-patch-check.sh
 
+# Install dependencies for the interop CLI (tools/interop) — one-time setup.
+interop-setup:
+    cd tools/interop && pnpm install
+
+# Run the interop CLI against a live deployment (default: staging). Exercises account
+# provisioning, identity, sync, firehose, and scoped network interactions — see
+# tools/interop/README.md for the runbook and the safety ground rules.
+interop *args:
+    tools/interop/bin/interop {{args}}
+
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
 ci: fmt-check lock-check bruno-check font-check swift-rs-check clippy test audit
 

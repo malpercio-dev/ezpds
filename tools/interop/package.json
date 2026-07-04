@@ -1,0 +1,24 @@
+{
+  "name": "ezpds-interop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "CLI for exercising an ezpds deployment against the live ATProto network (account provisioning, identity, sync, firehose, relay/AppView visibility, scoped interactions).",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "bin": {
+    "interop": "./bin/interop"
+  },
+  "scripts": {
+    "interop": "node src/cli.js"
+  },
+  "dependencies": {
+    "@atproto/crypto": "^0.5.1",
+    "@ipld/dag-cbor": "^10.0.1",
+    "cborg": "^4.0.0",
+    "https-proxy-agent": "^7.0.5",
+    "multiformats": "^13.4.2",
+    "ws": "^8.18.0"
+  }
+}
