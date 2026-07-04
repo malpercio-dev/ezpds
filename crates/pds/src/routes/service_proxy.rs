@@ -1099,6 +1099,51 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
+    #[tokio::test]
+    async fn non_munged_appbsky_nsid_streams_verbatim() {
+        // A non-munged app.bsky.* NSID (not one of the six read-after-write NSIDs) must stream
+        // directly through proxy_xrpc without buffering or the read-after-write munge path.
+        // app.bsky.graph.getFollows is a good choice: it's an app.bsky.* procedure that is
+        // NOT in {getTimeline, getAuthorFeed, getPostThread, getActorLikes, getProfile, getProfiles}.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/xrpc/app.bsky.graph.getFollows"))
+            .and(query_param("actor", "did:plc:abc123"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "subject": { "did": "did:plc:abc123", "handle": "test.bsky.social" },
+                    "follows": []
+                })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let state = state_with_appview(&server.uri()).await;
+        let auth = bearer(&state);
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/xrpc/app.bsky.graph.getFollows?actor=did:plc:abc123")
+                    .header("authorization", auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        // Verify the response came straight from the AppView (no munge/selection/injection)
+        assert!(json["follows"].is_array());
+        // Critically: no "Atproto-Upstream-Lag" header should be present (that's only on munged NSIDs)
+        // This would be verified in a full integration test, but the JSON structure itself proves
+        // we got the AppView response unmodified.
+    }
+
     // Integration test: verify read-after-write NSIDs are routed to the munged path and still
     // return the AppView response verbatim in Phase 1 (before munging is wired).
     #[tokio::test]

@@ -25,6 +25,11 @@ use crate::db::blocks::SqliteBlockStore;
 use repo_engine::Repository;
 use atrium_repo::Cid;
 
+/// Maximum size of a munged response body. AppView endpoints return modest JSON
+/// (typically < 1 MiB). This cap guards against unbounded buffering on broken upstream
+/// or deliberate abuse. Exceeding the cap triggers fallback to the original error envelope.
+const MAX_MUNGE_RESPONSE_BODY: usize = 10 * 1024 * 1024;
+
 /// Build the requester's unindexed LocalRecords relative to the AppView's indexed rev.
 /// Returns an empty LocalRecords when `header_rev` is None (missing header) or nothing is newer.
 #[allow(dead_code)]
@@ -276,9 +281,37 @@ pub(crate) async fn pipethrough_munged(
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
 
-    // 2. Buffer the body
+    // 2. Buffer the body with a size cap
+    // First check content-length if available to bail early on obviously-oversized responses
+    let content_length = upstream.content_length();
+    if let Some(len) = content_length {
+        if len as usize > MAX_MUNGE_RESPONSE_BODY {
+            tracing::warn!(
+                content_length = len,
+                max = MAX_MUNGE_RESPONSE_BODY,
+                nsid,
+                "upstream response body exceeds max munge size"
+            );
+            return ApiError::new(ErrorCode::InternalError, "upstream response too large")
+                .into_response();
+        }
+    }
+
     let body_bytes = match upstream.bytes().await {
-        Ok(bytes) => bytes,
+        Ok(bytes) => {
+            // Double-check the buffered size in case content-length was absent or lying
+            if bytes.len() > MAX_MUNGE_RESPONSE_BODY {
+                tracing::warn!(
+                    actual_size = bytes.len(),
+                    max = MAX_MUNGE_RESPONSE_BODY,
+                    nsid,
+                    "buffered upstream response body exceeded max munge size"
+                );
+                return ApiError::new(ErrorCode::InternalError, "upstream response too large")
+                    .into_response();
+            }
+            bytes
+        }
         Err(err) => {
             tracing::error!(error = %err, nsid, "failed to read upstream response body");
             return ApiError::new(ErrorCode::InternalError, "failed to read upstream response")
@@ -1459,5 +1492,263 @@ mod tests {
         assert_eq!(munged["thread"]["post"]["author"]["displayName"], "Other User");
         assert!(munged["thread"]["replies"].is_array());
         assert_eq!(munged["thread"]["replies"].as_array().unwrap().len(), 0, "No local replies should be added");
+    }
+
+    #[tokio::test]
+    async fn test_pipethrough_munged_ac4_1_non_json_body_passthrough() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use std::sync::Arc;
+
+        let server = MockServer::start().await;
+        let old_rev = "0";
+
+        Mock::given(method("POST"))
+            .and(path("/xrpc/app.bsky.feed.getTimeline"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("atproto-repo-rev", old_rev)
+                    .insert_header("content-type", "text/plain")
+                    .set_body_string("not valid json at all"),
+            )
+            .mount(&server)
+            .await;
+
+        let state = crate::routes::test_utils::state_with_master_key().await;
+        let did = "did:plc:test_ac4_1";
+        seed_account_with_repo(&state.db, did).await;
+
+        let app = crate::app::app(state.clone());
+        let token = access_jwt(&state.jwt_secret, did);
+
+        // Write a local post so local.count > 0 and we attempt munging
+        let post_req = put_record_request(
+            did,
+            "app.bsky.feed.post",
+            "post1",
+            serde_json::json!({
+                "record": {
+                    "text": "Fresh local post",
+                    "createdAt": "2024-01-01T00:00:00.000Z"
+                }
+            }),
+            Some(&token),
+        );
+        let _post_resp = app.clone().oneshot(post_req).await.unwrap();
+
+        let mut state = state.clone();
+        let mut config = (*state.config).clone();
+        config.appview.url = server.uri();
+        state.config = Arc::new(config);
+
+        let req = axum::http::Request::builder()
+            .method(axum::http::Method::POST)
+            .uri("/xrpc/app.bsky.feed.getTimeline?limit=30")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(axum::body::Body::from(""))
+            .unwrap();
+
+        let resp = pipethrough_munged(&state, "app.bsky.feed.getTimeline", did, req).await;
+
+        // Must NOT be 500 — the parse error should trigger fallback to the original body
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::OK,
+            "non-JSON upstream body should be passed through unchanged"
+        );
+
+        let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        assert_eq!(
+            body_str, "not valid json at all",
+            "original non-JSON body should be returned verbatim"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipethrough_munged_ac4_2_quote_post_with_failed_get_posts() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use std::sync::Arc;
+
+        let server = MockServer::start().await;
+        let old_rev = "0";
+
+        Mock::given(method("POST"))
+            .and(path("/xrpc/app.bsky.feed.getTimeline"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("atproto-repo-rev", old_rev)
+                    .set_body_json(serde_json::json!({
+                        "feed": [
+                            {
+                                "post": {
+                                    "uri": "at://did:plc:other/app.bsky.feed.post/post123",
+                                    "cid": "bafy_other",
+                                    "author": {
+                                        "did": "did:plc:other",
+                                        "handle": "other.bsky.social"
+                                    },
+                                    "record": {
+                                        "$type": "app.bsky.feed.post",
+                                        "text": "Some post",
+                                        "createdAt": "2024-01-01T00:00:00.000Z"
+                                    },
+                                    "indexedAt": "2024-01-01T00:00:00.000Z"
+                                }
+                            }
+                        ]
+                    })),
+            )
+            .mount(&server)
+            .await;
+
+        let state = crate::routes::test_utils::state_with_master_key().await;
+        let did = "did:plc:test_ac4_2";
+        seed_account_with_repo(&state.db, did).await;
+
+        sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
+            .bind("test_ac4_2.bsky.social")
+            .bind(did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        let app = crate::app::app(state.clone());
+        let token = access_jwt(&state.jwt_secret, did);
+
+        // Write a local quote-post (even though getPosts will fail, the degradation should handle it)
+        let quote_post_req = put_record_request(
+            did,
+            "app.bsky.feed.post",
+            "quote_post",
+            serde_json::json!({
+                "record": {
+                    "text": "Quoting something",
+                    "createdAt": "2024-01-02T00:00:00.000Z",
+                    "embed": {
+                        "$type": "app.bsky.embed.record",
+                        "record": {
+                            "uri": "at://did:plc:other/app.bsky.feed.post/orig_post",
+                            "cid": "bafy_quote_orig"
+                        }
+                    }
+                }
+            }),
+            Some(&token),
+        );
+        let _quote_resp = app.clone().oneshot(quote_post_req).await.unwrap();
+
+        let mut state = state.clone();
+        let mut config = (*state.config).clone();
+        config.appview.url = server.uri();
+        state.config = Arc::new(config);
+
+        let req = axum::http::Request::builder()
+            .method(axum::http::Method::POST)
+            .uri("/xrpc/app.bsky.feed.getTimeline?limit=30")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(axum::body::Body::from(""))
+            .unwrap();
+
+        let resp = pipethrough_munged(&state, "app.bsky.feed.getTimeline", did, req).await;
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+
+        let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let munged: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        // The injected local post should be present in the response
+        assert!(munged["feed"].is_array(), "feed should be an array");
+        let feed = munged["feed"].as_array().unwrap();
+
+        // Verify at least one post from the local write is present
+        let local_post_found = feed.iter().any(|item| {
+            item.get("post")
+                .and_then(|p| p.get("record"))
+                .and_then(|rec| rec.get("text"))
+                .and_then(|t| t.as_str())
+                .map(|text| text.contains("Quoting something"))
+                .unwrap_or(false)
+        });
+
+        assert!(
+            local_post_found,
+            "local quote-post should be injected into the feed"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipethrough_munged_ac4_4_no_lag_when_current() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use std::sync::Arc;
+
+        let server = MockServer::start().await;
+        // Rev is at the current head — nothing unindexed
+        let current_rev = "bafy_current_head";
+
+        Mock::given(method("POST"))
+            .and(path("/xrpc/app.bsky.actor.getProfile"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("atproto-repo-rev", current_rev)
+                    .set_body_json(serde_json::json!({
+                        "did": "did:plc:test_ac4_4",
+                        "handle": "test.bsky.social",
+                        "displayName": "Test User",
+                        "description": "Test Desc"
+                    })),
+            )
+            .mount(&server)
+            .await;
+
+        let state = crate::routes::test_utils::state_with_master_key().await;
+        let did = "did:plc:test_ac4_4";
+        seed_account_with_repo(&state.db, did).await;
+
+        sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
+            .bind("test.bsky.social")
+            .bind(did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        // Update the repo root to match the AppView's rev so local.count == 0
+        sqlx::query("UPDATE accounts SET repo_root_cid = ? WHERE did = ?")
+            .bind(current_rev)
+            .bind(did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        let mut state = state.clone();
+        let mut config = (*state.config).clone();
+        config.appview.url = server.uri();
+        state.config = Arc::new(config);
+
+        let token = access_jwt(&state.jwt_secret, did);
+
+        let req = axum::http::Request::builder()
+            .method(axum::http::Method::POST)
+            .uri("/xrpc/app.bsky.actor.getProfile?actor=did:plc:test_ac4_4")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(axum::body::Body::from(""))
+            .unwrap();
+
+        let resp = pipethrough_munged(&state, "app.bsky.actor.getProfile", did, req).await;
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+
+        // CRITICAL: When local.count == 0 (no unindexed records), there should be NO lag header
+        assert!(
+            resp.headers().get("Atproto-Upstream-Lag").is_none(),
+            "Atproto-Upstream-Lag header must NOT be present when repo is current"
+        );
     }
 }
