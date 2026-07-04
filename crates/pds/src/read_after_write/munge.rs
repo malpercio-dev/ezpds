@@ -734,7 +734,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_post_thread_notfound_regression_nonlocal_post_stays_400() {
+    async fn get_post_thread_returns_error_body_unchanged_for_nonlocal_uri() {
         let state = crate::routes::test_utils::state_with_master_key().await;
         let requester = "did:plc:ac3_regression";
         let other = "did:plc:other_ac3_regression";

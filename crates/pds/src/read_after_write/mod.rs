@@ -1159,6 +1159,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_pipethrough_munged_getpostthread_nonlocal_notfound_stays_400() {
+        // A genuine NotFound whose requested uri is NOT one of the requester's local posts must
+        // fall back to the original 400 + error body — the 200 override only applies when a thread
+        // was actually reconstructed. The requester DOES have an unrelated local post (so the
+        // count>0 gate is passed), which is exactly the state that surfaced the masking bug.
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use std::sync::Arc;
+
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/xrpc/app.bsky.feed.getPostThread"))
+            .respond_with(
+                ResponseTemplate::new(400)
+                    .insert_header("atproto-repo-rev", "0")
+                    .set_body_json(serde_json::json!({
+                        "error": "NotFound",
+                        "message": "post not found"
+                    })),
+            )
+            .mount(&server)
+            .await;
+
+        let state = crate::routes::test_utils::state_with_master_key().await;
+        let did = "did:plc:test_nonlocal_notfound";
+        seed_account_with_repo(&state.db, did).await;
+
+        let app = crate::app::app(state.clone());
+        let token = access_jwt(&state.jwt_secret, did);
+
+        // Write an unrelated local post so local.count > 0 (passes the early-return gate).
+        let post_req = put_record_request(
+            did,
+            "app.bsky.feed.post",
+            "own_post",
+            serde_json::json!({
+                "record": { "text": "my own unrelated post", "createdAt": "2024-01-01T00:00:00.000Z" }
+            }),
+            Some(&token),
+        );
+        let _ = app.clone().oneshot(post_req).await.unwrap();
+
+        let mut state = state.clone();
+        let mut config = (*state.config).clone();
+        config.appview.url = server.uri();
+        state.config = Arc::new(config);
+
+        // Request the thread for a DIFFERENT post (another user's) that is not in local records.
+        let requested_uri = "at://did:plc:someone_else/app.bsky.feed.post/unknown";
+        let req = axum::http::Request::builder()
+            .method(axum::http::Method::POST)
+            .uri(format!(
+                "/xrpc/app.bsky.feed.getPostThread?uri={}",
+                urlencoding::encode(requested_uri)
+            ))
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(axum::body::Body::from(""))
+            .unwrap();
+
+        let resp = pipethrough_munged(&state, "app.bsky.feed.getPostThread", did, req).await;
+
+        // The genuine NotFound must NOT be masked as 200.
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::BAD_REQUEST,
+            "a NotFound for a non-local post must stay 400, not be forced to 200"
+        );
+
+        let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(
+            body.get("error").and_then(|e| e.as_str()),
+            Some("NotFound"),
+            "the original error body must be preserved"
+        );
+        assert!(
+            body.get("thread").is_none() || body["thread"].is_null(),
+            "no thread should be reconstructed for a non-local post"
+        );
+    }
+
+    #[tokio::test]
     async fn test_pipethrough_munged_ac3_2_getpostthread_splices_own_replies() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
