@@ -26,9 +26,10 @@ vars:pre-request {
 docs {
   # GET /xrpc/app.bsky.feed.getTimeline
 
-  Fetch the home timeline feed. **Read-after-write enabled:** local unindexed posts are
-  injected at the top of the feed and the response carries an `Atproto-Upstream-Lag` header
-  (in milliseconds) if the AppView's indexed state is behind the account's local writes.
+  Fetch the home timeline feed. **Read-after-write enabled:** the authenticated requester's own
+  unindexed posts are injected at the top of the feed and the response carries an
+  `Atproto-Upstream-Lag` header (in milliseconds) when the AppView's indexed state is behind the
+  requester's local writes. Only the requester's own records are merged — never other accounts'.
 
   Query params:
   - `limit` — max feed entries (default 30, max 100)

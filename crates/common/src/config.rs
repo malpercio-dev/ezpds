@@ -825,7 +825,10 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
     let appview = AppViewConfig {
         url: raw.appview.url.trim_end_matches('/').to_string(),
         did: raw.appview.did,
-        cdn_url: raw.appview.cdn_url,
+        // Trim a trailing slash too: `cdn_url` is concatenated as `{cdn_url}/img/...` in
+        // LocalViewer::image_url, so a configured `https://cdn.bsky.app/` would otherwise
+        // produce `//img/...`. Matches the documented "no trailing slash" contract.
+        cdn_url: raw.appview.cdn_url.trim_end_matches('/').to_string(),
     };
 
     validate_proxy_url("chat.url", &raw.chat.url)?;

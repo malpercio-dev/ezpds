@@ -410,7 +410,11 @@ pub(crate) async fn pipethrough_munged(
     let profile_val = local.profile.as_ref().map(|p| p.record.clone());
     let viewer = viewer::LocalViewer::new(state, did.to_string(), handle, profile_val);
 
-    // 8. Dispatch and munge
+    // 8. Dispatch and munge. Keep a copy of the pre-munge body so we can tell whether the munge
+    // actually merged any of the requester's records — the lag header must only be advertised when
+    // this response was really changed (a munge can return `original` unchanged: getProfile for
+    // another user, getAuthorFeed for another actor, a non-local getPostThread NotFound, etc.).
+    let original = parsed.clone();
     let munged = match nsid {
         "app.bsky.actor.getProfile" => munge::get_profile(&viewer, parsed, &local, did).await,
         "app.bsky.actor.getProfiles" => munge::get_profiles(&viewer, parsed, &local, did).await,
@@ -459,8 +463,13 @@ pub(crate) async fn pipethrough_munged(
         builder = builder.header(header::CONTENT_TYPE, content_type);
     }
 
-    if let Some(lag_ms) = local_lag_ms(&local) {
-        builder = builder.header("Atproto-Upstream-Lag", lag_ms.to_string());
+    // Advertise upstream lag only when the munge actually merged the requester's records into
+    // this response (i.e. the body changed). A pure passthrough of another user's data carries no
+    // lag, even though the requester happens to have unindexed writes of their own.
+    if munged != original {
+        if let Some(lag_ms) = local_lag_ms(&local) {
+            builder = builder.header("Atproto-Upstream-Lag", lag_ms.to_string());
+        }
     }
 
     match builder.body(Body::from(munged_bytes)) {
@@ -1010,6 +1019,87 @@ mod tests {
         assert_eq!(
             munged["displayName"], "AppView Name",
             "displayName should be unchanged from AppView"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipethrough_munged_no_lag_header_on_unchanged_passthrough() {
+        // The requester HAS unindexed local writes (local.count > 0), but the request views
+        // ANOTHER user's profile, so get_profile returns the AppView body unchanged. The
+        // Atproto-Upstream-Lag header must NOT be advertised: this response merged nothing.
+        use std::sync::Arc;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let other = "did:plc:some_other_user";
+        Mock::given(method("POST"))
+            .and(path("/xrpc/app.bsky.actor.getProfile"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    // Old rev so the requester's own write below counts as unindexed.
+                    .insert_header("atproto-repo-rev", "0")
+                    .set_body_json(serde_json::json!({
+                        "did": other,
+                        "handle": "other.bsky.social",
+                        "displayName": "Other User",
+                        "description": "Someone else's profile"
+                    })),
+            )
+            .mount(&server)
+            .await;
+
+        let state = crate::routes::test_utils::state_with_master_key().await;
+        let did = "did:plc:requester_with_writes";
+        seed_account_with_repo(&state.db, did).await;
+        sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
+            .bind("requester.bsky.social")
+            .bind(did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        let app = crate::app::app(state.clone());
+        let token = access_jwt(&state.jwt_secret, did);
+
+        // Requester writes their OWN profile → local.count > 0 (a merge is possible in general).
+        let profile_req = put_record_request(
+            did,
+            "app.bsky.actor.profile",
+            "self",
+            serde_json::json!({ "record": { "displayName": "My Own Fresh Name" } }),
+            Some(&token),
+        );
+        let _ = app.clone().oneshot(profile_req).await.unwrap();
+
+        let mut state = state.clone();
+        let mut config = (*state.config).clone();
+        config.appview.url = server.uri();
+        state.config = Arc::new(config);
+
+        // Request the OTHER user's profile.
+        let req = axum::http::Request::builder()
+            .method(axum::http::Method::POST)
+            .uri(format!("/xrpc/app.bsky.actor.getProfile?actor={other}"))
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(axum::body::Body::from(""))
+            .unwrap();
+
+        let resp = pipethrough_munged(&state, "app.bsky.actor.getProfile", did, req).await;
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        assert!(
+            resp.headers().get("Atproto-Upstream-Lag").is_none(),
+            "no lag header on a passthrough of another user's profile, even with local writes present"
+        );
+
+        let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(
+            body["displayName"], "Other User",
+            "the other user's profile must be returned untouched"
         );
     }
 
