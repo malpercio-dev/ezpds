@@ -414,8 +414,10 @@ pub(crate) async fn pipethrough_munged(
         }
     };
 
-    // If we munged a NotFound thread successfully, override status to 200
-    let response_status = if is_thread_not_found && status.is_client_error() {
+    // If we munged a NotFound thread successfully, override status to 200.
+    // Only override if the munged output actually contains a reconstructed thread.
+    let reconstructed = munged.get("thread").map(|t| !t.is_null()).unwrap_or(false);
+    let response_status = if is_thread_not_found && status.is_client_error() && reconstructed {
         axum::http::StatusCode::OK
     } else {
         status

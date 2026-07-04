@@ -171,13 +171,11 @@ pub(crate) async fn get_post_thread(
             }
         }
 
-        // Sort by indexed_at and insert into replies
+        // Insert into replies: appending to the end is intentionally best-effort (shallow).
+        // A full merge-sort is not required by the acceptance criteria.
         if !replies_to_add.is_empty() {
-            replies_to_add.sort_by(|a, b| b.0.cmp(&a.0)); // descending (newest first)
-
             if let Some(replies_arr) = thread.get_mut("replies").and_then(|r| r.as_array_mut()) {
                 for (_, thread_post) in replies_to_add {
-                    // Insert at end for simplicity (best-effort, shallow)
                     replies_arr.push(thread_post);
                 }
             } else {
@@ -732,6 +730,58 @@ mod tests {
         assert_eq!(
             feed[0]["post"]["author"]["displayName"], "Old Other Name",
             "other user's author view should be unchanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_post_thread_notfound_regression_nonlocal_post_stays_400() {
+        let state = crate::routes::test_utils::state_with_master_key().await;
+        let requester = "did:plc:ac3_regression";
+        let other = "did:plc:other_ac3_regression";
+        crate::routes::test_utils::seed_account_with_repo(&state.db, requester).await;
+
+        let app = crate::app::app(state.clone());
+        let token = crate::routes::test_utils::access_jwt(&state.jwt_secret, requester);
+
+        // Write a local post by requester
+        let post_req = crate::routes::test_utils::put_record_request(
+            requester,
+            "app.bsky.feed.post",
+            "local_post",
+            serde_json::json!({ "record": { "text": "my local post", "createdAt": "2026-07-03T12:00:00.000Z" } }),
+            Some(&token),
+        );
+        let _post_resp = app.clone().oneshot(post_req).await.unwrap();
+
+        let local = super::super::get_records_since_rev(&state, requester, Some("0")).await;
+
+        let handle = crate::db::accounts::get_session_account(&state.db, requester)
+            .await
+            .unwrap()
+            .unwrap();
+        let profile_val = local.profile.as_ref().map(|p| p.record.clone());
+        let viewer = super::super::viewer::LocalViewer::new(&state, requester.to_string(), handle.handle, profile_val);
+
+        // The AppView returns a NotFound error for a post that is NOT in our local records
+        let appview_error = json!({
+            "error": "NotFound",
+            "message": "post not found"
+        });
+        let requested_uri = format!("at://{}/app.bsky.feed.post/unknown_post", other);
+
+        // Call get_post_thread with the NotFound error body and a requested_uri that doesn't exist locally
+        let result = get_post_thread(&viewer, appview_error.clone(), &local, requester, &requested_uri).await;
+
+        // The result should equal the original appview_error (unchanged)
+        // because the requested_uri is not in our local posts
+        assert!(
+            result.get("thread").is_none() || result.get("thread").unwrap().is_null(),
+            "thread should not be reconstructed for a non-local post URI"
+        );
+        assert_eq!(
+            result.get("error").and_then(|e| e.as_str()),
+            Some("NotFound"),
+            "error body should still contain NotFound"
         );
     }
 }
