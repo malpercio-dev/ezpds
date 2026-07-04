@@ -1070,7 +1070,19 @@ mod tests {
             serde_json::json!({ "record": { "displayName": "My Own Fresh Name" } }),
             Some(&token),
         );
-        let _ = app.clone().oneshot(profile_req).await.unwrap();
+        let profile_resp = app.clone().oneshot(profile_req).await.unwrap();
+        assert!(
+            profile_resp.status().is_success(),
+            "profile write setup must succeed"
+        );
+
+        // Guard the test's premise: the requester genuinely has unindexed local records, so this
+        // exercises the "munged == original ⇒ no header" branch, not the trivial count==0 path.
+        let local = get_records_since_rev(&state, did, Some("0")).await;
+        assert!(
+            local.count > 0,
+            "test setup must create unindexed local records"
+        );
 
         let mut state = state.clone();
         let mut config = (*state.config).clone();
