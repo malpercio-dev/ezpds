@@ -21,7 +21,6 @@ pub(crate) struct LocalViewer<'a> {
 }
 
 impl<'a> LocalViewer<'a> {
-    #[allow(dead_code)]
     pub(crate) fn new(
         state: &'a AppState,
         did: String,
@@ -36,7 +35,6 @@ impl<'a> LocalViewer<'a> {
         }
     }
 
-    #[allow(dead_code)]
     fn profile_view_basic(&self) -> Value {
         let mut view = json!({
             "did": self.did,
@@ -60,7 +58,6 @@ impl<'a> LocalViewer<'a> {
         view
     }
 
-    #[allow(dead_code)]
     fn update_profile_view(&self, mut view: Value) -> Value {
         if let Some(ref profile) = self.profile {
             if let Some(name) = profile.get("displayName").and_then(|v| v.as_str()) {
@@ -87,7 +84,6 @@ impl<'a> LocalViewer<'a> {
         view
     }
 
-    #[allow(dead_code)]
     pub(crate) fn update_profile_detailed(&self, mut view: Value) -> Value {
         view = self.update_profile_view(view);
 
@@ -104,7 +100,6 @@ impl<'a> LocalViewer<'a> {
         view
     }
 
-    #[allow(dead_code)]
     pub(crate) fn update_profile_view_basic(&self, mut view: Value) -> Value {
         if let Some(ref profile) = self.profile {
             if let Some(name) = profile.get("displayName").and_then(|v| v.as_str()) {
@@ -125,7 +120,6 @@ impl<'a> LocalViewer<'a> {
         view
     }
 
-    #[allow(dead_code)]
     fn image_url(&self, kind: &str, cid: &str) -> String {
         format!(
             "{}/img/{}/plain/{}/{}@jpeg",
@@ -133,7 +127,6 @@ impl<'a> LocalViewer<'a> {
         )
     }
 
-    #[allow(dead_code)]
     fn extract_blob_cid(&self, blob_value: &Value) -> Option<String> {
         blob_value
             .get("ref")
@@ -142,7 +135,6 @@ impl<'a> LocalViewer<'a> {
             .map(|s| s.to_string())
     }
 
-    #[allow(dead_code)]
     pub(crate) async fn post_view(&self, post: &RecordDescript, quotes: &QuoteMap) -> Value {
         let mut view = json!({
             "$type": "app.bsky.feed.defs#postView",
@@ -163,7 +155,6 @@ impl<'a> LocalViewer<'a> {
         view
     }
 
-    #[allow(dead_code)]
     fn hydrate_embed(&self, embed: Option<&Value>, quotes: &QuoteMap) -> Option<Value> {
         let embed = embed?;
         let type_val = embed.get("$type").and_then(|v| v.as_str())?;
@@ -177,7 +168,6 @@ impl<'a> LocalViewer<'a> {
         }
     }
 
-    #[allow(dead_code)]
     fn hydrate_images_embed(&self, embed: &Value) -> Option<Value> {
         let images = embed.get("images")?.as_array()?;
 
@@ -201,7 +191,6 @@ impl<'a> LocalViewer<'a> {
         }))
     }
 
-    #[allow(dead_code)]
     fn hydrate_external_embed(&self, embed: &Value) -> Option<Value> {
         let external = embed.get("external")?;
 
@@ -223,7 +212,6 @@ impl<'a> LocalViewer<'a> {
         Some(view)
     }
 
-    #[allow(dead_code)]
     fn hydrate_record_embed(&self, embed: &Value, quotes: &QuoteMap) -> Option<Value> {
         let record_uri = embed.get("record")?.get("uri")?.as_str()?;
 
@@ -255,7 +243,6 @@ impl<'a> LocalViewer<'a> {
         }))
     }
 
-    #[allow(dead_code)]
     fn hydrate_record_with_media_embed(&self, embed: &Value, quotes: &QuoteMap) -> Option<Value> {
         let media_embed = embed.get("media")?;
         let record_embed = embed.get("record")?;
@@ -270,7 +257,6 @@ impl<'a> LocalViewer<'a> {
         }))
     }
 
-    #[allow(dead_code)]
     pub(crate) async fn hydrate_quotes(&self, posts: &[RecordDescript]) -> QuoteMap {
         let mut quote_uris = std::collections::HashSet::new();
 
@@ -353,7 +339,6 @@ impl<'a> LocalViewer<'a> {
         }
     }
 
-    #[allow(dead_code)]
     fn collect_quote_uris(&self, embed: &Value, uris: &mut std::collections::HashSet<String>) {
         if let Some(type_val) = embed.get("$type").and_then(|v| v.as_str()) {
             if type_val == "app.bsky.embed.record" {
@@ -376,7 +361,6 @@ impl<'a> LocalViewer<'a> {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) async fn insert_posts_in_feed(
         &self,
         feed: &mut Vec<Value>,

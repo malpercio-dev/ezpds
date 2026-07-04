@@ -2,7 +2,6 @@
 
 /// One of the requester's records selected for merging, with the metadata a munge needs.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct RecordDescript {
     pub uri: String,
     pub cid: String,
@@ -14,7 +13,6 @@ pub struct RecordDescript {
 
 /// The requester's records written since the AppView's last-indexed rev.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct LocalRecords {
     pub count: usize,
     pub profile: Option<RecordDescript>,

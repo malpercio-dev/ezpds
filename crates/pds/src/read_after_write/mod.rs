@@ -9,7 +9,6 @@ mod munge;
 mod types;
 mod viewer;
 
-#[allow(unused_imports)]
 pub use types::{LocalRecords, RecordDescript};
 
 use axum::{
@@ -37,7 +36,6 @@ const MAX_MUNGE_RESPONSE_BODY: usize = 10 * 1024 * 1024;
 
 /// Build the requester's unindexed LocalRecords relative to the AppView's indexed rev.
 /// Returns an empty LocalRecords when `header_rev` is None (missing header) or nothing is newer.
-#[allow(dead_code)]
 pub(crate) async fn get_records_since_rev(
     state: &AppState,
     did: &str,
@@ -170,7 +168,6 @@ pub(crate) async fn get_records_since_rev(
 }
 
 /// Milliseconds since the oldest merged record's indexed_at, or None when there are none.
-#[allow(dead_code)]
 fn local_lag_ms(local: &LocalRecords) -> Option<i64> {
     if local.count == 0 {
         return None;
