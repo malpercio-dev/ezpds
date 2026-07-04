@@ -105,6 +105,138 @@ pub(crate) async fn get_actor_likes(
     original
 }
 
+pub(crate) async fn get_post_thread(
+    viewer: &LocalViewer<'_>,
+    mut original: Value,
+    local: &LocalRecords,
+    requester: &str,
+    requested_uri: &str,
+) -> Value {
+    // Early exit: no local records means nothing to munge
+    if local.count == 0 {
+        return original;
+    }
+
+    // Check if the original response has a thread (Case A: AppView returned a threadViewPost)
+    if let Some(thread) = original.get_mut("thread").and_then(|t| t.as_object_mut()) {
+        // Case A: refresh the focus post's author if it's the requester
+        if let Some(post) = thread.get_mut("post").and_then(|p| p.as_object_mut()) {
+            if let Some(author) = post.get_mut("author").and_then(|a| a.as_object_mut()) {
+                if author.get("did").and_then(|d| d.as_str()).unwrap_or("") == requester {
+                    let author_view = viewer.update_profile_view_basic(serde_json::Value::Object(author.clone()));
+                    *author = author_view.as_object().unwrap().clone();
+                }
+            }
+        }
+
+        // Case A: splice the requester's unindexed replies into thread.replies
+        let mut replies_to_add = Vec::new();
+        let quotes = viewer.hydrate_quotes(&local.posts).await;
+
+        for local_post in &local.posts {
+            // Check if this local post is a reply to something in the thread
+            if let Some(reply) = local_post.record.get("reply") {
+                if let Some(parent_uri) = reply.get("parent").and_then(|p| p.get("uri")).and_then(|u| u.as_str()) {
+                    // Check if parent_uri is the focus post or any post in the thread
+                    let mut is_reply_to_thread = false;
+
+                    if let Some(focus_post) = thread.get("post").and_then(|p| p.get("uri")).and_then(|u| u.as_str()) {
+                        if parent_uri == focus_post {
+                            is_reply_to_thread = true;
+                        }
+                    }
+
+                    if !is_reply_to_thread {
+                        if let Some(replies_arr) = thread.get("replies").and_then(|r| r.as_array()) {
+                            for reply_item in replies_arr {
+                                if let Some(reply_post_uri) = reply_item.get("post").and_then(|p| p.get("uri")).and_then(|u| u.as_str()) {
+                                    if parent_uri == reply_post_uri {
+                                        is_reply_to_thread = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if is_reply_to_thread {
+                        let post_view = viewer.post_view(local_post, &quotes).await;
+                        let thread_post = serde_json::json!({
+                            "$type": "app.bsky.feed.defs#threadViewPost",
+                            "post": post_view,
+                        });
+                        replies_to_add.push((local_post.indexed_at.clone(), thread_post));
+                    }
+                }
+            }
+        }
+
+        // Sort by indexed_at and insert into replies
+        if !replies_to_add.is_empty() {
+            replies_to_add.sort_by(|a, b| b.0.cmp(&a.0)); // descending (newest first)
+
+            if let Some(replies_arr) = thread.get_mut("replies").and_then(|r| r.as_array_mut()) {
+                for (_, thread_post) in replies_to_add {
+                    // Insert at end for simplicity (best-effort, shallow)
+                    replies_arr.push(thread_post);
+                }
+            } else {
+                // If no replies array exists, create one
+                thread.insert("replies".to_string(), serde_json::Value::Array(
+                    replies_to_add.into_iter().map(|(_, tp)| tp).collect()
+                ));
+            }
+        }
+
+        return original;
+    }
+
+    // Case B: NotFound and requested_uri is one of local.posts
+    if requested_uri.is_empty() {
+        return original;
+    }
+
+    for local_post in &local.posts {
+        if local_post.uri == requested_uri {
+            // Build a threadViewPost from this local record
+            let quotes = viewer.hydrate_quotes(&local.posts).await;
+            let post_view = viewer.post_view(local_post, &quotes).await;
+
+            // Find local replies to this post
+            let mut local_replies = Vec::new();
+            for potential_reply in &local.posts {
+                if let Some(reply) = potential_reply.record.get("reply") {
+                    if let Some(parent_uri) = reply.get("parent").and_then(|p| p.get("uri")).and_then(|u| u.as_str()) {
+                        if parent_uri == requested_uri {
+                            let reply_view = viewer.post_view(potential_reply, &quotes).await;
+                            let reply_post = serde_json::json!({
+                                "$type": "app.bsky.feed.defs#threadViewPost",
+                                "post": reply_view,
+                            });
+                            local_replies.push((potential_reply.indexed_at.clone(), reply_post));
+                        }
+                    }
+                }
+            }
+
+            // Sort replies by indexed_at (descending)
+            local_replies.sort_by(|a, b| b.0.cmp(&a.0));
+
+            let thread_view = serde_json::json!({
+                "$type": "app.bsky.feed.defs#threadViewPost",
+                "post": post_view,
+                "replies": local_replies.into_iter().map(|(_, rp)| rp).collect::<Vec<_>>(),
+            });
+
+            original["thread"] = thread_view;
+            return original;
+        }
+    }
+
+    // requested_uri is NOT a local post: return original unchanged (the 400 stands)
+    original
+}
+
 /// Refresh the author view on any feed items authored by the requester, if a local profile exists.
 fn refresh_own_authored_items(
     viewer: &LocalViewer<'_>,
