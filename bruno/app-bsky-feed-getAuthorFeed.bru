@@ -1,0 +1,41 @@
+meta {
+  name: Get Author Feed (app.bsky.feed.getAuthorFeed)
+  type: http
+  seq: 87
+}
+
+get {
+  url: {{baseUrl}}/xrpc/app.bsky.feed.getAuthorFeed?actor={{actor}}&limit={{limit}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+params:query {
+  actor: {{actor}}
+  limit: {{limit}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  actor: {{userDid}}
+  limit: 30
+}
+
+docs {
+  # GET /xrpc/app.bsky.feed.getAuthorFeed
+
+  Fetch a user's feed posts. **Read-after-write enabled:** when fetching the requester's own
+  feed, unindexed local posts are injected into the feed and the response carries an
+  `Atproto-Upstream-Lag` header if the AppView is behind the account's local writes.
+
+  Query params:
+  - `actor` — user DID or handle
+  - `limit` — max posts (default 30, max 100)
+  - `cursor` — pagination cursor
+
+  Response carries `feed` (array of posts) and optional `cursor`.
+}

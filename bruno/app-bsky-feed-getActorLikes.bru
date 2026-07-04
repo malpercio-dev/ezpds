@@ -1,0 +1,41 @@
+meta {
+  name: Get Actor Likes (app.bsky.feed.getActorLikes)
+  type: http
+  seq: 89
+}
+
+get {
+  url: {{baseUrl}}/xrpc/app.bsky.feed.getActorLikes?actor={{actor}}&limit={{limit}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+params:query {
+  actor: {{actor}}
+  limit: {{limit}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  actor: {{userDid}}
+  limit: 30
+}
+
+docs {
+  # GET /xrpc/app.bsky.feed.getActorLikes
+
+  Fetch posts liked by a user. **Read-after-write enabled:** when fetching the requester's
+  own likes, unindexed local like records are merged into the feed and the response carries
+  an `Atproto-Upstream-Lag` header if the AppView is behind the account's local writes.
+
+  Query params:
+  - `actor` — user DID or handle
+  - `limit` — max likes (default 30, max 100)
+  - `cursor` — pagination cursor
+
+  Response carries `feed` (array of liked posts) and optional `cursor`.
+}

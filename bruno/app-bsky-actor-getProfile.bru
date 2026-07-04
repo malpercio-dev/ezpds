@@ -1,0 +1,38 @@
+meta {
+  name: Get Profile (app.bsky.actor.getProfile)
+  type: http
+  seq: 90
+}
+
+get {
+  url: {{baseUrl}}/xrpc/app.bsky.actor.getProfile?actor={{actor}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+params:query {
+  actor: {{actor}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  actor: {{userDid}}
+}
+
+docs {
+  # GET /xrpc/app.bsky.actor.getProfile
+
+  Fetch a user's profile. **Read-after-write enabled:** when fetching the requester's own
+  profile, unindexed local profile changes are reflected in the response and the response
+  carries an `Atproto-Upstream-Lag` header if the AppView is behind the account's local writes.
+
+  Query params:
+  - `actor` — user DID or handle (required)
+
+  Response carries profile fields: `did`, `handle`, `displayName`, `avatar`, `description`,
+  `followersCount`, `followsCount`, `postsCount`, etc.
+}
