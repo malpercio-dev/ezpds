@@ -1,8 +1,9 @@
 // pattern: Imperative Shell
 //
-// Proxy a munged NSID to the AppView, buffer the response, and (in later phases) merge the
-// requester's own unindexed records. In Phase 1 this is a behavioral no-op: it buffers and
-// returns the AppView response verbatim.
+// Proxy a read-after-write NSID to the AppView, buffer the response, and merge the requester's
+// own not-yet-indexed records into it. `pipethrough_munged` runs a best-effort fallback ladder:
+// any upstream/parse/munge failure degrades to returning the AppView response unchanged, and the
+// `Atproto-Upstream-Lag` header is attached only when local records were actually merged.
 
 mod munge;
 mod types;
@@ -25,9 +26,13 @@ use crate::db::blocks::SqliteBlockStore;
 use atrium_repo::Cid;
 use repo_engine::Repository;
 
-/// Maximum size of a munged response body. AppView endpoints return modest JSON
-/// (typically < 1 MiB). This cap guards against unbounded buffering on broken upstream
-/// or deliberate abuse. Exceeding the cap triggers fallback to the original error envelope.
+/// Maximum size of a munged response body we will accept. AppView endpoints return modest JSON
+/// (typically < 1 MiB); this cap rejects anything larger with a fallback error envelope.
+/// It bounds the *accepted* size, not peak buffering: when the upstream sends a `Content-Length`
+/// we bail before reading, but a chunked / length-absent response is still fully buffered by
+/// `reqwest::Response::bytes()` before the post-read length check rejects it. That is an
+/// acceptable guard here — the upstream is the trusted, configured AppView — not a hard
+/// memory bound. Tightening it to a streamed bounded read is a future hardening step.
 const MAX_MUNGE_RESPONSE_BODY: usize = 10 * 1024 * 1024;
 
 /// Build the requester's unindexed LocalRecords relative to the AppView's indexed rev.
@@ -335,7 +340,7 @@ pub(crate) async fn pipethrough_munged(
         };
     }
 
-    // 4. Parse body as serde_json::Value
+    // 5. Parse body as serde_json::Value
     let parsed = match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
         Ok(val) => val,
         Err(err) => {
@@ -354,7 +359,7 @@ pub(crate) async fn pipethrough_munged(
         }
     };
 
-    // 5. Get local records since the AppView's rev
+    // 6. Get local records since the AppView's rev
     let local = get_records_since_rev(state, did, header_rev.as_deref()).await;
 
     // If local.count == 0 -> return buffered original (no lag header)
@@ -372,7 +377,7 @@ pub(crate) async fn pipethrough_munged(
         };
     }
 
-    // 6. Get the handle and build LocalViewer
+    // 7. Get the handle and build LocalViewer
     let handle = match crate::db::accounts::get_session_account(&state.db, did).await {
         Ok(Some(account)) => account.handle,
         Ok(None) => {
@@ -408,7 +413,7 @@ pub(crate) async fn pipethrough_munged(
     let profile_val = local.profile.as_ref().map(|p| p.record.clone());
     let viewer = viewer::LocalViewer::new(state, did.to_string(), handle, profile_val);
 
-    // 7. Dispatch and munge
+    // 8. Dispatch and munge
     let munged = match nsid {
         "app.bsky.actor.getProfile" => munge::get_profile(&viewer, parsed, &local, did).await,
         "app.bsky.actor.getProfiles" => munge::get_profiles(&viewer, parsed, &local, did).await,
@@ -1749,7 +1754,10 @@ mod tests {
             .await
             .unwrap();
 
-        // Update the repo root to match the AppView's rev so local.count == 0
+        // No post records are written for this account, so get_records_since_rev finds nothing
+        // unindexed regardless of the header rev: local.count == 0, which is the passthrough
+        // (no-lag-header) path this test asserts. The repo_root_cid is set to the header rev only
+        // to make the "AppView is fully caught up" scenario explicit.
         sqlx::query("UPDATE accounts SET repo_root_cid = ? WHERE did = ?")
             .bind(current_rev)
             .bind(did)
