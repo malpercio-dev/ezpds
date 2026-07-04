@@ -87,6 +87,11 @@ export async function firehoseWriteCheck(name, { timeoutSeconds = 30 } = {}) {
   return new Promise((resolve, reject) => {
     let done = false;
     let created = null;
+    // The #commit frame can arrive BEFORE the createRecord HTTP response (the
+    // server emits the firehose event and then responds), so frames observed
+    // while `created` is still unknown are buffered and re-scanned once the
+    // response lands.
+    const seenCommits = [];
     const finish = (err, result) => {
       if (done) return;
       done = true;
@@ -100,12 +105,29 @@ export async function firehoseWriteCheck(name, { timeoutSeconds = 30 } = {}) {
       timeoutSeconds * 1000,
     );
 
+    const matches = (body) => {
+      const path = `app.bsky.feed.post/${rkeyFromUri(created.uri)}`;
+      return (body.ops ?? []).some((op) => op.path === path && op.action === 'create');
+    };
+    const settle = (body) =>
+      finish(null, { seq: body.seq, rev: body.rev, uri: created.uri, rkey: rkeyFromUri(created.uri) });
+
+    // Subscribe with cursor=0 (replay-then-live) rather than live-only: a
+    // cursor-less subscription only delivers events past the server's snapshot
+    // frontier, and a write racing the snapshot (right after the WS handshake)
+    // can land just below it and never be delivered. With a cursor, the commit
+    // is guaranteed to arrive via either the replay page or the live stream;
+    // replay volume is bounded by the server's firehose GC and the matcher
+    // ignores everything but our own rkey.
     const ws = connectFirehose({
+      cursor: 0,
       onFrame: ({ header, body }) => {
-        if (header.t !== '#commit' || body.repo !== account.did || !created) return;
-        const path = `app.bsky.feed.post/${rkeyFromUri(created.uri)}`;
-        const match = (body.ops ?? []).find((op) => op.path === path && op.action === 'create');
-        if (match) finish(null, { seq: body.seq, rev: body.rev, uri: created.uri, rkey: rkeyFromUri(created.uri) });
+        if (header.t !== '#commit' || body.repo !== account.did) return;
+        if (!created) {
+          seenCommits.push(body);
+          return;
+        }
+        if (matches(body)) settle(body);
       },
       onError: () => {},
     });
@@ -114,6 +136,8 @@ export async function firehoseWriteCheck(name, { timeoutSeconds = 30 } = {}) {
     ws.on('open', async () => {
       try {
         created = await createPost(name, `ezpds interop firehose check ${new Date().toISOString()}`);
+        const buffered = seenCommits.find(matches);
+        if (buffered) settle(buffered);
       } catch (err) {
         finish(err);
       }

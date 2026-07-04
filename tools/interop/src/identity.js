@@ -51,16 +51,23 @@ export function pdsEndpointFromDoc(doc) {
 export async function verifyIdentity(name) {
   const account = getAccount(loadState(), name);
   const results = { did: account.did, handle: account.handle, checks: [] };
-  const check = (label, ok, detail) => results.checks.push({ label, ok, detail });
+  const check = (label, ok, detail, informational = false) =>
+    results.checks.push({ label, ok, detail, informational });
 
   const viaPds = await resolveHandleViaPds(account.handle);
   check('pds resolveHandle', viaPds === account.did, viaPds);
 
   try {
     const viaWellKnown = await resolveHandleViaWellKnown(account.handle);
+    // Reachable: a wrong DID is a hard failure.
     check('well-known atproto-did', viaWellKnown === account.did, viaWellKnown);
   } catch (err) {
-    check('well-known atproto-did', false, `unreachable: ${err.message}`);
+    // Unreachable: informational, but a real network-facing deficiency — on
+    // Railway's shared *.up.railway.app domain the wildcard cert covers only
+    // one label, so sub-subdomain handles can never serve well-known over
+    // valid TLS and network peers cannot verify them (DNS TXT is equally
+    // unavailable there). Fix is a custom handle domain with a wildcard cert.
+    check('well-known atproto-did', false, `unreachable: ${err.message}`, true);
   }
 
   const doc = await fetchPlcDocument(account.did);
@@ -69,6 +76,6 @@ export async function verifyIdentity(name) {
   const endpoint = pdsEndpointFromDoc(doc);
   check('plc.directory PDS endpoint', endpoint === BASE_URL, endpoint);
 
-  results.ok = results.checks.every((c) => c.ok);
+  results.ok = results.checks.filter((c) => !c.informational).every((c) => c.ok);
   return results;
 }

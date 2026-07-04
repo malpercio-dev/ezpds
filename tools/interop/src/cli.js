@@ -125,9 +125,12 @@ async function main() {
     case 'crud-test':
       print(await crudRoundTrip(requireName(v)));
       break;
-    case 'firehose-test':
-      print(await firehoseWriteCheck(requireName(v)));
+    case 'firehose-test': {
+      const result = await firehoseWriteCheck(requireName(v));
+      await deleteRecord(v.name, 'app.bsky.feed.post', result.rkey);
+      print({ ...result, cleanedUp: true });
       break;
+    }
     case 'sync-test':
       print(await syncChecks(requireName(v)));
       break;
