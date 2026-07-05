@@ -609,8 +609,17 @@ async fn handle_refresh_token(
     }
 
     // Carry the granted granular scope forward across rotation — the rotated
-    // session grants exactly what the original did.
-    let granted_scope = stored.scope;
+    // session grants exactly what the original did. Refresh rows written before
+    // granular scopes were persisted hold the fixed `com.atproto.refresh` string;
+    // reusing that verbatim would mint an access token that resolves to
+    // `AuthScope::Refresh` and fail every access-gated route, so coerce any scope
+    // that isn't a valid atproto grant to the base `atproto` scope (full access
+    // under the current session model).
+    let granted_scope = if crate::auth::oauth_scopes::is_atproto_oauth_scope(&stored.scope) {
+        stored.scope
+    } else {
+        "atproto".to_string()
+    };
 
     // Issue new ES256 access token.
     let access_token = match issue_access_token(
@@ -1347,6 +1356,87 @@ mod tests {
         .await
         .unwrap();
         token.plaintext
+    }
+
+    /// Seed a valid refresh token holding the legacy fixed `com.atproto.refresh`
+    /// scope (as written before granular scopes were persisted).
+    async fn seed_legacy_refresh_token(state: &AppState, jkt: &str) -> String {
+        register_oauth_client(
+            &state.db,
+            "https://app.example.com/client-metadata.json",
+            r#"{"redirect_uris":["https://app.example.com/callback"]}"#,
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES ('did:plc:testaccount000000000000', 'test@example.com', NULL, \
+             datetime('now'), datetime('now'))",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let token = generate_token();
+        sqlx::query(
+            "INSERT INTO oauth_tokens (id, client_id, did, scope, jkt, expires_at, created_at) \
+             VALUES (?, ?, ?, 'com.atproto.refresh', ?, datetime('now', '+24 hours'), datetime('now'))",
+        )
+        .bind(&token.hash)
+        .bind("https://app.example.com/client-metadata.json")
+        .bind("did:plc:testaccount000000000000")
+        .bind(jkt)
+        .execute(&state.db)
+        .await
+        .unwrap();
+        token.plaintext
+    }
+
+    /// A legacy refresh row (scope `com.atproto.refresh`, written before granular
+    /// scopes were persisted) must rotate into an *access-level* token: the access
+    /// token's `scope` claim and the response `scope` are coerced to `atproto`
+    /// rather than reused verbatim, which would resolve to `AuthScope::Refresh`.
+    #[tokio::test]
+    async fn refresh_token_legacy_scope_is_coerced_to_atproto() {
+        let state = test_state().await;
+        let key = SigningKey::random(&mut OsRng);
+        let jkt = dpop_thumbprint(&key);
+
+        let plaintext = seed_legacy_refresh_token(&state, &jkt).await;
+        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let dpop = make_dpop_proof(
+            &key,
+            "POST",
+            "https://test.example.com/oauth/token",
+            Some(&nonce),
+            now_secs(),
+        );
+
+        let body = format!(
+            "grant_type=refresh_token\
+             &refresh_token={plaintext}\
+             &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json"
+        );
+
+        let resp = app(state)
+            .oneshot(post_token_with_dpop(&body, &dpop))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = json_body(resp).await;
+        assert_eq!(
+            json["scope"], "atproto",
+            "a legacy com.atproto.refresh scope must be coerced to the atproto access scope"
+        );
+
+        // The minted access token carries the coerced scope, so it resolves to an
+        // access-level session rather than a refresh-only one.
+        let at = json["access_token"].as_str().unwrap();
+        let payload_b64 = at.split('.').nth(1).unwrap();
+        let payload_json = String::from_utf8(URL_SAFE_NO_PAD.decode(payload_b64).unwrap()).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&payload_json).unwrap();
+        assert_eq!(payload["scope"], "atproto");
     }
 
     #[tokio::test]
