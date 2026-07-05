@@ -110,6 +110,12 @@ pub struct RepoOp {
     pub rkey: String,
     /// New record CID for create/update; `None` for delete.
     pub cid: Option<String>,
+    /// Previous record CID — the ATProto `#repoOp.prev`. Set for `update`/`delete` (the CID of
+    /// the record this op replaced or removed), `None` for `create`. Per proposal 0006, a Sync
+    /// v1.1 relay pairs this per-op `prev` with the commit's `prevData` to invert the MST diff and
+    /// inductively validate each op without archival state. Part of the wire frame and persisted,
+    /// so it round-trips through cursor replay.
+    pub prev: Option<String>,
     /// New record value for create/update; `None` for delete.
     ///
     /// Carried on live events for in-process consumers, but **not** part of the `subscribeRepos`
@@ -1114,6 +1120,10 @@ fn validate_commit_cids(input: &CommitInput) -> Result<(), FirehoseError> {
             repo_engine::Cid::try_from(cid.as_str())
                 .map_err(|e| FirehoseError::Encode(format!("invalid op CID {cid:?}: {e}")))?;
         }
+        if let Some(prev) = &op.prev {
+            repo_engine::Cid::try_from(prev.as_str())
+                .map_err(|e| FirehoseError::Encode(format!("invalid op prev CID {prev:?}: {e}")))?;
+        }
     }
     Ok(())
 }
@@ -1155,6 +1165,7 @@ pub fn decode_stored_event(
                     collection: o.collection,
                     rkey: o.rkey,
                     cid: o.cid,
+                    prev: o.prev,
                     value: None,
                 });
             }
@@ -1236,6 +1247,7 @@ struct StoredOpRef<'a> {
     collection: &'a str,
     rkey: &'a str,
     cid: Option<&'a str>,
+    prev: Option<&'a str>,
 }
 
 impl<'a> From<&'a RepoOp> for StoredOpRef<'a> {
@@ -1245,6 +1257,7 @@ impl<'a> From<&'a RepoOp> for StoredOpRef<'a> {
             collection: &op.collection,
             rkey: &op.rkey,
             cid: op.cid.as_deref(),
+            prev: op.prev.as_deref(),
         }
     }
 }
@@ -1292,6 +1305,10 @@ struct StoredOpOwned {
     collection: String,
     rkey: String,
     cid: Option<String>,
+    // An op persisted before per-op `prev` landed has no `prev` key; serde decodes a missing
+    // `Option` field to `None`, so those older rows replay with `prev` absent.
+    #[serde(default)]
+    prev: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1375,6 +1392,7 @@ mod tests {
                 collection: "app.bsky.feed.post".to_string(),
                 rkey: "abc".to_string(),
                 cid: Some(VALID_CID.to_string()),
+                prev: None,
                 value: Some(serde_json::json!({ "text": "hi" })),
             }],
             blocks: vec![1, 2, 3],
@@ -1388,6 +1406,7 @@ mod tests {
             collection: "app.bsky.feed.post".to_string(),
             rkey: "abc".to_string(),
             cid: Some("bafy".to_string()),
+            prev: None,
             value: None,
         };
         assert_eq!(op.path(), "app.bsky.feed.post/abc");
@@ -1796,8 +1815,60 @@ mod tests {
         assert_eq!(c.ops[0].collection, "app.bsky.feed.post");
         assert_eq!(c.ops[0].rkey, "abc");
         assert_eq!(c.ops[0].cid.as_deref(), Some(VALID_CID));
+        // A create carries no previous record CID.
+        assert_eq!(c.ops[0].prev, None);
         // The record value is not on the wire, so it is not persisted or restored.
         assert_eq!(c.ops[0].value, None);
+    }
+
+    #[tokio::test]
+    async fn commit_op_prev_survives_persist_and_replay() {
+        // Sync v1.1: an update/delete op's `prev` (the previous record CID) must round-trip
+        // through the durable log so a relay replaying from a cursor can inductively validate it.
+        let fh = test_firehose().await;
+        let mut input = commit_input("did:plc:opprev");
+        input.ops = vec![
+            RepoOp {
+                action: OpAction::Update,
+                collection: "app.bsky.feed.post".to_string(),
+                rkey: "abc".to_string(),
+                cid: Some(VALID_CID.to_string()),
+                prev: Some(VALID_CID.to_string()),
+                value: None,
+            },
+            RepoOp {
+                action: OpAction::Delete,
+                collection: "app.bsky.feed.post".to_string(),
+                rkey: "gone".to_string(),
+                cid: None,
+                prev: Some(VALID_CID.to_string()),
+                value: None,
+            },
+        ];
+        fh.emit_commit(input).await.unwrap();
+
+        let rows = crate::db::firehose_seq::events_in_range(&fh.db, 0, 1, 1)
+            .await
+            .unwrap();
+        let FirehoseEvent::Commit(c) =
+            decode_stored_event(rows[0].seq as u64, &rows[0].event_type, &rows[0].event).unwrap()
+        else {
+            panic!("expected a #commit event");
+        };
+        assert_eq!(c.ops[0].prev.as_deref(), Some(VALID_CID));
+        assert_eq!(c.ops[1].prev.as_deref(), Some(VALID_CID));
+    }
+
+    #[tokio::test]
+    async fn emit_commit_rejects_invalid_op_prev_cid() {
+        let fh = test_firehose().await;
+        let mut input = commit_input("did:plc:a");
+        input.ops[0].prev = Some("not-a-cid".to_string());
+        assert!(
+            matches!(fh.emit_commit(input).await, Err(FirehoseError::Encode(_))),
+            "a commit whose op prev won't encode must be rejected at emit"
+        );
+        assert_eq!(fh.current_seq(), 0);
     }
 
     #[tokio::test]

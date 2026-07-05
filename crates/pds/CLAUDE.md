@@ -44,7 +44,9 @@ monotonic sequencer (backed by the `repo_seq` table, V028) and a Tokio `broadcas
 (`repo_engine::collect_commit_diff_cids` + `build_car_from_cids`, run *before* post-commit GC) and
 publishes a sequenced `CommitEvent` carrying the DID, rev, `since`, `prevData` (the previous
 commit's MST root CID — Sync v1.1's inductive-validation anchor, captured before the write mutates
-the repo; `None` for genesis), per-record `RepoOp`s (action + collection/rkey + cid + value), and
+the repo; `None` for genesis), per-record `RepoOp`s (action + collection/rkey + cid + prev + value;
+`prev` is the previous record CID for an update/delete — Sync v1.1's per-op inductive-validation
+anchor — `None` for a create), and
 the CARv1 diff blocks. The `#commit` wire frame emits the deprecated `blobs` list empty. Backpressure is by design: the bounded
 channel never blocks producers — a slow subscriber observes `Lagged` and is expected to disconnect.
 All three write paths (`create_record`/`put_record` via `record_write`, `delete_record`,

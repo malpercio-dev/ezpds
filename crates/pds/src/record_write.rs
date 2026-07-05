@@ -212,15 +212,16 @@ pub async fn write_record(
     // before mutating anything, so a stale client fails with InvalidSwap rather than racing.
     enforce_swap(swap, &root_cid_str, &mut repo, mst_key).await?;
 
-    // Determine whether the record already exists — both to enforce create-only semantics
-    // and to label the firehose op as a create (new key) vs an update (existing key).
-    let existed = repo_engine::get_record_cid(&mut repo, mst_key)
+    // Look up the record's current CID — both to enforce create-only semantics (and to label the
+    // firehose op as a create vs an update) and, when it exists, to carry as the op's Sync v1.1
+    // `prev` (the previous record CID for the update). Read before the write mutates the repo.
+    let prev_cid = repo_engine::get_record_cid(&mut repo, mst_key)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, key = %mst_key, "failed to check record existence");
             ApiError::new(ErrorCode::InternalError, "failed to write record")
-        })?
-        .is_some();
+        })?;
+    let existed = prev_cid.is_some();
     if create_only && existed {
         return Err(ApiError::new(
             ErrorCode::Conflict,
@@ -281,6 +282,8 @@ pub async fn write_record(
         collection,
         rkey,
         cid: Some(record_cid.to_string()),
+        // The previous record CID — `Some` for an update, `None` for a create.
+        prev: prev_cid.map(|c| c.to_string()),
         value: Some(record.clone()),
     };
     commit_repo_write(

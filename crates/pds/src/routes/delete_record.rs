@@ -110,14 +110,16 @@ pub async fn delete_record(
     };
     crate::record_write::enforce_swap(&swap, &root_cid_str, &mut repo, &mst_key).await?;
 
-    // Idempotent: if the record is already absent, succeed without a new commit.
-    let existing: Option<serde_json::Value> = repo_engine::get_record(&mut repo, &mst_key)
+    // Idempotent: if the record is already absent, succeed without a new commit. The current CID,
+    // read before the delete mutates the repo, doubles as the firehose op's Sync v1.1 `prev` (the
+    // previous record CID for this delete).
+    let prev_cid = repo_engine::get_record_cid(&mut repo, &mst_key)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, key = %mst_key, "failed to read record");
             ApiError::new(ErrorCode::InternalError, "failed to delete record")
         })?;
-    if existing.is_none() {
+    if prev_cid.is_none() {
         return Ok((StatusCode::OK, axum::Json(serde_json::json!({}))));
     }
 
@@ -153,6 +155,8 @@ pub async fn delete_record(
         collection: collection.clone(),
         rkey: rkey.clone(),
         cid: None,
+        // The removed record's CID is this delete's previous record CID.
+        prev: prev_cid.map(|c| c.to_string()),
         value: None,
     };
     crate::record_write::commit_repo_write(
