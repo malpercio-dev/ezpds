@@ -96,6 +96,12 @@ pub struct WriteOutcome {
     pub key: String,
     /// The new record block CID for create/update; `None` for delete.
     pub cid: Option<Cid>,
+    /// The record's CID *before* this op ran — the ATProto `#repoOp.prev` (previous record CID)
+    /// for an update or delete. `None` for a create (the key was absent) or for a delete of an
+    /// already-absent key (the no-op path). Captured from the in-memory MST just before the op
+    /// mutates it, so within-batch chaining is honoured: a create-then-update of the same key
+    /// reports the just-created CID as the update's `prev`.
+    pub prev: Option<Cid>,
 }
 
 /// Apply a batch of record writes to `repo`, signing one commit per mutating write.
@@ -129,23 +135,31 @@ where
                 WriteOutcome {
                     key: key.clone(),
                     cid: Some(cid),
+                    prev: None,
                 }
             }
             WriteOp::Update { key, value } => {
+                // The record being replaced, read before the write, is this op's `prev`.
+                let prev = get_record_cid(repo, key).await?;
                 let cid = put_record_json(repo, signer, key, value).await?;
                 WriteOutcome {
                     key: key.clone(),
                     cid: Some(cid),
+                    prev,
                 }
             }
             WriteOp::Delete { key } => {
-                // Idempotent: only commit a delete when the record is actually present.
-                if get_record_json(repo, key).await?.is_some() {
+                // Idempotent: only commit a delete when the record is actually present. The
+                // record being removed, read before the delete, is this op's `prev` (`None` on
+                // the no-op path where the key was already absent).
+                let prev = get_record_cid(repo, key).await?;
+                if prev.is_some() {
                     delete_record(repo, signer, key).await?;
                 }
                 WriteOutcome {
                     key: key.clone(),
                     cid: None,
+                    prev,
                 }
             }
         };
@@ -915,6 +929,18 @@ mod tests {
         assert!(outcomes[0].cid.is_some(), "create yields a record CID");
         assert!(outcomes[3].cid.is_none(), "delete yields no CID");
 
+        // `prev` chains the record's prior CID for updates/deletes and is absent for creates.
+        assert!(outcomes[0].prev.is_none(), "create has no previous record");
+        assert!(outcomes[1].prev.is_none(), "create has no previous record");
+        assert_eq!(
+            outcomes[2].prev, outcomes[0].cid,
+            "update's prev is the CID it replaced (a's create)"
+        );
+        assert_eq!(
+            outcomes[3].prev, outcomes[1].cid,
+            "delete's prev is the CID it removed (b's create)"
+        );
+
         // Final state reflects the whole batch: a updated, b gone.
         let a = get_record_json(&mut repo, "app.bsky.feed.post/a")
             .await
@@ -971,6 +997,10 @@ mod tests {
 
         assert_eq!(outcomes.len(), 1);
         assert!(outcomes[0].cid.is_none());
+        assert!(
+            outcomes[0].prev.is_none(),
+            "a no-op delete of an absent key has no previous record CID"
+        );
         // A no-op delete must not write a commit, so the root is unchanged.
         assert_eq!(repo.root(), root_before);
     }

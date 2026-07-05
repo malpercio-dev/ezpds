@@ -286,6 +286,9 @@ pub async fn apply_writes(
                 collection,
                 rkey,
                 cid: outcome.cid.map(|c| c.to_string()),
+                // The engine captured each op's previous record CID (the record it
+                // replaced/removed) before applying it — `None` for a create.
+                prev: outcome.prev.map(|c| c.to_string()),
                 value,
             }
         })
