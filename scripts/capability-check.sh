@@ -32,12 +32,31 @@ fail=0
 # Extract the contents of the first "permissions": [ ... ] array in a capability file
 # as one sorted permission per line. Collapses newlines first so a multi-line array
 # parses identically to a single-line one; [^]] stops at the array's closing bracket.
+# Assumes a flat array of bare strings — enforced by assert_flat_permissions below.
 extract_permissions() {
   tr -d '\n' < "$1" \
     | sed -n 's/.*"permissions"[[:space:]]*:[[:space:]]*\[\([^]]*\)\].*/\1/p' \
     | grep -o '"[^"]*"' \
     | tr -d '"' \
     | sort
+}
+
+# assert_flat_permissions FILE — the sed/grep parser above only handles a flat array of
+# string permissions. Tauri v2 also allows scoped-object permissions
+# ({ "identifier": …, "allow": [...] }); those would truncate/mis-parse the extraction
+# and could hide a banned grant (a false pass). A capability file's only `{` is the root
+# object opener *before* the "permissions" key, so any `{` in the substring that follows
+# that key marks a non-flat entry. Fail loudly (fail-closed) rather than parse it wrongly.
+assert_flat_permissions() {
+  local file="$1" tail
+  tail="$(tr -d '\n' < "$file" | sed -n 's/.*"permissions"[[:space:]]*:[[:space:]]*//p')"
+  if printf '%s' "$tail" | grep -q '{'; then
+    echo "✗ $file uses a non-flat (scoped-object) permission — this guard only parses" >&2
+    echo "  flat string permissions. Upgrade extract_permissions in" >&2
+    echo "  scripts/capability-check.sh (e.g. a JSON-aware parser) before adding one." >&2
+    fail=1
+    return 1
+  fi
 }
 
 # check_caps FILE EXPECTED... — FILE's permissions must equal EXACTLY the expected set.
@@ -49,6 +68,8 @@ check_caps() {
     fail=1
     return
   fi
+  # Refuse to trust the flat-string parser on a shape it can't handle.
+  assert_flat_permissions "$file" || return
   local expected actual
   expected="$(printf '%s\n' "$@" | sort)"
   actual="$(extract_permissions "$file")"
