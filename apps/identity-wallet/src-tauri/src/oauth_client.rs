@@ -7,9 +7,17 @@
 use std::sync::{Arc, Mutex};
 
 use reqwest::{Client, Response};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::oauth::{DPoPKeypair, OAuthError, OAuthSession};
+
+/// Bearer-mode token refresh response from `com.atproto.server.refreshSession`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RefreshSessionResponse {
+    access_jwt: String,
+    refresh_jwt: String,
+}
 
 /// Extract the `exp` claim from a JWT's payload.
 ///
@@ -260,11 +268,23 @@ impl OAuthClient {
         Ok(())
     }
 
-    /// POST `/oauth/token` with `grant_type=refresh_token` — no `ath` claim in DPoP proof.
+    /// Refresh the access token.
     ///
-    /// Updates `self.session` with the new tokens and persists to Keychain.
+    /// For DPoP mode: POSTs `/oauth/token` with `grant_type=refresh_token` and updates
+    /// session + Keychain via `apply_token_response`.
+    ///
+    /// For Bearer mode: POSTs `/xrpc/com.atproto.server.refreshSession` with the Bearer token,
+    /// updates session **in memory only** (does not touch Keychain per design requirement).
     /// Surfaces all errors to the caller — no silent swallowing.
     pub async fn refresh_token(&self) -> Result<(), OAuthError> {
+        match self.auth_mode {
+            AuthMode::Dpop => self.refresh_token_dpop().await,
+            AuthMode::Bearer => self.refresh_token_bearer().await,
+        }
+    }
+
+    /// DPoP token refresh via `/oauth/token`.
+    async fn refresh_token_dpop(&self) -> Result<(), OAuthError> {
         let (refresh_token, nonce_opt) = {
             let s = self.session.lock().unwrap();
             (s.refresh_token.clone(), s.dpop_nonce.clone())
@@ -356,6 +376,70 @@ impl OAuthClient {
         }
 
         self.apply_token_response(resp).await
+    }
+
+    /// Bearer token refresh via `com.atproto.server.refreshSession`.
+    ///
+    /// Updates session **in memory only** — does NOT write to Keychain.
+    /// Bearer refresh is only used for destination accounts during migration and must not
+    /// corrupt the primary DPoP session state stored in Keychain.
+    async fn refresh_token_bearer(&self) -> Result<(), OAuthError> {
+        let refresh_token = {
+            let s = self.session.lock().unwrap();
+            s.refresh_token.clone()
+        };
+
+        let url = format!("{}/xrpc/com.atproto.server.refreshSession", self.base_url);
+        let resp = self
+            .inner
+            .post(&url)
+            .header("Authorization", format!("Bearer {refresh_token}"))
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "Bearer token refresh network error");
+                OAuthError::TokenRefreshFailed
+            })?;
+
+        if resp.status().as_u16() == 400 {
+            let body = resp.text().await.unwrap_or_default();
+            if let Ok(err) = serde_json::from_str::<serde_json::Value>(&body) {
+                if err.get("error").and_then(|e| e.as_str()) == Some("invalid_grant") {
+                    tracing::error!("Bearer refresh token invalid");
+                    return Err(OAuthError::InvalidGrant);
+                }
+            }
+            tracing::error!(body = %body, "Bearer token refresh failed");
+            return Err(OAuthError::TokenRefreshFailed);
+        }
+
+        if resp.status().as_u16() != 200 {
+            let body = resp.text().await.unwrap_or_default();
+            tracing::error!(body = %body, "Bearer token refresh failed");
+            return Err(OAuthError::TokenRefreshFailed);
+        }
+
+        let token_resp: RefreshSessionResponse = resp.json().await.map_err(|e| {
+            tracing::error!(error = %e, "Bearer token refresh response deserialization failed");
+            OAuthError::TokenRefreshFailed
+        })?;
+
+        // Bearer refresh must not persist to Keychain.
+        // Update session in memory only.
+        let expires_at = jwt_exp_claim(&token_resp.access_jwt).unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        });
+
+        let mut s = self.session.lock().unwrap();
+        s.access_token = token_resp.access_jwt;
+        s.refresh_token = token_resp.refresh_jwt;
+        s.expires_at = expires_at;
+
+        tracing::info!("Bearer access token refreshed (in-memory only)");
+        Ok(())
     }
 
     /// Construct with a custom base URL and pre-built keypair (test use only).
@@ -794,6 +878,107 @@ mod tests {
         assert_eq!(
             session.expires_at, 0,
             "expires_at must default to 0 on invalid JWT"
+        );
+    }
+
+    #[tokio::test]
+    async fn bearer_refresh_hits_refresh_session_not_oauth_token() {
+        // Verifies: Bearer client refresh uses POST /xrpc/com.atproto.server.refreshSession, not /oauth/token.
+        // Also verifies: refresh updates session in memory only (not calling Keychain store).
+        let server = MockServer::start();
+
+        // Mock the refreshSession endpoint.
+        let refresh_mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/xrpc/com.atproto.server.refreshSession")
+                .header("Authorization", "Bearer old_refresh_token");
+            then.status(200).json_body(serde_json::json!({
+                "accessJwt": "new_access_jwt",
+                "refreshJwt": "new_refresh_jwt"
+            }));
+        });
+
+        // Mock /oauth/token — should NOT be called (0 hits expected).
+        let oauth_mock = server.mock(|when, then| {
+            when.method(POST).path("/oauth/token");
+            then.status(200);
+        });
+
+        // Create a Bearer client with an expired token (expires_at = 0 forces refresh).
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let expired_jwt = make_bearer_jwt(now - 100); // Already expired
+        let client = make_bearer_client(&expired_jwt, "old_refresh_token", &server.base_url()).await;
+
+        // Issue a request — should trigger lazy refresh.
+        let resp_mock = server.mock(|when, then| {
+            when.method(GET)
+                .path("/resource")
+                .header("Authorization", "Bearer new_access_jwt")
+                .is_true(request_has_no_dpop_header);
+            then.status(200).body("ok");
+        });
+
+        let resp = client.get("/resource").await.expect("GET must succeed");
+        assert_eq!(resp.status().as_u16(), 200);
+
+        // Verify refreshSession was called exactly once.
+        assert_eq!(
+            refresh_mock.calls(), 1,
+            "POST /xrpc/com.atproto.server.refreshSession must be called exactly once"
+        );
+
+        // Verify /oauth/token was NOT called.
+        assert_eq!(
+            oauth_mock.calls(), 0,
+            "POST /oauth/token must NOT be called for Bearer mode"
+        );
+
+        // Verify the follow-up request used the new access token.
+        assert_eq!(
+            resp_mock.calls(), 1,
+            "follow-up request must carry the new access token"
+        );
+
+        // Verify session was updated in memory with the new tokens.
+        let session = client.session.lock().unwrap();
+        assert_eq!(
+            session.access_token, "new_access_jwt",
+            "session access token must be updated"
+        );
+        assert_eq!(
+            session.refresh_token, "new_refresh_jwt",
+            "session refresh token must be updated"
+        );
+    }
+
+    #[tokio::test]
+    async fn bearer_refresh_invalid_grant_returns_invalid_grant() {
+        // Verifies: Bearer refresh 400 with invalid_grant maps to InvalidGrant, not TokenRefreshFailed.
+        let server = MockServer::start();
+
+        server.mock(|when, then| {
+            when.method(POST).path("/xrpc/com.atproto.server.refreshSession");
+            then.status(400).json_body(serde_json::json!({
+                "error": "invalid_grant",
+                "error_description": "refresh token expired"
+            }));
+        });
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let expired_jwt = make_bearer_jwt(now - 100);
+        let client = make_bearer_client(&expired_jwt, "old_refresh_token", &server.base_url()).await;
+
+        let result = client.refresh_token().await;
+        assert!(
+            matches!(result, Err(OAuthError::InvalidGrant)),
+            "Bearer refresh invalid_grant must surface as InvalidGrant, got: {:?}",
+            result
         );
     }
 }
