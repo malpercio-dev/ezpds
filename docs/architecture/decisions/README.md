@@ -48,3 +48,5 @@ understand why the architecture is the way it is.
 | [0011](0011-sqlite-via-sqlx.md) | Accepted | SQLite (via sqlx) as the datastore |
 | [0012](0012-canonical-dag-cbor-for-plc-ops.md) | Accepted | Canonical DAG-CBOR encoding for did:plc operations |
 | [0013](0013-native-swiftui-shell-over-rust-core.md) | Deferred | Native SwiftUI shell over the Rust core (if/when we leave Tauri) |
+| [0014](0014-atrium-repo-for-repo-engine.md) | Accepted | Adopt `atrium-repo` for the repo engine's MST and block store |
+| [0015](0015-ci-on-github-actions.md) | Accepted | Host CI on GitHub Actions (leaving the tangled spindle) |

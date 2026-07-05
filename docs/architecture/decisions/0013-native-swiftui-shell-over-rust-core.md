@@ -3,10 +3,10 @@
 - **Status:** Deferred — not scheduled
 - **Date:** 2026-06-20 (recorded); migrated into the ADR log 2026-07-02
 - **Deciders:** ezpds maintainers
-- **Related:** [`apps/identity-wallet/src-tauri/src/plc_monitor.rs`](../../../apps/identity-wallet/src-tauri/src/plc_monitor.rs) · [ADR-0010](0010-toolchains-managed-outside-nix.md) · [`docs/design-plans/2026-06-20-denix-ios-build.md`](../../design-plans/2026-06-20-denix-ios-build.md)
+- **Related:** [`apps/identity-wallet/src-tauri/src/plc_monitor.rs`](../../../apps/identity-wallet/src-tauri/src/plc_monitor.rs) · [ADR-0010](0010-toolchains-managed-outside-nix.md) · [`docs/archive/design-plans/2026-06-20-denix-ios-build.md`](../../archive/design-plans/2026-06-20-denix-ios-build.md)
 
-> Migrated verbatim from `docs/mobile-native-migration-decision.md`, which now
-> redirects here. Preserved as a Deferred decision record.
+> Migrated verbatim from `docs/mobile-native-migration-decision.md` (the
+> redirect stub has since been removed). Preserved as a Deferred decision record.
 
 ## Context
 

@@ -349,4 +349,4 @@ This document resolves cross-spec-analysis items:
 
 ### Remaining updates needed in individual documents
 
-The architecture (items 1–6), provisioning API (items 9–13, 15), migration spec (items 16–18), and mobile spec (items 19–20) still need their own text updated to reference these unified phases. Those are separate action items tracked in cross-spec-analysis.md.
+The architecture (items 1–6), provisioning API (items 9–13, 15), migration spec (items 16–18), and mobile spec (items 19–20) still need their own text updated to reference these unified phases. Those are separate action items tracked in [archive/cross-spec-analysis.md](archive/cross-spec-analysis.md).
