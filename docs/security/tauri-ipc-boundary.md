@@ -15,11 +15,13 @@ expected sets in that script together — the guard fails otherwise.
 
 Tauri v2 gates every webview→Rust IPC call through **capability** files in each app's
 `src-tauri/capabilities/`. A capability binds a set of **permissions** to one or more
-windows (and, optionally, platforms). Two things are *not* gated and are the intended
-surface: an app's own `#[tauri::command]`s (registered via `tauri::generate_handler!`) are
-allowed by default and need no permission entry. Everything else — Tauri **core** APIs
-(window, path, event, …) and **plugin** commands — is denied unless a matching capability
-grants it. The attack we are minimizing: a compromised or malicious script running in the
+windows (and, optionally, platforms). A window must be bound to a capability to reach the
+IPC layer at all; once it is, the app's own `#[tauri::command]`s (registered via
+`tauri::generate_handler!`) are callable **without a per-command permission entry** — that
+is the intended surface. Everything else — Tauri **core** APIs (window, path, event, …) and
+**plugin** commands — is denied unless a matching capability *permission* grants it. So the
+only things worth listing (and minimizing) in a capability are the core and plugin
+permissions; the app's commands are covered implicitly by the window binding. The attack we are minimizing: a compromised or malicious script running in the
 webview (e.g. via a supply-chain'd frontend dep or an XSS-style injection) reaching for
 `core:window`, `core:path`, or a plugin command to do more than the app's own commands
 allow. Least privilege shrinks that reachable surface to the few grants each frontend
@@ -29,14 +31,14 @@ actually uses.
 
 Each permission below traces to a real frontend code path. App-defined commands
 (`invoke('create_account', …)`, `invoke('generate_claim_code', …)`, etc.) are intentionally
-absent — they need no entry.
+absent — the window binding already covers them, so they need no per-command entry.
 
 ### identity-wallet — `capabilities/default.json`
 
 | Permission | Why it's present |
 | --- | --- |
 | `core:event:default` | The frontend calls `listen()` for the `auth_ready` event (session restored on launch) and `plc_alert` event (`IdentityListHome` updates alert badges). The backend *emits* these from Rust, which is not ACL-gated; the webview *listening* is. |
-| `auth-session:default` | The in-app OAuth flow calls `plugin:auth-session|start` (the vendored `tauri-plugin-auth-session` / `ASWebAuthenticationSession`) for both the create and claim login flows. |
+| `auth-session:default` | The in-app OAuth flow calls `plugin:auth-session\|start` (the vendored `tauri-plugin-auth-session` / `ASWebAuthenticationSession`) for both the create and claim login flows. |
 
 ### admin-companion — `capabilities/default.json`
 
