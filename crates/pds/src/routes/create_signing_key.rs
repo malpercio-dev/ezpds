@@ -153,6 +153,7 @@ mod tests {
             crawlers: base.crawlers,
             iroh: base.iroh,
             rate_limiter: base.rate_limiter,
+            email: base.email,
             allow_loopback_proxy_targets: base.allow_loopback_proxy_targets,
         }
     }
@@ -415,6 +416,7 @@ mod tests {
             crawlers: base.crawlers,
             iroh: base.iroh,
             rate_limiter: base.rate_limiter,
+            email: base.email,
             allow_loopback_proxy_targets: base.allow_loopback_proxy_targets,
         };
 

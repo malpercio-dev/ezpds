@@ -21,13 +21,14 @@ vars:pre-request {
 
 docs {
   Mints a single-use, 1-hour email token that authorizes a later `signPlcOperation` call —
-  the interop (PDS-signed) account-migration path (ADR-0002). Email delivery is stubbed
-  pending MM-211: the plaintext token is logged server-side (via `tracing::info!`) rather
-  than emailed.
+  the interop (PDS-signed) account-migration path (ADR-0002). The token is delivered to the
+  account email via the configured sender: the default `log` provider writes it to the server
+  log, `smtp` sends a real email.
 
   Requires a full access-scope token. Returns 200 with an empty body.
 
   Errors:
   - 401 AUTHENTICATION_REQUIRED: missing Authorization header
   - 401 INVALID_TOKEN: app-password / refresh-scope token (full access required)
+  - 503 SERVICE_UNAVAILABLE: the email could not be delivered
 }

@@ -81,6 +81,79 @@ pub(crate) async fn get_session_account(
     ))
 }
 
+/// Mark an active account's email confirmed.
+///
+/// Sets `email_confirmed_at` to now for the account named by `did`, provided it is active (not
+/// deactivated, suspended, or taken down — mirroring [`get_session_account`]'s guard). Returns
+/// `true` when a row was updated, `false` when no active account matched. Re-confirming an
+/// already-confirmed account simply refreshes the timestamp — harmless and idempotent.
+pub(crate) async fn set_email_confirmed(
+    db: &sqlx::SqlitePool,
+    did: &str,
+) -> Result<bool, ApiError> {
+    let result = sqlx::query(
+        "UPDATE accounts \
+         SET email_confirmed_at = datetime('now'), updated_at = datetime('now') \
+         WHERE did = ? AND deactivated_at IS NULL AND suspended_at IS NULL \
+           AND taken_down_at IS NULL",
+    )
+    .bind(did)
+    .execute(db)
+    .await
+    .map_err(|e| {
+        tracing::error!(did = %did, error = %e, "failed to set email_confirmed_at");
+        ApiError::new(ErrorCode::InternalError, "failed to confirm email")
+    })?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// Outcome of [`update_account_email`].
+pub(crate) enum EmailUpdateOutcome {
+    /// The email was changed and confirmation state reset.
+    Updated,
+    /// No active account row matched the DID.
+    NotFound,
+    /// The requested new email is already in use by another account
+    /// (the `idx_accounts_email` UNIQUE index rejected the write).
+    Taken,
+}
+
+/// Change an active account's email and reset its confirmation state.
+///
+/// Sets `email` to `new_email` and clears `email_confirmed_at` — a changed address is unconfirmed
+/// until re-verified — for the account named by `did`, provided it is active. A collision with the
+/// `idx_accounts_email` UNIQUE index is reported as [`EmailUpdateOutcome::Taken`] rather than a
+/// 500, so the caller can return a clean client error.
+pub(crate) async fn update_account_email(
+    db: &sqlx::SqlitePool,
+    did: &str,
+    new_email: &str,
+) -> Result<EmailUpdateOutcome, ApiError> {
+    let result = sqlx::query(
+        "UPDATE accounts \
+         SET email = ?, email_confirmed_at = NULL, updated_at = datetime('now') \
+         WHERE did = ? AND deactivated_at IS NULL AND suspended_at IS NULL \
+           AND taken_down_at IS NULL",
+    )
+    .bind(new_email)
+    .bind(did)
+    .execute(db)
+    .await;
+
+    match result {
+        Ok(r) if r.rows_affected() == 1 => Ok(EmailUpdateOutcome::Updated),
+        Ok(_) => Ok(EmailUpdateOutcome::NotFound),
+        Err(e) if crate::db::is_unique_violation(&e) => Ok(EmailUpdateOutcome::Taken),
+        Err(e) => {
+            tracing::error!(did = %did, error = %e, "failed to update account email");
+            Err(ApiError::new(
+                ErrorCode::InternalError,
+                "failed to update email",
+            ))
+        }
+    }
+}
+
 /// Return `true` when an active account exists for `did` (not deactivated, suspended, or
 /// taken down).
 ///

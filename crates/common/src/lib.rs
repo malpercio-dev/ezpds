@@ -4,8 +4,8 @@ mod error;
 
 pub use config::{
     AccountsConfig, AppViewConfig, BlobsConfig, ChatConfig, Config, ConfigError, ContactConfig,
-    CrawlersConfig, FirehoseConfig, IrohConfig, OAuthConfig, RateLimitConfig, Sensitive,
-    ServerLinksConfig, TelemetryConfig,
+    CrawlersConfig, EmailConfig, EmailProvider, FirehoseConfig, IrohConfig, OAuthConfig,
+    RateLimitConfig, Sensitive, ServerLinksConfig, SmtpTls, TelemetryConfig,
 };
 pub use config_loader::{
     collect_ezpds_env, load_config, load_config_from_env_only, load_config_with_env,

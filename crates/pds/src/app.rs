@@ -29,6 +29,7 @@ use crate::routes::apply_writes::apply_writes;
 use crate::routes::atproto_did::atproto_did_handler;
 use crate::routes::check_account_status::check_account_status;
 use crate::routes::claim_codes::claim_codes;
+use crate::routes::confirm_email::confirm_email;
 use crate::routes::create_account::create_account;
 use crate::routes::create_account_xrpc::create_account as create_account_xrpc;
 use crate::routes::create_app_password::create_app_password;
@@ -78,6 +79,8 @@ use crate::routes::put_record::put_record;
 use crate::routes::refresh_session::refresh_session;
 use crate::routes::register_device::register_device;
 use crate::routes::request_account_delete::request_account_delete;
+use crate::routes::request_email_confirmation::request_email_confirmation;
+use crate::routes::request_email_update::request_email_update;
 use crate::routes::request_password_reset::request_password_reset;
 use crate::routes::request_plc_operation_signature::request_plc_operation_signature;
 use crate::routes::reserve_signing_key::reserve_signing_key;
@@ -102,6 +105,7 @@ use crate::routes::sync_subscribe_repos::subscribe_repos;
 use crate::routes::transfer_accept::transfer_accept;
 use crate::routes::transfer_complete::transfer_complete;
 use crate::routes::transfer_initiate::transfer_initiate;
+use crate::routes::update_email::update_email;
 use crate::routes::update_handle::update_handle_handler;
 use crate::routes::update_subject_status::update_subject_status;
 use crate::routes::upload_blob::upload_blob;
@@ -216,6 +220,10 @@ pub struct AppState {
     /// points). The middleware in [`crate::rate_limit`] reads it per request; the repo-write path
     /// charges write points through it. Shared via Arc.
     pub rate_limiter: Arc<crate::rate_limit::RateLimiterState>,
+    /// Outbound email sender (password reset, email confirmation, email update). The default
+    /// `LogEmailSender` logs instead of sending, so tests and a fresh install need no mail server;
+    /// `email.provider = "smtp"` swaps in real SMTP delivery. Shared via Arc.
+    pub email: Arc<dyn crate::email::EmailSender>,
     /// Test-only relaxation of the `atproto-proxy` SSRF guard
     /// (`identity_resolution::resolve_atproto_proxy_target`): when `true`, a loopback address is
     /// accepted alongside public ones, so tests can proxy to a local `wiremock` server standing in
@@ -313,6 +321,16 @@ pub fn app(state: AppState) -> Router {
             "/xrpc/com.atproto.server.resetPassword",
             post(reset_password),
         )
+        .route(
+            "/xrpc/com.atproto.server.requestEmailConfirmation",
+            post(request_email_confirmation),
+        )
+        .route("/xrpc/com.atproto.server.confirmEmail", post(confirm_email))
+        .route(
+            "/xrpc/com.atproto.server.requestEmailUpdate",
+            post(request_email_update),
+        )
+        .route("/xrpc/com.atproto.server.updateEmail", post(update_email))
         // Operator/moderation surface: account-level takedown. Admin-authed (master token or
         // signed companion-app device request), unlike every other com.atproto.* route above.
         .route(
@@ -723,6 +741,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
                 ..RateLimitConfig::default()
             },
             telemetry: TelemetryConfig::default(),
+            email: common::EmailConfig::default(),
             admin_token: None,
             signing_key_master_key: None,
             plc_directory_url,
@@ -748,6 +767,8 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
             enabled: false,
             ..RateLimitConfig::default()
         })),
+        // Tests never send real email: the default Log sender logs instead of delivering.
+        email: Arc::new(crate::email::LogEmailSender),
         allow_loopback_proxy_targets: true,
     }
 }

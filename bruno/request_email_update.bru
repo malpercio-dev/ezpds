@@ -1,0 +1,35 @@
+meta {
+  name: Request Email Update (requestEmailUpdate)
+  type: http
+  seq: 94
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.server.requestEmailUpdate
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  Reports whether changing the account email requires an email token, and — when it does — mints
+  and delivers one to the current address. Returns 200 with `{ "tokenRequired": bool }`.
+
+  `tokenRequired` is true exactly when the current email is confirmed: a confirmed address may only
+  be changed by someone who can still receive mail at it. An unconfirmed address can be changed
+  without a token, and none is minted or sent.
+
+  Requires a full access-scope token (app-password / refresh tokens are rejected).
+
+  Errors:
+  - 401 AUTHENTICATION_REQUIRED: missing Authorization header
+  - 401 INVALID_TOKEN: app-password / refresh-scope token (full access required)
+  - 503 SERVICE_UNAVAILABLE: a token was required but the email could not be delivered
+}

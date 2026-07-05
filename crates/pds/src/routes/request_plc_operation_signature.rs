@@ -8,11 +8,11 @@
 // account's behalf. The wallet-authorized path signs its identity leg locally and
 // never calls this.
 //
-// Email delivery is stubbed repo-wide (see `requestPasswordReset`) pending an outbound-email
-// path: the plaintext token is logged via `tracing::info!` rather than emailed.
+// The token is delivered to the account email via the configured [`crate::email::EmailSender`]
+// (the default log sender writes it to the logs; SMTP delivers a real email).
 //
 // Gather:  AuthenticatedUser (full access token) → DID
-// Process: generate token → store hash (1h TTL) → "deliver" (log)
+// Process: generate token → store hash (1h TTL) → email it
 // Respond: 200, empty body
 
 use axum::{extract::State, http::StatusCode};
@@ -23,6 +23,7 @@ use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
 use crate::auth::oauth_scopes;
+use crate::db::accounts::get_session_account;
 use crate::db::plc_operation_tokens::insert_plc_operation_token;
 use crate::token::generate_token;
 
@@ -39,15 +40,32 @@ pub async fn request_plc_operation_signature(
     }
     oauth_scopes::require_identity(&user.scope_claim, "*")?;
 
+    let account = get_session_account(&state.db, &user.did)
+        .await?
+        .ok_or_else(|| ApiError::new(ErrorCode::InvalidToken, "account not found"))?;
+
     let token = generate_token();
     insert_plc_operation_token(&state.db, &user.did, &token.hash).await?;
 
-    // Stub delivery: log the plaintext token until an outbound-email path is implemented.
-    tracing::info!(
-        did = %user.did,
-        plc_operation_token = %token.plaintext,
-        "PLC operation signature token generated (email delivery not yet implemented)"
-    );
+    let host = state.config.public_host();
+    let message = crate::email::EmailMessage {
+        to: account.email.clone(),
+        subject: format!("Authorize an identity operation on {host}"),
+        body: format!(
+            "An identity (PLC) operation was requested on your {host} account.\n\n\
+             Authorization code: {token}\n\n\
+             Enter this code in your app to authorize the operation. It expires in 1 hour.\n\n\
+             If you didn't request this, you can safely ignore this email.",
+            token = token.plaintext,
+        ),
+    };
+    if let Err(e) = state.email.send(message).await {
+        tracing::error!(did = %user.did, error = %e, "failed to send PLC operation token");
+        return Err(ApiError::new(
+            ErrorCode::ServiceUnavailable,
+            "failed to send authorization email",
+        ));
+    }
 
     Ok(StatusCode::OK)
 }
