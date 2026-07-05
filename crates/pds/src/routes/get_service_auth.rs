@@ -298,7 +298,7 @@ mod tests {
             TEST_DID,
             "atproto rpc:app.bsky.feed.getTimeline?aud=did:web:api.bsky.app",
         );
-        let allowed = app(state)
+        let allowed = app(state.clone())
             .oneshot(get_request(
                 &rpc_scoped,
                 "aud=did:web:api.bsky.app&lxm=app.bsky.feed.getTimeline",
@@ -306,6 +306,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(allowed.status(), StatusCode::OK);
+
+        let fragment_allowed = app(state)
+            .oneshot(get_request(
+                &rpc_scoped,
+                "aud=did:web:api.bsky.app%23bsky_appview&lxm=app.bsky.feed.getTimeline",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(fragment_allowed.status(), StatusCode::OK);
+        let body = body_json(fragment_allowed).await;
+        let (_, claims) = decode_jwt(body["token"].as_str().unwrap());
+        assert_eq!(claims["aud"], "did:web:api.bsky.app");
     }
 
     #[tokio::test]
