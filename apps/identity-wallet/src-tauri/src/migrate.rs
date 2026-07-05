@@ -24,7 +24,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::claim::{ChangeType, ClaimResult, OpDiff, ServiceChange};
 use crate::identity_store::{IdentityStore, PerDidSignError};
@@ -97,6 +97,31 @@ pub enum MigrateError {
     /// No pending migration (build must run before submit), or DID mismatch.
     #[error("Migration not ready: {message}")]
     MigrationNotReady { message: String },
+}
+
+/// Which outbound-migration authorization path the wallet should use for a DID.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MigrationPath {
+    /// The wallet holds an authorized rotation key and can self-sign the PLC op.
+    SelfSigned,
+    /// The wallet does not hold an authorized rotation key; use the PDS-signed interop path.
+    Interop,
+    /// The wallet cannot safely choose a path (for example, plc.directory is unreachable).
+    CannotDetermine,
+}
+
+/// Result of deciding which outbound-migration path applies to a DID.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationPathDecision {
+    pub path: MigrationPath,
+    /// The wallet's per-DID device key, when available.
+    pub device_key_id: Option<String>,
+    /// Index of the device key in the DID's current rotationKeys, if present.
+    pub rotation_key_index: Option<usize>,
+    /// Human-readable explanation for UI/orchestrator logging.
+    pub reason: String,
 }
 
 // ── Pure inputs to the guard ─────────────────────────────────────────────────
@@ -282,6 +307,121 @@ fn string_array_field(op: &serde_json::Value, field: &str) -> Result<Vec<String>
                 })
         })
         .collect()
+}
+
+/// Read current rotation keys from the latest non-nullified PLC audit-log entry.
+///
+/// Unlike `pds_client::rotation_keys_from_audit_log`, this helper is strict: malformed
+/// logs are an error so path detection can fail closed as `CannotDetermine` instead
+/// of silently picking the interop path from an accidental empty key set.
+pub(crate) fn current_rotation_keys_from_audit_log(
+    raw_json: &str,
+) -> Result<Vec<String>, MigrateError> {
+    let audit_log =
+        crypto::parse_audit_log(raw_json).map_err(|e| MigrateError::InvalidAuditLog {
+            message: format!("failed to parse audit log: {e}"),
+        })?;
+    let latest = audit_log
+        .iter()
+        .rev()
+        .find(|e| !e.nullified)
+        .ok_or_else(|| MigrateError::InvalidAuditLog {
+            message: "audit log is empty or fully nullified".to_string(),
+        })?;
+    let rotation_keys = string_array_field(&latest.operation, "rotationKeys")?;
+    if rotation_keys.is_empty() {
+        return Err(MigrateError::InvalidAuditLog {
+            message: "operation.rotationKeys is empty".to_string(),
+        });
+    }
+    Ok(rotation_keys)
+}
+
+/// Decide whether the wallet can self-sign a migration for this DID.
+///
+/// The detector encodes ADR-0002's two-path model: if the wallet's per-DID device
+/// key appears anywhere in the current rotationKeys, the wallet can use the
+/// self-signed path; otherwise it must fall back to the PDS-signed interop path.
+/// A key at index 1+ is still authorized, but the index is surfaced so the UI can
+/// explain that the wallet is not the primary rotation key.
+pub(crate) fn decide_migration_path(
+    rotation_keys: &[String],
+    device_key_id: Option<&str>,
+) -> MigrationPathDecision {
+    let Some(device_key_id) = device_key_id else {
+        return MigrationPathDecision {
+            path: MigrationPath::Interop,
+            device_key_id: None,
+            rotation_key_index: None,
+            reason: "wallet has no device key for this DID; use PDS-signed interop".to_string(),
+        };
+    };
+
+    match rotation_keys.iter().position(|key| key == device_key_id) {
+        Some(index) => MigrationPathDecision {
+            path: MigrationPath::SelfSigned,
+            device_key_id: Some(device_key_id.to_string()),
+            rotation_key_index: Some(index),
+            reason: if index == 0 {
+                "wallet device key is the primary rotation key; self-signed migration is available"
+                    .to_string()
+            } else {
+                format!(
+                    "wallet device key is authorized at rotationKeys[{index}]; self-signed migration is available"
+                )
+            },
+        },
+        None => MigrationPathDecision {
+            path: MigrationPath::Interop,
+            device_key_id: Some(device_key_id.to_string()),
+            rotation_key_index: None,
+            reason: "wallet device key is not in current rotationKeys; use PDS-signed interop"
+                .to_string(),
+        },
+    }
+}
+
+/// Fetch current PLC state and decide which migration path should be used.
+pub async fn detect_migration_path(pds_client: &PdsClient, did: &str) -> MigrationPathDecision {
+    let log_json = match pds_client.fetch_audit_log(did).await {
+        Ok(log_json) => log_json,
+        Err(e) => {
+            return MigrationPathDecision {
+                path: MigrationPath::CannotDetermine,
+                device_key_id: None,
+                rotation_key_index: None,
+                reason: format!("cannot fetch PLC audit log: {e}"),
+            }
+        }
+    };
+
+    let rotation_keys = match current_rotation_keys_from_audit_log(&log_json) {
+        Ok(keys) => keys,
+        Err(e) => {
+            return MigrationPathDecision {
+                path: MigrationPath::CannotDetermine,
+                device_key_id: None,
+                rotation_key_index: None,
+                reason: e.to_string(),
+            }
+        }
+    };
+
+    let store = IdentityStore;
+    let device_key_id = match store.get_or_create_device_key(did) {
+        Ok(key) => Some(key.key_id),
+        Err(crate::identity_store::IdentityStoreError::IdentityNotFound) => None,
+        Err(e) => {
+            return MigrationPathDecision {
+                path: MigrationPath::CannotDetermine,
+                device_key_id: None,
+                rotation_key_index: None,
+                reason: format!("cannot load wallet device key: {e}"),
+            }
+        }
+    };
+
+    decide_migration_path(&rotation_keys, device_key_id.as_deref())
 }
 
 // ── RecommendedCredentials -> typed maps ─────────────────────────────────────
@@ -600,6 +740,15 @@ pub async fn submit_migration_op(
 // the migration orchestrator before `build_migration_op_cmd` runs — this leg does
 // not perform the destination login.
 
+/// Tauri command: decide whether to use self-signed migration or PDS-signed interop.
+#[tauri::command]
+pub async fn detect_migration_path_cmd(
+    state: tauri::State<'_, crate::oauth::AppState>,
+    did: String,
+) -> Result<MigrationPathDecision, MigrateError> {
+    Ok(detect_migration_path(state.pds_client(), &did).await)
+}
+
 /// Tauri command: build + sign the migration op, parking it in `MigrationState`.
 #[tauri::command]
 pub async fn build_migration_op_cmd(
@@ -721,6 +870,104 @@ mod tests {
     #[test]
     fn guard_accepts_a_well_formed_migration() {
         assert!(guard_migration_op(&ok_inputs()).is_ok());
+    }
+
+    #[test]
+    fn path_detector_returns_self_signed_for_key_at_index_zero() {
+        let keys = vec![DEVICE.to_string(), OLD_PDS.to_string()];
+        let decision = decide_migration_path(&keys, Some(DEVICE));
+        assert_eq!(decision.path, MigrationPath::SelfSigned);
+        assert_eq!(decision.rotation_key_index, Some(0));
+        assert_eq!(decision.device_key_id.as_deref(), Some(DEVICE));
+    }
+
+    #[test]
+    fn path_detector_returns_self_signed_for_key_at_later_index() {
+        let keys = vec![OLD_PDS.to_string(), DEVICE.to_string()];
+        let decision = decide_migration_path(&keys, Some(DEVICE));
+        assert_eq!(decision.path, MigrationPath::SelfSigned);
+        assert_eq!(decision.rotation_key_index, Some(1));
+        assert!(decision.reason.contains("rotationKeys[1]"));
+    }
+
+    #[test]
+    fn path_detector_returns_interop_when_key_absent() {
+        let keys = vec![OLD_PDS.to_string()];
+        let decision = decide_migration_path(&keys, Some(DEVICE));
+        assert_eq!(decision.path, MigrationPath::Interop);
+        assert_eq!(decision.rotation_key_index, None);
+    }
+
+    #[test]
+    fn path_detector_returns_interop_without_wallet_key() {
+        let keys = vec![OLD_PDS.to_string()];
+        let decision = decide_migration_path(&keys, None);
+        assert_eq!(decision.path, MigrationPath::Interop);
+        assert_eq!(decision.device_key_id, None);
+    }
+
+    #[test]
+    fn current_rotation_keys_reads_latest_non_nullified_audit_entry() {
+        let log = serde_json::json!([
+            audit_entry(
+                "bafy_old",
+                false,
+                serde_json::json!({
+                    "rotationKeys": [OLD_PDS],
+                    "alsoKnownAs": [HANDLE]
+                })
+            ),
+            audit_entry(
+                "bafy_latest",
+                false,
+                serde_json::json!({
+                    "rotationKeys": [DEVICE, OLD_PDS],
+                    "alsoKnownAs": [HANDLE]
+                })
+            ),
+            audit_entry(
+                "bafy_nullified",
+                true,
+                serde_json::json!({
+                    "rotationKeys": ["did:key:zEVIL"],
+                    "alsoKnownAs": [HANDLE]
+                })
+            ),
+        ]);
+        let keys = current_rotation_keys_from_audit_log(&log.to_string()).expect("rotation keys");
+        assert_eq!(keys, vec![DEVICE.to_string(), OLD_PDS.to_string()]);
+    }
+
+    #[test]
+    fn current_rotation_keys_rejects_malformed_audit_log() {
+        let log = serde_json::json!([audit_entry(
+            "bafy_bad",
+            false,
+            serde_json::json!({
+                "rotationKeys": [DEVICE, 42],
+                "alsoKnownAs": [HANDLE]
+            })
+        )]);
+        assert!(matches!(
+            current_rotation_keys_from_audit_log(&log.to_string()),
+            Err(MigrateError::InvalidAuditLog { .. })
+        ));
+    }
+
+    #[test]
+    fn current_rotation_keys_rejects_empty_rotation_keys() {
+        let log = serde_json::json!([audit_entry(
+            "bafy_bad",
+            false,
+            serde_json::json!({
+                "rotationKeys": [],
+                "alsoKnownAs": [HANDLE]
+            })
+        )]);
+        assert!(matches!(
+            current_rotation_keys_from_audit_log(&log.to_string()),
+            Err(MigrateError::InvalidAuditLog { .. })
+        ));
     }
 
     #[test]

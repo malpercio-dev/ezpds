@@ -937,6 +937,7 @@ pub fn run() {
             plc_monitor::check_identity_status,
             recovery::build_recovery_override_cmd,
             recovery::submit_recovery_override_cmd,
+            migrate::detect_migration_path_cmd,
             migrate::build_migration_op_cmd,
             migrate::submit_migration_op_cmd,
         ])
