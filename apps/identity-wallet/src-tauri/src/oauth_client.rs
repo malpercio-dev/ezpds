@@ -124,6 +124,73 @@ impl OAuthClient {
             .await
     }
 
+    /// POST `{base_url}/{path}` with a raw byte body and caller-chosen Content-Type.
+    ///
+    /// Used for binary uploads like `importRepo` (CAR format) and `uploadBlob` (arbitrary MIME type).
+    /// Branches on `auth_mode` for authentication headers (Bearer or DPoP).
+    /// For DPoP mode, retries once on `use_dpop_nonce` like `execute_with_retry`.
+    pub async fn post_bytes(
+        &self,
+        path: &str,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> Result<Response, OAuthError> {
+        // Proactive token refresh before reading the access token.
+        self.maybe_refresh_token().await?;
+
+        let url = format!("{}/{}", self.base_url, path.trim_start_matches('/'));
+        let nonce_opt = {
+            let s = self.session.lock().unwrap();
+            s.dpop_nonce.clone()
+        };
+
+        let resp = self
+            .send_bytes(&url, content_type, &body, nonce_opt.as_deref())
+            .await?;
+
+        // Bearer mode: send once, no retry on use_dpop_nonce.
+        if self.auth_mode == AuthMode::Bearer {
+            return Ok(resp);
+        }
+
+        // DPoP mode: on use_dpop_nonce, extract the server nonce and retry once.
+        if resp.status().as_u16() == 400 {
+            let maybe_nonce = resp
+                .headers()
+                .get("DPoP-Nonce")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+
+            let error_body = resp.text().await.unwrap_or_default();
+
+            let is_use_dpop_nonce = {
+                serde_json::from_str::<serde_json::Value>(&error_body)
+                    .ok()
+                    .and_then(|v| v.get("error")?.as_str().map(|e| e == "use_dpop_nonce"))
+                    .unwrap_or(false)
+            };
+
+            if is_use_dpop_nonce {
+                if let Some(fresh_nonce) = maybe_nonce {
+                    {
+                        let mut s = self.session.lock().unwrap();
+                        s.dpop_nonce = Some(fresh_nonce.clone());
+                    }
+                    tracing::debug!(nonce = %fresh_nonce, "retrying post_bytes with server DPoP nonce");
+                    return self.send_bytes(&url, content_type, &body, Some(&fresh_nonce)).await;
+                } else {
+                    tracing::error!("use_dpop_nonce response missing DPoP-Nonce header");
+                    return Err(OAuthError::NotAuthenticated);
+                }
+            } else {
+                tracing::error!(body = %error_body, "400 response without use_dpop_nonce error");
+                return Err(OAuthError::NotAuthenticated);
+            }
+        }
+
+        Ok(resp)
+    }
+
     // ── Internal ──────────────────────────────────────────────────────────────
 
     /// Build and send a request with DPoP headers, retrying once on `use_dpop_nonce`.
@@ -247,6 +314,50 @@ impl OAuthClient {
 
         builder.send().await.map_err(|e| {
             tracing::error!(error = %e, "OAuthClient request network error");
+            OAuthError::NotAuthenticated
+        })
+    }
+
+    /// Send a single POST request with raw byte body and appropriate authentication headers.
+    ///
+    /// For DPoP mode: `Authorization: DPoP {token}` + `DPoP: {proof}` with `ath` claim.
+    /// For Bearer mode: `Authorization: Bearer {token}` with no DPoP header.
+    /// The `Content-Type` header is set to the caller-provided value.
+    async fn send_bytes(
+        &self,
+        url: &str,
+        content_type: &str,
+        body: &[u8],
+        nonce: Option<&str>,
+    ) -> Result<Response, OAuthError> {
+        let access_token = {
+            let s = self.session.lock().unwrap();
+            s.access_token.clone()
+        };
+
+        let mut builder = self.inner.post(url).header("Content-Type", content_type);
+
+        // Branch on auth mode for header construction.
+        match self.auth_mode {
+            AuthMode::Bearer => {
+                // Bearer mode: only Authorization header, no DPoP proof.
+                builder = builder
+                    .header("Authorization", format!("Bearer {access_token}"));
+            }
+            AuthMode::Dpop => {
+                // DPoP mode: Authorization + DPoP proof with ath claim.
+                let ath = DPoPKeypair::compute_ath(&access_token);
+                let proof = self
+                    .dpop
+                    .make_proof("POST", url, nonce, Some(&ath))?;
+                builder = builder
+                    .header("Authorization", format!("DPoP {access_token}"))
+                    .header("DPoP", &proof);
+            }
+        }
+
+        builder.body(body.to_vec()).send().await.map_err(|e| {
+            tracing::error!(error = %e, "OAuthClient post_bytes network error");
             OAuthError::NotAuthenticated
         })
     }
@@ -980,5 +1091,94 @@ mod tests {
             "Bearer refresh invalid_grant must surface as InvalidGrant, got: {:?}",
             result
         );
+    }
+
+    #[tokio::test]
+    async fn post_bytes_bearer_sends_correct_headers_and_body() {
+        // Verifies: Bearer client post_bytes sends Authorization: Bearer, Content-Type, no DPoP header, and the exact byte body.
+        let server = MockServer::start();
+
+        let expected_bytes = b"fake CAR data blob here";
+
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/xrpc/com.atproto.repo.importRepo")
+                .header("Authorization", "Bearer my_bearer_token")
+                .header("Content-Type", "application/vnd.ipld.car")
+                .is_true(request_has_no_dpop_header)
+                .body_from_fn(|actual_body| {
+                    // Verify the body bytes match exactly.
+                    actual_body == expected_bytes
+                });
+            then.status(200).json_body(serde_json::json!({
+                "uri": "at://did:plc:abc/com.atproto.repo.blob/hash"
+            }));
+        });
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let future_exp = now + 3600;
+        let access_jwt = make_bearer_jwt(future_exp);
+        let client = make_bearer_client(&access_jwt, "my_refresh_token", &server.base_url()).await;
+
+        let resp = client
+            .post_bytes(
+                "/xrpc/com.atproto.repo.importRepo",
+                "application/vnd.ipld.car",
+                expected_bytes.to_vec(),
+            )
+            .await
+            .expect("post_bytes must succeed");
+
+        assert_eq!(resp.status().as_u16(), 200, "post_bytes must return 200");
+    }
+
+    #[tokio::test]
+    async fn post_bytes_dpop_sends_authorization_and_dpop_headers() {
+        // Verifies: DPoP client post_bytes sends Authorization: DPoP, Content-Type, and DPoP header with ath claim.
+        let server = MockServer::start();
+
+        let expected_bytes = b"test blob data";
+
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/xrpc/com.atproto.repo.uploadBlob")
+                .header("Authorization", "DPoP my_access_token")
+                .header("Content-Type", "image/jpeg")
+                .header_exists("DPoP")
+                .is_true(|req| {
+                    // Verify the DPoP proof includes an ath claim.
+                    if let Some(payload) = decode_dpop_payload(req) {
+                        payload.get("ath").is_some()
+                    } else {
+                        false
+                    }
+                })
+                .body_from_fn(|actual_body| actual_body == expected_bytes);
+            then.status(200).json_body(serde_json::json!({
+                "blob": {
+                    "cid": "bagxx2...",
+                    "mimeType": "image/jpeg",
+                    "size": 1024
+                }
+            }));
+        });
+
+        let keypair = DPoPKeypair::get_or_create().expect("keypair must exist");
+        let session = make_session("my_access_token", "my_refresh_token", 300);
+        let client = OAuthClient::new_for_test(keypair, session, server.base_url());
+
+        let resp = client
+            .post_bytes(
+                "/xrpc/com.atproto.repo.uploadBlob",
+                "image/jpeg",
+                expected_bytes.to_vec(),
+            )
+            .await
+            .expect("post_bytes must succeed");
+
+        assert_eq!(resp.status().as_u16(), 200, "post_bytes must return 200");
     }
 }
