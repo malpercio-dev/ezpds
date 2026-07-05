@@ -674,6 +674,28 @@ export interface SignedMigrationOp {
   signedOp: Record<string, unknown>;
 }
 
+export type MigrationPath = 'self_signed' | 'interop' | 'cannot_determine';
+
+/**
+ * Decision for ADR-0002 outbound migration path selection.
+ * `rotationKeyIndex` is present when the wallet device key is authorized; index 0
+ * means it is the primary rotation key, while later indexes are still self-signable.
+ */
+export interface MigrationPathDecision {
+  path: MigrationPath;
+  deviceKeyId: string | null;
+  rotationKeyIndex: number | null;
+  reason: string;
+}
+
+/**
+ * Decide whether a DID can use wallet-authorized self-signed migration or must
+ * fall back to the PDS-signed interop path. Returns `cannot_determine` when
+ * plc.directory or local key material cannot be checked safely.
+ */
+export const detectMigrationPath = (did: string): Promise<MigrationPathDecision> =>
+  invoke('detect_migration_path_cmd', { did });
+
 /**
  * Build + locally sign the migration identity leg (repoint the DID to a new PDS).
  *
