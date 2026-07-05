@@ -53,9 +53,11 @@ export async function followTarget(accountName) {
   return created;
 }
 
-/** Latest original post by the target, via the public AppView. */
-export async function latestTargetPost() {
-  const target = await resolveTarget();
+/** Latest original post by the target, via the public AppView. Pass an
+ * already-resolved target to avoid re-running the did:web + resolveHandle
+ * round-trips. */
+export async function latestTargetPost(target) {
+  target = target ?? (await resolveTarget());
   const feed = await xrpc(PUBLIC_APPVIEW_URL, 'app.bsky.feed.getAuthorFeed', {
     params: { actor: target.did, limit: 10, filter: 'posts_no_replies' },
   });
@@ -66,7 +68,7 @@ export async function latestTargetPost() {
 
 export async function likeTargetPost(accountName) {
   const target = await resolveTarget();
-  const post = await latestTargetPost();
+  const post = await latestTargetPost(target);
   if (!post.uri.startsWith(`at://${target.did}/`)) {
     throw new Error(`post ${post.uri} is not authored by the allowed target — refusing`);
   }

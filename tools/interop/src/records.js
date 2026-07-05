@@ -71,6 +71,11 @@ export async function crudRoundTrip(name) {
     goneStatus = err.status;
   }
   if (goneStatus === null) throw new Error('record still readable after deleteRecord');
+  // Only a client-side not-found proves the delete; a network error or 5xx
+  // while re-reading must not pass as "gone".
+  if (goneStatus !== 400 && goneStatus !== 404) {
+    throw new Error(`unexpected error confirming deletion (status=${goneStatus ?? 'none'})`);
+  }
 
   return { uri: created.uri, cid: created.cid, deletedStatus: goneStatus };
 }

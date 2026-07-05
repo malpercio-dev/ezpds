@@ -6,7 +6,7 @@ import WebSocket from 'ws';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { decodeFirst } from 'cborg';
 import { BASE_URL } from './config.js';
-import { createPost, rkeyFromUri } from './records.js';
+import { createPost, deleteRecord, rkeyFromUri } from './records.js';
 import { loadState, getAccount } from './state.js';
 
 // Tag 42 = CID (multibase-prefixed bytes). We only need a printable token, not
@@ -100,10 +100,20 @@ export async function firehoseWriteCheck(name, { timeoutSeconds = 30 } = {}) {
       err ? reject(err) : resolve(result);
     };
 
-    const timer = setTimeout(
-      () => finish(new Error(`no matching #commit frame within ${timeoutSeconds}s${created ? ` (wrote ${created.uri})` : ''}`)),
-      timeoutSeconds * 1000,
-    );
+    const timer = setTimeout(async () => {
+      // Best-effort cleanup of the probe post: a timeout must not strand a
+      // test record in the repo (nothing else knows the rkey on this path).
+      let cleanup = '';
+      if (created) {
+        const rkey = rkeyFromUri(created.uri);
+        cleanup = await deleteRecord(name, 'app.bsky.feed.post', rkey)
+          .then(() => ` (wrote ${created.uri}; probe post deleted)`)
+          .catch((err) => ` (wrote ${created.uri}; cleanup failed: ${err.message})`);
+      }
+      const err = new Error(`no matching #commit frame within ${timeoutSeconds}s${cleanup}`);
+      if (created) err.created = { uri: created.uri, rkey: rkeyFromUri(created.uri) };
+      finish(err);
+    }, timeoutSeconds * 1000);
 
     const matches = (body) => {
       const path = `app.bsky.feed.post/${rkeyFromUri(created.uri)}`;

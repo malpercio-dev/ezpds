@@ -5,7 +5,7 @@
   "type": "module",
   "description": "CLI for exercising an ezpds deployment against the live ATProto network (account provisioning, identity, sync, firehose, relay/AppView visibility, scoped interactions).",
   "engines": {
-    "node": ">=22.12"
+    "node": ">=22.21"
   },
   "bin": {
     "interop": "./bin/interop"

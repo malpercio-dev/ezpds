@@ -72,6 +72,29 @@ export async function createAccount({ name, kind, handle, claimCode }) {
     },
   });
 
+  // Persist as soon as the remote side-effect exists: a failure in any later
+  // ceremony step must leave a recoverable trace (tokens included) instead of
+  // an orphaned server-side account that a retry would silently duplicate.
+  const persist = (fields) => {
+    state.accounts[name] = { ...(state.accounts[name] ?? {}), ...fields };
+    saveState(state);
+    return state.accounts[name];
+  };
+  persist({
+    kind,
+    name,
+    handle,
+    email,
+    password,
+    provisioningStatus: 'mobile-created',
+    accountId: mobile.accountId,
+    deviceKeyId: deviceKey.keyId,
+    deviceKeyPrivateHex: deviceKey.privateKeyHex,
+    deviceToken: mobile.deviceToken,
+    pendingSessionToken: mobile.sessionToken,
+    createdAt: new Date().toISOString(),
+  });
+
   // PDS-issued per-account repo signing key: rotationKeys[1] + verificationMethods.atproto.
   const repoKey = await request(`${BASE_URL}/v1/repo-signing-key`, { token: mobile.sessionToken });
 
@@ -83,6 +106,13 @@ export async function createAccount({ name, kind, handle, claimCode }) {
     rotationKeypair: rotationKey.keypair,
     handle,
     pdsUrl: BASE_URL,
+  });
+
+  persist({
+    provisioningStatus: 'keys-generated',
+    repoSigningKeyId: repoKey.keyId,
+    rotationKeyId: rotationKey.keyId,
+    rotationKeyPrivateHex: rotationKey.privateKeyHex,
   });
 
   const didResult = await request(`${BASE_URL}/v1/dids`, {
@@ -97,40 +127,32 @@ export async function createAccount({ name, kind, handle, claimCode }) {
   if (didResult.did !== did) {
     throw new Error(`DID mismatch: locally derived ${did}, server registered ${didResult.did}`);
   }
+  persist({
+    provisioningStatus: 'did-registered',
+    did,
+    provisioningSessionToken: didResult.session_token,
+  });
 
   await request(`${BASE_URL}/v1/handles`, {
     method: 'POST',
     token: didResult.session_token,
     body: { accountId: did, handle },
   });
+  persist({ provisioningStatus: 'handle-registered' });
 
   const session = await xrpc(BASE_URL, 'com.atproto.server.createSession', {
     method: 'POST',
     body: { identifier: did, password },
   });
-
-  state.accounts[name] = {
-    kind,
-    name,
-    did,
-    handle,
-    email,
-    password,
-    rotationKeyId: rotationKey.keyId,
-    rotationKeyPrivateHex: rotationKey.privateKeyHex,
-    deviceKeyId: deviceKey.keyId,
-    deviceKeyPrivateHex: deviceKey.privateKeyHex,
-    repoSigningKeyId: repoKey.keyId,
-    provisioningSessionToken: didResult.session_token,
-    deviceToken: mobile.deviceToken,
+  const account = persist({
+    provisioningStatus: 'complete',
+    pendingSessionToken: undefined,
     accessJwt: session.accessJwt,
     refreshJwt: session.refreshJwt,
-    createdAt: new Date().toISOString(),
-  };
-  saveState(state);
+  });
 
   console.log(`account created: ${did} (${handle})`);
-  return state.accounts[name];
+  return account;
 }
 
 function jwtExpiresSoon(jwt, marginSeconds = 60) {

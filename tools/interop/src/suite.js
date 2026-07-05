@@ -18,6 +18,14 @@ async function step(report, name, fn) {
   process.stderr.write(`▶ ${name}\n`);
   try {
     const detail = await fn();
+    // Check helpers (verifyIdentity, syncChecks, networkChecks) report logical
+    // failures via `ok: false` rather than throwing — treat those as failed.
+    if (detail && typeof detail === 'object' && detail.ok === false) {
+      const failed = (detail.checks ?? []).filter((c) => !c.ok && !c.informational).map((c) => c.label);
+      report.steps.push({ name, ok: false, ms: Date.now() - started, detail, error: `checks failed: ${failed.join(', ') || 'see detail'}` });
+      process.stderr.write(`  ✘ ${name}: ${failed.join(', ') || 'ok=false'}\n`);
+      return;
+    }
     report.steps.push({ name, ok: true, ms: Date.now() - started, detail });
     process.stderr.write(`  ✔ ${name}\n`);
   } catch (err) {
@@ -52,7 +60,13 @@ export async function runSuite({ account = 'primary', interact = true, lifecycle
   await step(report, 'repo: CRUD round-trip', () => crudRoundTrip(account));
   await step(report, 'firehose: write observed on subscribeRepos', async () => {
     const result = await firehoseWriteCheck(account);
-    await deleteRecord(account, 'app.bsky.feed.post', result.rkey);
+    // Cleanup failure must not mask a successful observation — report it
+    // alongside the result instead (same separation as "interact: cleanup").
+    try {
+      await deleteRecord(account, 'app.bsky.feed.post', result.rkey);
+    } catch (err) {
+      return { ...result, cleanupError: err.message };
+    }
     return result;
   });
   await step(report, 'sync: CAR / latestCommit / repoStatus / listRepos', () => syncChecks(account));
@@ -76,7 +90,12 @@ export async function runSuite({ account = 'primary', interact = true, lifecycle
     await step(report, `lifecycle: ephemeral account ${ephemeralName}`, async () => {
       const created = await createAccount({ name: ephemeralName, kind: 'ephemeral' });
       const identity = await verifyIdentity(ephemeralName);
+      // Always schedule teardown, even when the identity check failed — an
+      // ephemeral account must never outlive its run.
       const deleteAfter = await scheduleEphemeralDeletion(ephemeralName, { afterMinutes: 5 });
+      if (!identity.ok) {
+        throw new Error(`ephemeral identity checks failed (teardown still scheduled for ${deleteAfter})`);
+      }
       return { did: created.did, handle: created.handle, identityOk: identity.ok, deleteAfter };
     });
   }

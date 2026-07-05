@@ -16,9 +16,14 @@ export class HttpError extends Error {
 let lastRequestAt = 0;
 
 async function pace() {
-  const wait = lastRequestAt + MIN_REQUEST_INTERVAL_MS - Date.now();
+  // Reserve the next slot synchronously (before any await) so concurrent
+  // callers each get a distinct scheduled time instead of computing the same
+  // wait from a stale timestamp and firing back-to-back.
+  const now = Date.now();
+  const next = Math.max(lastRequestAt + MIN_REQUEST_INTERVAL_MS, now);
+  lastRequestAt = next;
+  const wait = next - now;
   if (wait > 0) await sleep(wait);
-  lastRequestAt = Date.now();
 }
 
 export function sleep(ms) {

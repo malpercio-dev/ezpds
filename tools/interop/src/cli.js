@@ -35,7 +35,12 @@ Checks
   firehose-test --name <n>         write a post, observe its #commit frame
   sync-test --name <n>             CAR export, latestCommit, repoStatus, listRepos
   network-check --name <n>         relay crawl status + AppView visibility
+  relay-status                     relay crawl status only
+  appview-profile [--did d | --name <n>]   AppView profile lookup
   post --name <n> --text "..."     create a plain post (no mentions)
+  get-record --did d --collection c --rkey r     read a single record
+  list-records --did d [--collection c]          list records in a collection
+  delete-record --name <n> --collection c --rkey r   delete a record
   firehose [--cursor c] [--seconds s]   stream frames to stdout
 
 Interactions (only against ${ALLOWED_TARGET.handle}; all writes ledgered)

@@ -41,10 +41,13 @@ pub async fn get_record(
     State(state): State<AppState>,
     Query(params): Query<GetRecordParams>,
 ) -> Result<impl IntoResponse, ApiError> {
+    // Empty values are treated as absent (matching `cid` below), so a bare `?repo=` still
+    // falls back to a valid legacy `did=` alias.
     let identifier = params
         .repo
         .as_deref()
-        .or(params.did.as_deref())
+        .filter(|s| !s.is_empty())
+        .or(params.did.as_deref().filter(|s| !s.is_empty()))
         .ok_or_else(|| {
             ApiError::new(
                 ErrorCode::InvalidRequest,
@@ -327,6 +330,36 @@ mod tests {
             json["uri"],
             format!("at://{did}/app.bsky.feed.post/viahandle1")
         );
+    }
+
+    #[tokio::test]
+    async fn get_record_empty_repo_falls_back_to_did() {
+        // A bare `?repo=` (empty value) must not shadow a valid legacy `did=` alias.
+        let (state, did) = setup_account_with_repo().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        let app = crate::app::app(state);
+
+        let put = crate::routes::test_utils::put_record_request(
+            &did,
+            "app.bsky.feed.post",
+            "emptyrepo1",
+            serde_json::json!({ "record": { "text": "fallback" } }),
+            Some(&token),
+        );
+        assert_eq!(
+            app.clone().oneshot(put).await.unwrap().status(),
+            StatusCode::OK
+        );
+
+        let get_request = Request::builder()
+            .method(http::Method::GET)
+            .uri(format!(
+                "/xrpc/com.atproto.repo.getRecord?repo=&did={did}&collection=app.bsky.feed.post&rkey=emptyrepo1"
+            ))
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(get_request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]
