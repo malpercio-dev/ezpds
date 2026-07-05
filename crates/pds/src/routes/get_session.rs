@@ -15,6 +15,7 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
+use crate::auth::oauth_scopes;
 use crate::db::accounts::get_session_account;
 
 #[derive(Serialize)]
@@ -72,7 +73,9 @@ pub async fn get_session(
     // Full-access sessions see the account email; app-password sessions do not (mirrors
     // createSession, so an app password can't recover the email getSession would otherwise leak).
     let email = match user.scope {
-        AuthScope::Access => Some(account.email),
+        AuthScope::Access if oauth_scopes::require_email(&user.scope_claim).is_ok() => {
+            Some(account.email)
+        }
         _ => None,
     };
 
@@ -163,6 +166,10 @@ mod tests {
 
     /// Issue a valid HS256 access JWT for a DID using the test state's fixed secret.
     fn access_jwt(secret: &[u8; 32], sub: &str) -> String {
+        scoped_access_jwt(secret, sub, "com.atproto.access")
+    }
+
+    fn scoped_access_jwt(secret: &[u8; 32], sub: &str, scope: &str) -> String {
         use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
         use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -173,7 +180,7 @@ mod tests {
         encode(
             &Header::new(Algorithm::HS256),
             &serde_json::json!({
-                "scope": "com.atproto.access",
+                "scope": scope,
                 "sub": sub,
                 "iat": now,
                 "exp": now + 7200_u64,
@@ -298,6 +305,44 @@ mod tests {
             json.get("didDoc").is_none(),
             "didDoc absent when no document stored"
         );
+    }
+
+    #[tokio::test]
+    async fn granular_email_scope_controls_email_visibility() {
+        let state = test_state().await;
+        insert_account(
+            &state.db,
+            "did:plc:emailgate",
+            "emailgate.test.example.com",
+            "emailgate@example.com",
+        )
+        .await;
+
+        let without_email = scoped_access_jwt(
+            &state.jwt_secret,
+            "did:plc:emailgate",
+            "atproto repo:app.bsky.feed.post?action=create",
+        );
+        let response = app(state.clone())
+            .oneshot(get_session_request(&without_email))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert!(json.get("email").is_none());
+
+        let with_email = scoped_access_jwt(
+            &state.jwt_secret,
+            "did:plc:emailgate",
+            "atproto transition:email",
+        );
+        let response = app(state)
+            .oneshot(get_session_request(&with_email))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json["email"], "emailgate@example.com");
     }
 
     #[tokio::test]

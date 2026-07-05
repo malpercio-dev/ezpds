@@ -19,6 +19,7 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
+use crate::auth::oauth_scopes;
 
 /// Max future window for a *method-bound* token (`lxm` present): one hour. Mirrors the reference
 /// PDS, which bounds scoped service tokens to a short life so a leaked token expires quickly.
@@ -55,7 +56,7 @@ pub async fn get_service_auth(
     State(state): State<AppState>,
     Query(params): Query<GetServiceAuthQuery>,
 ) -> Result<Json<GetServiceAuthResponse>, ApiError> {
-    // Refresh tokens must not mint service auth; only access-scope tokens.
+    // Refresh tokens and app-password tokens must not mint arbitrary service auth.
     if user.scope != AuthScope::Access {
         return Err(ApiError::new(
             ErrorCode::InvalidToken,
@@ -86,6 +87,14 @@ pub async fn get_service_auth(
     let lxm = params.lxm.as_deref().filter(|s| !s.is_empty());
 
     let exp = resolve_expiry(params.exp, lxm.is_some(), now)?;
+
+    let required_lxm = lxm.unwrap_or("*");
+    oauth_scopes::require_rpc(
+        &user.scope_claim,
+        required_lxm,
+        aud_claim,
+        "token scope does not permit service auth for this RPC audience",
+    )?;
 
     // Sign with the account's per-account repo key (decrypted with the configured master key);
     // the audience service verifies it against the `#atproto` key in the issuer's DID document.
@@ -176,6 +185,10 @@ mod tests {
 
     /// Issue a valid HS256 access JWT for `sub` using the state's fixed test secret.
     fn access_jwt(secret: &[u8; 32], sub: &str) -> String {
+        scoped_access_jwt(secret, sub, "com.atproto.access")
+    }
+
+    fn scoped_access_jwt(secret: &[u8; 32], sub: &str, scope: &str) -> String {
         use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
         use std::time::{SystemTime, UNIX_EPOCH};
         let now = SystemTime::now()
@@ -185,7 +198,7 @@ mod tests {
         encode(
             &Header::new(Algorithm::HS256),
             &serde_json::json!({
-                "scope": "com.atproto.access",
+                "scope": scope,
                 "sub": sub,
                 "iat": now,
                 "exp": now + 7200_u64,
@@ -257,6 +270,54 @@ mod tests {
             exp > now() && exp <= now() + DEFAULT_TTL + 5,
             "default expiry should be ~60s out, got exp={exp}"
         );
+    }
+
+    #[tokio::test]
+    async fn granular_rpc_scope_is_enforced_for_service_auth() {
+        let state = state_with_master_key().await;
+        seed_account_with_repo(&state.db, TEST_DID).await;
+        let repo_only = scoped_access_jwt(
+            &state.jwt_secret,
+            TEST_DID,
+            "atproto repo:app.bsky.feed.post?action=create",
+        );
+
+        let denied = app(state.clone())
+            .oneshot(get_request(
+                &repo_only,
+                "aud=did:web:api.bsky.app&lxm=app.bsky.feed.getTimeline",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+        let body = body_json(denied).await;
+        assert_eq!(body["error"]["code"], "InsufficientScope");
+
+        let rpc_scoped = scoped_access_jwt(
+            &state.jwt_secret,
+            TEST_DID,
+            "atproto rpc:app.bsky.feed.getTimeline?aud=did:web:api.bsky.app",
+        );
+        let allowed = app(state.clone())
+            .oneshot(get_request(
+                &rpc_scoped,
+                "aud=did:web:api.bsky.app&lxm=app.bsky.feed.getTimeline",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(allowed.status(), StatusCode::OK);
+
+        let fragment_allowed = app(state)
+            .oneshot(get_request(
+                &rpc_scoped,
+                "aud=did:web:api.bsky.app%23bsky_appview&lxm=app.bsky.feed.getTimeline",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(fragment_allowed.status(), StatusCode::OK);
+        let body = body_json(fragment_allowed).await;
+        let (_, claims) = decode_jwt(body["token"].as_str().unwrap());
+        assert_eq!(claims["aud"], "did:web:api.bsky.app");
     }
 
     #[tokio::test]

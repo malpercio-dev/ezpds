@@ -22,6 +22,7 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
+use crate::auth::oauth_scopes;
 use crate::db::plc_operation_tokens::insert_plc_operation_token;
 use crate::token::generate_token;
 
@@ -36,6 +37,7 @@ pub async fn request_plc_operation_signature(
             "full access token required",
         ));
     }
+    oauth_scopes::require_identity(&user.scope_claim, "*")?;
 
     let token = generate_token();
     insert_plc_operation_token(&state.db, &user.did, &token.hash).await?;

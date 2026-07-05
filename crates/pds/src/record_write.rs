@@ -157,6 +157,13 @@ pub async fn write_record(
     // Authenticate: require a valid access token whose subject owns this repo.
     let token = crate::auth::extract_bearer_token(headers)?;
     let claims = crate::auth::jwt::verify_access_token(token, state)?;
+    let auth_scope = crate::auth::jwt::parse_scope(&claims.scope)?;
+    if !auth_scope.is_access() {
+        return Err(ApiError::new(
+            ErrorCode::InvalidToken,
+            "access token required",
+        ));
+    }
     if claims.sub != *did {
         return Err(ApiError::new(
             ErrorCode::Forbidden,
@@ -208,10 +215,6 @@ pub async fn write_record(
     let prev_rev = repo.commit().rev().as_str().to_string();
     let prev_data = repo.commit().data().to_string();
 
-    // Enforce explicit swapCommit/swapRecord preconditions (ATProto optimistic concurrency)
-    // before mutating anything, so a stale client fails with InvalidSwap rather than racing.
-    enforce_swap(swap, &root_cid_str, &mut repo, mst_key).await?;
-
     // Look up the record's current CID — both to enforce create-only semantics (and to label the
     // firehose op as a create vs an update) and, when it exists, to carry as the op's Sync v1.1
     // `prev` (the previous record CID for the update). Read before the write mutates the repo.
@@ -222,6 +225,23 @@ pub async fn write_record(
             ApiError::new(ErrorCode::InternalError, "failed to write record")
         })?;
     let existed = prev_cid.is_some();
+    let action = if create_only || !existed {
+        crate::auth::oauth_scopes::RepoAction::Create
+    } else {
+        crate::auth::oauth_scopes::RepoAction::Update
+    };
+    if auth_scope == crate::auth::jwt::AuthScope::Access {
+        crate::auth::oauth_scopes::require_repo(
+            &claims.scope,
+            mst_key.split('/').next().unwrap_or(""),
+            action,
+        )?;
+    }
+
+    // Enforce explicit swapCommit/swapRecord preconditions (ATProto optimistic concurrency)
+    // after authorization and before mutating anything.
+    enforce_swap(swap, &root_cid_str, &mut repo, mst_key).await?;
+
     if create_only && existed {
         return Err(ApiError::new(
             ErrorCode::Conflict,

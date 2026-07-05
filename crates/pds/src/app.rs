@@ -513,6 +513,7 @@ async fn xrpc_handler(
     req: axum::extract::Request,
 ) -> Response {
     use crate::auth::jwt::AuthScope;
+    use crate::auth::oauth_scopes;
     use crate::identity_resolution::{resolve_atproto_proxy_target, ModerationProxyGuard};
     use crate::routes::service_proxy::proxy_xrpc;
 
@@ -540,6 +541,29 @@ async fn xrpc_handler(
         Ok(user) => user,
         Err(rejection) => return rejection.into_response(),
     };
+
+    let proxy_aud = match upstream {
+        ProxyUpstream::AppView => state.config.appview.did.as_str(),
+        ProxyUpstream::Chat => state.config.chat.did.as_str(),
+        ProxyUpstream::Moderation => req
+            .headers()
+            .get("atproto-proxy")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or(""),
+    };
+    if !user.scope.is_access() {
+        return ApiError::new(ErrorCode::InvalidToken, "access token required").into_response();
+    }
+    if user.scope == AuthScope::Access {
+        if let Err(err) = oauth_scopes::require_rpc(
+            &user.scope_claim,
+            &method,
+            proxy_aud,
+            "token scope does not permit proxying this RPC",
+        ) {
+            return err.into_response();
+        }
+    }
 
     // Direct messages require a privileged credential: full access or a *privileged* app
     // password. A plain `com.atproto.appPass` session must not reach the chat service — this is

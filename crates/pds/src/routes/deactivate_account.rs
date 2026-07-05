@@ -15,6 +15,7 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
+use crate::auth::oauth_scopes;
 use crate::db::accounts::{deactivate_account, AccountStateChange};
 
 /// The non-active status reported on the firehose `#account` event for a deactivation.
@@ -77,6 +78,7 @@ pub async fn deactivate_account_handler(
             "access token required",
         ));
     }
+    oauth_scopes::require_account(&user.scope_claim, "status", "manage")?;
 
     let delete_after = parse_optional_delete_after(&body)?;
 

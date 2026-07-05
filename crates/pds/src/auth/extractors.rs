@@ -20,6 +20,9 @@ use super::jwt::{parse_scope, verify_access_token, AuthScope};
 pub struct AuthenticatedUser {
     pub did: String,
     pub scope: AuthScope,
+    /// Raw `scope` claim. OAuth tokens carry the granular grant here; legacy
+    /// session/app-password tokens carry their `com.atproto.*` scope string.
+    pub scope_claim: String,
 }
 
 impl FromRequestParts<AppState> for AuthenticatedUser {
@@ -98,6 +101,7 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
         Ok(AuthenticatedUser {
             did: claims.sub,
             scope,
+            scope_claim: claims.scope,
         })
     }
 }
