@@ -275,9 +275,18 @@ pub async fn apply_writes(
         .iter()
         .zip(outcomes.iter())
         .zip(op_values)
-        .map(|((kind, outcome), value)| {
+        .filter_map(|((kind, outcome), value)| {
+            // A delete of an already-absent record is idempotent no-op in the engine (no commit,
+            // `prev: None`): it mutated nothing, so it must not become a `#repoOp`. Emitting it
+            // would produce a Sync v1.1 delete frame with a null `prev` that relays can't
+            // inductively validate — the same reason `deleteRecord` returns early on an absent
+            // record rather than committing. Creates/updates and real deletes always carry a
+            // mutation and are kept.
+            if matches!(kind, Kind::Delete) && outcome.prev.is_none() {
+                return None;
+            }
             let (collection, rkey) = crate::record_write::split_record_path(&outcome.key);
-            crate::firehose::RepoOp {
+            Some(crate::firehose::RepoOp {
                 action: match kind {
                     Kind::Create => crate::firehose::OpAction::Create,
                     Kind::Update => crate::firehose::OpAction::Update,
@@ -290,25 +299,31 @@ pub async fn apply_writes(
                 // replaced/removed) before applying it — `None` for a create.
                 prev: outcome.prev.map(|c| c.to_string()),
                 value,
-            }
+            })
         })
         .collect();
-    crate::record_write::commit_repo_write(
-        &state,
-        did,
-        root_cid,
-        repo.root(),
-        new_rev,
-        Some(prev_rev),
-        Some(prev_data),
-        fh_ops,
-        &root_cid_str,
-    )
-    .await?;
 
-    // Best-effort GC: reclaim the intermediate per-write commits and any superseded blocks.
-    if let Err(e) = crate::record_write::gc_repo_blocks(&state.db, did, repo.root()).await {
-        tracing::warn!(error = %e, did = %did, "post-commit block GC failed (non-fatal)");
+    // With no real mutation (a batch of only no-op deletes) the engine advanced no commit, so the
+    // root is unchanged. Skip the CAS + firehose emit entirely rather than staging an empty,
+    // unchanged-root `#commit` — mirroring `deleteRecord`'s idempotent no-op path.
+    if !fh_ops.is_empty() {
+        crate::record_write::commit_repo_write(
+            &state,
+            did,
+            root_cid,
+            repo.root(),
+            new_rev,
+            Some(prev_rev),
+            Some(prev_data),
+            fh_ops,
+            &root_cid_str,
+        )
+        .await?;
+
+        // Best-effort GC: reclaim the intermediate per-write commits and any superseded blocks.
+        if let Err(e) = crate::record_write::gc_repo_blocks(&state.db, did, repo.root()).await {
+            tracing::warn!(error = %e, did = %did, "post-commit block GC failed (non-fatal)");
+        }
     }
 
     let rev = repo.commit().rev().as_str().to_string();
@@ -685,6 +700,95 @@ mod tests {
         assert_eq!(event.ops[2].rkey, "k2");
         assert_eq!(event.ops[2].cid, None);
         assert!(!event.blocks.is_empty());
+
+        // Sync v1.1 per-op `prev`: create has none; the update points at k1's prior CID; the
+        // delete points at the CID k2 was created with earlier in this same batch.
+        assert_eq!(event.ops[0].prev, None);
+        assert!(event.ops[1].prev.is_some());
+        assert_eq!(event.ops[2].prev, event.ops[0].cid);
+    }
+
+    #[tokio::test]
+    async fn apply_writes_skips_noop_delete_of_absent_record() {
+        // A delete of a never-existing record mutated nothing, so it must NOT appear as a
+        // `#repoOp` (a delete frame with a null `prev` is not inductively validatable by a Sync
+        // v1.1 relay). The client still gets a deleteResult for it, and the real create commits.
+        use crate::firehose::{FirehoseEvent, OpAction};
+
+        let (state, did) = setup().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        let firehose = state.firehose.clone();
+        let app = crate::app::app(state);
+
+        let mut rx = firehose.subscribe();
+        let body = serde_json::json!({
+            "repo": did,
+            "writes": [
+                create_item("k1", "real"),
+                {
+                    "$type": "com.atproto.repo.applyWrites#delete",
+                    "collection": "app.bsky.feed.post",
+                    "rkey": "ghost",
+                },
+            ],
+        });
+        let resp = app.oneshot(apply_req(body, Some(&token))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        // The response still reports both writes (create + delete) in batch order.
+        let json = body_json(resp).await;
+        let results = json["results"].as_array().unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(
+            results[1]["$type"],
+            "com.atproto.repo.applyWrites#deleteResult"
+        );
+
+        // The firehose commit carries only the create op — the no-op delete was dropped.
+        let FirehoseEvent::Commit(event) = rx.try_recv().expect("batch must emit one commit event")
+        else {
+            panic!("expected a #commit event");
+        };
+        assert_eq!(
+            event.ops.len(),
+            1,
+            "the no-op delete must not become a repoOp"
+        );
+        assert_eq!(event.ops[0].action, OpAction::Create);
+        assert_eq!(event.ops[0].rkey, "k1");
+    }
+
+    #[tokio::test]
+    async fn apply_writes_all_noop_deletes_emits_no_commit() {
+        // A batch of only no-op deletes mutates nothing: no commit is staged and the repo root is
+        // unchanged, mirroring the single deleteRecord route's idempotent no-op path.
+        let (state, did) = setup().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        let db = state.db.clone();
+        let firehose = state.firehose.clone();
+        let app = crate::app::app(state);
+
+        let root_before = repo_root(&db, &did).await.unwrap();
+        let mut rx = firehose.subscribe();
+        let body = serde_json::json!({
+            "repo": did,
+            "writes": [{
+                "$type": "com.atproto.repo.applyWrites#delete",
+                "collection": "app.bsky.feed.post",
+                "rkey": "ghost",
+            }],
+        });
+        let resp = app.oneshot(apply_req(body, Some(&token))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        assert!(
+            rx.try_recv().is_err(),
+            "an all-no-op batch must not emit a commit event"
+        );
+        assert_eq!(
+            repo_root(&db, &did).await.unwrap(),
+            root_before,
+            "the repo root must be unchanged when nothing mutated"
+        );
     }
 
     #[tokio::test]
