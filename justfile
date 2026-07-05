@@ -50,6 +50,13 @@ bruno-check:
 font-check:
     scripts/font-parity.sh
 
+# Verify the Tauri IPC capability allowlists stay minimal (no core:default), reference the
+# mobile schema, and keep withGlobalTauri off. The static minimality-lock half of the
+# least-privilege IPC boundary in docs/security/tauri-ipc-boundary.md (Tauri v2 has no runtime
+# ACL-denial test); fails if an edit re-widens the surface. Runs on Linux — parses JSON only.
+cap-check:
+    scripts/capability-check.sh
+
 # Verify the swift-rs --disable-sandbox fork ([patch.crates-io] in Cargo.toml) is both
 # DECLARED and ACTUALLY APPLIED (Cargo.lock resolves swift-rs from the path, not the
 # registry). Cargo silently stops applying a [patch] when a dependency bump requires a
@@ -69,7 +76,7 @@ interop *args:
     tools/interop/bin/interop {{args}}
 
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
-ci: fmt-check lock-check bruno-check font-check swift-rs-check clippy test audit
+ci: fmt-check lock-check bruno-check font-check cap-check swift-rs-check clippy test audit
 
 # CI gate for the Linux pds pipeline (GitHub Actions, .github/workflows/ci.yml). Excludes the
 # iOS apps (identity-wallet, admin-companion), which need the Apple toolchain (security-framework)
@@ -78,6 +85,7 @@ ci-pds: fmt-check
     just lock-check
     just bruno-check
     just font-check
+    just cap-check
     just swift-rs-check
     cargo clippy --workspace --exclude identity-wallet --exclude admin-companion --all-targets -- -D warnings
     cargo test --workspace --exclude identity-wallet --exclude admin-companion

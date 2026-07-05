@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/mobile-schema.json",
   "identifier": "default",
-  "description": "Core IPC + logging for the main window. App-defined commands (pairing, signing) are allowed by default from the local webview and need no permission here; only plugin commands are listed.",
+  "description": "Minimal IPC allowlist (least privilege — see docs/security/tauri-ipc-boundary.md). App-defined commands (pairing, signing) are allowed by default from the local webview and need no permission here. The frontend uses no core API (no events, no window control), so this grants only the log plugin. Deliberately does NOT grant `core:default` — that blanket set bundles window/menu/tray/path/etc. this frontend never touches.",
   "windows": ["main"],
-  "permissions": ["core:default", "log:default"]
+  "permissions": ["log:default"]
 }

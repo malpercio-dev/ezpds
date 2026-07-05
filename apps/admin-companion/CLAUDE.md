@@ -97,7 +97,9 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
     cancelled/failed prompt blocks. The toggle is `set_biometric_enabled` (default on).
   - `@buildyourwebapp/tauri-plugin-sharesheet` — `src/lib/share.ts` `shareText()` opens the iOS
     Share Pane for a claim code; returns `false` off-device so the UI falls back to copy.
-  - `capabilities/default.json` grants `core:default` + `log:default` on all platforms.
+  - `capabilities/default.json` grants only `log:default` on all platforms (least
+    privilege — the frontend uses no core API; see `docs/security/tauri-ipc-boundary.md`
+    and `just cap-check`). App-defined commands are allowed by default and need no entry.
 - **Design tokens are the live system.** Reference `var(--color-*)` / `var(--font-*)` /
   `var(--space-*)`; never hardcode hex/px. Every text pair in `tokens.css` is verified to
   clear **WCAG 2.2 AAA (≥7:1)** on its intended ground (the seed anchors were AA; they

@@ -1,7 +1,7 @@
 {
-  "$schema": "../gen/schemas/desktop-schema.json",
+  "$schema": "../gen/schemas/mobile-schema.json",
   "identifier": "default",
-  "description": "Core APIs (events, window) plus the auth-session plugin. The app's own #[tauri::command]s are not permission-gated; this grants the frontend the core defaults it relies on (event listen/emit) and the in-app OAuth `plugin:auth-session|start` command.",
+  "description": "Minimal IPC allowlist (least privilege — see docs/security/tauri-ipc-boundary.md). The app's own #[tauri::command]s are allowed by default and need no entry, so the frontend's only gated needs are: the event system (it listens for the `auth_ready` and `plc_alert` events the backend emits) and the in-app OAuth `plugin:auth-session|start` command. Deliberately does NOT grant `core:default` — the blanket set bundles window/menu/tray/path/etc. this frontend never touches.",
   "windows": ["main"],
-  "permissions": ["core:default", "auth-session:default"]
+  "permissions": ["core:event:default", "auth-session:default"]
 }

@@ -19,7 +19,8 @@ Last verified: 2026-06-30
 - `cargo fmt --all --check` - Check formatting
 - `just bruno-check` - Verify route ⇄ Bruno-collection parity (scripts/bruno-parity.sh)
 - `just font-check` - Verify the four vendored font copies haven't drifted (scripts/font-parity.sh; same-named font files must be byte-identical across copies)
-- `just ci` - Full local gate (fmt-check, lock-check, bruno-check, font-check, swift-rs-check, clippy, test, audit) — the same checks CI runs
+- `just cap-check` - Verify the Tauri IPC capability allowlists stay minimal (scripts/capability-check.sh; no `core:default`, mobile schema, withGlobalTauri off — the static half of the least-privilege boundary in docs/security/tauri-ipc-boundary.md)
+- `just ci` - Full local gate (fmt-check, lock-check, bruno-check, font-check, cap-check, swift-rs-check, clippy, test, audit) — the same checks CI runs
 
 ## CI/CD
 
