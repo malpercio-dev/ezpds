@@ -902,21 +902,24 @@ mod tests {
     #[tokio::test]
     async fn bearer_mode_sends_authorization_bearer_header() {
         // Verifies: Bearer-mode client sends Authorization: Bearer {token} and no DPoP header.
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(GET)
-                .path("/resource")
-                .header("Authorization", "Bearer my_bearer_token")
-                .is_true(request_has_no_dpop_header);
-            then.status(200).body("ok");
-        });
-
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
         let future_exp = now + 3600;
         let access_jwt = make_bearer_jwt(future_exp);
+        // The access token IS the JWT, so the Authorization header is `Bearer {jwt}`.
+        let expected_auth = format!("Bearer {access_jwt}");
+
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/resource")
+                .header("Authorization", expected_auth.as_str())
+                .is_true(request_has_no_dpop_header);
+            then.status(200).body("ok");
+        });
+
         let client = make_bearer_client(&access_jwt, "my_refresh_token", &server.base_url()).await;
 
         let resp = client.get("/resource").await.expect("GET must succeed");
@@ -1096,24 +1099,7 @@ mod tests {
     #[tokio::test]
     async fn post_bytes_bearer_sends_correct_headers_and_body() {
         // Verifies: Bearer client post_bytes sends Authorization: Bearer, Content-Type, no DPoP header, and the exact byte body.
-        let server = MockServer::start();
-
         let expected_bytes = b"fake CAR data blob here";
-
-        server.mock(|when, then| {
-            when.method(POST)
-                .path("/xrpc/com.atproto.repo.importRepo")
-                .header("Authorization", "Bearer my_bearer_token")
-                .header("Content-Type", "application/vnd.ipld.car")
-                .is_true(request_has_no_dpop_header)
-                .body_from_fn(|actual_body| {
-                    // Verify the body bytes match exactly.
-                    actual_body == expected_bytes
-                });
-            then.status(200).json_body(serde_json::json!({
-                "uri": "at://did:plc:abc/com.atproto.repo.blob/hash"
-            }));
-        });
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1121,6 +1107,23 @@ mod tests {
             .as_secs();
         let future_exp = now + 3600;
         let access_jwt = make_bearer_jwt(future_exp);
+        // The access token IS the JWT, so the Authorization header is `Bearer {jwt}`.
+        let expected_auth = format!("Bearer {access_jwt}");
+
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/xrpc/com.atproto.repo.importRepo")
+                .header("Authorization", expected_auth.as_str())
+                .header("Content-Type", "application/vnd.ipld.car")
+                .is_true(request_has_no_dpop_header)
+                // Exact full-body match (httpmock's `When::body`); the payload is ASCII.
+                .body(std::str::from_utf8(expected_bytes).unwrap());
+            then.status(200).json_body(serde_json::json!({
+                "uri": "at://did:plc:abc/com.atproto.repo.blob/hash"
+            }));
+        });
+
         let client = make_bearer_client(&access_jwt, "my_refresh_token", &server.base_url()).await;
 
         let resp = client
@@ -1156,7 +1159,8 @@ mod tests {
                         false
                     }
                 })
-                .body_from_fn(|actual_body| actual_body == expected_bytes);
+                // Exact full-body match (httpmock's `When::body`); the payload is ASCII.
+                .body(std::str::from_utf8(expected_bytes).unwrap());
             then.status(200).json_body(serde_json::json!({
                 "blob": {
                     "cid": "bagxx2...",
