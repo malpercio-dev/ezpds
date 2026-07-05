@@ -69,6 +69,34 @@ pub async fn state_with_err_dns() -> AppState {
     }
 }
 
+// ── Email sender test double ───────────────────────────────────────────────
+
+/// Email sender that fails on every `send`, for exercising the delivery-failure branches of the
+/// token-minting routes (which map a send error to `ServiceUnavailable`).
+pub struct AlwaysErrEmail;
+
+impl crate::email::EmailSender for AlwaysErrEmail {
+    fn send<'a>(
+        &'a self,
+        _message: crate::email::EmailMessage,
+    ) -> Pin<Box<dyn Future<Output = Result<(), crate::email::EmailError>> + Send + 'a>> {
+        Box::pin(async {
+            Err(crate::email::EmailError(
+                "simulated delivery failure".to_string(),
+            ))
+        })
+    }
+}
+
+/// `test_state()` with an email sender that always fails delivery.
+pub async fn state_with_failing_email() -> AppState {
+    let base = test_state().await;
+    AppState {
+        email: Arc::new(AlwaysErrEmail),
+        ..base
+    }
+}
+
 // ── Admin state helper ────────────────────────────────────────────────────────
 
 /// Minimal test state with admin_token set to `"test-admin-token"`.
@@ -82,21 +110,7 @@ pub async fn test_state_with_admin_token() -> AppState {
     config.admin_token = Some("test-admin-token".to_string());
     AppState {
         config: Arc::new(config),
-        db: base.db,
-        http_client: base.http_client,
-        dns_provider: base.dns_provider,
-        txt_resolver: base.txt_resolver,
-        well_known_resolver: base.well_known_resolver,
-        jwt_secret: base.jwt_secret,
-        oauth_signing_keypair: base.oauth_signing_keypair,
-        dpop_nonces: base.dpop_nonces,
-        failed_login_attempts: base.failed_login_attempts,
-        firehose: base.firehose,
-        crawlers: base.crawlers,
-        iroh: base.iroh,
-        rate_limiter: base.rate_limiter,
-        email: base.email,
-        allow_loopback_proxy_targets: base.allow_loopback_proxy_targets,
+        ..base
     }
 }
 
@@ -114,21 +128,7 @@ pub async fn state_with_master_key() -> AppState {
     )));
     AppState {
         config: Arc::new(config),
-        db: base.db,
-        http_client: base.http_client,
-        dns_provider: base.dns_provider,
-        txt_resolver: base.txt_resolver,
-        well_known_resolver: base.well_known_resolver,
-        jwt_secret: base.jwt_secret,
-        oauth_signing_keypair: base.oauth_signing_keypair,
-        dpop_nonces: base.dpop_nonces,
-        failed_login_attempts: base.failed_login_attempts,
-        firehose: base.firehose,
-        crawlers: base.crawlers,
-        iroh: base.iroh,
-        rate_limiter: base.rate_limiter,
-        email: base.email,
-        allow_loopback_proxy_targets: base.allow_loopback_proxy_targets,
+        ..base
     }
 }
 

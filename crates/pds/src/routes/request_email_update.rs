@@ -87,7 +87,9 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
-    use crate::routes::test_utils::{access_jwt, body_json, seed_account_with_signing_key};
+    use crate::routes::test_utils::{
+        access_jwt, body_json, seed_account_with_signing_key, state_with_failing_email,
+    };
 
     fn post_req(jwt: Option<&str>) -> Request<Body> {
         let mut builder = Request::builder()
@@ -158,5 +160,19 @@ mod tests {
         let state = test_state().await;
         let response = app(state).oneshot(post_req(None)).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn email_delivery_failure_returns_503() {
+        // Delivery only happens when a token is required (confirmed email), so confirm first.
+        let state = state_with_failing_email().await;
+        let db = state.db.clone();
+        let did = "did:plc:requpdate3333333333333333";
+        seed_account_with_signing_key(&db, did, "carol.example.com").await;
+        confirm(&db, did).await;
+        let jwt = access_jwt(&state.jwt_secret, did);
+
+        let response = app(state).oneshot(post_req(Some(&jwt))).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }

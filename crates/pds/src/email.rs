@@ -17,11 +17,16 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use common::{EmailConfig, EmailProvider, SmtpTls};
 use lettre::message::Mailbox;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+
+/// Connect/send timeout for the SMTP transport. `send()` is awaited on the request path, so an
+/// unresponsive relay must not stall a handler (and tie up request capacity) indefinitely.
+const SMTP_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// A fully-rendered outbound message. Plaintext body only — the flows this serves (token
 /// delivery) have no need for HTML.
@@ -100,7 +105,8 @@ impl SmtpEmailSender {
                 .map_err(|e| EmailError(format!("failed to build STARTTLS SMTP relay: {e}")))?,
             SmtpTls::None => AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host),
         }
-        .port(config.smtp_port);
+        .port(config.smtp_port)
+        .timeout(Some(SMTP_TIMEOUT));
 
         // Authenticate only when both a username and password are configured.
         if let (Some(user), Some(pass)) = (

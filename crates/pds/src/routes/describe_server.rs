@@ -107,21 +107,7 @@ mod tests {
         config.server_did = Some("did:plc:configured123".to_string());
         let state = AppState {
             config: Arc::new(config),
-            db: base.db,
-            http_client: base.http_client,
-            dns_provider: base.dns_provider,
-            txt_resolver: base.txt_resolver,
-            well_known_resolver: base.well_known_resolver,
-            jwt_secret: base.jwt_secret,
-            oauth_signing_keypair: base.oauth_signing_keypair,
-            dpop_nonces: base.dpop_nonces,
-            failed_login_attempts: base.failed_login_attempts,
-            firehose: base.firehose,
-            crawlers: base.crawlers,
-            iroh: base.iroh,
-            rate_limiter: base.rate_limiter,
-            email: base.email,
-            allow_loopback_proxy_targets: base.allow_loopback_proxy_targets,
+            ..base
         };
 
         let response = app(state)
