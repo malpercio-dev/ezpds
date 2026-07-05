@@ -2557,7 +2557,7 @@ mod tests {
         mock_server.mock(|when, then| {
             when.method(httpmock::Method::POST)
                 .path("/xrpc/com.atproto.server.reserveSigningKey")
-                .body_contains("did:plc:test123");
+                .body_includes("did:plc:test123");
             then.status(200).json_body(serde_json::json!({
                 "signingKey": signing_key
             }));
