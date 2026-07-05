@@ -22,7 +22,8 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
-use crate::auth::jwt::AuthScope;
+use crate::auth::jwt::{AuthScope, SCOPE_ACCESS};
+use crate::auth::oauth_scopes;
 use crate::plc_ops::{build_did_document_from_op, fetch_current_plc_state};
 
 #[derive(Deserialize)]
@@ -42,6 +43,11 @@ pub async fn submit_plc_operation(
         return Err(ApiError::new(
             ErrorCode::InvalidToken,
             "full access token required",
+        ));
+    }
+    if user.scope_claim != SCOPE_ACCESS && !oauth_scopes::allows_identity(&user.scope_claim, "*") {
+        return Err(oauth_scopes::insufficient_scope(
+            "token scope does not permit identity operations",
         ));
     }
     let did = &user.did;

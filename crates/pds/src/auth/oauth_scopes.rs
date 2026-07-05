@@ -10,17 +10,14 @@
 //! (`include:`), and the fixed scopes (`atproto`, `transition:generic`,
 //! `transition:email`, `transition:chat.bsky`).
 //!
-//! It does **not** enforce granted permissions at request time — every valid
-//! atproto OAuth session is still treated as full access by the auth guard (see
-//! [`is_atproto_oauth_scope`]). Per-collection / per-RPC / per-resource
-//! enforcement is a separate change built on top of this one.
-//!
 //! The grammar and canonical forms are ported from the reference implementation
 //! (`@atproto/oauth-scopes`), so a scope string minted by a real atproto client
 //! parses here, and a string this module emits round-trips through the
 //! reference.
 
 use std::collections::BTreeSet;
+
+use common::{ApiError, ErrorCode};
 
 /// The fixed, non-parameterized scopes.
 const STATIC_SCOPES: [&str; 4] = [
@@ -75,9 +72,9 @@ pub fn normalize_scope_request(requested: &str) -> Result<String, String> {
 /// and the set includes the `atproto` base scope.
 ///
 /// The auth guard uses this to recognize a granular OAuth session and treat it
-/// as access-level: until per-permission enforcement lands, holding any valid
-/// atproto scope grants full access, exactly as a `com.atproto.access` session
-/// did before granular scopes existed.
+/// as access-level for coarse route admission; route handlers then inspect the
+/// raw scope claim with the `allows_*` helpers below for resource-specific
+/// enforcement.
 pub fn is_atproto_oauth_scope(scope: &str) -> bool {
     normalize_scope_request(scope).is_ok()
 }
@@ -641,6 +638,189 @@ fn is_type_slash_subtype(v: &str) -> bool {
     }
 }
 
+/// Repo write action checked against `repo:` granular scopes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepoAction {
+    Create,
+    Update,
+    Delete,
+}
+
+impl RepoAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            RepoAction::Create => "create",
+            RepoAction::Update => "update",
+            RepoAction::Delete => "delete",
+        }
+    }
+}
+
+/// Return an ATProto `InsufficientScope` denial.
+pub fn insufficient_scope(message: impl Into<String>) -> ApiError {
+    ApiError::new(ErrorCode::InsufficientScope, message)
+}
+
+/// Legacy transition scope that preserves pre-granular behavior for OAuth clients.
+pub fn has_transition_generic(scope: &str) -> bool {
+    scope
+        .split_whitespace()
+        .any(|token| token == "transition:generic")
+}
+
+/// Whether a granular OAuth grant permits reading account email fields.
+pub fn allows_email(scope: &str) -> bool {
+    has_transition_generic(scope)
+        || scope
+            .split_whitespace()
+            .any(|token| token == "transition:email" || account_token_allows(token, "email"))
+}
+
+/// Whether a granular OAuth grant permits an identity-management operation.
+pub fn allows_identity(scope: &str, attr: &str) -> bool {
+    has_transition_generic(scope)
+        || scope
+            .split_whitespace()
+            .any(|token| match parse_token(token) {
+                (prefix, Some(pos), _) if prefix == "identity" => pos == "*" || pos == attr,
+                _ => false,
+            })
+}
+
+/// Whether a granular OAuth grant permits an account operation.
+pub fn allows_account(scope: &str, attr: &str, action: &str) -> bool {
+    has_transition_generic(scope)
+        || scope
+            .split_whitespace()
+            .any(|token| account_token_allows_action(token, attr, action))
+}
+
+/// Whether a granular OAuth grant permits a repo write for `collection` and `action`.
+pub fn allows_repo(scope: &str, collection: &str, action: RepoAction) -> bool {
+    has_transition_generic(scope)
+        || scope
+            .split_whitespace()
+            .any(|token| match parse_token(token) {
+                (prefix, Some(pos), params) if prefix == "repo" => {
+                    collection_matches(&pos, collection) && repo_actions_match(&params, action)
+                }
+                (prefix, None, params) if prefix == "repo" => {
+                    let collections: Vec<&str> = params
+                        .iter()
+                        .filter(|(key, _)| key == "collection")
+                        .map(|(_, value)| value.as_str())
+                        .collect();
+                    !collections.is_empty()
+                        && collections
+                            .iter()
+                            .any(|c| collection_matches(c, collection))
+                        && repo_actions_match(&params, action)
+                }
+                _ => false,
+            })
+}
+
+/// Whether a granular OAuth grant permits proxying/minting service auth for an RPC.
+pub fn allows_rpc(scope: &str, lxm: &str, aud: &str) -> bool {
+    has_transition_generic(scope)
+        || scope
+            .split_whitespace()
+            .any(|token| match parse_token(token) {
+                (prefix, Some(pos), params) if prefix == "rpc" => {
+                    lxm_matches(&pos, lxm) && aud_matches(&params, aud)
+                }
+                (prefix, None, params) if prefix == "rpc" => {
+                    let lxms: Vec<&str> = params
+                        .iter()
+                        .filter(|(key, _)| key == "lxm")
+                        .map(|(_, value)| value.as_str())
+                        .collect();
+                    !lxms.is_empty()
+                        && lxms.iter().any(|candidate| lxm_matches(candidate, lxm))
+                        && aud_matches(&params, aud)
+                }
+                _ => false,
+            })
+}
+
+/// Whether a granular OAuth grant permits uploading a blob of `mime_type`.
+pub fn allows_blob(scope: &str, mime_type: &str) -> bool {
+    has_transition_generic(scope)
+        || scope
+            .split_whitespace()
+            .any(|token| match parse_token(token) {
+                (prefix, Some(pos), _) if prefix == "blob" => accept_matches(&pos, mime_type),
+                (prefix, None, params) if prefix == "blob" => params
+                    .iter()
+                    .filter(|(key, _)| key == "accept")
+                    .any(|(_, accept)| accept_matches(accept, mime_type)),
+                _ => false,
+            })
+}
+
+fn parse_token(token: &str) -> (String, Option<String>, Vec<(String, String)>) {
+    let syntax = ScopeSyntax::parse(token);
+    (syntax.prefix, syntax.positional, syntax.params)
+}
+
+fn collection_matches(grant: &str, collection: &str) -> bool {
+    grant == "*" || grant == collection
+}
+
+fn lxm_matches(grant: &str, lxm: &str) -> bool {
+    grant == "*" || grant == lxm
+}
+
+fn repo_actions_match(params: &[(String, String)], action: RepoAction) -> bool {
+    let requested = action.as_str();
+    let actions: Vec<&str> = params
+        .iter()
+        .filter(|(key, _)| key == "action")
+        .map(|(_, value)| value.as_str())
+        .collect();
+    actions.is_empty() || actions.contains(&requested)
+}
+
+fn aud_matches(params: &[(String, String)], aud: &str) -> bool {
+    params
+        .iter()
+        .find(|(key, _)| key == "aud")
+        .is_some_and(|(_, value)| value == "*" || value == aud)
+}
+
+fn accept_matches(grant: &str, mime_type: &str) -> bool {
+    let grant = grant.to_ascii_lowercase();
+    let mime_type = mime_type.to_ascii_lowercase();
+    grant == "*/*"
+        || grant == mime_type
+        || grant
+            .strip_suffix("/*")
+            .is_some_and(|prefix| mime_type.starts_with(&format!("{prefix}/")))
+}
+
+fn account_token_allows(token: &str, attr: &str) -> bool {
+    account_token_allows_action(token, attr, "read")
+        || account_token_allows_action(token, attr, "manage")
+}
+
+fn account_token_allows_action(token: &str, attr: &str, action: &str) -> bool {
+    match parse_token(token) {
+        (prefix, Some(pos), params) if prefix == "account" && pos == attr => {
+            let actions: Vec<&str> = params
+                .iter()
+                .filter(|(key, _)| key == "action")
+                .map(|(_, value)| value.as_str())
+                .collect();
+            if actions.is_empty() {
+                action == "read"
+            } else {
+                actions.contains(&action)
+            }
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -901,6 +1081,56 @@ mod tests {
             out,
             "atproto repo:com.example.foo rpc:com.example.method1?aud=*"
         );
+    }
+
+    #[test]
+    fn granular_permission_checks_match_resources() {
+        let scope = "atproto repo:app.bsky.feed.post?action=create rpc:app.bsky.feed.getTimeline?aud=did:web:api.bsky.app blob:image/* account:email identity:handle transition:email";
+        assert!(allows_repo(scope, "app.bsky.feed.post", RepoAction::Create));
+        assert!(!allows_repo(
+            scope,
+            "app.bsky.feed.post",
+            RepoAction::Delete
+        ));
+        assert!(!allows_repo(
+            scope,
+            "app.bsky.graph.follow",
+            RepoAction::Create
+        ));
+        assert!(allows_rpc(
+            scope,
+            "app.bsky.feed.getTimeline",
+            "did:web:api.bsky.app"
+        ));
+        assert!(!allows_rpc(
+            scope,
+            "chat.bsky.convo.listConvos",
+            "did:web:api.bsky.chat#bsky_chat"
+        ));
+        assert!(allows_blob(scope, "image/png"));
+        assert!(!allows_blob(scope, "application/json"));
+        assert!(allows_email(scope));
+        assert!(allows_identity(scope, "handle"));
+        assert!(!allows_account(scope, "status", "manage"));
+    }
+
+    #[test]
+    fn transition_generic_preserves_legacy_full_access() {
+        let scope = "atproto transition:generic";
+        assert!(allows_repo(
+            scope,
+            "app.bsky.graph.follow",
+            RepoAction::Delete
+        ));
+        assert!(allows_rpc(
+            scope,
+            "chat.bsky.convo.listConvos",
+            "did:web:api.bsky.chat#bsky_chat"
+        ));
+        assert!(allows_blob(scope, "application/json"));
+        assert!(allows_email(scope));
+        assert!(allows_account(scope, "status", "manage"));
+        assert!(allows_identity(scope, "handle"));
     }
 
     #[test]

@@ -157,6 +157,13 @@ pub async fn write_record(
     // Authenticate: require a valid access token whose subject owns this repo.
     let token = crate::auth::extract_bearer_token(headers)?;
     let claims = crate::auth::jwt::verify_access_token(token, state)?;
+    let auth_scope = crate::auth::jwt::parse_scope(&claims.scope)?;
+    if !auth_scope.is_access() {
+        return Err(ApiError::new(
+            ErrorCode::InvalidToken,
+            "access token required",
+        ));
+    }
     if claims.sub != *did {
         return Err(ApiError::new(
             ErrorCode::Forbidden,
@@ -222,6 +229,24 @@ pub async fn write_record(
             ApiError::new(ErrorCode::InternalError, "failed to write record")
         })?;
     let existed = prev_cid.is_some();
+    let action = if create_only || !existed {
+        crate::auth::oauth_scopes::RepoAction::Create
+    } else {
+        crate::auth::oauth_scopes::RepoAction::Update
+    };
+    if auth_scope == crate::auth::jwt::AuthScope::Access
+        && claims.scope != crate::auth::jwt::SCOPE_ACCESS
+        && !crate::auth::oauth_scopes::allows_repo(
+            &claims.scope,
+            mst_key.split('/').next().unwrap_or(""),
+            action,
+        )
+    {
+        return Err(crate::auth::oauth_scopes::insufficient_scope(
+            "token scope does not permit this repo write",
+        ));
+    }
+
     if create_only && existed {
         return Err(ApiError::new(
             ErrorCode::Conflict,

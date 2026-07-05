@@ -56,6 +56,9 @@ pub enum ErrorCode {
     AuthenticationRequired,
     /// Token is structurally invalid, has wrong signature, wrong audience, or DPoP mismatch.
     InvalidToken,
+    /// The token is valid but its granted OAuth scope set does not authorize this operation.
+    #[serde(rename = "InsufficientScope")]
+    InsufficientScope,
     /// A password-reset token has expired or has already been used.
     ///
     /// Serialized as `"ExpiredToken"` (PascalCase) to match the AT Protocol XRPC error format
@@ -129,6 +132,7 @@ impl ErrorCode {
             ErrorCode::HandleNotFound => 404,
             ErrorCode::AuthenticationRequired => 401,
             ErrorCode::InvalidToken => 401,
+            ErrorCode::InsufficientScope => 403,
             ErrorCode::ExpiredToken => 400,
             ErrorCode::PayloadTooLarge => 413,
             ErrorCode::Conflict => 409,
@@ -348,6 +352,7 @@ mod tests {
             (ErrorCode::HandleNotFound, 404),
             (ErrorCode::AuthenticationRequired, 401),
             (ErrorCode::InvalidToken, 401),
+            (ErrorCode::InsufficientScope, 403),
             (ErrorCode::ExpiredToken, 400),
             (ErrorCode::PayloadTooLarge, 413),
             (ErrorCode::InvalidRequest, 400),

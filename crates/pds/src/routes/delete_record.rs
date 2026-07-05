@@ -49,6 +49,13 @@ pub async fn delete_record(
     // Authenticate: require a valid access token whose subject owns this repo.
     let token = crate::auth::extract_bearer_token(&headers)?;
     let claims = crate::auth::jwt::verify_access_token(token, &state)?;
+    let auth_scope = crate::auth::jwt::parse_scope(&claims.scope)?;
+    if !auth_scope.is_access() {
+        return Err(ApiError::new(
+            ErrorCode::InvalidToken,
+            "access token required",
+        ));
+    }
     if claims.sub != *did {
         return Err(ApiError::new(
             ErrorCode::Forbidden,
@@ -58,6 +65,19 @@ pub async fn delete_record(
 
     repo_engine::validate_record_path(collection, rkey)
         .map_err(|_| ApiError::new(ErrorCode::InvalidClaim, "invalid collection or record key"))?;
+
+    if auth_scope == crate::auth::jwt::AuthScope::Access
+        && claims.scope != crate::auth::jwt::SCOPE_ACCESS
+        && !crate::auth::oauth_scopes::allows_repo(
+            &claims.scope,
+            collection,
+            crate::auth::oauth_scopes::RepoAction::Delete,
+        )
+    {
+        return Err(crate::auth::oauth_scopes::insufficient_scope(
+            "token scope does not permit this repo write",
+        ));
+    }
 
     let write_state = crate::db::accounts::get_repo_write_state(&state.db, did)
         .await
@@ -202,6 +222,26 @@ mod tests {
         )
     }
 
+    fn scoped_access_jwt(secret: &[u8; 32], sub: &str, scope: &str) -> String {
+        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        encode(
+            &Header::new(Algorithm::HS256),
+            &serde_json::json!({
+                "scope": scope,
+                "sub": sub,
+                "iat": now,
+                "exp": now + 7200_u64,
+            }),
+            &EncodingKey::from_secret(secret),
+        )
+        .unwrap()
+    }
+
     #[tokio::test]
     async fn delete_record_without_auth_returns_401() {
         let state = state_with_master_key().await;
@@ -251,6 +291,44 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         json["cid"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn granular_repo_scope_allows_create_post_but_not_delete_follow() {
+        let state = state_with_master_key().await;
+        let did = "did:plc:delrec".to_string();
+        seed_account_with_repo(&state.db, &did).await;
+        let token = scoped_access_jwt(
+            &state.jwt_secret,
+            &did,
+            "atproto repo:app.bsky.feed.post?action=create",
+        );
+        let app = crate::app::app(state);
+
+        let create_post = put_record_request(
+            &did,
+            "app.bsky.feed.post",
+            "scopedpost",
+            serde_json::json!({"record": {"text": "allowed"}}),
+            Some(&token),
+        );
+        let created = app.clone().oneshot(create_post).await.unwrap();
+        assert_eq!(created.status(), StatusCode::OK);
+
+        let delete_follow = delete_record_request(
+            &did,
+            "app.bsky.graph.follow",
+            "scopedfollow",
+            serde_json::json!({}),
+            Some(&token),
+        );
+        let denied = app.oneshot(delete_follow).await.unwrap();
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+        let bytes = axum::body::to_bytes(denied.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"]["code"], "InsufficientScope");
     }
 
     #[tokio::test]

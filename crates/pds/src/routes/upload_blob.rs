@@ -18,8 +18,9 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
-use crate::blob_store;
+use crate::auth::jwt::{AuthScope, SCOPE_ACCESS};
 use crate::db::blobs;
+use crate::{auth::oauth_scopes, blob_store};
 
 // ── Response types ───────────────────────────────────────────────────────────
 
@@ -78,6 +79,21 @@ pub async fn upload_blob(
 
     // 2. Read the full request body, enforcing max size.
     let bytes = collect_body_with_limit(request.into_body(), max_size).await?;
+    let mime_type = blob_store::detect_mime_type(&bytes);
+    if !user.scope.is_access() {
+        return Err(ApiError::new(
+            ErrorCode::InvalidToken,
+            "access token required",
+        ));
+    }
+    if user.scope == AuthScope::Access
+        && user.scope_claim != SCOPE_ACCESS
+        && !oauth_scopes::allows_blob(&user.scope_claim, &mime_type)
+    {
+        return Err(oauth_scopes::insufficient_scope(
+            "token scope does not permit this blob upload",
+        ));
+    }
 
     // 3. Check per-account storage quota.
     let quota = state.config.blobs.max_storage_per_account as i64;
@@ -171,7 +187,6 @@ async fn collect_body_with_limit(body: Body, max_bytes: usize) -> Result<Vec<u8>
 mod tests {
     use super::*;
     use crate::app::test_state;
-    use crate::auth::jwt::issue_access_jwt;
     use crate::routes::test_utils::body_json;
     use axum::{body::Body, http::Request, routing::post, Router};
     use std::sync::Arc;
@@ -185,16 +200,26 @@ mod tests {
 
     /// Helper: issue a valid HS256 JWT for the given DID using the test state's secret.
     fn issue_test_jwt(state: &AppState, did: &str) -> String {
+        issue_test_jwt_with_scope(state, did, "com.atproto.access")
+    }
+
+    fn issue_test_jwt_with_scope(state: &AppState, did: &str, scope: &str) -> String {
+        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        issue_access_jwt(
-            &state.jwt_secret,
-            did,
-            &state.config.public_url,
-            now,
-            "com.atproto.access",
+        encode(
+            &Header::new(Algorithm::HS256),
+            &serde_json::json!({
+                "scope": scope,
+                "sub": did,
+                "aud": state.config.public_url,
+                "iat": now,
+                "exp": now + 7200_u64,
+            }),
+            &EncodingKey::from_secret(&state.jwt_secret),
         )
         .unwrap()
     }
@@ -310,6 +335,51 @@ mod tests {
 
         let body = body_json(response).await;
         assert_eq!(body["blob"]["mimeType"], "application/octet-stream");
+    }
+
+    #[tokio::test]
+    async fn granular_blob_scope_is_enforced_by_mime_type() {
+        let state = test_state().await;
+        seed_account(&state, "did:plc:blobscope").await;
+        let repo_only_jwt = issue_test_jwt_with_scope(
+            &state,
+            "did:plc:blobscope",
+            "atproto repo:app.bsky.feed.post?action=create",
+        );
+
+        let denied = app_with_state(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.repo.uploadBlob")
+                    .header("authorization", format!("Bearer {repo_only_jwt}"))
+                    .body(Body::from(vec![
+                        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+                    ]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+        let body = body_json(denied).await;
+        assert_eq!(body["error"]["code"], "InsufficientScope");
+
+        let image_jwt =
+            issue_test_jwt_with_scope(&state, "did:plc:blobscope", "atproto blob:image/*");
+        let allowed = app_with_state(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.repo.uploadBlob")
+                    .header("authorization", format!("Bearer {image_jwt}"))
+                    .body(Body::from(vec![
+                        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+                    ]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(allowed.status(), StatusCode::OK);
     }
 
     /// Oversized body via Content-Length header returns 413 before reading the body.

@@ -29,6 +29,13 @@ pub struct StoredBlob {
     pub size_bytes: u64,
 }
 
+/// Detect a blob MIME type from magic bytes, falling back to generic binary.
+pub fn detect_mime_type(content: &[u8]) -> String {
+    infer::get(content)
+        .map(|t| t.to_string())
+        .unwrap_or_else(|| "application/octet-stream".to_string())
+}
+
 /// Store a blob on disk and return its CID, MIME type, and storage path.
 ///
 /// Content is written to `{data_dir}/blobs/{cid[0:2]}/{cid}`.
@@ -37,9 +44,7 @@ pub struct StoredBlob {
 /// Falls back to `application/octet-stream` when no magic bytes match.
 pub fn store_blob(data_dir: &Path, content: &[u8]) -> Result<StoredBlob, BlobStoreError> {
     // 1. Detect MIME type from magic bytes; fall back to generic binary.
-    let mime_type = infer::get(content)
-        .map(|t| t.to_string())
-        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let mime_type = detect_mime_type(content);
 
     // 2. Compute SHA-256 multihash.
     let hash = Sha256::digest(content);
