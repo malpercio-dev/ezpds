@@ -6,6 +6,7 @@ pub mod blobs;
 pub mod blocks;
 pub mod claim_codes;
 pub mod dids;
+pub mod email_tokens;
 pub mod firehose_seq;
 pub mod handles;
 pub mod iroh_identity;
@@ -189,6 +190,10 @@ static MIGRATIONS: &[Migration] = &[
     Migration {
         version: 35,
         sql: include_str!("migrations/V035__block_owners.sql"),
+    },
+    Migration {
+        version: 36,
+        sql: include_str!("migrations/V036__email_tokens.sql"),
     },
 ];
 

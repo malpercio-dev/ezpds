@@ -1,0 +1,41 @@
+meta {
+  name: Update Email (updateEmail)
+  type: http
+  seq: 95
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.server.updateEmail
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+body:json {
+  {
+    "email": "new@example.com",
+    "token": "{{emailUpdateToken}}"
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  Changes the account email and resets its confirmation state (the new address is unconfirmed until
+  re-verified). If the current email is confirmed, a token minted by `requestEmailUpdate` is
+  required (proving control of the old address); if unconfirmed, the `token` field may be omitted.
+
+  Requires a full access-scope token. Returns 200 with an empty body on success.
+
+  Errors:
+  - 401 AUTHENTICATION_REQUIRED: missing Authorization header
+  - 401 INVALID_TOKEN: app-password / refresh-scope token (full access required)
+  - 400 InvalidRequest: a token is required but missing, the new address is malformed, or it is
+    already in use by another account
+  - 400 ExpiredToken: the update token is unknown, expired, or already used
+}

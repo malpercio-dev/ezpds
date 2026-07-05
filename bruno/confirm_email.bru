@@ -1,0 +1,40 @@
+meta {
+  name: Confirm Email (confirmEmail)
+  type: http
+  seq: 93
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.server.confirmEmail
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+body:json {
+  {
+    "email": "{{accountEmail}}",
+    "token": "{{emailConfirmToken}}"
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  Consumes a token minted by `requestEmailConfirmation` and marks the account's email confirmed.
+  Two factors: a full access-scope session AND the single-use email token. The submitted `email`
+  must match the account's current address.
+
+  Returns 200 with an empty body on success.
+
+  Errors:
+  - 401 AUTHENTICATION_REQUIRED: missing Authorization header
+  - 401 INVALID_TOKEN: app-password / refresh-scope token (full access required)
+  - 400 InvalidRequest: the submitted email does not match the account email
+  - 400 ExpiredToken: the confirmation token is unknown, expired, or already used
+}

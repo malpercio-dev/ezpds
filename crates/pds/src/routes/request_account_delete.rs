@@ -7,12 +7,11 @@
 // prove control of the account email before the deletion is honored (the token is the second
 // factor alongside the account password that `deleteAccount` itself checks).
 //
-// Email delivery is stubbed repo-wide (see `requestPasswordReset` / `requestPlcOperationSignature`)
-// pending an outbound-email path: the plaintext token is logged via `tracing::info!` rather than
-// emailed.
+// The token is delivered to the account email via the configured [`crate::email::EmailSender`]
+// (the default log sender writes it to the logs; SMTP delivers a real email).
 //
 // Gather:  AuthenticatedUser (full access token) → DID
-// Process: generate token → store hash (1h TTL) → "deliver" (log)
+// Process: generate token → store hash (1h TTL) → email it
 // Respond: 200, empty body
 
 use axum::{extract::State, http::StatusCode};
@@ -24,6 +23,7 @@ use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
 use crate::auth::oauth_scopes;
 use crate::db::account_deletion_tokens::insert_account_deletion_token;
+use crate::db::accounts::get_session_account;
 use crate::token::generate_token;
 
 pub async fn request_account_delete(
@@ -39,15 +39,32 @@ pub async fn request_account_delete(
     }
     oauth_scopes::require_account(&user.scope_claim, "status", "manage")?;
 
+    let account = get_session_account(&state.db, &user.did)
+        .await?
+        .ok_or_else(|| ApiError::new(ErrorCode::InvalidToken, "account not found"))?;
+
     let token = generate_token();
     insert_account_deletion_token(&state.db, &user.did, &token.hash).await?;
 
-    // Stub delivery: log the plaintext token until an outbound-email path is implemented.
-    tracing::info!(
-        did = %user.did,
-        account_deletion_token = %token.plaintext,
-        "account deletion token generated (email delivery not yet implemented)"
-    );
+    let host = state.config.public_host();
+    let message = crate::email::EmailMessage {
+        to: account.email.clone(),
+        subject: format!("Confirm deletion of your {host} account"),
+        body: format!(
+            "Permanent deletion of your {host} account was requested. This cannot be undone.\n\n\
+             Confirmation code: {token}\n\n\
+             Enter this code in your app to confirm deletion. It expires in 1 hour.\n\n\
+             If you didn't request this, ignore this email and consider changing your password.",
+            token = token.plaintext,
+        ),
+    };
+    if let Err(e) = state.email.send(message).await {
+        tracing::error!(did = %user.did, error = %e, "failed to send account deletion token");
+        return Err(ApiError::new(
+            ErrorCode::ServiceUnavailable,
+            "failed to send confirmation email",
+        ));
+    }
 
     Ok(StatusCode::OK)
 }
@@ -61,7 +78,9 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
-    use crate::routes::test_utils::{access_jwt, app_pass_jwt, seed_account_with_signing_key};
+    use crate::routes::test_utils::{
+        access_jwt, app_pass_jwt, seed_account_with_signing_key, state_with_failing_email,
+    };
 
     fn post_req(jwt: Option<&str>) -> Request<Body> {
         let mut builder = Request::builder()
@@ -99,6 +118,18 @@ mod tests {
         let state = test_state().await;
         let response = app(state).oneshot(post_req(None)).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn email_delivery_failure_returns_503() {
+        let state = state_with_failing_email().await;
+        let db = state.db.clone();
+        let did = "did:plc:reqdelete3333333333333333";
+        seed_account_with_signing_key(&db, did, "carol.example.com").await;
+        let jwt = access_jwt(&state.jwt_secret, did);
+
+        let response = app(state).oneshot(post_req(Some(&jwt))).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]

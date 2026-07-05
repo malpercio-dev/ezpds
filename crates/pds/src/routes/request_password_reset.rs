@@ -1,7 +1,7 @@
 // pattern: Imperative Shell
 //
 // Gathers: JSON body {email}, DB pool
-// Processes: email lookup → token generation → DB insert → log token (email stub)
+// Processes: email lookup → token generation → DB insert → send reset email
 // Returns: 200 always (prevents email enumeration)
 //
 // Implements: POST /xrpc/com.atproto.server.requestPasswordReset
@@ -24,7 +24,9 @@ pub struct RequestPasswordResetRequest {
 ///
 /// Generates a short-lived (1-hour) single-use reset token for the given email address.
 /// Always returns 200 regardless of whether the email exists, to prevent account enumeration.
-/// Email delivery is stubbed — the plaintext token is logged via `tracing::info!`.
+/// The token is delivered via the configured [`crate::email::EmailSender`] (the default log
+/// sender writes it to the logs; SMTP delivers a real email). Delivery failures are logged but
+/// still return 200 so the response never reveals whether the address exists.
 pub async fn request_password_reset(
     State(state): State<AppState>,
     axum::Json(payload): axum::Json<RequestPasswordResetRequest>,
@@ -62,12 +64,25 @@ pub async fn request_password_reset(
         return StatusCode::OK;
     }
 
-    // --- Stub: log token (replace with email delivery in a future wave) ---
-    tracing::info!(
-        did = %account.did,
-        reset_token = %token.plaintext,
-        "password reset token generated (email delivery not yet implemented)"
-    );
+    // --- Deliver the reset token by email ---
+    // Send to the requested address (which `resolve_by_email` matched to this account). A delivery
+    // failure is logged but still returns 200: this endpoint must never reveal whether an email
+    // exists, and a best-effort notification must not surface a 500 to an anonymous caller.
+    let host = state.config.public_host();
+    let message = crate::email::EmailMessage {
+        to: payload.email.clone(),
+        subject: format!("Reset your {host} password"),
+        body: format!(
+            "A password reset was requested for your {host} account.\n\n\
+             Reset code: {token}\n\n\
+             Enter this code in your app to choose a new password. It expires in 1 hour.\n\n\
+             If you didn't request this, you can safely ignore this email.",
+            token = token.plaintext,
+        ),
+    };
+    if let Err(e) = state.email.send(message).await {
+        tracing::error!(did = %account.did, error = %e, "failed to send password reset email");
+    }
 
     StatusCode::OK
 }

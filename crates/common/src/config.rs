@@ -43,6 +43,8 @@ pub struct Config {
     /// Request rate-limiting knobs (global IP + per-endpoint IP + per-account write points).
     pub rate_limit: RateLimitConfig,
     pub telemetry: TelemetryConfig,
+    /// Outbound email delivery (password reset, email confirmation, email update).
+    pub email: EmailConfig,
     // Operator authentication for management endpoints (e.g., POST /v1/pds/keys).
     pub admin_token: Option<String>,
     // AES-256-GCM master key for encrypting signing key private keys at rest.
@@ -472,6 +474,112 @@ impl Default for TelemetryConfig {
     }
 }
 
+/// Which backend delivers outbound email.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum EmailProvider {
+    /// No real delivery — the message is logged. Keeps a fresh install and the test suite fully
+    /// offline (the pre-outbound-email stub behaviour). The default.
+    #[default]
+    Log,
+    /// Real delivery over SMTP (see the `smtp_*` fields of [`EmailConfig`]).
+    Smtp,
+}
+
+/// Transport security mode for the SMTP sender.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SmtpTls {
+    /// Implicit TLS (SMTPS) — TLS from connection open, conventionally port 465.
+    Implicit,
+    /// STARTTLS — upgrade a plaintext connection to TLS, conventionally port 587. The default.
+    #[default]
+    Starttls,
+    /// No transport encryption (plaintext SMTP). For localhost test sinks (MailHog/Mailpit) only;
+    /// never send credentials or real mail over this.
+    None,
+}
+
+/// Outbound email configuration.
+///
+/// Governs the pluggable email sender behind the password-reset, email-confirmation, and
+/// email-update flows. `provider = "log"` (the default) logs messages instead of sending them, so
+/// a fresh install and the tests need no mail server; `provider = "smtp"` delivers over SMTP and
+/// requires `from` and `smtp_host`.
+#[derive(Debug, Clone)]
+pub struct EmailConfig {
+    pub provider: EmailProvider,
+    /// From address on every message (e.g. `noreply@pds.example.com`). Required for SMTP.
+    pub from: Option<String>,
+    /// Optional display name paired with `from` (e.g. `Custos PDS`).
+    pub from_name: Option<String>,
+    /// SMTP relay host. Required when `provider = "smtp"`.
+    pub smtp_host: Option<String>,
+    /// SMTP relay port. Default 587 (STARTTLS submission).
+    pub smtp_port: u16,
+    /// SMTP AUTH username. When set (with a password), the sender authenticates.
+    pub smtp_username: Option<String>,
+    /// SMTP AUTH password. Wrapped in [`Sensitive`] so it never appears in `Debug` output.
+    pub smtp_password: Option<Sensitive<String>>,
+    /// Transport security mode.
+    pub smtp_tls: SmtpTls,
+    /// Connect/send timeout for the SMTP transport, in seconds. `send()` is awaited on the request
+    /// path, so this bounds how long a slow or unresponsive relay can stall a handler. Default 15.
+    pub smtp_timeout_secs: u64,
+}
+
+impl Default for EmailConfig {
+    fn default() -> Self {
+        Self {
+            provider: EmailProvider::Log,
+            from: None,
+            from_name: None,
+            smtp_host: None,
+            smtp_port: default_smtp_port(),
+            smtp_username: None,
+            smtp_password: None,
+            smtp_tls: SmtpTls::Starttls,
+            smtp_timeout_secs: default_smtp_timeout_secs(),
+        }
+    }
+}
+
+/// The default `smtp_port` when unset: the conventional port for the default STARTTLS mode.
+/// Delegates to [`default_smtp_port_for`] so the fallback lives in one place.
+fn default_smtp_port() -> u16 {
+    default_smtp_port_for(SmtpTls::Starttls)
+}
+
+fn default_smtp_timeout_secs() -> u64 {
+    15
+}
+
+/// The conventional submission port for a TLS mode: 465 for implicit TLS (SMTPS), 587 otherwise
+/// (STARTTLS submission / plaintext). Used to default `smtp_port` when the operator does not set it
+/// explicitly, so the port matches the selected `smtp_tls`.
+fn default_smtp_port_for(tls: SmtpTls) -> u16 {
+    match tls {
+        SmtpTls::Implicit => 465,
+        SmtpTls::Starttls | SmtpTls::None => 587,
+    }
+}
+
+/// Raw TOML form of [`EmailConfig`] — all fields optional so a partial `[email]` section (or env
+/// overlay) is valid. `smtp_password` is a plain `Option<String>` here (TOML/env carry the raw
+/// value); it is wrapped in [`Sensitive`] when the built [`EmailConfig`] is constructed.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct RawEmailConfig {
+    pub(crate) provider: Option<EmailProvider>,
+    pub(crate) from: Option<String>,
+    pub(crate) from_name: Option<String>,
+    pub(crate) smtp_host: Option<String>,
+    pub(crate) smtp_port: Option<u16>,
+    pub(crate) smtp_username: Option<String>,
+    pub(crate) smtp_password: Option<String>,
+    pub(crate) smtp_tls: Option<SmtpTls>,
+    pub(crate) smtp_timeout_secs: Option<u64>,
+}
+
 #[derive(Debug, Deserialize, Default)]
 pub(crate) struct RawTelemetryConfig {
     pub(crate) enabled: Option<bool>,
@@ -514,6 +622,8 @@ pub(crate) struct RawConfig {
     pub(crate) rate_limit: RateLimitConfig,
     #[serde(default)]
     pub(crate) telemetry: RawTelemetryConfig,
+    #[serde(default)]
+    pub(crate) email: RawEmailConfig,
     pub(crate) admin_token: Option<String>,
     pub(crate) plc_directory_url: Option<String>,
     #[serde(skip)]
@@ -711,6 +821,43 @@ pub(crate) fn apply_env_overrides(
     if let Some(v) = env.get("EZPDS_RATE_LIMIT_WRITE_POINTS_DAILY") {
         raw.rate_limit.write_points_daily = parse_u64("EZPDS_RATE_LIMIT_WRITE_POINTS_DAILY", v)?;
     }
+    // Email overrides. `provider` and `smtp_tls` parse from the same lowercase tokens the TOML
+    // form accepts; an unrecognised value is a hard config error rather than a silent fallback.
+    if let Some(v) = env.get("EZPDS_EMAIL_PROVIDER") {
+        raw.email.provider = Some(parse_email_provider(v)?);
+    }
+    if let Some(v) = env.get("EZPDS_EMAIL_FROM") {
+        raw.email.from = Some(v.clone());
+    }
+    if let Some(v) = env.get("EZPDS_EMAIL_FROM_NAME") {
+        raw.email.from_name = Some(v.clone());
+    }
+    if let Some(v) = env.get("EZPDS_EMAIL_SMTP_HOST") {
+        raw.email.smtp_host = Some(v.clone());
+    }
+    if let Some(v) = env.get("EZPDS_EMAIL_SMTP_PORT") {
+        raw.email.smtp_port = Some(v.parse::<u16>().map_err(|e| {
+            ConfigError::Invalid(format!(
+                "EZPDS_EMAIL_SMTP_PORT is not a valid port number: '{v}': {e}"
+            ))
+        })?);
+    }
+    if let Some(v) = env.get("EZPDS_EMAIL_SMTP_USERNAME") {
+        raw.email.smtp_username = Some(v.clone());
+    }
+    if let Some(v) = env.get("EZPDS_EMAIL_SMTP_PASSWORD") {
+        raw.email.smtp_password = Some(v.clone());
+    }
+    if let Some(v) = env.get("EZPDS_EMAIL_SMTP_TLS") {
+        raw.email.smtp_tls = Some(parse_smtp_tls(v)?);
+    }
+    if let Some(v) = env.get("EZPDS_EMAIL_SMTP_TIMEOUT_SECS") {
+        raw.email.smtp_timeout_secs = Some(v.parse::<u64>().map_err(|e| {
+            ConfigError::Invalid(format!(
+                "EZPDS_EMAIL_SMTP_TIMEOUT_SECS is not a valid non-negative integer: '{v}': {e}"
+            ))
+        })?);
+    }
     if let Some(v) = env.get("EZPDS_ADMIN_TOKEN") {
         raw.admin_token = Some(v.clone());
     }
@@ -721,6 +868,97 @@ pub(crate) fn apply_env_overrides(
         raw.signing_key_master_key = Some(parse_hex_32("EZPDS_SIGNING_KEY_MASTER_KEY", v)?);
     }
     Ok(raw)
+}
+
+/// Parse the `EZPDS_EMAIL_PROVIDER` env value into an [`EmailProvider`], matching the lowercase
+/// tokens the TOML form uses.
+fn parse_email_provider(value: &str) -> Result<EmailProvider, ConfigError> {
+    match value {
+        "log" => Ok(EmailProvider::Log),
+        "smtp" => Ok(EmailProvider::Smtp),
+        other => Err(ConfigError::Invalid(format!(
+            "EZPDS_EMAIL_PROVIDER must be 'log' or 'smtp', got: {other:?}"
+        ))),
+    }
+}
+
+/// Parse the `EZPDS_EMAIL_SMTP_TLS` env value into an [`SmtpTls`], matching the lowercase tokens
+/// the TOML form uses.
+fn parse_smtp_tls(value: &str) -> Result<SmtpTls, ConfigError> {
+    match value {
+        "implicit" => Ok(SmtpTls::Implicit),
+        "starttls" => Ok(SmtpTls::Starttls),
+        "none" => Ok(SmtpTls::None),
+        other => Err(ConfigError::Invalid(format!(
+            "EZPDS_EMAIL_SMTP_TLS must be 'implicit', 'starttls', or 'none', got: {other:?}"
+        ))),
+    }
+}
+
+/// Build and validate the [`EmailConfig`] from its raw form.
+///
+/// When `provider = "smtp"`, both `from` and `smtp_host` are required — without them the sender
+/// could not construct or route a message, so we reject at load time rather than fail every send
+/// at runtime. The password is moved into a [`Sensitive`] wrapper so it never leaks via `Debug`.
+fn build_email_config(raw: RawEmailConfig) -> Result<EmailConfig, ConfigError> {
+    let provider = raw.provider.unwrap_or_default();
+    let from = raw.from.filter(|s| !s.is_empty());
+    let smtp_host = raw.smtp_host.filter(|s| !s.is_empty());
+    let smtp_tls = raw.smtp_tls.unwrap_or_default();
+    // Treat empty-string credentials (an empty env override or TOML value) as unset, so we don't
+    // authenticate with a blank username/password. Filtering here also feeds the plaintext-TLS
+    // check below.
+    let smtp_username = raw.smtp_username.filter(|s| !s.is_empty());
+    let smtp_password = raw.smtp_password.filter(|s| !s.is_empty());
+    let smtp_timeout_secs = raw
+        .smtp_timeout_secs
+        .unwrap_or_else(default_smtp_timeout_secs);
+
+    // A zero timeout is `Duration::from_secs(0)`, which lettre treats as "no timeout" (an
+    // unbounded wait) — the opposite of what a timeout knob should do. Reject it rather than
+    // silently disable the guard; the field has no "disable" semantics.
+    if smtp_timeout_secs == 0 {
+        return Err(ConfigError::Invalid(
+            "email.smtp_timeout_secs must be > 0 (0 would disable the SMTP timeout entirely)"
+                .to_string(),
+        ));
+    }
+
+    if provider == EmailProvider::Smtp {
+        if from.is_none() {
+            return Err(ConfigError::Invalid(
+                "email.from is required when email.provider = \"smtp\"".to_string(),
+            ));
+        }
+        if smtp_host.is_none() {
+            return Err(ConfigError::Invalid(
+                "email.smtp_host is required when email.provider = \"smtp\"".to_string(),
+            ));
+        }
+        // Refuse to attach credentials over an unencrypted connection: the sender would send the
+        // SMTP password in plaintext. Reject at load time rather than rely on operator discipline.
+        if smtp_tls == SmtpTls::None && (smtp_username.is_some() || smtp_password.is_some()) {
+            return Err(ConfigError::Invalid(
+                "email.smtp_tls = \"none\" must not be combined with smtp_username/smtp_password (credentials would be sent unencrypted)".to_string(),
+            ));
+        }
+    }
+
+    Ok(EmailConfig {
+        provider,
+        from,
+        from_name: raw.from_name.filter(|s| !s.is_empty()),
+        smtp_host,
+        // Default the port to the convention for the chosen TLS mode (465 for implicit TLS, 587
+        // otherwise) so an operator who sets `smtp_tls = "implicit"` doesn't silently get 587.
+        smtp_port: raw
+            .smtp_port
+            .unwrap_or_else(|| default_smtp_port_for(smtp_tls)),
+        smtp_username,
+        smtp_password: smtp_password.map(Sensitive),
+        smtp_tls,
+        smtp_timeout_secs,
+    })
 }
 
 /// Validate a [`RawConfig`] and build a [`Config`], applying defaults for optional fields.
@@ -860,6 +1098,8 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         ));
     }
 
+    let email = build_email_config(raw.email)?;
+
     Ok(Config {
         bind_address,
         port,
@@ -881,6 +1121,7 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         crawlers: raw.crawlers,
         rate_limit: raw.rate_limit,
         telemetry,
+        email,
         admin_token: raw.admin_token,
         signing_key_master_key: raw
             .signing_key_master_key
@@ -1981,5 +2222,269 @@ mod tests {
 
         assert!(matches!(err, ConfigError::Invalid(_)));
         assert!(err.to_string().contains("PORT"));
+    }
+
+    // --- email config tests ---
+
+    #[test]
+    fn email_defaults_to_log_provider() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert_eq!(config.email.provider, EmailProvider::Log);
+        assert_eq!(config.email.smtp_port, 587);
+        assert_eq!(config.email.smtp_tls, SmtpTls::Starttls);
+        assert!(config.email.from.is_none());
+    }
+
+    #[test]
+    fn parses_email_section_from_toml() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [email]
+            provider = "smtp"
+            from = "noreply@pds.example.com"
+            from_name = "Custos PDS"
+            smtp_host = "smtp.example.com"
+            smtp_port = 465
+            smtp_username = "mailer"
+            smtp_password = "secret"
+            smtp_tls = "implicit"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert_eq!(config.email.provider, EmailProvider::Smtp);
+        assert_eq!(
+            config.email.from.as_deref(),
+            Some("noreply@pds.example.com")
+        );
+        assert_eq!(config.email.from_name.as_deref(), Some("Custos PDS"));
+        assert_eq!(config.email.smtp_host.as_deref(), Some("smtp.example.com"));
+        assert_eq!(config.email.smtp_port, 465);
+        assert_eq!(config.email.smtp_username.as_deref(), Some("mailer"));
+        assert_eq!(
+            config.email.smtp_password.as_ref().map(|s| s.0.as_str()),
+            Some("secret")
+        );
+        assert_eq!(config.email.smtp_tls, SmtpTls::Implicit);
+    }
+
+    #[test]
+    fn smtp_provider_requires_from() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [email]
+            provider = "smtp"
+            smtp_host = "smtp.example.com"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("email.from"));
+    }
+
+    #[test]
+    fn smtp_provider_requires_host() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [email]
+            provider = "smtp"
+            from = "noreply@pds.example.com"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("email.smtp_host"));
+    }
+
+    #[test]
+    fn email_env_overrides() {
+        let env = HashMap::from([
+            ("EZPDS_EMAIL_PROVIDER".to_string(), "smtp".to_string()),
+            (
+                "EZPDS_EMAIL_FROM".to_string(),
+                "noreply@pds.test".to_string(),
+            ),
+            ("EZPDS_EMAIL_SMTP_HOST".to_string(), "smtp.test".to_string()),
+            ("EZPDS_EMAIL_SMTP_PORT".to_string(), "2525".to_string()),
+            // implicit TLS so credentials are permitted (plaintext + creds is rejected).
+            ("EZPDS_EMAIL_SMTP_TLS".to_string(), "implicit".to_string()),
+            (
+                "EZPDS_EMAIL_SMTP_PASSWORD".to_string(),
+                "hunter2".to_string(),
+            ),
+        ]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert_eq!(config.email.provider, EmailProvider::Smtp);
+        assert_eq!(config.email.from.as_deref(), Some("noreply@pds.test"));
+        assert_eq!(config.email.smtp_host.as_deref(), Some("smtp.test"));
+        assert_eq!(config.email.smtp_port, 2525);
+        assert_eq!(config.email.smtp_tls, SmtpTls::Implicit);
+        assert_eq!(
+            config.email.smtp_password.as_ref().map(|s| s.0.as_str()),
+            Some("hunter2")
+        );
+    }
+
+    #[test]
+    fn email_provider_env_rejects_unknown_value() {
+        let env = HashMap::from([(
+            "EZPDS_EMAIL_PROVIDER".to_string(),
+            "carrierpigeon".to_string(),
+        )]);
+        let err = apply_env_overrides(minimal_raw(), &env).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("EZPDS_EMAIL_PROVIDER"));
+    }
+
+    #[test]
+    fn email_password_is_redacted_in_debug() {
+        // The Sensitive wrapper must keep the SMTP password out of Debug output (Config is Debug).
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [email]
+            provider = "smtp"
+            from = "noreply@pds.example.com"
+            smtp_host = "smtp.example.com"
+            smtp_password = "topsecret"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        let debug = format!("{:?}", config.email);
+        assert!(
+            !debug.contains("topsecret"),
+            "password must not leak in Debug"
+        );
+        assert!(debug.contains("***"), "Sensitive should render as ***");
+    }
+
+    #[test]
+    fn smtp_implicit_tls_defaults_port_to_465() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [email]
+            provider = "smtp"
+            from = "noreply@pds.example.com"
+            smtp_host = "smtp.example.com"
+            smtp_tls = "implicit"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.email.smtp_port, 465);
+    }
+
+    #[test]
+    fn smtp_starttls_defaults_port_to_587() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [email]
+            provider = "smtp"
+            from = "noreply@pds.example.com"
+            smtp_host = "smtp.example.com"
+            smtp_tls = "starttls"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.email.smtp_port, 587);
+    }
+
+    #[test]
+    fn explicit_smtp_port_overrides_tls_default() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [email]
+            provider = "smtp"
+            from = "noreply@pds.example.com"
+            smtp_host = "smtp.example.com"
+            smtp_tls = "implicit"
+            smtp_port = 2525
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.email.smtp_port, 2525);
+    }
+
+    #[test]
+    fn smtp_none_tls_with_credentials_is_rejected() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [email]
+            provider = "smtp"
+            from = "noreply@pds.example.com"
+            smtp_host = "localhost"
+            smtp_tls = "none"
+            smtp_username = "mailer"
+            smtp_password = "secret"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("smtp_tls = \"none\""));
+    }
+
+    #[test]
+    fn empty_smtp_password_is_treated_as_unset() {
+        // An empty-string override must not produce Some("") — otherwise the sender would try to
+        // authenticate with a blank password.
+        let env = HashMap::from([
+            ("EZPDS_EMAIL_PROVIDER".to_string(), "smtp".to_string()),
+            (
+                "EZPDS_EMAIL_FROM".to_string(),
+                "noreply@pds.test".to_string(),
+            ),
+            ("EZPDS_EMAIL_SMTP_HOST".to_string(), "smtp.test".to_string()),
+            ("EZPDS_EMAIL_SMTP_PASSWORD".to_string(), "".to_string()),
+        ]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert!(config.email.smtp_password.is_none());
+    }
+
+    #[test]
+    fn smtp_timeout_defaults_to_15s_and_can_be_overridden() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert_eq!(config.email.smtp_timeout_secs, 15);
+
+        let env = HashMap::from([(
+            "EZPDS_EMAIL_SMTP_TIMEOUT_SECS".to_string(),
+            "45".to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.email.smtp_timeout_secs, 45);
+    }
+
+    #[test]
+    fn zero_smtp_timeout_is_rejected() {
+        let env = HashMap::from([("EZPDS_EMAIL_SMTP_TIMEOUT_SECS".to_string(), "0".to_string())]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("smtp_timeout_secs"));
     }
 }

@@ -114,6 +114,12 @@ iroh = "1"
 # Blob MIME detection (pds)
 infer = "0.19"
 
+# Outbound email — SMTP delivery for the password-reset / email-confirmation / email-update flows
+# (pds). rustls (not native-tls) to reuse reqwest's TLS stack instead of compiling a second TLS
+# backend and pulling in system OpenSSL. default-features = false drops native-tls; we re-add only
+# the builder + SMTP transport + async-tokio-rustls transport + hostname (EHLO) we actually use.
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls", "hostname"] }
+
 # Mobile apps (Tauri v2 — shared by identity-wallet + admin-companion).
 # Now that two crates consume these, their versions live here per the workspace policy;
 # members opt in with `{ workspace = true }` (and add crate-specific features locally).

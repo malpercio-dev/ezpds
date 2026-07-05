@@ -27,6 +27,6 @@ docs {
   Requires a full access-scope token (app-password tokens are rejected). Takes no body and returns
   200 with an empty body.
 
-  Email delivery is stubbed repo-wide pending an outbound-email path: the plaintext token is
-  written to the server log via tracing rather than emailed.
+  Delivery goes through the configured email sender: the default `log` provider writes the token to
+  the server log, `smtp` sends a real email. A delivery failure returns 503.
 }

@@ -15,6 +15,7 @@ mod code_gen;
 mod crawler;
 mod db;
 mod dns;
+mod email;
 mod firehose;
 mod firehose_gc;
 mod genesis;
@@ -232,6 +233,20 @@ async fn run() -> anyhow::Result<()> {
             .with_context(|| "failed to initialise firehose sequencer from the event log")?,
     );
 
+    // Build the outbound email sender from config before `config` is moved into the AppState's Arc.
+    // A misconfigured SMTP setup is fatal here rather than failing every send at runtime.
+    let email = email::build_email_sender(&config.email)
+        .with_context(|| "failed to build outbound email sender")?;
+    match config.email.provider {
+        common::EmailProvider::Smtp => tracing::info!(
+            host = config.email.smtp_host.as_deref().unwrap_or(""),
+            "outbound email: SMTP delivery enabled"
+        ),
+        common::EmailProvider::Log => {
+            tracing::warn!("outbound email: using the log provider (messages are not sent)")
+        }
+    }
+
     // Build the rate limiter from config before `config` is moved into the AppState's Arc.
     let rate_limiter = Arc::new(rate_limit::RateLimiterState::new(&config.rate_limit));
     if config.rate_limit.enabled {
@@ -260,6 +275,7 @@ async fn run() -> anyhow::Result<()> {
         crawlers,
         iroh,
         rate_limiter,
+        email,
         allow_loopback_proxy_targets: false,
     };
 
