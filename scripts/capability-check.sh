@@ -71,16 +71,21 @@ check_caps() {
 # check_schema FILE — capability files must reference the mobile schema, and must NOT
 # reference the desktop one (both apps ship iOS-only; a desktop-schema reference is a
 # platform mismatch, and a missing/renamed schema ref is caught by the positive check).
+# shellcheck disable=SC2016  # the greps intentionally contain a literal `$schema` (an ERE anchor, not a shell var)
 check_schema() {
   local file="$1"
   [ -f "$file" ] || return
-  if grep -q 'desktop-schema\.json' "$file"; then
-    echo "✗ $file references the desktop capability schema — both apps are iOS-only." >&2
+  # Anchor both checks to the "$schema" field so a stray mention of a schema name
+  # elsewhere (e.g. inside a description) can't satisfy the positive check or trip
+  # the negative one. ERE only — `grep -P` (PCRE) is not portable to the BSD grep
+  # on the macOS `just ci` lane.
+  if grep -Eq '"\$schema"[[:space:]]*:[[:space:]]*"[^"]*desktop-schema\.json"' "$file"; then
+    echo "✗ $file's \$schema references the desktop capability schema — both apps are iOS-only." >&2
     echo "  Use ../gen/schemas/mobile-schema.json." >&2
     fail=1
   fi
-  if ! grep -q 'mobile-schema\.json' "$file"; then
-    echo "✗ $file does not reference the mobile capability schema" >&2
+  if ! grep -Eq '"\$schema"[[:space:]]*:[[:space:]]*"[^"]*mobile-schema\.json"' "$file"; then
+    echo "✗ $file's \$schema does not reference the mobile capability schema" >&2
     echo "  (expected ../gen/schemas/mobile-schema.json)." >&2
     fail=1
   fi
