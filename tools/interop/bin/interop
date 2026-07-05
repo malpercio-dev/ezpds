@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Wrapper for the interop CLI: wires Node's fetch/TLS to an egress proxy when one
+# is configured (e.g. Claude Code remote sessions), then execs the CLI.
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [ -n "${HTTPS_PROXY:-}" ]; then
+  # Node >= 22.21: make built-in fetch honor HTTPS_PROXY.
+  export NODE_USE_ENV_PROXY=1
+fi
+
+# Trust a re-terminating proxy CA if present and nothing else is configured.
+if [ -z "${NODE_EXTRA_CA_CERTS:-}" ] && [ -f /root/.ccr/ca-bundle.crt ]; then
+  export NODE_EXTRA_CA_CERTS=/root/.ccr/ca-bundle.crt
+fi
+
+exec node "$here/../src/cli.js" "$@"
