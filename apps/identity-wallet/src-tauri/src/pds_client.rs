@@ -1417,13 +1417,15 @@ pub async fn check_account_status(
 
 /// Activate the account on the destination PDS.
 ///
-/// Calls `POST /xrpc/com.atproto.server.activateAccount` with an empty body.
-/// The server accepts `{}` as a valid empty body.
+/// Calls `POST /xrpc/com.atproto.server.activateAccount` with a GENUINELY empty body.
+/// The handler (`crates/pds/src/routes/activate_account.rs`) rejects any non-whitespace body
+/// with a 400 — so we must send zero bytes, NOT `{}` (which `.post()` would serialize).
 pub async fn activate_account(client: &crate::oauth_client::OAuthClient) -> Result<(), PdsClientError> {
     let resp = client
-        .post(
+        .post_bytes(
             "/xrpc/com.atproto.server.activateAccount",
-            &serde_json::json!({}),
+            "application/json",
+            Vec::new(),
         )
         .await
         .map_err(|e| PdsClientError::NetworkError {
@@ -2799,7 +2801,13 @@ mod tests {
         mock_server.mock(|when, then| {
             when.method(httpmock::Method::GET)
                 .path("/xrpc/com.atproto.sync.getRepo")
-                .query_param("did", "did:plc:test123");
+                .query_param("did", "did:plc:test123")
+                // AC7.3: this endpoint is auth:none — the request must carry no Authorization header.
+                .is_true(|req| {
+                    !req.headers_vec()
+                        .iter()
+                        .any(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+                });
             then.status(200)
                 .header("content-type", "application/vnd.ipld.car")
                 .body("CAR header and data");
@@ -2850,7 +2858,13 @@ mod tests {
             when.method(httpmock::Method::GET)
                 .path("/xrpc/com.atproto.sync.getBlob")
                 .query_param("did", "did:plc:test123")
-                .query_param("cid", "bafy123");
+                .query_param("cid", "bafy123")
+                // AC7.3: this endpoint is auth:none — the request must carry no Authorization header.
+                .is_true(|req| {
+                    !req.headers_vec()
+                        .iter()
+                        .any(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+                });
             then.status(200)
                 .header("content-type", "application/octet-stream")
                 .body("blob data");
@@ -3024,6 +3038,11 @@ mod tests {
         mock_server.mock(|when, then| {
             when.method(httpmock::Method::POST)
                 .path("/xrpc/com.atproto.server.createAccount")
+                // The body must be the camelCase {handle,email,did}; a serde-rename regression
+                // (e.g. snake_case, or a dropped field) must fail this test.
+                .body_includes("\"handle\":\"user.example.com\"")
+                .body_includes("\"email\":\"user@example.com\"")
+                .body_includes("\"did\":\"did:plc:abc123\"")
                 .is_true(|req| req.headers_vec().iter().any(|(k, v)| k == "authorization" && v.contains("Bearer")));
             then.status(200).json_body(serde_json::json!({
                 "accessJwt": "access...",
@@ -3100,6 +3119,8 @@ mod tests {
             when.method(httpmock::Method::POST)
                 .path("/xrpc/com.atproto.repo.importRepo")
                 .header("content-type", "application/vnd.ipld.car")
+                // The exact CAR bytes must reach the server unchanged.
+                .body("CAR bytes content")
                 .is_true(|req| req.headers_vec().iter().any(|(k, v)| k == "authorization" && v.contains("Bearer")));
             then.status(200);
         });
@@ -3122,6 +3143,8 @@ mod tests {
             when.method(httpmock::Method::POST)
                 .path("/xrpc/com.atproto.repo.uploadBlob")
                 .header("content-type", "image/jpeg")
+                // The exact blob bytes must reach the server unchanged.
+                .body("JPEG data")
                 .is_true(|req| req.headers_vec().iter().any(|(k, v)| k == "authorization" && v.contains("Bearer")));
             then.status(200).json_body(serde_json::json!({
                 "blob": {
@@ -3141,7 +3164,10 @@ mod tests {
 
         assert!(result.is_ok());
         let resp = result.unwrap();
-        assert!(resp.blob["$type"].is_string());
+        // Assert the fields Phase 3 actually consumes from the blob ref, not just $type.
+        assert_eq!(resp.blob["ref"]["$link"], "bafy123");
+        assert_eq!(resp.blob["mimeType"], "image/jpeg");
+        assert_eq!(resp.blob["size"], 1234);
     }
 
     /// list_missing_blobs without cursor issues base path; with cursor includes ?cursor=
@@ -3291,7 +3317,9 @@ mod tests {
         assert_eq!(status.imported_blobs, 48);
     }
 
-    /// activate_account POSTs empty body {} and treats 200 as success
+    /// activate_account POSTs a genuinely empty body and treats 200 as success.
+    /// The real handler rejects any non-whitespace body with 400, so the empty-body
+    /// assertion below is the actual server contract (a `{}` body would be a bug).
     #[tokio::test]
     async fn test_activate_account_success() {
         let mock_server = MockServer::start();
@@ -3299,6 +3327,7 @@ mod tests {
         mock_server.mock(|when, then| {
             when.method(httpmock::Method::POST)
                 .path("/xrpc/com.atproto.server.activateAccount")
+                .is_true(|req| req.body_ref().is_empty())
                 .is_true(|req| req.headers_vec().iter().any(|(k, v)| k == "authorization" && v.contains("Bearer")));
             then.status(200);
         });
