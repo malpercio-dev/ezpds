@@ -88,7 +88,7 @@ staging      RAILWAY_TOKEN=$STAGING_TOKEN     railway up --service ezpds --envir
 production   RAILWAY_TOKEN=$PRODUCTION_TOKEN  railway up --service ezpds --environment production --ci
 ```
 
-**Smoke = deploy health.** [railway.toml](../../railway.toml) already sets `healthcheckPath = "/xrpc/_health"` (30s timeout), so a deploy goes healthy only when the image builds, the binary boots, migrations run, and the DB comes up. The packaging-bug class (entrypoint, `gosu`, `useradd`, `/data` chown, `VOLUME` rejection) surfaces on the `staging` deploy — the staging deploy is the de facto packaging gate, and because `production` is gated behind a manual `v*` tag, a packaging regression cannot silently reach production.
+**Smoke = deploy health.** [railway.toml](../../../railway.toml) already sets `healthcheckPath = "/xrpc/_health"` (30s timeout), so a deploy goes healthy only when the image builds, the binary boots, migrations run, and the DB comes up. The packaging-bug class (entrypoint, `gosu`, `useradd`, `/data` chown, `VOLUME` rejection) surfaces on the `staging` deploy — the staging deploy is the de facto packaging gate, and because `production` is gated behind a manual `v*` tag, a packaging regression cannot silently reach production.
 
 **Secret split.** CI holds only deploy credentials; the app's runtime secrets never touch tangled.
 
@@ -102,9 +102,9 @@ production   RAILWAY_TOKEN=$PRODUCTION_TOKEN  railway up --service ezpds --envir
 
 ## Existing Patterns
 
-- **Test steps already exist** in [.tangled/workflows/ci.yaml](../../.tangled/workflows/ci.yaml) (fmt → clippy → test → audit on push/PR/manual to `main`). This design folds them into a single `just ci` recipe so the gate is defined once and reused by all three workflow files. The `just` task runner is the established command surface ([justfile](../../justfile) currently holds `docker-build`).
-- **Railway config-as-code is already in place** — [railway.toml](../../railway.toml) sets the Dockerfile builder, `/xrpc/_health` healthcheck, and restart policy. This design adds per-environment behavior (and a pre-deploy backup hook for production) without changing that contract.
-- **Container contract is documented** in [docs/deploy.md](../deploy.md): required `EZPDS_*` env vars, the `/data` volume, the non-root `gosu` entrypoint that chowns `/data`. The deploy doc's GitHub-connect / GitHub Actions / GHCR sections are stale (the repo is on tangled) and are reconciled in Phase 6.
+- **Test steps already exist** in [.tangled/workflows/ci.yaml](../../.tangled/workflows/ci.yaml) (fmt → clippy → test → audit on push/PR/manual to `main`). This design folds them into a single `just ci` recipe so the gate is defined once and reused by all three workflow files. The `just` task runner is the established command surface ([justfile](../../../justfile) currently holds `docker-build`).
+- **Railway config-as-code is already in place** — [railway.toml](../../../railway.toml) sets the Dockerfile builder, `/xrpc/_health` healthcheck, and restart policy. This design adds per-environment behavior (and a pre-deploy backup hook for production) without changing that contract.
+- **Container contract is documented** in [docs/deploy.md](../../deploy.md): required `EZPDS_*` env vars, the `/data` volume, the non-root `gosu` entrypoint that chowns `/data`. The deploy doc's GitHub-connect / GitHub Actions / GHCR sections are stale (the repo is on tangled) and are reconciled in Phase 6.
 - **Functional Core / Imperative Shell.** The relay is the project's sole imperative shell. Making the spindle pipeline the *deploy-time* imperative shell — pure config in git, side-effecting `railway up` confined to push/tag-triggered steps — mirrors that separation.
 - **No deploy automation exists today.** Production runs at `ezpds-production.up.railway.app`, deployed by a manual local `railway up`. This design automates that exact flow; it does not introduce a new deploy mechanism.
 
@@ -115,7 +115,7 @@ production   RAILWAY_TOKEN=$PRODUCTION_TOKEN  railway up --service ezpds --envir
 **Goal:** Define the test gate once and restructure tangled workflows by trigger context, with no deploy behavior yet.
 
 **Components:**
-- `just ci` recipe in [justfile](../../justfile) — runs `cargo fmt --all --check`, `cargo clippy --workspace -- -D warnings`, `cargo test --workspace`, `cargo audit`.
+- `just ci` recipe in [justfile](../../../justfile) — runs `cargo fmt --all --check`, `cargo clippy --workspace -- -D warnings`, `cargo test --workspace`, `cargo audit`.
 - `.tangled/workflows/pr.yaml` — `when: pull_request → main`, steps: `just ci`.
 - `.tangled/workflows/staging.yaml` and `.tangled/workflows/release.yaml` — created with the `just ci` step and a placeholder/no-op deploy step (real deploy added in later phases); triggers `push → main` and `push tag v*` respectively.
 - Remove or repurpose [.tangled/workflows/ci.yaml](../../.tangled/workflows/ci.yaml) (its steps now live in `just ci`; optionally keep a `manual` entry).
@@ -158,7 +158,7 @@ production   RAILWAY_TOKEN=$PRODUCTION_TOKEN  railway up --service ezpds --envir
 **Goal:** Produce a retrievable restore point of the production SQLite database, as the prerequisite for safe promotes.
 
 **Components (choose one — see Additional Considerations):**
-- **Litestream (recommended):** add the `litestream` binary to the runtime image; entrypoint restores on boot if the DB is absent, then `litestream replicate -exec` supervises the relay, streaming the WAL to S3-compatible storage. Restructures [docker-entrypoint.sh](../../docker-entrypoint.sh) (still root-chowns `/data` first).
+- **Litestream (recommended):** add the `litestream` binary to the runtime image; entrypoint restores on boot if the DB is absent, then `litestream replicate -exec` supervises the relay, streaming the WAL to S3-compatible storage. Restructures [docker-entrypoint.sh](../../../docker-entrypoint.sh) (still root-chowns `/data` first).
 - **Pre-deploy snapshot:** a `preDeployCommand` (production only, via `[environments.production]` in `railway.toml`) runs a WAL-safe `sqlite3 relay.db ".backup"` and uploads to a bucket; requires adding `sqlite3` and an object-storage client to the `debian-bookworm-slim` runtime image.
 - Backup target: a Railway bucket or external S3-compatible store (Backblaze B2 / Tigris); credentials live in the `production` environment only.
 
@@ -185,12 +185,12 @@ production   RAILWAY_TOKEN=$PRODUCTION_TOKEN  railway up --service ezpds --envir
 **Goal:** Make the deploy docs match the tangled→Railway reality.
 
 **Components:**
-- Rewrite the Railway and Image Distribution sections of [docs/deploy.md](../deploy.md): remove "connect the GitHub repo" / GitHub Actions / GHCR-as-primary; document the two-environment topology, the `railway up`-from-spindle flow, tag-based promote, backup-before-promote, and the forward-only-migration rollback caveat. Mark the colmena/NixOS path as secondary.
-- Update the CI/Commands section of [AGENTS.md](../../AGENTS.md) to describe `just ci` and the three workflows.
+- Rewrite the Railway and Image Distribution sections of [docs/deploy.md](../../deploy.md): remove "connect the GitHub repo" / GitHub Actions / GHCR-as-primary; document the two-environment topology, the `railway up`-from-spindle flow, tag-based promote, backup-before-promote, and the forward-only-migration rollback caveat. Mark the colmena/NixOS path as secondary.
+- Update the CI/Commands section of [AGENTS.md](../../../AGENTS.md) to describe `just ci` and the three workflows.
 
 **Dependencies:** Phases 1–5 (documents the implemented system).
 
-**Done when:** [docs/deploy.md](../deploy.md) and [AGENTS.md](../../AGENTS.md) describe the implemented pipeline with no GitHub-connect assumption; internal links resolve. Covers the docs Definition-of-Done item and ci-cd-tangled-railway.AC5.2 (documented rollback procedure).
+**Done when:** [docs/deploy.md](../../deploy.md) and [AGENTS.md](../../../AGENTS.md) describe the implemented pipeline with no GitHub-connect assumption; internal links resolve. Covers the docs Definition-of-Done item and ci-cd-tangled-railway.AC5.2 (documented rollback procedure).
 <!-- END_PHASE_6 -->
 
 ## Additional Considerations

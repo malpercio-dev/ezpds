@@ -1,6 +1,6 @@
 # Crypto Crate
 
-Last verified: 2026-06-28
+Last verified: 2026-07-05
 
 ## Purpose
 Provides cryptographic primitives for the ezpds workspace: P-256 key generation,
@@ -82,6 +82,31 @@ where F: FnOnce(&[u8]) -> Result<Vec<u8>, CryptoError>
 - Callback receives CBOR-encoded unsigned op bytes; must return raw 64-byte r||s P-256 ECDSA signature (big-endian, low-S canonical)
 - Errors: propagates any `CryptoError` returned by the callback, or `CryptoError::PlcOperation` for serialization failures
 
+**`compute_cid`**
+```rust
+pub fn compute_cid(signed_op_cbor: &[u8]) -> Result<String, CryptoError>
+```
+- Computes a CIDv1 (dag-cbor, sha-256) from signed operation CBOR bytes: `version(1) || codec(0x71) || hash(0x12) || length(0x20) || sha256(bytes)`
+- Returns a multibase base32lower-encoded CID string (`b` prefix), the format used in did:plc `prev` fields
+- Used as the `prev` value chaining a rotation op onto the operation before it
+
+**`build_did_plc_rotation_op`**
+```rust
+pub fn build_did_plc_rotation_op<F>(
+    prev_cid: &str,                                    // CID of the previous op in the chain (from `compute_cid`)
+    rotation_keys: Vec<String>,                         // new rotationKeys array
+    verification_methods: BTreeMap<String, String>,     // method name → did:key: URI
+    also_known_as: Vec<String>,                         // new alsoKnownAs array
+    services: BTreeMap<String, PlcService>,             // new services map (service name → PlcService)
+    sign: F,                                            // callback: &[u8] -> Result<Vec<u8>, CryptoError>
+) -> Result<SignedPlcOperation, CryptoError>
+where F: FnOnce(&[u8]) -> Result<Vec<u8>, CryptoError>
+```
+- Builds and signs a did:plc **rotation** operation (non-null `prev`, arbitrary rotation keys/verification methods/alsoKnownAs/services supplied by the caller — unlike genesis, this function does not decide the new state)
+- Same external-signer-callback shape as `build_did_plc_genesis_op_with_external_signer` (raw 64-byte r‖s P-256 ECDSA signature, big-endian, low-S canonical)
+- Returns `SignedPlcOperation { cid, signed_op_json }` — `cid` (via `compute_cid`) is ready to use as the next op's `prev`; `signed_op_json` is ready to POST to plc.directory
+- Errors: propagates any `CryptoError` from the callback, or `CryptoError::PlcOperation` for serialization failures
+
 **`verify_genesis_op`**
 ```rust
 pub fn verify_genesis_op(
@@ -94,6 +119,19 @@ pub fn verify_genesis_op(
 - Derives DID from SHA-256 of signed CBOR (same algorithm as `build_did_plc_genesis_op`)
 - Returns extracted op fields for semantic validation by the caller
 - Errors: `CryptoError::PlcOperation` for any parse, format, or signature failure
+
+**`verify_plc_operation`**
+```rust
+pub fn verify_plc_operation(
+    signed_op_json: &str,                       // JSON-encoded signed PLC operation (genesis or rotation)
+    authorized_rotation_keys: &[DidKeyUri],     // candidate signer keys, tried in order
+) -> Result<VerifiedPlcOp, CryptoError>
+```
+- General-purpose signed-op verifier covering **both** genesis and rotation ops (unlike `verify_genesis_op`, which only accepts genesis ops against a single key)
+- Reconstructs the unsigned op with DAG-CBOR canonical field ordering and tries each key in `authorized_rotation_keys` until one verifies the ECDSA-SHA256 signature
+- Caller obligation: supplies the correct authorized-key set for this op — the op's own `rotationKeys` for a genesis op, or the **previous** op's `rotationKeys` for a rotation op; this function only checks that *some* provided key signed it, not that the set is right for the DID's current state
+- Returns `VerifiedPlcOp { did, cid, prev, rotation_keys, also_known_as, verification_methods, services }` — `did` is `Some` (derived from signed CBOR) only for a genesis op (`prev.is_none()`), `None` for a rotation op; `cid` is this op's own CID (via `compute_cid`)
+- Errors: `CryptoError::PlcOperation` if no authorized key verifies the signature, or for any parse/format failure
 
 **`verify_p256_signature`**
 
@@ -110,6 +148,22 @@ pub fn verify_p256_signature(
 - Message is hashed with SHA-256 internally — pass the bytes exactly as signed, do not pre-hash
 - Errors: `CryptoError::SignatureVerification` for a malformed public key, an unparseable signature, or a verification mismatch
 
+**`parse_audit_log`**
+```rust
+pub fn parse_audit_log(json: &str) -> Result<Vec<AuditEntry>, CryptoError>
+```
+- Parses a plc.directory audit log response (`GET https://plc.directory/{did}/log/audit`) into a list of `AuditEntry`
+- Purely structural — does not verify the operations it returns; pass each `AuditEntry.operation` to `verify_plc_operation` to validate cryptographically
+- Errors: `CryptoError::PlcOperation` if the JSON cannot be parsed
+
+**`diff_audit_logs`**
+```rust
+pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<AuditEntry>
+```
+- Finds entries in `current` not present in `cached`, compared by CID
+- Returns the new entries in the order they appear in `current`
+- Used to detect PLC operations a caller's cache hasn't seen yet (e.g. a refreshed audit log fetch)
+
 ### Public types
 
 **`P256Keypair`**
@@ -121,12 +175,32 @@ pub fn verify_p256_signature(
 - `did`: `"did:plc:xxxx..."` (28 chars total)
 - `signed_op_json`: contains `type`, `rotationKeys`, `verificationMethods`, `alsoKnownAs`, `services`, `prev` (null), `sig`
 
+**`PlcService`**
+- A single entry in a PLC operation's `services` map (e.g. the `atproto_pds` entry)
+- `service_type`: e.g. `"AtprotoPersonalDataServer"` (serialized as `type`)
+- `endpoint`: the service's URL, e.g. `"https://pds.example.com"`
+
 **`VerifiedGenesisOp`**
 - `did`: derived DID string
 - `rotation_keys`: full `rotationKeys` array from the op
 - `also_known_as`: full `alsoKnownAs` array from the op
 - `verification_methods`: full `verificationMethods` map from the op
 - `atproto_pds_endpoint`: endpoint from `services["atproto_pds"]`, if present
+
+**`VerifiedPlcOp`**
+- Returned by `verify_plc_operation`; covers both genesis and rotation ops
+- `did`: `Some(derived DID)` for a genesis op (`prev.is_none()`), `None` for a rotation op (caller supplies the DID from context)
+- `cid`: this op's own CID
+- `prev`: `None` for genesis, `Some(cid)` for rotation
+- `rotation_keys` / `also_known_as` / `verification_methods` / `services`: full corresponding fields from the op
+
+**`AuditEntry`**
+- A single entry from a plc.directory audit log, as returned by `parse_audit_log`
+- `did`: the DID this operation belongs to
+- `cid`: this operation's CID
+- `created_at`: ISO 8601 timestamp when plc.directory received the operation (serialized as `createdAt`)
+- `nullified`: whether plc.directory considers this operation invalidated
+- `operation`: the raw signed PLC operation as a JSON `Value` — pass to `verify_plc_operation` to validate cryptographically
 
 **`ShamirShare`**
 - `index`: u8 in [1, 3] (not secret)
@@ -143,7 +217,7 @@ pub fn verify_p256_signature(
 
 ## Dependencies
 - **Uses**: p256 (ECDSA/key generation), aes-gcm (AES-256-GCM), multibase (base58btc encoding), rand_core (OS RNG), base64 (storage encoding), zeroize (secret cleanup), ciborium (CBOR serialization for did:plc), data-encoding (base32-lowercase), sha2 (SHA-256), serde/serde_json (struct serialization)
-- **Used by**: `crates/PDS/` (key generation, did:plc genesis building and verification in POST /v1/dids), `apps/identity-wallet/` (external signer genesis op building in DID ceremony)
+- **Used by**: `crates/pds/` (key generation, did:plc genesis building and verification in POST /v1/dids; `crates/pds/src/plc_ops.rs` shares the interop PLC-signing surface's audit-log fetch + service parsing; `routes/sign_plc_operation.rs`/`routes/submit_plc_operation.rs` build/verify rotation ops via `build_did_plc_rotation_op`/`verify_plc_operation`), `apps/identity-wallet/` (external signer genesis op building in DID ceremony)
 
 ## Invariants
 - Private key bytes are always wrapped in `Zeroizing` -- callers must not copy them into non-zeroizing storage

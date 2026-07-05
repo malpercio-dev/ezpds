@@ -21,8 +21,12 @@ Keep building y'all. <3
 ezpds is a self-hosted PDS implementation for the AT Protocol (the protocol behind Bluesky and the ATmosphere). It provides:
 
 - **A PDS server** ([`crates/pds`](crates/pds/)) — an Axum-based HTTP server that implements the ATProto provisioning API, XRPC endpoints, and OAuth 2.0 flows. It stores accounts, DIDs, handles, and signing keys in SQLite.
+- **A repo engine** ([`crates/repo-engine`](crates/repo-engine/)) — the ATProto repository core: MST construction, CAR export/import, genesis repo creation, record CRUD, and commit signing, consumed by the PDS.
 - **A crypto library** ([`crates/crypto`](crates/crypto/)) — P-256 key generation, `did:key` derivation, AES-256-GCM encryption, and full `did:plc` lifecycle support (genesis ops, rotation ops, audit log verification, CID computation).
 - **Obsign**, an iOS identity wallet ([`apps/identity-wallet`](apps/identity-wallet/)) — a Tauri v2 app (SvelteKit 2 + Svelte 5 frontend, Rust backend) that walks users through account creation, DID ceremony, handle registration, and identity recovery. Keys are backed by the device Secure Enclave.
+- **An admin companion** ([`apps/admin-companion`](apps/admin-companion/)) — a second Tauri v2 iOS app: a terminal-native operator console for the PDS operator (claim codes, admin device pairing/revocation via Secure-Enclave-signed requests).
+
+Supporting pieces: [`sites/marketing/`](sites/marketing/) (zero-build static marketing site for Obsign + Custos), [`tools/interop/`](tools/interop/) (interop CLI that exercises a live deployment against the real ATProto network), [`bruno/`](bruno/) (HTTP request collection covering every route, CI-enforced parity), and [`docs/architecture/`](docs/architecture/) (living architecture docs + the ADR log).
 
 ## Architecture
 
@@ -58,41 +62,34 @@ ezpds is a self-hosted PDS implementation for the AT Protocol (the protocol behi
 | `crates/pds` | ATProto PDS server — provisioning API, XRPC, OAuth, auth | **Active** — primary development focus |
 | `crates/crypto` | P-256 keys, did:key, did:plc genesis/rotation, Shamir secret sharing, AES-256-GCM | **Complete** — well-tested |
 | `crates/common` | Shared config, error types, serde utilities | **Complete** |
-| `crates/repo-engine` | MST construction, CAR file storage, commit construction | **Stub** — not yet implemented |
+| `crates/repo-engine` | MST construction, CAR export/import, genesis, record CRUD, commit signing | **Functional** — consumed by `crates/pds` |
 | `apps/identity-wallet` | Tauri v2 iOS app (SvelteKit 2 + Svelte 5) | **Active** — account creation, DID ceremony, handle registration, OAuth, PLC monitoring, recovery |
+| `apps/admin-companion` | Tauri v2 iOS operator console ("Brass Console") | **Active** — pairing, claim codes, device revocation |
 
 ### PDS endpoints
 
-**Provisioning API** (`/v1/...`):
-- `POST /v1/accounts` — Create account
-- `POST /v1/accounts/mobile` — Create mobile account (with device key)
-- `POST /v1/accounts/sessions` — Create provisioning session
-- `POST /v1/accounts/claim-codes` — Issue claim codes
-- `POST /v1/dids` — Create DID (submit signed genesis op)
-- `GET /v1/dids/:did` — Get DID document
-- `POST /v1/handles` — Register handle
-- `DELETE /v1/handles/:handle` — Delete handle
-- `POST /v1/devices` — Register device
-- `GET /v1/devices/:id/pds` — Get device PDS
-- `GET/POST /v1/pds/keys` — Manage PDS signing keys
+The route surface is large; the exhaustive, kept-current route table lives in
+[`crates/pds/CLAUDE.md`](crates/pds/CLAUDE.md), and every route has a matching
+request in the [`bruno/`](bruno/) collection (CI-enforced parity via
+`just bruno-check`). In summary:
 
-**XRPC** (ATProto standard):
-- `com.atproto.server.createSession` / `getSession` / `refreshSession` / `deleteSession`
-- `com.atproto.server.describeServer`
-- `com.atproto.server.requestPasswordReset` / `resetPassword`
-- `com.atproto.identity.resolveHandle`
-- Catch-all `/:method` — returns `MethodNotImplemented` for unimplemented NSIDs
-
-**OAuth 2.0** (with DPoP):
-- `GET /.well-known/oauth-authorization-server`
-- `GET/POST /oauth/authorize`
-- `POST /oauth/par` (Pushed Authorization Request)
-- `POST /oauth/token`
-- `GET /oauth/client-metadata.json`
-- `GET /oauth/jwks`
-
-**Well-known**:
-- `GET /.well-known/atproto-did` — DID document
+- **Provisioning API** (`/v1/...`) — accounts (desktop + mobile flows), claim
+  codes, DIDs, handles, devices, PDS signing keys, admin device
+  pairing/revocation, account transfer, usage/storage.
+- **XRPC** — the `com.atproto.{server,repo,sync,identity,admin,temp}.*`
+  surface: sessions and app passwords, record CRUD + `applyWrites`, blob
+  upload/download with GC, repo export/import (CAR), the firehose
+  (`subscribeRepos`), handle/DID resolution, PLC operation signing, and the
+  admin takedown surface.
+- **Service proxy** — catch-all dispatches `app.bsky.*` and
+  `com.atproto.moderation.*` to the AppView (with read-after-write munging for
+  the account's own writes) and `chat.bsky.*` to the chat service; unmatched
+  NSIDs return `MethodNotImplemented`. `app.bsky.actor.{get,put}Preferences`
+  are served locally.
+- **OAuth 2.0** (with DPoP) — authorization-server metadata, `authorize`, PAR,
+  `token`, client metadata, JWKS.
+- **Well-known** — `atproto-did`, `oauth-authorization-server`,
+  `oauth-protected-resource`.
 
 ### Obsign (iOS)
 
@@ -129,9 +126,12 @@ On first shell entry, `rustup toolchain install` runs automatically.
 
 ```bash
 cargo build                   # Build all crates
-cargo build -p pds          # Build just the PDS binary
-nix build .#pds --accept-flake-config  # Build via Nix (output: ./result/bin/pds)
+cargo build -p pds            # Build just the PDS binary
 ```
+
+The flake intentionally exposes no package outputs — the PDS ships as an OCI
+image built by the root [`Dockerfile`](Dockerfile), not a Nix-built binary
+(see [ADR-0008](docs/architecture/decisions/0008-pds-as-oci-image-not-nix-built.md)).
 
 ### Run the PDS
 
@@ -143,21 +143,18 @@ cargo run -p pds -- --config pds.toml
 ### Run checks
 
 ```bash
-just ci          # Full CI pipeline: fmt-check + clippy + test + cargo audit
+just ci          # Full local gate: fmt-check, lock-check, bruno-check, font-check, swift-rs-check, clippy, test, audit
 just test        # Run all tests
 just clippy      # Lint (warnings as errors)
 just fmt-check   # Check formatting
 just nix-check   # Validate NixOS module / flake structure
 ```
 
-### Docker (Linux only)
+### Docker
 
 ```bash
-nix build .#docker-image --accept-flake-config
-docker load < result
+docker build -t pds .    # or: just docker-build
 ```
-
-On macOS, use a remote Linux builder or CI.
 
 ## Configuration
 
@@ -165,34 +162,46 @@ The PDS is configured via a TOML file (default: `pds.toml`). See [`pds.dev.toml`
 
 Key settings:
 - `bind_address` / `port` — Listen address
-- `database_url` — SQLite path (default: `./relay.db`)
+- `data_dir` — Required; root for on-disk state
+- `database_url` — SQLite path (default: `{data_dir}/relay.db`)
 - `public_url` — The PDS's public-facing URL
 - `available_user_domains` — Handle domains users can register (e.g. `["ezpds.com"]`)
 - `invite_code_required` — Whether claim codes are required for account creation
 - `admin_token` — Token for management endpoints
-- `oauth` — OAuth 2.0 configuration
+- `blobs` — Blob size/quota limits, GC interval, temp-blob TTL
+- `appview` / `chat` — Service-proxy targets (AppView URL/DID/CDN, chat service)
+- `crawlers` — Relay hosts to notify via `requestCrawl`
+- `rate_limit` — Global, per-endpoint, and per-account write-point limits
 - `telemetry` — OpenTelemetry trace export
+
+See [`pds.dev.toml`](pds.dev.toml) and `crates/common/src/config.rs` for the full set.
 
 ## Project status
 
-ezpds is under active development. The PDS server and crypto library are functional; the iOS identity wallet is in development. Key capabilities:
+ezpds is under active development. The PDS server, repo engine, and crypto library are functional and deployed; both iOS apps are active. Key capabilities:
 
 **Working now:**
 - Account creation (desktop + mobile flows)
 - DID creation (`did:plc`) with device-backed keys
 - Handle registration and resolution
-- Session management (JWT + refresh tokens)
+- Session management (JWT + refresh tokens), app passwords
 - OAuth 2.0 with DPoP
-- Password reset flow
-- PDS signing key management
+- Repo records — full CRUD, `applyWrites`, CAR export/import
+- Blob upload/download with garbage collection
+- Federation — firehose (`subscribeRepos` with durable sequencer), `getRepo`, `requestCrawl`
+- App proxy — AppView/chat proxying with read-after-write for the account's own writes
+- Interop test CLI ([`tools/interop/`](tools/interop/)) exercising a live deployment against the real ATProto network
+- PDS signing key management, provisioning transfer endpoints
 - Shamir secret sharing for recovery
 - OpenTelemetry observability
 
-**In progress / planned** (see [Linear project](https://linear.app)):
-- Wave 4: Blob upload/download, blob garbage collection
-- Wave 5: Federation — firehose, subscribeRepos, getRepo, requestCrawl
-- Wave 6: App proxy — catch-all to appview, preferences, chat proxy
-- Wave 7: Hardening — interop tests, cargo-audit, provisioning transfer endpoints, Tauri IPC lockdown
+**In progress / planned** (Linear is the live source of truth):
+- Firehose Sync v1.1 residuals (per-op `prev` CIDs)
+- Account migration (PDS↔PDS, inbound + outbound "credible exit")
+- Outbound email delivery + email confirmation endpoints
+- OAuth granular auth scopes + permission sets
+- Tauri IPC lockdown
+- Wave 8: auth.md agentic auth (agent identity, claim ceremony, JWT-bearer grants)
 
 ## License
 
