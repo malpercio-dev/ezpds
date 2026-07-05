@@ -14,7 +14,12 @@ use repo_engine::Repository;
 
 #[derive(Deserialize)]
 pub struct GetRecordParams {
-    did: String,
+    /// The repo to read from — an at-identifier (DID or handle), per the
+    /// `com.atproto.repo.getRecord` lexicon.
+    repo: Option<String>,
+    /// Legacy alias for `repo`, kept so pre-existing clients of this PDS that were built
+    /// against the earlier `did=` parameter keep working. `repo` wins when both are given.
+    did: Option<String>,
     collection: String,
     rkey: String,
     /// Optional CID selecting a specific version of the record. When omitted, the current
@@ -22,7 +27,7 @@ pub struct GetRecordParams {
     cid: Option<String>,
 }
 
-/// GET /xrpc/com.atproto.repo.getRecord?did=<did>&collection=<collection>&rkey=<rkey>&cid=<cid>
+/// GET /xrpc/com.atproto.repo.getRecord?repo=<did|handle>&collection=<collection>&rkey=<rkey>&cid=<cid>
 ///
 /// Read a record from the repository.
 ///
@@ -36,14 +41,25 @@ pub async fn get_record(
     State(state): State<AppState>,
     Query(params): Query<GetRecordParams>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let did = &params.did;
-    let collection = &params.collection;
-    let rkey = &params.rkey;
+    let identifier = params
+        .repo
+        .as_deref()
+        .or(params.did.as_deref())
+        .ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::InvalidRequest,
+                "missing repo parameter (the handle or DID of the repo)",
+            )
+        })?;
 
-    // Validate DID format.
-    if !crate::auth::validation::is_valid_did(did) {
+    // A did:-prefixed identifier must be a well-formed DID; anything else is treated as a
+    // handle and resolved to its owning DID, matching the repo-write routes.
+    if identifier.starts_with("did:") && !crate::auth::validation::is_valid_did(identifier) {
         return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
     }
+    let did = &crate::record_write::resolve_repo_did(&state, identifier).await?;
+    let collection = &params.collection;
+    let rkey = &params.rkey;
 
     // Look up the repo root CID.
     let root_cid_str = crate::db::accounts::get_repo_root_cid(&state.db, did)
@@ -229,6 +245,104 @@ mod tests {
         );
         assert_eq!(resp["value"]["text"], "Hello, ATProto!");
         assert_eq!(resp["value"]["createdAt"], "2026-06-22T00:00:00Z");
+    }
+
+    #[tokio::test]
+    async fn get_record_accepts_lexicon_repo_param() {
+        // The lexicon names the identifier param `repo`; `did` is only a legacy alias. A
+        // standard client sending `repo=` must get the record back.
+        let (state, did) = setup_account_with_repo().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        let app = crate::app::app(state);
+
+        let record = serde_json::json!({ "text": "via repo param" });
+        let put = crate::routes::test_utils::put_record_request(
+            &did,
+            "app.bsky.feed.post",
+            "repoparam1",
+            serde_json::json!({ "record": record }),
+            Some(&token),
+        );
+        assert_eq!(
+            app.clone().oneshot(put).await.unwrap().status(),
+            StatusCode::OK
+        );
+
+        let get_request = Request::builder()
+            .method(http::Method::GET)
+            .uri(format!(
+                "/xrpc/com.atproto.repo.getRecord?repo={did}&collection=app.bsky.feed.post&rkey=repoparam1"
+            ))
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(get_request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["value"]["text"], "via repo param");
+    }
+
+    #[tokio::test]
+    async fn get_record_resolves_handle_to_did() {
+        // `repo` is an at-identifier: a handle pointing at the account resolves to the owning
+        // DID, and the response AT-URI carries the resolved DID (not the handle).
+        let (state, did) = setup_account_with_repo().await;
+        sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
+            .bind("alice.example.com")
+            .bind(&did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let token = access_jwt(&state.jwt_secret, &did);
+        let app = crate::app::app(state);
+
+        let put = crate::routes::test_utils::put_record_request(
+            &did,
+            "app.bsky.feed.post",
+            "viahandle1",
+            serde_json::json!({ "record": { "text": "hello" } }),
+            Some(&token),
+        );
+        assert_eq!(
+            app.clone().oneshot(put).await.unwrap().status(),
+            StatusCode::OK
+        );
+
+        let get_request = Request::builder()
+            .method(http::Method::GET)
+            .uri("/xrpc/com.atproto.repo.getRecord?repo=alice.example.com&collection=app.bsky.feed.post&rkey=viahandle1")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(get_request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            json["uri"],
+            format!("at://{did}/app.bsky.feed.post/viahandle1")
+        );
+    }
+
+    #[tokio::test]
+    async fn get_record_missing_identifier_returns_400() {
+        // Neither `repo` nor the legacy `did` alias present → a clear 400, not a
+        // deserialization error.
+        let state = crate::app::test_state().await;
+        let app = crate::app::app(state);
+
+        let request = Request::builder()
+            .method(http::Method::GET)
+            .uri("/xrpc/com.atproto.repo.getRecord?collection=app.bsky.feed.post&rkey=x")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

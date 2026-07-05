@@ -5,19 +5,23 @@ meta {
 }
 
 get {
-  url: {{baseUrl}}/xrpc/com.atproto.repo.getRecord?did={{did}}&collection={{collection}}&rkey={{rkey}}
+  url: {{baseUrl}}/xrpc/com.atproto.repo.getRecord?repo={{did}}&collection={{collection}}&rkey={{rkey}}
   body: none
   auth: none
 }
 
 params:query {
-  did: {{did}}
+  repo: {{did}}
   collection: {{collection}}
   rkey: {{rkey}}
   ~cid:
 }
 
 docs {
+  `repo` is an at-identifier (DID or handle), per the lexicon; a handle resolves to its owning
+  DID and the response AT-URI carries the resolved DID. `did` is accepted as a legacy alias for
+  `repo` (this PDS's original parameter name) — `repo` wins when both are sent.
+
   Optional `cid` selects a version of the record. Omit it (or leave it disabled) to get the
   current version. Only the current version is served: a `cid` that matches the current record
   returns it; any other (superseded or unknown) CID returns a 404 (record not found).

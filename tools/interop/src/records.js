@@ -16,9 +16,9 @@ export async function createRecord(name, collection, record, rkey) {
 }
 
 export async function getRecord(did, collection, rkey) {
-  // The lexicon names this param `repo`, but ezpds's getRecord currently
-  // requires `did` (routes/get_record.rs). Send both — serde ignores the
-  // extra — so the CLI works against ezpds today and the spec shape.
+  // Send both the lexicon's `repo` and ezpds's original `did` param so the
+  // CLI works against deployments from before getRecord accepted `repo`
+  // (routes/get_record.rs now takes `repo` with `did` as a legacy alias).
   return xrpc(BASE_URL, 'com.atproto.repo.getRecord', { params: { repo: did, did, collection, rkey } });
 }
 
