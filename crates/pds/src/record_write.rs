@@ -215,10 +215,6 @@ pub async fn write_record(
     let prev_rev = repo.commit().rev().as_str().to_string();
     let prev_data = repo.commit().data().to_string();
 
-    // Enforce explicit swapCommit/swapRecord preconditions (ATProto optimistic concurrency)
-    // before mutating anything, so a stale client fails with InvalidSwap rather than racing.
-    enforce_swap(swap, &root_cid_str, &mut repo, mst_key).await?;
-
     // Look up the record's current CID — both to enforce create-only semantics (and to label the
     // firehose op as a create vs an update) and, when it exists, to carry as the op's Sync v1.1
     // `prev` (the previous record CID for the update). Read before the write mutates the repo.
@@ -234,18 +230,17 @@ pub async fn write_record(
     } else {
         crate::auth::oauth_scopes::RepoAction::Update
     };
-    if auth_scope == crate::auth::jwt::AuthScope::Access
-        && claims.scope != crate::auth::jwt::SCOPE_ACCESS
-        && !crate::auth::oauth_scopes::allows_repo(
+    if auth_scope == crate::auth::jwt::AuthScope::Access {
+        crate::auth::oauth_scopes::require_repo(
             &claims.scope,
             mst_key.split('/').next().unwrap_or(""),
             action,
-        )
-    {
-        return Err(crate::auth::oauth_scopes::insufficient_scope(
-            "token scope does not permit this repo write",
-        ));
+        )?;
     }
+
+    // Enforce explicit swapCommit/swapRecord preconditions (ATProto optimistic concurrency)
+    // after authorization and before mutating anything.
+    enforce_swap(swap, &root_cid_str, &mut repo, mst_key).await?;
 
     if create_only && existed {
         return Err(ApiError::new(

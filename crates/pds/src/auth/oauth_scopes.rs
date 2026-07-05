@@ -19,6 +19,8 @@ use std::collections::BTreeSet;
 
 use common::{ApiError, ErrorCode};
 
+use super::jwt::SCOPE_ACCESS;
+
 /// The fixed, non-parameterized scopes.
 const STATIC_SCOPES: [&str; 4] = [
     "atproto",
@@ -659,6 +661,75 @@ impl RepoAction {
 /// Return an ATProto `InsufficientScope` denial.
 pub fn insufficient_scope(message: impl Into<String>) -> ApiError {
     ApiError::new(ErrorCode::InsufficientScope, message)
+}
+
+/// Require that a non-legacy granular OAuth grant permits reading email fields.
+pub fn require_email(scope: &str) -> Result<(), ApiError> {
+    if scope == SCOPE_ACCESS || allows_email(scope) {
+        Ok(())
+    } else {
+        Err(insufficient_scope(
+            "token scope does not permit reading email fields",
+        ))
+    }
+}
+
+/// Require that a non-legacy granular OAuth grant permits an identity operation.
+pub fn require_identity(scope: &str, attr: &str) -> Result<(), ApiError> {
+    if scope == SCOPE_ACCESS || allows_identity(scope, attr) {
+        Ok(())
+    } else {
+        Err(insufficient_scope(
+            "token scope does not permit identity operations",
+        ))
+    }
+}
+
+/// Require that a non-legacy granular OAuth grant permits an account operation.
+pub fn require_account(scope: &str, attr: &str, action: &str) -> Result<(), ApiError> {
+    if scope == SCOPE_ACCESS || allows_account(scope, attr, action) {
+        Ok(())
+    } else {
+        Err(insufficient_scope(
+            "token scope does not permit account status changes",
+        ))
+    }
+}
+
+/// Require that a non-legacy granular OAuth grant permits a repo write.
+pub fn require_repo(scope: &str, collection: &str, action: RepoAction) -> Result<(), ApiError> {
+    if scope == SCOPE_ACCESS || allows_repo(scope, collection, action) {
+        Ok(())
+    } else {
+        Err(insufficient_scope(
+            "token scope does not permit this repo write",
+        ))
+    }
+}
+
+/// Require that a non-legacy granular OAuth grant permits an RPC audience/method.
+pub fn require_rpc(
+    scope: &str,
+    lxm: &str,
+    aud: &str,
+    message: &'static str,
+) -> Result<(), ApiError> {
+    if scope == SCOPE_ACCESS || allows_rpc(scope, lxm, aud) {
+        Ok(())
+    } else {
+        Err(insufficient_scope(message))
+    }
+}
+
+/// Require that a non-legacy granular OAuth grant permits uploading a blob MIME type.
+pub fn require_blob(scope: &str, mime_type: &str) -> Result<(), ApiError> {
+    if scope == SCOPE_ACCESS || allows_blob(scope, mime_type) {
+        Ok(())
+    } else {
+        Err(insufficient_scope(
+            "token scope does not permit this blob upload",
+        ))
+    }
 }
 
 /// Legacy transition scope that preserves pre-granular behavior for OAuth clients.

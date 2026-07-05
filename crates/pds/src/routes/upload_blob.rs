@@ -18,7 +18,6 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
-use crate::auth::jwt::{AuthScope, SCOPE_ACCESS};
 use crate::db::blobs;
 use crate::{auth::oauth_scopes, blob_store};
 
@@ -77,22 +76,18 @@ pub async fn upload_blob(
         }
     }
 
-    // 2. Read the full request body, enforcing max size.
-    let bytes = collect_body_with_limit(request.into_body(), max_size).await?;
-    let mime_type = blob_store::detect_mime_type(&bytes);
     if !user.scope.is_access() {
         return Err(ApiError::new(
             ErrorCode::InvalidToken,
             "access token required",
         ));
     }
-    if user.scope == AuthScope::Access
-        && user.scope_claim != SCOPE_ACCESS
-        && !oauth_scopes::allows_blob(&user.scope_claim, &mime_type)
-    {
-        return Err(oauth_scopes::insufficient_scope(
-            "token scope does not permit this blob upload",
-        ));
+
+    // 2. Read the full request body, enforcing max size.
+    let bytes = collect_body_with_limit(request.into_body(), max_size).await?;
+    let mime_type = blob_store::detect_mime_type(&bytes);
+    if user.scope == crate::auth::jwt::AuthScope::Access {
+        oauth_scopes::require_blob(&user.scope_claim, &mime_type)?;
     }
 
     // 3. Check per-account storage quota.

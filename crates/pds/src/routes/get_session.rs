@@ -14,7 +14,7 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
-use crate::auth::jwt::{AuthScope, SCOPE_ACCESS};
+use crate::auth::jwt::AuthScope;
 use crate::auth::oauth_scopes;
 use crate::db::accounts::get_session_account;
 
@@ -73,10 +73,7 @@ pub async fn get_session(
     // Full-access sessions see the account email; app-password sessions do not (mirrors
     // createSession, so an app password can't recover the email getSession would otherwise leak).
     let email = match user.scope {
-        AuthScope::Access
-            if user.scope_claim == SCOPE_ACCESS
-                || oauth_scopes::allows_email(&user.scope_claim) =>
-        {
+        AuthScope::Access if oauth_scopes::require_email(&user.scope_claim).is_ok() => {
             Some(account.email)
         }
         _ => None,

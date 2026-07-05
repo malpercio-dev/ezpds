@@ -14,7 +14,7 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
-use crate::auth::jwt::{AuthScope, SCOPE_ACCESS};
+use crate::auth::jwt::AuthScope;
 use crate::auth::oauth_scopes;
 use crate::db::accounts::{activate_account, AccountStateChange};
 use crate::db::blocks::SqliteBlockStore;
@@ -41,13 +41,7 @@ pub async fn activate_account_handler(
             "access token required",
         ));
     }
-    if user.scope_claim != SCOPE_ACCESS
-        && !oauth_scopes::allows_account(&user.scope_claim, "status", "manage")
-    {
-        return Err(oauth_scopes::insufficient_scope(
-            "token scope does not permit account status changes",
-        ));
-    }
+    oauth_scopes::require_account(&user.scope_claim, "status", "manage")?;
 
     // The lexicon defines no input for activateAccount. Accept an empty (or whitespace-only) body,
     // but reject any actual payload so a malformed request is not silently treated as valid.

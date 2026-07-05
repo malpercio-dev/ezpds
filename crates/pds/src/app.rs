@@ -512,7 +512,7 @@ async fn xrpc_handler(
     auth: Result<crate::auth::extractors::AuthenticatedUser, ApiError>,
     req: axum::extract::Request,
 ) -> Response {
-    use crate::auth::jwt::{AuthScope, SCOPE_ACCESS};
+    use crate::auth::jwt::AuthScope;
     use crate::auth::oauth_scopes;
     use crate::identity_resolution::{resolve_atproto_proxy_target, ModerationProxyGuard};
     use crate::routes::service_proxy::proxy_xrpc;
@@ -551,12 +551,18 @@ async fn xrpc_handler(
             .and_then(|v| v.to_str().ok())
             .unwrap_or(""),
     };
-    if user.scope == AuthScope::Access
-        && user.scope_claim != SCOPE_ACCESS
-        && !oauth_scopes::allows_rpc(&user.scope_claim, &method, proxy_aud)
-    {
-        return oauth_scopes::insufficient_scope("token scope does not permit proxying this RPC")
-            .into_response();
+    if !user.scope.is_access() {
+        return ApiError::new(ErrorCode::InvalidToken, "access token required").into_response();
+    }
+    if user.scope == AuthScope::Access {
+        if let Err(err) = oauth_scopes::require_rpc(
+            &user.scope_claim,
+            &method,
+            proxy_aud,
+            "token scope does not permit proxying this RPC",
+        ) {
+            return err.into_response();
+        }
     }
 
     // Direct messages require a privileged credential: full access or a *privileged* app

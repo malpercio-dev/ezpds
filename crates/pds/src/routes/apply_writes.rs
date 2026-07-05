@@ -172,13 +172,8 @@ pub async fn apply_writes(
             Kind::Update => crate::auth::oauth_scopes::RepoAction::Update,
             Kind::Delete => crate::auth::oauth_scopes::RepoAction::Delete,
         };
-        if auth_scope == crate::auth::jwt::AuthScope::Access
-            && claims.scope != crate::auth::jwt::SCOPE_ACCESS
-            && !crate::auth::oauth_scopes::allows_repo(&claims.scope, &collection, repo_action)
-        {
-            return Err(crate::auth::oauth_scopes::insufficient_scope(
-                "token scope does not permit this repo write",
-            ));
+        if auth_scope == crate::auth::jwt::AuthScope::Access {
+            crate::auth::oauth_scopes::require_repo(&claims.scope, &collection, repo_action)?;
         }
 
         let key = format!("{collection}/{rkey}");

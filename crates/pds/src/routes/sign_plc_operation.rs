@@ -26,7 +26,7 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
-use crate::auth::jwt::{AuthScope, SCOPE_ACCESS};
+use crate::auth::jwt::AuthScope;
 use crate::auth::oauth_scopes;
 use crate::db::plc_operation_tokens::{consume_plc_operation_token, plc_operation_token_is_valid};
 use crate::db::repo_keys::get_signing_key_by_did;
@@ -64,11 +64,7 @@ pub async fn sign_plc_operation(
             "full access token required",
         ));
     }
-    if user.scope_claim != SCOPE_ACCESS && !oauth_scopes::allows_identity(&user.scope_claim, "*") {
-        return Err(oauth_scopes::insufficient_scope(
-            "token scope does not permit identity operations",
-        ));
-    }
+    oauth_scopes::require_identity(&user.scope_claim, "*")?;
     let did = &user.did;
 
     // Two-factor gate: a full-access session (above) AND a single-use email token. We validate the

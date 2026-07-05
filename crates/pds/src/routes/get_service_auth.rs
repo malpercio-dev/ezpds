@@ -18,7 +18,7 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
-use crate::auth::jwt::{AuthScope, SCOPE_ACCESS};
+use crate::auth::jwt::AuthScope;
 use crate::auth::oauth_scopes;
 
 /// Max future window for a *method-bound* token (`lxm` present): one hour. Mirrors the reference
@@ -89,13 +89,12 @@ pub async fn get_service_auth(
     let exp = resolve_expiry(params.exp, lxm.is_some(), now)?;
 
     let required_lxm = lxm.unwrap_or("*");
-    if user.scope_claim != SCOPE_ACCESS
-        && !oauth_scopes::allows_rpc(&user.scope_claim, required_lxm, aud)
-    {
-        return Err(oauth_scopes::insufficient_scope(
-            "token scope does not permit service auth for this RPC audience",
-        ));
-    }
+    oauth_scopes::require_rpc(
+        &user.scope_claim,
+        required_lxm,
+        aud_claim,
+        "token scope does not permit service auth for this RPC audience",
+    )?;
 
     // Sign with the account's per-account repo key (decrypted with the configured master key);
     // the audience service verifies it against the `#atproto` key in the issuer's DID document.

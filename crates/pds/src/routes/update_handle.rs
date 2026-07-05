@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
-use crate::auth::jwt::{AuthScope, SCOPE_ACCESS};
+use crate::auth::jwt::AuthScope;
 use crate::auth::oauth_scopes;
 use crate::db::dids::{fetch_also_known_as, update_also_known_as};
 use common::{ApiError, ErrorCode};
@@ -57,13 +57,7 @@ pub async fn update_handle_handler(
             "access token required",
         ));
     }
-    if user.scope_claim != SCOPE_ACCESS
-        && !oauth_scopes::allows_identity(&user.scope_claim, "handle")
-    {
-        return Err(oauth_scopes::insufficient_scope(
-            "token scope does not permit identity handle changes",
-        ));
-    }
+    oauth_scopes::require_identity(&user.scope_claim, "handle")?;
 
     // Step 1: Validate handle structure.
     crate::handle::validate_handle_structure(&payload.handle)

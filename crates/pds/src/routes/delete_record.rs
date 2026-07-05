@@ -66,17 +66,12 @@ pub async fn delete_record(
     repo_engine::validate_record_path(collection, rkey)
         .map_err(|_| ApiError::new(ErrorCode::InvalidClaim, "invalid collection or record key"))?;
 
-    if auth_scope == crate::auth::jwt::AuthScope::Access
-        && claims.scope != crate::auth::jwt::SCOPE_ACCESS
-        && !crate::auth::oauth_scopes::allows_repo(
+    if auth_scope == crate::auth::jwt::AuthScope::Access {
+        crate::auth::oauth_scopes::require_repo(
             &claims.scope,
             collection,
             crate::auth::oauth_scopes::RepoAction::Delete,
-        )
-    {
-        return Err(crate::auth::oauth_scopes::insufficient_scope(
-            "token scope does not permit this repo write",
-        ));
+        )?;
     }
 
     let write_state = crate::db::accounts::get_repo_write_state(&state.db, did)
