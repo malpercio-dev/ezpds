@@ -84,9 +84,9 @@ check_schema() {
     echo "  Use ../gen/schemas/mobile-schema.json." >&2
     fail=1
   fi
-  if ! grep -Eq '"\$schema"[[:space:]]*:[[:space:]]*"[^"]*mobile-schema\.json"' "$file"; then
+  if ! grep -Eq '"\$schema"[[:space:]]*:[[:space:]]*"\.\./gen/schemas/mobile-schema\.json"' "$file"; then
     echo "✗ $file's \$schema does not reference the mobile capability schema" >&2
-    echo "  (expected ../gen/schemas/mobile-schema.json)." >&2
+    echo "  (expected exactly ../gen/schemas/mobile-schema.json)." >&2
     fail=1
   fi
 }
