@@ -949,7 +949,7 @@ mod tests {
 
         let resp = client.get("/resource").await.expect("GET must not error");
         assert_eq!(resp.status().as_u16(), 400, "should return the 400 without retry");
-        assert_eq!(mock.hits(), 1, "must send exactly one request (no retry)");
+        assert_eq!(mock.calls(), 1, "must send exactly one request (no retry)");
     }
 
     #[tokio::test]
