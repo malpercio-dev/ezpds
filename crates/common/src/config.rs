@@ -910,6 +910,19 @@ fn build_email_config(raw: RawEmailConfig) -> Result<EmailConfig, ConfigError> {
     // check below.
     let smtp_username = raw.smtp_username.filter(|s| !s.is_empty());
     let smtp_password = raw.smtp_password.filter(|s| !s.is_empty());
+    let smtp_timeout_secs = raw
+        .smtp_timeout_secs
+        .unwrap_or_else(default_smtp_timeout_secs);
+
+    // A zero timeout is `Duration::from_secs(0)`, which lettre treats as "no timeout" (an
+    // unbounded wait) — the opposite of what a timeout knob should do. Reject it rather than
+    // silently disable the guard; the field has no "disable" semantics.
+    if smtp_timeout_secs == 0 {
+        return Err(ConfigError::Invalid(
+            "email.smtp_timeout_secs must be > 0 (0 would disable the SMTP timeout entirely)"
+                .to_string(),
+        ));
+    }
 
     if provider == EmailProvider::Smtp {
         if from.is_none() {
@@ -944,9 +957,7 @@ fn build_email_config(raw: RawEmailConfig) -> Result<EmailConfig, ConfigError> {
         smtp_username,
         smtp_password: smtp_password.map(Sensitive),
         smtp_tls,
-        smtp_timeout_secs: raw
-            .smtp_timeout_secs
-            .unwrap_or_else(default_smtp_timeout_secs),
+        smtp_timeout_secs,
     })
 }
 
@@ -2466,5 +2477,14 @@ mod tests {
         let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
         let config = validate_and_build(raw).unwrap();
         assert_eq!(config.email.smtp_timeout_secs, 45);
+    }
+
+    #[test]
+    fn zero_smtp_timeout_is_rejected() {
+        let env = HashMap::from([("EZPDS_EMAIL_SMTP_TIMEOUT_SECS".to_string(), "0".to_string())]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("smtp_timeout_secs"));
     }
 }
