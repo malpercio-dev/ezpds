@@ -86,10 +86,10 @@ to prevent regression.
 
 ## Enforcement
 
-Tauri v2 has **no runtime ACL-denial test harness** — a denied call surfaces only as a
-console string (`"<command> not allowed"`) with no catchable exception type, and build-time
-schema validation checks JSON *syntax*, not capability membership. So enforcement is two
-halves:
+Tauri v2 has **no runtime ACL-denial test harness**: a denied call just *fails* at runtime —
+the `invoke()` promise rejects with a `"<command> not allowed"` error that is also logged to
+the console — but there is no typed result an automated test can assert on, and build-time
+validation checks JSON *syntax*, not capability membership. So enforcement is two halves:
 
 1. **Static minimality lock (automated, CI).** `scripts/capability-check.sh` (`just
    cap-check`) asserts: no `core:default` in any capability; each file's permission set
@@ -98,15 +98,14 @@ halves:
    (pure JSON parsing, no Apple toolchain), so a re-widening can't merge silently.
 
 2. **Manual denial check (on-device, when a simulator is available).** In a dev build, from
-   the WKWebView dev tools, call a core command outside the allowlist through the
-   `@tauri-apps/api` and confirm it is denied. For example, importing `getCurrentWindow`
-   from `@tauri-apps/api/window` and calling `.setTitle('x')` (which needs
-   `core:window:allow-set-title`, no longer granted) should reject with a
-   `"…not allowed"` console error, while the app's own commands (e.g. `list_identities`,
-   `pairing_state`) still resolve. This is the half the static guard cannot prove; run it
-   after any capability change once Xcode/Simulator is at hand. (The exact denial-error
-   string and internal invoke path vary by Tauri version — the signal is a *rejected*
-   call, versus a resolving app command.)
+   the WKWebView dev tools, call a core command outside the allowlist through
+   `@tauri-apps/api` and confirm it is **denied** — e.g. `getCurrentWindow().setTitle('x')`
+   (needs `core:window:allow-set-title`, no longer granted). The signal to watch for is the
+   denial itself: a `"…not allowed"` error surfaces in the dev-tools console and the call
+   fails, while the app's own commands (e.g. `list_identities`, `pairing_state`) still
+   resolve. This is the half the static guard cannot prove; run it after any capability
+   change once Xcode/Simulator is at hand. (The exact error string and internal invoke path
+   vary by Tauri version — what matters is *denied* vs. *resolves*.)
 
 ## Changing an allowlist
 
