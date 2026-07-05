@@ -29,7 +29,7 @@ export const MAX_RATE_LIMIT_RETRIES = 4;
 
 // Default email pattern for test accounts (outbound email is stubbed server-side).
 export function defaultEmail(name) {
-  const local = process.env.EZPDS_INTEROP_EMAIL_LOCAL ?? 'jacob';
-  const domain = process.env.EZPDS_INTEROP_EMAIL_DOMAIN ?? 'jacobzweifel.com';
+  const local = process.env.EZPDS_INTEROP_EMAIL_LOCAL ?? 'root';
+  const domain = process.env.EZPDS_INTEROP_EMAIL_DOMAIN ?? 'malpercio.dev';
   return `${local}+ezpds-interop-${name}@${domain}`;
 }
