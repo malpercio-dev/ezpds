@@ -49,14 +49,14 @@ pub struct PARResponse {
 /// OAuth 2.0 error response (RFC 6749 §5.2 / RFC 9126 §2.3).
 struct PARError {
     error: &'static str,
-    error_description: &'static str,
+    error_description: String,
 }
 
 impl PARError {
-    fn new(error: &'static str, error_description: &'static str) -> Self {
+    fn new(error: &'static str, error_description: impl Into<String>) -> Self {
         Self {
             error,
-            error_description,
+            error_description: error_description.into(),
         }
     }
 }
@@ -131,12 +131,17 @@ pub async fn post_par(State(state): State<AppState>, Form(form): Form<PARForm>) 
         }
     };
 
-    let scope = form
+    // Validate & canonically normalize the requested granular scopes; a malformed
+    // or unsupported scope is rejected up-front (RFC 6749 §4.1.2.1 `invalid_scope`).
+    let requested_scope = form
         .scope
         .as_deref()
         .filter(|s| !s.is_empty())
-        .unwrap_or("atproto")
-        .to_string();
+        .unwrap_or("atproto");
+    let scope = match crate::auth::oauth_scopes::normalize_scope_request(requested_scope) {
+        Ok(s) => s,
+        Err(desc) => return PARError::new("invalid_scope", desc).into_response(),
+    };
 
     // Look up the registered client and validate redirect_uri.
     let client = match get_oauth_client(&state.db, &client_id).await {
