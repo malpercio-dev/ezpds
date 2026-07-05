@@ -22,6 +22,7 @@ use crate::app::AppState;
 /// - `dpop_signing_alg_values_supported`: signals that DPoP (RFC 9449) is required.
 /// - `token_endpoint_auth_methods_supported`: public clients + private_key_jwt per spec §1.2.
 /// - `require_pushed_authorization_requests`: PAR is mandatory per AT Protocol OAuth spec.
+/// - `agent_auth`: advertises the auth.md agent-registration discovery surface.
 #[derive(Serialize)]
 struct OAuthServerMetadata {
     issuer: String,
@@ -36,6 +37,23 @@ struct OAuthServerMetadata {
     code_challenge_methods_supported: Vec<String>,
     dpop_signing_alg_values_supported: Vec<String>,
     require_pushed_authorization_requests: bool,
+    agent_auth: AgentAuthMetadata,
+}
+
+#[derive(Serialize)]
+struct AgentAuthMetadata {
+    skill: String,
+    identity_endpoint: String,
+    claim_endpoint: String,
+    events_endpoint: String,
+    identity_types_supported: Vec<String>,
+    identity_assertion: IdentityAssertionMetadata,
+    events_supported: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct IdentityAssertionMetadata {
+    assertion_types_supported: Vec<String>,
 }
 
 pub async fn oauth_server_metadata(State(state): State<AppState>) -> impl IntoResponse {
@@ -51,6 +69,8 @@ pub async fn oauth_server_metadata(State(state): State<AppState>) -> impl IntoRe
         grant_types_supported: vec![
             "authorization_code".to_string(),
             "refresh_token".to_string(),
+            "urn:ietf:params:oauth:grant-type:jwt-bearer".to_string(),
+            "urn:workos:agent-auth:grant-type:claim".to_string(),
         ],
         token_endpoint_auth_methods_supported: vec![
             "none".to_string(),
@@ -59,6 +79,26 @@ pub async fn oauth_server_metadata(State(state): State<AppState>) -> impl IntoRe
         code_challenge_methods_supported: vec!["S256".to_string()],
         dpop_signing_alg_values_supported: vec!["ES256".to_string()],
         require_pushed_authorization_requests: true,
+        agent_auth: AgentAuthMetadata {
+            skill: format!("{base}/auth.md"),
+            identity_endpoint: format!("{base}/agent/identity"),
+            claim_endpoint: format!("{base}/agent/identity/claim"),
+            events_endpoint: format!("{base}/agent/event/notify"),
+            identity_types_supported: vec![
+                "anonymous".to_string(),
+                "identity_assertion".to_string(),
+                "service_auth".to_string(),
+            ],
+            identity_assertion: IdentityAssertionMetadata {
+                assertion_types_supported: vec![
+                    "urn:ietf:params:oauth:token-type:id-jag".to_string()
+                ],
+            },
+            events_supported: vec![
+                "https://schemas.workos.com/events/agent/auth/identity/assertion/revoked"
+                    .to_string(),
+            ],
+        },
     })
 }
 
@@ -169,11 +209,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn grant_types_include_authorization_code_and_refresh_token() {
+    async fn grant_types_include_authorization_code_refresh_token_and_agent_auth_grants() {
         let json = metadata_json().await;
         let grants = json["grant_types_supported"].as_array().unwrap();
         assert!(grants.iter().any(|v| v == "authorization_code"));
         assert!(grants.iter().any(|v| v == "refresh_token"));
+        assert!(grants
+            .iter()
+            .any(|v| v == "urn:ietf:params:oauth:grant-type:jwt-bearer"));
+        assert!(grants
+            .iter()
+            .any(|v| v == "urn:workos:agent-auth:grant-type:claim"));
+    }
+
+    #[tokio::test]
+    async fn agent_auth_advertises_agent_endpoints_from_public_url() {
+        let json = metadata_json().await;
+        assert_eq!(
+            json["agent_auth"]["skill"],
+            "https://test.example.com/auth.md"
+        );
+        assert_eq!(
+            json["agent_auth"]["identity_endpoint"],
+            "https://test.example.com/agent/identity"
+        );
+        assert_eq!(
+            json["agent_auth"]["claim_endpoint"],
+            "https://test.example.com/agent/identity/claim"
+        );
+        assert_eq!(
+            json["agent_auth"]["events_endpoint"],
+            "https://test.example.com/agent/event/notify"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_auth_advertises_supported_identity_types_assertions_and_events() {
+        let json = metadata_json().await;
+        assert_eq!(
+            json["agent_auth"]["identity_types_supported"],
+            serde_json::json!(["anonymous", "identity_assertion", "service_auth"])
+        );
+        assert_eq!(
+            json["agent_auth"]["identity_assertion"]["assertion_types_supported"],
+            serde_json::json!(["urn:ietf:params:oauth:token-type:id-jag"])
+        );
+        assert_eq!(
+            json["agent_auth"]["events_supported"],
+            serde_json::json!([
+                "https://schemas.workos.com/events/agent/auth/identity/assertion/revoked"
+            ])
+        );
     }
 
     #[tokio::test]
@@ -243,8 +329,8 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-        // All four URL-bearing fields must not produce "...com//oauth/..." when
-        // public_url has a trailing slash.
+        // URL-bearing fields must not produce "...com//oauth/..." or
+        // "...com//agent/..." when public_url has a trailing slash.
         assert_eq!(
             json["authorization_endpoint"],
             "https://pds.example.com/oauth/authorize"
@@ -258,5 +344,21 @@ mod tests {
             "https://pds.example.com/oauth/par"
         );
         assert_eq!(json["jwks_uri"], "https://pds.example.com/oauth/jwks");
+        assert_eq!(
+            json["agent_auth"]["skill"],
+            "https://pds.example.com/auth.md"
+        );
+        assert_eq!(
+            json["agent_auth"]["identity_endpoint"],
+            "https://pds.example.com/agent/identity"
+        );
+        assert_eq!(
+            json["agent_auth"]["claim_endpoint"],
+            "https://pds.example.com/agent/identity/claim"
+        );
+        assert_eq!(
+            json["agent_auth"]["events_endpoint"],
+            "https://pds.example.com/agent/event/notify"
+        );
     }
 }
