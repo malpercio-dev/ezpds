@@ -1132,6 +1132,351 @@ pub async fn get_recommended_did_credentials(
         })
 }
 
+// ============================================================================
+// Migration XRPC helpers (Task 3, 4, 5)
+// ============================================================================
+
+/// Get service auth token for migration from the SOURCE PDS.
+///
+/// Calls `GET /xrpc/com.atproto.server.getServiceAuth?aud={dest_did}&lxm={lxm}`.
+/// For migration, `aud` is the destination server DID and `lxm` is typically
+/// "com.atproto.server.createAccount".
+pub async fn get_service_auth(
+    client: &crate::oauth_client::OAuthClient,
+    aud: &str,
+    lxm: &str,
+) -> Result<ServiceAuthToken, PdsClientError> {
+    let path = format!(
+        "/xrpc/com.atproto.server.getServiceAuth?aud={}&lxm={}",
+        urlencoding::encode(aud),
+        urlencoding::encode(lxm),
+    );
+
+    let resp = client
+        .get(&path)
+        .await
+        .map_err(|e| PdsClientError::NetworkError {
+            message: format!("get_service_auth failed: {}", e),
+        })?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp
+            .text()
+            .await
+            .unwrap_or_else(|_| "(response body unreadable)".to_string());
+        return Err(PdsClientError::NetworkError {
+            message: format!("get_service_auth returned {}: {}", status, body),
+        });
+    }
+
+    resp.json::<ServiceAuthToken>()
+        .await
+        .map_err(|e| PdsClientError::NetworkError {
+            message: format!("failed to parse get_service_auth response: {}", e),
+        })
+}
+
+/// Create account in migration mode on the destination PDS.
+///
+/// Calls `POST /xrpc/com.atproto.server.createAccount` with the request body.
+/// The `client` should be a Bearer client carrying a service-auth JWT from the source PDS.
+/// A 409 response maps to `PdsClientError::DidAlreadyExists`.
+pub async fn create_account_migration(
+    client: &crate::oauth_client::OAuthClient,
+    req: &CreateAccountMigrationRequest,
+) -> Result<CreateAccountResponse, PdsClientError> {
+    let resp = client
+        .post("/xrpc/com.atproto.server.createAccount", req)
+        .await
+        .map_err(|e| PdsClientError::NetworkError {
+            message: format!("create_account_migration failed: {}", e),
+        })?;
+
+    let status = resp.status();
+    if status.as_u16() == 409 {
+        return Err(PdsClientError::DidAlreadyExists);
+    }
+
+    if !status.is_success() {
+        let body = resp
+            .text()
+            .await
+            .unwrap_or_else(|_| "(response body unreadable)".to_string());
+        return Err(PdsClientError::NetworkError {
+            message: format!("create_account_migration returned {}: {}", status, body),
+        });
+    }
+
+    resp.json::<CreateAccountResponse>()
+        .await
+        .map_err(|e| PdsClientError::NetworkError {
+            message: format!("failed to parse create_account_migration response: {}", e),
+        })
+}
+
+/// Import a CAR into the destination PDS repository.
+///
+/// Calls `POST /xrpc/com.atproto.repo.importRepo` with raw CAR bytes.
+/// Content-Type is `application/vnd.ipld.car`.
+pub async fn import_repo(
+    client: &crate::oauth_client::OAuthClient,
+    car: Vec<u8>,
+) -> Result<(), PdsClientError> {
+    let resp = client
+        .post_bytes(
+            "/xrpc/com.atproto.repo.importRepo",
+            "application/vnd.ipld.car",
+            car,
+        )
+        .await
+        .map_err(|e| PdsClientError::NetworkError {
+            message: format!("import_repo failed: {}", e),
+        })?;
+
+    let status = resp.status();
+    if status.is_success() {
+        Ok(())
+    } else {
+        let body = resp
+            .text()
+            .await
+            .unwrap_or_else(|_| "(response body unreadable)".to_string());
+        Err(PdsClientError::NetworkError {
+            message: format!("import_repo returned {}: {}", status, body),
+        })
+    }
+}
+
+/// Upload a blob to the destination PDS.
+///
+/// Calls `POST /xrpc/com.atproto.repo.uploadBlob` with raw blob bytes.
+/// Content-Type is set to the provided MIME type.
+pub async fn upload_blob(
+    client: &crate::oauth_client::OAuthClient,
+    mime: &str,
+    bytes: Vec<u8>,
+) -> Result<UploadBlobResponse, PdsClientError> {
+    let resp = client
+        .post_bytes("/xrpc/com.atproto.repo.uploadBlob", mime, bytes)
+        .await
+        .map_err(|e| PdsClientError::NetworkError {
+            message: format!("upload_blob failed: {}", e),
+        })?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp
+            .text()
+            .await
+            .unwrap_or_else(|_| "(response body unreadable)".to_string());
+        return Err(PdsClientError::NetworkError {
+            message: format!("upload_blob returned {}: {}", status, body),
+        });
+    }
+
+    resp.json::<UploadBlobResponse>()
+        .await
+        .map_err(|e| PdsClientError::NetworkError {
+            message: format!("failed to parse upload_blob response: {}", e),
+        })
+}
+
+/// List missing blobs on the destination PDS (one page).
+///
+/// Calls `GET /xrpc/com.atproto.repo.listMissingBlobs?cursor=...` (cursor is optional).
+pub async fn list_missing_blobs(
+    client: &crate::oauth_client::OAuthClient,
+    cursor: Option<&str>,
+) -> Result<MissingBlobs, PdsClientError> {
+    let path = if let Some(cur) = cursor {
+        format!(
+            "/xrpc/com.atproto.repo.listMissingBlobs?cursor={}",
+            urlencoding::encode(cur)
+        )
+    } else {
+        "/xrpc/com.atproto.repo.listMissingBlobs".to_string()
+    };
+
+    let resp = client
+        .get(&path)
+        .await
+        .map_err(|e| PdsClientError::NetworkError {
+            message: format!("list_missing_blobs failed: {}", e),
+        })?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp
+            .text()
+            .await
+            .unwrap_or_else(|_| "(response body unreadable)".to_string());
+        return Err(PdsClientError::NetworkError {
+            message: format!("list_missing_blobs returned {}: {}", status, body),
+        });
+    }
+
+    resp.json::<MissingBlobs>()
+        .await
+        .map_err(|e| PdsClientError::NetworkError {
+            message: format!("failed to parse list_missing_blobs response: {}", e),
+        })
+}
+
+/// Get the user's preferences.
+///
+/// Calls `GET /xrpc/app.bsky.actor.getPreferences`.
+/// Returns the full response object (with `preferences` key).
+pub async fn get_preferences(
+    client: &crate::oauth_client::OAuthClient,
+) -> Result<serde_json::Value, PdsClientError> {
+    let resp = client
+        .get("/xrpc/app.bsky.actor.getPreferences")
+        .await
+        .map_err(|e| PdsClientError::NetworkError {
+            message: format!("get_preferences failed: {}", e),
+        })?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp
+            .text()
+            .await
+            .unwrap_or_else(|_| "(response body unreadable)".to_string());
+        return Err(PdsClientError::NetworkError {
+            message: format!("get_preferences returned {}: {}", status, body),
+        });
+    }
+
+    resp.json::<serde_json::Value>()
+        .await
+        .map_err(|e| PdsClientError::NetworkError {
+            message: format!("failed to parse get_preferences response: {}", e),
+        })
+}
+
+/// Put the user's preferences.
+///
+/// Calls `POST /xrpc/app.bsky.actor.putPreferences` with the preferences object
+/// (the same object returned by `get_preferences`).
+pub async fn put_preferences(
+    client: &crate::oauth_client::OAuthClient,
+    prefs: &serde_json::Value,
+) -> Result<(), PdsClientError> {
+    let resp = client
+        .post("/xrpc/app.bsky.actor.putPreferences", prefs)
+        .await
+        .map_err(|e| PdsClientError::NetworkError {
+            message: format!("put_preferences failed: {}", e),
+        })?;
+
+    let status = resp.status();
+    if status.is_success() {
+        Ok(())
+    } else {
+        let body = resp
+            .text()
+            .await
+            .unwrap_or_else(|_| "(response body unreadable)".to_string());
+        Err(PdsClientError::NetworkError {
+            message: format!("put_preferences returned {}: {}", status, body),
+        })
+    }
+}
+
+/// Check the account status on the destination PDS.
+///
+/// Calls `GET /xrpc/com.atproto.server.checkAccountStatus`.
+pub async fn check_account_status(
+    client: &crate::oauth_client::OAuthClient,
+) -> Result<AccountStatus, PdsClientError> {
+    let resp = client
+        .get("/xrpc/com.atproto.server.checkAccountStatus")
+        .await
+        .map_err(|e| PdsClientError::NetworkError {
+            message: format!("check_account_status failed: {}", e),
+        })?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp
+            .text()
+            .await
+            .unwrap_or_else(|_| "(response body unreadable)".to_string());
+        return Err(PdsClientError::NetworkError {
+            message: format!("check_account_status returned {}: {}", status, body),
+        });
+    }
+
+    resp.json::<AccountStatus>()
+        .await
+        .map_err(|e| PdsClientError::NetworkError {
+            message: format!("failed to parse check_account_status response: {}", e),
+        })
+}
+
+/// Activate the account on the destination PDS.
+///
+/// Calls `POST /xrpc/com.atproto.server.activateAccount` with an empty body.
+/// The server accepts `{}` as a valid empty body.
+pub async fn activate_account(client: &crate::oauth_client::OAuthClient) -> Result<(), PdsClientError> {
+    let resp = client
+        .post(
+            "/xrpc/com.atproto.server.activateAccount",
+            &serde_json::json!({}),
+        )
+        .await
+        .map_err(|e| PdsClientError::NetworkError {
+            message: format!("activate_account failed: {}", e),
+        })?;
+
+    let status = resp.status();
+    if status.is_success() {
+        Ok(())
+    } else {
+        let body = resp
+            .text()
+            .await
+            .unwrap_or_else(|_| "(response body unreadable)".to_string());
+        Err(PdsClientError::NetworkError {
+            message: format!("activate_account returned {}: {}", status, body),
+        })
+    }
+}
+
+/// Deactivate the account on the destination PDS.
+///
+/// Calls `POST /xrpc/com.atproto.server.deactivateAccount` with optional deleteAfter (RFC 3339).
+pub async fn deactivate_account(
+    client: &crate::oauth_client::OAuthClient,
+    delete_after: Option<&str>,
+) -> Result<(), PdsClientError> {
+    let body = match delete_after {
+        Some(t) => serde_json::json!({ "deleteAfter": t }),
+        None => serde_json::json!({}),
+    };
+
+    let resp = client
+        .post("/xrpc/com.atproto.server.deactivateAccount", &body)
+        .await
+        .map_err(|e| PdsClientError::NetworkError {
+            message: format!("deactivate_account failed: {}", e),
+        })?;
+
+    let status = resp.status();
+    if status.is_success() {
+        Ok(())
+    } else {
+        let body_text = resp
+            .text()
+            .await
+            .unwrap_or_else(|_| "(response body unreadable)".to_string());
+        Err(PdsClientError::NetworkError {
+            message: format!("deactivate_account returned {}: {}", status, body_text),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2595,5 +2940,416 @@ mod tests {
             }
             e => panic!("Expected NetworkError, got: {:?}", e),
         }
+    }
+
+    // Helper: create a valid Bearer test JWT with a distant expiry
+    fn make_bearer_jwt(exp: u64) -> String {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"ES256"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{}}}"#, exp).as_bytes());
+        // Dummy signature; jwt_exp_claim never verifies it
+        let sig = "dummy_signature";
+        format!("{}.{}.{}", header, payload, sig)
+    }
+
+    // ============================================================================
+    // Task 3: get_service_auth and create_account_migration
+    // ============================================================================
+
+    /// get_service_auth issues GET with aud and lxm query params and parses token
+    #[tokio::test]
+    async fn test_get_service_auth_success() {
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.server.getServiceAuth")
+                .query_param("aud", "did:web:dest.example.com")
+                .query_param("lxm", "com.atproto.server.createAccount");
+            then.status(200).json_body(serde_json::json!({
+                "token": "eyJhbGc..."
+            }));
+        });
+
+        let jwt = make_bearer_jwt(9999999999);  // Far future expiry
+        let test_client = crate::oauth_client::OAuthClient::new_bearer(
+            jwt,
+            "test_refresh_token".to_string(),
+            mock_server.base_url(),
+        ).expect("new_bearer must succeed");
+        let result = get_service_auth(
+            &test_client,
+            "did:web:dest.example.com",
+            "com.atproto.server.createAccount",
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let token = result.unwrap();
+        assert_eq!(token.token, "eyJhbGc...");
+    }
+
+    /// get_service_auth returns NetworkError on non-2xx status
+    #[tokio::test]
+    async fn test_get_service_auth_error() {
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.server.getServiceAuth");
+            then.status(401).body("unauthorized");
+        });
+
+        let test_client =
+            crate::oauth_client::OAuthClient::new_bearer(make_bearer_jwt(9999999999), "refresh".to_string(), mock_server.base_url())
+                .expect("new_bearer must succeed");
+        let result = get_service_auth(&test_client, "did:web:dest", "com.atproto.server.createAccount")
+            .await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PdsClientError::NetworkError { .. } => {
+                // Expected
+            }
+            e => panic!("Expected NetworkError, got: {:?}", e),
+        }
+    }
+
+    /// create_account_migration POSTs camelCase body and parses response
+    #[tokio::test]
+    async fn test_create_account_migration_success() {
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.createAccount")
+                .is_true(|req| req.headers_vec().iter().any(|(k, v)| k == "authorization" && v.contains("Bearer")));
+            then.status(200).json_body(serde_json::json!({
+                "accessJwt": "access...",
+                "refreshJwt": "refresh...",
+                "handle": "user.example.com",
+                "did": "did:plc:abc123"
+            }));
+        });
+
+        let test_client = crate::oauth_client::OAuthClient::new_bearer(
+            make_bearer_jwt(9999999999),
+            "refresh_jwt".to_string(),
+            mock_server.base_url(),
+        ).expect("new_bearer must succeed");
+        let req = CreateAccountMigrationRequest {
+            handle: "user.example.com".to_string(),
+            email: "user@example.com".to_string(),
+            did: "did:plc:abc123".to_string(),
+            invite_code: None,
+        };
+        let result = create_account_migration(&test_client, &req).await;
+
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        assert_eq!(resp.access_jwt, "access...");
+        assert_eq!(resp.refresh_jwt, "refresh...");
+        assert_eq!(resp.handle, "user.example.com");
+        assert_eq!(resp.did, "did:plc:abc123");
+    }
+
+    /// create_account_migration maps 409 to DidAlreadyExists
+    #[tokio::test]
+    async fn test_create_account_migration_409() {
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.createAccount");
+            then.status(409).body("account already exists");
+        });
+
+        let test_client = crate::oauth_client::OAuthClient::new_bearer(
+            make_bearer_jwt(9999999999),
+            "refresh_jwt".to_string(),
+            mock_server.base_url(),
+        ).expect("new_bearer must succeed");
+        let req = CreateAccountMigrationRequest {
+            handle: "existing.example.com".to_string(),
+            email: "existing@example.com".to_string(),
+            did: "did:plc:xyz789".to_string(),
+            invite_code: None,
+        };
+        let result = create_account_migration(&test_client, &req).await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PdsClientError::DidAlreadyExists => {
+                // Expected
+            }
+            e => panic!("Expected DidAlreadyExists, got: {:?}", e),
+        }
+    }
+
+    // ============================================================================
+    // Task 4: import_repo, upload_blob, list_missing_blobs, get+put_preferences
+    // ============================================================================
+
+    /// import_repo sends CAR bytes with correct Content-Type and returns Ok on 200
+    #[tokio::test]
+    async fn test_import_repo_success() {
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.repo.importRepo")
+                .header("content-type", "application/vnd.ipld.car")
+                .is_true(|req| req.headers_vec().iter().any(|(k, v)| k == "authorization" && v.contains("Bearer")));
+            then.status(200);
+        });
+
+        let test_client =
+            crate::oauth_client::OAuthClient::new_bearer(make_bearer_jwt(9999999999), "refresh_token".to_string(), mock_server.base_url())
+                .expect("new_bearer must succeed");
+        let car_bytes = b"CAR bytes content".to_vec();
+        let result = import_repo(&test_client, car_bytes).await;
+
+        assert!(result.is_ok());
+    }
+
+    /// upload_blob sends raw bytes with provided MIME type and parses blob response
+    #[tokio::test]
+    async fn test_upload_blob_success() {
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.repo.uploadBlob")
+                .header("content-type", "image/jpeg")
+                .is_true(|req| req.headers_vec().iter().any(|(k, v)| k == "authorization" && v.contains("Bearer")));
+            then.status(200).json_body(serde_json::json!({
+                "blob": {
+                    "$type": "com.atproto.sync.blob",
+                    "mimeType": "image/jpeg",
+                    "size": 1234,
+                    "ref": { "$link": "bafy123" }
+                }
+            }));
+        });
+
+        let test_client =
+            crate::oauth_client::OAuthClient::new_bearer(make_bearer_jwt(9999999999), "refresh_token".to_string(), mock_server.base_url())
+                .expect("new_bearer must succeed");
+        let blob_bytes = b"JPEG data".to_vec();
+        let result = upload_blob(&test_client, "image/jpeg", blob_bytes).await;
+
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        assert!(resp.blob["$type"].is_string());
+    }
+
+    /// list_missing_blobs without cursor issues base path; with cursor includes ?cursor=
+    #[tokio::test]
+    async fn test_list_missing_blobs_no_cursor() {
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.repo.listMissingBlobs")
+                .is_true(|req| req.headers_vec().iter().any(|(k, v)| k == "authorization" && v.contains("Bearer")));
+            then.status(200).json_body(serde_json::json!({
+                "blobs": [
+                    { "cid": "bafy1", "recordUri": "at://did/record1" },
+                    { "cid": "bafy2", "recordUri": "at://did/record2" }
+                ]
+            }));
+        });
+
+        let test_client =
+            crate::oauth_client::OAuthClient::new_bearer(make_bearer_jwt(9999999999), "refresh_token".to_string(), mock_server.base_url())
+                .expect("new_bearer must succeed");
+        let result = list_missing_blobs(&test_client, None).await;
+
+        assert!(result.is_ok());
+        let blobs = result.unwrap();
+        assert_eq!(blobs.blobs.len(), 2);
+        assert_eq!(blobs.blobs[0].cid, "bafy1");
+    }
+
+    /// list_missing_blobs with cursor includes it in query params
+    #[tokio::test]
+    async fn test_list_missing_blobs_with_cursor() {
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.repo.listMissingBlobs")
+                .query_param("cursor", "next_page_token")
+                .is_true(|req| req.headers_vec().iter().any(|(k, v)| k == "authorization" && v.contains("Bearer")));
+            then.status(200).json_body(serde_json::json!({
+                "blobs": [
+                    { "cid": "bafy3", "recordUri": "at://did/record3" }
+                ],
+                "cursor": "another_token"
+            }));
+        });
+
+        let test_client =
+            crate::oauth_client::OAuthClient::new_bearer(make_bearer_jwt(9999999999), "refresh_token".to_string(), mock_server.base_url())
+                .expect("new_bearer must succeed");
+        let result = list_missing_blobs(&test_client, Some("next_page_token")).await;
+
+        assert!(result.is_ok());
+        let blobs = result.unwrap();
+        assert_eq!(blobs.blobs.len(), 1);
+        assert_eq!(blobs.cursor, Some("another_token".to_string()));
+    }
+
+    /// get_preferences parses full preferences object
+    #[tokio::test]
+    async fn test_get_preferences_success() {
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/app.bsky.actor.getPreferences")
+                .is_true(|req| req.headers_vec().iter().any(|(k, v)| k == "authorization" && v.contains("Bearer")));
+            then.status(200).json_body(serde_json::json!({
+                "preferences": [
+                    { "feed": "pinned", "value": "at://feed1" }
+                ]
+            }));
+        });
+
+        let test_client =
+            crate::oauth_client::OAuthClient::new_bearer(make_bearer_jwt(9999999999), "refresh_token".to_string(), mock_server.base_url())
+                .expect("new_bearer must succeed");
+        let result = get_preferences(&test_client).await;
+
+        assert!(result.is_ok());
+        let prefs = result.unwrap();
+        assert!(prefs["preferences"].is_array());
+    }
+
+    /// put_preferences POSTs the preferences object back and treats 200 as success
+    #[tokio::test]
+    async fn test_put_preferences_success() {
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/app.bsky.actor.putPreferences")
+                .is_true(|req| req.headers_vec().iter().any(|(k, v)| k == "authorization" && v.contains("Bearer")));
+            then.status(200);
+        });
+
+        let test_client =
+            crate::oauth_client::OAuthClient::new_bearer(make_bearer_jwt(9999999999), "refresh_token".to_string(), mock_server.base_url())
+                .expect("new_bearer must succeed");
+        let prefs = serde_json::json!({
+            "preferences": [
+                { "feed": "pinned", "value": "at://feed1" }
+            ]
+        });
+        let result = put_preferences(&test_client, &prefs).await;
+
+        assert!(result.is_ok());
+    }
+
+    // ============================================================================
+    // Task 5: check_account_status, activate_account, deactivate_account
+    // ============================================================================
+
+    /// check_account_status parses all fields including storedBlocks
+    #[tokio::test]
+    async fn test_check_account_status_success() {
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.server.checkAccountStatus")
+                .is_true(|req| req.headers_vec().iter().any(|(k, v)| k == "authorization" && v.contains("Bearer")));
+            then.status(200).json_body(serde_json::json!({
+                "activated": true,
+                "validDid": true,
+                "storedBlocks": 12345,
+                "indexedRecords": 100,
+                "privateStateValues": 5,
+                "expectedBlobs": 50,
+                "importedBlobs": 48
+            }));
+        });
+
+        let test_client =
+            crate::oauth_client::OAuthClient::new_bearer(make_bearer_jwt(9999999999), "refresh_token".to_string(), mock_server.base_url())
+                .expect("new_bearer must succeed");
+        let result = check_account_status(&test_client).await;
+
+        assert!(result.is_ok());
+        let status = result.unwrap();
+        assert!(status.activated);
+        assert!(status.valid_did);
+        assert_eq!(status.stored_blocks, 12345);
+        assert_eq!(status.indexed_records, 100);
+        assert_eq!(status.expected_blobs, 50);
+        assert_eq!(status.imported_blobs, 48);
+    }
+
+    /// activate_account POSTs empty body {} and treats 200 as success
+    #[tokio::test]
+    async fn test_activate_account_success() {
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.activateAccount")
+                .is_true(|req| req.headers_vec().iter().any(|(k, v)| k == "authorization" && v.contains("Bearer")));
+            then.status(200);
+        });
+
+        let test_client =
+            crate::oauth_client::OAuthClient::new_bearer(make_bearer_jwt(9999999999), "refresh_token".to_string(), mock_server.base_url())
+                .expect("new_bearer must succeed");
+        let result = activate_account(&test_client).await;
+
+        assert!(result.is_ok());
+    }
+
+    /// deactivate_account without deleteAfter sends {} body
+    #[tokio::test]
+    async fn test_deactivate_account_no_delete_after() {
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.deactivateAccount")
+                .is_true(|req| req.headers_vec().iter().any(|(k, v)| k == "authorization" && v.contains("Bearer")));
+            then.status(200);
+        });
+
+        let test_client =
+            crate::oauth_client::OAuthClient::new_bearer(make_bearer_jwt(9999999999), "refresh_token".to_string(), mock_server.base_url())
+                .expect("new_bearer must succeed");
+        let result = deactivate_account(&test_client, None).await;
+
+        assert!(result.is_ok());
+    }
+
+    /// deactivate_account with deleteAfter includes it in request body
+    #[tokio::test]
+    async fn test_deactivate_account_with_delete_after() {
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.deactivateAccount")
+                .body_includes("deleteAfter")
+                .body_includes("2026-07-08")
+                .is_true(|req| req.headers_vec().iter().any(|(k, v)| k == "authorization" && v.contains("Bearer")));
+            then.status(200);
+        });
+
+        let test_client =
+            crate::oauth_client::OAuthClient::new_bearer(make_bearer_jwt(9999999999), "refresh_token".to_string(), mock_server.base_url())
+                .expect("new_bearer must succeed");
+        let result = deactivate_account(&test_client, Some("2026-07-08T00:00:00.000Z")).await;
+
+        assert!(result.is_ok());
     }
 }
