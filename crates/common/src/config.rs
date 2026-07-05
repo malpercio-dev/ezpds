@@ -523,6 +523,9 @@ pub struct EmailConfig {
     pub smtp_password: Option<Sensitive<String>>,
     /// Transport security mode.
     pub smtp_tls: SmtpTls,
+    /// Connect/send timeout for the SMTP transport, in seconds. `send()` is awaited on the request
+    /// path, so this bounds how long a slow or unresponsive relay can stall a handler. Default 15.
+    pub smtp_timeout_secs: u64,
 }
 
 impl Default for EmailConfig {
@@ -536,12 +539,19 @@ impl Default for EmailConfig {
             smtp_username: None,
             smtp_password: None,
             smtp_tls: SmtpTls::Starttls,
+            smtp_timeout_secs: default_smtp_timeout_secs(),
         }
     }
 }
 
+/// The default `smtp_port` when unset: the conventional port for the default STARTTLS mode.
+/// Delegates to [`default_smtp_port_for`] so the fallback lives in one place.
 fn default_smtp_port() -> u16 {
-    587
+    default_smtp_port_for(SmtpTls::Starttls)
+}
+
+fn default_smtp_timeout_secs() -> u64 {
+    15
 }
 
 /// The conventional submission port for a TLS mode: 465 for implicit TLS (SMTPS), 587 otherwise
@@ -567,6 +577,7 @@ pub(crate) struct RawEmailConfig {
     pub(crate) smtp_username: Option<String>,
     pub(crate) smtp_password: Option<String>,
     pub(crate) smtp_tls: Option<SmtpTls>,
+    pub(crate) smtp_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -840,6 +851,13 @@ pub(crate) fn apply_env_overrides(
     if let Some(v) = env.get("EZPDS_EMAIL_SMTP_TLS") {
         raw.email.smtp_tls = Some(parse_smtp_tls(v)?);
     }
+    if let Some(v) = env.get("EZPDS_EMAIL_SMTP_TIMEOUT_SECS") {
+        raw.email.smtp_timeout_secs = Some(v.parse::<u64>().map_err(|e| {
+            ConfigError::Invalid(format!(
+                "EZPDS_EMAIL_SMTP_TIMEOUT_SECS is not a valid non-negative integer: '{v}': {e}"
+            ))
+        })?);
+    }
     if let Some(v) = env.get("EZPDS_ADMIN_TOKEN") {
         raw.admin_token = Some(v.clone());
     }
@@ -926,6 +944,9 @@ fn build_email_config(raw: RawEmailConfig) -> Result<EmailConfig, ConfigError> {
         smtp_username,
         smtp_password: smtp_password.map(Sensitive),
         smtp_tls,
+        smtp_timeout_secs: raw
+            .smtp_timeout_secs
+            .unwrap_or_else(default_smtp_timeout_secs),
     })
 }
 
@@ -2431,5 +2452,19 @@ mod tests {
         let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
         let config = validate_and_build(raw).unwrap();
         assert!(config.email.smtp_password.is_none());
+    }
+
+    #[test]
+    fn smtp_timeout_defaults_to_15s_and_can_be_overridden() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert_eq!(config.email.smtp_timeout_secs, 15);
+
+        let env = HashMap::from([(
+            "EZPDS_EMAIL_SMTP_TIMEOUT_SECS".to_string(),
+            "45".to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.email.smtp_timeout_secs, 45);
     }
 }

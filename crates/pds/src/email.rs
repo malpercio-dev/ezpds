@@ -24,10 +24,6 @@ use lettre::message::Mailbox;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 
-/// Connect/send timeout for the SMTP transport. `send()` is awaited on the request path, so an
-/// unresponsive relay must not stall a handler (and tie up request capacity) indefinitely.
-const SMTP_TIMEOUT: Duration = Duration::from_secs(15);
-
 /// A fully-rendered outbound message. Plaintext body only — the flows this serves (token
 /// delivery) have no need for HTML.
 pub struct EmailMessage {
@@ -105,8 +101,10 @@ impl SmtpEmailSender {
                 .map_err(|e| EmailError(format!("failed to build STARTTLS SMTP relay: {e}")))?,
             SmtpTls::None => AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host),
         }
+        // `send()` is awaited on the request path, so bound how long a slow or unresponsive relay
+        // can stall a handler (configurable via `email.smtp_timeout_secs`, default 15s).
         .port(config.smtp_port)
-        .timeout(Some(SMTP_TIMEOUT));
+        .timeout(Some(Duration::from_secs(config.smtp_timeout_secs)));
 
         // Authenticate only when both a username and password are configured.
         if let (Some(user), Some(pass)) = (
@@ -251,6 +249,7 @@ mod tests {
             smtp_username: Some("user".to_string()),
             smtp_password: Some(common::Sensitive("pass".to_string())),
             smtp_tls: SmtpTls::Starttls,
+            smtp_timeout_secs: 15,
         };
         assert!(SmtpEmailSender::from_config(&config).is_ok());
     }
