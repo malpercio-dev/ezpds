@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-07-02 (backfilled)
 - **Deciders:** ezpds maintainers
-- **Related:** [`AGENTS.md`](../../../AGENTS.md) · [`apps/identity-wallet/CLAUDE.md`](../../../apps/identity-wallet/CLAUDE.md) · [`apps/identity-wallet/scripts/ios-env.sh`](../../../apps/identity-wallet/scripts/ios-env.sh) · [`docs/design-plans/2026-06-20-denix-ios-build.md`](../../design-plans/2026-06-20-denix-ios-build.md)
+- **Related:** [`AGENTS.md`](../../../AGENTS.md) · [`apps/identity-wallet/CLAUDE.md`](../../../apps/identity-wallet/CLAUDE.md) · [`apps/identity-wallet/scripts/ios-env.sh`](../../../apps/identity-wallet/scripts/ios-env.sh) · [`docs/archive/design-plans/2026-06-20-denix-ios-build.md`](../../archive/design-plans/2026-06-20-denix-ios-build.md)
 
 ## Context
 

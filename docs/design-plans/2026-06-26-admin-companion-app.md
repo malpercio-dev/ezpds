@@ -120,7 +120,7 @@ Headers on every admin request from a device:
 4. `POST /v1/admin/devices` with the pairing code, a device label, the public key, and a self-signature over `(pairing_code ‖ public_key ‖ timestamp)`. The relay verifies the code is valid/unconsumed/unexpired **and** that the self-signature checks against the supplied public key, then inserts the device row and consumes the code in one transaction → `{ device_id }`.
 5. From then on the phone signs each request; there is no separate login.
 
-**Relay surface.** A new route module `crates/relay/src/routes/admin_devices.rs` exposes pairing/claim/list/revoke. The existing admin guard `require_admin_token` ([auth.rs:32](../../crates/relay/src/routes/auth.rs)) is widened to `require_admin`, which accepts the master Bearer token **or** a verified device signature. The existing admin routes (`POST /v1/accounts/claim-codes`, `POST /v1/relay/keys`) switch to `require_admin` with no behavior change.
+**Relay surface.** A new route module `crates/pds/src/routes/admin_devices.rs` exposes pairing/claim/list/revoke. The existing admin guard `require_admin_token` ([guards.rs](../../crates/pds/src/auth/guards.rs)) is widened to `require_admin`, which accepts the master Bearer token **or** a verified device signature. The existing admin routes (`POST /v1/accounts/claim-codes`, `POST /v1/relay/keys`) switch to `require_admin` with no behavior change.
 
 **Endpoint contracts.**
 
@@ -135,7 +135,7 @@ Headers on every admin request from a device:
 
 Pairing-code minting stays master-token-only so a compromised device cannot enroll accomplices.
 
-**Database schema** (one forward-only migration, following the `schema_migrations` runner and `V00x__name.sql` convention; status derived, not stored, matching [V004__claim_codes_invite.sql](../../crates/relay/src/db/migrations/V004__claim_codes_invite.sql)):
+**Database schema** (one forward-only migration, following the `schema_migrations` runner and `V00x__name.sql` convention; status derived, not stored, matching [V004__claim_codes_invite.sql](../../crates/pds/src/db/migrations/V004__claim_codes_invite.sql)):
 
 ```sql
 admin_pairing_codes(
@@ -161,11 +161,11 @@ A device is *active* when `revoked_at IS NULL`; a pairing code is *pending* when
 
 This design reuses established patterns rather than introducing new machinery:
 
-- **Per-device bearer credentials hashed in a table** — the relay already does this for `devices`/`sessions` (SHA-256 of the token) in [auth.rs:144](../../crates/relay/src/routes/auth.rs). The admin-device model is the public-key analogue: store the device's `did:key` and verify signatures instead of hashing a secret.
-- **Derived status, not stored** — `admin_devices`/`admin_pairing_codes` follow `claim_codes` ([V004](../../crates/relay/src/db/migrations/V004__claim_codes_invite.sql)), computing pending/active/revoked from timestamps in queries.
+- **Per-device bearer credentials hashed in a table** — the relay already does this for `devices`/`sessions` (SHA-256 of the token) in [guards.rs](../../crates/pds/src/auth/guards.rs). The admin-device model is the public-key analogue: store the device's `did:key` and verify signatures instead of hashing a secret.
+- **Derived status, not stored** — `admin_devices`/`admin_pairing_codes` follow `claim_codes` ([V004](../../crates/pds/src/db/migrations/V004__claim_codes_invite.sql)), computing pending/active/revoked from timestamps in queries.
 - **Forward-only migrations** with the custom `schema_migrations` runner (not sqlx's built-in). New tables ship in a new `V00x__admin_devices.sql`.
-- **Constant-time admin auth** — `require_admin` keeps the master-token comparison from [auth.rs:32](../../crates/relay/src/routes/auth.rs) (subtle ct_eq) as one of its two accepted credentials.
-- **Route isolation** — a dedicated `routes/admin_devices.rs` per the relay's route-isolation rule in [crates/relay/CLAUDE.md](../../crates/relay/CLAUDE.md); each new route gets a matching `bruno/*.bru` per the AGENTS.md mandate.
+- **Constant-time admin auth** — `require_admin` keeps the master-token comparison from [guards.rs](../../crates/pds/src/auth/guards.rs) (subtle ct_eq) as one of its two accepted credentials.
+- **Route isolation** — a dedicated `routes/admin_devices.rs` per the relay's route-isolation rule in [crates/pds/CLAUDE.md](../../crates/pds/CLAUDE.md); each new route gets a matching `bruno/*.bru` per the AGENTS.md mandate.
 - **P-256 in the Secure Enclave + external-signer callback** — Obsign already generates an SE key and signs via `ECDSASignatureMessageX962SHA256`, normalizing DER → raw 64-byte r‖s ([device_key.rs](../../apps/identity-wallet/src-tauri/src/device_key.rs)); the relay already verifies P-256 signatures against a `did:key` ([plc.rs:542](../../crates/crypto/src/plc.rs)). The companion app reuses both ends; the only new crypto surface is a thin public verify wrapper.
 - **OKLCH CSS-variable token system** — the admin app forks the *architecture* of `apps/identity-wallet/src/lib/styles/{tokens,fonts,base}.css` (hex-free, `var(--*)` references) with new values.
 
@@ -190,8 +190,8 @@ This design reuses established patterns rather than introducing new machinery:
 **Goal:** Tables and query functions for pairing codes, admin devices, and nonces.
 
 **Components:**
-- Migration `crates/relay/src/db/migrations/V00x__admin_devices.sql` — `admin_pairing_codes`, `admin_devices`, `admin_nonces`.
-- Query functions in `crates/relay/src/db/` — insert/consume pairing code; insert/list/revoke device; lookup device by id; insert-nonce-if-absent; sweep stale nonces. Status derived in queries.
+- Migration `crates/pds/src/db/migrations/V00x__admin_devices.sql` — `admin_pairing_codes`, `admin_devices`, `admin_nonces`.
+- Query functions in `crates/pds/src/db/` — insert/consume pairing code; insert/list/revoke device; lookup device by id; insert-nonce-if-absent; sweep stale nonces. Status derived in queries.
 
 **Dependencies:** None (parallel to Phase 1).
 
@@ -203,8 +203,8 @@ This design reuses established patterns rather than introducing new machinery:
 **Goal:** Mint a pairing code and register a device by claiming it.
 
 **Components:**
-- `crates/relay/src/routes/admin_devices.rs` — `POST /v1/admin/pairing-codes` (master-token authed) and `POST /v1/admin/devices` (pairing code + self-signature verified via Phase 1).
-- Route registration in `crates/relay/src/app.rs`.
+- `crates/pds/src/routes/admin_devices.rs` — `POST /v1/admin/pairing-codes` (master-token authed) and `POST /v1/admin/devices` (pairing code + self-signature verified via Phase 1).
+- Route registration in `crates/pds/src/app.rs`.
 - `bruno/admin_pairing_codes.bru`, `bruno/admin_register_device.bru`.
 
 **Dependencies:** Phase 1 (verify), Phase 2 (tables).
@@ -217,7 +217,7 @@ This design reuses established patterns rather than introducing new machinery:
 **Goal:** `require_admin` accepts the master token or a verified, non-replayed device signature; existing admin routes adopt it.
 
 **Components:**
-- `require_admin(headers, body, state)` in `crates/relay/src/routes/auth.rs` — rebuilds the canonical `sign_string`, verifies against the device's stored key, enforces the ±60s timestamp window, and inserts the nonce (conflict ⇒ replay ⇒ reject); bumps `last_seen_at`. Retains the master-token path.
+- `require_admin(headers, body, state)` in `crates/pds/src/auth/guards.rs` — rebuilds the canonical `sign_string`, verifies against the device's stored key, enforces the ±60s timestamp window, and inserts the nonce (conflict ⇒ replay ⇒ reject); bumps `last_seen_at`. Retains the master-token path.
 - Switch `POST /v1/accounts/claim-codes` and `POST /v1/relay/keys` from `require_admin_token` to `require_admin`.
 
 **Dependencies:** Phases 1–3.

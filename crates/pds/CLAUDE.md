@@ -1,6 +1,6 @@
 # PDS Crate (Custos)
 
-Last verified: 2026-07-03
+Last verified: 2026-07-05
 
 ## Purpose
 
@@ -13,9 +13,12 @@ crates (`crypto`, `repo-engine`, `common`) are pure Functional Cores that the PD
 ```
 src/
   main.rs          — startup: open pool, run migrations, bind server
+  telemetry.rs     — OTel tracing-subscriber init (`init_subscriber`) + shutdown-flushing `OtelGuard`; wired by main.rs at startup, dropped after graceful shutdown
   app.rs           — AppState definition and construction
   firehose.rs      — persistent subscribeRepos event pipeline (durable sequencer + broadcast fan-out)
   firehose_gc.rs   — periodic `repo_seq` retention sweep (age/count pruning below the live frontier)
+  blob_store.rs    — blob storage backend: filesystem I/O, CID computation, MIME-type detection; blobs live at `{data_dir}/blobs/{cid[0:2]}/{cid}`
+  blob_gc.rs       — periodic blob GC: reconciles each repo's MST-referenced blobs into the `blobs` table (permanent vs released-with-grace), then sweeps blobs whose grace period elapsed and are still unreferenced
   crawler.rs       — outbound requestCrawl notifier (rate-limited, retrying, fire-and-forget)
   rate_limit.rs    — request rate-limiting middleware + shared limiter state (global IP, per-endpoint IP, per-account write points)
   iroh_tunnel.rs   — Iroh QUIC endpoint: NAT-traversing device↔pds tunnel (opt-in)
@@ -24,7 +27,11 @@ src/
   account_reaper.rs— periodic sweep that permanently deletes deactivated accounts past their `deleteAfter` (template: firehose_gc.rs)
   genesis.rs       — shared did:plc genesis-op machinery (verify/validate, DID-doc + CAR builders, plc.directory POST), used by both create_did.rs and create_account_xrpc.rs
   plc_ops.rs       — shared did:plc rotation/update-op machinery for the interop PLC-signing surface: fetch a DID's current PLC state (audit-log GET), render a DID doc from op fields, parse request verificationMethods/services; used by the identity.*PlcOperation routes
+  transfer.rs      — shared planned device-transfer accept/complete workflows composing multi-table transactions; `db/transfers.rs` owns the SQL, this module owns the cross-table ordering
   handle.rs        — handle validation (structural + domain policy), shared by provisioning + handle routes
+  identity_resolution.rs— shared handle/DID resolution chain (local handles table → DNS TXT → HTTP well-known) behind resolveHandle/resolveIdentity/refreshIdentity/resolveDid, plus `atproto-proxy` header target resolution with SSRF-guarded endpoint validation for the moderation proxy branch
+  dns.rs           — `DnsProvider` (create/delete a handle's DNS records on registration/removal; v0.1 ships no provider, DNS is managed manually) + `TxtResolver` (DNS TXT fallback for resolveHandle; `HickoryTxtResolver` is the production impl)
+  well_known.rs    — `WellKnownResolver`: HTTP `.well-known/atproto-did` fallback for resolveHandle (third fallback, after local DB and DNS TXT)
   token.rs         — bearer/device token generation + hashing (pure), shared by the auth guards and session-issuing routes
   code_gen.rs      — random claim-code generation (pure), shared by claim-code + account-creation routes
   uniqueness.rs    — email/handle pre-flight uniqueness DB checks, shared by the account-creation routes
@@ -44,7 +51,9 @@ monotonic sequencer (backed by the `repo_seq` table, V028) and a Tokio `broadcas
 (`repo_engine::collect_commit_diff_cids` + `build_car_from_cids`, run *before* post-commit GC) and
 publishes a sequenced `CommitEvent` carrying the DID, rev, `since`, `prevData` (the previous
 commit's MST root CID — Sync v1.1's inductive-validation anchor, captured before the write mutates
-the repo; `None` for genesis), per-record `RepoOp`s (action + collection/rkey + cid + value), and
+the repo; `None` for genesis), per-record `RepoOp`s (action + collection/rkey + cid + prev + value;
+`prev` is the previous record CID for an update/delete — Sync v1.1's per-op inductive-validation
+anchor — `None` for a create), and
 the CARv1 diff blocks. The `#commit` wire frame emits the deprecated `blobs` list empty. Backpressure is by design: the bounded
 channel never blocks producers — a slow subscriber observes `Lagged` and is expected to disconnect.
 All three write paths (`create_record`/`put_record` via `record_write`, `delete_record`,
@@ -213,15 +222,20 @@ and async query functions; no business logic lives here.
 | `mod.rs` | `open_pool`, `run_migrations`, `DbError`, `is_unique_violation` |
 | `accounts.rs` | `AccountRow` + `resolve_identifier` (handle/DID→account); `SessionAccountRow` + `get_session_account` (DID→account+handle+DID doc); `resolve_by_email` (email→account); `account_is_active`, `deactivate_account`/`activate_account` (flip `deactivated_at`, report the transition); `get_repo_write_state` + `advance_repo_root_if_active` (repo-write preconditions and the commit CAS); `get_account_overview` + `account_last_active` (operator usage/storage lookups — unfiltered by deactivation); `AccountLifecycle` + `get_repo_status`/`list_repos` (derive `active`/`status` from the `deactivated_at`/`suspended_at`/`taken_down_at` columns for the public sync endpoints); `set_account_takedown` + `TakedownStateChange` (flip `taken_down_at`, returning the account's full derived lifecycle so the caller's firehose event reflects takendown/suspended/deactivated precedence, not just the takedown dimension); `account_exists` (bare DID-presence check, unfiltered by lifecycle, shared by the create_did/createAccount promotion guards); `accounts_due_for_deletion` (DIDs whose `deleteAfter` has elapsed, for the deletion reaper) + `account_password_hash` (lifecycle-unfiltered hash lookup so `deleteAccount` can authenticate a deactivated account). All lifecycle-gated lookups (`get_session_account`, `resolve_identifier`, `resolve_by_email`, `account_is_active`, `get_repo_write_state`, `advance_repo_root_if_active`) now require `deactivated_at`/`suspended_at`/`taken_down_at` all NULL — a suspension or takedown closes logins and repo writes exactly like a self-service deactivation |
 | `app_passwords.rs` | app-password store (V031): `insert_app_password` (409 on duplicate name), `list_app_passwords` (metadata, no hash), `list_verify_candidates` (hash + privilege for `createSession`), `app_password_privileged` (privilege re-derivation for `refreshSession`). Revocation's multi-table delete lives in `routes/revoke_app_password.rs` |
+| `claim_codes.rs` | invite/claim-code store (`claim_codes`, V004): `claim_code_valid` (preflight exists/unredeemed/unexpired check — the authoritative single-use redemption is a separate atomic UPDATE inside the account-creation transaction) + `mint_claim_codes` (batch-generate and persist unique codes, retrying on rare collisions, `MintClaimCodesError::Exhausted` after too many) |
 | `handles.rs` | `handles` table (V002): `resolve_handle` (handle→DID local lookup, shared by `updateHandle`/`deleteHandle`/`.well-known/atproto-did`), `insert_handle` (+ `InsertHandleOutcome`, UNIQUE→`HandleTaken`, for `createHandle`). `updateHandle`'s atomic DELETE-then-INSERT swap and `deleteHandle`'s DNS-ordered delete stay in their route handlers |
+| `dids.rs` | `did_documents` table (V002) cache queries: `get_did_document`/`did_document_exists` (cached DID-doc lookup/existence probe), `fetch_also_known_as` (a DID's handles rendered as `at://<handle>` for the doc's `alsoKnownAs` array) + `update_also_known_as` (read-modify-write that field back into the stored document) |
 | `blocks.rs` | content-addressed repo-block byte store + per-account `block_owners` metadata, `SqliteBlockStore` adapter; `account_block_stats` (owned block refs, total referenced bytes, distinct-rev commit count for the usage endpoint) |
 | `blobs.rs` | blob metadata store; `account_storage_bytes`, `account_blob_metrics`, `account_largest_blob` (blob-storage metrics) |
 | `oauth.rs` | OAuth client lookup, auth code storage, token management |
 | `password_reset.rs` | `insert_reset_token`, `get_reset_token`, `mark_reset_token_used`, `update_password_hash` |
 | `plc_operation_tokens.rs` | PLC-operation email-token store (V033): `insert_plc_operation_token` (1-hour TTL) + `consume_plc_operation_token` (atomic single-use, bound to `(token_hash, did)`), gating `signPlcOperation` on the interop migration path |
+| `account_deletion_tokens.rs` | Account-deletion email-token store (V034, same hashed 1-hour single-use envelope as `plc_operation_tokens`/`password_reset`): `insert_account_deletion_token` + `consume_account_deletion_token` (atomic, bound to `(token_hash, did)`), gating `deleteAccount` behind a `requestAccountDelete`-minted token |
 | `preferences.rs` | `get_preferences` (DID→stored `app.bsky` preferences JSON blob); `put_preferences` (upsert the blob, overwriting any previous value). Both generic over the executor so `put_preferences.rs` can read-merge-write inside one transaction |
 | `refresh_tokens.rs` | `refresh_tokens` reads (V002/V006): `get_active_refresh_token` (+ `ActiveRefreshToken`, the unexpired-token lookup for `refreshSession`), `session_id_for_jti` (jti→session_id for `deleteSession`, no expiry filter). The rotation/revocation multi-table transactions stay in their route handlers |
 | `relay_signing_keys.rs` | operator-level PDS signing keys (`relay_signing_keys`, V003; not account-DID-keyed): `latest_signing_key` (+ `RelaySigningKey`) and `insert_signing_key`, backing `GET`/`POST /v1/pds/keys` |
+| `jwt_secret.rs` | persistent, single-row, AES-256-GCM-encrypted HS256 JWT signing secret (`jwt_signing_secret`, V015): `get_jwt_secret` (+ `JwtSecretRow`) / `store_jwt_secret`, so the secret survives restarts instead of being regenerated per boot |
+| `iroh_identity.rs` | persistent, single-row, AES-256-GCM-encrypted Iroh node Ed25519 secret key (`iroh_identity`, V022): `get_iroh_identity` (+ `IrohIdentityRow`) / `store_iroh_identity`, so the published node id (`get_device_pds`) stays stable across restarts |
 | `sessions.rs` | `sessions` writes (V009): `insert_provisioning_session` (standalone bearer session, no device, 1-year TTL). Every other session insert is one leg of a multi-table auth transaction and stays in its route handler |
 | `repo_keys.rs` | Per-account repo signing keys: pending-account key storage for the mobile DID ceremony, reserved signing keys for standard account migration, promotion into DID-keyed `signing_keys`, and commit-signer lookup |
 | `transfers.rs` | Planned device-swap sessions (V027/V029/V030): `insert_transfer` opens a `pending` transfer for a DID, sweeping any expired active row first then letting the partial unique indexes reject a still-active duplicate (→ `DuplicateActive`, the 409 path) or an already-taken active code (→ `CodeCollision`, caller regenerates and retries). Transfer-accept query helpers store promoted-device credentials in `transfer_devices`; completion helpers revoke superseded sessions/transfer-device credentials and append `transfer_audit_events`. `transfer_device_token_exists` lets the `auth/guards.rs` device-token auth path accept those credentials later. Wired by `routes/transfer_initiate.rs`, the root `transfer.rs` accept/complete workflows, `routes/transfer_accept.rs`, `routes/transfer_complete.rs`, and `auth/guards.rs` |
@@ -263,6 +277,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `request_password_reset.rs` | `POST /xrpc/com.atproto.server.requestPasswordReset` |
 | `reset_password.rs` | `POST /xrpc/com.atproto.server.resetPassword` |
 | `reserve_signing_key.rs` | `POST /xrpc/com.atproto.server.reserveSigningKey` — public standard account-migration repo signing-key reservation; returns `{ signingKey }` |
+| `get_repo_signing_key.rs` | `GET /v1/repo-signing-key` — issue (idempotently) the authenticated pending account's ATProto repo signing key for the mobile DID-creation ceremony: reuse-or-generate a per-account P-256 key, encrypt, store on the pending account; returns `{ keyId, publicKey, algorithm }`; 401 without a pending session, 503 with no master key configured |
 | `create_did.rs` | `POST /v1/dids` |
 | `get_did.rs` | `GET /v1/dids/:did` |
 | `create_account.rs` | `POST /v1/accounts` |
@@ -280,18 +295,37 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `transfer_complete.rs` | `POST /v1/transfer/complete` — finalize an accepted planned device swap; bearer auth accepts either the source account session or the accepted target device token; marks the transfer `complete`, revokes old sessions/prior transfer-device credentials, keeps the accepted target credential, and records a transfer audit event |
 | `get_device_pds.rs` | `GET /v1/devices/:id/pds` |
 | `describe_server.rs` | `GET /xrpc/com.atproto.server.describeServer` |
+| `upload_blob.rs` | `POST /xrpc/com.atproto.repo.uploadBlob` — size check → `blob_store::store_blob` on the filesystem → insert blob metadata; returns `{ blob: { $type, ref, mimeType, size } }` |
+| `get_blob.rs` | `GET /xrpc/com.atproto.sync.getBlob` — look up blob metadata by `(did, cid)`, verify DID ownership, stream the raw bytes back with the stored `Content-Type` |
+| `sync_get_blocks.rs` | `GET /xrpc/com.atproto.sync.getBlocks` — return requested repo blocks (MST nodes/records) by CID as a rootless CAR (empty `roots`, matching the reference PDS); a CID owned by a different account reads as `BlockNotFound` |
+| `sync_get_latest_commit.rs` | `GET /xrpc/com.atproto.sync.getLatestCommit` — report the current commit CID and rev for a repo |
+| `sync_get_record.rs` | `GET /xrpc/com.atproto.sync.getRecord` — export a single record with its MST proof as a CAR: a present record yields a 200 inclusion proof, an absent record in an existing repo yields a 200 exclusion proof; only an unknown DID/account 404s |
+| `get_repo.rs` | `GET /xrpc/com.atproto.sync.getRepo` — export a repository as a CAR file; an optional `since` (TID) makes it incremental, returning only blocks introduced after that revision |
+| `sync_get_repo_status.rs` | `GET /xrpc/com.atproto.sync.getRepoStatus` — report the hosting status (`active`/derived lifecycle status) of a single repo |
+| `list_blobs.rs` | `GET /xrpc/com.atproto.sync.listBlobs` — paginated list of a DID's blob CIDs (`{ cids, cursor }`) |
+| `list_repos.rs` | `GET /xrpc/com.atproto.sync.listRepos` — list all repositories hosted on this PDS, paginated |
+| `apply_writes.rs` | `POST /xrpc/com.atproto.repo.applyWrites` — apply a batch of record writes to a repo in one atomic commit |
+| `import_repo.rs` | `POST /xrpc/com.atproto.repo.importRepo` — scope check → deactivated-account precondition → parse/validate an uploaded CAR (`repo_engine::import_repo_car`) → persist reachable blocks and set the repo root/rev atomically, only while the account is still deactivated (migration path) |
+| `list_missing_blobs.rs` | `GET /xrpc/com.atproto.repo.listMissingBlobs` — walk the account's repo MST, collect blob references from records, diff against uploaded blobs, and paginate the missing set (`{ blobs: [{ cid, recordUri }], cursor? }`) |
+| `create_record.rs` | `POST /xrpc/com.atproto.repo.createRecord` — create a new record in a repository |
+| `get_record.rs` | `GET /xrpc/com.atproto.repo.getRecord` — read a record from a repository |
+| `list_records.rs` | `GET /xrpc/com.atproto.repo.listRecords` — list records in a collection with pagination |
+| `put_record.rs` | `POST /xrpc/com.atproto.repo.putRecord` — create or update a record in a repository |
+| `delete_record.rs` | `POST /xrpc/com.atproto.repo.deleteRecord` — delete a record from a repository |
 | `describe_repo.rs` | `GET /xrpc/com.atproto.repo.describeRepo` |
 | `service_proxy.rs` | `GET/POST /xrpc/app.bsky.*`, `GET/POST /xrpc/chat.bsky.*`, and `GET/POST /xrpc/com.atproto.moderation.*` — catch-all proxy with dual paths. The six **read-after-write NSIDs** (`app.bsky.feed.{getTimeline,getAuthorFeed,getPostThread,getActorLikes}` + `app.bsky.actor.{getProfile,getProfiles}`) are routed to `read_after_write::pipethrough_munged` (buffered munge path: merges requester's unindexed records, applies fallback ladder, emits `Atproto-Upstream-Lag` header); all other `app.bsky.*` NSIDs stream through `proxy_xrpc` (fast path: no buffering). `chat.bsky.*` NSIDs stream to the configured chat service (requires full access or *privileged* app password; plain `com.atproto.appPass` refused with 403). `com.atproto.moderation.*` (e.g. `createReport`) has no single configured upstream — the client names the target labeler via the `atproto-proxy` header (`did#serviceId`), which `identity_resolution::resolve_atproto_proxy_target` resolves (DID document → matching `service` entry's `serviceEndpoint`) before proxying; a missing header is 400, an unresolvable target is 503. Since that target DID is caller-controlled, the resolved `serviceEndpoint` is SSRF-guarded (`identity_resolution::validate_proxy_endpoint`): rejects non-http(s) schemes, userinfo, query/fragment, and any host — IP literal or DNS-resolved — that isn't a public address (loopback/private/link-local incl. cloud-metadata/unique-local-IPv6/etc.); a resolved domain's addresses are pinned for the actual connection (`service_proxy::build_pinned_client`) so a second DNS answer at connect time can't substitute an unchecked address. Both paths share `proxy_request` extraction (`mint_service_auth` is `pub(crate)`). |
 | `get_preferences.rs` | `GET /xrpc/app.bsky.actor.getPreferences` — local preference read (stored on the PDS, not proxied; registered ahead of the catch-all). Any access-level token; an app-password caller never sees full-access-only preference types (`preference_scope.rs`) |
 | `put_preferences.rs` | `POST /xrpc/app.bsky.actor.putPreferences` — local preference write (registered ahead of the catch-all). Any access-level token; a scope-limited partial replace — a full-access token overwrites the stored blob entirely, an app-password caller's write preserves any full-access-only entries it can't manage |
 | `preference_scope.rs` | Shared (non-handler) between the two: which preference `$type`s are full-access-only (`personalDetailsPref`), matching the reference PDS |
 | `resolve_handle.rs` | `GET /xrpc/com.atproto.identity.resolveHandle` |
+| `resolve_identity.rs` | `GET /xrpc/com.atproto.identity.resolveDid`, `GET /xrpc/com.atproto.identity.resolveIdentity`, `POST /xrpc/com.atproto.identity.refreshIdentity` — shared `identity_resolution` local→network resolution chain (DID document + bidirectionally-verified handle) behind all three; spec-shaped responses |
 | `get_recommended_did_credentials.rs` | `GET /xrpc/com.atproto.identity.getRecommendedDidCredentials` — the DID-doc fields this PDS recommends a (new/migrating) account's PLC op contain: the PDS-held rotation key, `#atproto` verification method, handle(s), and this server's `atproto_pds` endpoint. Session-authed. Consumed by migrating clients (which put their device key ahead of the recommended key) and standard tooling (ADR-0002) |
 | `request_plc_operation_signature.rs` | `POST /xrpc/com.atproto.identity.requestPlcOperationSignature` — mint a single-use 1-hour email token authorizing a later `signPlcOperation` (interop migration path). Full-access-authed; email delivery stubbed (logged) pending an outbound-email path |
 | `sign_plc_operation.rs` | `POST /xrpc/com.atproto.identity.signPlcOperation` — sign a DID-repointing PLC op with the PDS-held rotation key and return it UNSUBMITTED; overlays request changes onto the DID's current plc.directory state, chains via `prev`. Two-factor: full-access session + single-use email token. Interop path (ADR-0002); the wallet signs its identity leg locally instead |
 | `submit_plc_operation.rs` | `POST /xrpc/com.atproto.identity.submitPlcOperation` — verify a signed PLC op (signature by a current rotation key + `prev` chains onto the head) then POST it to plc.directory and refresh the cached DID document. Full-access-authed. Interop path |
 | `sync_subscribe_repos.rs` | `GET /xrpc/com.atproto.sync.subscribeRepos` (WebSocket firehose) |
 | `claim_codes.rs` | Claim code management |
+| `standard_signup.rs` | `POST /xrpc/com.atproto.server.createInviteCode` (admin-authed, single-use only), `POST /xrpc/com.atproto.server.createInviteCodes` (admin-authed, account-bound batches unsupported), `GET /xrpc/com.atproto.server.getAccountInviteCodes` (always an empty list — ezpds codes are operator-issued, not per-account), `GET /xrpc/com.atproto.temp.checkHandleAvailability`, `GET /xrpc/com.atproto.temp.checkSignupQueue` (always `activated: true`) — maps ezpds's operator-issued claim-code and handle-uniqueness primitives onto the standard-client signup NSIDs, without changing the custom mobile provisioning flow |
 | `get_pds_signing_key.rs` | `GET /v1/pds/keys` (deprecated alias: `GET /v1/relay/keys`) |
 | `health.rs` | `GET /xrpc/_health` |
 | `delete_session.rs` | `POST /xrpc/com.atproto.server.deleteSession` (session revocation) |
@@ -299,6 +333,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `activate_account.rs` | `POST /xrpc/com.atproto.server.activateAccount` (clear deactivation, emit `#account` firehose event on transition) |
 | `request_account_delete.rs` | `POST /xrpc/com.atproto.server.requestAccountDelete` — mint a single-use 1-hour email token authorizing a later `deleteAccount`. Full-access-authed; email delivery stubbed (logged) pending an outbound-email path, like `requestPlcOperationSignature` |
 | `delete_account.rs` | `POST /xrpc/com.atproto.server.deleteAccount` — permanently delete the account named by the body's `did` after verifying its `password` + email `token` (no session auth: the credentials are in the body). Removes all local data via `account_delete::purge_account` and emits an `#account` (`status="deleted"`) frame; leaves the did:plc identity to the wallet. Credential failures → uniform 401 |
+| `check_account_status.rs` | `GET /xrpc/com.atproto.server.checkAccountStatus` — session-authed report of an account's activation/DID-validity/repo block+record counts and blob reference-vs-imported diff, for migration tooling to confirm import completeness before calling `activateAccount` |
 | `oauth_client_metadata.rs` | `GET /oauth/client-metadata.json` (OAuth client metadata per ATProto spec) |
 | `provisioning_session.rs` | Provisioning session creation (email + password → session token) |
 | `test_utils.rs` | Test helpers (excluded from production builds) |

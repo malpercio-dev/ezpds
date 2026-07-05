@@ -1,6 +1,6 @@
 # ezpds
 
-Last verified: 2026-06-30
+Last verified: 2026-07-05
 
 ## Tech Stack
 - Language: Rust (pinned to an exact stable version in rust-toolchain.toml, currently 1.96.0)
@@ -21,6 +21,7 @@ Last verified: 2026-06-30
 - `just font-check` - Verify the four vendored font copies haven't drifted (scripts/font-parity.sh; same-named font files must be byte-identical across copies)
 - `just cap-check` - Verify the Tauri IPC capability allowlists stay minimal (scripts/capability-check.sh; no `core:default`, mobile schema, withGlobalTauri off — the static half of the least-privilege boundary in docs/security/tauri-ipc-boundary.md)
 - `just ci` - Full local gate (fmt-check, lock-check, bruno-check, font-check, cap-check, swift-rs-check, clippy, test, audit) — the same checks CI runs
+- `just interop-setup` / `just interop <args>` - Install deps for and run the interop CLI (`tools/interop/`) against a live deployment
 
 ## CI/CD
 
@@ -41,21 +42,23 @@ Release flow: `just set-version X.Y.Z` (PR) → merge → `just release` (cuts/p
 - direnv auto-activates via `.envrc` (`use flake . --impure --accept-flake-config`)
 - **Always run `nix develop` from the workspace root**, not from a subdirectory — `CARGO_HOME` and `RUSTUP_HOME` resolve relative to devenv root
 - Rust toolchain managed by **rustup** (not Nix's `rust-default`); pinned in `rust-toolchain.toml` to an **exact version** (currently 1.96.0 — not the moving `stable` channel, so local and CI never diverge on rustfmt/clippy; bump deliberately), with rustfmt + clippy + rust-analyzer + iOS targets. On first shell entry, `enterShell` runs `rustup toolchain install` automatically.
-- Shell provides: just, cargo-audit, sqlite (runtime binary + dev headers/library for sqlx's libsqlite3-sys), pkg-config, cargo-tauri, node (22.x), pnpm, rustup, shellcheck
+- Shell provides: just, cargo-audit, sqlite (runtime binary + dev headers/library for sqlx's libsqlite3-sys), pkg-config, cargo-tauri, node (22.x), pnpm, rustup, shellcheck, jq, cmake (needed by aws-lc-sys)
 - `LIBSQLITE3_SYS_USE_PKG_CONFIG=1` is set automatically by devenv (links sqlx against Nix-provided SQLite instead of bundled)
 - `DEVELOPER_DIR` and the Apple iOS toolchain are resolved dynamically (no hardcoded Xcode paths): `enterShell` sources `apps/identity-wallet/scripts/ios-env.sh`, which runs `/usr/bin/xcode-select -p` to point `DEVELOPER_DIR` at the active Xcode (Nix's Darwin hooks otherwise clobber it to a stub SDK). The same script is sourced by the patched Xcode Run Script phase, so CLI and Xcode builds resolve the toolchain identically. iOS-host `CC`/`AR`/linker overrides are gated on `EZPDS_IOS_BUILD=1` (set only by the `just ios-*` recipes and the Xcode Run Script), so a plain `cargo build --workspace` / `cargo run -p pds` is unaffected.
 - Binary cache: devenv.cachix.org (activated by `--accept-flake-config`); speeds up cold shell builds significantly
 - nixpkgs pin: `cachix/devenv-nixpkgs/rolling` (devenv's own nixpkgs fork — package versions may differ from upstream nixpkgs.search.dev)
 
 ## Project Structure
-- `apps/identity-wallet/` - Tauri v2 mobile app (iOS)
+- `apps/identity-wallet/` - Tauri v2 mobile app (iOS) — Obsign identity wallet
+- `apps/admin-companion/` - Tauri v2 mobile app (iOS) — operator console ("Brass Console")
 - `crates/pds/` - PDS / Custos server (axum-based)
 - `crates/repo-engine/` - ATProto repo engine
 - `crates/crypto/` - Cryptographic operations (P-256 key generation, did:key derivation, AES-256-GCM encryption, did:plc genesis ops and verification)
 - `crates/common/` - Shared types and utilities
 - `nix/` - Nix deployment (module.nix: NixOS module for OCI container)
 - `sites/marketing/` - Static marketing site for Obsign + Custos (zero-build HTML/CSS; design derivation documented in its README)
-- `docs/` - Specs, design plans, implementation plans
+- `tools/interop/` - Node/pnpm interop CLI exercising a live deployment (staging by default) end-to-end against the real ATProto network (see its README)
+- `docs/` - Specs, design plans, implementation plans, and `docs/architecture/` (living architecture docs + the ADR log in `docs/architecture/decisions/`). Plans for landed/superseded work live in `docs/archive/` — when a plan's work ships, move its design/test/implementation triad there together (see `docs/archive/README.md`)
 
 ## Mobile
 

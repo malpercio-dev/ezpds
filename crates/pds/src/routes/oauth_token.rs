@@ -432,14 +432,16 @@ async fn handle_authorization_code(
         return OAuthTokenError::new("server_error", "database error").into_response();
     }
 
-    // Normalize scope for access token: AT Protocol uses "com.atproto.access".
-    let access_scope = "com.atproto.access".to_string();
+    // The access token carries the granular scope set granted at consent time,
+    // recording exactly what the client was granted. Per-request enforcement is a
+    // later change; today any granted atproto scope is treated as full access.
+    let granted_scope = auth_code.scope;
 
     // Issue ES256 access token.
     let access_token = match issue_access_token(
         &state.oauth_signing_keypair,
         &auth_code.did,
-        &access_scope,
+        &granted_scope,
         &jkt,
         &state.config.public_url,
     ) {
@@ -447,13 +449,15 @@ async fn handle_authorization_code(
         Err(e) => return e.into_response(),
     };
 
-    // Generate and store refresh token.
+    // Generate and store refresh token, persisting the granted scope so rotation
+    // carries it forward.
     let refresh = generate_token();
     if let Err(e) = store_oauth_refresh_token(
         &state.db,
         &refresh.hash,
         &auth_code.client_id,
         &auth_code.did,
+        &granted_scope,
         &jkt,
     )
     .await
@@ -478,7 +482,7 @@ async fn handle_authorization_code(
             token_type: "DPoP",
             expires_in: 300,
             refresh_token: refresh.plaintext,
-            scope: access_scope,
+            scope: granted_scope,
         }),
     )
         .into_response()
@@ -604,14 +608,15 @@ async fn handle_refresh_token(
         return OAuthTokenError::new("server_error", "database error").into_response();
     }
 
-    // Normalize scope for access token: AT Protocol uses "com.atproto.access".
-    let access_scope = "com.atproto.access".to_string();
+    // Carry the granted granular scope forward across rotation — the rotated
+    // session grants exactly what the original did.
+    let granted_scope = stored.scope;
 
     // Issue new ES256 access token.
     let access_token = match issue_access_token(
         &state.oauth_signing_keypair,
         &stored.did,
-        &access_scope,
+        &granted_scope,
         &jkt,
         &state.config.public_url,
     ) {
@@ -626,6 +631,7 @@ async fn handle_refresh_token(
         &new_refresh.hash,
         &stored.client_id,
         &stored.did,
+        &granted_scope,
         &jkt,
     )
     .await
@@ -650,7 +656,7 @@ async fn handle_refresh_token(
             token_type: "DPoP",
             expires_in: 300,
             refresh_token: new_refresh.plaintext,
-            scope: "com.atproto.refresh".to_string(),
+            scope: granted_scope,
         }),
     )
         .into_response()
@@ -1064,8 +1070,8 @@ mod tests {
         );
         assert!(json["scope"].is_string(), "scope must be present");
         assert_eq!(
-            json["scope"], "com.atproto.access",
-            "scope must be com.atproto.access"
+            json["scope"], "atproto",
+            "the granted granular scope must be returned"
         );
 
         let rt = json["refresh_token"].as_str().unwrap();
@@ -1300,6 +1306,7 @@ mod tests {
             &token.hash,
             "https://app.example.com/client-metadata.json",
             "did:plc:testaccount000000000000",
+            "atproto transition:generic",
             jkt,
         )
         .await
@@ -1391,8 +1398,8 @@ mod tests {
             "rotated refresh_token must be present"
         );
         assert_eq!(
-            json["scope"], "com.atproto.refresh",
-            "scope must be com.atproto.refresh"
+            json["scope"], "atproto transition:generic",
+            "the granted granular scope must be carried forward on rotation"
         );
 
         // Rotated token must differ from the original and be the correct length.

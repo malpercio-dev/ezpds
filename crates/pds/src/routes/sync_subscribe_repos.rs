@@ -285,13 +285,16 @@ struct CommitBody<'a> {
     time: &'a str,
 }
 
-/// A single `#repoOp` on the wire: `action`, MST `path` (`collection/rkey`), and the record
-/// `cid` (a tag-42 link, or null for a delete).
+/// A single `#repoOp` on the wire: `action`, MST `path` (`collection/rkey`), the new record
+/// `cid` (a tag-42 link, or null for a delete), and `prev` (the previous record CID for an
+/// update/delete, a tag-42 link; null for a create). Sync v1.1 relays pair per-op `prev` with the
+/// commit's `prevData` to invert the MST diff and inductively validate each op.
 #[derive(Serialize)]
 struct RepoOpWire<'a> {
     action: &'a str,
     path: String,
     cid: Option<Cid>,
+    prev: Option<Cid>,
 }
 
 /// Encode a [`CommitEvent`] into a complete firehose frame: the `#commit` header concatenated
@@ -315,10 +318,17 @@ fn encode_commit_frame(commit: &CommitEvent) -> Result<Vec<u8>, String> {
             }
             None => None,
         };
+        let prev = match &op.prev {
+            Some(s) => Some(
+                Cid::try_from(s.as_str()).map_err(|e| format!("invalid op prev CID {s:?}: {e}"))?,
+            ),
+            None => None,
+        };
         ops.push(RepoOpWire {
             action: op.action.as_str(),
             path: op.path(),
             cid,
+            prev,
         });
     }
 
@@ -493,6 +503,7 @@ mod tests {
                 cid: Some(
                     "bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uwrf3e2o6cw3djmprrm".to_string(),
                 ),
+                prev: None,
                 value: Some(serde_json::json!({ "text": "hi" })),
             }],
             blocks: vec![0xCA, 0xFE],
@@ -619,6 +630,7 @@ mod tests {
             collection: "app.bsky.feed.post".to_string(),
             rkey: "gone".to_string(),
             cid: None,
+            prev: Some(TEST_CID.to_string()),
             value: None,
         }];
         let frame = encode_commit_frame(&event).unwrap();
@@ -629,6 +641,54 @@ mod tests {
         };
         assert_eq!(map_get(&ops[0], "action"), &Ipld::String("delete".into()));
         assert_eq!(map_get(&ops[0], "cid"), &Ipld::Null);
+        // A delete carries the removed record's CID as a tag-42 `prev` link.
+        match map_get(&ops[0], "prev") {
+            Ipld::Link(cid) => assert_eq!(cid.to_string(), TEST_CID),
+            other => panic!("delete op prev must be a CID link, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_op_encodes_null_prev() {
+        // The sample commit's op is a create, whose `prev` is present-and-null on the wire.
+        let frame = encode_commit_frame(&sample_commit()).unwrap();
+        let (_, body) = decode_frame(&frame);
+        let ops = match map_get(&body, "ops") {
+            Ipld::List(l) => l.clone(),
+            other => panic!("ops must be a list, got {other:?}"),
+        };
+        assert_eq!(map_get(&ops[0], "action"), &Ipld::String("create".into()));
+        assert_eq!(map_get(&ops[0], "prev"), &Ipld::Null);
+    }
+
+    #[test]
+    fn update_op_encodes_prev_link() {
+        let mut event = sample_commit();
+        event.ops = vec![RepoOp {
+            action: OpAction::Update,
+            collection: "app.bsky.feed.post".to_string(),
+            rkey: "abc".to_string(),
+            cid: Some(TEST_CID.to_string()),
+            prev: Some(TEST_CID.to_string()),
+            value: None,
+        }];
+        let frame = encode_commit_frame(&event).unwrap();
+        let (_, body) = decode_frame(&frame);
+        let ops = match map_get(&body, "ops") {
+            Ipld::List(l) => l.clone(),
+            other => panic!("ops must be a list, got {other:?}"),
+        };
+        match map_get(&ops[0], "prev") {
+            Ipld::Link(cid) => assert_eq!(cid.to_string(), TEST_CID),
+            other => panic!("update op prev must be a CID link, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn invalid_op_prev_cid_is_an_error_not_a_panic() {
+        let mut event = sample_commit();
+        event.ops[0].prev = Some("not-a-cid".to_string());
+        assert!(encode_commit_frame(&event).is_err());
     }
 
     #[test]
