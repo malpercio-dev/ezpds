@@ -11,6 +11,18 @@ use serde::Serialize;
 
 use crate::oauth::{DPoPKeypair, OAuthError, OAuthSession};
 
+/// How this client authenticates its XRPC requests.
+///
+/// `Dpop` is the wallet's normal OAuth mode (DPoP-bound access token + proof header,
+/// refresh via `/oauth/token`). `Bearer` is the legacy session mode used ONLY for the
+/// migrated (deactivated) destination account, whose credentials are the plain
+/// `accessJwt`/`refreshJwt` that migration-mode `createAccount` returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthMode {
+    Dpop,
+    Bearer,
+}
+
 /// Authenticated HTTP client.
 ///
 /// Wraps every request with:
@@ -24,6 +36,7 @@ pub struct OAuthClient {
     dpop: DPoPKeypair,
     session: Arc<Mutex<OAuthSession>>,
     base_url: String,
+    auth_mode: AuthMode,
 }
 
 impl OAuthClient {
@@ -41,6 +54,7 @@ impl OAuthClient {
             dpop,
             session,
             base_url,
+            auth_mode: AuthMode::Dpop,
         })
     }
 
@@ -298,6 +312,7 @@ impl OAuthClient {
             dpop: keypair,
             session,
             base_url,
+            auth_mode: AuthMode::Dpop,
         }
     }
 
