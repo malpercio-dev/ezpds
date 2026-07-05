@@ -157,12 +157,21 @@ pub fn verify_hs256_access_token(
 }
 
 /// Parse the ATProto scope string into [`AuthScope`].
+///
+/// The four `com.atproto.*` strings are the legacy session-type scopes issued by
+/// password auth (`createSession`) and app passwords. An OAuth session instead
+/// carries a granular atproto scope string (e.g. `atproto transition:generic` or
+/// `atproto repo:app.bsky.feed.post`); any such string maps to
+/// [`AuthScope::Access`]. Until per-permission enforcement lands, holding a valid
+/// atproto scope grants full access, exactly as `com.atproto.access` did — the
+/// granular grant is recorded on the token but not yet checked per request.
 pub fn parse_scope(scope: &str) -> Result<AuthScope, ApiError> {
     match scope {
         "com.atproto.access" => Ok(AuthScope::Access),
         "com.atproto.refresh" => Ok(AuthScope::Refresh),
         "com.atproto.appPass" => Ok(AuthScope::AppPass),
         "com.atproto.appPassPrivileged" => Ok(AuthScope::AppPassPrivileged),
+        _ if crate::auth::oauth_scopes::is_atproto_oauth_scope(scope) => Ok(AuthScope::Access),
         _ => Err(ApiError::new(
             ErrorCode::InvalidToken,
             "unrecognised token scope",

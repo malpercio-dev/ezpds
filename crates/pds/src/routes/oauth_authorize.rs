@@ -396,6 +396,17 @@ pub async fn post_authorization(
         .into_response();
     }
 
+    // Validate & canonically normalize the requested granular scopes before
+    // issuing a code. Hidden form fields are attacker-controllable, so this is
+    // re-checked here even though the PAR endpoint already validated it.
+    let normalized_scope = match crate::auth::oauth_scopes::normalize_scope_request(&form.scope) {
+        Ok(s) => s,
+        Err(desc) => {
+            return error_redirect(&form.redirect_uri, "invalid_scope", &desc, &form.state)
+                .into_response()
+        }
+    };
+
     // Resolve the identifier and verify the password before issuing any auth code.
     // Re-render the consent form (200) on all credential errors so the user can retry
     // without the OAuth client seeing a denial. "Not found" and "wrong password" produce
@@ -571,7 +582,7 @@ pub async fn post_authorization(
         &form.code_challenge,
         &form.code_challenge_method,
         &form.redirect_uri,
-        &form.scope,
+        &normalized_scope,
     )
     .await
     {

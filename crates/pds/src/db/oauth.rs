@@ -170,7 +170,7 @@ pub struct AuthCodeRow {
     pub code_challenge: String,
     pub code_challenge_method: String,
     pub redirect_uri: String,
-    #[allow(dead_code)]
+    /// The granular atproto OAuth scope set granted at consent time.
     pub scope: String,
 }
 
@@ -233,7 +233,9 @@ pub async fn delete_authorization_code(
 ///
 /// `token_hash` is used as the row's `id` (PRIMARY KEY). This follows the same
 /// pattern as `oauth_authorization_codes` where `code` IS the hash.
-/// `scope` is always `'com.atproto.refresh'` for OAuth refresh tokens.
+/// `scope` is the granular atproto OAuth scope set granted to this session (e.g.
+/// `atproto transition:generic`), persisted so refresh-token rotation carries the
+/// granted permissions forward.
 /// `jkt` is the DPoP key thumbprint binding this token to the client's keypair.
 /// Expires 24 hours after insertion.
 pub async fn store_oauth_refresh_token(
@@ -241,15 +243,17 @@ pub async fn store_oauth_refresh_token(
     token_hash: &str,
     client_id: &str,
     did: &str,
+    scope: &str,
     jkt: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO oauth_tokens (id, client_id, did, scope, jkt, expires_at, created_at) \
-         VALUES (?, ?, ?, 'com.atproto.refresh', ?, datetime('now', '+24 hours'), datetime('now'))",
+         VALUES (?, ?, ?, ?, ?, datetime('now', '+24 hours'), datetime('now'))",
     )
     .bind(token_hash)
     .bind(client_id)
     .bind(did)
+    .bind(scope)
     .bind(jkt)
     .execute(pool)
     .await?;
@@ -260,7 +264,7 @@ pub async fn store_oauth_refresh_token(
 pub struct RefreshTokenRow {
     pub client_id: String,
     pub did: String,
-    #[allow(dead_code)]
+    /// The granular atproto OAuth scope set carried forward across rotations.
     pub scope: String,
     /// DPoP key thumbprint bound to this refresh token. `None` for tokens
     /// issued before DPoP binding was enforced (not expected after V012).
@@ -717,6 +721,7 @@ mod tests {
             "refresh-token-hash-01",
             "https://app.example.com/client-metadata.json",
             "did:plc:testaccount000000000000",
+            "atproto transition:generic",
             "jkt-thumbprint",
         )
         .await
@@ -732,8 +737,8 @@ mod tests {
         let (id, scope, jkt) = row.expect("refresh token row must exist");
         assert_eq!(id, "refresh-token-hash-01");
         assert_eq!(
-            scope, "com.atproto.refresh",
-            "scope must be com.atproto.refresh"
+            scope, "atproto transition:generic",
+            "the granted granular scope must be persisted"
         );
         assert_eq!(jkt.as_deref(), Some("jkt-thumbprint"));
     }
