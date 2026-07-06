@@ -1,0 +1,38 @@
+meta {
+  name: OAuth PAR — Granular auth scopes
+  type: http
+  seq: 96
+}
+
+post {
+  url: {{baseUrl}}/oauth/par
+  body: formUrlEncoded
+  auth: none
+}
+
+body:form-urlencoded {
+  client_id: https://app.example.com/client-metadata.json
+  redirect_uri: https://app.example.com/callback
+  code_challenge: {{codeChallenge}}
+  code_challenge_method: S256
+  state: {{state}}
+  response_type: code
+  scope: atproto repo:app.bsky.feed.post?action=create rpc:app.bsky.feed.getTimeline?aud=did:web:api.bsky.app blob:image/* account:email?action=read transition:email
+}
+
+vars:pre-request {
+  codeChallenge: <replace-with-base64url-sha256-of-code-verifier>
+  state: <replace-with-random-state-value>
+}
+
+docs {
+  Exercises the granular auth-scope grammar end-to-end at PAR time: a per-collection
+  repo write grant (create-only posts), a per-method RPC grant bound to an audience,
+  a MIME-restricted blob grant, a read-only account attribute, and the email
+  transition scope. The server normalizes and validates the set (rejecting unknown
+  or malformed tokens with invalid_scope), renders each grant as a separately
+  uncheckable permission on the consent screen, and persists only the approved
+  subset on the issued tokens. Permission-set references (include:<nsid>) are also
+  accepted here and resolved via the Lexicon-publishing protocol — see
+  docs/architecture/decisions/0016-dynamic-lexicon-permission-set-resolution.md.
+}
