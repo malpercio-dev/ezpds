@@ -832,14 +832,17 @@ impl PdsClient {
             urlencoding::encode(did)
         );
 
-        let resp =
-            self.client
-                .get(&url)
-                .send()
-                .await
-                .map_err(|e| PdsClientError::NetworkError {
-                    message: format!("failed to fetch repo CAR: {}", e),
-                })?;
+        // A full repo CAR can be large; override the shared 30s client timeout so a slow bulk
+        // download doesn't fail mid-stream.
+        let resp = self
+            .client
+            .get(&url)
+            .timeout(Duration::from_secs(300))
+            .send()
+            .await
+            .map_err(|e| PdsClientError::NetworkError {
+                message: format!("failed to fetch repo CAR: {}", e),
+            })?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -877,14 +880,16 @@ impl PdsClient {
             urlencoding::encode(cid)
         );
 
-        let resp =
-            self.client
-                .get(&url)
-                .send()
-                .await
-                .map_err(|e| PdsClientError::NetworkError {
-                    message: format!("failed to fetch blob: {}", e),
-                })?;
+        // Blobs (images/video) can be large; override the shared 30s client timeout for the download.
+        let resp = self
+            .client
+            .get(&url)
+            .timeout(Duration::from_secs(300))
+            .send()
+            .await
+            .map_err(|e| PdsClientError::NetworkError {
+                message: format!("failed to fetch blob: {}", e),
+            })?;
 
         let status = resp.status();
         if !status.is_success() {

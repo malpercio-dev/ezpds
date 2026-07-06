@@ -66,6 +66,17 @@ async function refreshDestSession(destSession, targetPds) {
 }
 
 /**
+ * Merge destination-session fields into the persisted account, reloading from disk first so we
+ * don't clobber concurrent writes — notably `ensureSession(name)`, which refreshes and persists the
+ * SOURCE tokens mid-flow. Mutating a stale top-of-function snapshot would overwrite that refresh.
+ */
+function persistDest(name, fields) {
+  const s = loadState();
+  s.accounts[name] = { ...s.accounts[name], ...fields };
+  saveState(s);
+}
+
+/**
  * Perform a complete outbound migration: source PDS → destination PDS.
  * Self-signs the PLC migration op with the stored rotation key.
  */
@@ -119,12 +130,10 @@ export async function performMigration({ name, targetPds, inviteCode }) {
     destSession = createResp;
     // Persist the destination session immediately so a mid-run failure is resumable: the 409
     // branch below re-reads state.accounts[name].destAccessJwt, which is only populated here.
-    state.accounts[name] = {
-      ...state.accounts[name],
+    persistDest(name, {
       destAccessJwt: destSession.accessJwt,
       destRefreshJwt: destSession.refreshJwt,
-    };
-    saveState(state);
+    });
     console.error(`✓ Account created on destination`);
   } catch (err) {
     // 409 DidAlreadyExists — account exists, try to resume
@@ -166,12 +175,10 @@ export async function performMigration({ name, targetPds, inviteCode }) {
   // access token issued at createAccount. (Per-call 401-retry inside the loop is a further
   // enhancement for very large accounts.)
   destSession = await refreshDestSession(destSession, targetPds);
-  state.accounts[name] = {
-    ...state.accounts[name],
+  persistDest(name, {
     destAccessJwt: destSession.accessJwt,
     destRefreshJwt: destSession.refreshJwt,
-  };
-  saveState(state);
+  });
   console.error(`Draining blobs...`);
   let cursor = undefined;
   let blobCount = 0;
@@ -337,14 +344,12 @@ export async function performMigration({ name, targetPds, inviteCode }) {
   console.error(`✓ Source account deactivated`);
 
   // 13. Persist the migration results
-  state.accounts[name] = {
-    ...state.accounts[name],
+  persistDest(name, {
     pds: targetPds,
     destAccessJwt: destSession.accessJwt,
     destRefreshJwt: destSession.refreshJwt,
     migrationStatus: 'complete',
-  };
-  saveState(state);
+  });
   console.error(`✓ Migration state persisted\n`);
 
   return {

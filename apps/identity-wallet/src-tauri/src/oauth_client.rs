@@ -366,11 +366,18 @@ impl OAuthClient {
     async fn maybe_refresh_token(&self) -> Result<(), OAuthError> {
         let should_refresh = {
             let s = self.session.lock().unwrap();
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|_| OAuthError::TokenRefreshFailed)?
-                .as_secs();
-            s.expires_at < now + 60
+            // A one-shot Bearer client (e.g. carrying a service-auth JWT) is built with an empty
+            // refresh token — it cannot refresh, so never attempt it (a refresh with an empty
+            // Bearer would fail and abort the in-flight request).
+            if s.refresh_token.is_empty() {
+                false
+            } else {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|_| OAuthError::TokenRefreshFailed)?
+                    .as_secs();
+                s.expires_at < now + 60
+            }
         };
 
         if should_refresh {
