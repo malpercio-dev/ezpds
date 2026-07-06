@@ -812,30 +812,27 @@ export const finalizeMigration = (did: string): Promise<void> =>
 /**
  * Prompt for biometric authentication (Face ID / Touch ID) via `@tauri-apps/plugin-biometric`.
  * Gates the PLC-op submission in the migration review screen — the user is the signer, so this
- * is the authorization boundary, not decorative confirmation.
+ * is the authorization boundary for an irreversible identity change, not decorative confirmation.
  *
- * The plugin's Rust side is registered only under `#[cfg(mobile)]`. The npm import ALWAYS
- * resolves (the package is an unconditional dependency), so the real "no biometric here" signal
- * is the first plugin `invoke` rejecting: on the desktop/host build `checkStatus()` (which invokes
- * `plugin:biometric|status`) rejects because the command isn't registered — treat that as "nothing
- * to gate against" and RESOLVE, rather than blocking migration approval in dev. On a real iOS
- * device the plugin IS registered, `checkStatus` is reliable, and `authenticate()` is the actual
- * gate: it rejects on cancel/failure, and the caller treats that as "do not submit".
- * `allowDeviceCredential` lets a device without enrolled biometrics fall back to the passcode.
+ * Because it is a security boundary it must fail CLOSED. The plugin exists only on iOS/Android,
+ * so it is imported dynamically: the ONLY failure treated as "no gate to enforce" is the import
+ * itself throwing — off-device (desktop dev, host build) there is genuinely nothing to gate, so
+ * resolve. Every other outcome propagates: a `checkStatus()` rejection on a real device (a
+ * transient keystore/permission error), and `authenticate()` rejecting on cancel/failed match,
+ * both reject so a momentary hiccup can never silently skip approval. `checkStatus().isAvailable
+ * === false` (a bare simulator with no enrolled biometric) is the one benign "nothing to gate"
+ * case and resolves. `allowDeviceCredential` lets a device without enrolled biometrics fall back
+ * to the passcode. Mirrors admin-companion's `requireUserPresence`, which likewise catches only
+ * the import.
  */
 export const authenticateBiometric = async (reason: string): Promise<void> => {
   let plugin: typeof import('@tauri-apps/plugin-biometric');
   try {
     plugin = await import('@tauri-apps/plugin-biometric');
   } catch {
-    return; // npm package unavailable — nothing to gate against.
+    return; // plugin not present (desktop dev / host build) — nothing to gate against.
   }
-  let available: boolean;
-  try {
-    available = (await plugin.checkStatus()).isAvailable;
-  } catch {
-    return; // plugin command not registered (desktop/host build) — no gate to enforce here.
-  }
-  if (!available) return; // no enrolled hardware (e.g. a bare simulator).
+  const { isAvailable } = await plugin.checkStatus();
+  if (!isAvailable) return; // no enrolled hardware (e.g. a bare simulator) — nothing to gate.
   await plugin.authenticate(reason, { allowDeviceCredential: true });
 };
