@@ -1,3 +1,5 @@
+// pattern: Imperative Shell
+//
 // MM-231 audit: composes the wallet-authorized outbound migration flow (ADR-0002) across two
 // independently configured servers (their own DB pool, master key, and — critically — distinct
 // `resolve_server_did()`), driving every step through the real HTTP handlers rather than calling
