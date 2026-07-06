@@ -940,6 +940,10 @@ pub fn run() {
             recovery::submit_recovery_override_cmd,
             migrate::build_migration_op_cmd,
             migrate::submit_migration_op_cmd,
+            migration_orchestrator::prepare_migration,
+            migration_orchestrator::prepare_source_auth,
+            migration_orchestrator::complete_source_auth,
+            migration_orchestrator::create_destination_account,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
