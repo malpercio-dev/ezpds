@@ -56,6 +56,10 @@ pub async fn get_service_auth(
     State(state): State<AppState>,
     Query(params): Query<GetServiceAuthQuery>,
 ) -> Result<Json<GetServiceAuthResponse>, ApiError> {
+    // Deliberately no deactivation check: an outbound-migrating account is expected to mint a
+    // token for the destination's createAccount (and retry it) right up to and after the point
+    // its own PDS deactivates it — gating on activity here would break exactly the flow this
+    // endpoint exists to serve.
     // Refresh tokens and app-password tokens must not mint arbitrary service auth.
     if user.scope != AuthScope::Access {
         return Err(ApiError::new(
