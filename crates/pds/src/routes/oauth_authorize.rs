@@ -1766,28 +1766,6 @@ mod tests {
 
     // ── Consent UI grouping + per-scope opt-out (oauth-scopes-permission-sets.AC5) ──
 
-    fn granted_scope_form(scope: &str, granted: &[&str]) -> String {
-        let granted_params: String = granted
-            .iter()
-            .map(|g| format!("&granted_scope={}", super::encode_param(g)))
-            .collect();
-        format!(
-            "action=approve\
-             &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json\
-             &redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback\
-             &code_challenge=e3b0c44298fc1c149afb\
-             &code_challenge_method=S256\
-             &state=teststate\
-             &scope={}\
-             &response_type=code\
-             &identifier={}&password={}{}",
-            super::encode_param(scope),
-            super::encode_param(TEST_HANDLE),
-            super::encode_param(TEST_PASSWORD),
-            granted_params,
-        )
-    }
-
     async fn stored_scope_for(db: &sqlx::SqlitePool, location: &str) -> String {
         let plaintext = location
             .split("code=")
@@ -1843,7 +1821,7 @@ mod tests {
         let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
         let db = state.db.clone();
         // Only identity:handle is submitted as granted — repo:app.bsky.feed.post was unchecked.
-        let form = granted_scope_form(
+        let form = include_scope_form(
             "atproto repo:app.bsky.feed.post identity:handle",
             &["identity:handle"],
         );
@@ -1863,7 +1841,7 @@ mod tests {
         let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
         let db = state.db.clone();
         // No granted_scope submitted at all — everything unchecked. atproto must still grant.
-        let form = granted_scope_form("atproto identity:handle", &[]);
+        let form = include_scope_form("atproto identity:handle", &[]);
         let resp = post_authorize(state, &form).await;
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
