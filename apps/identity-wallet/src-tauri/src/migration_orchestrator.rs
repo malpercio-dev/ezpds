@@ -9,10 +9,10 @@
 //                   finalize_migration (Phase 5) — Tauri commands, plus their
 //                   *_impl / drain_missing_blobs network cores.
 
+use crate::oauth_client::OAuthClient;
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::Emitter;
-use crate::oauth_client::OAuthClient;
 
 // ── Phase enum ─────────────────────────────────────────────────────────────
 
@@ -175,12 +175,7 @@ pub async fn prepare_migration(
     did: String,
     dest_pds_url: String,
 ) -> Result<(), MigrationError> {
-    let result = prepare_migration_impl(
-        state.pds_client(),
-        &did,
-        &dest_pds_url,
-    )
-    .await?;
+    let result = prepare_migration_impl(state.pds_client(), &did, &dest_pds_url).await?;
 
     // Store fresh state at phase Resolved (in-memory only; app kill restarts from prepare_migration)
     *state.orchestration_state.lock().await = Some(result);
@@ -196,34 +191,30 @@ async fn prepare_migration_impl(
     tracing::info!(did = %did, dest_url = %dest_pds_url, "prepare_migration: discovering source + destination");
 
     // 1. Discover source PDS
-    let (source_pds_url, plc_doc) = pds_client
-        .discover_pds(did)
-        .await
-        .map_err(|e| {
-            tracing::error!(did = %did, error = %e, "failed to discover source PDS");
-            // Preserve the unreachable distinction in the message (there is no SourceUnreachable
-            // variant; AC1.5 only names the destination, but a bare NetworkError is less actionable).
-            match e {
-                crate::pds_client::PdsClientError::PdsUnreachable { .. } => {
-                    MigrationError::NetworkError {
-                        message: format!("source PDS unreachable: {}", e),
-                    }
+    let (source_pds_url, plc_doc) = pds_client.discover_pds(did).await.map_err(|e| {
+        tracing::error!(did = %did, error = %e, "failed to discover source PDS");
+        // Preserve the unreachable distinction in the message (there is no SourceUnreachable
+        // variant; AC1.5 only names the destination, but a bare NetworkError is less actionable).
+        match e {
+            crate::pds_client::PdsClientError::PdsUnreachable { .. } => {
+                MigrationError::NetworkError {
+                    message: format!("source PDS unreachable: {}", e),
                 }
-                other => MigrationError::NetworkError {
-                    message: format!("source discovery failed: {}", other),
-                },
             }
-        })?;
+            other => MigrationError::NetworkError {
+                message: format!("source discovery failed: {}", other),
+            },
+        }
+    })?;
 
     // Extract handle from also_known_as (format: at://handle). A DID document with no at:// entry
     // is a data problem (unusable identity), not a network error — surface it as such.
-    let handle = extract_handle_from_also_known_as(&plc_doc.also_known_as)
-        .ok_or_else(|| {
-            tracing::error!(did = %did, "no at:// handle in also_known_as");
-            MigrationError::AccountCreationFailed {
-                message: "source DID document has no at:// handle in alsoKnownAs".into(),
-            }
-        })?;
+    let handle = extract_handle_from_also_known_as(&plc_doc.also_known_as).ok_or_else(|| {
+        tracing::error!(did = %did, "no at:// handle in also_known_as");
+        MigrationError::AccountCreationFailed {
+            message: "source DID document has no at:// handle in alsoKnownAs".into(),
+        }
+    })?;
 
     // 2. Describe destination server
     let dest_describe = pds_client
@@ -281,10 +272,11 @@ pub async fn prepare_source_auth(
     // Gate: ensure phase + DID, extract source_pds_url
     let source_pds_url = {
         let orchestration = state.orchestration_state.lock().await;
-        let mig = ensure_phase_did(&orchestration, &did, MigrationPhase::Resolved).map_err(|e| {
-            tracing::warn!("prepare_source_auth: phase gate failed: {}", e);
-            e
-        })?;
+        let mig =
+            ensure_phase_did(&orchestration, &did, MigrationPhase::Resolved).map_err(|e| {
+                tracing::warn!("prepare_source_auth: phase gate failed: {}", e);
+                e
+            })?;
         mig.source_pds_url.clone()
     }; // lock released
 
@@ -520,14 +512,11 @@ pub async fn complete_source_auth(
     tracing::info!(did = %did, "complete_source_auth: exchanging code");
 
     // Take the parked flow
-    let pending = state
-        .pending_source_login
-        .lock()
-        .unwrap()
-        .take()
-        .ok_or(MigrationError::SourceAuthFailed {
+    let pending = state.pending_source_login.lock().unwrap().take().ok_or(
+        MigrationError::SourceAuthFailed {
             message: "no pending source login".into(),
-        })?;
+        },
+    )?;
 
     // Validate DID matches parked state
     if pending.did != did {
@@ -584,11 +573,12 @@ pub async fn complete_source_auth(
         dpop_nonce: _initial_nonce,
     }));
 
-    let oauth_client = OAuthClient::new(session, pending.oauth_client_pds_url.clone()).map_err(|_| {
-        MigrationError::SourceAuthFailed {
-            message: "failed to create OAuth client".to_string(),
-        }
-    })?;
+    let oauth_client =
+        OAuthClient::new(session, pending.oauth_client_pds_url.clone()).map_err(|_| {
+            MigrationError::SourceAuthFailed {
+                message: "failed to create OAuth client".to_string(),
+            }
+        })?;
 
     // Update orchestration state: store source_client, advance phase
     let mut orchestration = state.orchestration_state.lock().await;
@@ -685,8 +675,8 @@ async fn source_exchange_code_with_retry(
                 let proof_with_nonce = dpop
                     .make_proof("POST", token_htu, Some(&nonce_val), None)
                     .map_err(|_| MigrationError::SourceAuthFailed {
-                        message: "failed to create DPoP proof with nonce".to_string(),
-                    })?;
+                    message: "failed to create DPoP proof with nonce".to_string(),
+                })?;
 
                 let retry_resp = pds_client
                     .pds_token_exchange(metadata, code, pkce_verifier, &proof_with_nonce, client_id)
@@ -837,7 +827,8 @@ async fn create_destination_account_impl(
             None => {
                 tracing::error!(did = %did, "createAccount 409 with no dest_client; destination conflict");
                 Err(MigrationError::DestinationConflict {
-                    message: "account exists but session was lost (app kill); restart migration".into(),
+                    message: "account exists but session was lost (app kill); restart migration"
+                        .into(),
                 })
             }
         },
@@ -866,10 +857,11 @@ pub async fn create_destination_account(
     // Gate + extract dependencies
     let (source_client, dest_pds_url, dest_did, handle, existing_dest_client) = {
         let orchestration = state.orchestration_state.lock().await;
-        let mig = ensure_phase_did(&orchestration, &did, MigrationPhase::SourceAuthed).map_err(|e| {
-            tracing::warn!("create_destination_account: phase gate failed: {}", e);
-            e
-        })?;
+        let mig =
+            ensure_phase_did(&orchestration, &did, MigrationPhase::SourceAuthed).map_err(|e| {
+                tracing::warn!("create_destination_account: phase gate failed: {}", e);
+                e
+            })?;
 
         (
             mig.source_client.clone(),
@@ -977,10 +969,11 @@ pub async fn transfer_repo(
     // Gate + extract dependencies
     let (dest_client, source_pds_url) = {
         let orchestration = state.orchestration_state.lock().await;
-        let mig = ensure_phase_did(&orchestration, &did, MigrationPhase::DestCreated).map_err(|e| {
-            tracing::warn!("transfer_repo: phase gate failed: {}", e);
-            e
-        })?;
+        let mig =
+            ensure_phase_did(&orchestration, &did, MigrationPhase::DestCreated).map_err(|e| {
+                tracing::warn!("transfer_repo: phase gate failed: {}", e);
+                e
+            })?;
 
         (mig.dest_client.clone(), mig.source_pds_url.clone())
     }; // lock released
@@ -1093,10 +1086,12 @@ pub async fn transfer_blobs(
     // Gate + extract dependencies
     let (dest_client, source_pds_url) = {
         let orchestration = state.orchestration_state.lock().await;
-        let mig = ensure_phase_did(&orchestration, &did, MigrationPhase::RepoTransferred).map_err(|e| {
-            tracing::warn!("transfer_blobs: phase gate failed: {}", e);
-            e
-        })?;
+        let mig = ensure_phase_did(&orchestration, &did, MigrationPhase::RepoTransferred).map_err(
+            |e| {
+                tracing::warn!("transfer_blobs: phase gate failed: {}", e);
+                e
+            },
+        )?;
 
         (mig.dest_client.clone(), mig.source_pds_url.clone())
     }; // lock released
@@ -1183,10 +1178,11 @@ pub async fn transfer_preferences(
     // Gate + extract dependencies
     let (source_client, dest_client) = {
         let orchestration = state.orchestration_state.lock().await;
-        let mig = ensure_phase_did(&orchestration, &did, MigrationPhase::BlobsTransferred).map_err(|e| {
-            tracing::warn!("transfer_preferences: phase gate failed: {}", e);
-            e
-        })?;
+        let mig = ensure_phase_did(&orchestration, &did, MigrationPhase::BlobsTransferred)
+            .map_err(|e| {
+                tracing::warn!("transfer_preferences: phase gate failed: {}", e);
+                e
+            })?;
 
         (mig.source_client.clone(), mig.dest_client.clone())
     }; // lock released
@@ -1254,10 +1250,11 @@ pub async fn verify_import(
     // Gate + extract dependencies
     let dest_client = {
         let orchestration = state.orchestration_state.lock().await;
-        let mig = ensure_phase_did(&orchestration, &did, MigrationPhase::PreferencesTransferred).map_err(|e| {
-            tracing::warn!("verify_import: phase gate failed: {}", e);
-            e
-        })?;
+        let mig = ensure_phase_did(&orchestration, &did, MigrationPhase::PreferencesTransferred)
+            .map_err(|e| {
+                tracing::warn!("verify_import: phase gate failed: {}", e);
+                e
+            })?;
 
         mig.dest_client.clone()
     }; // lock released
@@ -1447,10 +1444,11 @@ async fn finalize_migration_core(
     // Gate: ensure phase + DID, extract clients
     let (dest_client, source_client) = {
         let orchestration = orchestration_state.lock().await;
-        let mig = ensure_phase_did(&orchestration, did, MigrationPhase::IdentityArmed).map_err(|e| {
-            tracing::warn!("finalize_migration: phase gate failed: {}", e);
-            e
-        })?;
+        let mig =
+            ensure_phase_did(&orchestration, did, MigrationPhase::IdentityArmed).map_err(|e| {
+                tracing::warn!("finalize_migration: phase gate failed: {}", e);
+                e
+            })?;
         (mig.dest_client.clone(), mig.source_client.clone())
     }; // lock released
 
@@ -1697,14 +1695,22 @@ mod tests {
     #[tokio::test]
     async fn test_create_destination_account_impl_idempotent_with_existing_client() {
         let existing = Arc::new(
-            OAuthClient::new_bearer(make_bearer_jwt(9999999999), String::new(), "https://dest.pds".into())
-                .unwrap(),
+            OAuthClient::new_bearer(
+                make_bearer_jwt(9999999999),
+                String::new(),
+                "https://dest.pds".into(),
+            )
+            .unwrap(),
         );
         // Dummy deps that must never be touched (unreachable URLs prove the fast path took over).
         let pds_client = crate::pds_client::PdsClient::new();
         let source_client = Arc::new(
-            OAuthClient::new_bearer(make_bearer_jwt(9999999999), String::new(), "http://127.0.0.1:1".into())
-                .unwrap(),
+            OAuthClient::new_bearer(
+                make_bearer_jwt(9999999999),
+                String::new(),
+                "http://127.0.0.1:1".into(),
+            )
+            .unwrap(),
         );
 
         let result = create_destination_account_impl(
@@ -1753,8 +1759,12 @@ mod tests {
 
         let pds_client = crate::pds_client::PdsClient::new();
         let source_client = Arc::new(
-            OAuthClient::new_bearer(make_bearer_jwt(9999999999), String::new(), source.base_url())
-                .unwrap(),
+            OAuthClient::new_bearer(
+                make_bearer_jwt(9999999999),
+                String::new(),
+                source.base_url(),
+            )
+            .unwrap(),
         );
 
         let result = create_destination_account_impl(
@@ -1807,8 +1817,12 @@ mod tests {
 
         let pds_client = crate::pds_client::PdsClient::new();
         let source_client = Arc::new(
-            OAuthClient::new_bearer(make_bearer_jwt(9999999999), String::new(), source.base_url())
-                .unwrap(),
+            OAuthClient::new_bearer(
+                make_bearer_jwt(9999999999),
+                String::new(),
+                source.base_url(),
+            )
+            .unwrap(),
         );
 
         let result = create_destination_account_impl(
@@ -1986,8 +2000,13 @@ mod tests {
         let pds_client = crate::pds_client::PdsClient::new();
         let dest_client = bearer_client_at(dest.base_url());
 
-        let result =
-            transfer_repo_impl(&pds_client, &dest_client, &source.base_url(), "did:plc:abc123").await;
+        let result = transfer_repo_impl(
+            &pds_client,
+            &dest_client,
+            &source.base_url(),
+            "did:plc:abc123",
+        )
+        .await;
 
         assert!(result.is_ok());
         assert_eq!(get_repo.calls(), 1);
@@ -2014,10 +2033,18 @@ mod tests {
         let pds_client = crate::pds_client::PdsClient::new();
         let dest_client = bearer_client_at(dest.base_url());
 
-        let result =
-            transfer_repo_impl(&pds_client, &dest_client, &source.base_url(), "did:plc:abc123").await;
+        let result = transfer_repo_impl(
+            &pds_client,
+            &dest_client,
+            &source.base_url(),
+            "did:plc:abc123",
+        )
+        .await;
 
-        assert!(matches!(result, Err(MigrationError::RepoTransferFailed { .. })));
+        assert!(matches!(
+            result,
+            Err(MigrationError::RepoTransferFailed { .. })
+        ));
     }
 
     // ── Task 2 mock tests: drain_missing_blobs ─────────────────────────────
@@ -2040,8 +2067,13 @@ mod tests {
 
         // Source URL is unreachable; if the drain tried to fetch a blob it would error, proving
         // the empty-page short-circuit did not touch the source.
-        let result =
-            drain_missing_blobs(&pds_client, &dest_client, "http://127.0.0.1:1", "did:plc:abc123").await;
+        let result = drain_missing_blobs(
+            &pds_client,
+            &dest_client,
+            "http://127.0.0.1:1",
+            "did:plc:abc123",
+        )
+        .await;
 
         assert!(result.is_ok());
     }
@@ -2115,8 +2147,13 @@ mod tests {
         let pds_client = crate::pds_client::PdsClient::new();
         let dest_client = bearer_client_at(dest.base_url());
 
-        let result =
-            drain_missing_blobs(&pds_client, &dest_client, &source.base_url(), "did:plc:abc123").await;
+        let result = drain_missing_blobs(
+            &pds_client,
+            &dest_client,
+            &source.base_url(),
+            "did:plc:abc123",
+        )
+        .await;
 
         assert!(result.is_ok());
         assert_eq!(get_a.calls(), 1, "cid_a fetched once");
@@ -2149,10 +2186,18 @@ mod tests {
         let pds_client = crate::pds_client::PdsClient::new();
         let dest_client = bearer_client_at(dest.base_url());
 
-        let result =
-            drain_missing_blobs(&pds_client, &dest_client, &source.base_url(), "did:plc:abc123").await;
+        let result = drain_missing_blobs(
+            &pds_client,
+            &dest_client,
+            &source.base_url(),
+            "did:plc:abc123",
+        )
+        .await;
 
-        assert!(matches!(result, Err(MigrationError::BlobTransferFailed { .. })));
+        assert!(matches!(
+            result,
+            Err(MigrationError::BlobTransferFailed { .. })
+        ));
     }
 
     // ── Task 3 tests: transfer_preferences ─────────────────────────────────
@@ -2423,9 +2468,7 @@ mod tests {
             dest_did: "did:web:dest".into(),
             handle: "alice.test".into(),
             source_client: None,
-            dest_client: Some(Arc::new(
-                bearer_client_at("https://dest.pds".into()),
-            )),
+            dest_client: Some(Arc::new(bearer_client_at("https://dest.pds".into()))),
             phase: MigrationPhase::PreferencesTransferred, // Too early!
         });
 
@@ -2482,8 +2525,14 @@ mod tests {
         let migration_state = tokio::sync::Mutex::new(None);
 
         let result = arm_identity_leg_core(&orchestration, &migration_state, did).await;
-        assert!(matches!(result, Err(MigrationError::MigrationNotReady { .. })));
-        assert!(migration_state.lock().await.is_none(), "must not park on a failed gate");
+        assert!(matches!(
+            result,
+            Err(MigrationError::MigrationNotReady { .. })
+        ));
+        assert!(
+            migration_state.lock().await.is_none(),
+            "must not park on a failed gate"
+        );
     }
 
     // Missing dest_client (impossible past DestCreated, but defended) → AccountCreationFailed.
@@ -2496,7 +2545,10 @@ mod tests {
         let migration_state = tokio::sync::Mutex::new(None);
 
         let result = arm_identity_leg_core(&orchestration, &migration_state, did).await;
-        assert!(matches!(result, Err(MigrationError::AccountCreationFailed { .. })));
+        assert!(matches!(
+            result,
+            Err(MigrationError::AccountCreationFailed { .. })
+        ));
     }
 
     // ── Task 2 tests: finalize_migration ───────────────────────────────────
@@ -2627,9 +2679,16 @@ mod tests {
 
         let result = finalize_migration_impl(&dest_client, &source_client).await;
 
-        assert!(matches!(result, Err(MigrationError::ActivationFailed { .. })));
+        assert!(matches!(
+            result,
+            Err(MigrationError::ActivationFailed { .. })
+        ));
         assert_eq!(activate.calls(), 1, "activate was called");
-        assert_eq!(deactivate.calls(), 0, "deactivate was NOT called (ordering guarantee)");
+        assert_eq!(
+            deactivate.calls(),
+            0,
+            "deactivate was NOT called (ordering guarantee)"
+        );
     }
 
     // An IdentityArmed OutboundMigrationState with both clients populated.
@@ -2653,7 +2712,10 @@ mod tests {
         }));
 
         let result = finalize_migration_core(&orchestration, &migration_state, did).await;
-        assert!(matches!(result, Err(MigrationError::MigrationNotReady { .. })));
+        assert!(matches!(
+            result,
+            Err(MigrationError::MigrationNotReady { .. })
+        ));
         // Phase must not advance on a failed gate.
         assert_eq!(
             orchestration.lock().await.as_ref().unwrap().phase,
@@ -2669,7 +2731,10 @@ mod tests {
         let migration_state = tokio::sync::Mutex::new(None);
 
         let result = finalize_migration_core(&orchestration, &migration_state, did).await;
-        assert!(matches!(result, Err(MigrationError::MigrationNotReady { .. })));
+        assert!(matches!(
+            result,
+            Err(MigrationError::MigrationNotReady { .. })
+        ));
     }
 
     // AC1.2 (end-to-end via the core): armed + cleared migration_state + mock activate/deactivate
@@ -2725,7 +2790,6 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
     async fn test_full_migration_pipeline_happy_path() {
-
         let did = "did:plc:fullpipe";
 
         // The identity leg (build_migration_op) self-signs with the per-DID device key, which must
@@ -2876,10 +2940,8 @@ mod tests {
 
         // ─ Mock plc.directory GET (DID doc refetch) ─
         plc.mock(|when, then| {
-            when.method(httpmock::Method::GET)
-                .path(format!("/{}", did));
-            then.status(200)
-                .json_body(serde_json::json!({ "id": did }));
+            when.method(httpmock::Method::GET).path(format!("/{}", did));
+            then.status(200).json_body(serde_json::json!({ "id": did }));
         });
 
         // ─ Mock dest.activateAccount ─
@@ -2914,7 +2976,10 @@ mod tests {
             None,
         )
         .await;
-        assert!(dest_result.is_ok(), "create_destination_account_impl should succeed");
+        assert!(
+            dest_result.is_ok(),
+            "create_destination_account_impl should succeed"
+        );
         let dest_client = dest_result.unwrap();
 
         // ─ Step 2: transfer_repo_impl ─
@@ -2927,7 +2992,10 @@ mod tests {
 
         // ─ Step 4: transfer_preferences_impl ─
         let prefs_result = transfer_preferences_impl(&source_client, &dest_client).await;
-        assert!(prefs_result.is_ok(), "transfer_preferences_impl should succeed");
+        assert!(
+            prefs_result.is_ok(),
+            "transfer_preferences_impl should succeed"
+        );
 
         // ─ Step 5: check_account_status via import_reconciles ─
         let status = crate::pds_client::check_account_status(&dest_client)
@@ -2955,7 +3023,11 @@ mod tests {
             .expect("finalize_migration_impl should succeed");
 
         // ─ AC10.2: Verify plc.directory POST was hit exactly once ─
-        assert_eq!(plc_post.calls(), 1, "plc.directory POST must be hit exactly once (AC10.2)");
+        assert_eq!(
+            plc_post.calls(),
+            1,
+            "plc.directory POST must be hit exactly once (AC10.2)"
+        );
 
         // ─ AC1.2 / AC4.2: Verify activation before deactivation ─
         assert_eq!(activate.calls(), 1, "activate must be called");
@@ -3018,7 +3090,13 @@ mod tests {
         let pds_client = crate::pds_client::PdsClient::new();
         let dest_client = bearer_client_at(dest.base_url());
 
-        let result = drain_missing_blobs(&pds_client, &dest_client, &source.base_url(), "did:plc:test").await;
+        let result = drain_missing_blobs(
+            &pds_client,
+            &dest_client,
+            &source.base_url(),
+            "did:plc:test",
+        )
+        .await;
 
         assert!(result.is_ok(), "drain should complete successfully");
         // AC5.2: uploadBlob must be hit exactly twice (only the blobs on the first page)
@@ -3146,13 +3224,23 @@ mod tests {
         .await
         .expect("create dest");
 
-        transfer_repo_impl(&pds_client, &dest_client, &source.base_url(), "did:plc:test")
-            .await
-            .expect("transfer repo");
+        transfer_repo_impl(
+            &pds_client,
+            &dest_client,
+            &source.base_url(),
+            "did:plc:test",
+        )
+        .await
+        .expect("transfer repo");
 
-        drain_missing_blobs(&pds_client, &dest_client, &source.base_url(), "did:plc:test")
-            .await
-            .expect("drain blobs");
+        drain_missing_blobs(
+            &pds_client,
+            &dest_client,
+            &source.base_url(),
+            "did:plc:test",
+        )
+        .await
+        .expect("drain blobs");
 
         transfer_preferences_impl(&source_client, &dest_client)
             .await

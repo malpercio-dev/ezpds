@@ -54,7 +54,8 @@ pub struct AppState {
     /// `prepare_migration`). Tracks the DID, source/dest PDS URLs, OAuth clients, and phase
     /// across multiple outbound migration commands.
     /// Uses tokio::sync::Mutex because migration orchestrator commands hold the lock across .await points.
-    pub orchestration_state: tokio::sync::Mutex<Option<crate::migration_orchestrator::OutboundMigrationState>>,
+    pub orchestration_state:
+        tokio::sync::Mutex<Option<crate::migration_orchestrator::OutboundMigrationState>>,
     /// Pending source-PDS OAuth login, parked between `prepare_source_auth` and
     /// `complete_source_auth` while the ASWebAuthenticationSession runs (twin of `pending_pds_login`).
     /// Holds the discovered auth-server metadata plus the secrets the token exchange needs.

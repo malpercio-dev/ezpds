@@ -565,10 +565,17 @@ impl PdsClient {
     /// This is used as a destination reachability probe (AC1.5 prepare_migration) and to
     /// obtain the destination server's DID for service-auth requests.
     /// Maps connection failure / non-2xx to `PdsClientError::PdsUnreachable`.
-    pub async fn describe_server(&self, pds_url: &str) -> Result<DescribeServerResponse, PdsClientError> {
-        let url = format!("{}/xrpc/com.atproto.server.describeServer", pds_url.trim_end_matches('/'));
+    pub async fn describe_server(
+        &self,
+        pds_url: &str,
+    ) -> Result<DescribeServerResponse, PdsClientError> {
+        let url = format!(
+            "{}/xrpc/com.atproto.server.describeServer",
+            pds_url.trim_end_matches('/')
+        );
 
-        let response = self.client
+        let response = self
+            .client
             .get(&url)
             .timeout(Duration::from_secs(30))
             .send()
@@ -814,21 +821,25 @@ impl PdsClient {
     ///
     /// Calls `GET {pds_url}/xrpc/com.atproto.sync.getRepo?did={did}` and returns the raw CAR bytes.
     /// No Authorization header is sent.
-    pub async fn fetch_repo_car(&self, pds_url: &str, did: &str) -> Result<Vec<u8>, PdsClientError> {
+    pub async fn fetch_repo_car(
+        &self,
+        pds_url: &str,
+        did: &str,
+    ) -> Result<Vec<u8>, PdsClientError> {
         let url = format!(
             "{}/xrpc/com.atproto.sync.getRepo?did={}",
             pds_url.trim_end_matches('/'),
             urlencoding::encode(did)
         );
 
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| PdsClientError::NetworkError {
-                message: format!("failed to fetch repo CAR: {}", e),
-            })?;
+        let resp =
+            self.client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| PdsClientError::NetworkError {
+                    message: format!("failed to fetch repo CAR: {}", e),
+                })?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -866,14 +877,14 @@ impl PdsClient {
             urlencoding::encode(cid)
         );
 
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| PdsClientError::NetworkError {
-                message: format!("failed to fetch blob: {}", e),
-            })?;
+        let resp =
+            self.client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| PdsClientError::NetworkError {
+                    message: format!("failed to fetch blob: {}", e),
+                })?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -898,7 +909,11 @@ impl PdsClient {
     ///
     /// Calls `POST {pds_url}/xrpc/com.atproto.server.reserveSigningKey` with body `{"did": did}`.
     /// Returns the `signingKey` field from the response (a did:key string).
-    pub async fn reserve_signing_key(&self, pds_url: &str, did: &str) -> Result<String, PdsClientError> {
+    pub async fn reserve_signing_key(
+        &self,
+        pds_url: &str,
+        did: &str,
+    ) -> Result<String, PdsClientError> {
         let url = format!(
             "{}/xrpc/com.atproto.server.reserveSigningKey",
             pds_url.trim_end_matches('/')
@@ -1466,7 +1481,9 @@ pub async fn check_account_status(
 /// Calls `POST /xrpc/com.atproto.server.activateAccount` with a GENUINELY empty body.
 /// The handler (`crates/pds/src/routes/activate_account.rs`) rejects any non-whitespace body
 /// with a 400 — so we must send zero bytes, NOT `{}` (which `.post()` would serialize).
-pub async fn activate_account(client: &crate::oauth_client::OAuthClient) -> Result<(), PdsClientError> {
+pub async fn activate_account(
+    client: &crate::oauth_client::OAuthClient,
+) -> Result<(), PdsClientError> {
     let resp = client
         .post_bytes(
             "/xrpc/com.atproto.server.activateAccount",
@@ -3032,12 +3049,13 @@ mod tests {
             }));
         });
 
-        let jwt = make_bearer_jwt(9999999999);  // Far future expiry
+        let jwt = make_bearer_jwt(9999999999); // Far future expiry
         let test_client = crate::oauth_client::OAuthClient::new_bearer(
             jwt,
             "test_refresh_token".to_string(),
             mock_server.base_url(),
-        ).expect("new_bearer must succeed");
+        )
+        .expect("new_bearer must succeed");
         let result = get_service_auth(
             &test_client,
             "did:web:dest.example.com",
@@ -3061,11 +3079,18 @@ mod tests {
             then.status(401).body("unauthorized");
         });
 
-        let test_client =
-            crate::oauth_client::OAuthClient::new_bearer(make_bearer_jwt(9999999999), "refresh".to_string(), mock_server.base_url())
-                .expect("new_bearer must succeed");
-        let result = get_service_auth(&test_client, "did:web:dest", "com.atproto.server.createAccount")
-            .await;
+        let test_client = crate::oauth_client::OAuthClient::new_bearer(
+            make_bearer_jwt(9999999999),
+            "refresh".to_string(),
+            mock_server.base_url(),
+        )
+        .expect("new_bearer must succeed");
+        let result = get_service_auth(
+            &test_client,
+            "did:web:dest",
+            "com.atproto.server.createAccount",
+        )
+        .await;
 
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -3089,7 +3114,11 @@ mod tests {
                 .body_includes("\"handle\":\"user.example.com\"")
                 .body_includes("\"email\":\"user@example.com\"")
                 .body_includes("\"did\":\"did:plc:abc123\"")
-                .is_true(|req| req.headers_vec().iter().any(|(k, v)| k == "authorization" && v.contains("Bearer")));
+                .is_true(|req| {
+                    req.headers_vec()
+                        .iter()
+                        .any(|(k, v)| k == "authorization" && v.contains("Bearer"))
+                });
             then.status(200).json_body(serde_json::json!({
                 "accessJwt": "access...",
                 "refreshJwt": "refresh...",
@@ -3102,7 +3131,8 @@ mod tests {
             make_bearer_jwt(9999999999),
             "refresh_jwt".to_string(),
             mock_server.base_url(),
-        ).expect("new_bearer must succeed");
+        )
+        .expect("new_bearer must succeed");
         let req = CreateAccountMigrationRequest {
             handle: "user.example.com".to_string(),
             email: "user@example.com".to_string(),
@@ -3134,7 +3164,8 @@ mod tests {
             make_bearer_jwt(9999999999),
             "refresh_jwt".to_string(),
             mock_server.base_url(),
-        ).expect("new_bearer must succeed");
+        )
+        .expect("new_bearer must succeed");
         let req = CreateAccountMigrationRequest {
             handle: "existing.example.com".to_string(),
             email: "existing@example.com".to_string(),
@@ -3167,13 +3198,20 @@ mod tests {
                 .header("content-type", "application/vnd.ipld.car")
                 // The exact CAR bytes must reach the server unchanged.
                 .body("CAR bytes content")
-                .is_true(|req| req.headers_vec().iter().any(|(k, v)| k == "authorization" && v.contains("Bearer")));
+                .is_true(|req| {
+                    req.headers_vec()
+                        .iter()
+                        .any(|(k, v)| k == "authorization" && v.contains("Bearer"))
+                });
             then.status(200);
         });
 
-        let test_client =
-            crate::oauth_client::OAuthClient::new_bearer(make_bearer_jwt(9999999999), "refresh_token".to_string(), mock_server.base_url())
-                .expect("new_bearer must succeed");
+        let test_client = crate::oauth_client::OAuthClient::new_bearer(
+            make_bearer_jwt(9999999999),
+            "refresh_token".to_string(),
+            mock_server.base_url(),
+        )
+        .expect("new_bearer must succeed");
         let car_bytes = b"CAR bytes content".to_vec();
         let result = import_repo(&test_client, car_bytes).await;
 
@@ -3191,7 +3229,11 @@ mod tests {
                 .header("content-type", "image/jpeg")
                 // The exact blob bytes must reach the server unchanged.
                 .body("JPEG data")
-                .is_true(|req| req.headers_vec().iter().any(|(k, v)| k == "authorization" && v.contains("Bearer")));
+                .is_true(|req| {
+                    req.headers_vec()
+                        .iter()
+                        .any(|(k, v)| k == "authorization" && v.contains("Bearer"))
+                });
             then.status(200).json_body(serde_json::json!({
                 "blob": {
                     "$type": "com.atproto.sync.blob",
@@ -3202,9 +3244,12 @@ mod tests {
             }));
         });
 
-        let test_client =
-            crate::oauth_client::OAuthClient::new_bearer(make_bearer_jwt(9999999999), "refresh_token".to_string(), mock_server.base_url())
-                .expect("new_bearer must succeed");
+        let test_client = crate::oauth_client::OAuthClient::new_bearer(
+            make_bearer_jwt(9999999999),
+            "refresh_token".to_string(),
+            mock_server.base_url(),
+        )
+        .expect("new_bearer must succeed");
         let blob_bytes = b"JPEG data".to_vec();
         let result = upload_blob(&test_client, "image/jpeg", blob_bytes).await;
 
@@ -3224,7 +3269,11 @@ mod tests {
         mock_server.mock(|when, then| {
             when.method(httpmock::Method::GET)
                 .path("/xrpc/com.atproto.repo.listMissingBlobs")
-                .is_true(|req| req.headers_vec().iter().any(|(k, v)| k == "authorization" && v.contains("Bearer")));
+                .is_true(|req| {
+                    req.headers_vec()
+                        .iter()
+                        .any(|(k, v)| k == "authorization" && v.contains("Bearer"))
+                });
             then.status(200).json_body(serde_json::json!({
                 "blobs": [
                     { "cid": "bafy1", "recordUri": "at://did/record1" },
@@ -3233,9 +3282,12 @@ mod tests {
             }));
         });
 
-        let test_client =
-            crate::oauth_client::OAuthClient::new_bearer(make_bearer_jwt(9999999999), "refresh_token".to_string(), mock_server.base_url())
-                .expect("new_bearer must succeed");
+        let test_client = crate::oauth_client::OAuthClient::new_bearer(
+            make_bearer_jwt(9999999999),
+            "refresh_token".to_string(),
+            mock_server.base_url(),
+        )
+        .expect("new_bearer must succeed");
         let result = list_missing_blobs(&test_client, None).await;
 
         assert!(result.is_ok());
@@ -3253,7 +3305,11 @@ mod tests {
             when.method(httpmock::Method::GET)
                 .path("/xrpc/com.atproto.repo.listMissingBlobs")
                 .query_param("cursor", "next_page_token")
-                .is_true(|req| req.headers_vec().iter().any(|(k, v)| k == "authorization" && v.contains("Bearer")));
+                .is_true(|req| {
+                    req.headers_vec()
+                        .iter()
+                        .any(|(k, v)| k == "authorization" && v.contains("Bearer"))
+                });
             then.status(200).json_body(serde_json::json!({
                 "blobs": [
                     { "cid": "bafy3", "recordUri": "at://did/record3" }
@@ -3262,9 +3318,12 @@ mod tests {
             }));
         });
 
-        let test_client =
-            crate::oauth_client::OAuthClient::new_bearer(make_bearer_jwt(9999999999), "refresh_token".to_string(), mock_server.base_url())
-                .expect("new_bearer must succeed");
+        let test_client = crate::oauth_client::OAuthClient::new_bearer(
+            make_bearer_jwt(9999999999),
+            "refresh_token".to_string(),
+            mock_server.base_url(),
+        )
+        .expect("new_bearer must succeed");
         let result = list_missing_blobs(&test_client, Some("next_page_token")).await;
 
         assert!(result.is_ok());
@@ -3281,7 +3340,11 @@ mod tests {
         mock_server.mock(|when, then| {
             when.method(httpmock::Method::GET)
                 .path("/xrpc/app.bsky.actor.getPreferences")
-                .is_true(|req| req.headers_vec().iter().any(|(k, v)| k == "authorization" && v.contains("Bearer")));
+                .is_true(|req| {
+                    req.headers_vec()
+                        .iter()
+                        .any(|(k, v)| k == "authorization" && v.contains("Bearer"))
+                });
             then.status(200).json_body(serde_json::json!({
                 "preferences": [
                     { "feed": "pinned", "value": "at://feed1" }
@@ -3289,9 +3352,12 @@ mod tests {
             }));
         });
 
-        let test_client =
-            crate::oauth_client::OAuthClient::new_bearer(make_bearer_jwt(9999999999), "refresh_token".to_string(), mock_server.base_url())
-                .expect("new_bearer must succeed");
+        let test_client = crate::oauth_client::OAuthClient::new_bearer(
+            make_bearer_jwt(9999999999),
+            "refresh_token".to_string(),
+            mock_server.base_url(),
+        )
+        .expect("new_bearer must succeed");
         let result = get_preferences(&test_client).await;
 
         assert!(result.is_ok());
@@ -3307,13 +3373,20 @@ mod tests {
         mock_server.mock(|when, then| {
             when.method(httpmock::Method::POST)
                 .path("/xrpc/app.bsky.actor.putPreferences")
-                .is_true(|req| req.headers_vec().iter().any(|(k, v)| k == "authorization" && v.contains("Bearer")));
+                .is_true(|req| {
+                    req.headers_vec()
+                        .iter()
+                        .any(|(k, v)| k == "authorization" && v.contains("Bearer"))
+                });
             then.status(200);
         });
 
-        let test_client =
-            crate::oauth_client::OAuthClient::new_bearer(make_bearer_jwt(9999999999), "refresh_token".to_string(), mock_server.base_url())
-                .expect("new_bearer must succeed");
+        let test_client = crate::oauth_client::OAuthClient::new_bearer(
+            make_bearer_jwt(9999999999),
+            "refresh_token".to_string(),
+            mock_server.base_url(),
+        )
+        .expect("new_bearer must succeed");
         let prefs = serde_json::json!({
             "preferences": [
                 { "feed": "pinned", "value": "at://feed1" }
@@ -3336,7 +3409,11 @@ mod tests {
         mock_server.mock(|when, then| {
             when.method(httpmock::Method::GET)
                 .path("/xrpc/com.atproto.server.checkAccountStatus")
-                .is_true(|req| req.headers_vec().iter().any(|(k, v)| k == "authorization" && v.contains("Bearer")));
+                .is_true(|req| {
+                    req.headers_vec()
+                        .iter()
+                        .any(|(k, v)| k == "authorization" && v.contains("Bearer"))
+                });
             then.status(200).json_body(serde_json::json!({
                 "activated": true,
                 "validDid": true,
@@ -3348,9 +3425,12 @@ mod tests {
             }));
         });
 
-        let test_client =
-            crate::oauth_client::OAuthClient::new_bearer(make_bearer_jwt(9999999999), "refresh_token".to_string(), mock_server.base_url())
-                .expect("new_bearer must succeed");
+        let test_client = crate::oauth_client::OAuthClient::new_bearer(
+            make_bearer_jwt(9999999999),
+            "refresh_token".to_string(),
+            mock_server.base_url(),
+        )
+        .expect("new_bearer must succeed");
         let result = check_account_status(&test_client).await;
 
         assert!(result.is_ok());
@@ -3374,13 +3454,20 @@ mod tests {
             when.method(httpmock::Method::POST)
                 .path("/xrpc/com.atproto.server.activateAccount")
                 .is_true(|req| req.body_ref().is_empty())
-                .is_true(|req| req.headers_vec().iter().any(|(k, v)| k == "authorization" && v.contains("Bearer")));
+                .is_true(|req| {
+                    req.headers_vec()
+                        .iter()
+                        .any(|(k, v)| k == "authorization" && v.contains("Bearer"))
+                });
             then.status(200);
         });
 
-        let test_client =
-            crate::oauth_client::OAuthClient::new_bearer(make_bearer_jwt(9999999999), "refresh_token".to_string(), mock_server.base_url())
-                .expect("new_bearer must succeed");
+        let test_client = crate::oauth_client::OAuthClient::new_bearer(
+            make_bearer_jwt(9999999999),
+            "refresh_token".to_string(),
+            mock_server.base_url(),
+        )
+        .expect("new_bearer must succeed");
         let result = activate_account(&test_client).await;
 
         assert!(result.is_ok());
@@ -3394,13 +3481,20 @@ mod tests {
         mock_server.mock(|when, then| {
             when.method(httpmock::Method::POST)
                 .path("/xrpc/com.atproto.server.deactivateAccount")
-                .is_true(|req| req.headers_vec().iter().any(|(k, v)| k == "authorization" && v.contains("Bearer")));
+                .is_true(|req| {
+                    req.headers_vec()
+                        .iter()
+                        .any(|(k, v)| k == "authorization" && v.contains("Bearer"))
+                });
             then.status(200);
         });
 
-        let test_client =
-            crate::oauth_client::OAuthClient::new_bearer(make_bearer_jwt(9999999999), "refresh_token".to_string(), mock_server.base_url())
-                .expect("new_bearer must succeed");
+        let test_client = crate::oauth_client::OAuthClient::new_bearer(
+            make_bearer_jwt(9999999999),
+            "refresh_token".to_string(),
+            mock_server.base_url(),
+        )
+        .expect("new_bearer must succeed");
         let result = deactivate_account(&test_client, None).await;
 
         assert!(result.is_ok());
@@ -3416,13 +3510,20 @@ mod tests {
                 .path("/xrpc/com.atproto.server.deactivateAccount")
                 .body_includes("deleteAfter")
                 .body_includes("2026-07-08")
-                .is_true(|req| req.headers_vec().iter().any(|(k, v)| k == "authorization" && v.contains("Bearer")));
+                .is_true(|req| {
+                    req.headers_vec()
+                        .iter()
+                        .any(|(k, v)| k == "authorization" && v.contains("Bearer"))
+                });
             then.status(200);
         });
 
-        let test_client =
-            crate::oauth_client::OAuthClient::new_bearer(make_bearer_jwt(9999999999), "refresh_token".to_string(), mock_server.base_url())
-                .expect("new_bearer must succeed");
+        let test_client = crate::oauth_client::OAuthClient::new_bearer(
+            make_bearer_jwt(9999999999),
+            "refresh_token".to_string(),
+            mock_server.base_url(),
+        )
+        .expect("new_bearer must succeed");
         let result = deactivate_account(&test_client, Some("2026-07-08T00:00:00.000Z")).await;
 
         assert!(result.is_ok());

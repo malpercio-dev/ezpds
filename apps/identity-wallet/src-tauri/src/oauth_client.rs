@@ -87,9 +87,11 @@ impl OAuthClient {
     /// Build a Bearer-session client for a migrated destination account. `access_jwt` /
     /// `refresh_jwt` are the legacy tokens returned by migration-mode `createAccount`.
     /// `expires_at` is derived from the access token's `exp` claim so proactive refresh works.
-    pub fn new_bearer(access_jwt: String, refresh_jwt: String, base_url: String)
-        -> Result<Self, OAuthError>
-    {
+    pub fn new_bearer(
+        access_jwt: String,
+        refresh_jwt: String,
+        base_url: String,
+    ) -> Result<Self, OAuthError> {
         let expires_at = jwt_exp_claim(&access_jwt).unwrap_or(0);
         let session = OAuthSession {
             access_token: access_jwt,
@@ -177,7 +179,9 @@ impl OAuthClient {
                         s.dpop_nonce = Some(fresh_nonce.clone());
                     }
                     tracing::debug!(nonce = %fresh_nonce, "retrying post_bytes with server DPoP nonce");
-                    return self.send_bytes(&url, content_type, &body, Some(&fresh_nonce)).await;
+                    return self
+                        .send_bytes(&url, content_type, &body, Some(&fresh_nonce))
+                        .await;
                 } else {
                     tracing::error!("use_dpop_nonce response missing DPoP-Nonce header");
                     return Err(OAuthError::NotAuthenticated);
@@ -291,8 +295,7 @@ impl OAuthClient {
         match self.auth_mode {
             AuthMode::Bearer => {
                 // Bearer mode: only Authorization header, no DPoP proof.
-                builder = builder
-                    .header("Authorization", format!("Bearer {access_token}"));
+                builder = builder.header("Authorization", format!("Bearer {access_token}"));
             }
             AuthMode::Dpop => {
                 // DPoP mode: Authorization + DPoP proof with ath claim.
@@ -341,15 +344,12 @@ impl OAuthClient {
         match self.auth_mode {
             AuthMode::Bearer => {
                 // Bearer mode: only Authorization header, no DPoP proof.
-                builder = builder
-                    .header("Authorization", format!("Bearer {access_token}"));
+                builder = builder.header("Authorization", format!("Bearer {access_token}"));
             }
             AuthMode::Dpop => {
                 // DPoP mode: Authorization + DPoP proof with ath claim.
                 let ath = DPoPKeypair::compute_ath(&access_token);
-                let proof = self
-                    .dpop
-                    .make_proof("POST", url, nonce, Some(&ath))?;
+                let proof = self.dpop.make_proof("POST", url, nonce, Some(&ath))?;
                 builder = builder
                     .header("Authorization", format!("DPoP {access_token}"))
                     .header("DPoP", &proof);
@@ -634,8 +634,12 @@ mod tests {
 
     /// Create a Bearer-mode OAuthClient for testing.
     async fn make_bearer_client(access: &str, refresh: &str, base_url: &str) -> OAuthClient {
-        OAuthClient::new_bearer(access.to_string(), refresh.to_string(), base_url.to_string())
-            .expect("new_bearer must succeed")
+        OAuthClient::new_bearer(
+            access.to_string(),
+            refresh.to_string(),
+            base_url.to_string(),
+        )
+        .expect("new_bearer must succeed")
     }
 
     fn token_response_body() -> serde_json::Value {
@@ -948,7 +952,11 @@ mod tests {
         let client = make_bearer_client(&access_jwt, "my_refresh_token", &server.base_url()).await;
 
         let resp = client.get("/resource").await.expect("GET must not error");
-        assert_eq!(resp.status().as_u16(), 400, "should return the 400 without retry");
+        assert_eq!(
+            resp.status().as_u16(),
+            400,
+            "should return the 400 without retry"
+        );
         assert_eq!(mock.calls(), 1, "must send exactly one request (no retry)");
     }
 
@@ -1024,7 +1032,8 @@ mod tests {
             .unwrap()
             .as_secs();
         let expired_jwt = make_bearer_jwt(now - 100); // Already expired
-        let client = make_bearer_client(&expired_jwt, "old_refresh_token", &server.base_url()).await;
+        let client =
+            make_bearer_client(&expired_jwt, "old_refresh_token", &server.base_url()).await;
 
         // Issue a request — should trigger lazy refresh.
         let resp_mock = server.mock(|when, then| {
@@ -1040,19 +1049,22 @@ mod tests {
 
         // Verify refreshSession was called exactly once.
         assert_eq!(
-            refresh_mock.calls(), 1,
+            refresh_mock.calls(),
+            1,
             "POST /xrpc/com.atproto.server.refreshSession must be called exactly once"
         );
 
         // Verify /oauth/token was NOT called.
         assert_eq!(
-            oauth_mock.calls(), 0,
+            oauth_mock.calls(),
+            0,
             "POST /oauth/token must NOT be called for Bearer mode"
         );
 
         // Verify the follow-up request used the new access token.
         assert_eq!(
-            resp_mock.calls(), 1,
+            resp_mock.calls(),
+            1,
             "follow-up request must carry the new access token"
         );
 
@@ -1074,7 +1086,8 @@ mod tests {
         let server = MockServer::start();
 
         server.mock(|when, then| {
-            when.method(POST).path("/xrpc/com.atproto.server.refreshSession");
+            when.method(POST)
+                .path("/xrpc/com.atproto.server.refreshSession");
             then.status(400).json_body(serde_json::json!({
                 "error": "invalid_grant",
                 "error_description": "refresh token expired"
@@ -1086,7 +1099,8 @@ mod tests {
             .unwrap()
             .as_secs();
         let expired_jwt = make_bearer_jwt(now - 100);
-        let client = make_bearer_client(&expired_jwt, "old_refresh_token", &server.base_url()).await;
+        let client =
+            make_bearer_client(&expired_jwt, "old_refresh_token", &server.base_url()).await;
 
         let result = client.refresh_token().await;
         assert!(
