@@ -1,9 +1,12 @@
 // pattern: Mixed (Functional Core types + Imperative Shell commands)
 //
 // Functional Core: MigrationPhase, OutboundMigrationState, MigrationError, PendingSourceLogin,
-//                  ensure_phase_did (pure gate function, no network, no side effects)
+//                  ensure_phase_did, import_reconciles, extract_handle_from_also_known_as
+//                  (pure functions — no network, no side effects)
 // Imperative Shell: prepare_migration, prepare_source_auth, complete_source_auth,
-//                   create_destination_account (Tauri commands; Tasks 4-6 in Phase 3)
+//                   create_destination_account (Phase 3); transfer_repo, transfer_blobs,
+//                   transfer_preferences, verify_import (Phase 4) — Tauri commands, plus their
+//                   *_impl / drain_missing_blobs network cores.
 
 use serde::Serialize;
 use std::sync::Arc;
@@ -2158,10 +2161,11 @@ mod tests {
         assert!(!import_reconciles(&status));
     }
 
-    // AC3.1 command test: checkAccountStatus returns reconciled status → advance to Verified
+    // AC3.1: a real checkAccountStatus payload with imported==expected and a repo commit passes the
+    // import_reconciles gate (the branch verify_import uses to decide whether to advance to Verified).
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
-    async fn test_verify_import_complete_advances_phase() {
+    async fn test_verify_import_gate_reconciles_on_complete_status() {
         let dest = MockServer::start();
         dest.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -2190,10 +2194,11 @@ mod tests {
         assert_eq!(status.expected_blobs, 10);
     }
 
-    // AC3.3 command test: incomplete import returns VerificationIncomplete with counts
+    // AC3.3: a real checkAccountStatus payload with imported<expected fails the import_reconciles
+    // gate (the branch on which verify_import returns VerificationIncomplete with these counts).
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
-    async fn test_verify_import_incomplete_returns_counts() {
+    async fn test_verify_import_gate_rejects_incomplete_status() {
         let dest = MockServer::start();
         dest.mock(|when, then| {
             when.method(httpmock::Method::GET)
