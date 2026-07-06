@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-07-05
 - **Deciders:** ezpds maintainers
-- **Related:** [MM-237](https://linear.app/malpercio/issue/MM-237) · [docs/design-plans/2026-07-05-oauth-scopes-permission-sets.md](../../design-plans/2026-07-05-oauth-scopes-permission-sets.md)
+- **Related:** [MM-237](https://linear.app/malpercio/issue/MM-237) · [docs/archive/design-plans/2026-07-05-oauth-scopes-permission-sets.md](../../archive/design-plans/2026-07-05-oauth-scopes-permission-sets.md)
 
 ## Context
 
