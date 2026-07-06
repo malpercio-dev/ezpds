@@ -11,7 +11,7 @@
     onalert,
   }: {
     onadd: () => void;
-    onselect: (did: string, didDoc: Record<string, unknown>) => void;
+    onselect: (did: string, didDoc: Record<string, unknown>, deviceKeyIsRoot: boolean | null) => void;
     onalert?: (did: string, changes: UnauthorizedChange[]) => void;
   } = $props();
 
@@ -204,7 +204,7 @@
       <div class="cards">
         {#each identities as card (card.did)}
           {@const alerts = alertData.get(card.did)}
-          <button class="card" onclick={() => onselect(card.did, didDocs.get(card.did) ?? {})}>
+          <button class="card" onclick={() => onselect(card.did, didDocs.get(card.did) ?? {}, card.deviceKeyIsRoot)}>
             <DIDAvatar did={card.did} handle={card.handle ?? 'Unknown'} />
             <span class="info">
               <span class="handle">{card.handle ? '@' + card.handle : 'Unknown handle'}</span>

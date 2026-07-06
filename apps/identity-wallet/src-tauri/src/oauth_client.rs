@@ -298,11 +298,15 @@ impl OAuthClient {
                 builder = builder.header("Authorization", format!("Bearer {access_token}"));
             }
             AuthMode::Dpop => {
-                // DPoP mode: Authorization + DPoP proof with ath claim.
+                // DPoP mode: Authorization + DPoP proof with ath claim. `htu` is the target URI
+                // without the query string (RFC 9449 §4.2); a spec-compliant server strips the
+                // query before comparing, so a proof carrying `?aud=..&lxm=..` (getServiceAuth)
+                // would be rejected. The request itself still targets the full `url`.
+                let htu = url.split('?').next().unwrap_or(url);
                 let ath = DPoPKeypair::compute_ath(&access_token);
                 let proof = self
                     .dpop
-                    .make_proof(method.as_str(), url, nonce, Some(&ath))?;
+                    .make_proof(method.as_str(), htu, nonce, Some(&ath))?;
                 builder = builder
                     .header("Authorization", format!("DPoP {access_token}"))
                     .header("DPoP", &proof);
@@ -347,9 +351,13 @@ impl OAuthClient {
                 builder = builder.header("Authorization", format!("Bearer {access_token}"));
             }
             AuthMode::Dpop => {
-                // DPoP mode: Authorization + DPoP proof with ath claim.
+                // DPoP mode: Authorization + DPoP proof with ath claim. `htu` excludes the query
+                // string (RFC 9449 §4.2), matching `send_with_dpop`; the request still targets the
+                // full `url`. (Binary-upload paths carry no query today, but keep the two proof
+                // builders consistent so a future query-bearing upload can't ship a bad proof.)
+                let htu = url.split('?').next().unwrap_or(url);
                 let ath = DPoPKeypair::compute_ath(&access_token);
-                let proof = self.dpop.make_proof("POST", url, nonce, Some(&ath))?;
+                let proof = self.dpop.make_proof("POST", htu, nonce, Some(&ath))?;
                 builder = builder
                     .header("Authorization", format!("DPoP {access_token}"))
                     .header("DPoP", &proof);
@@ -688,6 +696,45 @@ mod tests {
         decode_dpop_payload(req)
             .map(|p| p.get("nonce").is_none())
             .unwrap_or(false)
+    }
+
+    /// `when.is_true()` predicate: the DPoP proof's `htu` claim must NOT contain a query string
+    /// (RFC 9449 §4.2 — htu is the target URI without query/fragment).
+    fn dpop_htu_has_no_query(req: &HttpMockRequest) -> bool {
+        decode_dpop_payload(req)
+            .and_then(|p| {
+                p.get("htu")
+                    .and_then(|v| v.as_str())
+                    .map(|s| !s.contains('?'))
+            })
+            .unwrap_or(false)
+    }
+
+    #[tokio::test]
+    async fn dpop_htu_excludes_query_string() {
+        // getServiceAuth is the first OAuth GET carrying a query (?aud=..&lxm=..). Its DPoP proof
+        // must still put a query-less htu in the claim, or a spec-compliant server rejects it.
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/xrpc/com.atproto.server.getServiceAuth")
+                .is_true(dpop_htu_has_no_query);
+            then.status(200).body("ok");
+        });
+
+        let keypair = DPoPKeypair::get_or_create().expect("keypair must exist");
+        let session = make_session("my_access_token", "my_refresh_token", 300);
+        let client = OAuthClient::new_for_test(keypair, session, server.base_url());
+
+        let resp = client
+            .get("/xrpc/com.atproto.server.getServiceAuth?aud=did:web:dest&lxm=com.atproto.server.createAccount")
+            .await
+            .expect("GET must send");
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "DPoP htu must exclude the query string"
+        );
     }
 
     #[tokio::test]

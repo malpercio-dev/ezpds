@@ -47,6 +47,13 @@ zeroize = { workspace = true }
 urlencoding = { workspace = true }
 chrono = { workspace = true }
 
+# Biometric (Face ID / Touch ID) gate on the migration PLC-op submission. Mobile-only —
+# there is no desktop implementation, so it is target-gated to keep the macOS host build
+# (and the test suite) free of a dependency it cannot compile. Registered behind
+# `#[cfg(mobile)]` in lib.rs. Same version admin-companion already uses.
+[target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
+tauri-plugin-biometric = "2"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
 httpmock = "0.8"

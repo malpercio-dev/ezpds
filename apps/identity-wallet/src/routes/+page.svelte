@@ -19,6 +19,11 @@
   import EmailVerificationScreen from '$lib/components/onboarding/EmailVerificationScreen.svelte';
   import ReviewOperationScreen from '$lib/components/onboarding/ReviewOperationScreen.svelte';
   import ClaimSuccessScreen from '$lib/components/onboarding/ClaimSuccessScreen.svelte';
+  import MigrationStartScreen from '$lib/components/onboarding/MigrationStartScreen.svelte';
+  import MigrationSourceAuthScreen from '$lib/components/onboarding/MigrationSourceAuthScreen.svelte';
+  import MigrationProgressScreen from '$lib/components/onboarding/MigrationProgressScreen.svelte';
+  import MigrationReviewScreen from '$lib/components/onboarding/MigrationReviewScreen.svelte';
+  import MigrationSuccessScreen from '$lib/components/onboarding/MigrationSuccessScreen.svelte';
   import DIDDocumentScreen from '$lib/components/home/DIDDocumentScreen.svelte';
   import RecoveryInfoScreen from '$lib/components/home/RecoveryInfoScreen.svelte';
   import AlertDetailScreen from '$lib/components/home/AlertDetailScreen.svelte';
@@ -66,7 +71,12 @@
     | 'pds_auth'
     | 'email_verification'
     | 'review_operation'
-    | 'claim_success';
+    | 'claim_success'
+    | 'migration_start'
+    | 'migration_source_auth'
+    | 'migration_progress'
+    | 'migration_review'
+    | 'migration_success';
 
   // ── State ────────────────────────────────────────────────────────────────
 
@@ -90,13 +100,24 @@
 
   let homeData = $state<HomeData | null>(null);
 
+  let selectedDid = $state<string | null>(null);
   let selectedDidDoc = $state<Record<string, unknown> | null>(null);
+  let selectedDeviceKeyIsRoot = $state<boolean | null>(null);
 
   let selectedAlertDid = $state<string | null>(null);
   let selectedAlertChanges = $state<UnauthorizedChange[]>([]);
 
   let selectedRecoveryCid = $state<string | null>(null);
   let selectedRecoveryCreatedAt = $state<string | null>(null);
+
+  // ── Migration flow state ──────────────────────────────────────────────────
+  // Each migration screen owns its own transient error/progress display; the page only threads
+  // the values a later screen consumes (destination + email for the flow, the result for success).
+  let migrationDid = $state('');
+  let migrationEmail = $state('');
+  let migrationInviteCode = $state<string | undefined>(undefined);
+  let migrationDestPds = $state('');
+  let migrationResult = $state<ClaimResult | null>(null);
 
   // ── Navigation helpers ───────────────────────────────────────────────────
 
@@ -364,8 +385,10 @@
   {:else if step === 'home'}
     <IdentityListHome
       onadd={() => goTo('mode_select')}
-      onselect={(_did, didDoc) => {
+      onselect={(did, didDoc, deviceKeyIsRoot) => {
+        selectedDid = did;
         selectedDidDoc = didDoc;
+        selectedDeviceKeyIsRoot = deviceKeyIsRoot;
         goTo('identity_detail');
       }}
       onalert={(did, changes) => {
@@ -379,6 +402,60 @@
     <DIDDocumentScreen
       didDoc={selectedDidDoc ? normalizePlcDocToW3c(selectedDidDoc) : {}}
       onback={() => goTo('home')}
+      onmigrate={selectedDeviceKeyIsRoot === true
+        ? () => {
+            migrationDid = selectedDid ?? '';
+            goTo('migration_start');
+          }
+        : undefined}
+    />
+
+  {:else if step === 'migration_start'}
+    <MigrationStartScreen
+      did={migrationDid}
+      onnext={({ destPdsUrl, email, inviteCode }) => {
+        migrationDestPds = destPdsUrl;
+        migrationEmail = email;
+        migrationInviteCode = inviteCode;
+        goTo('migration_source_auth');
+      }}
+      onback={() => goTo('identity_detail')}
+    />
+
+  {:else if step === 'migration_source_auth'}
+    <MigrationSourceAuthScreen
+      did={migrationDid}
+      onnext={() => goTo('migration_progress')}
+      onback={() => goTo('migration_start')}
+    />
+
+  {:else if step === 'migration_progress'}
+    <MigrationProgressScreen
+      did={migrationDid}
+      email={migrationEmail}
+      inviteCode={migrationInviteCode}
+      onnext={() => goTo('migration_review')}
+      onerror={() => {
+        // Stay on the progress screen — it surfaces the error inline and offers Retry itself,
+        // rather than rewinding. The parent has nothing to do on a per-leg failure.
+      }}
+    />
+
+  {:else if step === 'migration_review'}
+    <MigrationReviewScreen
+      did={migrationDid}
+      onnext={(result) => {
+        migrationResult = result;
+        goTo('migration_success');
+      }}
+      oncancel={() => goTo('identity_detail')}
+    />
+
+  {:else if step === 'migration_success'}
+    <MigrationSuccessScreen
+      result={migrationResult!}
+      destPdsLabel={migrationDestPds}
+      ondone={() => goTo('home')}
     />
 
   {:else if step === 'did_document'}

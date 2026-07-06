@@ -3225,6 +3225,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-auth-session",
+ "tauri-plugin-biometric",
  "tauri-plugin-log",
  "thiserror 2.0.18",
  "tokio",

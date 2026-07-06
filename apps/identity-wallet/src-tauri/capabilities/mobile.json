@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "Mobile-only plugin commands. The migration review screen gates the PLC-op submission behind biometric (Face ID / Touch ID) user presence — the user is the signer, so this is the authorization boundary. The plugin exists only on iOS/Android, so this capability is platform-gated and skipped on the macOS host build.",
+  "platforms": ["iOS", "android"],
+  "windows": ["main"],
+  "permissions": ["biometric:default"]
+}

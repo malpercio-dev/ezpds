@@ -39,5 +39,15 @@
       </array>
     </dict>
   </array>
+
+  <!--
+    Face ID gates the migration PLC-op submission (the DID-repointing operation the wallet
+    signs locally) so a momentary unlock can't authorize an identity change. Touch ID /
+    device passcode are used on devices without Face ID. Tauri merges this key into the
+    generated iOS Info.plist, satisfying iOS's NSFaceIDUsageDescription requirement for the
+    biometric plugin.
+  -->
+  <key>NSFaceIDUsageDescription</key>
+  <string>Confirm it's you before authorizing the identity change to migrate your account.</string>
 </dict>
 </plist>
