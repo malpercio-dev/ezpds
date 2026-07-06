@@ -736,6 +736,9 @@ async fn source_exchange_code_with_retry(
 
 /// Pure core: reserve key, mint service-auth, create account, return Bearer client.
 /// Extracted for unit testability with mocked servers.
+// The explicit-dependency signature (source/dest clients, urls, dids, handle, email, invite,
+// existing client) is deliberate for testability; a struct would only move the arity around.
+#[allow(clippy::too_many_arguments)]
 async fn create_destination_account_impl(
     pds_client: &crate::pds_client::PdsClient,
     source_client: &Arc<OAuthClient>,
@@ -1329,15 +1332,24 @@ pub async fn arm_identity_leg(
     did: String,
 ) -> Result<(), MigrationError> {
     tracing::info!(did = %did, "arm_identity_leg: populating migration identity-leg state");
+    arm_identity_leg_core(&state.orchestration_state, &state.migration_state, &did).await
+}
 
+/// Core of `arm_identity_leg`, parameterized over the two mutexes so it is unit-testable without a
+/// Tauri `State`. Gate at Verified → build `migrate::MigrationState` with the dest Bearer client →
+/// park it in `migration_state` → advance the orchestration phase to `IdentityArmed`. No network.
+async fn arm_identity_leg_core(
+    orchestration_state: &tokio::sync::Mutex<Option<OutboundMigrationState>>,
+    migration_state: &tokio::sync::Mutex<Option<crate::migrate::MigrationState>>,
+    did: &str,
+) -> Result<(), MigrationError> {
     // Gate: ensure phase + DID, extract dest_client
     let dest_client = {
-        let orchestration = state.orchestration_state.lock().await;
-        let mig = ensure_phase_did(&orchestration, &did, MigrationPhase::Verified).map_err(|e| {
+        let orchestration = orchestration_state.lock().await;
+        let mig = ensure_phase_did(&orchestration, did, MigrationPhase::Verified).map_err(|e| {
             tracing::warn!("arm_identity_leg: phase gate failed: {}", e);
             e
         })?;
-
         mig.dest_client.clone()
     }; // lock released
 
@@ -1348,34 +1360,26 @@ pub async fn arm_identity_leg(
         });
     };
 
-    // Build fresh MigrationState with the destination Bearer client
-    let migration_state = crate::migrate::MigrationState {
-        did: did.clone(),
+    // Build + park the identity-leg state (dest_oauth_client is Arc<OAuthClient>, NOT Option).
+    *migration_state.lock().await = Some(crate::migrate::MigrationState {
+        did: did.to_string(),
         dest_oauth_client: dest_client,
         signed_op: None,
-    };
+    });
 
-    // Store the migration state
-    *state.migration_state.lock().await = Some(migration_state);
-
-    // Update orchestration state: advance phase to IdentityArmed
-    let mut orchestration = state.orchestration_state.lock().await;
-    if let Some(ref mut mig) = orchestration.as_mut() {
-        // Defense-in-depth DID check
-        if mig.did != did {
-            drop(orchestration);
-            tracing::warn!("arm_identity_leg: orchestration state did mismatch");
-            return Err(MigrationError::MigrationNotReady {
-                message: "did mismatch with orchestration state".into(),
-            });
-        }
-        mig.phase = MigrationPhase::IdentityArmed;
-    } else {
-        drop(orchestration);
+    // Advance orchestration phase to IdentityArmed (defense-in-depth DID re-check under the lock).
+    let mut orchestration = orchestration_state.lock().await;
+    let Some(mig) = orchestration.as_mut() else {
         return Err(MigrationError::MigrationNotReady {
             message: "orchestration state lost".into(),
         });
+    };
+    if mig.did != did {
+        return Err(MigrationError::MigrationNotReady {
+            message: "did mismatch with orchestration state".into(),
+        });
     }
+    mig.phase = MigrationPhase::IdentityArmed;
 
     tracing::info!(did = %did, "identity leg armed successfully");
     Ok(())
@@ -1427,15 +1431,26 @@ pub async fn finalize_migration(
     did: String,
 ) -> Result<(), MigrationError> {
     tracing::info!(did = %did, "finalize_migration: activating destination and deactivating source");
+    finalize_migration_core(&state.orchestration_state, &state.migration_state, &did).await
+}
 
+/// Core of `finalize_migration`, parameterized over the two mutexes so its gating + phase advance
+/// are unit-testable without a Tauri `State`. Gate at IdentityArmed; require the migrate
+/// `migration_state` cleared (== None, proving `submit_migration_op_cmd` ran — AC4.2); then
+/// activate the destination and deactivate the source (via `finalize_migration_impl`, AC1.2) and
+/// advance to `Finalized`.
+async fn finalize_migration_core(
+    orchestration_state: &tokio::sync::Mutex<Option<OutboundMigrationState>>,
+    migration_state: &tokio::sync::Mutex<Option<crate::migrate::MigrationState>>,
+    did: &str,
+) -> Result<(), MigrationError> {
     // Gate: ensure phase + DID, extract clients
     let (dest_client, source_client) = {
-        let orchestration = state.orchestration_state.lock().await;
-        let mig = ensure_phase_did(&orchestration, &did, MigrationPhase::IdentityArmed).map_err(|e| {
+        let orchestration = orchestration_state.lock().await;
+        let mig = ensure_phase_did(&orchestration, did, MigrationPhase::IdentityArmed).map_err(|e| {
             tracing::warn!("finalize_migration: phase gate failed: {}", e);
             e
         })?;
-
         (mig.dest_client.clone(), mig.source_client.clone())
     }; // lock released
 
@@ -1453,39 +1468,30 @@ pub async fn finalize_migration(
         });
     };
 
-    // AC4.2 defense-in-depth: the identity op must have been submitted (migration_state cleared)
-    {
-        let migration_state = state.migration_state.lock().await;
-        if migration_state.is_some() {
-            drop(migration_state);
-            tracing::error!(did = %did, "finalize_migration: migration identity op not yet submitted");
-            return Err(MigrationError::MigrationNotReady {
-                message: "identity op not yet submitted".into(),
-            });
-        }
-    } // lock released
+    // AC4.2 defense-in-depth: the identity op must have been submitted (migration_state cleared).
+    if migration_state.lock().await.is_some() {
+        tracing::error!(did = %did, "finalize_migration: migration identity op not yet submitted");
+        return Err(MigrationError::MigrationNotReady {
+            message: "identity op not yet submitted".into(),
+        });
+    }
 
-    // Activate destination, then deactivate source (AC1.2 ordering)
+    // Activate destination, then deactivate source (AC1.2 ordering).
     finalize_migration_impl(&dest_client, &source_client).await?;
 
-    // Update orchestration state: advance phase to Finalized
-    let mut orchestration = state.orchestration_state.lock().await;
-    if let Some(ref mut mig) = orchestration.as_mut() {
-        // Defense-in-depth DID check
-        if mig.did != did {
-            drop(orchestration);
-            tracing::warn!("finalize_migration: orchestration state did mismatch");
-            return Err(MigrationError::MigrationNotReady {
-                message: "did mismatch with orchestration state".into(),
-            });
-        }
-        mig.phase = MigrationPhase::Finalized;
-    } else {
-        drop(orchestration);
+    // Advance orchestration phase to Finalized (defense-in-depth DID re-check under the lock).
+    let mut orchestration = orchestration_state.lock().await;
+    let Some(mig) = orchestration.as_mut() else {
         return Err(MigrationError::MigrationNotReady {
             message: "orchestration state lost".into(),
         });
+    };
+    if mig.did != did {
+        return Err(MigrationError::MigrationNotReady {
+            message: "did mismatch with orchestration state".into(),
+        });
     }
+    mig.phase = MigrationPhase::Finalized;
 
     tracing::info!(did = %did, "migration finalized successfully");
     Ok(())
@@ -2430,47 +2436,67 @@ mod tests {
         ));
     }
 
-    // AC4.1 behavioral test: arm_identity_leg at Verified populates migration_state with dest_client
-    #[tokio::test]
-    async fn test_arm_identity_leg_populates_migration_state() {
-        // Build a simple AppState equivalent for testing
-        let orchestration = tokio::sync::Mutex::new(Some(OutboundMigrationState {
-            did: "did:plc:abc123".into(),
+    // Build a Verified OutboundMigrationState with both clients populated.
+    fn verified_state(did: &str) -> OutboundMigrationState {
+        OutboundMigrationState {
+            did: did.into(),
             source_pds_url: "https://source.pds".into(),
             dest_pds_url: "https://dest.pds".into(),
             dest_did: "did:web:dest".into(),
             handle: "alice.test".into(),
-            source_client: Some(Arc::new(
-                bearer_client_at("https://source.pds".into()),
-            )),
-            dest_client: Some(Arc::new(
-                bearer_client_at("https://dest.pds".into()),
-            )),
+            source_client: Some(Arc::new(bearer_client_at("https://source.pds".into()))),
+            dest_client: Some(Arc::new(bearer_client_at("https://dest.pds".into()))),
             phase: MigrationPhase::Verified,
-        }));
+        }
+    }
 
-        let migration_state = tokio::sync::Mutex::new(None);
+    // AC4.1: the REAL arm_identity_leg_core parks a migrate::MigrationState AND advances the
+    // orchestration phase to IdentityArmed (drives production code, not a hand-rolled copy).
+    #[tokio::test]
+    async fn test_arm_identity_leg_core_populates_state_and_advances_phase() {
         let did = "did:plc:abc123";
+        let orchestration = tokio::sync::Mutex::new(Some(verified_state(did)));
+        let migration_state = tokio::sync::Mutex::new(None);
 
-        // Simulate arm_identity_leg logic
-        let dest_client = {
-            let orch = orchestration.lock().await;
-            let mig = ensure_phase_did(&*orch, did, MigrationPhase::Verified).unwrap();
-            mig.dest_client.clone()
-        };
+        arm_identity_leg_core(&orchestration, &migration_state, did)
+            .await
+            .expect("arm should succeed on a Verified state");
 
-        let migration_state_val = crate::migrate::MigrationState {
-            did: did.to_string(),
-            dest_oauth_client: dest_client.unwrap(),
-            signed_op: None,
-        };
+        // migrate::MigrationState parked with the right DID …
+        let mig = migration_state.lock().await;
+        assert_eq!(mig.as_ref().expect("migration_state parked").did, did);
+        // … and the orchestration phase advanced to IdentityArmed.
+        assert_eq!(
+            orchestration.lock().await.as_ref().unwrap().phase,
+            MigrationPhase::IdentityArmed
+        );
+    }
 
-        *migration_state.lock().await = Some(migration_state_val);
+    // AC4.3: arm_identity_leg_core before Verified → MIGRATION_NOT_READY, and nothing is parked.
+    #[tokio::test]
+    async fn test_arm_identity_leg_core_gate_before_verified() {
+        let did = "did:plc:abc123";
+        let mut early = verified_state(did);
+        early.phase = MigrationPhase::PreferencesTransferred; // one below Verified
+        let orchestration = tokio::sync::Mutex::new(Some(early));
+        let migration_state = tokio::sync::Mutex::new(None);
 
-        // Verify: migration_state is now Some and contains the correct DID
-        let locked = migration_state.lock().await;
-        assert!(locked.is_some());
-        assert_eq!(locked.as_ref().unwrap().did, "did:plc:abc123");
+        let result = arm_identity_leg_core(&orchestration, &migration_state, did).await;
+        assert!(matches!(result, Err(MigrationError::MigrationNotReady { .. })));
+        assert!(migration_state.lock().await.is_none(), "must not park on a failed gate");
+    }
+
+    // Missing dest_client (impossible past DestCreated, but defended) → AccountCreationFailed.
+    #[tokio::test]
+    async fn test_arm_identity_leg_core_missing_dest_client() {
+        let did = "did:plc:abc123";
+        let mut state = verified_state(did);
+        state.dest_client = None;
+        let orchestration = tokio::sync::Mutex::new(Some(state));
+        let migration_state = tokio::sync::Mutex::new(None);
+
+        let result = arm_identity_leg_core(&orchestration, &migration_state, did).await;
+        assert!(matches!(result, Err(MigrationError::AccountCreationFailed { .. })));
     }
 
     // ── Task 2 tests: finalize_migration ───────────────────────────────────
@@ -2496,21 +2522,36 @@ mod tests {
         ));
     }
 
-    // AC1.2: finalize_migration_impl calls activate BEFORE deactivate (ordering test with mocks)
+    // AC1.2: finalize_migration_impl activates the destination BEFORE deactivating the source.
+    // Ordering is OBSERVED: each mock records its name into a shared vec (the is_true closures move
+    // in cloned Arcs, so they are 'static), and we assert the recorded sequence.
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
     async fn test_finalize_migration_impl_activate_before_deactivate() {
+        use std::sync::Mutex as StdMutex;
+        let order: Arc<StdMutex<Vec<String>>> = Arc::new(StdMutex::new(Vec::new()));
+
         let dest = MockServer::start();
+        let order_a = order.clone();
         let activate_mock = dest.mock(|when, then| {
             when.method(httpmock::Method::POST)
-                .path("/xrpc/com.atproto.server.activateAccount");
+                .path("/xrpc/com.atproto.server.activateAccount")
+                .is_true(move |_req| {
+                    order_a.lock().unwrap().push("activate".to_string());
+                    true
+                });
             then.status(200).body("{}");
         });
 
         let source = MockServer::start();
+        let order_d = order.clone();
         let deactivate_mock = source.mock(|when, then| {
             when.method(httpmock::Method::POST)
-                .path("/xrpc/com.atproto.server.deactivateAccount");
+                .path("/xrpc/com.atproto.server.deactivateAccount")
+                .is_true(move |_req| {
+                    order_d.lock().unwrap().push("deactivate".to_string());
+                    true
+                });
             then.status(200).body("{}");
         });
 
@@ -2522,8 +2563,11 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(activate_mock.calls(), 1, "activate must be called once");
         assert_eq!(deactivate_mock.calls(), 1, "deactivate must be called once");
-        // The mock setup guarantees order: if deactivate were called first on a mock
-        // with different URL expectations, it would fail. This implicitly tests ordering.
+        assert_eq!(
+            *order.lock().unwrap(),
+            vec!["activate".to_string(), "deactivate".to_string()],
+            "AC1.2: destination activated before source deactivated"
+        );
     }
 
     // AC5.3: activate returning 200 on already-active account (idempotent) → success
@@ -2588,24 +2632,79 @@ mod tests {
         assert_eq!(deactivate.calls(), 0, "deactivate was NOT called (ordering guarantee)");
     }
 
-    // AC4.2 gate: finalize_migration when migration_state.is_some() → MIGRATION_NOT_READY
-    #[test]
-    fn test_finalize_migration_migration_state_not_cleared_gate() {
-        // This is a logical gate: if migration_state is still Some, the identity op
-        // was not submitted (submit clears it). finalize rejects until it's cleared.
-        // This test verifies the gate logic in isolation.
+    // An IdentityArmed OutboundMigrationState with both clients populated.
+    fn armed_state(did: &str) -> OutboundMigrationState {
+        let mut s = verified_state(did);
+        s.phase = MigrationPhase::IdentityArmed;
+        s
+    }
 
-        let migration_state = Some(crate::migrate::MigrationState {
-            did: "did:plc:abc123".into(),
-            dest_oauth_client: Arc::new(
-                bearer_client_at("https://dest.pds".into()),
-            ),
+    // AC4.2: the REAL finalize_migration_core refuses while migrate::migration_state is still Some
+    // (identity op not yet submitted). No network is reached, so this is a pure test.
+    #[tokio::test]
+    async fn test_finalize_migration_core_rejects_when_identity_op_not_submitted() {
+        let did = "did:plc:abc123";
+        let orchestration = tokio::sync::Mutex::new(Some(armed_state(did)));
+        // migration_state still Some → the identity op has NOT been submitted.
+        let migration_state = tokio::sync::Mutex::new(Some(crate::migrate::MigrationState {
+            did: did.into(),
+            dest_oauth_client: Arc::new(bearer_client_at("https://dest.pds".into())),
             signed_op: None,
+        }));
+
+        let result = finalize_migration_core(&orchestration, &migration_state, did).await;
+        assert!(matches!(result, Err(MigrationError::MigrationNotReady { .. })));
+        // Phase must not advance on a failed gate.
+        assert_eq!(
+            orchestration.lock().await.as_ref().unwrap().phase,
+            MigrationPhase::IdentityArmed
+        );
+    }
+
+    // AC4.2 phase gate: finalize_migration_core before IdentityArmed → MIGRATION_NOT_READY.
+    #[tokio::test]
+    async fn test_finalize_migration_core_gate_before_identity_armed() {
+        let did = "did:plc:abc123";
+        let orchestration = tokio::sync::Mutex::new(Some(verified_state(did))); // Verified, not armed
+        let migration_state = tokio::sync::Mutex::new(None);
+
+        let result = finalize_migration_core(&orchestration, &migration_state, did).await;
+        assert!(matches!(result, Err(MigrationError::MigrationNotReady { .. })));
+    }
+
+    // AC1.2 (end-to-end via the core): armed + cleared migration_state + mock activate/deactivate
+    // → Ok AND the orchestration phase advances to Finalized.
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn test_finalize_migration_core_advances_to_finalized() {
+        let did = "did:plc:abc123";
+        let dest = MockServer::start();
+        dest.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.activateAccount");
+            then.status(200).body("{}");
+        });
+        let source = MockServer::start();
+        source.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.deactivateAccount");
+            then.status(200).body("{}");
         });
 
-        // The gate: migration_state.is_some() → error
-        let is_error = migration_state.is_some();
-        assert!(is_error, "AC4.2: if migration_state is Some, finalize should reject");
+        let mut state = armed_state(did);
+        state.dest_client = Some(Arc::new(bearer_client_at(dest.base_url())));
+        state.source_client = Some(Arc::new(bearer_client_at(source.base_url())));
+        let orchestration = tokio::sync::Mutex::new(Some(state));
+        let migration_state = tokio::sync::Mutex::new(None); // identity op already submitted
+
+        finalize_migration_core(&orchestration, &migration_state, did)
+            .await
+            .expect("finalize should succeed when armed + identity op submitted");
+
+        assert_eq!(
+            orchestration.lock().await.as_ref().unwrap().phase,
+            MigrationPhase::Finalized
+        );
     }
 
     // ── Task 3 tests: Full-pipeline integration test ────────────────────────
@@ -2628,9 +2727,6 @@ mod tests {
     async fn test_full_migration_pipeline_happy_path() {
 
         let did = "did:plc:fullpipe";
-        let source_url: String;
-        let dest_url: String;
-        let plc_url: String;
 
         // The identity leg (build_migration_op) self-signs with the per-DID device key, which must
         // be registered first (IdentityStore/Keychain) and must be rotationKeys[0] in the current
@@ -2645,13 +2741,13 @@ mod tests {
 
         // ─ Set up three MockServers (source, dest, plc.directory) ─
         let source = MockServer::start();
-        source_url = source.base_url();
+        let source_url = source.base_url();
 
         let dest = MockServer::start();
-        dest_url = dest.base_url();
+        let dest_url = dest.base_url();
 
         let plc = MockServer::start();
-        plc_url = plc.base_url();
+        let plc_url = plc.base_url();
 
         // ─ Mock dest.reserveSigningKey ─
         dest.mock(|when, then| {
@@ -2804,9 +2900,8 @@ mod tests {
         let pds_client = crate::pds_client::PdsClient::new_for_test(plc_url.clone());
 
         let source_client = Arc::new(bearer_client_at(source_url.clone()));
-        let dest_client_created = Arc::new(bearer_client_at(dest_url.clone()));
 
-        // ─ Step 1: create_destination_account_impl ─
+        // ─ Step 1: create_destination_account_impl (returns the real dest Bearer client) ─
         let dest_result = create_destination_account_impl(
             &pds_client,
             &source_client,
@@ -2934,9 +3029,9 @@ mod tests {
         );
     }
 
-    // AC5.4: Abort before identity leg — verify dest stays deactivated (coherent state)
-    // Simulates: prepare → create dest account → transfer repo → blobs → prefs → verify
-    // Then STOP (do NOT arm_identity_leg or finalize). Assert activateAccount never hit.
+    // AC5.4: Abort before the identity leg — verify the dest stays deactivated (coherent state).
+    // Drives: create dest account → transfer repo → blobs → prefs → verify, then STOPS (no
+    // arm_identity_leg / finalize). Asserts activateAccount is never hit.
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
     async fn test_full_migration_abort_before_identity_leg_leaves_dest_deactivated() {
