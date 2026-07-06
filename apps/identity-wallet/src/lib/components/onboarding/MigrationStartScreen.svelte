@@ -79,11 +79,27 @@
     retryMessage = null;
 
     try {
-      const decision = await detectMigrationPath(did);
+      // Track which call threw by catching each separately — detect and prepare share the
+      // `{ code, message? }` shape, so disambiguating by shape after the fact mislabels a
+      // detect failure as a prepare failure (and vice versa).
+      let decision: MigrationPathDecision;
+      try {
+        decision = await detectMigrationPath(did);
+      } catch (raw: unknown) {
+        console.error('Migration path detection failed:', raw);
+        error = describeDetectError(raw);
+        return;
+      }
 
       switch (decision.path) {
         case 'self_signed':
-          await prepareMigration(did, destPdsUrl.trim());
+          try {
+            await prepareMigration(did, destPdsUrl.trim());
+          } catch (raw: unknown) {
+            console.error('Migration preparation failed:', raw);
+            error = describePrepareError(raw);
+            return;
+          }
           onnext({
             destPdsUrl: destPdsUrl.trim(),
             email: email.trim(),
@@ -99,15 +115,6 @@
           retryMessage =
             "Couldn't verify this identity's keys — check your connection and try again.";
           break;
-      }
-    } catch (raw: unknown) {
-      console.error('Migration path detection/preparation failed:', raw);
-      error = describeDetectError(raw);
-      // prepareMigration failures reuse MigrationError codes, which overlap in shape
-      // with MigrateError (both are `{ code, message? }`) — the same describer covers
-      // both since the messages are generic-enough fallbacks per code.
-      if (isCodedError(raw) && 'message' in raw) {
-        error = describePrepareError(raw);
       }
     } finally {
       checking = false;

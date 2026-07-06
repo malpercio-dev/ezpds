@@ -114,6 +114,10 @@
   }
 
   async function runLeg(id: LegId, fn: () => Promise<void>) {
+    // Resume, don't repeat: a Retry after a mid-flow failure must not re-run legs that already
+    // succeeded — re-importing the repo would 409 and re-creating the account can trip
+    // DESTINATION_CONFLICT. Completed legs stay 'done' and are skipped.
+    if (legStates[id] === 'done') return;
     legStates[id] = 'active';
     await fn();
     legStates[id] = 'done';

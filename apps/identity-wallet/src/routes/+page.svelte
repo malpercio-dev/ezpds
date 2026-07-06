@@ -28,7 +28,7 @@
   import RecoveryInfoScreen from '$lib/components/home/RecoveryInfoScreen.svelte';
   import AlertDetailScreen from '$lib/components/home/AlertDetailScreen.svelte';
   import RecoveryOverrideScreen from '$lib/components/home/RecoveryOverrideScreen.svelte';
-  import { createAccount, registerCreatedIdentity, listIdentities, checkIdentityStatus, type CreateAccountError, type OAuthError, type HomeData, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type UnauthorizedChange, type MigrationPathDecision, type AccountStatus, type MigrationError } from '$lib/ipc';
+  import { createAccount, registerCreatedIdentity, listIdentities, checkIdentityStatus, type CreateAccountError, type OAuthError, type HomeData, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type UnauthorizedChange } from '$lib/ipc';
   import { normalizePlcDocToW3c } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
@@ -111,14 +111,13 @@
   let selectedRecoveryCreatedAt = $state<string | null>(null);
 
   // ── Migration flow state ──────────────────────────────────────────────────
+  // Each migration screen owns its own transient error/progress display; the page only threads
+  // the values a later screen consumes (destination + email for the flow, the result for success).
   let migrationDid = $state('');
   let migrationEmail = $state('');
   let migrationInviteCode = $state<string | undefined>(undefined);
   let migrationDestPds = $state('');
-  let migrationDecision = $state<MigrationPathDecision | null>(null);
-  let migrationVerifyStatus = $state<AccountStatus | null>(null);
   let migrationResult = $state<ClaimResult | null>(null);
-  let migrationError = $state<MigrationError | null>(null);
 
   // ── Navigation helpers ───────────────────────────────────────────────────
 
@@ -406,7 +405,6 @@
       onmigrate={selectedDeviceKeyIsRoot === true
         ? () => {
             migrationDid = selectedDid ?? '';
-            migrationError = null;
             goTo('migration_start');
           }
         : undefined}
@@ -415,11 +413,10 @@
   {:else if step === 'migration_start'}
     <MigrationStartScreen
       did={migrationDid}
-      onnext={({ destPdsUrl, email, inviteCode, decision }) => {
+      onnext={({ destPdsUrl, email, inviteCode }) => {
         migrationDestPds = destPdsUrl;
         migrationEmail = email;
         migrationInviteCode = inviteCode;
-        migrationDecision = decision;
         goTo('migration_source_auth');
       }}
       onback={() => goTo('identity_detail')}
@@ -437,14 +434,10 @@
       did={migrationDid}
       email={migrationEmail}
       inviteCode={migrationInviteCode}
-      onnext={(status) => {
-        migrationVerifyStatus = status;
-        goTo('migration_review');
-      }}
-      onerror={(err) => {
-        migrationError = err;
-        // Stay on the progress screen — it surfaces the error inline with its own
-        // Retry action, rather than silently rewinding to source auth.
+      onnext={() => goTo('migration_review')}
+      onerror={() => {
+        // Stay on the progress screen — it surfaces the error inline and offers Retry itself,
+        // rather than rewinding. The parent has nothing to do on a per-leg failure.
       }}
     />
 

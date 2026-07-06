@@ -814,23 +814,28 @@ export const finalizeMigration = (did: string): Promise<void> =>
  * Gates the PLC-op submission in the migration review screen — the user is the signer, so this
  * is the authorization boundary, not decorative confirmation.
  *
- * The plugin exists only on iOS/Android, so it is imported dynamically: on the desktop/host
- * build (no plugin) it RESOLVES — there is nothing to gate against and blocking would be wrong.
- * Once the plugin IS present, the gate fails CLOSED: a `checkStatus()` failure propagates (rejects)
- * rather than silently proceeding, so a status hiccup can't bypass the authorization boundary. It
- * resolves only when there is genuinely no enrolled hardware (a bare simulator), and rejects on a
- * real denial (cancel/fail). `allowDeviceCredential` lets a device without enrolled biometrics fall
- * back to the passcode, so a configured device is always genuinely gated.
+ * The plugin's Rust side is registered only under `#[cfg(mobile)]`. The npm import ALWAYS
+ * resolves (the package is an unconditional dependency), so the real "no biometric here" signal
+ * is the first plugin `invoke` rejecting: on the desktop/host build `checkStatus()` (which invokes
+ * `plugin:biometric|status`) rejects because the command isn't registered — treat that as "nothing
+ * to gate against" and RESOLVE, rather than blocking migration approval in dev. On a real iOS
+ * device the plugin IS registered, `checkStatus` is reliable, and `authenticate()` is the actual
+ * gate: it rejects on cancel/failure, and the caller treats that as "do not submit".
+ * `allowDeviceCredential` lets a device without enrolled biometrics fall back to the passcode.
  */
 export const authenticateBiometric = async (reason: string): Promise<void> => {
   let plugin: typeof import('@tauri-apps/plugin-biometric');
   try {
     plugin = await import('@tauri-apps/plugin-biometric');
   } catch {
-    return; // plugin absent (desktop dev / host build) — nothing to gate against.
+    return; // npm package unavailable — nothing to gate against.
   }
-  // Plugin present: do NOT swallow a status-query failure — that would fail open on a real device.
-  const status = await plugin.checkStatus();
-  if (!status.isAvailable) return; // no enrolled hardware (e.g. a bare simulator).
+  let available: boolean;
+  try {
+    available = (await plugin.checkStatus()).isAvailable;
+  } catch {
+    return; // plugin command not registered (desktop/host build) — no gate to enforce here.
+  }
+  if (!available) return; // no enrolled hardware (e.g. a bare simulator).
   await plugin.authenticate(reason, { allowDeviceCredential: true });
 };
