@@ -29,8 +29,8 @@ Two smaller, independent pieces round out the ticket alongside resolution. First
 - **oauth-scopes-permission-sets.AC2.1 Success:** A well-formed permission-set record with `repo`/`rpc`/`blob`/`account`/`identity` entries expands to the exact canonical scope string those entries represent.
 - **oauth-scopes-permission-sets.AC2.2 Failure:** A permission-set record that fails to deserialize (malformed/unexpected JSON shape) fails resolution.
 - **oauth-scopes-permission-sets.AC2.3 Failure:** A permission-set record containing a `blob:*/*`-equivalent entry fails resolution.
-- **oauth-scopes-permission-sets.AC2.4 Success:** A permission-set record containing a nested `include:` reference to another permission set resolves up to 3 levels deep.
-- **oauth-scopes-permission-sets.AC2.5 Failure:** A nested `include:` chain exceeding the depth cap fails resolution.
+- **oauth-scopes-permission-sets.AC2.4 Success:** An `rpc` permission entry marked `inheritAud: true` receives the audience supplied by the `include:` token's own `?aud=` parameter when expanded.
+- **oauth-scopes-permission-sets.AC2.5 Failure:** An `rpc` permission entry marked `inheritAud: true` with no `aud` available (neither a literal one on the entry nor one supplied on the `include:` token) fails resolution.
 
 ### oauth-scopes-permission-sets.AC3: Resolved permission sets are cached
 - **oauth-scopes-permission-sets.AC3.1 Success:** A second request for the same `include:` token within the positive TTL window returns the cached result with no additional network calls.
@@ -99,9 +99,9 @@ Resolution chain per `include:` token, reusing existing identity-resolution prim
 3. **DID → DID document**: `identity_resolution::resolve_did_document(state, &authority_did)`, reused unmodified.
 4. **Service endpoint**: extract the PDS `serviceEndpoint` from the document's `service` array, same lookup shape as `resolve_atproto_proxy_target`.
 5. **SSRF guard**: the resolved endpoint is attacker-influenced (the NSID comes from the client's requested scope string), so it goes through `identity_resolution::validate_proxy_endpoint` before any fetch — the same guard the moderation-proxy branch uses for its caller-supplied target.
-6. **XRPC fetch**: `com.atproto.repo.getRecord` against that (pinned) endpoint via `state.http_client`, fetching the permission-set's Lexicon schema record.
+6. **XRPC fetch**: `com.atproto.repo.getRecord` against that (pinned) endpoint via `state.http_client`, with `collection: "com.atproto.lexicon.schema"` and `rkey: <nsid>` — the confirmed convention for fetching a Lexicon schema record once its authority is known.
 
-**Permission-set parsing & expansion.** The fetched record's `defs.main.permissions[]` array is walked; each entry (`resource: repo/rpc/blob/account/identity` + its fields) is rendered into the same canonical scope-string form `oauth_scopes.rs::format_scope` already produces, then the reconstructed set is fed back through `normalize_scope_request` for validation — reusing existing grammar code rather than re-deriving it. Two fail-closed rules on the whole resolved set (not per-entry skip): a `blob:*/*`-equivalent entry is invalid inside a permission set (per spec) and rejects the set; a nested `include:` entry recurses up to a fixed depth cap (3) to allow composed sets while bounding cycles/DoS.
+**Permission-set parsing & expansion.** The fetched record's `defs.main.permissions[]` array is walked; each entry (`resource: repo/rpc/blob/account/identity` + its fields) is rendered into the same canonical scope-string form `oauth_scopes.rs::format_scope` already produces, then the reconstructed set is fed back through `normalize_scope_request` for validation — reusing existing grammar code rather than re-deriving it. An `rpc` entry marked `inheritAud: true` takes its `aud` from the `include:` token's own `?aud=` parameter rather than a literal value on the entry (confirmed: `include:` composition, not a JSON field, is how atproto expresses nesting — there is no separate "nested permission set" shape to recurse into). One fail-closed rule on the whole resolved set (not per-entry skip): a `blob:*/*`-equivalent entry is invalid inside a permission set (per spec) and rejects the set.
 
 **Caching.** In-memory only, held in `AppState`, shaped like the DPoP nonce store (`auth/dpop.rs`): `Mutex<HashMap<String, CacheEntry>>` keyed on the full `include:` token (NSID + `aud`), where `CacheEntry` is `Resolved { scopes, resolved_at }` or `Failed { failed_at }`. TTL policy follows the finalized spec: serve a `Resolved` entry for up to 24h before re-resolving; hard-expire at 90 days; never resolve more often than an access token's lifetime requires. A `Failed` entry is cached for 60s to absorb repeated submissions against a broken authority without hammering it. No background refresh task — resolution happens synchronously inline in the request path, matching how DID/PLC-directory resolution already works inline in this same request.
 
@@ -154,11 +154,11 @@ No divergences from existing patterns — every load-bearing piece of this desig
 **Goal:** Fetch the resolved endpoint's Lexicon schema record and expand it into a canonical granular-scope string.
 
 **Components:**
-- `crates/pds/src/auth/permission_sets.rs` — XRPC `com.atproto.repo.getRecord` fetch via `state.http_client`; schema deserialization (`defs.main.permissions[]`); per-entry rendering via `oauth_scopes::format_scope`; whole-set validation via `oauth_scopes::normalize_scope_request`; `blob:*/*` rejection; nested `include:` recursion with a depth cap of 3.
+- `crates/pds/src/auth/permission_sets.rs` — XRPC `com.atproto.repo.getRecord` fetch via `state.http_client` (`collection: "com.atproto.lexicon.schema"`, `rkey: <nsid>`); schema deserialization (`defs.main.permissions[]`); per-entry rendering via `oauth_scopes::format_scope`; `inheritAud` handling for `rpc` entries (audience comes from the `include:` token's `?aud=`, not a literal on the entry); whole-set validation via `oauth_scopes::normalize_scope_request`; `blob:*/*` rejection.
 
 **Dependencies:** Phase 2 (resolution chain).
 
-**Done when:** Unit tests pass for: a well-formed permission-set record expands to the expected canonical scope string; malformed/unparseable schema JSON fails closed; a `blob:*/*` entry fails closed; nested `include:` resolves up to the depth cap and fails closed past it. `oauth-scopes-permission-sets.AC2.1`–`AC2.5`.
+**Done when:** Unit tests pass for: a well-formed permission-set record expands to the expected canonical scope string; malformed/unparseable schema JSON fails closed; a `blob:*/*` entry fails closed; an `inheritAud` entry correctly takes its audience from the `include:` token; an `inheritAud` entry with no audience available fails closed. `oauth-scopes-permission-sets.AC2.1`–`AC2.5`.
 <!-- END_PHASE_3 -->
 
 <!-- START_PHASE_4 -->
@@ -204,6 +204,6 @@ No divergences from existing patterns — every load-bearing piece of this desig
 
 **Fail-closed is set-wide, not entry-wide.** Every failure mode in resolution, fetch, or parsing rejects the *entire* `include:` reference (and therefore the whole authorization request, since `normalize_scope_request` already requires all tokens to be valid) rather than silently dropping just the unresolvable piece. This matches the existing malformed-token behavior and avoids ever granting a smaller-than-requested permission set without the user knowing.
 
-**Nested `include:` depth cap is a judgment call, not a spec requirement.** The finalized spec doesn't explicitly confirm or rule out permission sets referencing other permission sets. A depth cap of 3 was chosen during design as a reasonable bound if composed sets do appear in practice, without over-building for a case that may never occur.
+**Correction from initial design (2026-07-05): no nested `include:` recursion.** The original design assumed a permission-set record could contain a nested `include:`-type entry and proposed a depth-capped recursive resolver for it. Verification against the finalized spec found this premise wrong: `include:` is exclusively a client-facing OAuth scope-string syntax, never a field inside a permission-set's own JSON. Composition instead happens via `inheritAud` on `rpc` entries, which take their audience from whatever `?aud=` the *including* scope token supplies rather than from a literal value baked into the set. This is a simplification, not a scope increase — there is no recursion to implement.
 
 **GET-path expansion failure does not block rendering.** If `include:` resolution fails during the `GET` (render) call, the consent page still renders — showing the unexpanded `include:` token rather than blocking the user from ever seeing the page. The `POST` re-runs expansion authoritatively regardless, so a transient resolution failure at render time can't result in an under- or over-broad grant; it can only make the preview less informative for that one page load.
