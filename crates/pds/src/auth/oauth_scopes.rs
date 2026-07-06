@@ -37,6 +37,46 @@ const ACCOUNT_ATTRS: [&str; 3] = ["email", "repo", "status"];
 const ACCOUNT_ACTIONS: [&str; 2] = ["read", "manage"];
 const IDENTITY_ATTRS: [&str; 2] = ["handle", "*"];
 
+/// A declarative summary of each granular resource-type prefix, for `scopes_supported` in
+/// OAuth discovery metadata. Each prefix accepts further positional/query parameters per the
+/// grammar above — the full grantable scope space is unbounded, so this summarizes it by
+/// prefix rather than enumerating every concrete value.
+const SCOPE_PREFIX_SUMMARY: [&str; 6] = [
+    "repo:*",
+    "rpc:*",
+    "blob:*/*",
+    "account:*",
+    "identity:*",
+    "include:*",
+];
+
+/// The full scope surface this server supports, for `scopes_supported` in OAuth discovery
+/// metadata (RFC 8414 / RFC 9728): the fixed/transition scopes plus the resource-prefix summary.
+pub fn supported_scopes() -> Vec<&'static str> {
+    STATIC_SCOPES
+        .iter()
+        .copied()
+        .chain(SCOPE_PREFIX_SUMMARY.iter().copied())
+        .collect()
+}
+
+/// Human-readable group heading for a scope token's resource-type prefix, for the OAuth
+/// consent screen (`routes::oauth_templates::render_permission_groups`). Kept alongside
+/// `SCOPE_PREFIX_SUMMARY` — the two lists name the same resource types — so a future resource
+/// type is at least a one-file change instead of two independently-maintained matches.
+pub(crate) fn resource_group_label(token: &str) -> &'static str {
+    match token.split(':').next().unwrap_or(token) {
+        "repo" => "Repository writes",
+        "rpc" => "Cross-service requests",
+        "blob" => "File uploads",
+        "account" => "Account settings",
+        "identity" => "Identity",
+        "transition" => "Legacy full access",
+        "include" => "Permission set",
+        _ => "Other",
+    }
+}
+
 /// Validate and canonically normalize a requested OAuth `scope` string.
 ///
 /// On success returns the canonical scope string: each token parsed and
@@ -83,7 +123,10 @@ pub fn is_atproto_oauth_scope(scope: &str) -> bool {
 
 /// Normalize a single scope token to its canonical string, or `None` if it is
 /// not a recognized/valid scope.
-fn normalize_token(token: &str) -> Option<String> {
+///
+/// `pub(super)`: also used by `auth::permission_sets` to validate/canonicalize each rendered
+/// permission-set entry through the same grammar a client-supplied token would go through.
+pub(super) fn normalize_token(token: &str) -> Option<String> {
     if STATIC_SCOPES.contains(&token) {
         return Some(token.to_string());
     }
@@ -105,15 +148,18 @@ fn normalize_token(token: &str) -> Option<String> {
 /// A scope token split into its `prefix`, optional `positional` argument, and
 /// query `params` — the structural layer shared by every resource type, mirroring
 /// the reference `ScopeStringSyntax`.
-struct ScopeSyntax {
-    prefix: String,
-    positional: Option<String>,
+///
+/// `pub(super)`: also used by `auth::permission_sets` to pull the `nsid`/`aud` back out of an
+/// already-normalized `include:` token without re-deriving this parsing.
+pub(super) struct ScopeSyntax {
+    pub(super) prefix: String,
+    pub(super) positional: Option<String>,
     /// Percent-decoded `(key, value)` pairs, in the order they appeared.
     params: Vec<(String, String)>,
 }
 
 impl ScopeSyntax {
-    fn parse(token: &str) -> ScopeSyntax {
+    pub(super) fn parse(token: &str) -> ScopeSyntax {
         let colon = token.find(':');
         let question = token.find('?');
 
@@ -172,7 +218,7 @@ impl ScopeSyntax {
 
     /// The single value for `key`. `None` if absent; `Some(None)` if present
     /// more than once (which is invalid for a single-valued param).
-    fn get_single(&self, key: &str) -> Option<Option<&str>> {
+    pub(super) fn get_single(&self, key: &str) -> Option<Option<&str>> {
         let vals = self.get_multi(key);
         match vals.len() {
             0 => None,
@@ -251,7 +297,14 @@ fn encode_component(value: &str) -> String {
 }
 
 /// Assemble a canonical scope string from its parts.
-fn format_scope(prefix: &str, positional: Option<&str>, params: &[(String, String)]) -> String {
+///
+/// `pub(super)`: also used by `auth::permission_sets` to render a resolved permission-set
+/// entry into a raw candidate token before it's passed through `normalize_token`.
+pub(super) fn format_scope(
+    prefix: &str,
+    positional: Option<&str>,
+    params: &[(String, String)],
+) -> String {
     let mut out = String::from(prefix);
     if let Some(pos) = positional {
         out.push(':');

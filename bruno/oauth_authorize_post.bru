@@ -23,3 +23,14 @@ body:form-urlencoded {
 vars:pre-request {
   baseUrl: http://localhost:8080
 }
+
+docs {
+  # POST /oauth/authorize (Approve)
+
+  `granted_scope` (repeatable, optional): the consent screen renders every non-`atproto`
+  permission in `scope` as a checked-by-default checkbox named `granted_scope`. Submit one
+  `granted_scope=<token>` per permission the user left checked; omit entirely if none are
+  checked. `atproto` is never a checkbox and is always granted regardless of `granted_scope`.
+  Any `granted_scope` value that isn't actually present in `scope` (after `include:<nsid>`
+  expansion) is ignored — it can only narrow the grant, never widen it.
+}

@@ -170,6 +170,29 @@ pub struct PinnedResolution {
     pub addrs: Vec<std::net::SocketAddr>,
 }
 
+/// Build a one-off HTTP client hardened for fetching from a caller-influenced target.
+///
+/// Always disables redirects: a `validate_proxy_endpoint` check only inspects the *first* URL,
+/// so following a redirect could sail past it onto a private/loopback/metadata address. When
+/// `pinned` is present (the host was a domain name), DNS resolution for that domain is
+/// additionally overridden to exactly the addresses already validated — without this, the
+/// client would re-resolve the domain independently at connect time, and a second DNS answer
+/// (attacker-controlled, or simply a changed record) could point at an address that was never
+/// checked. Shared by `routes::service_proxy`'s moderation-proxy branch and
+/// `auth::permission_sets`'s Lexicon-authority fetch — both face the identical
+/// "attacker names the resolution target" shape.
+pub(crate) fn build_pinned_client(
+    pinned: Option<&PinnedResolution>,
+) -> Result<reqwest::Client, reqwest::Error> {
+    let mut builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none());
+    if let Some(pin) = pinned {
+        builder = builder.resolve_to_addrs(&pin.domain, &pin.addrs);
+    }
+    builder.build()
+}
+
 /// Resolve an inbound `atproto-proxy` header (`<did>#<serviceId>`) to the upstream service it
 /// names.
 ///
@@ -242,7 +265,10 @@ pub async fn resolve_atproto_proxy_target(
 ///
 /// `allow_loopback` is a test-only relaxation (see `AppState::allow_loopback_proxy_targets`):
 /// production always passes `false`.
-async fn validate_proxy_endpoint(
+///
+/// `pub(crate)`: also reused by `auth::permission_sets` to guard the Lexicon-authority service
+/// endpoint fetch, which faces the identical "attacker names the resolution target" shape.
+pub(crate) async fn validate_proxy_endpoint(
     endpoint: &str,
     allow_loopback: bool,
 ) -> Result<Option<PinnedResolution>, ApiError> {

@@ -17,7 +17,7 @@ use reqwest::Client;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-use crate::auth::{DpopNonceStore, OAuthSigningKey};
+use crate::auth::{DpopNonceStore, OAuthSigningKey, PermissionSetCache};
 use crate::dns::{DnsProvider, TxtResolver};
 use crate::routes::account_storage::account_storage;
 use crate::routes::account_usage::account_usage;
@@ -204,6 +204,9 @@ pub struct AppState {
     /// In-memory store for server-issued DPoP nonces. Shared across all token endpoint requests.
     #[allow(dead_code)]
     pub dpop_nonces: DpopNonceStore,
+    /// In-memory cache of resolved `include:<nsid>` permission sets. Shared across all OAuth
+    /// authorize requests.
+    pub permission_set_cache: PermissionSetCache,
     /// In-memory sliding-window store for failed createSession attempts (rate limiting).
     /// Shared across all requests via Arc<Mutex<...>>.
     pub failed_login_attempts: FailedLoginStore,
@@ -661,7 +664,7 @@ pub(crate) async fn test_state() -> AppState {
 
 #[cfg(test)]
 pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
-    use crate::auth::new_nonce_store;
+    use crate::auth::{new_nonce_store, new_permission_set_cache};
     use crate::db::{open_pool, run_migrations};
     use common::{
         AppViewConfig, BlobsConfig, ChatConfig, CrawlersConfig, FirehoseConfig, IrohConfig,
@@ -755,6 +758,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
         jwt_secret: [0x42u8; 32],
         oauth_signing_keypair: test_signing_key,
         dpop_nonces,
+        permission_set_cache: new_permission_set_cache(),
         failed_login_attempts: Arc::new(Mutex::new(HashMap::new())),
         firehose,
         crawlers: Arc::new(crate::crawler::CrawlerNotifier::new(
