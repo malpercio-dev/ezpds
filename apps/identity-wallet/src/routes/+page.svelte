@@ -19,11 +19,16 @@
   import EmailVerificationScreen from '$lib/components/onboarding/EmailVerificationScreen.svelte';
   import ReviewOperationScreen from '$lib/components/onboarding/ReviewOperationScreen.svelte';
   import ClaimSuccessScreen from '$lib/components/onboarding/ClaimSuccessScreen.svelte';
+  import MigrationStartScreen from '$lib/components/onboarding/MigrationStartScreen.svelte';
+  import MigrationSourceAuthScreen from '$lib/components/onboarding/MigrationSourceAuthScreen.svelte';
+  import MigrationProgressScreen from '$lib/components/onboarding/MigrationProgressScreen.svelte';
+  import MigrationReviewScreen from '$lib/components/onboarding/MigrationReviewScreen.svelte';
+  import MigrationSuccessScreen from '$lib/components/onboarding/MigrationSuccessScreen.svelte';
   import DIDDocumentScreen from '$lib/components/home/DIDDocumentScreen.svelte';
   import RecoveryInfoScreen from '$lib/components/home/RecoveryInfoScreen.svelte';
   import AlertDetailScreen from '$lib/components/home/AlertDetailScreen.svelte';
   import RecoveryOverrideScreen from '$lib/components/home/RecoveryOverrideScreen.svelte';
-  import { createAccount, registerCreatedIdentity, listIdentities, checkIdentityStatus, type CreateAccountError, type OAuthError, type HomeData, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type UnauthorizedChange } from '$lib/ipc';
+  import { createAccount, registerCreatedIdentity, listIdentities, checkIdentityStatus, type CreateAccountError, type OAuthError, type HomeData, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type UnauthorizedChange, type MigrationPathDecision, type AccountStatus, type MigrationError } from '$lib/ipc';
   import { normalizePlcDocToW3c } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
@@ -66,7 +71,12 @@
     | 'pds_auth'
     | 'email_verification'
     | 'review_operation'
-    | 'claim_success';
+    | 'claim_success'
+    | 'migration_start'
+    | 'migration_source_auth'
+    | 'migration_progress'
+    | 'migration_review'
+    | 'migration_success';
 
   // ── State ────────────────────────────────────────────────────────────────
 
@@ -90,13 +100,25 @@
 
   let homeData = $state<HomeData | null>(null);
 
+  let selectedDid = $state<string | null>(null);
   let selectedDidDoc = $state<Record<string, unknown> | null>(null);
+  let selectedDeviceKeyIsRoot = $state<boolean | null>(null);
 
   let selectedAlertDid = $state<string | null>(null);
   let selectedAlertChanges = $state<UnauthorizedChange[]>([]);
 
   let selectedRecoveryCid = $state<string | null>(null);
   let selectedRecoveryCreatedAt = $state<string | null>(null);
+
+  // ── Migration flow state ──────────────────────────────────────────────────
+  let migrationDid = $state('');
+  let migrationEmail = $state('');
+  let migrationInviteCode = $state<string | undefined>(undefined);
+  let migrationDestPds = $state('');
+  let migrationDecision = $state<MigrationPathDecision | null>(null);
+  let migrationVerifyStatus = $state<AccountStatus | null>(null);
+  let migrationResult = $state<ClaimResult | null>(null);
+  let migrationError = $state<MigrationError | null>(null);
 
   // ── Navigation helpers ───────────────────────────────────────────────────
 
@@ -364,8 +386,10 @@
   {:else if step === 'home'}
     <IdentityListHome
       onadd={() => goTo('mode_select')}
-      onselect={(_did, didDoc) => {
+      onselect={(did, didDoc, deviceKeyIsRoot) => {
+        selectedDid = did;
         selectedDidDoc = didDoc;
+        selectedDeviceKeyIsRoot = deviceKeyIsRoot;
         goTo('identity_detail');
       }}
       onalert={(did, changes) => {
@@ -379,6 +403,66 @@
     <DIDDocumentScreen
       didDoc={selectedDidDoc ? normalizePlcDocToW3c(selectedDidDoc) : {}}
       onback={() => goTo('home')}
+      onmigrate={selectedDeviceKeyIsRoot === true
+        ? () => {
+            migrationDid = selectedDid ?? '';
+            migrationError = null;
+            goTo('migration_start');
+          }
+        : undefined}
+    />
+
+  {:else if step === 'migration_start'}
+    <MigrationStartScreen
+      did={migrationDid}
+      onnext={({ destPdsUrl, email, inviteCode, decision }) => {
+        migrationDestPds = destPdsUrl;
+        migrationEmail = email;
+        migrationInviteCode = inviteCode;
+        migrationDecision = decision;
+        goTo('migration_source_auth');
+      }}
+      onback={() => goTo('identity_detail')}
+    />
+
+  {:else if step === 'migration_source_auth'}
+    <MigrationSourceAuthScreen
+      did={migrationDid}
+      onnext={() => goTo('migration_progress')}
+      onback={() => goTo('migration_start')}
+    />
+
+  {:else if step === 'migration_progress'}
+    <MigrationProgressScreen
+      did={migrationDid}
+      email={migrationEmail}
+      inviteCode={migrationInviteCode}
+      onnext={(status) => {
+        migrationVerifyStatus = status;
+        goTo('migration_review');
+      }}
+      onerror={(err) => {
+        migrationError = err;
+        // Stay on the progress screen — it surfaces the error inline with its own
+        // Retry action, rather than silently rewinding to source auth.
+      }}
+    />
+
+  {:else if step === 'migration_review'}
+    <MigrationReviewScreen
+      did={migrationDid}
+      onnext={(result) => {
+        migrationResult = result;
+        goTo('migration_success');
+      }}
+      oncancel={() => goTo('identity_detail')}
+    />
+
+  {:else if step === 'migration_success'}
+    <MigrationSuccessScreen
+      result={migrationResult!}
+      destPdsLabel={migrationDestPds}
+      ondone={() => goTo('home')}
     />
 
   {:else if step === 'did_document'}

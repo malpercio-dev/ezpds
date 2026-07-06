@@ -4,9 +4,13 @@
   let {
     didDoc,
     onback,
+    onmigrate,
   }: {
     didDoc: Record<string, unknown>;
     onback: () => void;
+    /** Only passed when the device key is the DID's root rotation key — gates the
+     *  wallet-authorized outbound migration entry point (ADR-0002 path 1). */
+    onmigrate?: () => void;
   } = $props();
 
   let showRaw = $state(false);
@@ -108,6 +112,10 @@
 
   {#if showRaw}
     <pre class="raw">{rawJson}</pre>
+  {/if}
+
+  {#if onmigrate}
+    <button class="migrate" onclick={onmigrate}>Migrate to another PDS</button>
   {/if}
 </div>
 
@@ -242,5 +250,18 @@
     white-space: pre;
     word-break: normal;
     margin: 0;
+  }
+
+  .migrate {
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-md);
+    padding: 10px var(--space-md);
+    font-family: var(--font-sans);
+    font-size: var(--text-label);
+    font-weight: var(--weight-semibold);
+    color: var(--color-accent);
+    cursor: pointer;
+    text-align: center;
   }
 </style>

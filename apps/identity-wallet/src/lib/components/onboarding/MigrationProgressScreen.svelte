@@ -1,0 +1,284 @@
+<script lang="ts">
+  import {
+    createDestinationAccount,
+    transferRepo,
+    transferBlobs,
+    transferPreferences,
+    verifyImport,
+    type AccountStatus,
+    type MigrationError,
+  } from '$lib/ipc';
+  import { isCodedError } from '$lib/did-doc-utils';
+  import Spinner from '$lib/components/ui/Spinner.svelte';
+  import Button from '$lib/components/ui/Button.svelte';
+
+  let {
+    did,
+    email,
+    inviteCode,
+    onnext,
+    onerror,
+  }: {
+    did: string;
+    email: string;
+    inviteCode?: string;
+    onnext: (status: AccountStatus) => void;
+    onerror: (err: MigrationError) => void;
+  } = $props();
+
+  type LegId = 'account' | 'repo' | 'blobs' | 'preferences' | 'verify';
+  type LegState = 'pending' | 'active' | 'done' | 'failed';
+
+  const LEGS: { id: LegId; label: string }[] = [
+    { id: 'account', label: 'Create destination account' },
+    { id: 'repo', label: 'Transfer repository' },
+    { id: 'blobs', label: 'Transfer blobs' },
+    { id: 'preferences', label: 'Transfer preferences' },
+    { id: 'verify', label: 'Verify destination' },
+  ];
+
+  let legStates = $state<Record<LegId, LegState>>({
+    account: 'pending',
+    repo: 'pending',
+    blobs: 'pending',
+    preferences: 'pending',
+    verify: 'pending',
+  });
+
+  // The failed leg's error message, surfaced inline (CodeRabbit fix: don't rely solely
+  // on the caller rewinding via onerror — show the failure here with a Retry action).
+  let failure = $state<string | null>(null);
+
+  function statusGlyph(state: LegState): string {
+    switch (state) {
+      case 'pending':
+        return '○';
+      case 'active':
+        return '◐';
+      case 'done':
+        return '✓';
+      case 'failed':
+        return '✕';
+    }
+  }
+
+  function statusWord(state: LegState): string {
+    switch (state) {
+      case 'pending':
+        return 'Waiting';
+      case 'active':
+        return 'In progress';
+      case 'done':
+        return 'Done';
+      case 'failed':
+        return 'Failed';
+    }
+  }
+
+  function describeError(raw: unknown): string {
+    if (isCodedError(raw)) {
+      const err = raw as MigrationError;
+      switch (err.code) {
+        case 'DESTINATION_UNREACHABLE':
+          return "Couldn't reach the destination PDS.";
+        case 'SOURCE_AUTH_FAILED':
+          return 'Your source-PDS session expired. Please sign in again.';
+        case 'SERVICE_AUTH_FAILED':
+          return "Couldn't authorize with the destination PDS.";
+        case 'ACCOUNT_CREATION_FAILED':
+          return "Couldn't create the account on the destination PDS.";
+        case 'DESTINATION_CONFLICT':
+          return 'An account already exists on the destination PDS with a conflicting identity.';
+        case 'REPO_TRANSFER_FAILED':
+          return "Couldn't transfer the repository.";
+        case 'BLOB_TRANSFER_FAILED':
+          return "Couldn't transfer one or more blobs.";
+        case 'PREFERENCES_TRANSFER_FAILED':
+          return "Couldn't transfer preferences.";
+        case 'VERIFICATION_INCOMPLETE':
+          return `Import incomplete: ${err.imported}/${err.expected} blobs imported so far.`;
+        case 'NETWORK_ERROR':
+          return 'Network error. Check your connection and try again.';
+        case 'MIGRATION_NOT_READY':
+          return 'Migration is not ready yet. Please restart the migration flow.';
+        default:
+          return `Something went wrong (${err.code}).`;
+      }
+    }
+    return 'An unexpected error occurred.';
+  }
+
+  function toMigrationError(raw: unknown): MigrationError {
+    if (isCodedError(raw)) return raw as MigrationError;
+    return { code: 'NETWORK_ERROR', message: 'An unexpected error occurred.' };
+  }
+
+  async function runLeg(id: LegId, fn: () => Promise<void>) {
+    legStates[id] = 'active';
+    await fn();
+    legStates[id] = 'done';
+  }
+
+  async function runMigration() {
+    failure = null;
+    try {
+      await runLeg('account', () => createDestinationAccount(did, email, inviteCode));
+      await runLeg('repo', () => transferRepo(did));
+      await runLeg('blobs', () => transferBlobs(did));
+      await runLeg('preferences', () => transferPreferences(did));
+
+      legStates.verify = 'active';
+      const status = await verifyImport(did);
+      legStates.verify = 'done';
+
+      onnext(status);
+    } catch (raw: unknown) {
+      console.error('Migration leg failed:', raw);
+      // Mark whichever leg is still 'active' as failed.
+      for (const leg of LEGS) {
+        if (legStates[leg.id] === 'active') {
+          legStates[leg.id] = 'failed';
+        }
+      }
+
+      failure = describeError(raw);
+      onerror(toMigrationError(raw));
+    }
+  }
+
+  function retry() {
+    for (const leg of LEGS) {
+      if (legStates[leg.id] === 'failed') legStates[leg.id] = 'pending';
+    }
+    runMigration();
+  }
+
+  runMigration();
+</script>
+
+<div class="screen">
+  <div class="header">
+    <Spinner size={40} label="Migrating" />
+    <h1 class="title">Migrating your identity</h1>
+    <p class="subtitle">This can take a few minutes. Don't close the app.</p>
+  </div>
+
+  <ul class="checklist">
+    {#each LEGS as leg (leg.id)}
+      <li class="leg leg--{legStates[leg.id]}">
+        <span class="leg-glyph" aria-hidden="true">{statusGlyph(legStates[leg.id])}</span>
+        <span class="leg-body">
+          <span class="leg-label">{leg.label}</span>
+          <span class="leg-status">{statusWord(legStates[leg.id])}</span>
+        </span>
+      </li>
+    {/each}
+  </ul>
+
+  {#if failure}
+    <div class="error-box" role="alert">
+      <p class="error-text">{failure}</p>
+    </div>
+    <Button onclick={retry}>Retry</Button>
+  {/if}
+</div>
+
+<style>
+  .screen {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    padding: var(--space-xl) var(--space-lg);
+    gap: var(--space-lg);
+    overflow-y: auto;
+  }
+  .header {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: var(--space-sm);
+  }
+  .title {
+    font-family: var(--font-sans);
+    font-size: var(--text-headline);
+    line-height: var(--leading-headline);
+    font-weight: var(--weight-bold);
+    color: var(--color-ink);
+    margin: 0;
+  }
+  .subtitle {
+    font-size: var(--text-body);
+    color: var(--color-muted);
+    margin: 0;
+    max-width: 32ch;
+  }
+
+  .checklist {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+  }
+  .leg {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-sm);
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-lg);
+    padding: var(--space-sm) var(--space-md);
+  }
+  .leg-glyph {
+    font-size: var(--text-title);
+    line-height: var(--leading-headline);
+    width: 22px;
+    flex-shrink: 0;
+    text-align: center;
+    color: var(--color-muted);
+  }
+  .leg--done .leg-glyph {
+    color: var(--color-safe);
+  }
+  .leg--active .leg-glyph {
+    color: var(--color-primary-deep);
+  }
+  .leg--failed .leg-glyph {
+    color: var(--color-critical);
+  }
+  .leg-body {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+  }
+  .leg-label {
+    font-size: var(--text-body);
+    font-weight: var(--weight-semibold);
+    color: var(--color-ink);
+  }
+  .leg-status {
+    font-size: var(--text-label);
+    color: var(--color-muted);
+  }
+  .leg--done .leg-status {
+    color: var(--color-safe);
+  }
+  .leg--failed .leg-status {
+    color: var(--color-critical);
+  }
+
+  .error-box {
+    background: var(--color-critical-surface);
+    border-radius: var(--radius-md);
+    padding: var(--space-sm) var(--space-md);
+  }
+  .error-text {
+    font-size: var(--text-label);
+    color: var(--color-critical);
+    margin: 0;
+    line-height: 1.4;
+  }
+</style>

@@ -866,7 +866,7 @@ async fn register_created_identity(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .manage(oauth::AppState::new())
         .plugin(
             tauri_plugin_log::Builder::new()
@@ -877,7 +877,15 @@ pub fn run() {
         // frontend as `plugin:auth-session|start`; drives both the create-flow and claim-flow
         // PDS logins. (Replaced the deep-link + opener plugins, which depended on Safari
         // auto-launching the app from a custom-scheme redirect — which iOS blocks.)
-        .plugin(tauri_plugin_auth_session::init())
+        .plugin(tauri_plugin_auth_session::init());
+
+    // Biometric (Face ID / Touch ID) gate on the migration PLC-op submission. Mobile-only —
+    // registering it behind `#[cfg(mobile)]` keeps the macOS host build and its test suite
+    // free of a dependency they cannot compile.
+    #[cfg(mobile)]
+    let builder = builder.plugin(tauri_plugin_biometric::init());
+
+    builder
         .setup(|app| {
             // Restore PDS URL from Keychain if previously configured.
             if let Some(url) = keychain::load_pds_url() {

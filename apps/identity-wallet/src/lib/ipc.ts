@@ -808,3 +808,29 @@ export const armIdentityLeg = (did: string): Promise<void> => invoke('arm_identi
 /** Activate the destination account, then deactivate the source (in that order). */
 export const finalizeMigration = (did: string): Promise<void> =>
   invoke('finalize_migration', { did });
+
+/**
+ * Prompt for biometric authentication (Face ID / Touch ID) via `@tauri-apps/plugin-biometric`.
+ * Gates the PLC-op submission in the migration review screen — the user is the signer, so this
+ * is the authorization boundary, not decorative confirmation.
+ *
+ * The plugin exists only on iOS/Android, so it is imported dynamically: on the desktop/host
+ * build (no plugin) it RESOLVES — there is nothing to gate against and blocking would be wrong.
+ * Once the plugin IS present, the gate fails CLOSED: a `checkStatus()` failure propagates (rejects)
+ * rather than silently proceeding, so a status hiccup can't bypass the authorization boundary. It
+ * resolves only when there is genuinely no enrolled hardware (a bare simulator), and rejects on a
+ * real denial (cancel/fail). `allowDeviceCredential` lets a device without enrolled biometrics fall
+ * back to the passcode, so a configured device is always genuinely gated.
+ */
+export const authenticateBiometric = async (reason: string): Promise<void> => {
+  let plugin: typeof import('@tauri-apps/plugin-biometric');
+  try {
+    plugin = await import('@tauri-apps/plugin-biometric');
+  } catch {
+    return; // plugin absent (desktop dev / host build) — nothing to gate against.
+  }
+  // Plugin present: do NOT swallow a status-query failure — that would fail open on a real device.
+  const status = await plugin.checkStatus();
+  if (!status.isAvailable) return; // no enrolled hardware (e.g. a bare simulator).
+  await plugin.authenticate(reason, { allowDeviceCredential: true });
+};
