@@ -2626,13 +2626,22 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
     async fn test_full_migration_pipeline_happy_path() {
-        use crate::migrate::MigrationState;
-        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let did = "did:plc:fullpipe";
         let source_url: String;
         let dest_url: String;
         let plc_url: String;
+
+        // The identity leg (build_migration_op) self-signs with the per-DID device key, which must
+        // be registered first (IdentityStore/Keychain) and must be rotationKeys[0] in the current
+        // audit log for the guard to pass. Mirrors migrate.rs's build/submit test setup.
+        let store = crate::identity_store::IdentityStore;
+        let _ = store.remove_identity(did);
+        store.add_identity(did).expect("add_identity");
+        let device_key_id = store
+            .get_or_create_device_key(did)
+            .expect("device key generation")
+            .key_id;
 
         // ─ Set up three MockServers (source, dest, plc.directory) ─
         let source = MockServer::start();
@@ -2757,8 +2766,10 @@ mod tests {
                     "nullified": false,
                     "operation": {
                         "type": "plc_operation",
-                        "rotationKeys": ["did:key:zDEVICE", "did:key:zOLD"],
-                        "verificationMethods": { "atproto": "did:key:zDEVICE" },
+                        // rotationKeys[0] must be the real per-DID device key (guard: sovereignty +
+                        // authorization — the wallet key must already be in the current rotation set).
+                        "rotationKeys": [device_key_id.clone(), "did:key:zOLD"],
+                        "verificationMethods": { "atproto": "did:key:zOLDSIGN" },
                         "alsoKnownAs": ["at://alice.test"],
                         "services": { "atproto_pds": { "type": "AtprotoPersonalDataServer", "endpoint": &source_url } },
                         "prev": "bafy_prev",
@@ -2829,14 +2840,9 @@ mod tests {
             .expect("check_account_status should succeed");
         assert!(import_reconciles(&status), "import should reconcile");
 
-        // ─ Step 6: arm_identity_leg (builds migration_state) ─
-        let migration_state_val = MigrationState {
-            did: did.to_string(),
-            dest_oauth_client: dest_client.clone(),
-            signed_op: None,
-        };
-
-        // ─ Step 7: build_migration_op (dest getRecommendedDidCredentials + plc.directory audit fetch) ─
+        // ─ Step 6/7: identity leg — build_migration_op (dest getRecommendedDidCredentials +
+        //   plc.directory audit fetch). arm_identity_leg (parking migrate::MigrationState) is a
+        //   thin State mutation covered by its own gate test; here we drive the pure core. ─
         let built_op = crate::migrate::build_migration_op(&pds_client, &dest_client, did)
             .await
             .expect("build_migration_op should succeed");
@@ -2859,8 +2865,11 @@ mod tests {
         // ─ AC1.2 / AC4.2: Verify activation before deactivation ─
         assert_eq!(activate.calls(), 1, "activate must be called");
         assert_eq!(deactivate.calls(), 1, "deactivate must be called");
-        // Ordering is guaranteed by the mock setup: if deactivate were called first,
-        // its assertions would fail (different URL expectations).
+        // Ordering within finalize (activate before deactivate) is enforced by
+        // finalize_migration_impl and proven by its dedicated ordering tests; here the
+        // exactly-once plc POST (AC10.2) plus a completed run cover AC1.1/AC4.2.
+
+        let _ = store.remove_identity(did);
     }
 
     // AC5.2: Resume scenario — listMissingBlobs returns partial set on first call, then empty
@@ -2871,17 +2880,13 @@ mod tests {
         let source = MockServer::start();
         let dest = MockServer::start();
 
-        // ─ Mock dest.listMissingBlobs: first page has 2 blobs, second page empty ─
-        let mut call_count = 0;
+        // ─ First page (no cursor): the still-missing set left by a partial prior drain ─
+        // Matched only on the no-cursor request (query_param_missing) so it can't also match the
+        // cursor=c1 re-list below (overlapping mocks would be ambiguous and could loop forever).
         dest.mock(|when, then| {
             when.method(httpmock::Method::GET)
                 .path("/xrpc/com.atproto.repo.listMissingBlobs")
-                .is_true(|req| {
-                    call_count += 1;
-                    true
-                });
-            // First call: no cursor, return 2 blobs
-            // Second call: cursor=c1, return empty
+                .query_param_missing("cursor");
             then.status(200).json_body(serde_json::json!({
                 "blobs": [
                     { "cid": "cid_a", "recordUri": "at://did/1" },
@@ -2891,7 +2896,7 @@ mod tests {
             }));
         });
 
-        // ─ Second listMissingBlobs returns empty ─
+        // ─ Second listMissingBlobs (cursor=c1): drained → empty, terminates the loop ─
         dest.mock(|when, then| {
             when.method(httpmock::Method::GET)
                 .path("/xrpc/com.atproto.repo.listMissingBlobs")
