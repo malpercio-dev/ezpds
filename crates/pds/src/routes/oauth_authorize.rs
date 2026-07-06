@@ -316,17 +316,28 @@ pub async fn get_authorization(
         .unwrap_or_else(|| params.client_id.clone());
 
     // Render-only expansion: shows the user real permissions instead of an opaque `include:`
-    // reference. Best-effort — a resolution failure here falls back to the unexpanded scope
-    // rather than blocking the page; `post_authorization` re-runs expansion authoritatively
-    // regardless (hidden form fields are attacker-controllable), so this can't under- or
-    // over-grant, only make the preview less informative for this one page load.
-    let display_scope = crate::auth::permission_sets::expand_include_scopes(
+    // reference. `post_authorization` re-runs expansion authoritatively regardless of what's
+    // rendered here (hidden form fields are attacker-controllable), but a resolution failure
+    // still redirects with an error rather than falling back to the raw unexpanded scope: if the
+    // page fell back and a transient failure then cleared before the user submits,
+    // `post_authorization`'s authoritative expansion would produce granular tokens that don't
+    // match the raw `include:<nsid>` checkbox value the page rendered, and the grant-reduction
+    // filter would silently drop everything from that set — a real (if narrow) desync between
+    // what the user saw/approved and what gets granted. Failing the page outright avoids that
+    // class of bug entirely, at the cost of requiring a retry on a transient blip.
+    let display_scope = match crate::auth::permission_sets::expand_include_scopes(
         &state,
         &state.permission_set_cache,
         &params.scope,
     )
     .await
-    .unwrap_or_else(|_| params.scope.clone());
+    {
+        Ok(s) => s,
+        Err(desc) => {
+            return error_redirect(&params.redirect_uri, "invalid_scope", &desc, &params.state)
+                .into_response()
+        }
+    };
 
     Html(render_consent_page(
         &client_name,
@@ -971,19 +982,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_consent_page_escapes_xss_in_scope() {
-        // scope=<b>bold</b> URL-encoded in the request
+    async fn get_consent_page_rejects_malformed_scope_instead_of_rendering_it() {
+        // scope=<b>bold</b> URL-encoded in the request — not a valid scope (no `atproto` base,
+        // not a recognized token). `expand_include_scopes`'s embedded `normalize_scope_request`
+        // now validates the GET path's scope too (it never did before granular scopes), so this
+        // is rejected via redirect before ever reaching render — a stronger property than
+        // escaping malicious/malformed content, which is what this test used to check for.
         let url = authorize_url("").replace("scope=atproto", "scope=%3Cb%3Ebold%3C%2Fb%3E");
         let resp = get_authorize(state_with_client().await, &url).await;
-        let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
-        let html = std::str::from_utf8(&body).unwrap();
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        assert!(location.contains("error=invalid_scope"), "got: {location}");
         assert!(
-            !html.contains("<b>"),
-            "raw HTML tags must not appear in scope output"
-        );
-        assert!(
-            html.contains("&lt;b&gt;"),
-            "scope tags must be HTML-escaped"
+            !location.contains("<b>"),
+            "raw HTML tags must not appear anywhere in the response"
         );
     }
 
@@ -1730,6 +1742,26 @@ mod tests {
             !html.contains("include:app.bsky.authFull"),
             "consent page should not show the unexpanded include: reference: {html}"
         );
+    }
+
+    #[tokio::test]
+    async fn get_consent_page_redirects_invalid_scope_on_unresolvable_include_token() {
+        // No txt_resolver configured — resolution fails. The page must redirect with an error
+        // rather than falling back to rendering the raw include: token: a fallback here could
+        // desync from what post_authorization later grants if the authority becomes reachable
+        // by the time the user submits (see oauth-scopes-permission-sets design notes).
+        let state = state_with_client().await;
+        let url = authorize_url("").replace(
+            "scope=atproto",
+            &format!(
+                "scope={}",
+                super::encode_param("atproto include:app.bsky.authFull")
+            ),
+        );
+        let resp = get_authorize(state, &url).await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        assert!(location.contains("error=invalid_scope"), "got: {location}");
     }
 
     // ── Consent UI grouping + per-scope opt-out (oauth-scopes-permission-sets.AC5) ──
