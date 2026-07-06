@@ -2,7 +2,6 @@
 // Reuses account session helpers, identity/sync resolvers, and crypto primitives.
 
 import * as dagCbor from '@ipld/dag-cbor';
-import * as crypto from 'node:crypto';
 import { BASE_URL, PLC_URL } from './config.js';
 import { request, xrpc } from './http.js';
 import { ensureSession } from './account.js';
@@ -10,24 +9,6 @@ import { keypairFromHex } from './crypto.js';
 import { resolveHandleViaPds, fetchPlcDocument, pdsEndpointFromDoc } from './identity.js';
 import { getRepoCar } from './sync.js';
 import { loadState, saveState, getAccount } from './state.js';
-
-const BASE32_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567';
-
-function base32Encode(buffer) {
-  let result = '';
-  let bits = 0;
-  let value = 0;
-  for (const byte of buffer) {
-    value = (value << 8) | byte;
-    bits += 8;
-    while (bits >= 5) {
-      result += BASE32_ALPHABET[(value >>> (bits - 5)) & 0x1f];
-      bits -= 5;
-    }
-  }
-  if (bits > 0) result += BASE32_ALPHABET[(value << (5 - bits)) & 0x1f];
-  return result;
-}
 
 /**
  * Sign a PLC operation (genesis or migration) with a rotation keypair.
