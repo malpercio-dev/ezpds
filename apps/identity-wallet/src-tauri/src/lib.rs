@@ -5,6 +5,7 @@ pub mod http;
 pub mod identity_store;
 pub mod keychain;
 pub mod migrate;
+pub mod migration_orchestrator;
 pub mod oauth;
 pub mod oauth_client;
 pub mod pds_client;
