@@ -105,9 +105,12 @@ just interop migrate verify --name primary --target-pds https://target-pds.examp
 # - Repo is serveable from the target PDS
 ```
 
-**Note:** Once migration is complete, all subsequent interop commands for that
-account automatically target the new PDS (via the `pds` field in
-`.state/state.json`).
+**Note:** `migrate perform` records the new endpoint on the account (`pds` +
+`migrationStatus` in `.state/state.json`) and stores the destination session, but
+the other interop commands (`account`, `sync`, `records`, the `suite`) still target
+the configured `BASE_URL` — they do **not** yet read the per-account `pds`. Use
+`migrate verify --target-pds <url>` (which takes the destination explicitly) to
+confirm the migrated account on the new PDS.
 
 ## What the suite checks
 

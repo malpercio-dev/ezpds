@@ -46,6 +46,26 @@ async function buildMigrationOp({
 }
 
 /**
+ * Refresh the destination Bearer session against the target PDS (mirrors account.js `ensureSession`).
+ * A long transfer (large repo / many blobs) can outlast a short-lived access token, so we refresh
+ * proactively before the longest phases. Returns the (possibly) refreshed `{ accessJwt, refreshJwt }`;
+ * on any refresh failure it logs and keeps the current tokens (best-effort).
+ */
+async function refreshDestSession(destSession, targetPds) {
+  if (!destSession.refreshJwt) return destSession;
+  try {
+    const refreshed = await xrpc(targetPds, 'com.atproto.server.refreshSession', {
+      token: destSession.refreshJwt,
+      method: 'POST',
+    });
+    return { accessJwt: refreshed.accessJwt, refreshJwt: refreshed.refreshJwt };
+  } catch (err) {
+    console.error(`  ⚠ destination session refresh failed (${err.message}); using existing token`);
+    return destSession;
+  }
+}
+
+/**
  * Perform a complete outbound migration: source PDS → destination PDS.
  * Self-signs the PLC migration op with the stored rotation key.
  */
@@ -133,7 +153,11 @@ export async function performMigration({ name, targetPds, inviteCode }) {
   });
   console.error(`✓ Repo imported`);
 
-  // 7. Blob drain loop: list missing blobs on dest, fetch from source, upload to dest
+  // 7. Blob drain loop: list missing blobs on dest, fetch from source, upload to dest.
+  // Refresh the destination session first — the drain is the longest phase and may outlast the
+  // access token issued at createAccount. (Per-call 401-retry inside the loop is a further
+  // enhancement for very large accounts.)
+  destSession = await refreshDestSession(destSession, targetPds);
   console.error(`Draining blobs...`);
   let cursor = undefined;
   let blobCount = 0;
@@ -339,14 +363,23 @@ export async function verifyMigration({ name, targetPds }) {
     console.error(`  ${ok ? '✓' : '✗'} ${label}: ${detail}`);
   };
 
-  // Resolve handle → DID (should be unchanged)
-  const resolvedDid = await resolveHandleViaPds(account.handle);
-  check('handle resolves to DID', resolvedDid === account.did, resolvedDid);
+  // Resolve handle → DID (should be unchanged). Record a clean failed check on any transient
+  // error rather than throwing — this is a diagnostic tool, so all checks should report.
+  try {
+    const resolvedDid = await resolveHandleViaPds(account.handle);
+    check('handle resolves to DID', resolvedDid === account.did, resolvedDid);
+  } catch (err) {
+    check('handle resolves to DID', false, err.message);
+  }
 
   // Fetch PLC doc and verify PDS endpoint
-  const plcDoc = await fetchPlcDocument(account.did);
-  const pdsEndpoint = pdsEndpointFromDoc(plcDoc);
-  check('PLC endpoint points to target PDS', pdsEndpoint === targetPds, pdsEndpoint);
+  try {
+    const plcDoc = await fetchPlcDocument(account.did);
+    const pdsEndpoint = pdsEndpointFromDoc(plcDoc);
+    check('PLC endpoint points to target PDS', pdsEndpoint === targetPds, pdsEndpoint);
+  } catch (err) {
+    check('PLC endpoint points to target PDS', false, err.message);
+  }
 
   // Fetch repo from target PDS to verify it's serveable
   try {

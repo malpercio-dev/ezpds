@@ -702,8 +702,9 @@ export const submitMigrationOp = (did: string): Promise<ClaimResult> =>
 export type AccountStatus = {
   activated: boolean;
   validDid: boolean;
-  repoCommit?: string;
-  repoRev?: string;
+  // Rust `Option<String>` without skip_serializing_if → serializes to `null` (present, not absent).
+  repoCommit: string | null;
+  repoRev: string | null;
   /** ezpds returns "storedBlocks" (not the canonical "repoBlocks"). */
   storedBlocks: number;
   indexedRecords: number;
