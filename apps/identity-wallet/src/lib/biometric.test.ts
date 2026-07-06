@@ -51,4 +51,23 @@ describe('authenticateBiometric', () => {
 
     await expect(authenticateBiometric('reason')).rejects.toThrow();
   });
+
+  it('proceeds without gating when the plugin module cannot be imported at all', async () => {
+    // The one fail-OPEN branch: if the dynamic import itself throws, the plugin genuinely
+    // isn't loadable (there is nothing to gate against), so resolve without touching the
+    // plugin. A fresh module registry lets us swap in a throwing import factory.
+    vi.resetModules();
+    vi.doMock('@tauri-apps/plugin-biometric', () => {
+      throw new Error('module not resolvable');
+    });
+    try {
+      const { authenticateBiometric: freshGate } = await import('./ipc');
+      await expect(freshGate('reason')).resolves.toBeUndefined();
+      expect(checkStatus).not.toHaveBeenCalled();
+      expect(authenticate).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock('@tauri-apps/plugin-biometric');
+      vi.resetModules();
+    }
+  });
 });

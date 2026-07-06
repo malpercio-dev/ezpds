@@ -815,15 +815,22 @@ export const finalizeMigration = (did: string): Promise<void> =>
  * is the authorization boundary for an irreversible identity change, not decorative confirmation.
  *
  * Because it is a security boundary it must fail CLOSED. The plugin exists only on iOS/Android,
- * so it is imported dynamically: the ONLY failure treated as "no gate to enforce" is the import
- * itself throwing — off-device (desktop dev, host build) there is genuinely nothing to gate, so
- * resolve. Every other outcome propagates: a `checkStatus()` rejection on a real device (a
- * transient keystore/permission error), and `authenticate()` rejecting on cancel/failed match,
- * both reject so a momentary hiccup can never silently skip approval. `checkStatus().isAvailable
- * === false` (a bare simulator with no enrolled biometric) is the one benign "nothing to gate"
- * case and resolves. `allowDeviceCredential` lets a device without enrolled biometrics fall back
- * to the passcode. Mirrors admin-companion's `requireUserPresence`, which likewise catches only
- * the import.
+ * so it is imported dynamically. The ONLY failure treated as "no gate to enforce" is the dynamic
+ * import itself throwing — i.e. the plugin module is genuinely unloadable, so there is nothing to
+ * gate against and we resolve. Every other outcome propagates so a momentary hiccup can never
+ * silently skip approval: a `checkStatus()` rejection (a transient keystore/permission error on a
+ * real device) and an `authenticate()` rejection (operator cancel / failed match) both reject.
+ * `checkStatus().isAvailable === false` (a bare simulator with no enrolled biometric) is the one
+ * benign "nothing to gate" case and resolves. `allowDeviceCredential` lets a device without
+ * enrolled biometrics fall back to the passcode.
+ *
+ * Note the npm import is NOT itself the desktop/host signal: the package is an unconditional
+ * dependency, so off-device the import resolves and `checkStatus()` is what rejects (the Rust
+ * command is registered only under `#[cfg(mobile)]`) — which correctly fails closed. That is
+ * acceptable because this app ships iOS-only and the migration IPC path can't complete in a
+ * browser regardless; we deliberately do not add a platform-skip that would reopen the gate on a
+ * non-mobile surface. Mirrors admin-companion's `requireUserPresence`, which likewise catches
+ * only the import and lets `checkStatus()`/`authenticate()` fail closed.
  */
 export const authenticateBiometric = async (reason: string): Promise<void> => {
   let plugin: typeof import('@tauri-apps/plugin-biometric');
