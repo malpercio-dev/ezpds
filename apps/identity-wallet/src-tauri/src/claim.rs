@@ -328,6 +328,11 @@ fn map_pds_error_to_resolve(err: PdsClientError) -> ResolveError {
         PdsClientError::NetworkError { message } => ResolveError::NetworkError { message },
         PdsClientError::InvalidResponse { message } => ResolveError::NetworkError { message },
         PdsClientError::OauthFailed { message } => ResolveError::NetworkError { message },
+        // Only produced by the migration createAccount leg; not reachable from resolve, but the
+        // match is exhaustive over the shared error enum, so map it to the generic network error.
+        PdsClientError::DidAlreadyExists => ResolveError::NetworkError {
+            message: "did already exists".to_string(),
+        },
     }
 }
 

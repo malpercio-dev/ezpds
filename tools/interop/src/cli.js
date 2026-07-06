@@ -10,6 +10,7 @@ import { watchFirehose, firehoseWriteCheck } from './firehose.js';
 import { syncChecks } from './sync.js';
 import { networkChecks, relayHostStatus, appviewProfile } from './network.js';
 import { resolveTarget, followTarget, likeTargetPost, mentionTarget, cleanupInteractions } from './interact.js';
+import { performMigration, verifyMigration } from './migrate.js';
 import { runSuite } from './suite.js';
 import { loadState, statePaths } from './state.js';
 
@@ -50,6 +51,10 @@ Interactions (only against ${ALLOWED_TARGET.handle}; all writes ledgered)
   interact mention --name <n>      post mentioning them
   interact cleanup [--name <n>]    delete all ledgered interaction records
 
+Migration (requires --target-pds; needs a second PDS instance; not part of suite)
+  migrate perform --name <n> --target-pds <url>   drive outbound migration (self-signs PLC op)
+  migrate verify --name <n> --target-pds <url>    confirm handle/DID/repo resolve to new PDS
+
 Suite
   suite [--name <n>] [--no-interact] [--lifecycle]   full end-to-end run + JSON report
 
@@ -64,6 +69,8 @@ function flags(args, extra = {}) {
       name: { type: 'string' },
       handle: { type: 'string' },
       'claim-code': { type: 'string' },
+      'target-pds': { type: 'string' },
+      'invite-code': { type: 'string' },
       ephemeral: { type: 'boolean' },
       lifecycle: { type: 'boolean' },
       'no-interact': { type: 'boolean' },
@@ -178,6 +185,18 @@ async function main() {
         case 'mention': print(await mentionTarget(requireName(v))); break;
         case 'cleanup': print(await cleanupInteractions(v.name)); break;
         default: throw new Error(`unknown interact subcommand "${sub}" (resolve|follow|like|mention|cleanup)`);
+      }
+      break;
+    }
+    case 'migrate': {
+      const targetPds = v['target-pds'];
+      if (!targetPds) {
+        throw new Error('migrate requires --target-pds <url> (needs a second PDS instance; not part of `suite`)');
+      }
+      switch (sub) {
+        case 'perform': print(await performMigration({ name: requireName(v), targetPds, inviteCode: v['invite-code'] })); break;
+        case 'verify': print(await verifyMigration({ name: requireName(v), targetPds })); break;
+        default: throw new Error(`unknown migrate subcommand "${sub}" (perform|verify)`);
       }
       break;
     }

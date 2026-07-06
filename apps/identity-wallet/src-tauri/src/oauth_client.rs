@@ -7,9 +7,47 @@
 use std::sync::{Arc, Mutex};
 
 use reqwest::{Client, Response};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::oauth::{DPoPKeypair, OAuthError, OAuthSession};
+
+/// Bearer-mode token refresh response from `com.atproto.server.refreshSession`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RefreshSessionResponse {
+    access_jwt: String,
+    refresh_jwt: String,
+}
+
+/// Extract the `exp` claim from a JWT's payload.
+///
+/// Splits the token on `.`, base64url-decodes the payload segment, and parses it as JSON.
+/// Returns `None` on any failure (malformed token, missing exp, unparseable JSON, etc.).
+fn jwt_exp_claim(token: &str) -> Option<u64> {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+
+    let payload_bytes = URL_SAFE_NO_PAD.decode(parts[1]).ok()?;
+    let payload: serde_json::Value = serde_json::from_slice(&payload_bytes).ok()?;
+    payload.get("exp")?.as_u64()
+}
+
+/// How this client authenticates its XRPC requests.
+///
+/// `Dpop` is the wallet's normal OAuth mode (DPoP-bound access token + proof header,
+/// refresh via `/oauth/token`). `Bearer` is the legacy session mode used ONLY for the
+/// migrated (deactivated) destination account, whose credentials are the plain
+/// `accessJwt`/`refreshJwt` that migration-mode `createAccount` returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthMode {
+    Dpop,
+    Bearer,
+}
 
 /// Authenticated HTTP client.
 ///
@@ -24,6 +62,7 @@ pub struct OAuthClient {
     dpop: DPoPKeypair,
     session: Arc<Mutex<OAuthSession>>,
     base_url: String,
+    auth_mode: AuthMode,
 }
 
 impl OAuthClient {
@@ -41,6 +80,31 @@ impl OAuthClient {
             dpop,
             session,
             base_url,
+            auth_mode: AuthMode::Dpop,
+        })
+    }
+
+    /// Build a Bearer-session client for a migrated destination account. `access_jwt` /
+    /// `refresh_jwt` are the legacy tokens returned by migration-mode `createAccount`.
+    /// `expires_at` is derived from the access token's `exp` claim so proactive refresh works.
+    pub fn new_bearer(
+        access_jwt: String,
+        refresh_jwt: String,
+        base_url: String,
+    ) -> Result<Self, OAuthError> {
+        let expires_at = jwt_exp_claim(&access_jwt).unwrap_or(0);
+        let session = OAuthSession {
+            access_token: access_jwt,
+            refresh_token: refresh_jwt,
+            expires_at,
+            dpop_nonce: None,
+        };
+        Ok(Self {
+            inner: Client::new(),
+            dpop: DPoPKeypair::get_or_create()?,
+            session: Arc::new(Mutex::new(session)),
+            base_url,
+            auth_mode: AuthMode::Bearer,
         })
     }
 
@@ -60,6 +124,75 @@ impl OAuthClient {
         let url = format!("{}/{}", self.base_url, path.trim_start_matches('/'));
         self.execute_with_retry(reqwest::Method::POST, &url, Some(body))
             .await
+    }
+
+    /// POST `{base_url}/{path}` with a raw byte body and caller-chosen Content-Type.
+    ///
+    /// Used for binary uploads like `importRepo` (CAR format) and `uploadBlob` (arbitrary MIME type).
+    /// Branches on `auth_mode` for authentication headers (Bearer or DPoP).
+    /// For DPoP mode, retries once on `use_dpop_nonce` like `execute_with_retry`.
+    pub async fn post_bytes(
+        &self,
+        path: &str,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> Result<Response, OAuthError> {
+        // Proactive token refresh before reading the access token.
+        self.maybe_refresh_token().await?;
+
+        let url = format!("{}/{}", self.base_url, path.trim_start_matches('/'));
+        let nonce_opt = {
+            let s = self.session.lock().unwrap();
+            s.dpop_nonce.clone()
+        };
+
+        let resp = self
+            .send_bytes(&url, content_type, &body, nonce_opt.as_deref())
+            .await?;
+
+        // Bearer mode: send once, no retry on use_dpop_nonce.
+        if self.auth_mode == AuthMode::Bearer {
+            return Ok(resp);
+        }
+
+        // DPoP mode: on use_dpop_nonce, extract the server nonce and retry once.
+        if resp.status().as_u16() == 400 {
+            let maybe_nonce = resp
+                .headers()
+                .get("DPoP-Nonce")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+
+            let error_body = resp.text().await.unwrap_or_default();
+
+            let is_use_dpop_nonce = {
+                serde_json::from_str::<serde_json::Value>(&error_body)
+                    .ok()
+                    .and_then(|v| v.get("error")?.as_str().map(|e| e == "use_dpop_nonce"))
+                    .unwrap_or(false)
+            };
+
+            if is_use_dpop_nonce {
+                if let Some(fresh_nonce) = maybe_nonce {
+                    {
+                        let mut s = self.session.lock().unwrap();
+                        s.dpop_nonce = Some(fresh_nonce.clone());
+                    }
+                    tracing::debug!(nonce = %fresh_nonce, "retrying post_bytes with server DPoP nonce");
+                    return self
+                        .send_bytes(&url, content_type, &body, Some(&fresh_nonce))
+                        .await;
+                } else {
+                    tracing::error!("use_dpop_nonce response missing DPoP-Nonce header");
+                    return Err(OAuthError::NotAuthenticated);
+                }
+            } else {
+                tracing::error!(body = %error_body, "400 response without use_dpop_nonce error");
+                return Err(OAuthError::NotAuthenticated);
+            }
+        }
+
+        Ok(resp)
     }
 
     // ── Internal ──────────────────────────────────────────────────────────────
@@ -82,6 +215,11 @@ impl OAuthClient {
         let resp = self
             .send_with_dpop(&method, url, body, nonce_opt.as_deref())
             .await?;
+
+        // Bearer mode: send once, no retry on use_dpop_nonce (Bearer servers don't use nonces).
+        if self.auth_mode == AuthMode::Bearer {
+            return Ok(resp);
+        }
 
         // On use_dpop_nonce, extract the server nonce from the DPoP-Nonce header,
         // update session, and retry once.
@@ -131,7 +269,10 @@ impl OAuthClient {
         Ok(resp)
     }
 
-    /// Send a single request with `Authorization: DPoP` and `DPoP: {proof}` headers.
+    /// Send a single request with appropriate authentication headers.
+    ///
+    /// For DPoP mode: `Authorization: DPoP {token}` + `DPoP: {proof}`.
+    /// For Bearer mode: `Authorization: Bearer {token}` with no DPoP header.
     async fn send_with_dpop<B: Serialize + Sync>(
         &self,
         method: &reqwest::Method,
@@ -139,15 +280,10 @@ impl OAuthClient {
         body: Option<&B>,
         nonce: Option<&str>,
     ) -> Result<Response, OAuthError> {
-        let (access_token, ath) = {
+        let access_token = {
             let s = self.session.lock().unwrap();
-            let ath = DPoPKeypair::compute_ath(&s.access_token);
-            (s.access_token.clone(), ath)
+            s.access_token.clone()
         };
-
-        let proof = self
-            .dpop
-            .make_proof(method.as_str(), url, nonce, Some(&ath))?;
 
         let mut builder = match method {
             m if *m == reqwest::Method::GET => self.inner.get(url),
@@ -155,9 +291,23 @@ impl OAuthClient {
             _ => return Err(OAuthError::NotAuthenticated),
         };
 
-        builder = builder
-            .header("Authorization", format!("DPoP {access_token}"))
-            .header("DPoP", &proof);
+        // Branch on auth mode for header construction.
+        match self.auth_mode {
+            AuthMode::Bearer => {
+                // Bearer mode: only Authorization header, no DPoP proof.
+                builder = builder.header("Authorization", format!("Bearer {access_token}"));
+            }
+            AuthMode::Dpop => {
+                // DPoP mode: Authorization + DPoP proof with ath claim.
+                let ath = DPoPKeypair::compute_ath(&access_token);
+                let proof = self
+                    .dpop
+                    .make_proof(method.as_str(), url, nonce, Some(&ath))?;
+                builder = builder
+                    .header("Authorization", format!("DPoP {access_token}"))
+                    .header("DPoP", &proof);
+            }
+        }
 
         if let (Some(b), m) = (body, method) {
             if *m == reqwest::Method::POST {
@@ -171,15 +321,63 @@ impl OAuthClient {
         })
     }
 
+    /// Send a single POST request with raw byte body and appropriate authentication headers.
+    ///
+    /// For DPoP mode: `Authorization: DPoP {token}` + `DPoP: {proof}` with `ath` claim.
+    /// For Bearer mode: `Authorization: Bearer {token}` with no DPoP header.
+    /// The `Content-Type` header is set to the caller-provided value.
+    async fn send_bytes(
+        &self,
+        url: &str,
+        content_type: &str,
+        body: &[u8],
+        nonce: Option<&str>,
+    ) -> Result<Response, OAuthError> {
+        let access_token = {
+            let s = self.session.lock().unwrap();
+            s.access_token.clone()
+        };
+
+        let mut builder = self.inner.post(url).header("Content-Type", content_type);
+
+        // Branch on auth mode for header construction.
+        match self.auth_mode {
+            AuthMode::Bearer => {
+                // Bearer mode: only Authorization header, no DPoP proof.
+                builder = builder.header("Authorization", format!("Bearer {access_token}"));
+            }
+            AuthMode::Dpop => {
+                // DPoP mode: Authorization + DPoP proof with ath claim.
+                let ath = DPoPKeypair::compute_ath(&access_token);
+                let proof = self.dpop.make_proof("POST", url, nonce, Some(&ath))?;
+                builder = builder
+                    .header("Authorization", format!("DPoP {access_token}"))
+                    .header("DPoP", &proof);
+            }
+        }
+
+        builder.body(body.to_vec()).send().await.map_err(|e| {
+            tracing::error!(error = %e, "OAuthClient post_bytes network error");
+            OAuthError::NotAuthenticated
+        })
+    }
+
     /// Refresh the access token if it expires within the next 60 seconds.
     async fn maybe_refresh_token(&self) -> Result<(), OAuthError> {
         let should_refresh = {
             let s = self.session.lock().unwrap();
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|_| OAuthError::TokenRefreshFailed)?
-                .as_secs();
-            s.expires_at < now + 60
+            // A one-shot Bearer client (e.g. carrying a service-auth JWT) is built with an empty
+            // refresh token — it cannot refresh, so never attempt it (a refresh with an empty
+            // Bearer would fail and abort the in-flight request).
+            if s.refresh_token.is_empty() {
+                false
+            } else {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|_| OAuthError::TokenRefreshFailed)?
+                    .as_secs();
+                s.expires_at < now + 60
+            }
         };
 
         if should_refresh {
@@ -188,11 +386,23 @@ impl OAuthClient {
         Ok(())
     }
 
-    /// POST `/oauth/token` with `grant_type=refresh_token` — no `ath` claim in DPoP proof.
+    /// Refresh the access token.
     ///
-    /// Updates `self.session` with the new tokens and persists to Keychain.
+    /// For DPoP mode: POSTs `/oauth/token` with `grant_type=refresh_token` and updates
+    /// session + Keychain via `apply_token_response`.
+    ///
+    /// For Bearer mode: POSTs `/xrpc/com.atproto.server.refreshSession` with the Bearer token,
+    /// updates session **in memory only** (does not touch Keychain per design requirement).
     /// Surfaces all errors to the caller — no silent swallowing.
     pub async fn refresh_token(&self) -> Result<(), OAuthError> {
+        match self.auth_mode {
+            AuthMode::Dpop => self.refresh_token_dpop().await,
+            AuthMode::Bearer => self.refresh_token_bearer().await,
+        }
+    }
+
+    /// DPoP token refresh via `/oauth/token`.
+    async fn refresh_token_dpop(&self) -> Result<(), OAuthError> {
         let (refresh_token, nonce_opt) = {
             let s = self.session.lock().unwrap();
             (s.refresh_token.clone(), s.dpop_nonce.clone())
@@ -286,6 +496,70 @@ impl OAuthClient {
         self.apply_token_response(resp).await
     }
 
+    /// Bearer token refresh via `com.atproto.server.refreshSession`.
+    ///
+    /// Updates session **in memory only** — does NOT write to Keychain.
+    /// Bearer refresh is only used for destination accounts during migration and must not
+    /// corrupt the primary DPoP session state stored in Keychain.
+    async fn refresh_token_bearer(&self) -> Result<(), OAuthError> {
+        let refresh_token = {
+            let s = self.session.lock().unwrap();
+            s.refresh_token.clone()
+        };
+
+        let url = format!("{}/xrpc/com.atproto.server.refreshSession", self.base_url);
+        let resp = self
+            .inner
+            .post(&url)
+            .header("Authorization", format!("Bearer {refresh_token}"))
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "Bearer token refresh network error");
+                OAuthError::TokenRefreshFailed
+            })?;
+
+        if resp.status().as_u16() == 400 {
+            let body = resp.text().await.unwrap_or_default();
+            if let Ok(err) = serde_json::from_str::<serde_json::Value>(&body) {
+                if err.get("error").and_then(|e| e.as_str()) == Some("invalid_grant") {
+                    tracing::error!("Bearer refresh token invalid");
+                    return Err(OAuthError::InvalidGrant);
+                }
+            }
+            tracing::error!(body = %body, "Bearer token refresh failed");
+            return Err(OAuthError::TokenRefreshFailed);
+        }
+
+        if resp.status().as_u16() != 200 {
+            let body = resp.text().await.unwrap_or_default();
+            tracing::error!(body = %body, "Bearer token refresh failed");
+            return Err(OAuthError::TokenRefreshFailed);
+        }
+
+        let token_resp: RefreshSessionResponse = resp.json().await.map_err(|e| {
+            tracing::error!(error = %e, "Bearer token refresh response deserialization failed");
+            OAuthError::TokenRefreshFailed
+        })?;
+
+        // Bearer refresh must not persist to Keychain.
+        // Update session in memory only.
+        let expires_at = jwt_exp_claim(&token_resp.access_jwt).unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        });
+
+        let mut s = self.session.lock().unwrap();
+        s.access_token = token_resp.access_jwt;
+        s.refresh_token = token_resp.refresh_jwt;
+        s.expires_at = expires_at;
+
+        tracing::info!("Bearer access token refreshed (in-memory only)");
+        Ok(())
+    }
+
     /// Construct with a custom base URL and pre-built keypair (test use only).
     #[cfg(test)]
     pub fn new_for_test(
@@ -298,6 +572,7 @@ impl OAuthClient {
             dpop: keypair,
             session,
             base_url,
+            auth_mode: AuthMode::Dpop,
         }
     }
 
@@ -351,6 +626,27 @@ mod tests {
             expires_at: now + expires_in_secs,
             dpop_nonce: None,
         }))
+    }
+
+    /// Create a Bearer-mode test JWT with a specific exp claim.
+    fn make_bearer_jwt(exp: u64) -> String {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"ES256"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{}}}"#, exp).as_bytes());
+        // Dummy signature; jwt_exp_claim never verifies it
+        let sig = "dummy_signature";
+        format!("{}.{}.{}", header, payload, sig)
+    }
+
+    /// Create a Bearer-mode OAuthClient for testing.
+    async fn make_bearer_client(access: &str, refresh: &str, base_url: &str) -> OAuthClient {
+        OAuthClient::new_bearer(
+            access.to_string(),
+            refresh.to_string(),
+            base_url.to_string(),
+        )
+        .expect("new_bearer must succeed")
     }
 
     fn token_response_body() -> serde_json::Value {
@@ -422,8 +718,8 @@ mod tests {
         //   Mock1 (specific): first request has NO nonce in DPoP proof → 400+DPoP-Nonce
         //   Mock2 (general):  retry has nonce in proof → Mock1 won't match → Mock2 serves
         //
-        // If the retry proof omits the nonce, Mock1 matches again → Mock1.hits() would
-        // be 2 and Mock2.hits() would be 0, causing the assertion below to fail.
+        // If the retry proof omits the nonce, Mock1 matches again → Mock1.calls() would
+        // be 2 and Mock2.calls() would be 0, causing the assertion below to fail.
         let server = MockServer::start();
 
         let mock_challenge = server.mock(|when, then| {
@@ -454,12 +750,12 @@ mod tests {
         );
 
         assert_eq!(
-            mock_challenge.hits(),
+            mock_challenge.calls(),
             1,
             "initial request must hit the nonce-challenge mock"
         );
         assert_eq!(
-            mock_retry.hits(),
+            mock_retry.calls(),
             1,
             "retry must hit the success mock (nonce in proof)"
         );
@@ -601,9 +897,313 @@ mod tests {
 
         // Exactly 2 requests: initial attempt + one nonce retry.
         assert_eq!(
-            token_mock.hits(),
+            token_mock.calls(),
             2,
             "must make exactly 2 requests: initial + nonce retry"
         );
+    }
+
+    /// `when.is_true()` predicate: request must NOT have a `DPoP` header.
+    fn request_has_no_dpop_header(req: &HttpMockRequest) -> bool {
+        req.headers_vec()
+            .iter()
+            .all(|(k, _)| !k.eq_ignore_ascii_case("dpop"))
+    }
+
+    #[tokio::test]
+    async fn bearer_mode_sends_authorization_bearer_header() {
+        // Verifies: Bearer-mode client sends Authorization: Bearer {token} and no DPoP header.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let future_exp = now + 3600;
+        let access_jwt = make_bearer_jwt(future_exp);
+        // The access token IS the JWT, so the Authorization header is `Bearer {jwt}`.
+        let expected_auth = format!("Bearer {access_jwt}");
+
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/resource")
+                .header("Authorization", expected_auth.as_str())
+                .is_true(request_has_no_dpop_header);
+            then.status(200).body("ok");
+        });
+
+        let client = make_bearer_client(&access_jwt, "my_refresh_token", &server.base_url()).await;
+
+        let resp = client.get("/resource").await.expect("GET must succeed");
+        assert_eq!(resp.status().as_u16(), 200);
+    }
+
+    #[tokio::test]
+    async fn bearer_mode_does_not_retry_on_use_dpop_nonce() {
+        // Verifies: Bearer mode sends once, does not retry on 400 with DPoP-Nonce.
+        // This is a clarity/safety measure — Bearer servers never return use_dpop_nonce.
+        let server = MockServer::start();
+
+        let mock = server.mock(|when, then| {
+            when.method(GET).path("/resource");
+            then.status(400)
+                .header("DPoP-Nonce", "server-nonce")
+                .json_body(serde_json::json!({"error": "use_dpop_nonce"}));
+        });
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let future_exp = now + 3600;
+        let access_jwt = make_bearer_jwt(future_exp);
+        let client = make_bearer_client(&access_jwt, "my_refresh_token", &server.base_url()).await;
+
+        let resp = client.get("/resource").await.expect("GET must not error");
+        assert_eq!(
+            resp.status().as_u16(),
+            400,
+            "should return the 400 without retry"
+        );
+        assert_eq!(mock.calls(), 1, "must send exactly one request (no retry)");
+    }
+
+    #[tokio::test]
+    async fn bearer_mode_derives_expires_at_from_jwt_exp() {
+        // Verifies: new_bearer derives expires_at from the access JWT's exp claim.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let jwt_exp = now + 7200; // 2 hours in future
+        let access_jwt = make_bearer_jwt(jwt_exp);
+
+        let client = OAuthClient::new_bearer(
+            access_jwt,
+            "refresh_token".to_string(),
+            "http://localhost".to_string(),
+        )
+        .expect("new_bearer must succeed");
+
+        let session = client.session.lock().unwrap();
+        assert_eq!(
+            session.expires_at, jwt_exp,
+            "expires_at must match the JWT exp claim"
+        );
+    }
+
+    #[tokio::test]
+    async fn bearer_mode_falls_back_to_zero_on_invalid_jwt() {
+        // Verifies: new_bearer falls back to expires_at=0 if jwt_exp_claim fails.
+        let access_jwt = "invalid.jwt.token".to_string();
+
+        let client = OAuthClient::new_bearer(
+            access_jwt,
+            "refresh_token".to_string(),
+            "http://localhost".to_string(),
+        )
+        .expect("new_bearer must succeed");
+
+        let session = client.session.lock().unwrap();
+        assert_eq!(
+            session.expires_at, 0,
+            "expires_at must default to 0 on invalid JWT"
+        );
+    }
+
+    #[tokio::test]
+    async fn bearer_refresh_hits_refresh_session_not_oauth_token() {
+        // Verifies: Bearer client refresh uses POST /xrpc/com.atproto.server.refreshSession, not /oauth/token.
+        // Also verifies: refresh updates session in memory only (not calling Keychain store).
+        let server = MockServer::start();
+
+        // Mock the refreshSession endpoint.
+        let refresh_mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/xrpc/com.atproto.server.refreshSession")
+                .header("Authorization", "Bearer old_refresh_token");
+            then.status(200).json_body(serde_json::json!({
+                "accessJwt": "new_access_jwt",
+                "refreshJwt": "new_refresh_jwt"
+            }));
+        });
+
+        // Mock /oauth/token — should NOT be called (0 hits expected).
+        let oauth_mock = server.mock(|when, then| {
+            when.method(POST).path("/oauth/token");
+            then.status(200);
+        });
+
+        // Create a Bearer client with an expired token (expires_at = 0 forces refresh).
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let expired_jwt = make_bearer_jwt(now - 100); // Already expired
+        let client =
+            make_bearer_client(&expired_jwt, "old_refresh_token", &server.base_url()).await;
+
+        // Issue a request — should trigger lazy refresh.
+        let resp_mock = server.mock(|when, then| {
+            when.method(GET)
+                .path("/resource")
+                .header("Authorization", "Bearer new_access_jwt")
+                .is_true(request_has_no_dpop_header);
+            then.status(200).body("ok");
+        });
+
+        let resp = client.get("/resource").await.expect("GET must succeed");
+        assert_eq!(resp.status().as_u16(), 200);
+
+        // Verify refreshSession was called exactly once.
+        assert_eq!(
+            refresh_mock.calls(),
+            1,
+            "POST /xrpc/com.atproto.server.refreshSession must be called exactly once"
+        );
+
+        // Verify /oauth/token was NOT called.
+        assert_eq!(
+            oauth_mock.calls(),
+            0,
+            "POST /oauth/token must NOT be called for Bearer mode"
+        );
+
+        // Verify the follow-up request used the new access token.
+        assert_eq!(
+            resp_mock.calls(),
+            1,
+            "follow-up request must carry the new access token"
+        );
+
+        // Verify session was updated in memory with the new tokens.
+        let session = client.session.lock().unwrap();
+        assert_eq!(
+            session.access_token, "new_access_jwt",
+            "session access token must be updated"
+        );
+        assert_eq!(
+            session.refresh_token, "new_refresh_jwt",
+            "session refresh token must be updated"
+        );
+    }
+
+    #[tokio::test]
+    async fn bearer_refresh_invalid_grant_returns_invalid_grant() {
+        // Verifies: Bearer refresh 400 with invalid_grant maps to InvalidGrant, not TokenRefreshFailed.
+        let server = MockServer::start();
+
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/xrpc/com.atproto.server.refreshSession");
+            then.status(400).json_body(serde_json::json!({
+                "error": "invalid_grant",
+                "error_description": "refresh token expired"
+            }));
+        });
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let expired_jwt = make_bearer_jwt(now - 100);
+        let client =
+            make_bearer_client(&expired_jwt, "old_refresh_token", &server.base_url()).await;
+
+        let result = client.refresh_token().await;
+        assert!(
+            matches!(result, Err(OAuthError::InvalidGrant)),
+            "Bearer refresh invalid_grant must surface as InvalidGrant, got: {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn post_bytes_bearer_sends_correct_headers_and_body() {
+        // Verifies: Bearer client post_bytes sends Authorization: Bearer, Content-Type, no DPoP header, and the exact byte body.
+        let expected_bytes = b"fake CAR data blob here";
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let future_exp = now + 3600;
+        let access_jwt = make_bearer_jwt(future_exp);
+        // The access token IS the JWT, so the Authorization header is `Bearer {jwt}`.
+        let expected_auth = format!("Bearer {access_jwt}");
+
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/xrpc/com.atproto.repo.importRepo")
+                .header("Authorization", expected_auth.as_str())
+                .header("Content-Type", "application/vnd.ipld.car")
+                .is_true(request_has_no_dpop_header)
+                // Exact full-body match (httpmock's `When::body`); the payload is ASCII.
+                .body(std::str::from_utf8(expected_bytes).unwrap());
+            then.status(200).json_body(serde_json::json!({
+                "uri": "at://did:plc:abc/com.atproto.repo.blob/hash"
+            }));
+        });
+
+        let client = make_bearer_client(&access_jwt, "my_refresh_token", &server.base_url()).await;
+
+        let resp = client
+            .post_bytes(
+                "/xrpc/com.atproto.repo.importRepo",
+                "application/vnd.ipld.car",
+                expected_bytes.to_vec(),
+            )
+            .await
+            .expect("post_bytes must succeed");
+
+        assert_eq!(resp.status().as_u16(), 200, "post_bytes must return 200");
+    }
+
+    #[tokio::test]
+    async fn post_bytes_dpop_sends_authorization_and_dpop_headers() {
+        // Verifies: DPoP client post_bytes sends Authorization: DPoP, Content-Type, and DPoP header with ath claim.
+        let server = MockServer::start();
+
+        let expected_bytes = b"test blob data";
+
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/xrpc/com.atproto.repo.uploadBlob")
+                .header("Authorization", "DPoP my_access_token")
+                .header("Content-Type", "image/jpeg")
+                .header_exists("DPoP")
+                .is_true(|req| {
+                    // Verify the DPoP proof includes an ath claim.
+                    if let Some(payload) = decode_dpop_payload(req) {
+                        payload.get("ath").is_some()
+                    } else {
+                        false
+                    }
+                })
+                // Exact full-body match (httpmock's `When::body`); the payload is ASCII.
+                .body(std::str::from_utf8(expected_bytes).unwrap());
+            then.status(200).json_body(serde_json::json!({
+                "blob": {
+                    "cid": "bagxx2...",
+                    "mimeType": "image/jpeg",
+                    "size": 1024
+                }
+            }));
+        });
+
+        let keypair = DPoPKeypair::get_or_create().expect("keypair must exist");
+        let session = make_session("my_access_token", "my_refresh_token", 300);
+        let client = OAuthClient::new_for_test(keypair, session, server.base_url());
+
+        let resp = client
+            .post_bytes(
+                "/xrpc/com.atproto.repo.uploadBlob",
+                "image/jpeg",
+                expected_bytes.to_vec(),
+            )
+            .await
+            .expect("post_bytes must succeed");
+
+        assert_eq!(resp.status().as_u16(), 200, "post_bytes must return 200");
     }
 }

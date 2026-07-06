@@ -50,6 +50,16 @@ pub struct AppState {
     /// `build_migration_op_cmd` reads it, `submit_migration_op_cmd` consumes the signed op.
     /// Uses tokio::sync::Mutex because migration commands hold the lock across .await points.
     pub migration_state: tokio::sync::Mutex<Option<crate::migrate::MigrationState>>,
+    /// Outbound-migration orchestration state (in-memory only; an app kill restarts from
+    /// `prepare_migration`). Tracks the DID, source/dest PDS URLs, OAuth clients, and phase
+    /// across multiple outbound migration commands.
+    /// Uses tokio::sync::Mutex because migration orchestrator commands hold the lock across .await points.
+    pub orchestration_state:
+        tokio::sync::Mutex<Option<crate::migration_orchestrator::OutboundMigrationState>>,
+    /// Pending source-PDS OAuth login, parked between `prepare_source_auth` and
+    /// `complete_source_auth` while the ASWebAuthenticationSession runs (twin of `pending_pds_login`).
+    /// Holds the discovered auth-server metadata plus the secrets the token exchange needs.
+    pub pending_source_login: Mutex<Option<crate::migration_orchestrator::PendingSourceLogin>>,
 }
 
 impl AppState {
@@ -63,6 +73,8 @@ impl AppState {
             claim_state: tokio::sync::Mutex::new(None),
             recovery_state: tokio::sync::Mutex::new(None),
             migration_state: tokio::sync::Mutex::new(None),
+            orchestration_state: tokio::sync::Mutex::new(None),
+            pending_source_login: Mutex::new(None),
         }
     }
 

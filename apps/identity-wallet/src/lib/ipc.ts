@@ -714,3 +714,97 @@ export const buildMigrationOp = (did: string): Promise<SignedMigrationOp> =>
  */
 export const submitMigrationOp = (did: string): Promise<ClaimResult> =>
   invoke('submit_migration_op_cmd', { did });
+
+// ── migration orchestrator (wallet-authorized outbound migration) ─────────────
+
+/**
+ * Mirrors the Rust AccountStatus (GET com.atproto.server.checkAccountStatus, ezpds shape)
+ * with #[serde(rename_all = "camelCase")]. Returned by verifyImport().
+ */
+export type AccountStatus = {
+  activated: boolean;
+  validDid: boolean;
+  // Rust `Option<String>` without skip_serializing_if → serializes to `null` (present, not absent).
+  repoCommit: string | null;
+  repoRev: string | null;
+  /** ezpds returns "storedBlocks" (not the canonical "repoBlocks"). */
+  storedBlocks: number;
+  indexedRecords: number;
+  privateStateValues: number;
+  expectedBlobs: number;
+  importedBlobs: number;
+};
+
+/**
+ * Error returned by the migration orchestrator commands.
+ * Matches MigrationError in migration_orchestrator.rs with
+ * #[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")] — codes must match exactly.
+ */
+export type MigrationError =
+  | { code: 'MIGRATION_NOT_READY'; message: string }
+  | { code: 'DESTINATION_UNREACHABLE'; message: string }
+  | { code: 'SOURCE_AUTH_FAILED'; message: string }
+  | { code: 'SERVICE_AUTH_FAILED'; message: string }
+  | { code: 'ACCOUNT_CREATION_FAILED'; message: string }
+  | { code: 'DESTINATION_CONFLICT'; message: string }
+  | { code: 'REPO_TRANSFER_FAILED'; message: string }
+  | { code: 'BLOB_TRANSFER_FAILED'; message: string }
+  | { code: 'PREFERENCES_TRANSFER_FAILED'; message: string }
+  | { code: 'VERIFICATION_INCOMPLETE'; imported: number; expected: number }
+  | { code: 'ACTIVATION_FAILED'; message: string }
+  | { code: 'DEACTIVATION_FAILED'; message: string }
+  | { code: 'NETWORK_ERROR'; message: string };
+
+/**
+ * Resolve the destination + source PDS and open the migration session (in-memory).
+ * Rejects with MigrationError (e.g. DESTINATION_UNREACHABLE).
+ */
+export const prepareMigration = (did: string, destPdsUrl: string): Promise<void> =>
+  invoke('prepare_migration', { did, destPdsUrl });
+
+/**
+ * Source-PDS OAuth: prepare -> in-app auth session -> complete (mirrors startPdsAuth).
+ * Drives the ASWebAuthenticationSession via the auth-session plugin between the two Rust commands.
+ */
+export const startSourceAuth = async (did: string): Promise<void> => {
+  const prepared = await invoke<{ authUrl: string; callbackScheme: string }>('prepare_source_auth', {
+    did,
+  });
+  let callbackUrl: string;
+  try {
+    callbackUrl = await invoke<string>('plugin:auth-session|start', {
+      authUrl: prepared.authUrl,
+      callbackUrlScheme: prepared.callbackScheme,
+    });
+  } catch {
+    throw { code: 'SOURCE_AUTH_FAILED', message: 'auth session cancelled' } as MigrationError;
+  }
+  await invoke('complete_source_auth', { did, callbackUrl });
+};
+
+/** Reserve the signing key, mint service-auth, and create the deactivated destination account. */
+export const createDestinationAccount = (
+  did: string,
+  email: string,
+  inviteCode?: string,
+): Promise<void> => invoke('create_destination_account', { did, email, inviteCode });
+
+/** Export the source repo CAR and import it into the destination. */
+export const transferRepo = (did: string): Promise<void> => invoke('transfer_repo', { did });
+
+/** Drain the destination's missing-blob set from the source (cursor-paginated). */
+export const transferBlobs = (did: string): Promise<void> => invoke('transfer_blobs', { did });
+
+/** Copy the source account preferences to the destination. */
+export const transferPreferences = (did: string): Promise<void> =>
+  invoke('transfer_preferences', { did });
+
+/** Verify the import completed; resolves with the destination AccountStatus. */
+export const verifyImport = (did: string): Promise<AccountStatus> => invoke('verify_import', { did });
+
+/** Arm the reused migrate.rs identity leg with the destination Bearer client. */
+export const armIdentityLeg = (did: string): Promise<void> => invoke('arm_identity_leg', { did });
+
+/** Activate the destination account, then deactivate the source (in that order). */
+export const finalizeMigration = (did: string): Promise<void> =>
+  invoke('finalize_migration', { did });

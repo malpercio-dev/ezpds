@@ -5,6 +5,7 @@ pub mod http;
 pub mod identity_store;
 pub mod keychain;
 pub mod migrate;
+pub mod migration_orchestrator;
 pub mod oauth;
 pub mod oauth_client;
 pub mod pds_client;
@@ -940,6 +941,16 @@ pub fn run() {
             migrate::detect_migration_path_cmd,
             migrate::build_migration_op_cmd,
             migrate::submit_migration_op_cmd,
+            migration_orchestrator::prepare_migration,
+            migration_orchestrator::prepare_source_auth,
+            migration_orchestrator::complete_source_auth,
+            migration_orchestrator::create_destination_account,
+            migration_orchestrator::transfer_repo,
+            migration_orchestrator::transfer_blobs,
+            migration_orchestrator::transfer_preferences,
+            migration_orchestrator::verify_import,
+            migration_orchestrator::arm_identity_leg,
+            migration_orchestrator::finalize_migration,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

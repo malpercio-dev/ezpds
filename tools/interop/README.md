@@ -64,6 +64,54 @@ just interop suite --lifecycle             # adds ephemeral create→deactivate�
 `suite` prints a pass/fail table and writes a JSON report under
 `.state/reports/`. Exit code 0 = all steps passed.
 
+## Migration testing
+
+To test outbound migration (moving an account from one PDS to another), use the
+`migrate` command group. This requires a **second PDS instance** (a separate
+target deployment) and is **intentionally excluded from the default `suite`**.
+
+**Prerequisites:**
+- Two running PDS instances: the source (the default `EZPDS_BASE_URL`) and a
+  separate target (passed with `--target-pds`).
+- An existing account on the source PDS (create with `just interop
+  create-account --name primary`).
+
+**Commands:**
+
+```sh
+just interop migrate perform --name primary --target-pds https://target-pds.example.com
+# Executes the complete 12-step migration:
+# 1. Ensure source session
+# 2. Describe target server
+# 3. Reserve signing key on target
+# 4. Get service auth token from source
+# 5. Create account on target (with service auth)
+# 6. Import repo from source to target
+# 7. Drain blobs: list missing on target, fetch from source, upload to target
+# 8. Copy preferences
+# 9. Verify account status
+# 10. Build and sign migration PLC operation with the local rotation key
+# 11. Post signed op to plc.directory to repoint the DID
+# 12. Activate account on target + deactivate on source; persist new PDS in state
+```
+
+After migration:
+
+```sh
+just interop migrate verify --name primary --target-pds https://target-pds.example.com
+# Verifies the migration succeeded:
+# - Handle resolves to the same DID
+# - DID's plc.directory atproto_pds endpoint points to target PDS
+# - Repo is serveable from the target PDS
+```
+
+**Note:** `migrate perform` records the new endpoint on the account (`pds` +
+`migrationStatus` in `.state/state.json`) and stores the destination session, but
+the other interop commands (`account`, `sync`, `records`, the `suite`) still target
+the configured `BASE_URL` — they do **not** yet read the per-account `pds`. Use
+`migrate verify --target-pds <url>` (which takes the destination explicitly) to
+confirm the migrated account on the new PDS.
+
 ## What the suite checks
 
 | Step | What it proves |
