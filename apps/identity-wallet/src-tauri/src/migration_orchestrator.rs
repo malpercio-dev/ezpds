@@ -7,6 +7,7 @@
 
 use serde::Serialize;
 use std::sync::Arc;
+use tauri::Emitter;
 use crate::oauth_client::OAuthClient;
 
 // ── Phase enum ─────────────────────────────────────────────────────────────
@@ -1067,20 +1068,10 @@ mod tests {
         ));
     }
 
-    // AC1.3: prepare_source_auth before Resolved phase returns MIGRATION_NOT_READY
+    // prepare_source_auth gates at phase >= Resolved. Resolved is the first phase, so a
+    // "phase too low" case is impossible; the only gate failures are no-state and did-mismatch.
     #[test]
-    fn test_prepare_source_auth_phase_gate() {
-        let state = Some(OutboundMigrationState {
-            did: "did:plc:abc123".into(),
-            source_pds_url: "https://source.pds".into(),
-            dest_pds_url: "https://dest.pds".into(),
-            dest_did: "did:web:dest".into(),
-            handle: "alice.test".into(),
-            source_client: None,
-            dest_client: None,
-            phase: MigrationPhase::Resolved,
-        });
-
+    fn test_prepare_source_auth_no_state_gate() {
         // No state → gate fails
         let result = ensure_phase_did(&None, "did:plc:abc123", MigrationPhase::Resolved);
         assert!(matches!(
