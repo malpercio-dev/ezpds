@@ -815,31 +815,25 @@ export const finalizeMigration = (did: string): Promise<void> =>
  * is the authorization boundary for an irreversible identity change, not decorative confirmation.
  *
  * Because it is a security boundary it must fail CLOSED. The plugin exists only on iOS/Android,
- * so it is imported dynamically. The ONLY failure treated as "no gate to enforce" is the dynamic
- * import itself throwing — i.e. the plugin module is genuinely unloadable, so there is nothing to
- * gate against and we resolve. Every other outcome propagates so a momentary hiccup can never
- * silently skip approval: a `checkStatus()` rejection (a transient keystore/permission error on a
- * real device) and an `authenticate()` rejection (operator cancel / failed match) both reject.
- * `checkStatus().isAvailable === false` (a bare simulator with no enrolled biometric) is the one
- * benign "nothing to gate" case and resolves. `allowDeviceCredential` lets a device without
- * enrolled biometrics fall back to the passcode.
+ * so it is imported dynamically. The ONLY case we skip is the dynamic import itself throwing —
+ * the plugin module is genuinely unloadable (a host build with no plugin), so there is nothing
+ * to gate against and we resolve. Whenever the plugin IS present we ALWAYS run `authenticate()`:
+ * it presents Face ID / Touch ID, or — via `allowDeviceCredential` — the device passcode, and
+ * rejects on cancel/failure so the caller aborts the submission.
  *
- * Note the npm import is NOT itself the desktop/host signal: the package is an unconditional
- * dependency, so off-device the import resolves and `checkStatus()` is what rejects (the Rust
- * command is registered only under `#[cfg(mobile)]`) — which correctly fails closed. That is
- * acceptable because this app ships iOS-only and the migration IPC path can't complete in a
- * browser regardless; we deliberately do not add a platform-skip that would reopen the gate on a
- * non-mobile surface. Mirrors admin-companion's `requireUserPresence`, which likewise catches
- * only the import and lets `checkStatus()`/`authenticate()` fail closed.
+ * We deliberately do NOT pre-check `checkStatus().isAvailable` and skip when it is false: on iOS
+ * that flag is false when biometrics aren't *enrolled* even though the device still has a
+ * passcode that `authenticate()` would gate on, so skipping there would drop the approval gate on
+ * a real device. `authenticate()` alone is the authoritative gate. (A simulator with neither an
+ * enrolled biometric nor a passcode set will reject here and block — enroll one to test the
+ * flow.)
  */
 export const authenticateBiometric = async (reason: string): Promise<void> => {
   let plugin: typeof import('@tauri-apps/plugin-biometric');
   try {
     plugin = await import('@tauri-apps/plugin-biometric');
   } catch {
-    return; // plugin not present (desktop dev / host build) — nothing to gate against.
+    return; // plugin module not loadable (host build) — nothing to gate against.
   }
-  const { isAvailable } = await plugin.checkStatus();
-  if (!isAvailable) return; // no enrolled hardware (e.g. a bare simulator) — nothing to gate.
   await plugin.authenticate(reason, { allowDeviceCredential: true });
 };
