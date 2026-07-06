@@ -194,7 +194,7 @@ async function main() {
         throw new Error('migrate requires --target-pds <url> (needs a second PDS instance; not part of `suite`)');
       }
       switch (sub) {
-        case 'perform': print(await performMigration({ name: requireName(v), targetPds })); break;
+        case 'perform': print(await performMigration({ name: requireName(v), targetPds, inviteCode: v['invite-code'] })); break;
         case 'verify': print(await verifyMigration({ name: requireName(v), targetPds })); break;
         default: throw new Error(`unknown migrate subcommand "${sub}" (perform|verify)`);
       }

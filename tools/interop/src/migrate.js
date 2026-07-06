@@ -3,7 +3,7 @@
 
 import * as dagCbor from '@ipld/dag-cbor';
 import { BASE_URL, PLC_URL } from './config.js';
-import { request, xrpc } from './http.js';
+import { request, xrpc, sleep } from './http.js';
 import { ensureSession } from './account.js';
 import { keypairFromHex } from './crypto.js';
 import { resolveHandleViaPds, fetchPlcDocument, pdsEndpointFromDoc } from './identity.js';
@@ -49,7 +49,7 @@ async function buildMigrationOp({
  * Perform a complete outbound migration: source PDS → destination PDS.
  * Self-signs the PLC migration op with the stored rotation key.
  */
-export async function performMigration({ name, targetPds }) {
+export async function performMigration({ name, targetPds, inviteCode }) {
   const state = loadState();
   const sourceAccount = getAccount(state, name);
 
@@ -93,6 +93,7 @@ export async function performMigration({ name, targetPds }) {
         handle: source.handle,
         email: source.email,
         did: source.did,
+        ...(inviteCode ? { inviteCode } : {}),
       },
     });
     destSession = createResp;
@@ -149,8 +150,9 @@ export async function performMigration({ name, targetPds }) {
       const blobCid = blobMissing.cid;
       const mimeType = blobMissing.mimeType;
 
-      // Fetch from source (no auth)
-      const blobBytes = await request(`${BASE_URL}/xrpc/com.atproto.sync.getBlob`, {
+      // Fetch from source (no auth). Must go through xrpc(), which serializes params into the
+      // query string — request() ignores `params`, so the did/cid would be dropped.
+      const blobBytes = await xrpc(BASE_URL, 'com.atproto.sync.getBlob', {
         raw: true,
         params: { did: source.did, cid: blobCid },
       });
@@ -179,29 +181,46 @@ export async function performMigration({ name, targetPds }) {
   const sourcePrefs = await xrpc(BASE_URL, 'app.bsky.actor.getPreferences', {
     token: source.accessJwt,
   });
-  await xrpc(targetPds, 'app.bsky.actor.putPreferences', {
-    token: destSession.accessJwt,
-    method: 'POST',
-    body: { preferences: sourcePrefs.preferences },
-  });
-  console.error(`✓ Preferences copied`);
+  const preferences = sourcePrefs.preferences ?? [];
+  if (preferences.length > 0) {
+    await xrpc(targetPds, 'app.bsky.actor.putPreferences', {
+      token: destSession.accessJwt,
+      method: 'POST',
+      body: { preferences },
+    });
+    console.error(`✓ Preferences copied (${preferences.length})`);
+  } else {
+    console.error(`✓ No source preferences to copy`);
+  }
 
-  // 9. Check account status on dest
-  const destStatus = await xrpc(targetPds, 'com.atproto.server.getAccountStatus', {
+  // 9. Verify the import completed on the destination (NSID is checkAccountStatus, not
+  //    getAccountStatus). Blobs must all be imported and the repo must be committed.
+  const destStatus = await xrpc(targetPds, 'com.atproto.server.checkAccountStatus', {
     token: destSession.accessJwt,
   });
-  console.error(`✓ Account status verified (repoCommit: ${destStatus.repoCommit})`);
+  if (destStatus.importedBlobs !== destStatus.expectedBlobs || !destStatus.repoCommit) {
+    throw new Error(
+      `import incomplete on destination: importedBlobs=${destStatus.importedBlobs} ` +
+        `expectedBlobs=${destStatus.expectedBlobs} repoCommit=${destStatus.repoCommit}`,
+    );
+  }
+  console.error(
+    `✓ Import verified (blobs ${destStatus.importedBlobs}/${destStatus.expectedBlobs}, repoCommit ${destStatus.repoCommit})`,
+  );
 
   // 10. Identity migration: build and sign the PLC operation
   console.error(`\nBuilding and signing migration PLC operation...`);
 
-  // Fetch the account's PLC op audit log to get the previous op's CID
+  // Fetch the account's PLC op audit log to get the previous op's CID (the `prev` of the new op).
   const auditLog = await request(`${PLC_URL}/${source.did}/log/audit`);
-  const previousEntry = auditLog.at(-1);
-  if (!previousEntry?.cid) {
-    throw new Error('No previous PLC op found in audit log');
+  if (!Array.isArray(auditLog) || auditLog.length === 0) {
+    throw new Error(`unexpected PLC audit log shape for ${source.did} (expected a non-empty array)`);
   }
-  const prevCid = previousEntry.cid;
+  const previousEntry = auditLog.at(-1);
+  const prevCid = previousEntry?.cid;
+  if (typeof prevCid !== 'string') {
+    throw new Error('latest PLC audit entry has no string `cid` to use as prev');
+  }
 
   // Get the recommended DID credentials from the destination
   // (which includes the new signing key and preserved rotation/aka fields)
@@ -209,7 +228,16 @@ export async function performMigration({ name, targetPds }) {
     token: destSession.accessJwt,
   });
 
-  // Build the migration op: same rotation keys, updated PDS, new signing key
+  // Build the migration op. CRITICAL: the wallet rotation key MUST stay at rotationKeys[0] — this
+  // is the "credible exit" guarantee (the key that just signed this op must remain authorized).
+  // getRecommendedDidCredentials returns ONLY the destination PDS signing key, so we prepend the
+  // wallet key and dedup rather than trusting the recommendation to preserve it.
+  const walletRotationKey = sourceAccount.rotationKeyId;
+  const recommendedRotationKeys = recommended.rotationKeys ?? [];
+  const rotationKeys = [
+    walletRotationKey,
+    ...recommendedRotationKeys.filter((k) => k !== walletRotationKey),
+  ];
   const migrationOp = await buildMigrationOp({
     prev: prevCid,
     services: {
@@ -219,7 +247,7 @@ export async function performMigration({ name, targetPds }) {
       },
     },
     alsoKnownAs: recommended.alsoKnownAs ?? [`at://${source.handle}`],
-    rotationKeys: recommended.rotationKeys ?? [sourceAccount.rotationKeyId],
+    rotationKeys,
     verificationMethods: {
       atproto: signingKey,
     },
@@ -236,31 +264,33 @@ export async function performMigration({ name, targetPds }) {
   });
   console.error(`✓ Migration op posted to PLC`);
 
-  // 12. Activate account on dest (retry poll if needed)
+  // 12. Activate the destination once its DID doc has propagated. checkAccountStatus.validDid
+  //     reflects whether plc.directory now serves the repointed doc; activateAccount itself returns
+  //     an empty body, so its response can't confirm anything — we gate on validDid instead.
   console.error(`Activating account on destination...`);
   let activated = false;
   for (let attempt = 0; attempt < 10; attempt++) {
-    try {
-      const activateResp = await xrpc(targetPds, 'com.atproto.server.activateAccount', {
+    const status = await xrpc(targetPds, 'com.atproto.server.checkAccountStatus', {
+      token: destSession.accessJwt,
+    });
+    if (status.validDid) {
+      await xrpc(targetPds, 'com.atproto.server.activateAccount', {
         token: destSession.accessJwt,
         method: 'POST',
       });
-      if (activateResp.validDid) {
-        activated = true;
-        console.error(`✓ Account activated on destination`);
-        break;
-      }
-    } catch (err) {
-      // DID doc may not have propagated yet; retry
-      console.error(`  (attempt ${attempt + 1}/10) DID doc not yet propagated, retrying...`);
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      activated = true;
+      console.error(`✓ Account activated on destination`);
+      break;
     }
+    console.error(`  (attempt ${attempt + 1}/10) DID doc not yet propagated, waiting...`);
+    await sleep(1000);
   }
   if (!activated) {
-    console.error(`⚠ Account activation incomplete, but proceeding`);
+    // Do NOT deactivate the source — that would leave the identity homeless.
+    throw new Error('destination DID doc did not propagate; account not activated (source left active)');
   }
 
-  // Deactivate source account
+  // Deactivate the source LAST, only after the destination is live.
   console.error(`Deactivating source account...`);
   await xrpc(BASE_URL, 'com.atproto.server.deactivateAccount', {
     token: source.accessJwt,
