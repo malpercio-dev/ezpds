@@ -270,6 +270,7 @@ async fn run() -> anyhow::Result<()> {
         jwt_secret,
         oauth_signing_keypair,
         dpop_nonces: auth::new_nonce_store(),
+        permission_set_cache: auth::new_permission_set_cache(),
         failed_login_attempts: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         firehose,
         crawlers,

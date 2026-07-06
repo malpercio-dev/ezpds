@@ -64,7 +64,10 @@ pub async fn oauth_server_metadata(State(state): State<AppState>) -> impl IntoRe
         token_endpoint: format!("{base}/oauth/token"),
         pushed_authorization_request_endpoint: format!("{base}/oauth/par"),
         jwks_uri: format!("{base}/oauth/jwks"),
-        scopes_supported: vec!["atproto".to_string(), "transition:generic".to_string()],
+        scopes_supported: crate::auth::oauth_scopes::supported_scopes()
+            .into_iter()
+            .map(String::from)
+            .collect(),
         response_types_supported: vec!["code".to_string()],
         grant_types_supported: vec![
             "authorization_code".to_string(),
@@ -191,11 +194,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scopes_supported_are_atproto_scopes() {
+    async fn scopes_supported_reflects_the_full_granular_scope_grammar() {
+        // Locks the discovery contract: the fixed/transition scopes plus a declarative
+        // summary of each granular resource-type prefix (oauth-scopes-permission-sets.AC6.1).
+        // Each prefix accepts further positional/query parameters per oauth_scopes.rs's
+        // grammar — this list summarizes the supported surface, it doesn't enumerate the
+        // (unbounded) space of concrete grantable scopes.
         let json = metadata_json().await;
         assert_eq!(
             json["scopes_supported"],
-            serde_json::json!(["atproto", "transition:generic"])
+            serde_json::json!([
+                "atproto",
+                "transition:email",
+                "transition:generic",
+                "transition:chat.bsky",
+                "repo:*",
+                "rpc:*",
+                "blob:*/*",
+                "account:*",
+                "identity:*",
+                "include:*"
+            ])
         );
     }
 

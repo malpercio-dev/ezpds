@@ -33,7 +33,10 @@ pub async fn oauth_protected_resource_metadata(State(state): State<AppState>) ->
     Json(OAuthProtectedResourceMetadata {
         resource: base.to_string(),
         authorization_servers: vec![base.to_string()],
-        scopes_supported: vec!["atproto".to_string(), "transition:generic".to_string()],
+        scopes_supported: crate::auth::oauth_scopes::supported_scopes()
+            .into_iter()
+            .map(String::from)
+            .collect(),
         bearer_methods_supported: vec!["header".to_string()],
         resource_documentation: "https://atproto.com".to_string(),
     })
@@ -119,11 +122,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scopes_supported_are_atproto_scopes() {
+    async fn scopes_supported_reflects_the_full_granular_scope_grammar() {
+        // Mirrors oauth_server_metadata.rs's contract (oauth-scopes-permission-sets.AC6.2) —
+        // both discovery documents advertise the same supported scope surface.
         let json = metadata_json().await;
         assert_eq!(
             json["scopes_supported"],
-            serde_json::json!(["atproto", "transition:generic"])
+            serde_json::json!([
+                "atproto",
+                "transition:email",
+                "transition:generic",
+                "transition:chat.bsky",
+                "repo:*",
+                "rpc:*",
+                "blob:*/*",
+                "account:*",
+                "identity:*",
+                "include:*"
+            ])
         );
     }
 

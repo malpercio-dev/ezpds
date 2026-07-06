@@ -17,9 +17,21 @@ body:form-urlencoded {
   code_challenge: e3b0c44298fc1c149afbf4c8996fb924
   code_challenge_method: S256
   state: randomstate123
-  scope: atproto
+  scope: atproto repo:app.bsky.feed.post
+  granted_scope: repo:app.bsky.feed.post
 }
 
 vars:pre-request {
   baseUrl: http://localhost:8080
+}
+
+docs {
+  # POST /oauth/authorize (Approve)
+
+  `granted_scope` (repeatable, optional): the consent screen renders every non-`atproto`
+  permission in `scope` as a checked-by-default checkbox named `granted_scope`. Submit one
+  `granted_scope=<token>` per permission the user left checked; omit entirely if none are
+  checked. `atproto` is never a checkbox and is always granted regardless of `granted_scope`.
+  Any `granted_scope` value that isn't actually present in `scope` (after `include:<nsid>`
+  expansion) is ignored — it can only narrow the grant, never widen it.
 }

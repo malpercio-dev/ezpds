@@ -13,3 +13,15 @@ get {
 vars:pre-request {
   baseUrl: http://localhost:8080
 }
+
+docs {
+  # GET /.well-known/oauth-authorization-server
+
+  RFC 8414 authorization server metadata. `scopes_supported` reflects the real granular
+  scope grammar (`crates/pds/src/auth/oauth_scopes.rs::supported_scopes`) — the fixed/transition
+  scopes plus a declarative per-resource-type summary, not every concrete grantable value
+  (that space is unbounded):
+
+  `["atproto", "transition:email", "transition:generic", "transition:chat.bsky", "repo:*",
+  "rpc:*", "blob:*/*", "account:*", "identity:*", "include:*"]`
+}

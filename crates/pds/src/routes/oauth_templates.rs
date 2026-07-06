@@ -73,12 +73,6 @@ pub(super) fn render_consent_page(
     login_hint: Option<&str>,
     error: Option<&str>,
 ) -> String {
-    let scope_tags: String = scope
-        .split_whitespace()
-        .map(|s| format!("<span class=\"scope-tag\">{}</span>", html_escape(s)))
-        .collect::<Vec<_>>()
-        .join("\n        ");
-
     // Monogram for the application mark — the first character of the client name.
     let app_initial = client_name
         .chars()
@@ -111,12 +105,15 @@ pub(super) fn render_consent_page(
     html.push_str(&html_escape(client_id));
     html.push_str("</div>\n      </span>\n    </div>\n");
 
-    // Permissions.
-    html.push_str("    <div class=\"section-label\">Requesting permission</div>\n");
-    html.push_str("    <div class=\"scopes\">\n        ");
-    html.push_str(&scope_tags);
-    html.push_str("\n    </div>\n");
-    html.push_str("    <p class=\"scope-note\">These permissions let the app read and write your data and act as your identity on the network.</p>\n");
+    // Permissions: `atproto` is the mandatory base — always granted, never a checkbox.
+    // Everything else is grouped by resource type with a checked-by-default checkbox, so the
+    // user can deny individual permissions before approving.
+    html.push_str("    <div class=\"section-label\">Base access</div>\n");
+    html.push_str(
+        "    <div class=\"scopes\">\n        <span class=\"scope-tag\">atproto</span>\n    </div>\n",
+    );
+    html.push_str(&render_permission_groups(scope));
+    html.push_str("    <p class=\"scope-note\">Uncheck anything you don't want to grant — the app will only be able to do what's left checked.</p>\n");
 
     // Sign in.
     html.push_str("    <div class=\"section-label\">Sign in to approve</div>\n");
@@ -165,6 +162,40 @@ pub(super) fn render_consent_page(
     html.push_str("<span>");
     html.push_str(&html_escape(public_url));
     html.push_str("</span></div>\n  </div>\n</body>\n</html>");
+    html
+}
+
+// ── Permission grouping ─────────────────────────────────────────────────────────
+
+/// Render every non-`atproto` scope token as a checked-by-default checkbox, grouped under a
+/// resource-type heading. `atproto` is rendered separately by the caller — it's mandatory and
+/// never a checkbox.
+fn render_permission_groups(scope: &str) -> String {
+    let mut groups: Vec<(&'static str, Vec<&str>)> = Vec::new();
+    for token in scope.split_whitespace() {
+        if token == "atproto" {
+            continue;
+        }
+        let label = crate::auth::oauth_scopes::resource_group_label(token);
+        match groups.iter_mut().find(|(l, _)| *l == label) {
+            Some((_, tokens)) => tokens.push(token),
+            None => groups.push((label, vec![token])),
+        }
+    }
+
+    let mut html = String::new();
+    for (label, tokens) in groups {
+        html.push_str("    <div class=\"section-label\">");
+        html.push_str(&html_escape(label));
+        html.push_str("</div>\n    <div class=\"permission-group\">\n");
+        for token in tokens {
+            let escaped = html_escape(token);
+            html.push_str(&format!(
+                "      <label class=\"permission-row\"><input type=\"checkbox\" name=\"granted_scope\" value=\"{escaped}\" checked /> <span class=\"mono\">{escaped}</span></label>\n"
+            ));
+        }
+        html.push_str("    </div>\n");
+    }
     html
 }
 
@@ -263,6 +294,14 @@ const CONSENT_CSS: &str = r#"
       background: var(--sunk); border: 1px solid var(--line); border-radius: 7px; padding: 4px 9px;
     }
     .scope-note { font-size: 13px; color: var(--muted); line-height: 1.45; }
+    .permission-group { display: flex; flex-direction: column; gap: 6px; margin-bottom: 4px; }
+    .permission-row {
+      display: flex; align-items: center; gap: 9px;
+      background: var(--parchment); border: 1px solid var(--line); border-radius: 9px;
+      padding: 9px 11px; cursor: pointer;
+    }
+    .permission-row input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--aubergine); flex-shrink: 0; }
+    .permission-row .mono { font-family: var(--mono); font-size: 12.5px; color: var(--ink-soft); word-break: break-all; }
     .error-banner {
       display: flex; align-items: center; gap: 8px;
       background: var(--crit-surface); color: var(--crit);

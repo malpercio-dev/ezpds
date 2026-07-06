@@ -85,6 +85,19 @@ pub struct ConsentForm {
     pub identifier: Option<String>,
     /// Password for the identified account. `None` when absent (same as above).
     pub password: Option<String>,
+    /// The subset of non-`atproto` permissions the user left checked on the consent page.
+    /// One `granted_scope` form field per checked box; absent entirely if every box was
+    /// unchecked. `atproto` is never a checkbox — it's always granted, unconditionally.
+    ///
+    /// `deserialize_with` is required, not cosmetic: the urlencoded-form deserializer
+    /// represents a single repeated-key occurrence as a bare string rather than a
+    /// one-element sequence, so a plain `Vec<String>` fails to deserialize with exactly one
+    /// checkbox checked (the common case) while working fine with zero or two-plus.
+    #[serde(
+        default,
+        deserialize_with = "crate::auth::permission_sets::string_or_vec"
+    )]
+    pub granted_scope: Vec<String>,
 }
 
 /// Distinguishes client-caused failures from server-caused failures in PAR resolution.
@@ -302,6 +315,30 @@ pub async fn get_authorization(
         .client_name
         .unwrap_or_else(|| params.client_id.clone());
 
+    // Render-only expansion: shows the user real permissions instead of an opaque `include:`
+    // reference. `post_authorization` re-runs expansion authoritatively regardless of what's
+    // rendered here (hidden form fields are attacker-controllable), but a resolution failure
+    // still redirects with an error rather than falling back to the raw unexpanded scope: if the
+    // page fell back and a transient failure then cleared before the user submits,
+    // `post_authorization`'s authoritative expansion would produce granular tokens that don't
+    // match the raw `include:<nsid>` checkbox value the page rendered, and the grant-reduction
+    // filter would silently drop everything from that set — a real (if narrow) desync between
+    // what the user saw/approved and what gets granted. Failing the page outright avoids that
+    // class of bug entirely, at the cost of requiring a retry on a transient blip.
+    let display_scope = match crate::auth::permission_sets::expand_include_scopes(
+        &state,
+        &state.permission_set_cache,
+        &params.scope,
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(desc) => {
+            return error_redirect(&params.redirect_uri, "invalid_scope", &desc, &params.state)
+                .into_response()
+        }
+    };
+
     Html(render_consent_page(
         &client_name,
         &params.client_id,
@@ -309,7 +346,7 @@ pub async fn get_authorization(
         &params.code_challenge,
         &params.code_challenge_method,
         &params.state,
-        &params.scope,
+        &display_scope,
         &params.response_type,
         &state.config.public_url,
         params.login_hint.as_deref(),
@@ -396,21 +433,11 @@ pub async fn post_authorization(
         .into_response();
     }
 
-    // Validate & canonically normalize the requested granular scopes before
-    // issuing a code. Hidden form fields are attacker-controllable, so this is
-    // re-checked here even though the PAR endpoint already validated it.
-    let normalized_scope = match crate::auth::oauth_scopes::normalize_scope_request(&form.scope) {
-        Ok(s) => s,
-        Err(desc) => {
-            return error_redirect(&form.redirect_uri, "invalid_scope", &desc, &form.state)
-                .into_response()
-        }
-    };
-
-    // Resolve the identifier and verify the password before issuing any auth code.
-    // Re-render the consent form (200) on all credential errors so the user can retry
-    // without the OAuth client seeing a denial. "Not found" and "wrong password" produce
-    // identical messages and timing to prevent enumeration.
+    // Resolve the identifier and check the login rate limit *before* any expensive work —
+    // scope normalization/expansion below can perform real DNS/HTTP network calls for
+    // `include:<nsid>` references, so this cheap, local, identifier-keyed gate must run first
+    // to avoid giving an unauthenticated caller a way to trigger unthrottled network I/O by
+    // varying the scope on repeated submissions for the same identifier.
     let client_name_str = metadata
         .client_name
         .clone()
@@ -439,7 +466,7 @@ pub async fn post_authorization(
         None => return rerender(None, "Please enter your handle or DID."),
     };
 
-    // Rate-limit check: guard before any DB work or argon2 to shed load early.
+    // Rate-limit check: guard before any DB work, argon2, or scope resolution to shed load early.
     {
         let mut attempts = match state.failed_login_attempts.lock() {
             Ok(g) => g,
@@ -467,6 +494,10 @@ pub async fn post_authorization(
         None => return rerender(Some(&identifier), "Please enter your password."),
     };
 
+    // Look up the account and verify the password before issuing any auth code. Re-render the
+    // consent form (200) on all credential errors so the user can retry without the OAuth
+    // client seeing a denial. "Not found" and "wrong password" produce identical messages and
+    // timing to prevent enumeration.
     let account = match resolve_identifier(&state.db, &identifier).await {
         Ok(Some(a)) => a,
         Ok(None) => {
@@ -568,6 +599,57 @@ pub async fn post_authorization(
         clear_failures(&mut attempts, &identifier);
     }
 
+    // Validate & canonically normalize the requested granular scopes before issuing a code.
+    // Deliberately deferred until after credential verification: scope resolution below can
+    // perform real DNS/HTTP network calls for `include:<nsid>` references, so an unauthenticated
+    // or wrong-password caller never reaches it — the network path stays behind valid
+    // credentials, and an invalid `include:` reference can't be probed pre-auth either. Hidden
+    // form fields are attacker-controllable, so this is re-checked here even though the PAR
+    // endpoint already validated it.
+    let normalized_scope = match crate::auth::oauth_scopes::normalize_scope_request(&form.scope) {
+        Ok(s) => s,
+        Err(desc) => {
+            return error_redirect(&form.redirect_uri, "invalid_scope", &desc, &form.state)
+                .into_response()
+        }
+    };
+
+    // Resolve any `include:<nsid>` permission-set references to their granular scopes.
+    // Authoritative — re-run regardless of what the GET already displayed, since hidden form
+    // fields are attacker-controllable. Fails closed: an unresolvable reference rejects the
+    // whole request rather than granting a smaller-than-requested set.
+    let expanded_scope = match crate::auth::permission_sets::expand_include_scopes(
+        &state,
+        &state.permission_set_cache,
+        &normalized_scope,
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(desc) => {
+            return error_redirect(&form.redirect_uri, "invalid_scope", &desc, &form.state)
+                .into_response()
+        }
+    };
+
+    // Reduce to the user's actually-checked permissions: `atproto` is always granted
+    // (never a checkbox); every other token is granted only if its checkbox was left checked.
+    // Filtering `expanded_scope`'s own tokens (rather than trusting `granted_scope` values
+    // directly) means a tampered/injected checkbox value that was never part of the requested
+    // set is simply not present to match against — it can't add scope, only remove it.
+    let granted_tokens: Vec<&str> = expanded_scope
+        .split_whitespace()
+        .filter(|t| *t == "atproto" || form.granted_scope.iter().any(|g| g == t))
+        .collect();
+    let granted_scope =
+        match crate::auth::oauth_scopes::normalize_scope_request(&granted_tokens.join(" ")) {
+            Ok(s) => s,
+            Err(desc) => {
+                return error_redirect(&form.redirect_uri, "invalid_scope", &desc, &form.state)
+                    .into_response()
+            }
+        };
+
     let did = account.did;
 
     // Store the SHA-256 hash of the code, matching the session/refresh-token pattern.
@@ -582,7 +664,7 @@ pub async fn post_authorization(
         &form.code_challenge,
         &form.code_challenge_method,
         &form.redirect_uri,
-        &normalized_scope,
+        &granted_scope,
     )
     .await
     {
@@ -900,19 +982,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_consent_page_escapes_xss_in_scope() {
-        // scope=<b>bold</b> URL-encoded in the request
+    async fn get_consent_page_rejects_malformed_scope_instead_of_rendering_it() {
+        // scope=<b>bold</b> URL-encoded in the request — not a valid scope (no `atproto` base,
+        // not a recognized token). `expand_include_scopes`'s embedded `normalize_scope_request`
+        // now validates the GET path's scope too (it never did before granular scopes), so this
+        // is rejected via redirect before ever reaching render — a stronger property than
+        // escaping malicious/malformed content, which is what this test used to check for.
         let url = authorize_url("").replace("scope=atproto", "scope=%3Cb%3Ebold%3C%2Fb%3E");
         let resp = get_authorize(state_with_client().await, &url).await;
-        let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
-        let html = std::str::from_utf8(&body).unwrap();
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        assert!(location.contains("error=invalid_scope"), "got: {location}");
         assert!(
-            !html.contains("<b>"),
-            "raw HTML tags must not appear in scope output"
-        );
-        assert!(
-            html.contains("&lt;b&gt;"),
-            "scope tags must be HTML-escaped"
+            !location.contains("<b>"),
+            "raw HTML tags must not appear anywhere in the response"
         );
     }
 
@@ -1486,5 +1569,303 @@ mod tests {
             html.contains("Invalid Request"),
             "mismatched client_id should render an error page"
         );
+    }
+
+    // ── include: permission-set expansion (oauth-scopes-permission-sets.AC4) ─────
+
+    use std::future::Future;
+    use std::pin::Pin;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use crate::dns::{DnsError, TxtResolver};
+    use crate::routes::test_utils::seed_did_document;
+
+    const AUTHORITY_DID: &str = "did:plc:authoritydidxxxxxxxxxxxxx";
+    const AUTHORITY_NSID: &str = "app.bsky.authFull";
+
+    struct FixedTxtResolver {
+        records: Vec<String>,
+    }
+
+    impl TxtResolver for FixedTxtResolver {
+        fn txt_lookup<'a>(
+            &'a self,
+            _name: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, DnsError>> + Send + 'a>> {
+            let records = self.records.clone();
+            Box::pin(async move { Ok(records) })
+        }
+    }
+
+    /// A test state with a registered client + password account, plus DNS/DID-document
+    /// resolution wired up for `AUTHORITY_NSID` to a mock PDS serving `schema`.
+    async fn state_with_include_authority(
+        schema: serde_json::Value,
+    ) -> (crate::app::AppState, MockServer) {
+        let server = MockServer::start().await;
+        let base = state_with_client_and_account_with_password(TEST_PASSWORD).await;
+        let state = crate::app::AppState {
+            txt_resolver: Some(std::sync::Arc::new(FixedTxtResolver {
+                records: vec![format!("did={AUTHORITY_DID}")],
+            })),
+            ..base
+        };
+        seed_did_document(
+            &state.db,
+            AUTHORITY_DID,
+            serde_json::json!({
+                "id": AUTHORITY_DID,
+                "service": [{
+                    "id": "#atproto_pds",
+                    "type": "AtprotoPersonalDataServer",
+                    "serviceEndpoint": server.uri(),
+                }],
+            }),
+        )
+        .await;
+
+        Mock::given(method("GET"))
+            .and(path("/xrpc/com.atproto.repo.getRecord"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "uri": format!("at://{AUTHORITY_DID}/com.atproto.lexicon.schema/{AUTHORITY_NSID}"),
+                "cid": "bafyreictest",
+                "value": {
+                    "lexicon": 1,
+                    "id": AUTHORITY_NSID,
+                    "defs": {
+                        "main": {
+                            "type": "permission-set",
+                            "permissions": schema,
+                        }
+                    }
+                },
+            })))
+            .mount(&server)
+            .await;
+
+        (state, server)
+    }
+
+    /// `granted` simulates which checkboxes a real browser would submit still checked —
+    /// `post_authorization` only grants a non-`atproto` token if it's present here.
+    fn include_scope_form(scope: &str, granted: &[&str]) -> String {
+        let granted_params: String = granted
+            .iter()
+            .map(|g| format!("&granted_scope={}", super::encode_param(g)))
+            .collect();
+        format!(
+            "action=approve\
+             &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json\
+             &redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback\
+             &code_challenge=e3b0c44298fc1c149afb\
+             &code_challenge_method=S256\
+             &state=teststate\
+             &scope={}\
+             &response_type=code\
+             &identifier={}&password={}{}",
+            super::encode_param(scope),
+            super::encode_param(TEST_HANDLE),
+            super::encode_param(TEST_PASSWORD),
+            granted_params,
+        )
+    }
+
+    #[tokio::test]
+    async fn ac4_1_include_scope_stores_expanded_scope_on_authorization_code() {
+        let (state, _server) = state_with_include_authority(serde_json::json!([
+            { "type": "permission", "resource": "identity", "attr": "handle" }
+        ]))
+        .await;
+        let db = state.db.clone();
+
+        let scope = format!("atproto include:{AUTHORITY_NSID}");
+        let resp = post_authorize(state, &include_scope_form(&scope, &["identity:handle"])).await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        assert!(!location.contains("error="), "unexpected error: {location}");
+
+        let plaintext = location
+            .split("code=")
+            .nth(1)
+            .unwrap()
+            .split('&')
+            .next()
+            .unwrap();
+        let code_hash = hash_bearer_token(plaintext).unwrap();
+        let row: (String,) =
+            sqlx::query_as("SELECT scope FROM oauth_authorization_codes WHERE code = ?")
+                .bind(&code_hash)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(
+            row.0, "atproto identity:handle",
+            "stored scope must be the expanded granular set, not the raw include: token"
+        );
+    }
+
+    #[tokio::test]
+    async fn ac4_2_unresolvable_include_scope_redirects_invalid_scope() {
+        // No txt_resolver configured at all — the include: reference cannot resolve.
+        let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
+        let scope = "atproto include:app.bsky.authFull".to_string();
+        let resp = post_authorize(state, &include_scope_form(&scope, &[])).await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        assert!(location.contains("error=invalid_scope"), "got: {location}");
+    }
+
+    #[tokio::test]
+    async fn ac4_3_get_consent_page_shows_expanded_permissions_for_include_scope() {
+        let (state, _server) = state_with_include_authority(serde_json::json!([
+            { "type": "permission", "resource": "identity", "attr": "handle" }
+        ]))
+        .await;
+
+        let url = authorize_url("").replace(
+            "scope=atproto",
+            &format!(
+                "scope={}",
+                super::encode_param(&format!("atproto include:{AUTHORITY_NSID}"))
+            ),
+        );
+        let resp = get_authorize(state, &url).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+        assert!(
+            html.contains("identity:handle"),
+            "consent page should show the expanded permission, not the raw include: token: {html}"
+        );
+        assert!(
+            !html.contains("include:app.bsky.authFull"),
+            "consent page should not show the unexpanded include: reference: {html}"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_consent_page_redirects_invalid_scope_on_unresolvable_include_token() {
+        // No txt_resolver configured — resolution fails. The page must redirect with an error
+        // rather than falling back to rendering the raw include: token: a fallback here could
+        // desync from what post_authorization later grants if the authority becomes reachable
+        // by the time the user submits (see oauth-scopes-permission-sets design notes).
+        let state = state_with_client().await;
+        let url = authorize_url("").replace(
+            "scope=atproto",
+            &format!(
+                "scope={}",
+                super::encode_param("atproto include:app.bsky.authFull")
+            ),
+        );
+        let resp = get_authorize(state, &url).await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        assert!(location.contains("error=invalid_scope"), "got: {location}");
+    }
+
+    // ── Consent UI grouping + per-scope opt-out (oauth-scopes-permission-sets.AC5) ──
+
+    async fn stored_scope_for(db: &sqlx::SqlitePool, location: &str) -> String {
+        let plaintext = location
+            .split("code=")
+            .nth(1)
+            .unwrap()
+            .split('&')
+            .next()
+            .unwrap();
+        let code_hash = hash_bearer_token(plaintext).unwrap();
+        let row: (String,) =
+            sqlx::query_as("SELECT scope FROM oauth_authorization_codes WHERE code = ?")
+                .bind(&code_hash)
+                .fetch_one(db)
+                .await
+                .unwrap();
+        row.0
+    }
+
+    #[tokio::test]
+    async fn ac5_1_consent_page_groups_permissions_by_resource_type() {
+        let state = state_with_client().await;
+        let url = authorize_url("").replace(
+            "scope=atproto",
+            &format!(
+                "scope={}",
+                super::encode_param("atproto repo:app.bsky.feed.post identity:handle")
+            ),
+        );
+        let resp = get_authorize(state, &url).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+        assert!(
+            html.contains("Repository writes"),
+            "repo: scope should be grouped under a resource-type heading: {html}"
+        );
+        assert!(
+            html.contains("Identity"),
+            "identity: scope should be grouped under a resource-type heading: {html}"
+        );
+        assert!(
+            html.contains("name=\"granted_scope\""),
+            "should render checkboxes"
+        );
+        assert!(
+            html.contains("value=\"repo:app.bsky.feed.post\" checked"),
+            "checkboxes should default to checked: {html}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ac5_2_unchecking_a_permission_excludes_it_from_the_granted_scope() {
+        let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
+        let db = state.db.clone();
+        // Only identity:handle is submitted as granted — repo:app.bsky.feed.post was unchecked.
+        let form = include_scope_form(
+            "atproto repo:app.bsky.feed.post identity:handle",
+            &["identity:handle"],
+        );
+        let resp = post_authorize(state, &form).await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        assert!(!location.contains("error="), "unexpected error: {location}");
+        assert_eq!(
+            stored_scope_for(&db, location).await,
+            "atproto identity:handle",
+            "unchecked repo: scope must be excluded from the granted set"
+        );
+    }
+
+    #[tokio::test]
+    async fn ac5_3_atproto_cannot_be_unchecked() {
+        let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
+        let db = state.db.clone();
+        // No granted_scope submitted at all — everything unchecked. atproto must still grant.
+        let form = include_scope_form("atproto identity:handle", &[]);
+        let resp = post_authorize(state, &form).await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        assert!(!location.contains("error="), "unexpected error: {location}");
+        assert_eq!(
+            stored_scope_for(&db, location).await,
+            "atproto",
+            "atproto must remain granted even with nothing else checked"
+        );
+    }
+
+    #[tokio::test]
+    async fn ac7_1_legacy_scope_without_include_is_unaffected() {
+        // No txt_resolver configured — if legacy scopes triggered any resolution attempt,
+        // this would fail. It must succeed exactly as it does without this feature.
+        let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
+        let resp = post_authorize(
+            state,
+            &approve_form_with_credentials(TEST_HANDLE, TEST_PASSWORD),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        assert!(location.contains("code="));
+        assert!(!location.contains("error="));
     }
 }

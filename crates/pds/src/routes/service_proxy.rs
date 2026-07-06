@@ -214,13 +214,7 @@ pub async fn proxy_xrpc(
 /// changed record between validation and connection) could point at an address that was never
 /// checked.
 fn build_moderation_client(guard: &ModerationProxyGuard) -> Result<reqwest::Client, ApiError> {
-    let mut builder = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .redirect(reqwest::redirect::Policy::none());
-    if let Some(pin) = &guard.pinned {
-        builder = builder.resolve_to_addrs(&pin.domain, &pin.addrs);
-    }
-    builder.build().map_err(|e| {
+    crate::identity_resolution::build_pinned_client(guard.pinned.as_ref()).map_err(|e| {
         tracing::error!(error = %e, "failed to build moderation proxy client");
         ApiError::new(
             ErrorCode::InternalError,

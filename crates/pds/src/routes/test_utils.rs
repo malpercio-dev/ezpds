@@ -301,21 +301,9 @@ pub async fn seed_handle(db: &sqlx::SqlitePool, handle: &str, did: &str) {
         .expect("insert handle");
 }
 
-/// Insert a DID document row directly into `did_documents`.
-///
-/// `did_documents` has no FK to `accounts`, so this can be used without a corresponding
-/// account row. Used in tests that exercise DID document retrieval endpoints.
-pub async fn seed_did_document(db: &sqlx::SqlitePool, did: &str, document: serde_json::Value) {
-    sqlx::query(
-        "INSERT INTO did_documents (did, document, created_at, updated_at) \
-         VALUES (?, ?, datetime('now'), datetime('now'))",
-    )
-    .bind(did)
-    .bind(document.to_string())
-    .execute(db)
-    .await
-    .expect("insert did_document");
-}
+/// Insert a DID document row directly into `did_documents`. Lives in `db::dids` (not here) so
+/// non-route test code can depend on it too; re-exported for existing route test call sites.
+pub(crate) use crate::db::dids::seed_did_document;
 
 /// Seed a device row with a fresh device token. Returns `(device_id, plaintext_token)`.
 ///

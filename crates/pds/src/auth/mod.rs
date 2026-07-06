@@ -4,6 +4,7 @@ pub mod guards;
 pub mod jwt;
 pub mod oauth_scopes;
 pub mod password;
+pub mod permission_sets;
 pub mod rate_limit;
 pub mod signing_key;
 pub mod validation;
@@ -16,6 +17,7 @@ pub use dpop::{
     cleanup_expired_nonces, issue_nonce, new_nonce_store, validate_dpop_for_token_endpoint,
     DpopNonceStore, DpopTokenEndpointError,
 };
+pub use permission_sets::{new_permission_set_cache, PermissionSetCache};
 // Foundational types: used once authenticated routes are wired up.
 #[allow(unused_imports)]
 pub use extractors::AuthenticatedUser;
