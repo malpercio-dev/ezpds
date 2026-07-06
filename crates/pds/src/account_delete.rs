@@ -40,6 +40,8 @@ pub enum PurgeOutcome {
 /// * `transfer_audit_events` before `transfers` before `transfer_devices`
 ///   (`transfer_audit_events.transfer_id → transfers.id`, `transfers.accepted_device_id →
 ///   transfer_devices.id`)
+/// * `agent_claim_attempts` before `agent_identities`
+///   (`agent_claim_attempts.identity_id → agent_identities.id`)
 ///
 /// `did_documents` and `reserved_signing_keys` carry the DID with no FK to `accounts`, but are
 /// scoped by `did` so removing this account's rows is correct. `repo_seq` (the durable firehose
@@ -59,6 +61,8 @@ const DELETE_BY_DID: &[&str] = &[
     "DELETE FROM password_reset_tokens WHERE did = ?",
     "DELETE FROM plc_operation_tokens WHERE did = ?",
     "DELETE FROM account_deletion_tokens WHERE did = ?",
+    "DELETE FROM agent_claim_attempts WHERE identity_id IN (SELECT id FROM agent_identities WHERE did = ?)",
+    "DELETE FROM agent_identities WHERE did = ?",
     "DELETE FROM transfer_audit_events WHERE did = ?",
     "DELETE FROM transfers WHERE did = ?",
     "DELETE FROM transfer_devices WHERE did = ?",
@@ -262,8 +266,8 @@ mod tests {
         let (state, _dir) = purge_state().await;
         let did = "did:plc:purgeme";
         seed_account_with_repo(&state.db, did).await;
-        // Give the account a handle, a session, and a preference blob so the multi-table delete
-        // has something to remove in several of the child tables.
+        // Give the account a handle, a preference blob, and an agent-auth registration so the
+        // multi-table delete has something to remove in several child-table shapes.
         sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
             .bind("purge.example.com")
             .bind(did)
@@ -275,6 +279,25 @@ mod tests {
              VALUES (?, '[]', datetime('now'))",
         )
         .bind(did)
+        .execute(&state.db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO agent_identities \
+             (id, did, registration_type, scopes, assertion_expires_at, status, created_at, updated_at) \
+             VALUES ('reg_purge', ?, 'anonymous', '[\"com.atproto.access\"]', \
+                     '2099-01-01T00:00:00Z', 'active', datetime('now'), datetime('now'))",
+        )
+        .bind(did)
+        .execute(&state.db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO agent_claim_attempts \
+             (id, identity_id, user_code, user_code_expires_at, status, created_at) \
+             VALUES ('cla_purge', 'reg_purge', '123456', '2099-01-01T00:00:00Z', \
+                     'pending', datetime('now'))",
+        )
         .execute(&state.db)
         .await
         .unwrap();
@@ -304,6 +327,17 @@ mod tests {
             row_count(&state.db, "account_preferences", "did", did).await,
             0
         );
+        assert_eq!(
+            row_count(&state.db, "agent_identities", "did", did).await,
+            0
+        );
+        let claim_attempts: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM agent_claim_attempts WHERE identity_id = 'reg_purge'",
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(claim_attempts, 0);
         assert_eq!(
             row_count(&state.db, "block_owners", "account_did", did).await,
             0

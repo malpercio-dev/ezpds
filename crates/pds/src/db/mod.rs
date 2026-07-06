@@ -1,6 +1,7 @@
 pub mod account_deletion_tokens;
 pub mod accounts;
 pub mod admin_devices;
+pub mod agent_auth;
 pub mod app_passwords;
 pub mod blobs;
 pub mod blocks;
@@ -194,6 +195,10 @@ static MIGRATIONS: &[Migration] = &[
     Migration {
         version: 36,
         sql: include_str!("migrations/V036__email_tokens.sql"),
+    },
+    Migration {
+        version: 37,
+        sql: include_str!("migrations/V037__agent_auth.sql"),
     },
 ];
 
