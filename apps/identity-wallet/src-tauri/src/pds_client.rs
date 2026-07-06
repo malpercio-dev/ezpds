@@ -269,6 +269,19 @@ pub struct CreateAccountResponse {
     pub did_doc: Option<serde_json::Value>,
 }
 
+/// Response from describeServer.
+///
+/// Returned from `GET /xrpc/com.atproto.server.describeServer`. This is the public,
+/// unauthenticated server description endpoint used to discover the server's DID and
+/// available user domains (for destination reachability probes).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DescribeServerResponse {
+    pub did: String,
+    #[serde(default)]
+    pub available_user_domains: Vec<String>,
+}
+
 /// Missing blob entry from listMissingBlobs.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -543,6 +556,38 @@ impl PdsClient {
         }
 
         Ok(metadata)
+    }
+
+    /// Fetch the server description from a PDS.
+    ///
+    /// Gets `GET {pds_url}/xrpc/com.atproto.server.describeServer` (public, no auth).
+    /// This is used as a destination reachability probe (AC1.5 prepare_migration) and to
+    /// obtain the destination server's DID for service-auth requests.
+    /// Maps connection failure / non-2xx to `PdsClientError::PdsUnreachable`.
+    pub async fn describe_server(&self, pds_url: &str) -> Result<DescribeServerResponse, PdsClientError> {
+        let url = format!("{}/xrpc/com.atproto.server.describeServer", pds_url.trim_end_matches('/'));
+
+        let response = self.client
+            .get(&url)
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|e| PdsClientError::PdsUnreachable {
+                reason: format!("failed to reach PDS: {}", e),
+            })?;
+
+        if !response.status().is_success() {
+            return Err(PdsClientError::PdsUnreachable {
+                reason: format!("describeServer returned {}", response.status()),
+            });
+        }
+
+        response
+            .json::<DescribeServerResponse>()
+            .await
+            .map_err(|e| PdsClientError::PdsUnreachable {
+                reason: format!("failed to parse describeServer response: {}", e),
+            })
     }
 
     /// Try to discover the authorization server URL from the PDS's protected
@@ -3380,5 +3425,59 @@ mod tests {
         let result = deactivate_account(&test_client, Some("2026-07-08T00:00:00.000Z")).await;
 
         assert!(result.is_ok());
+    }
+
+    // ============================================================================
+    // describe_server tests
+    // ============================================================================
+
+    /// describe_server parses the response correctly
+    #[tokio::test]
+    async fn test_describe_server_success() {
+        let mock_server = MockServer::start();
+
+        let response = serde_json::json!({
+            "did": "did:web:dest.example.com",
+            "availableUserDomains": [".dest.example.com"]
+        });
+
+        mock_server.mock(|when, then| {
+            when.method(GET)
+                .path("/xrpc/com.atproto.server.describeServer");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(response);
+        });
+
+        let client = PdsClient::new();
+        let result = client.describe_server(&mock_server.base_url()).await;
+
+        assert!(result.is_ok());
+        let desc = result.unwrap();
+        assert_eq!(desc.did, "did:web:dest.example.com");
+        assert_eq!(desc.available_user_domains, vec![".dest.example.com"]);
+    }
+
+    /// describe_server maps non-2xx to PdsUnreachable
+    #[tokio::test]
+    async fn test_describe_server_non_2xx() {
+        let mock_server = MockServer::start();
+
+        mock_server.mock(|when, then| {
+            when.method(GET)
+                .path("/xrpc/com.atproto.server.describeServer");
+            then.status(500);
+        });
+
+        let client = PdsClient::new();
+        let result = client.describe_server(&mock_server.base_url()).await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PdsClientError::PdsUnreachable { .. } => {
+                // Expected
+            }
+            e => panic!("Expected PdsUnreachable, got: {:?}", e),
+        }
     }
 }
