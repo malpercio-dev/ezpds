@@ -920,6 +920,201 @@ pub async fn create_destination_account(
     Ok(())
 }
 
+// ── Task 1: transfer_repo ──────────────────────────────────────────────────
+
+/// Tauri command: fetch repository from source PDS and import into destination.
+///
+/// Gate: ensure_phase_did(..., DestCreated) → clone dest_client, read source_pds_url; drop lock
+/// Then: fetch_repo_car(source) → import_repo(dest); re-lock + advance to RepoTransferred
+#[tauri::command]
+pub async fn transfer_repo(
+    state: tauri::State<'_, crate::oauth::AppState>,
+    did: String,
+) -> Result<(), MigrationError> {
+    tracing::info!(did = %did, "transfer_repo: fetching and importing repository");
+
+    // Gate + extract dependencies
+    let (dest_client, source_pds_url) = {
+        let orchestration = state.orchestration_state.lock().await;
+        let mig = ensure_phase_did(&orchestration, &did, MigrationPhase::DestCreated).map_err(|e| {
+            tracing::warn!("transfer_repo: phase gate failed: {}", e);
+            e
+        })?;
+
+        (mig.dest_client.clone(), mig.source_pds_url.clone())
+    }; // lock released
+
+    let Some(dest_client) = dest_client else {
+        tracing::error!(did = %did, "transfer_repo: dest_client not found");
+        return Err(MigrationError::AccountCreationFailed {
+            message: "destination client not authenticated".into(),
+        });
+    };
+
+    let pds_client = state.pds_client();
+
+    // 1. Fetch repository CAR from source
+    tracing::debug!(did = %did, source_url = %source_pds_url, "fetching repository from source");
+    let car = pds_client
+        .fetch_repo_car(&source_pds_url, &did)
+        .await
+        .map_err(|e| {
+            tracing::error!(did = %did, error = %e, "failed to fetch repository CAR");
+            MigrationError::RepoTransferFailed {
+                message: format!("failed to fetch repository: {}", e),
+            }
+        })?;
+
+    // 2. Import repository into destination
+    tracing::debug!(did = %did, car_len = %car.len(), "importing repository to destination");
+    crate::pds_client::import_repo(&dest_client, car)
+        .await
+        .map_err(|e| {
+            tracing::error!(did = %did, error = %e, "failed to import repository");
+            MigrationError::RepoTransferFailed {
+                message: format!("failed to import repository: {}", e),
+            }
+        })?;
+
+    // 3. Update orchestration state: advance phase to RepoTransferred
+    let mut orchestration = state.orchestration_state.lock().await;
+    if let Some(ref mut mig) = orchestration.as_mut() {
+        // Defense-in-depth DID check
+        if mig.did != did {
+            drop(orchestration);
+            tracing::warn!("transfer_repo: orchestration state did mismatch");
+            return Err(MigrationError::MigrationNotReady {
+                message: "did mismatch with orchestration state".into(),
+            });
+        }
+        mig.phase = MigrationPhase::RepoTransferred;
+    } else {
+        drop(orchestration);
+        return Err(MigrationError::MigrationNotReady {
+            message: "orchestration state lost".into(),
+        });
+    }
+
+    tracing::info!(did = %did, "repository transferred successfully");
+    Ok(())
+}
+
+// ── Task 2: transfer_blobs ─────────────────────────────────────────────────
+
+/// Pure core: drain the destination's missing-blob set via cursor pagination.
+///
+/// Loops: list_missing_blobs(cursor) → if empty, done; for each blob, fetch from source
+/// and upload to dest; advance cursor and repeat. Any leg failing aborts with
+/// BlobTransferFailed WITHOUT advancing the phase, so the whole step is retry-safe (AC2.6).
+async fn drain_missing_blobs(
+    pds_client: &crate::pds_client::PdsClient,
+    dest_client: &OAuthClient,
+    source_pds_url: &str,
+    did: &str,
+) -> Result<(), MigrationError> {
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = crate::pds_client::list_missing_blobs(dest_client, cursor.as_deref())
+            .await
+            .map_err(|e| {
+                tracing::error!(did = %did, error = %e, "list_missing_blobs failed");
+                MigrationError::BlobTransferFailed {
+                    message: format!("failed to list missing blobs: {}", e),
+                }
+            })?;
+
+        // AC2.3 / AC2.5: terminate when page is empty
+        if page.blobs.is_empty() {
+            tracing::debug!(did = %did, "blob drain complete: missing set is empty");
+            return Ok(());
+        }
+
+        // Upload each blob on this page
+        for blob in &page.blobs {
+            tracing::debug!(did = %did, cid = %blob.cid, "fetching blob from source");
+            let bytes = pds_client
+                .fetch_blob(source_pds_url, did, &blob.cid)
+                .await
+                .map_err(|e| {
+                    tracing::error!(did = %did, cid = %blob.cid, error = %e, "fetch_blob failed");
+                    MigrationError::BlobTransferFailed {
+                        message: format!("failed to fetch blob {}: {}", blob.cid, e),
+                    }
+                })?;
+
+            tracing::debug!(did = %did, cid = %blob.cid, bytes_len = %bytes.len(), "uploading blob to destination");
+            crate::pds_client::upload_blob(dest_client, "application/octet-stream", bytes)
+                .await
+                .map_err(|e| {
+                    tracing::error!(did = %did, cid = %blob.cid, error = %e, "upload_blob failed");
+                    MigrationError::BlobTransferFailed {
+                        message: format!("failed to upload blob {}: {}", blob.cid, e),
+                    }
+                })?;
+        }
+
+        // Walk pages: advance cursor or loop with None (will re-list and see empty on success)
+        cursor = page.cursor;
+    }
+}
+
+/// Tauri command: drain missing blobs from destination via cursor-paginated loop.
+///
+/// Gate: ensure_phase_did(..., RepoTransferred) → clone dest_client, read source_pds_url; drop lock
+/// Then: drain_missing_blobs; re-lock + advance to BlobsTransferred
+#[tauri::command]
+pub async fn transfer_blobs(
+    state: tauri::State<'_, crate::oauth::AppState>,
+    did: String,
+) -> Result<(), MigrationError> {
+    tracing::info!(did = %did, "transfer_blobs: draining missing blobs");
+
+    // Gate + extract dependencies
+    let (dest_client, source_pds_url) = {
+        let orchestration = state.orchestration_state.lock().await;
+        let mig = ensure_phase_did(&orchestration, &did, MigrationPhase::RepoTransferred).map_err(|e| {
+            tracing::warn!("transfer_blobs: phase gate failed: {}", e);
+            e
+        })?;
+
+        (mig.dest_client.clone(), mig.source_pds_url.clone())
+    }; // lock released
+
+    let Some(dest_client) = dest_client else {
+        tracing::error!(did = %did, "transfer_blobs: dest_client not found");
+        return Err(MigrationError::AccountCreationFailed {
+            message: "destination client not authenticated".into(),
+        });
+    };
+
+    let pds_client = state.pds_client();
+
+    // Drain the missing-blob set
+    drain_missing_blobs(pds_client, &dest_client, &source_pds_url, &did).await?;
+
+    // Update orchestration state: advance phase to BlobsTransferred
+    let mut orchestration = state.orchestration_state.lock().await;
+    if let Some(ref mut mig) = orchestration.as_mut() {
+        // Defense-in-depth DID check
+        if mig.did != did {
+            drop(orchestration);
+            tracing::warn!("transfer_blobs: orchestration state did mismatch");
+            return Err(MigrationError::MigrationNotReady {
+                message: "did mismatch with orchestration state".into(),
+            });
+        }
+        mig.phase = MigrationPhase::BlobsTransferred;
+    } else {
+        drop(orchestration);
+        return Err(MigrationError::MigrationNotReady {
+            message: "orchestration state lost".into(),
+        });
+    }
+
+    tracing::info!(did = %did, "blobs transferred successfully");
+    Ok(())
+}
+
 // ── Helper: extract handle from also_known_as ───────────────────────────────
 
 fn extract_handle_from_also_known_as(also_known_as: &[String]) -> Option<String> {
@@ -1309,5 +1504,73 @@ mod tests {
         ];
         let result = extract_handle_from_also_known_as(&entries);
         assert_eq!(result, None);
+    }
+
+    // ── Task 1 tests: transfer_repo ────────────────────────────────────────
+
+    // AC2.1: transfer_repo fetches source CAR and imports to dest, advances phase.
+    // (Pure gate test: phase < RepoTransferred returns MIGRATION_NOT_READY)
+    #[test]
+    fn test_transfer_repo_phase_gate() {
+        let state = Some(OutboundMigrationState {
+            did: "did:plc:abc123".into(),
+            source_pds_url: "https://source.pds".into(),
+            dest_pds_url: "https://dest.pds".into(),
+            dest_did: "did:web:dest".into(),
+            handle: "alice.test".into(),
+            source_client: None,
+            dest_client: None,
+            phase: MigrationPhase::SourceAuthed, // Too early!
+        });
+
+        let result = ensure_phase_did(&state, "did:plc:abc123", MigrationPhase::DestCreated);
+        assert!(matches!(
+            result,
+            Err(MigrationError::MigrationNotReady { .. })
+        ));
+    }
+
+    // AC2.1: transfer_repo phase gate (pure test, no network)
+    #[test]
+    fn test_transfer_repo_phase_too_low() {
+        let state = Some(OutboundMigrationState {
+            did: "did:plc:abc123".into(),
+            source_pds_url: "https://source.pds".into(),
+            dest_pds_url: "https://dest.pds".into(),
+            dest_did: "did:web:dest".into(),
+            handle: "alice.test".into(),
+            source_client: None,
+            dest_client: None,
+            phase: MigrationPhase::SourceAuthed, // Too early!
+        });
+
+        let result = ensure_phase_did(&state, "did:plc:abc123", MigrationPhase::DestCreated);
+        assert!(matches!(
+            result,
+            Err(MigrationError::MigrationNotReady { .. })
+        ));
+    }
+
+    // ── Task 2 tests: transfer_blobs ───────────────────────────────────────
+
+    // AC2.5: transfer_blobs phase gate (pure test, no network)
+    #[test]
+    fn test_transfer_blobs_phase_too_low() {
+        let state = Some(OutboundMigrationState {
+            did: "did:plc:abc123".into(),
+            source_pds_url: "https://source.pds".into(),
+            dest_pds_url: "https://dest.pds".into(),
+            dest_did: "did:web:dest".into(),
+            handle: "alice.test".into(),
+            source_client: None,
+            dest_client: None,
+            phase: MigrationPhase::DestCreated, // Too early for transfer_blobs!
+        });
+
+        let result = ensure_phase_did(&state, "did:plc:abc123", MigrationPhase::RepoTransferred);
+        assert!(matches!(
+            result,
+            Err(MigrationError::MigrationNotReady { .. })
+        ));
     }
 }

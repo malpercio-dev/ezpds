@@ -944,6 +944,8 @@ pub fn run() {
             migration_orchestrator::prepare_source_auth,
             migration_orchestrator::complete_source_auth,
             migration_orchestrator::create_destination_account,
+            migration_orchestrator::transfer_repo,
+            migration_orchestrator::transfer_blobs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
