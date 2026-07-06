@@ -117,6 +117,14 @@ export async function performMigration({ name, targetPds, inviteCode }) {
       },
     });
     destSession = createResp;
+    // Persist the destination session immediately so a mid-run failure is resumable: the 409
+    // branch below re-reads state.accounts[name].destAccessJwt, which is only populated here.
+    state.accounts[name] = {
+      ...state.accounts[name],
+      destAccessJwt: destSession.accessJwt,
+      destRefreshJwt: destSession.refreshJwt,
+    };
+    saveState(state);
     console.error(`✓ Account created on destination`);
   } catch (err) {
     // 409 DidAlreadyExists — account exists, try to resume
@@ -158,6 +166,12 @@ export async function performMigration({ name, targetPds, inviteCode }) {
   // access token issued at createAccount. (Per-call 401-retry inside the loop is a further
   // enhancement for very large accounts.)
   destSession = await refreshDestSession(destSession, targetPds);
+  state.accounts[name] = {
+    ...state.accounts[name],
+    destAccessJwt: destSession.accessJwt,
+    destRefreshJwt: destSession.refreshJwt,
+  };
+  saveState(state);
   console.error(`Draining blobs...`);
   let cursor = undefined;
   let blobCount = 0;
