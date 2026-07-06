@@ -2453,10 +2453,10 @@ mod tests {
         let did = "did:plc:abc123";
 
         // Simulate arm_identity_leg logic
-        let (dest_client) = {
+        let dest_client = {
             let orch = orchestration.lock().await;
             let mig = ensure_phase_did(&*orch, did, MigrationPhase::Verified).unwrap();
-            (mig.dest_client.clone(),)
+            mig.dest_client.clone()
         };
 
         let migration_state_val = crate::migrate::MigrationState {
