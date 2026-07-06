@@ -922,6 +922,40 @@ pub async fn create_destination_account(
 
 // ── Task 1: transfer_repo ──────────────────────────────────────────────────
 
+/// Pure core: fetch the source repo CAR (auth:none) and import it into the destination
+/// (Bearer). Extracted for unit testability with mocked servers.
+async fn transfer_repo_impl(
+    pds_client: &crate::pds_client::PdsClient,
+    dest_client: &OAuthClient,
+    source_pds_url: &str,
+    did: &str,
+) -> Result<(), MigrationError> {
+    // 1. Fetch repository CAR from source
+    tracing::debug!(did = %did, source_url = %source_pds_url, "fetching repository from source");
+    let car = pds_client
+        .fetch_repo_car(source_pds_url, did)
+        .await
+        .map_err(|e| {
+            tracing::error!(did = %did, error = %e, "failed to fetch repository CAR");
+            MigrationError::RepoTransferFailed {
+                message: format!("failed to fetch repository: {}", e),
+            }
+        })?;
+
+    // 2. Import repository into destination
+    tracing::debug!(did = %did, car_len = %car.len(), "importing repository to destination");
+    crate::pds_client::import_repo(dest_client, car)
+        .await
+        .map_err(|e| {
+            tracing::error!(did = %did, error = %e, "failed to import repository");
+            MigrationError::RepoTransferFailed {
+                message: format!("failed to import repository: {}", e),
+            }
+        })?;
+
+    Ok(())
+}
+
 /// Tauri command: fetch repository from source PDS and import into destination.
 ///
 /// Gate: ensure_phase_did(..., DestCreated) → clone dest_client, read source_pds_url; drop lock
@@ -953,28 +987,8 @@ pub async fn transfer_repo(
 
     let pds_client = state.pds_client();
 
-    // 1. Fetch repository CAR from source
-    tracing::debug!(did = %did, source_url = %source_pds_url, "fetching repository from source");
-    let car = pds_client
-        .fetch_repo_car(&source_pds_url, &did)
-        .await
-        .map_err(|e| {
-            tracing::error!(did = %did, error = %e, "failed to fetch repository CAR");
-            MigrationError::RepoTransferFailed {
-                message: format!("failed to fetch repository: {}", e),
-            }
-        })?;
-
-    // 2. Import repository into destination
-    tracing::debug!(did = %did, car_len = %car.len(), "importing repository to destination");
-    crate::pds_client::import_repo(&dest_client, car)
-        .await
-        .map_err(|e| {
-            tracing::error!(did = %did, error = %e, "failed to import repository");
-            MigrationError::RepoTransferFailed {
-                message: format!("failed to import repository: {}", e),
-            }
-        })?;
+    // Fetch source CAR + import into destination (pure core, unit-tested).
+    transfer_repo_impl(pds_client, &dest_client, &source_pds_url, &did).await?;
 
     // 3. Update orchestration state: advance phase to RepoTransferred
     let mut orchestration = state.orchestration_state.lock().await;
@@ -1572,5 +1586,204 @@ mod tests {
             result,
             Err(MigrationError::MigrationNotReady { .. })
         ));
+    }
+
+    // Build a Bearer dest client (future-exp so no proactive refresh fires) at `base_url`.
+    fn bearer_client_at(base_url: String) -> OAuthClient {
+        OAuthClient::new_bearer(make_bearer_jwt(9999999999), String::new(), base_url).unwrap()
+    }
+
+    // ── Task 1 mock tests: transfer_repo_impl ──────────────────────────────
+
+    // AC2.1: fetch the source CAR and POST the exact bytes to the destination importRepo.
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn test_transfer_repo_impl_success() {
+        let source = MockServer::start();
+        let get_repo = source.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.sync.getRepo")
+                .query_param("did", "did:plc:abc123");
+            then.status(200).body("CAR-DATA-BYTES");
+        });
+        let dest = MockServer::start();
+        let import = dest.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.repo.importRepo")
+                .header("content-type", "application/vnd.ipld.car")
+                .body("CAR-DATA-BYTES"); // the exact source bytes must round-trip
+            then.status(200);
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new();
+        let dest_client = bearer_client_at(dest.base_url());
+
+        let result =
+            transfer_repo_impl(&pds_client, &dest_client, &source.base_url(), "did:plc:abc123").await;
+
+        assert!(result.is_ok());
+        assert_eq!(get_repo.calls(), 1);
+        assert_eq!(import.calls(), 1);
+    }
+
+    // AC2.1 failure: a dest importRepo 500 → RepoTransferFailed (command leaves phase un-advanced).
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn test_transfer_repo_impl_import_failure() {
+        let source = MockServer::start();
+        source.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.sync.getRepo");
+            then.status(200).body("CAR");
+        });
+        let dest = MockServer::start();
+        dest.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.repo.importRepo");
+            then.status(500).body("server error");
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new();
+        let dest_client = bearer_client_at(dest.base_url());
+
+        let result =
+            transfer_repo_impl(&pds_client, &dest_client, &source.base_url(), "did:plc:abc123").await;
+
+        assert!(matches!(result, Err(MigrationError::RepoTransferFailed { .. })));
+    }
+
+    // ── Task 2 mock tests: drain_missing_blobs ─────────────────────────────
+
+    // AC2.5: an empty first page completes immediately with no getBlob/uploadBlob calls.
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn test_drain_missing_blobs_empty_first_page() {
+        let dest = MockServer::start();
+        dest.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.repo.listMissingBlobs")
+                .query_param_missing("cursor");
+            then.status(200)
+                .json_body(serde_json::json!({ "blobs": [], "cursor": null }));
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new();
+        let dest_client = bearer_client_at(dest.base_url());
+
+        // Source URL is unreachable; if the drain tried to fetch a blob it would error, proving
+        // the empty-page short-circuit did not touch the source.
+        let result =
+            drain_missing_blobs(&pds_client, &dest_client, "http://127.0.0.1:1", "did:plc:abc123").await;
+
+        assert!(result.is_ok());
+    }
+
+    // AC2.2/AC2.3: walk two cursor pages, fetch every missing CID from source and upload to dest
+    // once each, terminating on the empty page.
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn test_drain_missing_blobs_multi_page() {
+        let source = MockServer::start();
+        let get_a = source.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.sync.getBlob")
+                .query_param("cid", "cid_a");
+            then.status(200).body("blob-a");
+        });
+        let get_b = source.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.sync.getBlob")
+                .query_param("cid", "cid_b");
+            then.status(200).body("blob-b");
+        });
+        let get_c = source.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.sync.getBlob")
+                .query_param("cid", "cid_c");
+            then.status(200).body("blob-c");
+        });
+
+        let dest = MockServer::start();
+        // Page 1 (no cursor): two blobs, cursor c1.
+        dest.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.repo.listMissingBlobs")
+                .query_param_missing("cursor");
+            then.status(200).json_body(serde_json::json!({
+                "blobs": [
+                    { "cid": "cid_a", "recordUri": "at://did:plc:abc123/app.bsky.feed.post/1" },
+                    { "cid": "cid_b", "recordUri": "at://did:plc:abc123/app.bsky.feed.post/2" }
+                ],
+                "cursor": "c1"
+            }));
+        });
+        // Page 2 (cursor=c1): one blob, cursor c2.
+        dest.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.repo.listMissingBlobs")
+                .query_param("cursor", "c1");
+            then.status(200).json_body(serde_json::json!({
+                "blobs": [
+                    { "cid": "cid_c", "recordUri": "at://did:plc:abc123/app.bsky.feed.post/3" }
+                ],
+                "cursor": "c2"
+            }));
+        });
+        // Page 3 (cursor=c2): drained → empty, terminates the loop.
+        dest.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.repo.listMissingBlobs")
+                .query_param("cursor", "c2");
+            then.status(200)
+                .json_body(serde_json::json!({ "blobs": [], "cursor": null }));
+        });
+        let upload = dest.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.repo.uploadBlob");
+            then.status(200)
+                .json_body(serde_json::json!({ "blob": { "$type": "blob" } }));
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new();
+        let dest_client = bearer_client_at(dest.base_url());
+
+        let result =
+            drain_missing_blobs(&pds_client, &dest_client, &source.base_url(), "did:plc:abc123").await;
+
+        assert!(result.is_ok());
+        assert_eq!(get_a.calls(), 1, "cid_a fetched once");
+        assert_eq!(get_b.calls(), 1, "cid_b fetched once");
+        assert_eq!(get_c.calls(), 1, "cid_c fetched once");
+        assert_eq!(upload.calls(), 3, "each of the 3 blobs uploaded once");
+    }
+
+    // AC2.6: a failing source getBlob mid-drain aborts with BlobTransferFailed (retry-safe).
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn test_drain_missing_blobs_mid_failure_is_blob_transfer_failed() {
+        let source = MockServer::start();
+        source.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.sync.getBlob");
+            then.status(500).body("blob fetch error");
+        });
+        let dest = MockServer::start();
+        dest.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.repo.listMissingBlobs")
+                .query_param_missing("cursor");
+            then.status(200).json_body(serde_json::json!({
+                "blobs": [ { "cid": "cid_a", "recordUri": "at://did:plc:abc123/x/1" } ],
+                "cursor": null
+            }));
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new();
+        let dest_client = bearer_client_at(dest.base_url());
+
+        let result =
+            drain_missing_blobs(&pds_client, &dest_client, &source.base_url(), "did:plc:abc123").await;
+
+        assert!(matches!(result, Err(MigrationError::BlobTransferFailed { .. })));
     }
 }
