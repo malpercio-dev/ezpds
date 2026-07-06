@@ -847,9 +847,14 @@ pub fn allows_repo(scope: &str, collection: &str, action: RepoAction) -> bool {
 /// Whether a granular OAuth grant permits proxying/minting service auth for an RPC.
 pub fn allows_rpc(scope: &str, lxm: &str, aud: &str) -> bool {
     has_transition_generic(scope)
-        || scope
-            .split_whitespace()
-            .any(|token| match parse_token(token) {
+        || scope.split_whitespace().any(|token| {
+            // The chat transition scope grants the whole chat.bsky.* proxy/service-auth
+            // surface regardless of audience — it is the granular-era equivalent of a
+            // privileged app password's DM access, not a per-method rpc: grant.
+            if token == "transition:chat.bsky" {
+                return lxm.starts_with("chat.bsky.");
+            }
+            match parse_token(token) {
                 (prefix, Some(pos), params) if prefix == "rpc" => {
                     lxm_matches(&pos, lxm) && aud_matches(&params, aud)
                 }
@@ -864,7 +869,8 @@ pub fn allows_rpc(scope: &str, lxm: &str, aud: &str) -> bool {
                         && aud_matches(&params, aud)
                 }
                 _ => false,
-            })
+            }
+        })
 }
 
 /// Whether a granular OAuth grant permits uploading a blob of `mime_type`.
@@ -1255,6 +1261,35 @@ mod tests {
         assert!(allows_email(scope));
         assert!(allows_account(scope, "status", "manage"));
         assert!(allows_identity(scope, "handle"));
+    }
+
+    #[test]
+    fn transition_chat_scope_grants_chat_rpc_only() {
+        let scope = "atproto transition:chat.bsky";
+        assert!(allows_rpc(
+            scope,
+            "chat.bsky.convo.listConvos",
+            "did:web:api.bsky.chat#bsky_chat"
+        ));
+        assert!(allows_rpc(
+            scope,
+            "chat.bsky.convo.sendMessage",
+            "did:example:other-chat-service"
+        ));
+        assert!(!allows_rpc(
+            scope,
+            "app.bsky.feed.getTimeline",
+            "did:web:api.bsky.app"
+        ));
+        assert!(!allows_repo(
+            scope,
+            "app.bsky.feed.post",
+            RepoAction::Create
+        ));
+        assert!(!allows_blob(scope, "image/png"));
+        assert!(!allows_email(scope));
+        assert!(!allows_account(scope, "status", "manage"));
+        assert!(!allows_identity(scope, "handle"));
     }
 
     #[test]

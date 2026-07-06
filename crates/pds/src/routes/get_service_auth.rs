@@ -325,6 +325,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn transition_chat_scope_mints_chat_service_auth_only() {
+        let state = state_with_master_key().await;
+        seed_account_with_repo(&state.db, TEST_DID).await;
+        let chat_scoped =
+            scoped_access_jwt(&state.jwt_secret, TEST_DID, "atproto transition:chat.bsky");
+
+        let allowed = app(state.clone())
+            .oneshot(get_request(
+                &chat_scoped,
+                "aud=did:web:api.bsky.chat%23bsky_chat&lxm=chat.bsky.convo.listConvos",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(allowed.status(), StatusCode::OK);
+        let body = body_json(allowed).await;
+        let (_, claims) = decode_jwt(body["token"].as_str().unwrap());
+        assert_eq!(claims["aud"], "did:web:api.bsky.chat");
+        assert_eq!(claims["lxm"], "chat.bsky.convo.listConvos");
+
+        let denied = app(state)
+            .oneshot(get_request(
+                &chat_scoped,
+                "aud=did:web:api.bsky.app&lxm=app.bsky.feed.getTimeline",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+        let body = body_json(denied).await;
+        assert_eq!(body["error"]["code"], "InsufficientScope");
+    }
+
+    #[tokio::test]
     async fn omits_lxm_when_not_requested() {
         let state = state_with_master_key().await;
         seed_account_with_repo(&state.db, TEST_DID).await;
