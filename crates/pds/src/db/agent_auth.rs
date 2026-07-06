@@ -378,7 +378,7 @@ pub(crate) async fn get_agent_claim_attempt_by_user_code(
         "SELECT id, identity_id, user_code, user_code_expires_at, email, status, created_at, \
                 datetime(user_code_expires_at) <= datetime('now') AS is_expired \
          FROM agent_claim_attempts \
-         WHERE user_code = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+         WHERE user_code = ?",
     )
     .bind(user_code)
     .fetch_optional(db)

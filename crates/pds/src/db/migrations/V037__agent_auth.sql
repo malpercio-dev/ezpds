@@ -29,7 +29,9 @@ CREATE TABLE agent_identities (
 );
 
 CREATE INDEX idx_agent_identities_did ON agent_identities (did);
-CREATE INDEX idx_agent_identities_claim_token ON agent_identities (claim_token);
+CREATE UNIQUE INDEX idx_agent_identities_claim_token
+    ON agent_identities (claim_token)
+    WHERE claim_token IS NOT NULL;
 CREATE UNIQUE INDEX idx_agent_identities_iss_sub
     ON agent_identities (issuer, subject)
     WHERE issuer IS NOT NULL;
@@ -47,5 +49,5 @@ CREATE TABLE agent_claim_attempts (
     FOREIGN KEY (identity_id) REFERENCES agent_identities (id)
 );
 
-CREATE INDEX idx_agent_claim_attempts_user_code ON agent_claim_attempts (user_code);
+CREATE UNIQUE INDEX idx_agent_claim_attempts_user_code ON agent_claim_attempts (user_code);
 CREATE INDEX idx_agent_claim_attempts_identity ON agent_claim_attempts (identity_id);
