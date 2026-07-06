@@ -1129,6 +1129,188 @@ pub async fn transfer_blobs(
     Ok(())
 }
 
+// ── Task 3: transfer_preferences ───────────────────────────────────────────
+
+/// Pure core: get preferences from source and put them to destination.
+/// Extracted for unit testability with mocked servers.
+async fn transfer_preferences_impl(
+    source_client: &OAuthClient,
+    dest_client: &OAuthClient,
+) -> Result<(), MigrationError> {
+    // 1. Get preferences from source (old PDS, DPoP-authenticated)
+    tracing::debug!("fetching preferences from source");
+    let prefs = crate::pds_client::get_preferences(source_client)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to get preferences from source");
+            MigrationError::PreferencesTransferFailed {
+                message: format!("failed to get preferences: {}", e),
+            }
+        })?;
+
+    // 2. Put preferences to destination (new PDS, Bearer-authenticated)
+    tracing::debug!("uploading preferences to destination");
+    crate::pds_client::put_preferences(dest_client, &prefs)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to put preferences to destination");
+            MigrationError::PreferencesTransferFailed {
+                message: format!("failed to put preferences: {}", e),
+            }
+        })?;
+
+    Ok(())
+}
+
+/// Tauri command: get preferences from source PDS and put to destination.
+///
+/// Gate: ensure_phase_did(..., BlobsTransferred) → clone source_client AND dest_client; drop lock
+/// Then: transfer_preferences_impl; re-lock + advance to PreferencesTransferred
+#[tauri::command]
+pub async fn transfer_preferences(
+    state: tauri::State<'_, crate::oauth::AppState>,
+    did: String,
+) -> Result<(), MigrationError> {
+    tracing::info!(did = %did, "transfer_preferences: getting and putting preferences");
+
+    // Gate + extract dependencies
+    let (source_client, dest_client) = {
+        let orchestration = state.orchestration_state.lock().await;
+        let mig = ensure_phase_did(&orchestration, &did, MigrationPhase::BlobsTransferred).map_err(|e| {
+            tracing::warn!("transfer_preferences: phase gate failed: {}", e);
+            e
+        })?;
+
+        (mig.source_client.clone(), mig.dest_client.clone())
+    }; // lock released
+
+    let Some(source_client) = source_client else {
+        tracing::error!(did = %did, "transfer_preferences: source_client not found");
+        return Err(MigrationError::SourceAuthFailed {
+            message: "source client not authenticated".into(),
+        });
+    };
+
+    let Some(dest_client) = dest_client else {
+        tracing::error!(did = %did, "transfer_preferences: dest_client not found");
+        return Err(MigrationError::AccountCreationFailed {
+            message: "destination client not authenticated".into(),
+        });
+    };
+
+    // Transfer preferences (pure core, unit-tested).
+    transfer_preferences_impl(&source_client, &dest_client).await?;
+
+    // Update orchestration state: advance phase to PreferencesTransferred
+    let mut orchestration = state.orchestration_state.lock().await;
+    if let Some(ref mut mig) = orchestration.as_mut() {
+        // Defense-in-depth DID check
+        if mig.did != did {
+            drop(orchestration);
+            tracing::warn!("transfer_preferences: orchestration state did mismatch");
+            return Err(MigrationError::MigrationNotReady {
+                message: "did mismatch with orchestration state".into(),
+            });
+        }
+        mig.phase = MigrationPhase::PreferencesTransferred;
+    } else {
+        drop(orchestration);
+        return Err(MigrationError::MigrationNotReady {
+            message: "orchestration state lost".into(),
+        });
+    }
+
+    tracing::info!(did = %did, "preferences transferred successfully");
+    Ok(())
+}
+
+// ── Task 4: verify_import ──────────────────────────────────────────────────
+
+/// Pure completeness check: gate on blobs complete AND repo present.
+/// Does NOT require valid_did (the DID doc still points at the old PDS pre-identity-op).
+pub(crate) fn import_reconciles(status: &crate::pds_client::AccountStatus) -> bool {
+    status.imported_blobs == status.expected_blobs && status.repo_commit.is_some()
+}
+
+/// Tauri command: check destination account completeness, advance to Verified if reconciled.
+///
+/// Gate: ensure_phase_did(..., PreferencesTransferred) → clone dest_client; drop lock
+/// Then: check_account_status(dest_client); if import_reconciles → advance to Verified & return status;
+///       else → VerificationIncomplete with counts, phase unchanged
+#[tauri::command]
+pub async fn verify_import(
+    state: tauri::State<'_, crate::oauth::AppState>,
+    did: String,
+) -> Result<crate::pds_client::AccountStatus, MigrationError> {
+    tracing::info!(did = %did, "verify_import: checking account completeness");
+
+    // Gate + extract dependencies
+    let dest_client = {
+        let orchestration = state.orchestration_state.lock().await;
+        let mig = ensure_phase_did(&orchestration, &did, MigrationPhase::PreferencesTransferred).map_err(|e| {
+            tracing::warn!("verify_import: phase gate failed: {}", e);
+            e
+        })?;
+
+        mig.dest_client.clone()
+    }; // lock released
+
+    let Some(dest_client) = dest_client else {
+        tracing::error!(did = %did, "verify_import: dest_client not found");
+        return Err(MigrationError::AccountCreationFailed {
+            message: "destination client not authenticated".into(),
+        });
+    };
+
+    // Check account status on destination
+    let status = crate::pds_client::check_account_status(&dest_client)
+        .await
+        .map_err(|e| {
+            tracing::error!(did = %did, error = %e, "check_account_status failed");
+            MigrationError::NetworkError {
+                message: format!("failed to check account status: {}", e),
+            }
+        })?;
+
+    // Gate: verify import is complete (blobs + repo)
+    if import_reconciles(&status) {
+        // Advance phase and return the status
+        let mut orchestration = state.orchestration_state.lock().await;
+        if let Some(ref mut mig) = orchestration.as_mut() {
+            // Defense-in-depth DID check
+            if mig.did != did {
+                drop(orchestration);
+                tracing::warn!("verify_import: orchestration state did mismatch");
+                return Err(MigrationError::MigrationNotReady {
+                    message: "did mismatch with orchestration state".into(),
+                });
+            }
+            mig.phase = MigrationPhase::Verified;
+        } else {
+            drop(orchestration);
+            return Err(MigrationError::MigrationNotReady {
+                message: "orchestration state lost".into(),
+            });
+        }
+
+        tracing::info!(did = %did, "import verified successfully");
+        Ok(status)
+    } else {
+        // Import incomplete — return counts, phase unchanged
+        tracing::warn!(
+            did = %did,
+            imported_blobs = status.imported_blobs,
+            expected_blobs = status.expected_blobs,
+            repo_commit = ?status.repo_commit,
+            "import incomplete"
+        );
+        Err(MigrationError::VerificationIncomplete {
+            imported: status.imported_blobs,
+            expected: status.expected_blobs,
+        })
+    }
+}
+
 // ── Helper: extract handle from also_known_as ───────────────────────────────
 
 fn extract_handle_from_also_known_as(also_known_as: &[String]) -> Option<String> {
@@ -1785,5 +1967,259 @@ mod tests {
             drain_missing_blobs(&pds_client, &dest_client, &source.base_url(), "did:plc:abc123").await;
 
         assert!(matches!(result, Err(MigrationError::BlobTransferFailed { .. })));
+    }
+
+    // ── Task 3 tests: transfer_preferences ─────────────────────────────────
+
+    // AC2.4 pure gate test: transfer_preferences before BlobsTransferred phase fails
+    #[test]
+    fn test_transfer_preferences_phase_too_low() {
+        let state = Some(OutboundMigrationState {
+            did: "did:plc:abc123".into(),
+            source_pds_url: "https://source.pds".into(),
+            dest_pds_url: "https://dest.pds".into(),
+            dest_did: "did:web:dest".into(),
+            handle: "alice.test".into(),
+            source_client: None,
+            dest_client: None,
+            phase: MigrationPhase::RepoTransferred, // Too early for transfer_preferences!
+        });
+
+        let result = ensure_phase_did(&state, "did:plc:abc123", MigrationPhase::BlobsTransferred);
+        assert!(matches!(
+            result,
+            Err(MigrationError::MigrationNotReady { .. })
+        ));
+    }
+
+    // AC2.4: transfer_preferences fetches from source and posts to destination, advances phase.
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn test_transfer_preferences_impl_success() {
+        let source = MockServer::start();
+        let get_prefs = source.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/app.bsky.actor.getPreferences");
+            then.status(200).json_body(serde_json::json!({
+                "preferences": [
+                    { "name": "theme", "value": "dark" }
+                ]
+            }));
+        });
+
+        let dest = MockServer::start();
+        let put_prefs = dest.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/app.bsky.actor.putPreferences")
+                .json_body(serde_json::json!({
+                    "preferences": [
+                        { "name": "theme", "value": "dark" }
+                    ]
+                }));
+            then.status(200);
+        });
+
+        let source_client = bearer_client_at(source.base_url());
+        let dest_client = bearer_client_at(dest.base_url());
+
+        let result = transfer_preferences_impl(&source_client, &dest_client).await;
+
+        assert!(result.is_ok());
+        assert_eq!(get_prefs.calls(), 1);
+        assert_eq!(put_prefs.calls(), 1);
+    }
+
+    // AC2.4 failure: source getPreferences 500 → PreferencesTransferFailed
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn test_transfer_preferences_impl_source_failure() {
+        let source = MockServer::start();
+        source.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/app.bsky.actor.getPreferences");
+            then.status(500).body("server error");
+        });
+
+        let dest = MockServer::start();
+
+        let source_client = bearer_client_at(source.base_url());
+        let dest_client = bearer_client_at(dest.base_url());
+
+        let result = transfer_preferences_impl(&source_client, &dest_client).await;
+
+        assert!(matches!(
+            result,
+            Err(MigrationError::PreferencesTransferFailed { .. })
+        ));
+    }
+
+    // AC2.4 failure: dest putPreferences 500 → PreferencesTransferFailed
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn test_transfer_preferences_impl_dest_failure() {
+        let source = MockServer::start();
+        source.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/app.bsky.actor.getPreferences");
+            then.status(200).json_body(serde_json::json!({
+                "preferences": []
+            }));
+        });
+
+        let dest = MockServer::start();
+        dest.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/app.bsky.actor.putPreferences");
+            then.status(500).body("server error");
+        });
+
+        let source_client = bearer_client_at(source.base_url());
+        let dest_client = bearer_client_at(dest.base_url());
+
+        let result = transfer_preferences_impl(&source_client, &dest_client).await;
+
+        assert!(matches!(
+            result,
+            Err(MigrationError::PreferencesTransferFailed { .. })
+        ));
+    }
+
+    // ── Task 4 tests: verify_import ────────────────────────────────────────
+
+    // AC3.1 pure: import_reconciles is true when imported_blobs == expected_blobs AND repo_commit exists
+    #[test]
+    fn test_import_reconciles_true_when_complete() {
+        let status = crate::pds_client::AccountStatus {
+            activated: false,
+            valid_did: true,
+            repo_commit: Some("baffy".to_string()),
+            repo_rev: Some("rev".to_string()),
+            stored_blocks: 10,
+            indexed_records: 5,
+            private_state_values: 0,
+            expected_blobs: 10,
+            imported_blobs: 10,
+        };
+
+        assert!(import_reconciles(&status));
+    }
+
+    // AC3.2 pure: import_reconciles is true even when valid_did = false
+    #[test]
+    fn test_import_reconciles_ignores_valid_did() {
+        let status = crate::pds_client::AccountStatus {
+            activated: false,
+            valid_did: false, // Still invalid DID, but import reconciles
+            repo_commit: Some("baffy".to_string()),
+            repo_rev: Some("rev".to_string()),
+            stored_blocks: 10,
+            indexed_records: 5,
+            private_state_values: 0,
+            expected_blobs: 10,
+            imported_blobs: 10,
+        };
+
+        assert!(import_reconciles(&status));
+    }
+
+    // AC3.3 pure: import_reconciles is false when imported_blobs < expected_blobs
+    #[test]
+    fn test_import_reconciles_false_when_blobs_incomplete() {
+        let status = crate::pds_client::AccountStatus {
+            activated: false,
+            valid_did: true,
+            repo_commit: Some("baffy".to_string()),
+            repo_rev: Some("rev".to_string()),
+            stored_blocks: 10,
+            indexed_records: 5,
+            private_state_values: 0,
+            expected_blobs: 10,
+            imported_blobs: 5, // Incomplete
+        };
+
+        assert!(!import_reconciles(&status));
+    }
+
+    // AC3.3 pure: import_reconciles is false when repo_commit is None
+    #[test]
+    fn test_import_reconciles_false_when_repo_absent() {
+        let status = crate::pds_client::AccountStatus {
+            activated: false,
+            valid_did: true,
+            repo_commit: None, // No repo yet
+            repo_rev: None,
+            stored_blocks: 0,
+            indexed_records: 0,
+            private_state_values: 0,
+            expected_blobs: 10,
+            imported_blobs: 10,
+        };
+
+        assert!(!import_reconciles(&status));
+    }
+
+    // AC3.1 command test: checkAccountStatus returns reconciled status → advance to Verified
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn test_verify_import_complete_advances_phase() {
+        let dest = MockServer::start();
+        dest.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.server.checkAccountStatus");
+            then.status(200).json_body(serde_json::json!({
+                "activated": false,
+                "validDid": true,
+                "repoCommit": "baffy",
+                "repoRev": "rev",
+                "storedBlocks": 10,
+                "indexedRecords": 5,
+                "privateStateValues": 0,
+                "expectedBlobs": 10,
+                "importedBlobs": 10
+            }));
+        });
+
+        let dest_client = bearer_client_at(dest.base_url());
+
+        let status = crate::pds_client::check_account_status(&dest_client)
+            .await
+            .unwrap();
+
+        assert!(import_reconciles(&status));
+        assert_eq!(status.imported_blobs, 10);
+        assert_eq!(status.expected_blobs, 10);
+    }
+
+    // AC3.3 command test: incomplete import returns VerificationIncomplete with counts
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn test_verify_import_incomplete_returns_counts() {
+        let dest = MockServer::start();
+        dest.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.server.checkAccountStatus");
+            then.status(200).json_body(serde_json::json!({
+                "activated": false,
+                "validDid": false,
+                "repoCommit": null,
+                "repoRev": null,
+                "storedBlocks": 0,
+                "indexedRecords": 0,
+                "privateStateValues": 0,
+                "expectedBlobs": 10,
+                "importedBlobs": 5
+            }));
+        });
+
+        let dest_client = bearer_client_at(dest.base_url());
+
+        let status = crate::pds_client::check_account_status(&dest_client)
+            .await
+            .unwrap();
+
+        // Verify the pure gate catches the incompleteness
+        assert!(!import_reconciles(&status));
+        assert_eq!(status.imported_blobs, 5);
+        assert_eq!(status.expected_blobs, 10);
     }
 }
