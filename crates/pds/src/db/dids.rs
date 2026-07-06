@@ -108,3 +108,22 @@ pub async fn update_also_known_as(
 
     Ok(true)
 }
+
+/// Insert a DID document row directly into `did_documents`, bypassing any resolution.
+///
+/// `did_documents` has no FK to `accounts`, so this can be used without a corresponding
+/// account row. Lives here (not `routes::test_utils`) so `auth::permission_sets`'s tests can
+/// depend on it without `auth/` importing from `routes/`; re-exported from
+/// `routes::test_utils` for existing route test call sites.
+#[cfg(test)]
+pub(crate) async fn seed_did_document(db: &SqlitePool, did: &str, document: serde_json::Value) {
+    sqlx::query(
+        "INSERT INTO did_documents (did, document, created_at, updated_at) \
+         VALUES (?, ?, datetime('now'), datetime('now'))",
+    )
+    .bind(did)
+    .bind(document.to_string())
+    .execute(db)
+    .await
+    .expect("insert did_document");
+}

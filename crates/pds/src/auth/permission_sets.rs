@@ -451,8 +451,8 @@ mod tests {
     use std::sync::Arc;
 
     use crate::app::{test_state, AppState};
+    use crate::db::dids::seed_did_document;
     use crate::dns::{DnsError, TxtResolver};
-    use crate::routes::test_utils::seed_did_document;
 
     use super::*;
 

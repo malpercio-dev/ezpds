@@ -483,53 +483,6 @@ pub async fn post_authorization(
         None => return rerender(Some(&identifier), "Please enter your password."),
     };
 
-    // Validate & canonically normalize the requested granular scopes before
-    // issuing a code. Hidden form fields are attacker-controllable, so this is
-    // re-checked here even though the PAR endpoint already validated it.
-    let normalized_scope = match crate::auth::oauth_scopes::normalize_scope_request(&form.scope) {
-        Ok(s) => s,
-        Err(desc) => {
-            return error_redirect(&form.redirect_uri, "invalid_scope", &desc, &form.state)
-                .into_response()
-        }
-    };
-
-    // Resolve any `include:<nsid>` permission-set references to their granular scopes.
-    // Authoritative — re-run regardless of what the GET already displayed, since hidden form
-    // fields are attacker-controllable. Fails closed: an unresolvable reference rejects the
-    // whole request rather than granting a smaller-than-requested set.
-    let expanded_scope = match crate::auth::permission_sets::expand_include_scopes(
-        &state,
-        &state.permission_set_cache,
-        &normalized_scope,
-    )
-    .await
-    {
-        Ok(s) => s,
-        Err(desc) => {
-            return error_redirect(&form.redirect_uri, "invalid_scope", &desc, &form.state)
-                .into_response()
-        }
-    };
-
-    // Reduce to the user's actually-checked permissions: `atproto` is always granted
-    // (never a checkbox); every other token is granted only if its checkbox was left checked.
-    // Filtering `expanded_scope`'s own tokens (rather than trusting `granted_scope` values
-    // directly) means a tampered/injected checkbox value that was never part of the requested
-    // set is simply not present to match against — it can't add scope, only remove it.
-    let granted_tokens: Vec<&str> = expanded_scope
-        .split_whitespace()
-        .filter(|t| *t == "atproto" || form.granted_scope.iter().any(|g| g == t))
-        .collect();
-    let granted_scope =
-        match crate::auth::oauth_scopes::normalize_scope_request(&granted_tokens.join(" ")) {
-            Ok(s) => s,
-            Err(desc) => {
-                return error_redirect(&form.redirect_uri, "invalid_scope", &desc, &form.state)
-                    .into_response()
-            }
-        };
-
     // Look up the account and verify the password before issuing any auth code. Re-render the
     // consent form (200) on all credential errors so the user can retry without the OAuth
     // client seeing a denial. "Not found" and "wrong password" produce identical messages and
@@ -634,6 +587,57 @@ pub async fn post_authorization(
         };
         clear_failures(&mut attempts, &identifier);
     }
+
+    // Validate & canonically normalize the requested granular scopes before issuing a code.
+    // Deliberately deferred until after credential verification: scope resolution below can
+    // perform real DNS/HTTP network calls for `include:<nsid>` references, so an unauthenticated
+    // or wrong-password caller never reaches it — the network path stays behind valid
+    // credentials, and an invalid `include:` reference can't be probed pre-auth either. Hidden
+    // form fields are attacker-controllable, so this is re-checked here even though the PAR
+    // endpoint already validated it.
+    let normalized_scope = match crate::auth::oauth_scopes::normalize_scope_request(&form.scope) {
+        Ok(s) => s,
+        Err(desc) => {
+            return error_redirect(&form.redirect_uri, "invalid_scope", &desc, &form.state)
+                .into_response()
+        }
+    };
+
+    // Resolve any `include:<nsid>` permission-set references to their granular scopes.
+    // Authoritative — re-run regardless of what the GET already displayed, since hidden form
+    // fields are attacker-controllable. Fails closed: an unresolvable reference rejects the
+    // whole request rather than granting a smaller-than-requested set.
+    let expanded_scope = match crate::auth::permission_sets::expand_include_scopes(
+        &state,
+        &state.permission_set_cache,
+        &normalized_scope,
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(desc) => {
+            return error_redirect(&form.redirect_uri, "invalid_scope", &desc, &form.state)
+                .into_response()
+        }
+    };
+
+    // Reduce to the user's actually-checked permissions: `atproto` is always granted
+    // (never a checkbox); every other token is granted only if its checkbox was left checked.
+    // Filtering `expanded_scope`'s own tokens (rather than trusting `granted_scope` values
+    // directly) means a tampered/injected checkbox value that was never part of the requested
+    // set is simply not present to match against — it can't add scope, only remove it.
+    let granted_tokens: Vec<&str> = expanded_scope
+        .split_whitespace()
+        .filter(|t| *t == "atproto" || form.granted_scope.iter().any(|g| g == t))
+        .collect();
+    let granted_scope =
+        match crate::auth::oauth_scopes::normalize_scope_request(&granted_tokens.join(" ")) {
+            Ok(s) => s,
+            Err(desc) => {
+                return error_redirect(&form.redirect_uri, "invalid_scope", &desc, &form.state)
+                    .into_response()
+            }
+        };
 
     let did = account.did;
 
