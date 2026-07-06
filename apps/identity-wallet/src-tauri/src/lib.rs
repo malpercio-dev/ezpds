@@ -948,6 +948,8 @@ pub fn run() {
             migration_orchestrator::transfer_blobs,
             migration_orchestrator::transfer_preferences,
             migration_orchestrator::verify_import,
+            migration_orchestrator::arm_identity_leg,
+            migration_orchestrator::finalize_migration,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
