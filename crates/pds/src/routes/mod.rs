@@ -89,3 +89,6 @@ mod preference_scope;
 
 #[cfg(test)]
 pub(crate) mod test_utils;
+
+#[cfg(test)]
+mod outbound_migration_test;

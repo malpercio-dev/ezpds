@@ -135,8 +135,10 @@ pub async fn state_with_master_key() -> AppState {
 /// Insert a promoted account, generate + store its per-account repo signing key
 /// (encrypted with [`test_master_key`]), create the genesis repo signed with that key,
 /// and set `repo_root_cid`. Pair with [`state_with_master_key`] so `putRecord` can
-/// reload the same key to sign subsequent commits.
-pub async fn seed_account_with_repo(db: &sqlx::SqlitePool, did: &str) {
+/// reload the same key to sign subsequent commits. Returns the account's repo keypair so
+/// callers that need to assert against it directly (e.g. building a matching DID document
+/// on a second, independent server) don't have to regenerate or re-derive it.
+pub async fn seed_account_with_repo(db: &sqlx::SqlitePool, did: &str) -> crypto::P256Keypair {
     sqlx::query(
         "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
          VALUES (?, ?, 'hash', datetime('now'), datetime('now'))",
@@ -197,6 +199,7 @@ pub async fn seed_account_with_repo(db: &sqlx::SqlitePool, did: &str) {
     crate::db::blocks::tag_blocks_rev(db, did, &cids, &rev)
         .await
         .unwrap();
+    kp
 }
 
 /// Insert an account + handle and promote a per-account signing key (private key encrypted
