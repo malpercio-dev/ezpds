@@ -2025,7 +2025,7 @@ mod tests {
             "urn:ietf:params:oauth:request_uri:test"
         );
         assert_eq!(par_response.expires_in, 60);
-        assert_eq!(mock_par.hits(), 1);
+        assert_eq!(mock_par.calls(), 1);
     }
 
     /// PAR without login_hint
@@ -2491,7 +2491,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify the mock was hit (request was made)
-        assert_eq!(mock.hits(), 1);
+        assert_eq!(mock.calls(), 1);
     }
 
     /// get_recommended_did_credentials returns credentials

@@ -707,8 +707,8 @@ mod tests {
         //   Mock1 (specific): first request has NO nonce in DPoP proof → 400+DPoP-Nonce
         //   Mock2 (general):  retry has nonce in proof → Mock1 won't match → Mock2 serves
         //
-        // If the retry proof omits the nonce, Mock1 matches again → Mock1.hits() would
-        // be 2 and Mock2.hits() would be 0, causing the assertion below to fail.
+        // If the retry proof omits the nonce, Mock1 matches again → Mock1.calls() would
+        // be 2 and Mock2.calls() would be 0, causing the assertion below to fail.
         let server = MockServer::start();
 
         let mock_challenge = server.mock(|when, then| {
@@ -739,12 +739,12 @@ mod tests {
         );
 
         assert_eq!(
-            mock_challenge.hits(),
+            mock_challenge.calls(),
             1,
             "initial request must hit the nonce-challenge mock"
         );
         assert_eq!(
-            mock_retry.hits(),
+            mock_retry.calls(),
             1,
             "retry must hit the success mock (nonce in proof)"
         );
@@ -886,7 +886,7 @@ mod tests {
 
         // Exactly 2 requests: initial attempt + one nonce retry.
         assert_eq!(
-            token_mock.hits(),
+            token_mock.calls(),
             2,
             "must make exactly 2 requests: initial + nonce retry"
         );
