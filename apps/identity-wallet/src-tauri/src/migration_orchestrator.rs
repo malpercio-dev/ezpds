@@ -197,17 +197,27 @@ async fn prepare_migration_impl(
         .await
         .map_err(|e| {
             tracing::error!(did = %did, error = %e, "failed to discover source PDS");
-            MigrationError::NetworkError {
-                message: format!("source discovery failed: {}", e),
+            // Preserve the unreachable distinction in the message (there is no SourceUnreachable
+            // variant; AC1.5 only names the destination, but a bare NetworkError is less actionable).
+            match e {
+                crate::pds_client::PdsClientError::PdsUnreachable { .. } => {
+                    MigrationError::NetworkError {
+                        message: format!("source PDS unreachable: {}", e),
+                    }
+                }
+                other => MigrationError::NetworkError {
+                    message: format!("source discovery failed: {}", other),
+                },
             }
         })?;
 
-    // Extract handle from also_known_as (format: at://handle)
+    // Extract handle from also_known_as (format: at://handle). A DID document with no at:// entry
+    // is a data problem (unusable identity), not a network error — surface it as such.
     let handle = extract_handle_from_also_known_as(&plc_doc.also_known_as)
         .ok_or_else(|| {
             tracing::error!(did = %did, "no at:// handle in also_known_as");
-            MigrationError::NetworkError {
-                message: "no handle found in also_known_as".into(),
+            MigrationError::AccountCreationFailed {
+                message: "source DID document has no at:// handle in alsoKnownAs".into(),
             }
         })?;
 
@@ -733,10 +743,11 @@ async fn create_destination_account_impl(
     invite_code: Option<String>,
     existing_dest_client: Option<Arc<OAuthClient>>,
 ) -> Result<Arc<OAuthClient>, MigrationError> {
-    // 0. Idempotent fast path: if dest_client already exists, return it
-    if let Some(client) = existing_dest_client {
+    // 0. Idempotent fast path: if dest_client already exists, return it.
+    //    Borrow (don't move) so `existing_dest_client` survives to the DidAlreadyExists arm below.
+    if let Some(client) = &existing_dest_client {
         tracing::info!(did = %did, "create_destination_account: dest_client exists, returning cached");
-        return Ok(client);
+        return Ok(client.clone());
     }
 
     // 1. Reserve signing key at destination
@@ -793,34 +804,43 @@ async fn create_destination_account_impl(
         invite_code,
     };
 
-    let resp = crate::pds_client::create_account_migration(&sa_client, &req)
-        .await
-        .map_err(|e| {
-            tracing::error!(did = %did, error = %e, "createAccount failed");
-            match e {
-                crate::pds_client::PdsClientError::DidAlreadyExists => {
-                    // Tolerate DidAlreadyExists (AC5.1) but return error—state will be re-checked
-                    MigrationError::AccountCreationFailed {
-                        message: "did already exists at destination".into(),
-                    }
-                }
-                other => MigrationError::AccountCreationFailed {
-                    message: format!("account creation failed: {}", other),
-                },
+    match crate::pds_client::create_account_migration(&sa_client, &req).await {
+        Ok(resp) => {
+            // 5. Build destination Bearer client from the returned session tokens.
+            let dest_client =
+                OAuthClient::new_bearer(resp.access_jwt, resp.refresh_jwt, dest_pds_url.into())
+                    .map_err(|e| {
+                        tracing::error!(error = %e, "failed to create destination Bearer client from response");
+                        MigrationError::AccountCreationFailed {
+                            message: "failed to create destination client".to_string(),
+                        }
+                    })?;
+            tracing::info!(did = %did, "destination account created successfully");
+            Ok(Arc::new(dest_client))
+        }
+        // The account already exists at the destination. If we still hold an in-memory dest_client
+        // we tolerate it (AC5.1, idempotent re-establish — the fast path above usually covers this).
+        // If not, the destination session was lost (only possible after an app kill wiped in-memory
+        // state), so the flow must restart from prepare_migration (AC10.3 / DESTINATION_CONFLICT).
+        Err(crate::pds_client::PdsClientError::DidAlreadyExists) => match existing_dest_client {
+            Some(client) => {
+                tracing::info!(did = %did, "createAccount 409 but dest_client held; tolerating (AC5.1)");
+                Ok(client)
             }
-        })?;
-
-    // 5. Build destination Bearer client from response tokens
-    let dest_client = OAuthClient::new_bearer(resp.access_jwt, resp.refresh_jwt, dest_pds_url.into())
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to create destination Bearer client from response");
-            MigrationError::AccountCreationFailed {
-                message: "failed to create destination client".to_string(),
+            None => {
+                tracing::error!(did = %did, "createAccount 409 with no dest_client; destination conflict");
+                Err(MigrationError::DestinationConflict {
+                    message: "account exists but session was lost (app kill); restart migration".into(),
+                })
             }
-        })?;
-
-    tracing::info!(did = %did, "destination account created successfully");
-    Ok(Arc::new(dest_client))
+        },
+        Err(other) => {
+            tracing::error!(did = %did, error = %other, "createAccount failed");
+            Err(MigrationError::AccountCreationFailed {
+                message: format!("account creation failed: {}", other),
+            })
+        }
+    }
 }
 
 /// Tauri command: create destination account or re-establish cached session.
@@ -916,6 +936,7 @@ fn extract_handle_from_also_known_as(also_known_as: &[String]) -> Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use httpmock::MockServer;
 
     // AC1.3: Phase too low returns MigrationNotReady
     #[test]
@@ -1082,23 +1103,155 @@ mod tests {
 
     // ── Task 6 tests: Account creation idempotence + gating ───────────────
 
-    // AC5.1: create_destination_account with existing dest_client returns it (idempotent)
-    #[test]
-    fn test_create_destination_account_idempotent_with_existing_client() {
-        // This is a pure synchronous test showing idempotence logic
-        // The full async test with mocking would go in integration tests
-        let existing = Arc::new(OAuthClient::new_bearer(
-            "token".into(),
-            "refresh".into(),
-            "https://dest.pds".into(),
-        ).unwrap());
+    /// A JWT whose `exp` is `exp`. Bearer test clients need a future-exp token, else `new_bearer`
+    /// sets expires_at=0 and a proactive refresh fires before the request under test.
+    fn make_bearer_jwt(exp: u64) -> String {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"ES256"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{}}}"#, exp));
+        format!("{}.{}.sig", header, payload)
+    }
 
-        // Verify that the _impl function would return the cached client
-        // (actual async test omitted; this demonstrates the property)
-        assert!(Arc::ptr_eq(
-            &existing,
-            &existing.clone() // simulating the return
+    // AC5.1: create_destination_account_impl with an existing dest_client returns it (idempotent
+    // re-establish) WITHOUT any network — the fast path short-circuits before reserve/serviceAuth/
+    // createAccount, so this also covers "409-with-existing is tolerated" (createAccount is never
+    // reached when a client is held). No #[ignore] needed: no socket is bound.
+    #[tokio::test]
+    async fn test_create_destination_account_impl_idempotent_with_existing_client() {
+        let existing = Arc::new(
+            OAuthClient::new_bearer(make_bearer_jwt(9999999999), String::new(), "https://dest.pds".into())
+                .unwrap(),
+        );
+        // Dummy deps that must never be touched (unreachable URLs prove the fast path took over).
+        let pds_client = crate::pds_client::PdsClient::new();
+        let source_client = Arc::new(
+            OAuthClient::new_bearer(make_bearer_jwt(9999999999), String::new(), "http://127.0.0.1:1".into())
+                .unwrap(),
+        );
+
+        let result = create_destination_account_impl(
+            &pds_client,
+            &source_client,
+            "http://127.0.0.1:1",
+            "did:web:dest",
+            "did:plc:abc123",
+            "alice.test",
+            "alice@example.com",
+            None,
+            Some(existing.clone()),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        assert!(
+            Arc::ptr_eq(&result.unwrap(), &existing),
+            "must return the exact cached client without hitting the network"
+        );
+    }
+
+    // AC5.1: createAccount 409 with NO existing dest_client → DESTINATION_CONFLICT (session lost).
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn test_create_destination_account_impl_409_no_existing_is_conflict() {
+        let source = MockServer::start();
+        source.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.server.getServiceAuth");
+            then.status(200)
+                .json_body(serde_json::json!({ "token": make_bearer_jwt(9999999999) }));
+        });
+        let dest = MockServer::start();
+        dest.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.reserveSigningKey");
+            then.status(200)
+                .json_body(serde_json::json!({ "signingKey": "did:key:zDest" }));
+        });
+        dest.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.createAccount");
+            then.status(409).body("account already exists");
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new();
+        let source_client = Arc::new(
+            OAuthClient::new_bearer(make_bearer_jwt(9999999999), String::new(), source.base_url())
+                .unwrap(),
+        );
+
+        let result = create_destination_account_impl(
+            &pds_client,
+            &source_client,
+            &dest.base_url(),
+            "did:web:dest",
+            "did:plc:abc123",
+            "alice.test",
+            "alice@example.com",
+            None,
+            None, // no existing client → conflict
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(MigrationError::DestinationConflict { .. })
         ));
+    }
+
+    // Happy path: reserveSigningKey → getServiceAuth → createAccount(200) → dest Bearer client.
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn test_create_destination_account_impl_happy_path() {
+        let source = MockServer::start();
+        let sa_mock = source.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.server.getServiceAuth");
+            then.status(200)
+                .json_body(serde_json::json!({ "token": make_bearer_jwt(9999999999) }));
+        });
+        let dest = MockServer::start();
+        let reserve_mock = dest.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.reserveSigningKey");
+            then.status(200)
+                .json_body(serde_json::json!({ "signingKey": "did:key:zDest" }));
+        });
+        let create_mock = dest.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.createAccount");
+            then.status(200).json_body(serde_json::json!({
+                "accessJwt": make_bearer_jwt(9999999999),
+                "refreshJwt": "refresh_jwt",
+                "handle": "alice.test",
+                "did": "did:plc:abc123"
+            }));
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new();
+        let source_client = Arc::new(
+            OAuthClient::new_bearer(make_bearer_jwt(9999999999), String::new(), source.base_url())
+                .unwrap(),
+        );
+
+        let result = create_destination_account_impl(
+            &pds_client,
+            &source_client,
+            &dest.base_url(),
+            "did:web:dest",
+            "did:plc:abc123",
+            "alice.test",
+            "alice@example.com",
+            None,
+            None,
+        )
+        .await;
+
+        assert!(result.is_ok(), "happy path must return a dest client");
+        // Each leg was exercised exactly once, in order.
+        assert_eq!(reserve_mock.calls(), 1);
+        assert_eq!(sa_mock.calls(), 1);
+        assert_eq!(create_mock.calls(), 1);
     }
 
     // AC1.3: create_destination_account before SourceAuthed phase returns MIGRATION_NOT_READY
@@ -1143,6 +1296,17 @@ mod tests {
     #[test]
     fn test_extract_handle_from_also_known_as_empty() {
         let entries: Vec<String> = vec![];
+        let result = extract_handle_from_also_known_as(&entries);
+        assert_eq!(result, None);
+    }
+
+    // Only non-at:// entries present → None (prepare_migration maps this to AccountCreationFailed).
+    #[test]
+    fn test_extract_handle_from_also_known_as_no_at_uri() {
+        let entries = vec![
+            "https://example.com/user/alice".to_string(),
+            "mailto:alice@example.com".to_string(),
+        ];
         let result = extract_handle_from_also_known_as(&entries);
         assert_eq!(result, None);
     }
