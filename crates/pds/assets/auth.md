@@ -1,7 +1,33 @@
 # Agent authentication for {{service_name}}
 
-This service supports **agentic registration**: an autonomous agent can obtain its
-own credential to act on behalf of a user, without a browser-based login.
+## About this service
+
+`{{service_name}}` is an **[AT Protocol](https://atproto.com) Personal Data Server
+(PDS)** running at `{{public_url}}`. A PDS is the home server for a user's ATProto
+identity: it hosts their account, their cryptographic identity (a `did:plc` or
+`did:web` DID), and their **repository** — the signed, content-addressed log of all
+their records (posts, likes, follows, profile, and any other lexicon record type),
+plus the blobs (images, media) those records reference. It also speaks the ATProto
+network on the account's behalf: serving the repo to relays over the firehose,
+resolving handles and identities, and proxying reads/writes to an AppView.
+
+This document supports **agentic registration**: an autonomous agent can obtain its
+own credential to act on behalf of a user here, without a browser-based login. Once
+registered and holding an access token (§4), an agent calls this server's
+[XRPC API](https://atproto.com/specs/xrpc) — the same `com.atproto.*` and `app.bsky.*`
+endpoints a normal client uses. Depending on the scopes granted at registration, that
+can include:
+
+- **Reading** the user's records and repository — `com.atproto.repo.getRecord`,
+  `listRecords`, `com.atproto.sync.getRepo`, and AppView reads like
+  `app.bsky.feed.getTimeline` proxied through this PDS.
+- **Writing** on the user's behalf — `com.atproto.repo.createRecord`, `putRecord`,
+  `deleteRecord`, `applyWrites`, and `uploadBlob` (e.g. posting, liking, following).
+- **Resolving identity** — `com.atproto.identity.resolveHandle` / `resolveDid`.
+
+An agent credential is scoped and revocable (§7): it is not the user's password, and
+account-level and identity-level operations (rotating keys, changing the handle,
+deleting the account) are **not** granted to agents.
 
 - **Resource server:** `{{public_url}}`
 - **Authorization server:** `{{public_url}}`
