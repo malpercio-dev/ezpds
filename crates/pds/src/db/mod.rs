@@ -200,6 +200,10 @@ static MIGRATIONS: &[Migration] = &[
         version: 37,
         sql: include_str!("migrations/V037__agent_auth.sql"),
     },
+    Migration {
+        version: 38,
+        sql: include_str!("migrations/V038__agent_identities_nullable_did.sql"),
+    },
 ];
 
 /// Open a WAL-mode SQLite connection pool with a maximum of 1 connection.
@@ -415,6 +419,101 @@ mod tests {
         assert_eq!(
             count, expected,
             "second run must not insert duplicate migration rows"
+        );
+    }
+
+    /// Apply every migration strictly before `stop_before`, in order, inside one transaction —
+    /// mirroring `run_migrations` but letting a test pause at an intermediate schema version.
+    async fn apply_migrations_before(pool: &SqlitePool, stop_before: u32) {
+        let mut tx = pool.begin().await.unwrap();
+        for migration in MIGRATIONS.iter().filter(|m| m.version < stop_before) {
+            sqlx::raw_sql(migration.sql)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+        }
+        tx.commit().await.unwrap();
+    }
+
+    /// V038 rebuilds `agent_identities` (referenced by `agent_claim_attempts`) to make `did`
+    /// nullable. The fresh-DB migration run never has rows present during the rebuild, so this test
+    /// exercises the production upgrade path: seed the V037 schema with a populated
+    /// identity→claim-attempt chain, then apply V038 and confirm the child FK survives (thanks to
+    /// `PRAGMA defer_foreign_keys`) and an anonymous NULL-did identity can now be inserted.
+    #[tokio::test]
+    async fn v038_rebuild_preserves_child_rows_and_allows_null_did() {
+        let pool = in_memory_pool().await;
+        apply_migrations_before(&pool, 38).await;
+
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES ('did:plc:v038owner', 'v038@example.com', 'hash', datetime('now'), datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO agent_identities \
+             (id, did, registration_type, scopes, assertion_expires_at, created_at, updated_at) \
+             VALUES ('reg_v038', 'did:plc:v038owner', 'service_auth', '[]', \
+                     datetime('now', '+1 hour'), datetime('now'), datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO agent_claim_attempts \
+             (id, identity_id, user_code, user_code_expires_at, created_at) \
+             VALUES ('cla_v038', 'reg_v038', '123456', datetime('now', '+10 minutes'), datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Apply just V038.
+        let v038 = MIGRATIONS.iter().find(|m| m.version == 38).unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::raw_sql(v038.sql).execute(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+
+        // The child claim-attempt row still resolves its FK to the preserved identity id.
+        let (attempts,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM agent_claim_attempts WHERE identity_id = 'reg_v038'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(attempts, 1, "child claim attempt must survive the rebuild");
+
+        // An anonymous identity (NULL did) is now insertable, and FK enforcement is intact.
+        sqlx::query(
+            "INSERT INTO agent_identities \
+             (id, did, registration_type, scopes, assertion_expires_at, created_at, updated_at) \
+             VALUES ('reg_anon_v038', NULL, 'anonymous', '[]', datetime('now', '+1 hour'), \
+                     datetime('now'), datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let (did,): (Option<String>,) =
+            sqlx::query_as("SELECT did FROM agent_identities WHERE id = 'reg_anon_v038'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(did, None);
+
+        // A non-NULL did still has to reference a real account.
+        let orphan = sqlx::query(
+            "INSERT INTO agent_identities \
+             (id, did, registration_type, scopes, assertion_expires_at, created_at, updated_at) \
+             VALUES ('reg_orphan', 'did:plc:missing', 'service_auth', '[]', \
+                     datetime('now', '+1 hour'), datetime('now'), datetime('now'))",
+        )
+        .execute(&pool)
+        .await;
+        assert!(
+            orphan.is_err(),
+            "non-NULL did must still be checked against accounts"
         );
     }
 

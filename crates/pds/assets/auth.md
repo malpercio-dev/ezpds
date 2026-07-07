@@ -39,10 +39,10 @@ access token, and call the API.
 
 > **Scope of this document.** It describes the surface **this deployment actually
 > exposes today**. Where the [auth.md](https://github.com/workos/auth.md) spec
-> defines a mechanism that is advertised but not yet enabled here (the anonymous
-> registration type, the machine-pollable claim grant, provider-driven revocation),
-> the relevant section says so explicitly and gives the working alternative. Trust
-> the live discovery documents below over any cached assumption.
+> defines a mechanism that is advertised but not yet enabled here (the
+> machine-pollable claim grant, provider-driven revocation), the relevant section
+> says so explicitly and gives the working alternative. Trust the live discovery
+> documents below over any cached assumption.
 
 ## 1. Discover
 
@@ -90,11 +90,10 @@ at the agent-registration surface:
 
 > **Not everything advertised is live yet.** This metadata declares the full
 > auth.md surface for forward compatibility, but on this deployment the
-> `anonymous` identity type (§3.3), the `claim_endpoint` and the
-> `urn:workos:agent-auth:grant-type:claim` grant (§3.4), and the
-> `events_endpoint` revocation channel (§7) are **not yet implemented**. The
-> sections cross-referenced here give the working alternative for each. The live
-> path is: register (§3) → exchange the assertion with the JWT-bearer grant
+> `claim_endpoint` and the `urn:workos:agent-auth:grant-type:claim` grant (§3.4)
+> and the `events_endpoint` revocation channel (§7) are **not yet implemented**.
+> The sections cross-referenced here give the working alternative for each. The
+> live path is: register (§3) → exchange the assertion with the JWT-bearer grant
 > (§4) → call the API (§5).
 
 ## 2. Pick a method
@@ -107,7 +106,7 @@ this deployment; a disabled flow answers with a `*_not_enabled` error.
 |---|---|---|
 | An **ID-JAG** from a trusted identity provider | `identity_assertion` | The strongest path. The issuer must be on this server's trust list. |
 | Only the **user's email** | `service_auth` | Starts a claim ceremony the user completes. |
-| **No user identity at all** | `anonymous` | Advertised, **not yet enabled on this deployment** — see §3.3. |
+| **No user identity at all** | `anonymous` | Opt-in per operator. Returns a limited pre-claim assertion + a `claim_token` — see §3.3. |
 
 ## 3. Register
 
@@ -189,14 +188,40 @@ Content-Type: application/json
 }
 ```
 
-### 3.3 `anonymous` — not yet enabled
+### 3.3 `anonymous`
 
-The `anonymous` type is advertised in `identity_types_supported` for spec
-completeness, but this deployment cannot yet issue a credential to an agent with no
-user identity: every agent identity is bound to an existing account. A request with
-`type: "anonymous"` returns `anonymous_not_enabled` (or `temporarily_unavailable`
-where the operator has toggled it on ahead of implementation). Use
-`identity_assertion` or `service_auth` instead.
+When you have no user identity at all, register anonymously. The server records an
+ownerless pre-claim identity and returns a **pre-claim `identity_assertion`** carrying
+a limited scope set (the operator's `pre_claim_scopes`) plus a `claim_token` for an
+optional later claim ceremony:
+
+```http
+POST {{public_url}}/agent/identity
+Content-Type: application/json
+
+{
+  "type": "anonymous"
+}
+```
+
+**200:**
+
+```json
+{
+  "registration_id": "reg_…",
+  "registration_type": "anonymous",
+  "identity_assertion": "<service-signed pre-claim assertion>",
+  "assertion_expires": "2026-01-01T01:00:00.000Z",
+  "scopes": ["atproto", "repo:*?action=create&action=update", "blob:*/*"],
+  "claim_token": "clm_…"
+}
+```
+
+This flow is **opt-in per operator**; when disabled it answers `anonymous_not_enabled`.
+The pre-claim identity stays unclaimed until a user completes a claim ceremony that
+binds it to their account, so its assertion **cannot yet be exchanged** at the token
+endpoint (the JWT-bearer grant requires a claimed identity — §4). Hold the
+`claim_token` for the claim ceremony (§3.4), which is not yet live on this deployment.
 
 ### 3.4 The claim ceremony
 
@@ -273,7 +298,7 @@ Failures use the OAuth-style `{ "error", "error_description" }` body.
 |---|---|---|
 | `invalid_request` | Missing or malformed field (e.g. absent `type`). | Fix the request body. |
 | `service_auth_not_enabled` | The operator has not enabled `service_auth`. | Use another flow, or ask the operator. |
-| `anonymous_not_enabled` | `anonymous` is unavailable here (see §3.3). | Use `identity_assertion` or `service_auth`. |
+| `anonymous_not_enabled` | The operator has not enabled `anonymous` (see §3.3). | Use another flow, or ask the operator. |
 | `issuer_not_enabled` | The ID-JAG `iss` is not on the trust list. | Present an assertion from a trusted issuer. |
 | `invalid_grant` | Bad assertion/signature, or the identity is unclaimed. | Re-register and finish the claim ceremony. |
 | `login_required` | The ID-JAG's `auth_time` is too old. | Re-authenticate the user, then retry. |

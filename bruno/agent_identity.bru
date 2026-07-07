@@ -55,8 +55,25 @@ docs {
 
   ## anonymous
 
-  Body: `{ "type": "anonymous" }`. Deferred — currently returns `anonymous_not_enabled`
-  (or `temporarily_unavailable` when the flag is enabled but the flow is unimplemented).
+  Body: `{ "type": "anonymous" }`. Registers an ownerless pre-claim identity (no user identity yet;
+  `agent_identities.did` is NULL until a claim binds one). Returns 200 with a pre-claim
+  `identity_assertion` carrying the operator's `pre_claim_scopes` plus a `claim_token` for an
+  optional later claim ceremony:
+
+  ```json
+  {
+    "registration_id": "reg_...",
+    "registration_type": "anonymous",
+    "identity_assertion": "<service-signed pre-claim assertion>",
+    "assertion_expires": "...",
+    "scopes": ["atproto", "repo:*?action=create&action=update", "blob:*/*"],
+    "claim_token": "clm_..."
+  }
+  ```
+
+  Requires `[agent_auth] anonymous_enabled = true`. The identity stays unclaimed, so the pre-claim
+  assertion cannot yet be exchanged at the token endpoint (the jwt-bearer grant requires a claimed
+  identity).
 
   ## Errors (OAuth-style `{ "error", "error_description" }` body)
 
