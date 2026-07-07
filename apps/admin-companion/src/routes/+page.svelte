@@ -23,6 +23,9 @@
 
   let claiming = $state(false);
   let claimCode = $state<string | undefined>(undefined);
+  // The server the shown code was actually minted for — pinned when the mint starts, so
+  // switching servers while a mint is in flight can never relabel A's code as B's.
+  let claimCodeServer = $state<ServerIdentity | null>(null);
   let claimErrorView = $state<ErrorView | undefined>(undefined);
   // The server a failure is attributed to — the *attempted* pairing for a switch error
   // (the active selection is unchanged there, so `identity` would name the wrong relay).
@@ -49,6 +52,9 @@
     claiming = true;
     gateHint = undefined;
     shareHint = undefined;
+    // Pinned to the server the mint acts on, so a switch during the in-flight request
+    // can never relabel the code (or a failure) with another server's identity.
+    let target: ServerIdentity | null = null;
     try {
       // Confirm user presence before signing. A denial blocks; a disabled gate or an
       // off-device build proceeds (see requireUserPresence).
@@ -61,10 +67,14 @@
       claimErrorServer = null;
       // Drop the prior code so a failed mint never leaves a stale code beside the error.
       claimCode = undefined;
+      claimCodeServer = null;
+      // Captured in the same tick the Rust side resolves the active pairing.
+      target = identity;
       claimCode = await generateClaimCode();
+      claimCodeServer = target;
     } catch (e) {
       claimErrorView = classifyRelayError(e);
-      claimErrorServer = identity;
+      claimErrorServer = target ?? identity;
       await reloadPairings();
     } finally {
       claiming = false;
@@ -91,6 +101,7 @@
       switcherOpen = false;
       // Clear stale code so a code minted for the old server never shows beside the new identity.
       claimCode = undefined;
+      claimCodeServer = null;
       claimErrorView = undefined;
       claimErrorServer = null;
     } catch (e) {
@@ -108,6 +119,7 @@
       // Clear state scoped to the forgotten server — a code it minted or an error it
       // produced must never render beside an auto-promoted successor's identity.
       claimCode = undefined;
+      claimCodeServer = null;
       claimErrorView = undefined;
       claimErrorServer = null;
     } catch (e) {
@@ -195,30 +207,9 @@
       </section>
     {/if}
 
-    <!-- Main claim-code flow — hidden while a pick is required (the forced-open
-         switcher is the only affordance in that state). -->
-    {#if !needsPick}
-    <p class="lede">
-      Mint a single-use account claim code, signed by this device. Share it with the person
-      onboarding, or copy it.
-    </p>
-
-    {#if claimCode && identity}
-      <div class="code-block">
-        <div class="code-server">
-          <span class="code-server-nickname">{identity.nickname}</span>
-          <span class="code-server-host">{identity.host}</span>
-        </div>
-        <CodeOutput value={claimCode} label="Account claim code" onshare={shareCode} />
-      </div>
-      {#if shareHint}
-        <p class="hint" role="status">
-          <StatusChip status="info" label="copy" />
-          <span>{shareHint}</span>
-        </p>
-      {/if}
-    {/if}
-
+    <!-- Rendered outside the pick gate: a failed switch (the only action available
+         while a pick is required) must still surface its error, attributed to the
+         tapped server. -->
     {#if claimErrorView}
       <ErrorState
         view={claimErrorView}
@@ -228,6 +219,30 @@
         onforget={forgetActive}
         onswitch={() => (switcherOpen = true)}
       />
+    {/if}
+
+    <!-- Main claim-code flow — hidden while a pick is required (the forced-open
+         switcher is the only affordance in that state). -->
+    {#if !needsPick}
+    <p class="lede">
+      Mint a single-use account claim code, signed by this device. Share it with the person
+      onboarding, or copy it.
+    </p>
+
+    {#if claimCode && claimCodeServer}
+      <div class="code-block">
+        <div class="code-server">
+          <span class="code-server-nickname">{claimCodeServer.nickname}</span>
+          <span class="code-server-host">{claimCodeServer.host}</span>
+        </div>
+        <CodeOutput value={claimCode} label="Account claim code" onshare={shareCode} />
+      </div>
+      {#if shareHint}
+        <p class="hint" role="status">
+          <StatusChip status="info" label="copy" />
+          <span>{shareHint}</span>
+        </p>
+      {/if}
     {/if}
 
     {#if gateHint}
