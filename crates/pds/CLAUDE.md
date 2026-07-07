@@ -258,7 +258,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 |---|---|
 | `oauth_authorize.rs` | `GET/POST /oauth/authorize` |
 | `oauth_par.rs` | `POST /oauth/par` |
-| `oauth_token.rs` | `POST /oauth/token` — grants: `authorization_code` + `refresh_token` (DPoP-bound, rotating refresh tokens) and `urn:ietf:params:oauth:grant-type:jwt-bearer` (RFC 7523), which exchanges a service-signed agent `identity_assertion` for a short-lived **Bearer** access token (no DPoP, no refresh token; revoked/absent agent identity → `invalid_grant`, non-origin `resource` → `invalid_target`) |
+| `oauth_token.rs` | `POST /oauth/token` — grants: `authorization_code` + `refresh_token` (DPoP-bound, rotating refresh tokens) and `urn:ietf:params:oauth:grant-type:jwt-bearer` (RFC 7523), which exchanges a service-signed agent `identity_assertion` for a short-lived **Bearer** access token (no DPoP, no refresh token; the agent identity must be `claimed` with a DID matching the assertion `sub` — unclaimed/revoked/absent → `invalid_grant`, non-origin `resource` → `invalid_target`) |
 | `atproto_did.rs` | `GET /.well-known/atproto-did` |
 | `oauth_protected_resource.rs` | `GET /.well-known/oauth-protected-resource` |
 | `oauth_server_metadata.rs` | `GET /.well-known/oauth-authorization-server` |

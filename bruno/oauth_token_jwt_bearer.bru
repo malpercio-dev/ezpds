@@ -54,5 +54,6 @@ docs {
   - 400 invalid_request: missing `assertion`
   - 400 invalid_target: `resource` is not this server's origin
   - 400 invalid_grant: the assertion is malformed, expired, not signed by this
-    server, or its agent identity has been revoked / no longer exists
+    server, or its agent identity is not `claimed` (unclaimed/revoked/absent, or
+    its DID no longer matches the assertion `sub`)
 }

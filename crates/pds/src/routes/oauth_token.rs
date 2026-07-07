@@ -743,18 +743,19 @@ async fn handle_jwt_bearer(state: &AppState, form: TokenRequestForm) -> Response
         Err(e) => return e.into_response(),
     };
 
-    // Revocation gate: the assertion stays cryptographically valid until it expires, so an operator
-    // revoking the agent identity (or the account being deleted) must be enforced here at exchange
-    // time. A missing or revoked registration → invalid_grant, per RFC 7523 §3.1.
-    // Also require the stored DID to match the assertion's `sub`, so the revocation lookup and the
-    // token subject resolve to the same identity even if the issuance path ever drifts.
+    // State gate (the assertion stays cryptographically valid until it expires, so identity state
+    // is enforced here at exchange time, per RFC 7523 §3.1). Require exactly `Claimed`: that is the
+    // only state for which the registration flow mints a service-signed assertion — `Active` still
+    // owes the claim ceremony and `Revoked` was turned off by an operator, so both → invalid_grant.
+    // Also require the stored DID to match the assertion's `sub`, so the state lookup and the token
+    // subject resolve to the same identity even if the issuance path ever drifts.
     match get_agent_identity(&state.db, &claims.registration_id).await {
         Ok(Some(identity))
-            if identity.status != AgentIdentityStatus::Revoked && identity.did == claims.sub => {}
+            if identity.status == AgentIdentityStatus::Claimed && identity.did == claims.sub => {}
         Ok(_) => {
             return OAuthTokenError::new(
                 "invalid_grant",
-                "the agent identity has been revoked; re-register",
+                "the agent identity is not claimed or has been revoked",
             )
             .into_response();
         }
@@ -2492,6 +2493,35 @@ mod tests {
         let resp = app(state).oneshot(post_token(&body)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(json_body(resp).await["token_type"], "Bearer");
+    }
+
+    #[tokio::test]
+    async fn jwt_bearer_active_unclaimed_identity_returns_invalid_grant() {
+        // An `active` identity still owes the claim ceremony; no service assertion is minted for it,
+        // so even a validly-signed assertion must be refused until the identity is `claimed`.
+        let state = test_state().await;
+        let did = "did:plc:agentbearer8888888888";
+        seed_agent_identity(&state, "reg_active", did, "active").await;
+        let assertion = mint_assertion(
+            &state,
+            did,
+            "reg_active",
+            "com.atproto.access",
+            now_secs() + 600,
+        );
+
+        let resp = app(state)
+            .oneshot(post_token(&format!(
+                "grant_type={JWT_BEARER}&assertion={assertion}"
+            )))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(resp).await["error"],
+            "invalid_grant",
+            "an unclaimed (active) identity must not be able to exchange an assertion"
+        );
     }
 
     #[tokio::test]
