@@ -20,7 +20,7 @@
     /** Render a back affordance and call this on activate. */
     onback?: () => void;
     /** The active server identity (nickname + host). When omitted, the server block is
-     * hidden with a visually-hidden utility so its absence takes no screen space. */
+     * not rendered. */
     server?: { nickname: string; host: string } | null;
     /** When provided, the server-context block renders as a button (Home uses this to
      * open the inline switcher). Without it, the block is static text (Settings). */
