@@ -6,6 +6,7 @@ mod admin_subject_defs;
 pub mod agent_identity;
 pub mod apply_writes;
 pub mod atproto_did;
+pub mod auth_md;
 pub mod check_account_status;
 pub mod claim_codes;
 pub mod confirm_email;

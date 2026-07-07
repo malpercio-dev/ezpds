@@ -1,0 +1,15 @@
+meta {
+  name: Agent Auth Discovery (auth.md)
+  type: http
+  seq: 99
+}
+
+get {
+  url: {{baseUrl}}/auth.md
+  body: none
+  auth: none
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}

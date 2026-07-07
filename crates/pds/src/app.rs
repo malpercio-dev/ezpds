@@ -28,6 +28,7 @@ use crate::routes::admin_devices::{
 use crate::routes::agent_identity::post_agent_identity;
 use crate::routes::apply_writes::apply_writes;
 use crate::routes::atproto_did::atproto_did_handler;
+use crate::routes::auth_md::serve_auth_md;
 use crate::routes::check_account_status::check_account_status;
 use crate::routes::claim_codes::claim_codes;
 use crate::routes::confirm_email::confirm_email;
@@ -242,6 +243,7 @@ pub struct AppState {
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/", get(landing))
+        .route("/auth.md", get(serve_auth_md))
         .route("/.well-known/atproto-did", get(atproto_did_handler))
         .route(
             "/.well-known/oauth-protected-resource",
