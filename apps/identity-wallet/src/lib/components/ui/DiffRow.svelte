@@ -71,17 +71,17 @@
     color: var(--color-critical);
   }
   .diff--remove .diff-v {
-    color: oklch(0.4 0.1 25);
+    color: var(--color-critical-soft);
   }
   .diff--restore {
     background: var(--color-seal-pale);
   }
   .diff--restore .diff-ic,
   .diff--restore .diff-t {
-    color: var(--color-primary-deep);
+    color: var(--color-gold-ink);
   }
   .diff--restore .diff-v {
-    color: oklch(0.4 0.05 70);
+    color: var(--color-gold-soft);
   }
   .diff--modify {
     background: var(--color-warning-surface);
@@ -91,6 +91,6 @@
     color: var(--color-warning);
   }
   .diff--modify .diff-v {
-    color: oklch(0.42 0.08 70);
+    color: var(--color-warning-soft);
   }
 </style>

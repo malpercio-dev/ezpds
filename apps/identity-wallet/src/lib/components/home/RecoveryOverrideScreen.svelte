@@ -408,7 +408,7 @@
     position: absolute;
     inset: 0;
     width: 0;
-    background: oklch(0.39 0.17 25);
+    background: var(--color-critical-solid-deep);
     transition: width 0.1s linear;
   }
   .hold-label {

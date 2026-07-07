@@ -18,6 +18,9 @@
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
+    /* Emboss highlight/shade on the wax fill itself — a material effect on
+       the gold, appearance-invariant by design (the seal doesn't change at
+       night), so these stay literal rather than themed tokens. */
     box-shadow:
       inset 0 0 0 2px oklch(0.99 0.05 80 / 0.35),
       inset 0 -3px 8px oklch(0.2 0.05 60 / 0.22);

@@ -181,7 +181,7 @@
     height: 132px;
     border-radius: var(--radius-full);
     background: var(--color-surface-sunk);
-    box-shadow: inset 0 0 0 2px oklch(0.86 0.07 80);
+    box-shadow: inset 0 0 0 2px var(--color-seal-ring);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -203,11 +203,13 @@
     font-family: var(--font-display);
     font-size: 54px;
     line-height: 1;
-    color: oklch(0.62 0.1 72);
+    color: var(--color-seal-glyph);
     transition: color 0.4s ease;
   }
 
   .stage.sealed .wax {
+    /* Emboss on the gold fill — a material effect on the wax itself,
+       appearance-invariant by design, so it stays literal (see SealEmblem). */
     box-shadow:
       inset 0 0 0 2px oklch(0.99 0.05 80 / 0.4),
       inset 0 -4px 10px oklch(0.2 0.05 60 / 0.25);

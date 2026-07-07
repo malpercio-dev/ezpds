@@ -9,11 +9,19 @@
 }
 
 :root {
-  color-scheme: light; /* the app is light & humane by design — not Ledger-dark */
+  /* System-follow appearance: archival paper by day, the archive at night.
+     Both appearances stay humane (Proton / 1Password lane) — dark is a warm
+     ink ground, never Ledger-style asset-vault gloom. Every color token is a
+     light-dark() pair keyed off this property (tokens.css), so a future
+     in-app appearance setting only needs to override color-scheme here. */
+  color-scheme: light dark;
 }
 
 html {
   -webkit-text-size-adjust: 100%;
+  /* Painted at the root so the WebView never flashes the wrong appearance
+     while the app boots. */
+  background: var(--color-bg);
 }
 
 body {
