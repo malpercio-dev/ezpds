@@ -1,3 +1,5 @@
+// pattern: Imperative Shell
+//
 //! iOS Keychain storage for admin-companion credentials.
 //!
 //! All items are stored as `kSecClassGenericPassword` under service
