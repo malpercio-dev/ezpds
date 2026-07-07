@@ -1,7 +1,8 @@
 // pattern: Imperative Shell
 //
-// Gathers: AppState (DB), form body (authorization request parameters)
-// Processes: client lookup → redirect_uri validation → param validation → DB store
+// Gathers: AppState (DB + outbound HTTP client), form body (authorization request parameters)
+// Processes: client lookup (with ATProto URL-client_id metadata resolution on a cache miss)
+//            → redirect_uri validation → param validation → DB store
 // Returns:
 //   POST: 201 JSON { request_uri, expires_in } on success
 //         400 JSON { error, error_description } on invalid request (RFC 9126 §2.3)
@@ -16,8 +17,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
 use crate::db::oauth::{
-    cleanup_expired_par_requests, get_oauth_client, store_par_request, ClientMetadata,
-    StoredPARParams,
+    cleanup_expired_par_requests, get_oauth_client, store_par_request, upsert_oauth_client,
+    ClientMetadata, StoredPARParams,
 };
 use crate::token::generate_token;
 
@@ -143,19 +144,39 @@ pub async fn post_par(State(state): State<AppState>, Form(form): Form<PARForm>) 
         Err(desc) => return PARError::new("invalid_scope", desc).into_response(),
     };
 
-    // Look up the registered client and validate redirect_uri.
-    let client = match get_oauth_client(&state.db, &client_id).await {
-        Ok(Some(row)) => row,
-        Ok(None) => {
-            return PARError::new("invalid_client", "client_id is not registered").into_response()
-        }
+    // Look up the client: registered/cached rows first; on a miss, a URL-shaped
+    // client_id is resolved by fetching its metadata document (ATProto OAuth —
+    // client_id IS the metadata URL). The fetched document is only cached below,
+    // after the whole request validates.
+    let known_client = match get_oauth_client(&state.db, &client_id).await {
+        Ok(row) => row,
         Err(e) => {
             tracing::error!(error = %e, "db error looking up OAuth client in PAR");
             return PARError::new("server_error", "database error").into_response();
         }
     };
+    let (client_metadata_json, freshly_fetched) = match known_client {
+        Some(row) => (row.client_metadata, false),
+        None if client_id.starts_with("https://") || client_id.starts_with("http://") => {
+            match crate::oauth_client_resolution::resolve_client_metadata(
+                &state.http_client,
+                &client_id,
+            )
+            .await
+            {
+                Ok(json) => (json, true),
+                Err(e) => {
+                    tracing::info!(client_id = %client_id, error = %e, "URL client_id resolution failed in PAR");
+                    return PARError::new("invalid_client", e.to_string()).into_response();
+                }
+            }
+        }
+        None => {
+            return PARError::new("invalid_client", "client_id is not registered").into_response()
+        }
+    };
 
-    let metadata: ClientMetadata = match serde_json::from_str(&client.client_metadata) {
+    let metadata: ClientMetadata = match serde_json::from_str(&client_metadata_json) {
         Ok(m) => m,
         Err(e) => {
             tracing::error!(
@@ -206,6 +227,16 @@ pub async fn post_par(State(state): State<AppState>, Form(form): Form<PARForm>) 
                 .into_response();
         }
     };
+
+    // The request has fully validated — now cache a freshly resolved metadata document
+    // so the authorize/token endpoints' client lookups find it. Caching only after full
+    // validation keeps rejected requests from planting rows.
+    if freshly_fetched {
+        if let Err(e) = upsert_oauth_client(&state.db, &client_id, &client_metadata_json).await {
+            tracing::error!(error = %e, client_id = %client_id, "failed to cache resolved OAuth client metadata");
+            return PARError::new("server_error", "database error").into_response();
+        }
+    }
 
     // Generate the opaque request_uri token. The plaintext is used as the URN reference.
     let token = generate_token();
@@ -325,13 +356,18 @@ mod tests {
     async fn post_par_returns_400_for_unknown_client() {
         let state = test_state().await;
 
+        // A non-URL client_id exercises the registered-only path: a URL-shaped one
+        // would instead attempt live metadata resolution (covered by its own tests).
         let response = app(state)
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/oauth/par")
                     .header("content-type", "application/x-www-form-urlencoded")
-                    .body(Body::from(par_body(&[])))
+                    .body(Body::from(par_body(&[(
+                        "client_id",
+                        "dev.unregistered.client",
+                    )])))
                     .unwrap(),
             )
             .await
@@ -608,6 +644,187 @@ mod tests {
         assert_ne!(
             uri1, uri2,
             "each PAR call must produce a unique request_uri"
+        );
+    }
+
+    /// Serve a client-metadata document at `/oauth/client-metadata.json` on an ephemeral
+    /// loopback port; returns the document's URL (which doubles as the client_id). The JSON
+    /// is produced by `make_json(url)` so the document can reference its own URL as
+    /// `client_id`, mirroring a real ATProto OAuth client metadata document.
+    async fn serve_client_metadata(make_json: impl FnOnce(&str) -> String) -> String {
+        use std::future::IntoFuture;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://127.0.0.1:{}/oauth/client-metadata.json",
+            listener.local_addr().unwrap().port()
+        );
+        let json = make_json(&url);
+        let router = axum::Router::new().route(
+            "/oauth/client-metadata.json",
+            axum::routing::get(move || {
+                let json = json.clone();
+                async move { ([("content-type", "application/json")], json) }
+            }),
+        );
+        tokio::spawn(axum::serve(listener, router).into_future());
+        url
+    }
+
+    async fn par_with_client_id(
+        state: crate::app::AppState,
+        client_id: &str,
+    ) -> axum::response::Response {
+        app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/par")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(par_body(&[("client_id", client_id)])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn error_json(response: axum::response::Response) -> serde_json::Value {
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn post_par_fetches_and_caches_metadata_for_unregistered_url_client_id() {
+        let state = test_state().await;
+        let client_id = serve_client_metadata(|url| {
+            serde_json::json!({
+                "client_id": url,
+                "redirect_uris": [REDIRECT_URI],
+                "client_name": "Fetched Test App",
+            })
+            .to_string()
+        })
+        .await;
+
+        let response = par_with_client_id(state.clone(), &client_id).await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "PAR must resolve an unregistered URL client_id by fetching its metadata document"
+        );
+        let cached = crate::db::oauth::get_oauth_client(&state.db, &client_id)
+            .await
+            .unwrap();
+        assert!(
+            cached.is_some(),
+            "fetched metadata must be cached so authorize/token lookups find the client"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_par_rejects_url_client_metadata_with_mismatched_client_id() {
+        let state = test_state().await;
+        let client_id = serve_client_metadata(|_url| {
+            serde_json::json!({
+                "client_id": "https://elsewhere.example.com/client-metadata.json",
+                "redirect_uris": [REDIRECT_URI],
+            })
+            .to_string()
+        })
+        .await;
+
+        let response = par_with_client_id(state.clone(), &client_id).await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = error_json(response).await;
+        assert_eq!(json["error"].as_str(), Some("invalid_client"));
+        assert!(
+            json["error_description"]
+                .as_str()
+                .unwrap()
+                .contains("client_id mismatch"),
+            "mismatch must be reported distinctly, got: {}",
+            json["error_description"]
+        );
+        let cached = crate::db::oauth::get_oauth_client(&state.db, &client_id)
+            .await
+            .unwrap();
+        assert!(cached.is_none(), "mismatched metadata must not be cached");
+    }
+
+    #[tokio::test]
+    async fn post_par_rejects_url_client_when_redirect_uri_not_listed() {
+        let state = test_state().await;
+        let client_id = serve_client_metadata(|url| {
+            serde_json::json!({
+                "client_id": url,
+                "redirect_uris": ["https://other.example.com/cb"],
+            })
+            .to_string()
+        })
+        .await;
+
+        let response = par_with_client_id(state.clone(), &client_id).await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = error_json(response).await;
+        assert_eq!(
+            json["error"].as_str(),
+            Some("invalid_request"),
+            "resolved-but-unlisted redirect_uri is an invalid_request, not an unknown client"
+        );
+        let cached = crate::db::oauth::get_oauth_client(&state.db, &client_id)
+            .await
+            .unwrap();
+        assert!(
+            cached.is_none(),
+            "metadata must only be cached after the PAR fully validates"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_par_rejects_unreachable_url_client_id() {
+        let state = test_state().await;
+        // Bind then immediately drop a listener to obtain a loopback port that refuses
+        // connections — a deterministic "metadata document unreachable" target.
+        let port = {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let client_id = format!("http://127.0.0.1:{port}/oauth/client-metadata.json");
+
+        let response = par_with_client_id(state, &client_id).await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = error_json(response).await;
+        assert_eq!(json["error"].as_str(), Some("invalid_client"));
+        assert!(
+            json["error_description"]
+                .as_str()
+                .unwrap()
+                .contains("failed to fetch"),
+            "unreachable metadata must be reported as a fetch failure, got: {}",
+            json["error_description"]
+        );
+    }
+
+    #[tokio::test]
+    async fn post_par_rejects_http_url_client_id_for_non_loopback_host() {
+        let state = test_state().await;
+
+        let response =
+            par_with_client_id(state, "http://app.example.com/client-metadata.json").await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = error_json(response).await;
+        assert_eq!(json["error"].as_str(), Some("invalid_client"));
+        assert!(
+            json["error_description"].as_str().unwrap().contains("https"),
+            "plain-http client_id on a non-loopback host must be rejected before any fetch, got: {}",
+            json["error_description"]
         );
     }
 
