@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
+  import { SvelteMap } from 'svelte/reactivity';
   import {
     getOrCreateDeviceKey,
     listPairings,
@@ -42,9 +43,11 @@
   let biometricBusy = $state(false);
 
   let expandedId = $state<string | null>(null);
-  let renameStates = $state<Map<string, { value: string; error?: string }>>(new Map());
-  let errorStates = $state<Map<string, ErrorView | undefined>>(new Map());
-  let actionStates = $state<Map<string, { busy: boolean }>>(new Map());
+  let renameStates = $state<SvelteMap<string, { value: string; error?: string }>>(
+    new SvelteMap(),
+  );
+  let errorStates = $state<SvelteMap<string, ErrorView | undefined>>(new SvelteMap());
+  let actionStates = $state<SvelteMap<string, { busy: boolean }>>(new SvelteMap());
   let gateHint = $state<string | undefined>(undefined);
 
   onMount(async () => {
@@ -151,6 +154,21 @@
     }
   }
 
+  function toggleExpandedRow(pairingId: string) {
+    if (expandedId === pairingId) {
+      expandedId = null;
+      return;
+    }
+    expandedId = pairingId;
+    // Seed the rename state when the row opens (not during render).
+    if (!renameStates.has(pairingId)) {
+      const pairing = pairings.find((p) => p.id === pairingId);
+      if (pairing) {
+        renameStates.set(pairingId, { value: serverIdentity(pairing).nickname });
+      }
+    }
+  }
+
   const pairings = $derived(
     pairingsState !== null && pairingsState !== 'loading' && pairingsState !== 'error'
       ? pairingsState.pairings
@@ -208,7 +226,7 @@
             <button
               class="server-row"
               type="button"
-              onclick={() => (expandedId = expandedId === pairing.id ? null : pairing.id)}
+              onclick={() => toggleExpandedRow(pairing.id)}
             >
               <DeviceRow
                 label={serverIdentity(pairing).nickname}
@@ -224,13 +242,8 @@
               <div class="server-panel">
                 <!-- Rename -->
                 <div class="rename-block">
-                  {#key pairing.id}
-                    {@const renameState = (() => {
-                      if (!renameStates.has(pairing.id)) {
-                        renameStates.set(pairing.id, { value: serverIdentity(pairing).nickname });
-                      }
-                      return renameStates.get(pairing.id)!;
-                    })()}
+                  {#if renameStates.get(pairing.id) !== undefined}
+                    {@const renameState = renameStates.get(pairing.id)!}
                     <TextField
                       label="Nickname"
                       bind:value={renameState.value}
@@ -238,7 +251,7 @@
                       mono
                       error={renameState.error}
                     />
-                  {/key}
+                  {/if}
                   <Button
                     variant="secondary"
                     loading={actionStates.get(pairing.id)?.busy ?? false}
