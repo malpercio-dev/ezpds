@@ -102,7 +102,7 @@ validation checks JSON *syntax*, not capability membership. So enforcement is tw
    `@tauri-apps/api` and confirm it is **denied** — e.g. `getCurrentWindow().setTitle('x')`
    (needs `core:window:allow-set-title`, no longer granted). The signal to watch for is the
    denial itself: a `"…not allowed"` error surfaces in the dev-tools console and the call
-   fails, while the app's own commands (e.g. `list_identities`, `pairing_state`) still
+   fails, while the app's own commands (e.g. `list_identities`, `list_pairings`) still
    resolve. This is the half the static guard cannot prove; run it after any capability
    change once Xcode/Simulator is at hand. (The exact error string and internal invoke path
    vary by Tauri version — what matters is *denied* vs. *resolves*.)
