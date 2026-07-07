@@ -9,9 +9,6 @@
 
 mod device_key;
 mod keychain;
-// Consumed by `keychain`/`relay_client` at the end of this change-set; the allow keeps
-// intermediate commits clippy-clean and is removed when the relay client switches over.
-#[allow(dead_code)]
 mod pairings;
 mod relay_client;
 mod signing;
@@ -40,13 +37,15 @@ async fn pair_device(
     pairing_code: String,
     label: String,
 ) -> Result<String, relay_client::RelayClientError> {
-    relay_client::pair(&relay_url, &pairing_code, &label).await
+    // The nickname argument arrives with the multi-server IPC surface; until then a
+    // pairing created through this command carries an empty nickname.
+    relay_client::pair(&relay_url, &pairing_code, &label, "").await
 }
 
-/// The device's current pairing (`{ deviceId, relayUrl }`) or `null` if unpaired —
-/// lets the home screen choose between the Pair screen and the operator console.
+/// The pairing unqualified actions currently target, or `null` when the device has no
+/// active selection (never paired, or the active entry was removed without a pick).
 #[tauri::command]
-fn pairing_state() -> Result<Option<keychain::Pairing>, relay_client::RelayClientError> {
+fn pairing_state() -> Result<Option<pairings::Pairing>, relay_client::RelayClientError> {
     relay_client::current_pairing()
 }
 

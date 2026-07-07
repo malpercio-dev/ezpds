@@ -4,9 +4,9 @@
 //! `"ezpds-admin-companion"`. Use the `SERVICE` constant to ensure consistency.
 //!
 //! This is the operator console's analogue of the identity-wallet Keychain
-//! module ([`apps/identity-wallet/src-tauri/src/keychain.rs`]). It is trimmed to
-//! the device-key primitives the Phase 6 scaffold needs; the relay-URL and
-//! `device_id` helpers arrive with the pairing client in Phase 7.
+//! module ([`apps/identity-wallet/src-tauri/src/keychain.rs`]). It manages the device
+//! key (Phase 6), the versioned multi-relay pairing document (Phase 8+), and the
+//! biometric-gate preference.
 //!
 //! In test builds (`#[cfg(test)]`), all Keychain operations are redirected to an
 //! in-memory store so that tests never touch the real macOS Keychain and never
@@ -103,86 +103,22 @@ pub fn is_not_found(err: &KeychainError) -> bool {
     }
 }
 
-// ── Pairing state (Phase 7) ──────────────────────────────────────────────────
+// ── Pairing document (Phase 8+) ──────────────────────────────────────────────────
 //
-// Once a device pairs (`POST /v1/admin/devices`), it persists the relay-assigned
-// `device_id` and the relay's base URL so every later signed request can address the
-// relay and identify itself via the `X-Admin-Device` header. Neither value is a secret
-// (the device_id is a public identifier, the URL is public), but they live in the
-// Keychain alongside the device key so a single "unpair" clears all device state at once.
-
-/// Keychain account holding the relay-assigned device id (sent as `X-Admin-Device`).
-const DEVICE_ID_ACCOUNT: &str = "admin-device-id";
-/// Keychain account holding the paired relay's base URL (e.g. `https://relay.example`).
-const RELAY_URL_ACCOUNT: &str = "admin-relay-url";
-/// Keychain account holding the operator-chosen device label (shown on the Settings
-/// screen and sent to the relay at registration). Persisted alongside the pairing so the
-/// label the relay knows this device by is the label the operator sees locally.
-const LABEL_ACCOUNT: &str = "admin-device-label";
+// The versioned multi-relay pairing document: which relays this device is paired to,
+// and which one unqualified operator actions (claim-code mint, self-revoke) currently
+// target. Persisted as one JSON item (`admin-pairings`) in the Keychain; invariants
+// are enforced by the Functional Core in `pairings.rs`.
 
 /// Keychain account holding the versioned multi-relay pairing document (JSON — see
-/// `pairings::PairingDoc`). Replaces the single-pairing triple below.
+/// `pairings::PairingDoc`).
 const PAIRINGS_ACCOUNT: &str = "admin-pairings";
 
-/// The persisted result of a successful pairing: which relay this device is paired to,
-/// the id the relay knows it by, and the operator-chosen label. Serializes camelCase for
-/// the `pairing_state` IPC.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Pairing {
-    pub device_id: String,
-    pub relay_url: String,
-    pub label: String,
-}
-
-/// Persist the pairing produced by a successful device registration.
-///
-/// The relay URL is written **last**: `get_pairing` treats `device_id + relay_url` as
-/// "paired", so making relay_url the final commit means a mid-store failure leaves the
-/// pairing reading as "not paired" (fail-closed) rather than a half-written, readable
-/// pairing that contradicts the `Err` returned here.
-pub fn store_pairing(device_id: &str, relay_url: &str, label: &str) -> Result<(), KeychainError> {
-    store_item(LABEL_ACCOUNT, label.as_bytes())?;
-    store_item(DEVICE_ID_ACCOUNT, device_id.as_bytes())?;
-    store_item(RELAY_URL_ACCOUNT, relay_url.as_bytes())?;
-    Ok(())
-}
-
-/// Read the current pairing, or `None` if this device has not paired yet.
-///
-/// A missing `device_id` *or* `relay_url` is treated as "not paired" (`None`); only a
-/// transient/permission error propagates. This mirrors `device_key`'s discipline of
-/// never letting a flaky Keychain read masquerade as a clean "absent" state. The label is
-/// best-effort: a device paired before labels were persisted reads as paired with an empty
-/// label (the UI substitutes a fallback), never as "not paired".
-pub fn get_pairing() -> Result<Option<Pairing>, KeychainError> {
-    match (
-        get_string(DEVICE_ID_ACCOUNT)?,
-        get_string(RELAY_URL_ACCOUNT)?,
-    ) {
-        (Some(device_id), Some(relay_url)) => Ok(Some(Pairing {
-            device_id,
-            relay_url,
-            label: get_string(LABEL_ACCOUNT)?.unwrap_or_default(),
-        })),
-        _ => Ok(None),
-    }
-}
-
-/// Forget the current pairing (the companion app's "unpair"). Idempotent: clearing an
-/// already-absent pairing succeeds. Does **not** delete the device key — a re-pair
-/// reuses the same key so the relay can recognise a returning device by its public key.
-/// The biometric preference also survives (it is a device setting, not pairing state).
-pub fn clear_pairing() -> Result<(), KeychainError> {
-    for account in [DEVICE_ID_ACCOUNT, RELAY_URL_ACCOUNT, LABEL_ACCOUNT] {
-        match delete_item(account) {
-            Ok(()) => {}
-            Err(e) if is_not_found(&e) => {}
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(())
-}
+/// Legacy accounts from Phase 7, retained only for one-time cleanup on first load.
+/// New pairings go directly to the multi-relay document.
+const DEVICE_ID_ACCOUNT: &str = "admin-device-id";
+const RELAY_URL_ACCOUNT: &str = "admin-relay-url";
+const LABEL_ACCOUNT: &str = "admin-device-label";
 
 /// Load the pairing document, or an empty one if none has been written yet.
 ///
@@ -193,8 +129,6 @@ pub fn clear_pairing() -> Result<(), KeychainError> {
 /// A document that exists but does not parse or validate is a hard error; pairings are
 /// never silently reset, because an empty document is indistinguishable from a
 /// successful unpair.
-// Wired in by the relay-client switchover later in this change-set.
-#[allow(dead_code)]
 pub fn load_pairings() -> Result<PairingDoc, KeychainError> {
     match get_item(PAIRINGS_ACCOUNT) {
         Ok(bytes) => {
@@ -214,8 +148,6 @@ pub fn load_pairings() -> Result<PairingDoc, KeychainError> {
 /// Persist the whole pairing document as one keychain write. Every mutation is
 /// read-modify-write of the full document ending here, so a reader never observes a
 /// half-updated pairing list.
-// Wired in by the relay-client switchover later in this change-set.
-#[allow(dead_code)]
 pub fn save_pairings(doc: &PairingDoc) -> Result<(), KeychainError> {
     let bytes = serde_json::to_vec(doc).expect("PairingDoc serializes");
     store_item(PAIRINGS_ACCOUNT, &bytes)
@@ -223,8 +155,6 @@ pub fn save_pairings(doc: &PairingDoc) -> Result<(), KeychainError> {
 
 /// Delete the pre-multi-server pairing triple if present. Idempotent: absent items are
 /// skipped, so repeated loads on a fresh install are no-ops.
-// Wired in by the relay-client switchover later in this change-set.
-#[allow(dead_code)]
 fn clear_legacy_pairing_triple() -> Result<(), KeychainError> {
     for account in [DEVICE_ID_ACCOUNT, RELAY_URL_ACCOUNT, LABEL_ACCOUNT] {
         match delete_item(account) {
@@ -286,52 +216,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn store_and_get_pairing_round_trips() {
-        clear_for_test();
-        store_pairing("device-123", "https://relay.example", "Operator iPhone").expect("store");
-        let pairing = get_pairing().expect("read").expect("paired");
-        assert_eq!(pairing.device_id, "device-123");
-        assert_eq!(pairing.relay_url, "https://relay.example");
-        assert_eq!(pairing.label, "Operator iPhone");
-    }
-
-    #[test]
-    fn get_pairing_is_none_when_unpaired() {
-        clear_for_test();
-        assert_eq!(get_pairing().expect("read"), None);
-    }
-
-    #[test]
-    fn get_pairing_is_none_when_only_one_half_present() {
-        // A half-written pairing (device id but no relay URL) must read as "not paired",
-        // never as a malformed Some — the signed-request path can then fail closed.
-        clear_for_test();
-        store_item(DEVICE_ID_ACCOUNT, b"device-123").expect("store id only");
-        assert_eq!(get_pairing().expect("read"), None);
-    }
-
-    #[test]
-    fn get_pairing_tolerates_missing_label() {
-        // A device paired before labels were persisted has id + url but no label. It must
-        // still read as paired (label empty), never as "not paired".
-        clear_for_test();
-        store_item(DEVICE_ID_ACCOUNT, b"device-123").expect("store id");
-        store_item(RELAY_URL_ACCOUNT, b"https://relay.example").expect("store url");
-        let pairing = get_pairing().expect("read").expect("paired");
-        assert_eq!(pairing.label, "");
-    }
-
-    #[test]
-    fn clear_pairing_forgets_and_is_idempotent() {
-        clear_for_test();
-        store_pairing("device-123", "https://relay.example", "Operator iPhone").expect("store");
-        clear_pairing().expect("first clear");
-        assert_eq!(get_pairing().expect("read"), None);
-        // Clearing an already-absent pairing is a no-op success (unpair is idempotent).
-        clear_pairing().expect("second clear is a no-op");
-    }
-
-    #[test]
     fn biometric_pref_defaults_on_and_round_trips() {
         clear_for_test();
         // Fresh install: absent preference reads as enabled (signing gated by default).
@@ -342,17 +226,6 @@ mod tests {
 
         set_biometric_enabled(true).expect("enable");
         assert!(get_biometric_enabled().expect("read enabled"));
-    }
-
-    #[test]
-    fn biometric_pref_survives_unpair() {
-        // The biometric preference is a device setting, not pairing state — unpair must
-        // not reset it.
-        clear_for_test();
-        store_pairing("device-123", "https://relay.example", "Operator iPhone").expect("store");
-        set_biometric_enabled(false).expect("disable");
-        clear_pairing().expect("unpair");
-        assert!(!get_biometric_enabled().expect("pref persists across unpair"));
     }
 
     // ── Pairing document persistence tests ──────────────────────────────────────

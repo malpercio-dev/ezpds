@@ -62,6 +62,7 @@ impl PairingDoc {
     }
 
     /// All pairings, in insertion (pairing) order.
+    #[allow(dead_code)]
     pub fn pairings(&self) -> &[Pairing] {
         &self.pairings
     }
@@ -91,6 +92,7 @@ impl PairingDoc {
 
     /// Select the pairing that unqualified operator actions target. Unknown ids leave
     /// the current selection untouched.
+    #[allow(dead_code)]
     pub fn set_active(&mut self, id: &str) -> Result<(), NoSuchPairing> {
         if self.get(id).is_none() {
             return Err(NoSuchPairing);
@@ -101,6 +103,7 @@ impl PairingDoc {
 
     /// Update a pairing's operator-chosen nickname. Local-only: nicknames are display
     /// names and never leave the device.
+    #[allow(dead_code)]
     pub fn rename(&mut self, id: &str, nickname: &str) -> Result<(), NoSuchPairing> {
         let pairing = self
             .pairings

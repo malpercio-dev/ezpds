@@ -15,7 +15,7 @@
 
 use serde::Serialize;
 
-use crate::keychain::Pairing;
+use crate::pairings::Pairing;
 use crate::{device_key, keychain, signing};
 
 /// Platform tag sent at registration and stored on the device row. Derived from the
@@ -160,11 +160,12 @@ pub fn build_signed_request(
 // ── Async surface (thin reqwest wrappers) ────────────────────────────────────
 
 /// Pair this device with `relay_url` by claiming `pairing_code`. On success, persists
-/// the relay-assigned `device_id` and `relay_url`, and returns the `device_id`.
+/// the pairing as a new entry in the pairing document and makes it active.
 pub async fn pair(
     relay_url: &str,
     pairing_code: &str,
     label: &str,
+    nickname: &str,
 ) -> Result<String, RelayClientError> {
     let body = build_registration(pairing_code, label, unix_now())?;
     let url = join_url(relay_url, "/v1/admin/devices")?;
@@ -179,14 +180,26 @@ pub async fn pair(
     let device_id = parse_success::<RegisterDeviceResponse>(response)
         .await?
         .device_id;
-    keychain::store_pairing(&device_id, relay_url, label)?;
+    let mut doc = keychain::load_pairings()?;
+    doc.append(Pairing {
+        id: uuid::Uuid::new_v4().to_string(),
+        nickname: nickname.to_string(),
+        relay_url: relay_url.to_string(),
+        device_id: device_id.clone(),
+        device_label: label.to_string(),
+    });
+    keychain::save_pairings(&doc)?;
     Ok(device_id)
 }
 
 /// Mint a single account claim code via a signed `POST /v1/accounts/claim-codes`.
 /// The demo-lifesaver action: an operator generates a claim code from their phone.
 pub async fn generate_claim_code() -> Result<String, RelayClientError> {
-    let pairing = keychain::get_pairing()?.ok_or(RelayClientError::NotPaired)?;
+    let doc = keychain::load_pairings()?;
+    let pairing = doc
+        .active_pairing()
+        .cloned()
+        .ok_or(RelayClientError::NotPaired)?;
 
     // Serialize the body once so the exact bytes we sign are the exact bytes we send.
     let body = serde_json::to_vec(&ClaimCodesRequestBody { count: 1 })
@@ -206,10 +219,10 @@ pub async fn generate_claim_code() -> Result<String, RelayClientError> {
         })
 }
 
-/// The device's current pairing, or `None` if it has not paired yet. Lets the UI choose
-/// between the Pair screen and the operator console on launch.
+/// The pairing unqualified actions currently target, or `None` when the device has no
+/// active selection (never paired, or the active entry was removed without a pick).
 pub fn current_pairing() -> Result<Option<Pairing>, RelayClientError> {
-    Ok(keychain::get_pairing()?)
+    Ok(keychain::load_pairings()?.active_pairing().cloned())
 }
 
 /// Revoke this device on the relay, then forget the pairing locally — the Settings
@@ -219,13 +232,22 @@ pub fn current_pairing() -> Result<Option<Pairing>, RelayClientError> {
 /// only *after* the relay confirms: a failed revoke leaves the pairing intact so the
 /// operator can retry, or fall back to a local-only [`unpair`].
 pub async fn revoke_self() -> Result<(), RelayClientError> {
-    let pairing = keychain::get_pairing()?.ok_or(RelayClientError::NotPaired)?;
+    let doc = keychain::load_pairings()?;
+    let pairing = doc
+        .active_pairing()
+        .cloned()
+        .ok_or(RelayClientError::NotPaired)?;
     let path = format!("/v1/admin/devices/{}/revoke", pairing.device_id);
     // The revoke endpoint takes no body. The signature still binds method + path, so a
     // signature minted to revoke this device cannot be replayed to revoke another.
     let signed = build_signed_request(&pairing, "POST", &path, b"", unix_now(), &fresh_nonce())?;
     ensure_success(send(signed).await?).await?;
-    keychain::clear_pairing()?;
+    // Reload before mutating: the document may have gained entries during the network
+    // round-trip, and a stale write would silently drop them.
+    let mut doc = keychain::load_pairings()?;
+    if doc.remove(&pairing.id).is_ok() {
+        keychain::save_pairings(&doc)?;
+    }
     Ok(())
 }
 
@@ -234,7 +256,12 @@ pub async fn revoke_self() -> Result<(), RelayClientError> {
 /// accepting that the credential remains valid server-side until revoked another way. The
 /// device key is preserved so a re-pair is recognised.
 pub fn unpair() -> Result<(), RelayClientError> {
-    keychain::clear_pairing()?;
+    let mut doc = keychain::load_pairings()?;
+    if let Some(id) = doc.active_id().map(str::to_string) {
+        doc.remove(&id)
+            .expect("active id always resolves to an entry");
+        keychain::save_pairings(&doc)?;
+    }
     Ok(())
 }
 
@@ -381,6 +408,20 @@ mod tests {
             .unwrap_or_else(|| panic!("missing header {name}"))
     }
 
+    /// A document-backed pairing fixture. The golden envelope tests below predate the
+    /// multi-relay document; only this setup changed when the legacy triple helpers were
+    /// removed — every sign-string, header assertion, and relay-verifier call is
+    /// unchanged, which is what pins the envelope.
+    fn test_pairing(device_id: &str, relay_url: &str) -> Pairing {
+        Pairing {
+            id: "test-pairing-id".to_string(),
+            nickname: "test".to_string(),
+            relay_url: relay_url.to_string(),
+            device_id: device_id.to_string(),
+            device_label: "Operator iPhone".to_string(),
+        }
+    }
+
     #[test]
     fn build_registration_self_signature_verifies() {
         keychain::clear_for_test();
@@ -414,9 +455,7 @@ mod tests {
     fn signed_claim_code_request_is_accepted_by_relay_verifier() {
         keychain::clear_for_test();
         let key = device_key::get_or_create().expect("device key");
-        keychain::store_pairing("device-xyz", "https://relay.example", "Operator iPhone")
-            .expect("store pairing");
-        let pairing = keychain::get_pairing().unwrap().unwrap();
+        let pairing = test_pairing("device-xyz", "https://relay.example");
 
         let body = br#"{"count":1}"#;
         let req = build_signed_request(
@@ -462,9 +501,7 @@ mod tests {
     fn signed_self_revoke_request_is_accepted_and_path_bound() {
         keychain::clear_for_test();
         let key = device_key::get_or_create().expect("device key");
-        keychain::store_pairing("device-self", "https://relay.example", "Operator iPhone")
-            .expect("store pairing");
-        let pairing = keychain::get_pairing().unwrap().unwrap();
+        let pairing = test_pairing("device-self", "https://relay.example");
 
         let path = "/v1/admin/devices/device-self/revoke";
         let req = build_signed_request(&pairing, "POST", path, b"", 1_700_000_000, "nonce-rev")
@@ -507,8 +544,7 @@ mod tests {
     fn build_signed_request_binds_body_so_tamper_is_detected() {
         keychain::clear_for_test();
         let key = device_key::get_or_create().expect("device key");
-        keychain::store_pairing("device-xyz", "https://relay.example", "Operator iPhone").unwrap();
-        let pairing = keychain::get_pairing().unwrap().unwrap();
+        let pairing = test_pairing("device-xyz", "https://relay.example");
 
         let req = build_signed_request(
             &pairing,
@@ -537,6 +573,107 @@ mod tests {
             )
             .is_err(),
             "a signature over the real body must not verify against a tampered body"
+        );
+    }
+
+    #[test]
+    fn current_pairing_returns_the_active_document_entry() {
+        keychain::clear_for_test();
+        // Save a doc with two entries (active = second via append order).
+        let mut doc = crate::pairings::PairingDoc::empty();
+        doc.append(crate::pairings::Pairing {
+            id: "id-1".to_string(),
+            nickname: "first".to_string(),
+            relay_url: "https://relay-1.example".to_string(),
+            device_id: "device-1".to_string(),
+            device_label: "Operator iPhone".to_string(),
+        });
+        doc.append(crate::pairings::Pairing {
+            id: "id-2".to_string(),
+            nickname: "second".to_string(),
+            relay_url: "https://relay-2.example".to_string(),
+            device_id: "device-2".to_string(),
+            device_label: "Operator iPhone".to_string(),
+        });
+        keychain::save_pairings(&doc).expect("save");
+
+        // current_pairing() should return the second entry (the active one).
+        let pairing = current_pairing()
+            .expect("read")
+            .expect("has active pairing");
+        assert_eq!(pairing.id, "id-2");
+        assert_eq!(pairing.device_id, "device-2");
+    }
+
+    #[test]
+    fn unpair_removes_the_active_pairing_and_keeps_the_biometric_pref() {
+        keychain::clear_for_test();
+        keychain::set_biometric_enabled(false).expect("disable biometric");
+
+        // Save a doc with one entry.
+        let mut doc = crate::pairings::PairingDoc::empty();
+        doc.append(crate::pairings::Pairing {
+            id: "id-1".to_string(),
+            nickname: "test".to_string(),
+            relay_url: "https://relay.example".to_string(),
+            device_id: "device-1".to_string(),
+            device_label: "Operator iPhone".to_string(),
+        });
+        keychain::save_pairings(&doc).expect("save");
+
+        // Unpair removes it.
+        unpair().expect("unpair");
+        let loaded = keychain::load_pairings().expect("load");
+        assert_eq!(loaded.pairings().len(), 0, "no pairings after unpair");
+        assert_eq!(loaded.active_id(), None, "no active after unpair");
+
+        // Biometric pref still false.
+        assert!(!keychain::get_biometric_enabled().expect("read biometric"));
+
+        // Second unpair is a no-op success (idempotent).
+        unpair().expect("second unpair succeeds");
+    }
+
+    #[test]
+    fn unpair_with_two_remaining_clears_the_selection() {
+        keychain::clear_for_test();
+        // Three entries, active = third.
+        let mut doc = crate::pairings::PairingDoc::empty();
+        doc.append(crate::pairings::Pairing {
+            id: "id-1".to_string(),
+            nickname: "first".to_string(),
+            relay_url: "https://relay-1.example".to_string(),
+            device_id: "device-1".to_string(),
+            device_label: "Operator iPhone".to_string(),
+        });
+        doc.append(crate::pairings::Pairing {
+            id: "id-2".to_string(),
+            nickname: "second".to_string(),
+            relay_url: "https://relay-2.example".to_string(),
+            device_id: "device-2".to_string(),
+            device_label: "Operator iPhone".to_string(),
+        });
+        doc.append(crate::pairings::Pairing {
+            id: "id-3".to_string(),
+            nickname: "third".to_string(),
+            relay_url: "https://relay-3.example".to_string(),
+            device_id: "device-3".to_string(),
+            device_label: "Operator iPhone".to_string(),
+        });
+        keychain::save_pairings(&doc).expect("save");
+
+        // Unpair removes the active entry.
+        unpair().expect("unpair");
+
+        // The two remaining entries persist and active is None.
+        let loaded = keychain::load_pairings().expect("load");
+        assert_eq!(loaded.pairings().len(), 2, "two pairings remain");
+        assert_eq!(loaded.pairings()[0].id, "id-1", "first entry unchanged");
+        assert_eq!(loaded.pairings()[1].id, "id-2", "second entry unchanged");
+        assert_eq!(
+            loaded.active_id(),
+            None,
+            "active is None (UI must ask for explicit pick)"
         );
     }
 
