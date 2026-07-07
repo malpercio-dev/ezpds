@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
-  import { listPairings, setActivePairing, generateClaimCode, type PairingsState } from '$lib/ipc';
+  import { listPairings, setActivePairing, generateClaimCode, unpair, type PairingsState } from '$lib/ipc';
   import { serverIdentity } from '$lib/server-identity';
   import { classifyRelayError, type ErrorView } from '$lib/errors';
   import { requireUserPresence, presenceAllows } from '$lib/biometric';
@@ -92,7 +92,6 @@
   async function forgetActive() {
     if (!activePairing) return;
     try {
-      const { unpair } = await import('$lib/ipc');
       await unpair(activePairing.id);
       await reloadPairings();
     } catch (e) {
@@ -227,7 +226,7 @@
     {:else if pairings.length === 0}
       <Button variant="primary" onclick={() => goto('/pair')}>Pair this device</Button>
     {/if}
-    <!-- 'loading'/'error'/'needsPick': no primary action until state is resolvedestablished. -->
+    <!-- 'loading'/'error'/'needsPick': no primary action until state is resolved. -->
   {/snippet}
 </ScreenShell>
 
@@ -279,9 +278,9 @@
   }
   .switcher-row {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-sm);
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-xs);
     padding: var(--space-sm);
     background: transparent;
     border: none;
@@ -299,8 +298,9 @@
   }
   .switcher-left {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: var(--space-sm);
+    width: 100%;
   }
   .switcher-label {
     font-family: var(--font-sans);
@@ -312,6 +312,7 @@
     font-family: var(--font-mono);
     font-size: var(--text-label);
     color: var(--color-muted);
+    margin-left: auto;
   }
   .switcher-host {
     font-family: var(--font-mono);
