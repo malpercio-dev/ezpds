@@ -62,6 +62,15 @@ at the agent-registration surface:
 }
 ```
 
+> **Not everything advertised is live yet.** This metadata declares the full
+> auth.md surface for forward compatibility, but on this deployment the
+> `anonymous` identity type (§3.3), the `claim_endpoint` and the
+> `urn:workos:agent-auth:grant-type:claim` grant (§3.4), and the
+> `events_endpoint` revocation channel (§7) are **not yet implemented**. The
+> sections cross-referenced here give the working alternative for each. The live
+> path is: register (§3) → exchange the assertion with the JWT-bearer grant
+> (§4) → call the API (§5).
+
 ## 2. Pick a method
 
 Register at `POST {{public_url}}/agent/identity` with a JSON body whose `type`
