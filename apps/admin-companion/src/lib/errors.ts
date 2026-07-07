@@ -74,7 +74,7 @@ export function describeRelayError(error: unknown): string {
     case 'RELAY_REJECTED':
       // 403 is the one non-generic relay status: this device was revoked server-side.
       if (e.status === 403) {
-        return 'This device access to this server has been revoked. Forget it and switch to another, or pair again if access is restored.';
+        return 'Access to this server has been revoked. Forget it and switch to another, or pair again if access is restored.';
       }
       // 401 covers an expired/used pairing code, a bad signature, or — for a signed
       // request — a clock outside the relay's ±60s window. Surface the time hint too.

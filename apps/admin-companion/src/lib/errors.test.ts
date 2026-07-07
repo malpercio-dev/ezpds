@@ -141,7 +141,7 @@ describe('describeRelayError', () => {
   });
 
   it('never reveals which check failed on a 403 — states revocation, not a cause', () => {
-    expect(describeRelayError(REJECTED_403)).toMatch(/revoked/i);
+    expect(describeRelayError(REJECTED_403)).toMatch(/access.*revoked/i);
     expect(describeRelayError(REJECTED_403)).toMatch(/forget.*switch/i);
   });
 
