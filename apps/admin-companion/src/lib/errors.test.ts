@@ -9,6 +9,7 @@ const INVALID_RELAY_URL: RelayClientError = { code: 'INVALID_RELAY_URL' };
 const REJECTED_403: RelayClientError = { code: 'RELAY_REJECTED', status: 403, message: 'forbidden' };
 const REJECTED_401: RelayClientError = { code: 'RELAY_REJECTED', status: 401, message: 'unauthorized' };
 const REJECTED_500: RelayClientError = { code: 'RELAY_REJECTED', status: 500, message: 'server error' };
+const NO_SUCH_PAIRING: RelayClientError = { code: 'NO_SUCH_PAIRING' };
 const DEVICE_KEY: RelayClientError = { code: 'DEVICE_KEY', message: 'no key' };
 const KEYCHAIN: RelayClientError = { code: 'KEYCHAIN', message: 'locked' };
 const BAD_RESPONSE: RelayClientError = { code: 'BAD_RESPONSE', message: 'not json' };
@@ -41,12 +42,21 @@ describe('classifyRelayError', () => {
     });
   });
 
-  it('classifies RELAY_REJECTED with status 403 as revoked, routing to pair', () => {
+  it('classifies NO_SUCH_PAIRING as error, with no recovery affordance', () => {
+    expect(classifyRelayError(NO_SUCH_PAIRING)).toEqual({
+      status: 'error',
+      chipLabel: 'no such server',
+      message: describeRelayError(NO_SUCH_PAIRING),
+      recovery: 'none',
+    });
+  });
+
+  it('classifies RELAY_REJECTED with status 403 as revoked, offering forget or switch', () => {
     expect(classifyRelayError(REJECTED_403)).toEqual({
       status: 'revoked',
       chipLabel: 'access revoked',
       message: describeRelayError(REJECTED_403),
-      recovery: 'pair',
+      recovery: 'forget-or-switch',
     });
   });
 
@@ -119,6 +129,7 @@ describe('describeRelayError', () => {
     ['RELAY_REJECTED (403)', REJECTED_403],
     ['RELAY_REJECTED (401)', REJECTED_401],
     ['RELAY_REJECTED (other)', REJECTED_500],
+    ['NO_SUCH_PAIRING', NO_SUCH_PAIRING],
     ['DEVICE_KEY', DEVICE_KEY],
     ['KEYCHAIN', KEYCHAIN],
     ['BAD_RESPONSE', BAD_RESPONSE],
@@ -130,9 +141,8 @@ describe('describeRelayError', () => {
   });
 
   it('never reveals which check failed on a 403 — states revocation, not a cause', () => {
-    expect(describeRelayError(REJECTED_403)).toBe(
-      'This device has been revoked. Pair again to restore access.',
-    );
+    expect(describeRelayError(REJECTED_403)).toMatch(/access.*revoked/i);
+    expect(describeRelayError(REJECTED_403)).toMatch(/forget.*switch/i);
   });
 
   it('surfaces the "check device time" hint on a 401', () => {
@@ -151,6 +161,7 @@ describe('describeRelayError', () => {
       REJECTED_403,
       REJECTED_401,
       REJECTED_500,
+      NO_SUCH_PAIRING,
       DEVICE_KEY,
       KEYCHAIN,
       BAD_RESPONSE,

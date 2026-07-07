@@ -39,17 +39,25 @@ export type RelayClientError =
   | { code: 'INVALID_RELAY_URL' }
   | { code: 'UNREACHABLE'; message: string }
   | { code: 'RELAY_REJECTED'; status: number; message: string }
-  | { code: 'BAD_RESPONSE'; message: string };
+  | { code: 'BAD_RESPONSE'; message: string }
+  | { code: 'NO_SUCH_PAIRING' };
 
-/** The device's current pairing, as persisted after a successful registration. */
+/** One stored relay pairing. `id` is the stable local handle (a UUID minted at pair
+ * time); `deviceId` is relay-assigned and changes on re-pair. `nickname` is the
+ * operator's local display name and never leaves the device. */
 export interface Pairing {
-  /** Relay-assigned id this device sends as `X-Admin-Device`. */
-  deviceId: string;
-  /** Base URL of the paired relay. */
+  id: string;
+  nickname: string;
   relayUrl: string;
-  /** Operator-chosen label for this device (empty for pairings made before labels were
-   * persisted; the UI substitutes a fallback). */
-  label: string;
+  deviceId: string;
+  deviceLabel: string;
+}
+
+/** Every stored pairing plus the active selection (`null` when nothing is selected —
+ * fresh install, or the active entry was removed with two or more remaining). */
+export interface PairingsState {
+  active: string | null;
+  pairings: Pairing[];
 }
 
 /**
@@ -74,17 +82,28 @@ export function signWithDeviceKey(data: Uint8Array): Promise<Uint8Array> {
  * Pair this device with `relayUrl` by claiming `pairingCode`. Persists the
  * relay-assigned device id and returns it. Throws a {@link RelayClientError}.
  */
-export function pairDevice(
+export async function pairDevice(
   relayUrl: string,
   pairingCode: string,
   label: string,
+  nickname: string,
 ): Promise<string> {
-  return invoke<string>('pair_device', { relayUrl, pairingCode, label });
+  return invoke<string>('pair_device', { relayUrl, pairingCode, label, nickname });
 }
 
-/** The current pairing, or `null` if this device has not paired yet. */
-export function pairingState(): Promise<Pairing | null> {
-  return invoke<Pairing | null>('pairing_state');
+/** All stored pairings and the active selection. */
+export async function listPairings(): Promise<PairingsState> {
+  return invoke<PairingsState>('list_pairings');
+}
+
+/** Set the active pairing by id. */
+export async function setActivePairing(id: string): Promise<void> {
+  return invoke('set_active_pairing', { id });
+}
+
+/** Rename a pairing locally by id. */
+export async function renamePairing(id: string, nickname: string): Promise<void> {
+  return invoke('rename_pairing', { id, nickname });
 }
 
 /** Mint a single account claim code via a signed request to the paired relay. */
@@ -98,16 +117,16 @@ export function generateClaimCode(): Promise<string> {
  * request — in which case the pairing is left intact so the caller can retry or fall back
  * to {@link unpair}.
  */
-export function revokeSelf(): Promise<void> {
-  return invoke('revoke_self');
+export async function revokeSelf(id: string): Promise<void> {
+  return invoke('revoke_self', { id });
 }
 
 /**
- * Forget the current pairing locally **without** contacting the relay — the fallback when
+ * Forget a pairing locally **without** contacting the relay — the fallback when
  * {@link revokeSelf} can't reach the relay. The credential stays valid server-side.
  */
-export function unpair(): Promise<void> {
-  return invoke('unpair');
+export async function unpair(id: string): Promise<void> {
+  return invoke('unpair', { id });
 }
 
 /** Whether the biometric (user-presence) gate on signing actions is enabled (default on). */

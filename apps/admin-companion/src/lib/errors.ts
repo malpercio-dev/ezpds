@@ -10,7 +10,7 @@ import type { RelayClientError } from './ipc';
 import type { Status } from './components/ui/StatusChip.svelte';
 
 /** How the operator recovers from a given failure. */
-export type Recovery = 'pair' | 'retry' | 'none';
+export type Recovery = 'pair' | 'retry' | 'forget-or-switch' | 'none';
 
 /**
  * A failure rendered as a recovery state: the status chip to show, a short chip label, the
@@ -39,10 +39,10 @@ export function classifyRelayError(error: unknown): ErrorView {
     case 'INVALID_RELAY_URL':
       return { status: 'error', chipLabel: 'bad relay url', message, recovery: 'none' };
     case 'RELAY_REJECTED':
-      // A revoked device (the relay's one non-generic status) — access is gone; re-pair to
-      // restore it.
+      // A revoked device (the relay's one non-generic status) — access is gone; the operator
+      // forgets this server or switches to another, they do not blindly re-pair.
       if (e.status === 403) {
-        return { status: 'revoked', chipLabel: 'access revoked', message, recovery: 'pair' };
+        return { status: 'revoked', chipLabel: 'access revoked', message, recovery: 'forget-or-switch' };
       }
       // A 401 is most often a clock outside the relay's ±60s window — surface the
       // "check device time" hint (in `message`) and let the operator retry after fixing it.
@@ -50,6 +50,10 @@ export function classifyRelayError(error: unknown): ErrorView {
         return { status: 'error', chipLabel: 'check device time', message, recovery: 'retry' };
       }
       return { status: 'error', chipLabel: 'rejected', message, recovery: 'retry' };
+    case 'NO_SUCH_PAIRING':
+      // The pairing has been removed (likely on another screen). It may have been
+      // auto-promoted or deleted, so list_pairings() will resolve the actual state.
+      return { status: 'error', chipLabel: 'no such server', message, recovery: 'none' };
     case 'DEVICE_KEY':
     case 'KEYCHAIN':
     case 'BAD_RESPONSE':
@@ -64,22 +68,24 @@ export function describeRelayError(error: unknown): string {
     case 'NOT_PAIRED':
       return 'This device is not paired yet. Pair it first.';
     case 'INVALID_RELAY_URL':
-      return "That relay URL isn't a valid address.";
+      return 'That relay URL is not a valid address.';
     case 'UNREACHABLE':
-      return "Couldn't reach the relay. Check the URL and your connection.";
+      return 'Could not reach the relay. Check the URL and your connection.';
     case 'RELAY_REJECTED':
       // 403 is the one non-generic relay status: this device was revoked server-side.
       if (e.status === 403) {
-        return 'This device has been revoked. Pair again to restore access.';
+        return 'Access to this server has been revoked. Forget it and switch to another, or pair again if access is restored.';
       }
       // 401 covers an expired/used pairing code, a bad signature, or — for a signed
       // request — a clock outside the relay's ±60s window. Surface the time hint too.
       if (e.status === 401) {
-        return 'The relay rejected the request. The pairing code may be expired or used, or this device’s clock may be off — check the device time.';
+        return 'The relay rejected the request. The pairing code may be expired or used, or this device clock may be off — check the device time.';
       }
       return `The relay rejected the request (HTTP ${e.status}).`;
+    case 'NO_SUCH_PAIRING':
+      return 'That server is no longer in this device list. It may have been removed on another screen.';
     case 'DEVICE_KEY':
-      return "Couldn't use this device's admin key.";
+      return 'Could not use this device admin key.';
     case 'KEYCHAIN':
       return 'A secure-storage error occurred on this device.';
     case 'BAD_RESPONSE':

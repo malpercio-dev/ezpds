@@ -9,6 +9,8 @@
     prompt,
     title,
     onback,
+    server,
+    onservertap,
     children,
     actions,
   }: {
@@ -17,6 +19,12 @@
     title: string;
     /** Render a back affordance and call this on activate. */
     onback?: () => void;
+    /** The active server identity (nickname + host). When omitted, the server block is
+     * not rendered. */
+    server?: { nickname: string; host: string } | null;
+    /** When provided, the server-context block renders as a button (Home uses this to
+     * open the inline switcher). Without it, the block is static text (Settings). */
+    onservertap?: () => void;
     children: Snippet;
     /** Optional pinned action row (e.g. the primary Button) at the screen foot. */
     actions?: Snippet;
@@ -32,6 +40,21 @@
     {/if}
     <p class="prompt"><span class="brand">ezpds</span><span class="caret" aria-hidden="true">▸</span>{prompt}</p>
     <h1 class="title">{title}</h1>
+    {#if server}
+      {#if onservertap}
+        <button type="button" class="server server-tappable" onclick={onservertap}>
+          <span class="server-nickname">{server.nickname}</span>
+          <span class="server-host">{server.host}</span>
+          <span class="server-affordance" aria-hidden="true">▾</span>
+          <span class="visually-hidden">Switch server</span>
+        </button>
+      {:else}
+        <div class="server">
+          <span class="server-nickname">{server.nickname}</span>
+          <span class="server-host">{server.host}</span>
+        </div>
+      {/if}
+    {/if}
   </header>
 
   <main class="body">
@@ -92,6 +115,50 @@
     line-height: var(--leading-headline);
     font-weight: var(--weight-semibold);
     color: var(--color-ink);
+  }
+  .server {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    margin-top: var(--space-xs);
+  }
+  .server-tappable {
+    align-self: flex-start;
+    padding: var(--space-xs) 0;
+    background: transparent;
+    border: none;
+    font-family: inherit;
+    text-align: inherit;
+    cursor: pointer;
+  }
+  .server-nickname {
+    display: block;
+    font-family: var(--font-sans);
+    font-size: var(--text-body);
+    font-weight: var(--weight-medium);
+    color: var(--color-ink);
+  }
+  .server-host {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: var(--text-data);
+    color: var(--color-ink-soft);
+  }
+  .server-affordance {
+    display: inline;
+    margin-left: var(--space-xs);
+    color: var(--color-muted);
+  }
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
   }
   .body {
     display: flex;

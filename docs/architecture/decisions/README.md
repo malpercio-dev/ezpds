@@ -51,3 +51,4 @@ understand why the architecture is the way it is.
 | [0014](0014-atrium-repo-for-repo-engine.md) | Accepted | Adopt `atrium-repo` for the repo engine's MST and block store |
 | [0015](0015-ci-on-github-actions.md) | Accepted | Host CI on GitHub Actions (leaving the tangled spindle) |
 | [0016](0016-dynamic-lexicon-permission-set-resolution.md) | Accepted | Dynamic Lexicon-based permission-set resolution, not a static scope table |
+| [0017](0017-multi-relay-admin-pairings.md) | Accepted | One global admin device key across N relays; pairings in a single versioned keychain document with a Rust-owned active pointer |

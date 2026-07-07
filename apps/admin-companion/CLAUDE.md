@@ -1,7 +1,7 @@
 # Admin Companion (operator console) Mobile App
 
-Last verified: 2026-06-29
-Last updated: 2026-06-29
+Last verified: 2026-07-06
+Last updated: 2026-07-06
 
 ## Purpose
 
@@ -31,24 +31,35 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
 - **Relay client** — `src-tauri/src/relay_client.rs` (Imperative Shell, reqwest): `pair`
   (self-signed `POST /v1/admin/devices`), `generate_claim_code` (signed
   `POST /v1/accounts/claim-codes`), `revoke_self` (signed `POST /v1/admin/devices/:id/revoke`
-  for this device's own id, then local clear), `unpair` (local-only forget — the fallback
-  when the relay is unreachable), `current_pairing`. Request construction is factored into
-  pure `build_*` fns so a test verifies a built request with `crypto::verify_p256_signature`
-  — the relay's own verifier — proving acceptance (and path-binding of the revoke) without
-  a live relay.
-- **Pairing + preference persistence** — `keychain.rs`
-  `store_pairing`/`get_pairing`/`clear_pairing` (accounts `admin-device-id`,
-  `admin-relay-url`, `admin-device-label`) and `get/set_biometric_enabled`
-  (`admin-biometric-enabled`, default on, **survives unpair** — it's a device setting).
-- IPC commands: `pair_device`, `pairing_state`, `generate_claim_code`, `revoke_self`,
-  `unpair`, `biometric_enabled`, `set_biometric_enabled` (plus Phase 6's
-  `get_or_create_device_key`, `sign_with_device_key`).
-- **Screens**: **Pair** (`src/routes/pair/`), **Home** (`src/routes/+page.svelte` —
-  biometric-gated claim code, Copy + iOS Share, routes to Pair when unpaired),
-  **Settings** (`src/routes/settings/` — device label + relay URL + admin key, biometric
-  toggle, unpair = self-revoke with a local-only fallback). The error-state matrix
-  (not-paired / clock-skew / revoked / unreachable) is rendered by the shared
-  `ui/ErrorState.svelte` off `errors.ts`'s `classifyRelayError`.
+  for the target pairing's device id), `unpair` (local-only forget — no relay call), plus
+  pairing-document mutations (`list_pairings`, `set_active_pairing`, `rename_pairing`). Request
+  construction is factored into pure `build_*` fns so a test verifies a built request with
+  `crypto::verify_p256_signature` — the relay's own verifier — proving acceptance (and path-binding
+  of the revoke) without a live relay.
+- **Pairing + preference persistence** — `pairings.rs` (Functional Core: the versioned
+  `PairingDoc` — `{ version, active, pairings[] }` with UUID-keyed entries and invariant-preserving
+  append/rename/remove/set-active operations) persisted by `keychain.rs` `load_pairings`/`save_pairings`
+  as ONE JSON item (account `admin-pairings`). Multiple relays pair simultaneously; one is *active*
+  and all unqualified actions resolve it Rust-side. The legacy triple accounts (`admin-device-id`,
+  `admin-relay-url`, `admin-device-label`) are deleted on first load (no migration — re-pair).
+  `get/set_biometric_enabled` (`admin-biometric-enabled`, default on, survives unpair — a device
+  setting) is unchanged.
+- IPC commands: `pair_device` (relay URL, pairing code, label, nickname — appends and becomes
+  active), `list_pairings` (`{ active, pairings[] }`), `set_active_pairing(id)`, `rename_pairing(id, nickname)`
+  (local-only), `generate_claim_code` (acts on the active pairing; `NOT_PAIRED` when none), `revoke_self(id)`
+  (signed revoke on that pairing's relay, then local removal), `unpair(id)` (local-only forget),
+  `biometric_enabled`, `set_biometric_enabled` (plus Phase 6's `get_or_create_device_key`,
+  `sign_with_device_key`). `pairing_state` is gone — superseded by `list_pairings`.
+- **Screens**: **Pair** (`src/routes/pair/` — QR/manual + required nickname, reachable while
+  paired), **Home** (`src/routes/+page.svelte` — biometric-gated claim code for the *active*
+  server, tappable identity block → inline switcher, explicit-pick state when no active pairing),
+  **Settings** (`src/routes/settings/` — per-server list with per-entry rename / revoke-on-server /
+  forget-locally, global admin key display, biometric toggle, all revokes biometric-gated). The
+  error-state matrix (not-paired / clock-skew / revoked / unreachable) is rendered by the shared
+  `ui/ErrorState.svelte` off `errors.ts`'s `classifyRelayError`. Server identity display (`src/lib/server-identity.ts`)
+  pairs the operator nickname with the relay host in monospace everywhere, so staging and production
+  are always disambiguated. The `ScreenShell` UI primitive reserves a server slot for the active
+  pairing display.
 - **New UI primitives**: `ui/Toggle.svelte` (switch; state by position + on/off text, not
   color), `ui/ErrorState.svelte` (a classified failure → chip + message + recovery CTA),
   and `CodeOutput`'s optional `onshare` Share affordance. All exercised at `/preview`.
@@ -65,12 +76,18 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
 - `DeviceKeyError` / `RelayClientError` serialize as `{ code: "SCREAMING_SNAKE_CASE", … }`.
   The biometric-pref IPC commands surface keychain errors through `RelayClientError::Keychain`
   (the app's single Serialize error type) rather than exposing `KeychainError` directly.
-- Keychain accounts: `admin-device-key-priv` (software path), `admin-device-key-pub` +
-  `admin-device-key-app-label` (Secure Enclave path); `admin-device-id` + `admin-relay-url`
-  + `admin-device-label` (pairing state); `admin-biometric-enabled` (the gate preference).
-  "Unpair" clears the pairing accounts but **keeps the device key** (so a re-pair is
-  recognised by the same public key) **and keeps `admin-biometric-enabled`** (a device
-  setting, not pairing state).
+- Keychain accounts: device-key accounts unchanged (`admin-device-key-priv`, `admin-device-key-pub` +
+  `admin-device-key-app-label`); `admin-pairings` (the versioned multi-relay document, replaces the
+  legacy triple); `admin-biometric-enabled` (the gate preference, unchanged). Removal semantics:
+  a sole remaining pairing is always auto-promoted to active (unambiguous — even when the selection
+  was already cleared by an earlier ambiguous removal); removing the active pairing with two or
+  more remaining clears the selection and the UI must ask for an explicit pick (never silent
+  relay switch). A corrupt document (parse error, version mismatch, invalid active reference) is a
+  hard error surfaced as `RelayClientError::Keychain` — never a silent reset, which would be
+  indistinguishable from a successful unpair. Removing a pairing returns the `NO_SUCH_PAIRING` error
+  code when the id does not exist. "Unpair" is local-only (removes a pairing document entry) and keeps
+  the device key (so a re-pair is recognised by the same public key) and keeps `admin-biometric-enabled`
+  (a device setting, not pairing state).
 - **Signing contract is single-source-of-truth and must stay in lockstep with the relay.**
   `signing.rs`'s golden tests pin the exact literals the relay's `auth.rs` tests pin; if the
   relay changes an envelope, both tests break together. Signatures are low-S P-256, raw r‖s,

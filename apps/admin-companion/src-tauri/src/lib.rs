@@ -1,14 +1,17 @@
 //! admin-companion — Tauri backend entry point.
 //!
-//! The operator console's capabilities, layered on the device admin key: **pairing**
-//! (claim a QR pairing code → register this device's public key), **signed admin requests**
-//! (every call carries the canonical `X-Admin-*` envelope the relay verifies — the demo
-//! action is `generate_claim_code`), and **self-revoke** plus the biometric-gate preference
-//! that back the Settings screen. The terminal-native operator screens consume these
-//! commands over IPC.
+//! The operator console's capabilities, layered on the device admin key: **multi-relay
+//! pairing** (a versioned document of relays this device is paired to, with local id-based
+//! selection), **claim a QR pairing code** (→ register this device's public key with a new
+//! relay, append and activate), **signed admin requests** (every call carries the canonical
+//! `X-Admin-*` envelope the relay verifies — the demo action is `generate_claim_code`),
+//! **self-revoke** (a signed request sent to a specific relay's revoke endpoint), and the
+//! **biometric-gate preference** that backs the Settings screen. The terminal-native operator
+//! screens consume these commands over IPC.
 
 mod device_key;
 mod keychain;
+mod pairings;
 mod relay_client;
 mod signing;
 
@@ -28,22 +31,37 @@ fn sign_with_device_key(data: Vec<u8>) -> Result<Vec<u8>, device_key::DeviceKeyE
 }
 
 /// Pair this device with a relay by claiming a pairing code (typed manually or scanned
-/// from the operator's QR). Registers the device's public key and persists the
-/// relay-assigned `device_id` + relay URL; returns the `device_id`.
+/// from the operator's QR). Registers the device's public key, appends the pairing to
+/// the document, and makes it the active selection; returns the relay-assigned
+/// `device_id`. `nickname` is the operator's local display name for this relay — it is
+/// stored on-device only and never sent to the relay.
 #[tauri::command]
 async fn pair_device(
     relay_url: String,
     pairing_code: String,
     label: String,
+    nickname: String,
 ) -> Result<String, relay_client::RelayClientError> {
-    relay_client::pair(&relay_url, &pairing_code, &label).await
+    relay_client::pair(&relay_url, &pairing_code, &label, &nickname).await
 }
 
-/// The device's current pairing (`{ deviceId, relayUrl }`) or `null` if unpaired —
-/// lets the home screen choose between the Pair screen and the operator console.
+/// Every stored pairing plus the active selection — the state behind the Home switcher
+/// and the Settings server list. Local keychain read; no network.
 #[tauri::command]
-fn pairing_state() -> Result<Option<keychain::Pairing>, relay_client::RelayClientError> {
-    relay_client::current_pairing()
+fn list_pairings() -> Result<pairings::PairingsState, relay_client::RelayClientError> {
+    relay_client::list_pairings()
+}
+
+/// Select the pairing that unqualified actions (claim-code mint) target.
+#[tauri::command]
+fn set_active_pairing(id: String) -> Result<(), relay_client::RelayClientError> {
+    relay_client::set_active_pairing(&id)
+}
+
+/// Rename a pairing's operator-chosen nickname. Local-only; no relay is contacted.
+#[tauri::command]
+fn rename_pairing(id: String, nickname: String) -> Result<(), relay_client::RelayClientError> {
+    relay_client::rename_pairing(&id, &nickname)
 }
 
 /// Mint a single account claim code via a signed request to the paired relay. The
@@ -53,20 +71,18 @@ async fn generate_claim_code() -> Result<String, relay_client::RelayClientError>
     relay_client::generate_claim_code().await
 }
 
-/// Revoke this device on the relay (a signed self-revoke), then forget the pairing
-/// locally. The Settings "unpair" action: the admin credential is killed server-side, so
-/// a later-lost phone can't act as admin. Local state clears only after the relay confirms.
+/// Revoke the given pairing's admin credential on its relay (signed self-revoke), then
+/// remove the entry locally. Removal only after the relay confirms.
 #[tauri::command]
-async fn revoke_self() -> Result<(), relay_client::RelayClientError> {
-    relay_client::revoke_self().await
+async fn revoke_self(id: String) -> Result<(), relay_client::RelayClientError> {
+    relay_client::revoke_self(&id).await
 }
 
-/// Forget the current pairing locally without contacting the relay — the fallback when a
-/// server-side self-revoke can't reach the relay. The credential stays valid server-side
-/// until revoked another way.
+/// Forget the given pairing locally without contacting its relay — the fallback when a
+/// server-side self-revoke can't reach it.
 #[tauri::command]
-fn unpair() -> Result<(), relay_client::RelayClientError> {
-    relay_client::unpair()
+fn unpair(id: String) -> Result<(), relay_client::RelayClientError> {
+    relay_client::unpair(&id)
 }
 
 /// Whether the biometric (user-presence) gate on signing actions is enabled. Defaults to
@@ -103,7 +119,9 @@ pub fn run() {
             get_or_create_device_key,
             sign_with_device_key,
             pair_device,
-            pairing_state,
+            list_pairings,
+            set_active_pairing,
+            rename_pairing,
             generate_claim_code,
             revoke_self,
             unpair,
