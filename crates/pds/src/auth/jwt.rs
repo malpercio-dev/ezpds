@@ -81,23 +81,33 @@ pub fn verify_access_token(token: &str, state: &AppState) -> Result<AccessTokenC
     }
 }
 
+/// Build a `DecodingKey` for this server's own ES256 OAuth signing key from its public JWK.
+///
+/// Shared by every verifier of a token this server signed with that key — the AT+JWT access-token
+/// verifier below and the agent `identity_assertion` verifier in `routes/oauth_token.rs` — so the
+/// JWK-parsing/error-handling shape lives in one place and can't drift between the two.
+pub(crate) fn oauth_es256_decoding_key(state: &AppState) -> Result<DecodingKey, ApiError> {
+    let invalid = || ApiError::new(ErrorCode::InvalidToken, "invalid token");
+    let jwk: jsonwebtoken::jwk::Jwk = serde_json::from_value(
+        state.oauth_signing_keypair.public_key_jwk.clone(),
+    )
+    .map_err(|_| {
+        tracing::error!("failed to parse OAuth signing key JWK");
+        invalid()
+    })?;
+    DecodingKey::from_jwk(&jwk).map_err(|e| {
+        tracing::error!(error = %e, "failed to build ES256 DecodingKey from OAuth signing key JWK");
+        invalid()
+    })
+}
+
 /// Verify ES256 AT+JWT tokens issued by the OAuth token endpoint.
 pub fn verify_es256_access_token(
     token: &str,
     state: &AppState,
 ) -> Result<AccessTokenClaims, ApiError> {
     let invalid = || ApiError::new(ErrorCode::InvalidToken, "invalid token");
-    let jwk: jsonwebtoken::jwk::Jwk = serde_json::from_value(
-        state.oauth_signing_keypair.public_key_jwk.clone(),
-    )
-    .map_err(|_| {
-        tracing::error!("failed to parse OAuth signing key JWK for ES256 token verification");
-        invalid()
-    })?;
-    let decoding_key = DecodingKey::from_jwk(&jwk).map_err(|e| {
-        tracing::error!(error = %e, "failed to build ES256 DecodingKey from OAuth signing key JWK");
-        invalid()
-    })?;
+    let decoding_key = oauth_es256_decoding_key(state)?;
     let mut validation = Validation::new(Algorithm::ES256);
     validation.set_required_spec_claims(&["exp", "sub"]);
     validation.leeway = 0;
