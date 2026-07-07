@@ -1,6 +1,6 @@
 # ezpds
 
-Last verified: 2026-07-05
+Last verified: 2026-07-06
 
 ## Tech Stack
 - Language: Rust (pinned to an exact stable version in rust-toolchain.toml, currently 1.96.0)
@@ -105,13 +105,17 @@ The two are **siblings** — shared security rigor (practice-what-you-preach, WC
 - **Static plan:** [`docs/v01-issue-plan.md`](docs/v01-issue-plan.md) is the original wave breakdown (does not track live Done/Backlog state — use Linear for that). [`docs/unified-milestone-map.md`](docs/unified-milestone-map.md) is the phase model (v0.1–v2.0+).
 - Wave labels: Wave 2 (Auth), Wave 3 (Key Sovereignty), Wave 4 (Repo + Blobs), Wave 5 (Federation), Wave 7 (Hardening), Wave 8 (auth.md). Tag new issues with their wave on creation.
 - **When creating a Linear issue, always set the project to `ezpds`** (team `MM` alone is not enough — the project field is frequently missed, and wave labels don't attach the issue to the project).
+- **Capture before close.** Surveys, audits, and tiered recommendation lists produced during a design/research session must land somewhere durable — the design doc in `docs/design-plans/` or Linear issues — before the session ends. Findings that live only in conversation are lost at the next `/clear`.
 
 ## PDS Architecture
+
 See [`crates/pds/CLAUDE.md`](crates/pds/CLAUDE.md) for PDS-specific module structure,
 hard rules (route isolation, pattern comments, DB ownership), and step-by-step guides for
 adding routes and DB queries.
 
 ## Conventions
+
+- **Branch from a fresh base.** Before starting work on an issue, `git fetch origin main` and create the branch from `origin/main` — never from a possibly-stale local HEAD. If the issue depends on or overlaps sibling issues already marked Done in Linear, verify their PRs are actually in the branch base before concluding a feature is "missing". Treat "Linear says Done but the code isn't here" as a stop-and-verify signal (your base is probably stale), not a cue to build the missing piece.
 - Workspace-level dependency versions in root Cargo.toml; crates use `{ workspace = true }`
 - All crates share a single version (see `[workspace.package]` in Cargo.toml — bumped via `just set-version`) and edition (2021) via workspace.package
 - publish = false (not intended for crates.io)
