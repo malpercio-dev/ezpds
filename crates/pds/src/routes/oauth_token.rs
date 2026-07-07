@@ -746,8 +746,11 @@ async fn handle_jwt_bearer(state: &AppState, form: TokenRequestForm) -> Response
     // Revocation gate: the assertion stays cryptographically valid until it expires, so an operator
     // revoking the agent identity (or the account being deleted) must be enforced here at exchange
     // time. A missing or revoked registration → invalid_grant, per RFC 7523 §3.1.
+    // Also require the stored DID to match the assertion's `sub`, so the revocation lookup and the
+    // token subject resolve to the same identity even if the issuance path ever drifts.
     match get_agent_identity(&state.db, &claims.registration_id).await {
-        Ok(Some(identity)) if identity.status != AgentIdentityStatus::Revoked => {}
+        Ok(Some(identity))
+            if identity.status != AgentIdentityStatus::Revoked && identity.did == claims.sub => {}
         Ok(_) => {
             return OAuthTokenError::new(
                 "invalid_grant",
@@ -801,15 +804,9 @@ fn verify_agent_assertion(
     assertion: &str,
     state: &AppState,
 ) -> Result<AgentAssertionClaims, OAuthTokenError> {
-    let jwk: jsonwebtoken::jwk::Jwk =
-        serde_json::from_value(state.oauth_signing_keypair.public_key_jwk.clone()).map_err(|e| {
-            tracing::error!(error = %e, "failed to parse OAuth signing key JWK for assertion verification");
-            OAuthTokenError::new("server_error", "assertion verification unavailable")
-        })?;
-    let decoding_key = jsonwebtoken::DecodingKey::from_jwk(&jwk).map_err(|e| {
-        tracing::error!(error = %e, "failed to build DecodingKey from OAuth signing key JWK");
-        OAuthTokenError::new("server_error", "assertion verification unavailable")
-    })?;
+    // Reuse the shared loader — the assertion is signed by the same OAuth key as access tokens.
+    let decoding_key = crate::auth::jwt::oauth_es256_decoding_key(state)
+        .map_err(|_| OAuthTokenError::new("server_error", "assertion verification unavailable"))?;
 
     let origin = state.config.public_url.trim_end_matches('/');
     let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::ES256);
@@ -2495,5 +2492,39 @@ mod tests {
         let resp = app(state).oneshot(post_token(&body)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(json_body(resp).await["token_type"], "Bearer");
+    }
+
+    #[tokio::test]
+    async fn jwt_bearer_subject_did_mismatch_returns_invalid_grant() {
+        // Defense-in-depth: the registration row's DID must match the assertion's `sub`. Seed the
+        // identity under one DID but sign the assertion for a different one.
+        let state = test_state().await;
+        seed_agent_identity(
+            &state,
+            "reg_mismatch",
+            "did:plc:agentbearer7777777777",
+            "claimed",
+        )
+        .await;
+        let assertion = mint_assertion(
+            &state,
+            "did:plc:someoneelse00000000",
+            "reg_mismatch",
+            "com.atproto.access",
+            now_secs() + 600,
+        );
+
+        let resp = app(state)
+            .oneshot(post_token(&format!(
+                "grant_type={JWT_BEARER}&assertion={assertion}"
+            )))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(resp).await["error"],
+            "invalid_grant",
+            "an assertion sub that doesn't match the registration DID must be rejected"
+        );
     }
 }
