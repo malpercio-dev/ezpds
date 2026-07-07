@@ -138,7 +138,7 @@ The server verifies the ID-JAG's signature, `iss` (must be on the trust list),
     "registration_type": "identity_assertion",
     "identity_assertion": "<service-signed JWT>",
     "assertion_expires": "2026-01-01T00:00:00.000Z",
-    "scopes": ["atproto", "repo:*?action=create&action=update", "blob:*/*"]
+    "scopes": ["atproto", "blob:*/*", "repo:*?action=create&action=update"]
   }
   ```
 
@@ -237,7 +237,7 @@ grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer
   "access_token": "<Bearer token>",
   "token_type": "Bearer",
   "expires_in": 300,
-  "scope": "atproto repo:*?action=create&action=update blob:*/*"
+  "scope": "atproto blob:*/* repo:*?action=create&action=update"
 }
 ```
 
