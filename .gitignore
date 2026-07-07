@@ -57,6 +57,11 @@ apps/admin-companion/package-lock.json
 # Tauri-generated Xcode project (machine-specific; regenerated per developer via `cargo tauri ios init`)
 apps/identity-wallet/src-tauri/gen/
 apps/admin-companion/src-tauri/gen/
+
+# `cargo tauri icon` build output (ios-postinit Patch G renders apps/<app>/app-icon.png
+# here; only the iOS set — written into the gitignored gen/apple catalog — is shipped)
+apps/identity-wallet/src-tauri/icons-build/
+apps/admin-companion/src-tauri/icons-build/
 .pi/extensions/*/node_modules/
 
 # Claude Code agent worktrees (session-local, never committed)

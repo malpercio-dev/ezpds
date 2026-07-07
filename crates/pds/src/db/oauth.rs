@@ -57,6 +57,28 @@ pub async fn register_oauth_client(
     Ok(())
 }
 
+/// Insert or refresh a resolved OAuth client's metadata (the URL-client_id cache).
+///
+/// Unlike [`register_oauth_client`], a conflict on `client_id` replaces the stored
+/// metadata instead of failing: the row is a cache of a document the client controls,
+/// and two concurrent PARs resolving the same client must not race into a 500.
+pub async fn upsert_oauth_client(
+    pool: &SqlitePool,
+    client_id: &str,
+    client_metadata: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO oauth_clients (client_id, client_metadata, created_at) \
+         VALUES (?, ?, datetime('now')) \
+         ON CONFLICT(client_id) DO UPDATE SET client_metadata = excluded.client_metadata",
+    )
+    .bind(client_id)
+    .bind(client_metadata)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Look up a registered OAuth client by `client_id`. Returns `None` if not found.
 pub async fn get_oauth_client(
     pool: &SqlitePool,

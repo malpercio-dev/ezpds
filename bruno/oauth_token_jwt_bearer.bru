@@ -1,0 +1,59 @@
+meta {
+  name: OAuth Token — JWT-Bearer Assertion Exchange
+  type: http
+  seq: 98
+}
+
+post {
+  url: {{baseUrl}}/oauth/token
+  body: formUrlEncoded
+  auth: none
+}
+
+body:form-urlencoded {
+  grant_type: urn:ietf:params:oauth:grant-type:jwt-bearer
+  assertion: {{identityAssertion}}
+  resource: {{baseUrl}}
+}
+
+vars:pre-request {
+  identityAssertion: <replace-with-service-signed-identity-assertion-jwt>
+}
+
+docs {
+  # jwt-bearer grant (RFC 7523 / auth.md Step 5)
+
+  Exchanges a service-signed agent `identity_assertion` (issued by
+  `POST /agent/identity`, or returned after a claim ceremony) for a short-lived
+  **Bearer** access token. No DPoP proof is required — the assertion is already
+  key-bound by the registration ceremony — and **no refresh token** is issued:
+  the same assertion is re-exchanged until it expires.
+
+  ## Request
+
+  `application/x-www-form-urlencoded`:
+
+  - `grant_type` = `urn:ietf:params:oauth:grant-type:jwt-bearer`
+  - `assertion` = the service-signed `identity_assertion` JWT
+  - `resource` (optional, RFC 8707) = this server's origin; any other value is
+    rejected with `invalid_target`
+
+  ## Response (200)
+
+  ```json
+  {
+    "access_token": "<at+jwt>",
+    "token_type": "Bearer",
+    "expires_in": 300,
+    "scope": "com.atproto.access"
+  }
+  ```
+
+  ## Errors (OAuth `{ "error", "error_description" }` body)
+
+  - 400 invalid_request: missing `assertion`
+  - 400 invalid_target: `resource` is not this server's origin
+  - 400 invalid_grant: the assertion is malformed, expired, not signed by this
+    server, or its agent identity is not `claimed` (unclaimed/revoked/absent, or
+    its DID no longer matches the assertion `sub`)
+}

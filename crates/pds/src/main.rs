@@ -22,6 +22,7 @@ mod genesis;
 mod handle;
 mod identity_resolution;
 mod iroh_tunnel;
+mod oauth_client_resolution;
 mod platform;
 mod plc_ops;
 mod rate_limit;

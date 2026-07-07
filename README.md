@@ -165,7 +165,7 @@ Key settings:
 - `data_dir` — Required; root for on-disk state
 - `database_url` — SQLite path (default: `{data_dir}/relay.db`)
 - `public_url` — The PDS's public-facing URL
-- `available_user_domains` — Handle domains users can register (e.g. `["ezpds.com"]`)
+- `available_user_domains` — Handle domains users can register (e.g. `["obsign.org"]`)
 - `invite_code_required` — Whether claim codes are required for account creation
 - `admin_token` — Token for management endpoints
 - `blobs` — Blob size/quota limits, GC interval, temp-blob TTL
