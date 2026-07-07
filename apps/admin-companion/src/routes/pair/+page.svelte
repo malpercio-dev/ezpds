@@ -110,13 +110,14 @@
     const url = relayUrl.trim();
     const code = pairingCode.trim();
     const nick = nickname.trim();
-    if (!url || !code || !nick || pairing) return;
 
     // Validate nickname: required, no empty string.
     if (nick.length === 0) {
       nicknameError = "Give this server a name — it's how you'll tell environments apart.";
       return;
     }
+
+    if (!url || !code || pairing) return;
 
     // Mirror the form's URL constraint: a bare host (no scheme) can't be paired against.
     try {
