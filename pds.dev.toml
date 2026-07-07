@@ -61,3 +61,29 @@ urls = []
 # update_handle_per_5min = 10    # per IP
 # write_points_hourly = 5000     # per account (create=3, update=2, delete=1)
 # write_points_daily = 35000     # per account
+
+# auth.md agent registration (POST /agent/identity). Every flow is off by default — opt in per
+# flow. The endpoint is always advertised in the AS metadata, but performs no registration until
+# configured. Scalar/bool knobs are overridable via EZPDS_AGENT_AUTH_* (the issuer trust list is
+# TOML-only, since each entry carries a PEM key).
+# [agent_auth]
+# service_auth_enabled = false      # enable the login-hint → claim-ceremony flow
+# anonymous_enabled = false         # reserved; the anonymous flow is not yet implemented
+# assertion_ttl_secs = 3600         # lifetime of a minted service identity_assertion
+# claim_token_ttl_secs = 600        # lifetime of a claim token
+# user_code_ttl_secs = 600          # lifetime of a claim-ceremony user code
+# auth_time_max_age_secs = 3600     # ID-JAG auth_time older than this → login_required
+# granted_scopes = ["com.atproto.access"]
+# verification_uri = "https://example.com/agent/claim"  # defaults to {public_url}/agent/claim
+#
+# identity_assertion issuer trust list — an ID-JAG whose `iss` is not listed is refused with
+# issuer_not_enabled. Repeat the block per issuer.
+# [[agent_auth.trusted_issuers]]
+# issuer = "https://issuer.example.com"
+# audience = "https://your-pds.example.com"   # optional; defaults to public_url
+# algorithm = "ES256"                          # ES256/ES384/RS256/RS384/RS512/EdDSA
+# public_key_pem = """
+# -----BEGIN PUBLIC KEY-----
+# ...
+# -----END PUBLIC KEY-----
+# """

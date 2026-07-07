@@ -256,6 +256,32 @@ pub(crate) async fn get_agent_identity_by_claim_token(
     fetch_identity_by(db, "claim_token", claim_token).await
 }
 
+/// Fetch an agent identity by its `(issuer, subject)` pair.
+///
+/// Backs the `identity_assertion` flow: an ID-JAG's `(iss, sub)` is the stable key for an agent's
+/// registration, deduplicated by the partial unique index `idx_agent_identities_iss_sub`.
+pub(crate) async fn get_agent_identity_by_issuer_subject(
+    db: &sqlx::SqlitePool,
+    issuer: &str,
+    subject: &str,
+) -> Result<Option<AgentIdentityRow>, ApiError> {
+    let row = sqlx::query_as::<_, IdentitySqlRow>(
+        "SELECT id, did, registration_type, issuer, subject, email, scopes, identity_assertion, \
+                assertion_expires_at, pre_claim_scopes, claim_token, claim_token_expires_at, \
+                status, created_at, updated_at \
+         FROM agent_identities WHERE issuer = ? AND subject = ?",
+    )
+    .bind(issuer)
+    .bind(subject)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "DB error fetching agent identity by issuer/subject");
+        ApiError::new(ErrorCode::InternalError, "failed to load agent identity")
+    })?;
+    Ok(row.map(into_identity_row))
+}
+
 async fn fetch_identity_by(
     db: &sqlx::SqlitePool,
     column: &str,

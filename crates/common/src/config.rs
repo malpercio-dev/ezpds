@@ -36,6 +36,8 @@ pub struct Config {
     /// Account-lifecycle knobs (currently the scheduled-deletion reaper interval).
     pub accounts: AccountsConfig,
     pub oauth: OAuthConfig,
+    /// auth.md agent-registration knobs (per-flow enablement, issuer trust list, TTLs).
+    pub agent_auth: AgentAuthConfig,
     pub iroh: IrohConfig,
     pub appview: AppViewConfig,
     pub chat: ChatConfig,
@@ -305,6 +307,122 @@ fn default_write_points_daily() -> u64 {
 /// Stub for future OAuth configuration.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct OAuthConfig {}
+
+/// auth.md agent-registration configuration (`POST /agent/identity`).
+///
+/// Every registration flow is **off by default** — an operator opts in per flow. When a flow is
+/// disabled the endpoint answers its request with the flow's `*_not_enabled` auth.md error rather
+/// than acting, so a fresh install exposes the discovery surface (advertised in the AS metadata)
+/// but performs no agent registration until deliberately configured.
+///
+/// - `service_auth_enabled` gates the `service_auth` (login-hint → claim-ceremony) flow.
+/// - `anonymous_enabled` gates the `anonymous` flow (not yet implemented; see the deferred
+///   follow-up — the V037 schema binds every identity to an existing account DID, which an
+///   anonymous agent lacks).
+/// - `trusted_issuers` gates `identity_assertion`: an ID-JAG whose `iss` is not listed is refused
+///   with `issuer_not_enabled`. Each entry carries the issuer's verification key inline (PEM). The
+///   dynamic JWKS-URL form of the trust list is a separate follow-up.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AgentAuthConfig {
+    /// Enable the `service_auth` registration flow. Default `false`.
+    #[serde(default)]
+    pub service_auth_enabled: bool,
+    /// Enable the `anonymous` registration flow. Default `false`. Currently inert (deferred).
+    #[serde(default)]
+    pub anonymous_enabled: bool,
+    /// Issuers whose ID-JAGs are accepted by the `identity_assertion` flow. Empty (the default)
+    /// means every `identity_assertion` request is refused with `issuer_not_enabled`.
+    #[serde(default)]
+    pub trusted_issuers: Vec<TrustedIssuer>,
+    /// Lifetime, in seconds, of a minted service `identity_assertion`. Default 3600 (1 hour).
+    #[serde(default = "default_agent_assertion_ttl_secs")]
+    pub assertion_ttl_secs: u64,
+    /// Lifetime, in seconds, of a claim token returned for a pending claim ceremony. Default 600.
+    #[serde(default = "default_agent_claim_token_ttl_secs")]
+    pub claim_token_ttl_secs: u64,
+    /// Lifetime, in seconds, of a claim ceremony's user code. Default 600.
+    #[serde(default = "default_agent_user_code_ttl_secs")]
+    pub user_code_ttl_secs: u64,
+    /// Maximum age, in seconds, of an ID-JAG's `auth_time` before the flow returns `login_required`
+    /// (the assertion is too stale to trust). Default 3600 (1 hour).
+    #[serde(default = "default_agent_auth_time_max_age_secs")]
+    pub auth_time_max_age_secs: u64,
+    /// Scopes granted to a fully-registered agent identity. Default `["com.atproto.access"]`.
+    #[serde(default = "default_agent_granted_scopes")]
+    pub granted_scopes: Vec<String>,
+    /// Scopes carried by a pre-claim (anonymous) assertion. Default `["com.atproto.access"]`.
+    #[serde(default = "default_agent_granted_scopes")]
+    pub pre_claim_scopes: Vec<String>,
+    /// The human-facing URL where a user enters the claim-ceremony `user_code`. When `None` (the
+    /// default) the handler derives `{public_url}/agent/claim`.
+    #[serde(default)]
+    pub verification_uri: Option<String>,
+}
+
+impl Default for AgentAuthConfig {
+    fn default() -> Self {
+        Self {
+            service_auth_enabled: false,
+            anonymous_enabled: false,
+            trusted_issuers: Vec::new(),
+            assertion_ttl_secs: default_agent_assertion_ttl_secs(),
+            claim_token_ttl_secs: default_agent_claim_token_ttl_secs(),
+            user_code_ttl_secs: default_agent_user_code_ttl_secs(),
+            auth_time_max_age_secs: default_agent_auth_time_max_age_secs(),
+            granted_scopes: default_agent_granted_scopes(),
+            pre_claim_scopes: default_agent_granted_scopes(),
+            verification_uri: None,
+        }
+    }
+}
+
+/// One entry in the `identity_assertion` issuer trust list.
+///
+/// `public_key_pem` is the issuer's public key (PEM) used to verify ID-JAG signatures; `algorithm`
+/// names the JWS algorithm (`ES256` by default, also `RS256`/`EdDSA` and their larger cousins).
+/// `audience`, when set, overrides the expected `aud` claim (which otherwise defaults to this
+/// server's `public_url`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct TrustedIssuer {
+    /// Exact `iss` claim value this entry matches.
+    pub issuer: String,
+    /// Expected `aud` claim. `None` → the server's `public_url`.
+    #[serde(default)]
+    pub audience: Option<String>,
+    /// PEM-encoded public key used to verify the ID-JAG signature.
+    pub public_key_pem: String,
+    /// JWS algorithm of the ID-JAG. Default `ES256`.
+    #[serde(default = "default_idjag_algorithm")]
+    pub algorithm: String,
+}
+
+fn default_agent_assertion_ttl_secs() -> u64 {
+    60 * 60 // 1 hour
+}
+
+fn default_agent_claim_token_ttl_secs() -> u64 {
+    10 * 60 // 10 minutes
+}
+
+fn default_agent_user_code_ttl_secs() -> u64 {
+    10 * 60 // 10 minutes
+}
+
+fn default_agent_auth_time_max_age_secs() -> u64 {
+    60 * 60 // 1 hour
+}
+
+fn default_agent_granted_scopes() -> Vec<String> {
+    vec!["com.atproto.access".to_string()]
+}
+
+fn default_idjag_algorithm() -> String {
+    "ES256".to_string()
+}
+
+/// The JWS algorithms accepted for an ID-JAG's `algorithm`. Restricting to this set at config load
+/// turns a typo'd algorithm into a startup error rather than a per-request failure.
+const SUPPORTED_IDJAG_ALGORITHMS: &[&str] = &["ES256", "ES384", "RS256", "RS384", "RS512", "EdDSA"];
 
 /// Iroh networking configuration.
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -611,6 +729,8 @@ pub(crate) struct RawConfig {
     #[serde(default)]
     pub(crate) oauth: OAuthConfig,
     #[serde(default)]
+    pub(crate) agent_auth: AgentAuthConfig,
+    #[serde(default)]
     pub(crate) iroh: IrohConfig,
     #[serde(default)]
     pub(crate) appview: AppViewConfig,
@@ -820,6 +940,39 @@ pub(crate) fn apply_env_overrides(
     }
     if let Some(v) = env.get("EZPDS_RATE_LIMIT_WRITE_POINTS_DAILY") {
         raw.rate_limit.write_points_daily = parse_u64("EZPDS_RATE_LIMIT_WRITE_POINTS_DAILY", v)?;
+    }
+    // Agent-auth (auth.md) scalar/bool overrides. The issuer trust list is a list of structs
+    // carrying PEM keys, which does not map to a flat env var — it stays TOML-only.
+    if let Some(v) = env.get("EZPDS_AGENT_AUTH_SERVICE_AUTH_ENABLED") {
+        raw.agent_auth.service_auth_enabled = v.parse::<bool>().map_err(|e| {
+            ConfigError::Invalid(format!(
+                "EZPDS_AGENT_AUTH_SERVICE_AUTH_ENABLED is not a valid boolean: '{v}': {e}"
+            ))
+        })?;
+    }
+    if let Some(v) = env.get("EZPDS_AGENT_AUTH_ANONYMOUS_ENABLED") {
+        raw.agent_auth.anonymous_enabled = v.parse::<bool>().map_err(|e| {
+            ConfigError::Invalid(format!(
+                "EZPDS_AGENT_AUTH_ANONYMOUS_ENABLED is not a valid boolean: '{v}': {e}"
+            ))
+        })?;
+    }
+    if let Some(v) = env.get("EZPDS_AGENT_AUTH_ASSERTION_TTL_SECS") {
+        raw.agent_auth.assertion_ttl_secs = parse_u64("EZPDS_AGENT_AUTH_ASSERTION_TTL_SECS", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_AGENT_AUTH_CLAIM_TOKEN_TTL_SECS") {
+        raw.agent_auth.claim_token_ttl_secs =
+            parse_u64("EZPDS_AGENT_AUTH_CLAIM_TOKEN_TTL_SECS", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_AGENT_AUTH_USER_CODE_TTL_SECS") {
+        raw.agent_auth.user_code_ttl_secs = parse_u64("EZPDS_AGENT_AUTH_USER_CODE_TTL_SECS", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_AGENT_AUTH_AUTH_TIME_MAX_AGE_SECS") {
+        raw.agent_auth.auth_time_max_age_secs =
+            parse_u64("EZPDS_AGENT_AUTH_AUTH_TIME_MAX_AGE_SECS", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_AGENT_AUTH_VERIFICATION_URI") {
+        raw.agent_auth.verification_uri = Some(v.clone());
     }
     // Email overrides. `provider` and `smtp_tls` parse from the same lowercase tokens the TOML
     // form accepts; an unrecognised value is a hard config error rather than a silent fallback.
@@ -1100,6 +1253,53 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
 
     let email = build_email_config(raw.email)?;
 
+    // Agent-auth (auth.md) validation. The feature ships off by default, but a present-but-broken
+    // config should fail loudly at load rather than surface as a per-request 500.
+    if raw.agent_auth.assertion_ttl_secs == 0 {
+        return Err(ConfigError::Invalid(
+            "agent_auth.assertion_ttl_secs must be > 0 (a zero-lifetime assertion is born expired)"
+                .to_string(),
+        ));
+    }
+    if raw.agent_auth.claim_token_ttl_secs == 0 {
+        return Err(ConfigError::Invalid(
+            "agent_auth.claim_token_ttl_secs must be > 0".to_string(),
+        ));
+    }
+    if raw.agent_auth.user_code_ttl_secs == 0 {
+        return Err(ConfigError::Invalid(
+            "agent_auth.user_code_ttl_secs must be > 0".to_string(),
+        ));
+    }
+    if let Some(uri) = &raw.agent_auth.verification_uri {
+        if !uri.starts_with("https://") && !uri.starts_with("http://") {
+            return Err(ConfigError::Invalid(format!(
+                "agent_auth.verification_uri must start with http:// or https://, got: {uri:?}"
+            )));
+        }
+    }
+    for issuer in &raw.agent_auth.trusted_issuers {
+        if issuer.issuer.is_empty() {
+            return Err(ConfigError::Invalid(
+                "agent_auth.trusted_issuers entries must set a non-empty issuer".to_string(),
+            ));
+        }
+        if issuer.public_key_pem.trim().is_empty() {
+            return Err(ConfigError::Invalid(format!(
+                "agent_auth trusted issuer {:?} must set a non-empty public_key_pem",
+                issuer.issuer
+            )));
+        }
+        if !SUPPORTED_IDJAG_ALGORITHMS.contains(&issuer.algorithm.as_str()) {
+            return Err(ConfigError::Invalid(format!(
+                "agent_auth trusted issuer {:?} has unsupported algorithm {:?} (supported: {})",
+                issuer.issuer,
+                issuer.algorithm,
+                SUPPORTED_IDJAG_ALGORITHMS.join(", ")
+            )));
+        }
+    }
+
     Ok(Config {
         bind_address,
         port,
@@ -1115,6 +1315,7 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         firehose: raw.firehose,
         accounts: raw.accounts,
         oauth: raw.oauth,
+        agent_auth: raw.agent_auth,
         iroh: raw.iroh,
         appview,
         chat,
@@ -1291,6 +1492,103 @@ mod tests {
         let raw: RawConfig = toml::from_str(toml).unwrap();
         let err = validate_and_build(raw).unwrap_err();
         assert!(matches!(err, ConfigError::Invalid(_)));
+    }
+
+    #[test]
+    fn agent_auth_defaults_when_absent() {
+        // No [agent_auth] section: every flow is off, TTLs fall back to their defaults, and the
+        // issuer trust list is empty.
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert!(!config.agent_auth.service_auth_enabled);
+        assert!(!config.agent_auth.anonymous_enabled);
+        assert!(config.agent_auth.trusted_issuers.is_empty());
+        assert_eq!(config.agent_auth.assertion_ttl_secs, 3600);
+        assert_eq!(config.agent_auth.claim_token_ttl_secs, 600);
+        assert_eq!(config.agent_auth.granted_scopes, vec!["com.atproto.access"]);
+        assert!(config.agent_auth.verification_uri.is_none());
+    }
+
+    #[test]
+    fn agent_auth_parses_trusted_issuer_from_toml() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [agent_auth]
+            service_auth_enabled = true
+
+            [[agent_auth.trusted_issuers]]
+            issuer = "https://issuer.example.com"
+            public_key_pem = "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert!(config.agent_auth.service_auth_enabled);
+        assert_eq!(config.agent_auth.trusted_issuers.len(), 1);
+        let issuer = &config.agent_auth.trusted_issuers[0];
+        assert_eq!(issuer.issuer, "https://issuer.example.com");
+        assert_eq!(issuer.algorithm, "ES256"); // default
+        assert!(issuer.audience.is_none());
+    }
+
+    #[test]
+    fn agent_auth_zero_assertion_ttl_is_rejected() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [agent_auth]
+            assertion_ttl_secs = 0
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+    }
+
+    #[test]
+    fn agent_auth_unsupported_issuer_algorithm_is_rejected() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [[agent_auth.trusted_issuers]]
+            issuer = "https://issuer.example.com"
+            algorithm = "HS256"
+            public_key_pem = "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+    }
+
+    #[test]
+    fn agent_auth_empty_issuer_pem_is_rejected() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [[agent_auth.trusted_issuers]]
+            issuer = "https://issuer.example.com"
+            public_key_pem = "   "
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+    }
+
+    #[test]
+    fn agent_auth_env_override_enables_service_auth() {
+        let env = HashMap::from([(
+            "EZPDS_AGENT_AUTH_SERVICE_AUTH_ENABLED".to_string(),
+            "true".to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert!(config.agent_auth.service_auth_enabled);
     }
 
     #[test]

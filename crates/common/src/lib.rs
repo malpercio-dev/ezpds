@@ -3,9 +3,10 @@ mod config_loader;
 mod error;
 
 pub use config::{
-    AccountsConfig, AppViewConfig, BlobsConfig, ChatConfig, Config, ConfigError, ContactConfig,
-    CrawlersConfig, EmailConfig, EmailProvider, FirehoseConfig, IrohConfig, OAuthConfig,
-    RateLimitConfig, Sensitive, ServerLinksConfig, SmtpTls, TelemetryConfig,
+    AccountsConfig, AgentAuthConfig, AppViewConfig, BlobsConfig, ChatConfig, Config, ConfigError,
+    ContactConfig, CrawlersConfig, EmailConfig, EmailProvider, FirehoseConfig, IrohConfig,
+    OAuthConfig, RateLimitConfig, Sensitive, ServerLinksConfig, SmtpTls, TelemetryConfig,
+    TrustedIssuer,
 };
 pub use config_loader::{
     collect_ezpds_env, load_config, load_config_from_env_only, load_config_with_env,
