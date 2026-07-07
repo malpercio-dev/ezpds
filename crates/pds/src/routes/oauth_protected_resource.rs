@@ -19,9 +19,13 @@ use crate::app::AppState;
 ///
 /// ezpds is both the protected resource server and the authorization server, so
 /// `resource` and `authorization_servers[0]` are the same public origin.
+///
+/// `resource_name` is the human-readable instance name from config (`service_name`,
+/// default `"custos"`), intended for display to an end user during an authorization flow.
 #[derive(Serialize)]
 struct OAuthProtectedResourceMetadata {
     resource: String,
+    resource_name: String,
     authorization_servers: Vec<String>,
     scopes_supported: Vec<String>,
     bearer_methods_supported: Vec<String>,
@@ -32,6 +36,7 @@ pub async fn oauth_protected_resource_metadata(State(state): State<AppState>) ->
     let base = state.config.public_url.trim_end_matches('/');
     Json(OAuthProtectedResourceMetadata {
         resource: base.to_string(),
+        resource_name: state.config.service_name.clone(),
         authorization_servers: vec![base.to_string()],
         scopes_supported: crate::auth::oauth_scopes::supported_scopes()
             .into_iter()
@@ -156,6 +161,43 @@ mod tests {
     async fn resource_documentation_points_to_atproto_docs() {
         let json = metadata_json().await;
         assert_eq!(json["resource_documentation"], "https://atproto.com");
+    }
+
+    #[tokio::test]
+    async fn resource_name_defaults_to_configured_service_name() {
+        // test_state() sets service_name = "custos" (the default).
+        let json = metadata_json().await;
+        assert_eq!(json["resource_name"], "custos");
+    }
+
+    #[tokio::test]
+    async fn resource_name_reflects_configured_service_name() {
+        // Prove the field is sourced from config, not hardcoded: a custom service_name
+        // flows through to the advertised resource_name.
+        let base = test_state().await;
+        let mut config = (*base.config).clone();
+        config.service_name = "Custos Relay".to_string();
+        let state = AppState {
+            config: Arc::new(config),
+            ..base
+        };
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/oauth-protected-resource")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(json["resource_name"], "Custos Relay");
     }
 
     #[tokio::test]
