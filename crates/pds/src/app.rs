@@ -723,6 +723,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
             data_dir: PathBuf::from("/tmp"),
             database_url: "sqlite::memory:".to_string(),
             public_url: "https://test.example.com".to_string(),
+            service_name: "ezpds".to_string(),
             server_did: None,
             available_user_domains: vec!["example.com".to_string()],
             invite_code_required: true,

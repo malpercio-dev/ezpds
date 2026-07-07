@@ -25,6 +25,11 @@ pub struct Config {
     pub data_dir: PathBuf,
     pub database_url: String,
     pub public_url: String,
+    /// Human-readable display name for this instance, surfaced to end users (e.g. the
+    /// `resource_name` field of the RFC 9728 protected-resource metadata). Distinct from
+    /// `telemetry.service_name` (the machine-facing OTel `service.name` attribute). Defaults
+    /// to `"ezpds"`.
+    pub service_name: String,
     pub server_did: Option<String>,
     pub available_user_domains: Vec<String>,
     pub invite_code_required: bool,
@@ -595,6 +600,7 @@ pub(crate) struct RawConfig {
     pub(crate) data_dir: Option<String>,
     pub(crate) database_url: Option<String>,
     pub(crate) public_url: Option<String>,
+    pub(crate) service_name: Option<String>,
     pub(crate) server_did: Option<String>,
     pub(crate) available_user_domains: Option<Vec<String>>,
     pub(crate) invite_code_required: Option<bool>,
@@ -713,6 +719,9 @@ pub(crate) fn apply_env_overrides(
     }
     if let Some(v) = env.get("EZPDS_PUBLIC_URL") {
         raw.public_url = Some(v.clone());
+    }
+    if let Some(v) = env.get("EZPDS_SERVICE_NAME") {
+        raw.service_name = Some(v.clone());
     }
     if let Some(v) = env.get("EZPDS_SERVER_DID") {
         raw.server_did = Some(v.clone());
@@ -1015,6 +1024,11 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
             "available_user_domains must contain at least one domain".to_string(),
         ));
     }
+    let service_name = raw
+        .service_name
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "ezpds".to_string());
     let invite_code_required = raw.invite_code_required.unwrap_or(true);
     let plc_directory_url = raw
         .plc_directory_url
@@ -1106,6 +1120,7 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         data_dir,
         database_url,
         public_url,
+        service_name,
         server_did: raw.server_did,
         available_user_domains,
         invite_code_required,
@@ -1670,6 +1685,61 @@ mod tests {
         let config = validate_and_build(raw).unwrap();
 
         assert_eq!(config.telemetry.service_name, "from-env");
+    }
+
+    #[test]
+    fn service_name_defaults_to_ezpds() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert_eq!(config.service_name, "ezpds");
+    }
+
+    #[test]
+    fn service_name_from_toml() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+            service_name = "Custos Relay"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert_eq!(config.service_name, "Custos Relay");
+    }
+
+    #[test]
+    fn env_override_service_name() {
+        let env = HashMap::from([("EZPDS_SERVICE_NAME".to_string(), "My Instance".to_string())]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert_eq!(config.service_name, "My Instance");
+    }
+
+    #[test]
+    fn service_name_env_overrides_toml() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+            service_name = "from-toml"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let env = HashMap::from([("EZPDS_SERVICE_NAME".to_string(), "from-env".to_string())]);
+        let raw = apply_env_overrides(raw, &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert_eq!(config.service_name, "from-env");
+    }
+
+    #[test]
+    fn blank_service_name_falls_back_to_default() {
+        // An empty or whitespace-only override must not produce an empty display name.
+        let env = HashMap::from([("EZPDS_SERVICE_NAME".to_string(), "   ".to_string())]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert_eq!(config.service_name, "ezpds");
     }
 
     #[test]
