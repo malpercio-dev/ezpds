@@ -17,6 +17,8 @@ use security_framework::passwords::{
     delete_generic_password, get_generic_password, set_generic_password,
 };
 
+use crate::pairings::PairingDoc;
+
 /// Keychain service namespace. Distinct from identity-wallet's
 /// `"ezpds-identity-wallet"` so the two apps never collide on a shared device.
 //
@@ -34,6 +36,12 @@ pub enum KeychainError {
     /// (pairing state) can produce this; the device-key accounts store raw bytes.
     #[error("stored keychain value was not valid UTF-8")]
     InvalidUtf8,
+    /// The persisted pairing document exists but cannot be used (bad JSON, unknown
+    /// version, or violated invariants). Deliberately NOT recovered by resetting to an
+    /// empty document — a silent reset would be indistinguishable from a successful
+    /// unpair. Surfaces to the frontend through `RelayClientError::Keychain`.
+    #[error("pairing document is corrupt: {0}")]
+    CorruptPairingDoc(String),
     /// Returned by the in-memory test store when an item is not found.
     #[cfg(test)]
     #[error("item not found")]
@@ -89,6 +97,7 @@ pub fn is_not_found(err: &KeychainError) -> bool {
     match err {
         KeychainError::Security(e) => e.code() == -25300,
         KeychainError::InvalidUtf8 => false,
+        KeychainError::CorruptPairingDoc(_) => false,
         #[cfg(test)]
         KeychainError::NotFound => true,
     }
@@ -110,6 +119,10 @@ const RELAY_URL_ACCOUNT: &str = "admin-relay-url";
 /// screen and sent to the relay at registration). Persisted alongside the pairing so the
 /// label the relay knows this device by is the label the operator sees locally.
 const LABEL_ACCOUNT: &str = "admin-device-label";
+
+/// Keychain account holding the versioned multi-relay pairing document (JSON — see
+/// `pairings::PairingDoc`). Replaces the single-pairing triple below.
+const PAIRINGS_ACCOUNT: &str = "admin-pairings";
 
 /// The persisted result of a successful pairing: which relay this device is paired to,
 /// the id the relay knows it by, and the operator-chosen label. Serializes camelCase for
@@ -161,6 +174,58 @@ pub fn get_pairing() -> Result<Option<Pairing>, KeychainError> {
 /// reuses the same key so the relay can recognise a returning device by its public key.
 /// The biometric preference also survives (it is a device setting, not pairing state).
 pub fn clear_pairing() -> Result<(), KeychainError> {
+    for account in [DEVICE_ID_ACCOUNT, RELAY_URL_ACCOUNT, LABEL_ACCOUNT] {
+        match delete_item(account) {
+            Ok(()) => {}
+            Err(e) if is_not_found(&e) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// Load the pairing document, or an empty one if none has been written yet.
+///
+/// First load on a device that paired before the multi-server document existed also
+/// deletes the legacy single-pairing triple (`admin-device-id`, `admin-relay-url`,
+/// `admin-device-label`) — a one-time cleanup, not a migration: the operator re-pairs,
+/// and the stale relay-side device entry can be revoked from that relay's device list.
+/// A document that exists but does not parse or validate is a hard error; pairings are
+/// never silently reset, because an empty document is indistinguishable from a
+/// successful unpair.
+// Wired in by the relay-client switchover later in this change-set.
+#[allow(dead_code)]
+pub fn load_pairings() -> Result<PairingDoc, KeychainError> {
+    match get_item(PAIRINGS_ACCOUNT) {
+        Ok(bytes) => {
+            let doc: PairingDoc = serde_json::from_slice(&bytes)
+                .map_err(|e| KeychainError::CorruptPairingDoc(e.to_string()))?;
+            doc.validate().map_err(KeychainError::CorruptPairingDoc)?;
+            Ok(doc)
+        }
+        Err(e) if is_not_found(&e) => {
+            clear_legacy_pairing_triple()?;
+            Ok(PairingDoc::empty())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Persist the whole pairing document as one keychain write. Every mutation is
+/// read-modify-write of the full document ending here, so a reader never observes a
+/// half-updated pairing list.
+// Wired in by the relay-client switchover later in this change-set.
+#[allow(dead_code)]
+pub fn save_pairings(doc: &PairingDoc) -> Result<(), KeychainError> {
+    let bytes = serde_json::to_vec(doc).expect("PairingDoc serializes");
+    store_item(PAIRINGS_ACCOUNT, &bytes)
+}
+
+/// Delete the pre-multi-server pairing triple if present. Idempotent: absent items are
+/// skipped, so repeated loads on a fresh install are no-ops.
+// Wired in by the relay-client switchover later in this change-set.
+#[allow(dead_code)]
+fn clear_legacy_pairing_triple() -> Result<(), KeychainError> {
     for account in [DEVICE_ID_ACCOUNT, RELAY_URL_ACCOUNT, LABEL_ACCOUNT] {
         match delete_item(account) {
             Ok(()) => {}
