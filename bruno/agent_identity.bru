@@ -1,0 +1,70 @@
+meta {
+  name: Agent Identity (auth.md POST /agent/identity)
+  type: http
+  seq: 97
+}
+
+post {
+  url: {{baseUrl}}/agent/identity
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "type": "service_auth",
+    "login_hint": "{{accountEmail}}"
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # POST /agent/identity
+
+  The auth.md agent-registration endpoint (auth.md spec Step 3). Dispatches on the request `type`.
+  Every flow is opt-in per operator via `[agent_auth]` in `pds.toml` (all off by default), so a
+  fresh install answers each request with the flow's `*_not_enabled` error until configured.
+
+  ## service_auth (shown above)
+
+  The agent knows only the user's email (`login_hint`). Starts a claim ceremony bound to the
+  matching local account and returns the claim materials:
+
+  ```json
+  {
+    "registration_id": "reg_...",
+    "registration_type": "service_auth",
+    "claim_token": "clm_...",
+    "claim": { "user_code": "...", "verification_uri": "https://.../agent/claim", "expires_at": "..." }
+  }
+  ```
+
+  Requires `[agent_auth] service_auth_enabled = true`.
+
+  ## identity_assertion
+
+  Body: `{ "type": "identity_assertion", "assertion": "<ID-JAG JWT>" }` (optional
+  `"assertion_type": "urn:ietf:params:oauth:token-type:id-jag"`). The ID-JAG is verified against a
+  configured `[[agent_auth.trusted_issuers]]` entry (signature, `iss`, `aud`, `exp`, and
+  `auth_time` freshness). A confirmed `(iss, sub)` returns 200 with a service-signed
+  `identity_assertion`; a first-seen `(iss, sub)` whose email matches a local account returns
+  401 `interaction_required` with a claim block to confirm.
+
+  ## anonymous
+
+  Body: `{ "type": "anonymous" }`. Deferred — currently returns `anonymous_not_enabled`
+  (or `temporarily_unavailable` when the flag is enabled but the flow is unimplemented).
+
+  ## Errors (OAuth-style `{ "error", "error_description" }` body)
+
+  - 400 invalid_request: missing/unknown `type`, or a flow's required field is absent
+  - 400 service_auth_not_enabled / anonymous_not_enabled: the flow is disabled by config
+  - 403 issuer_not_enabled: the ID-JAG `iss` is not on the trust list
+  - 400/403 access_denied: no local account matches the asserted identity / login_hint
+  - 401 invalid_grant: the ID-JAG is malformed or fails verification
+  - 401 login_required: the ID-JAG `auth_time` is too stale
+  - 401 interaction_required: a new binding needs user confirmation (carries a `claim` block)
+}
