@@ -68,6 +68,7 @@ impl PairingDoc {
     }
 
     /// The id of the active pairing, if one is selected.
+    #[allow(dead_code)]
     pub fn active_id(&self) -> Option<&str> {
         self.active.as_deref()
     }
@@ -158,6 +159,25 @@ impl PairingDoc {
             }
         }
         Ok(())
+    }
+}
+
+/// The IPC-facing view of the document: which pairing is active, and every pairing.
+/// The storage `version` field stays internal to the keychain layer — the frontend
+/// renders state, it never migrates formats.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingsState {
+    pub active: Option<String>,
+    pub pairings: Vec<Pairing>,
+}
+
+impl From<PairingDoc> for PairingsState {
+    fn from(doc: PairingDoc) -> Self {
+        PairingsState {
+            active: doc.active,
+            pairings: doc.pairings,
+        }
     }
 }
 
