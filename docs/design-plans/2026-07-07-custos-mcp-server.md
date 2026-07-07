@@ -34,8 +34,13 @@ concrete finish line: the backlog endpoints become "whatever Custos MCP needs to
 
 2. **auth.md onboarding flow**, run automatically on first launch against a configured PDS URL:
    - Discovery: fetch `/.well-known/oauth-protected-resource` → AS metadata → `GET /auth.md`.
-   - Register via `POST /agent/identity` (`service_auth` flow with the user's email as
-     `login_hint`; `identity_assertion` flow supported when an ID-JAG is provided via config).
+   - Register via `POST /agent/identity`. **`service_auth` (email as `login_hint`) is the
+     default and only out-of-the-box flow.** The `identity_assertion` flow is offered only when
+     the operator has configured `[agent_auth] trusted_issuers` on the server *and* the MCP
+     server is given an ID-JAG from one of those issuers via config; the trust-list validation
+     itself is server-side (`routes/agent_identity.rs` verifies `iss` against the configured
+     list) — the MCP server never decides trust, it just fails legibly when the server rejects
+     an untrusted issuer.
    - Surface the `user_code` + `verification_uri` to the human (stderr + an MCP tool response),
      then poll the token endpoint with the claim grant until confirmed.
    - Exchange the resulting assertion via the JWT-bearer grant; cache tokens in an OS-appropriate

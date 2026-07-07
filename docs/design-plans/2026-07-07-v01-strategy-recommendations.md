@@ -40,7 +40,7 @@ What remains is not feature work. It falls into three buckets, each with its own
 
 ## Sequencing
 
-```
+```text
 Code Quality Hardening ──────────────────────────────┐  (independent, do anytime, small PRs)
                                                      │
 Agent Scope Enforcement ──> Wallet Consent & Audit ──┼──> Custos MCP Server

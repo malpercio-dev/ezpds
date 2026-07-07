@@ -21,7 +21,9 @@ log modeled on the existing `transfer_audit_events` pattern (V030).
 
 1. **Claim ceremony endpoints (MM-170).** `POST /agent/identity/claim` per the auth.md spec
    (already specced in the Linear issue): validates `claim_token`, creates/updates the
-   `agent_claim_attempts` row, returns `registration_id`/`claim_attempt_id`/`status`/`expires_at`.
+   `agent_claim_attempts` row, and returns the full MM-170 envelope —
+   `registration_id`/`claim_attempt_id`/`status`/`expires_at` plus a `claim_attempt` block
+   (`user_code`, `verification_uri`, `expires_in`, `interval`).
    A confirmation endpoint (wallet-authenticated, session or OAuth token of the bound account)
    accepts the `user_code`, flips the identity `active → claimed`, and completes the attempt.
    Expiry sweeps use the existing background-sweeper pattern (`account_reaper`/`blob_gc` style).

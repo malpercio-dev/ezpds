@@ -55,8 +55,12 @@ checklist document. Together these are the release gate for calling v0.1 done.
 4. **MM-241 validation run.** Execute the live bsky.social round trip using
    `tools/interop`'s migrate command group against staging, both directions where applicable.
    Deliverable is `docs/validation/2026-XX-XX-mm-241-live-migration.md` recording each step,
-   pass/fail, artifacts (DIDs used, report JSON paths), and any bugs filed. If a leg fails, file
-   the bug and stop — do not paper over it. (This item needs a human in the loop for live-network
+   pass/fail, artifacts (DIDs used, report JSON paths), and any bugs filed. The runbook's
+   **required pass conditions are MM-241's acceptance criteria**, checked after every leg —
+   not just "the commands ran": (a) the plc.directory audit log for the DID shows the correct
+   new entry for that hop, and (b) handle, DID document, and repo all resolve correctly against
+   the new host. A leg without both checks recorded is not passed. If a leg fails, file the bug
+   and stop — do not paper over it. (This item needs a human in the loop for live-network
    credentials; an agent prepares the checklist and runbook, the maintainer executes or supervises.)
 
 **Explicitly out of scope:** dashboards/alerting config (Grafana etc.), SLO definitions, OTel
@@ -88,7 +92,9 @@ metrics for the iOS apps, converting `tools/interop` itself.
 
 ### op-proof.AC4: MM-241 runbook
 - **AC4.1:** The runbook document exists with concrete commands (copy-pasteable `just interop …`
-  invocations), preconditions, and rollback notes for the live account used.
+  invocations), preconditions, rollback notes for the live account used, and — as required
+  pass conditions per leg — the plc.directory audit-log check and the handle/DID/repo
+  resolution checks from MM-241's acceptance criteria.
 - **AC4.2:** After execution, the document records the outcome and links the JSON reports; MM-241
   is closed or a blocking bug is filed.
 
