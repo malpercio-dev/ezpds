@@ -384,8 +384,7 @@ async fn existing_identity_assertion(
         AgentIdentityStatus::Claimed => {
             // Clamp the scopes stored at registration to the operator's *current* config, so
             // narrowing `[agent_auth] granted_scopes` narrows the minted assertion without
-            // re-registration (agent-scope-enforcement AC2.2) and the mint can never exceed the
-            // stored grant (AC2.1).
+            // re-registration and the mint can never exceed the stored grant.
             let scopes = crate::auth::oauth_scopes::intersect_scope_tokens(
                 &parse_scopes(&existing.scopes),
                 &state.config.agent_auth.granted_scopes,
@@ -1181,8 +1180,8 @@ mod tests {
 
     #[tokio::test]
     async fn identity_assertion_mint_is_clamped_to_current_config() {
-        // agent-scope-enforcement AC2.2: narrowing the operator's granted_scopes narrows the scopes
-        // minted for an already-registered (claimed) identity, without re-registration.
+        // Narrowing the operator's granted_scopes narrows the scopes minted for an
+        // already-registered (claimed) identity, without re-registration.
         let (priv_pem, pub_pem) = es256_keys();
         let cfg = AgentAuthConfig {
             trusted_issuers: vec![trusted("https://trusted.example", pub_pem)],

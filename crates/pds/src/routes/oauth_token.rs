@@ -758,8 +758,8 @@ async fn handle_jwt_bearer(state: &AppState, form: TokenRequestForm) -> Response
     // is enforced here at exchange time, per RFC 7523 §3.1). Require exactly `Claimed`: that is the
     // only state for which the registration flow mints a service-signed assertion. A `Revoked`
     // identity was turned off by its owner/operator — an explicit `access_denied` closes the
-    // credential (agent-scope-enforcement AC3.1). `Active` still owes the claim ceremony, and a
-    // missing/mismatched row can't be trusted, so both → `invalid_grant`. Also require the stored
+    // credential. `Active` still owes the claim ceremony, and a missing/mismatched row can't be
+    // trusted, so both → `invalid_grant`. Also require the stored
     // DID to match the assertion's `sub`, so the state lookup and the token subject resolve to the
     // same identity even if the issuance path ever drifts.
     match get_agent_identity(&state.db, &claims.registration_id).await {
@@ -2464,7 +2464,7 @@ mod tests {
         assert_eq!(
             json_body(resp).await["error"],
             "access_denied",
-            "a revoked identity must be refused with access_denied (agent-scope-enforcement AC3.1)"
+            "a revoked identity must be refused with access_denied"
         );
     }
 
@@ -2502,9 +2502,9 @@ mod tests {
             .unwrap()
     }
 
-    /// agent-scope-enforcement AC1.3: a bounded agent token is refused (403) on the account-lifecycle
-    /// and app-password-management surface — via the granular scope check (`deactivateAccount`) and
-    /// the agent-token guard (`createAppPassword`), respectively.
+    /// A bounded agent token is refused (403) on the account-lifecycle and app-password-management
+    /// surface — via the granular scope check (`deactivateAccount`) and the agent-token guard
+    /// (`createAppPassword`), respectively.
     #[tokio::test]
     async fn agent_token_is_forbidden_on_account_and_app_password_routes() {
         let state = test_state().await;
@@ -2544,7 +2544,7 @@ mod tests {
 
     #[tokio::test]
     async fn jwt_bearer_token_carries_registration_id_claim() {
-        // AC3.2: an agent-derived access token carries `registration_id`; ordinary tokens do not.
+        // An agent-derived access token carries `registration_id`; ordinary tokens do not.
         let state = test_state().await;
         let did = "did:plc:agentbearer9999999999";
         seed_agent_identity(&state, "reg_claim_present", did, "claimed").await;
