@@ -93,8 +93,12 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   - `@tauri-apps/plugin-biometric` (`barcode-scanner`/`biometric`/`sharesheet` `:default` ACLs)
     drives the **user-presence gate**: `src/lib/biometric.ts` `requireUserPresence(reason)` is
     called before every signing action (claim code, self-revoke). Needs `NSFaceIDUsageDescription`.
-    Off-device (desktop/host) or with the Settings toggle off, the gate resolves to allow; only a
-    cancelled/failed prompt blocks. The toggle is `set_biometric_enabled` (default on).
+    Whenever the plugin is present the gate ALWAYS runs `authenticate()` (biometric-or-passcode via
+    `allowDeviceCredential`) — it never pre-skips on `checkStatus().isAvailable`, which is false on a
+    passcode-only device even though the passcode could still gate authentication. The gate resolves to allow only when the
+    plugin module can't be imported at all (off-device desktop/host) or with the Settings toggle off;
+    a cancelled/failed prompt, or no credential enrolled, blocks. The toggle is
+    `set_biometric_enabled` (default on).
   - `@buildyourwebapp/tauri-plugin-sharesheet` — `src/lib/share.ts` `shareText()` opens the iOS
     Share Pane for a claim code; returns `false` off-device so the UI falls back to copy.
   - `capabilities/default.json` grants only `log:default` on all platforms (least

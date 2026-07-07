@@ -9,18 +9,27 @@
  *
  * The plugin (`@tauri-apps/plugin-biometric`) exists only on iOS/Android, so it is
  * imported dynamically: off-device (desktop dev, the host build) the import fails and the
- * gate resolves to `'unavailable'` rather than throwing. On a real device with Face ID /
- * Touch ID enrolled it prompts; `allowDeviceCredential` lets a device without enrolled
- * biometrics fall back to the passcode, so a configured iPhone is always genuinely gated.
+ * gate resolves to `'unavailable'` rather than throwing. Whenever the plugin IS present we
+ * ALWAYS run `authenticate()` — it presents Face ID / Touch ID, or, via
+ * `allowDeviceCredential`, the device passcode, and rejects (→ `'denied'`) on cancel/failure
+ * or when neither credential exists, so a configured iPhone is always genuinely gated.
+ *
+ * We deliberately do NOT pre-check `checkStatus().isAvailable` and skip when it is false: on
+ * iOS that flag is false when biometrics aren't *enrolled* even though the device still has a
+ * passcode that `authenticate()` would gate on, so skipping there would silently drop the
+ * user-presence requirement on a real, passcode-protected device. `authenticate()` alone is
+ * the authoritative gate. (A simulator with neither an enrolled biometric nor a passcode set
+ * will reject here and block — enroll one to test the flow.)
  */
 import { biometricEnabled } from './ipc';
 
 /**
  * - `authenticated` — the operator confirmed with Face ID / Touch ID / passcode.
  * - `skipped` — the gate is turned off in Settings.
- * - `unavailable` — no plugin or hardware (off-device, or a simulator with no enrolled
- *   biometric). The action is allowed: there is nothing to gate against here.
- * - `denied` — the operator cancelled or authentication failed. The action must NOT run.
+ * - `unavailable` — the plugin module is not loadable at all (off-device: desktop dev or the
+ *   host build). The action is allowed: there is genuinely nothing to gate against here.
+ * - `denied` — the operator cancelled, authentication failed, or no credential is enrolled.
+ *   The action must NOT run.
  */
 export type PresenceOutcome = 'authenticated' | 'skipped' | 'unavailable' | 'denied';
 
@@ -50,13 +59,15 @@ export async function requireUserPresence(reason: string): Promise<PresenceOutco
   try {
     plugin = await import('@tauri-apps/plugin-biometric');
   } catch {
-    // Plugin not present (desktop dev / host build) — nothing to gate against.
+    // Plugin module not loadable (desktop dev / host build) — nothing to gate against.
     return 'unavailable';
   }
 
   try {
-    const status = await plugin.checkStatus();
-    if (!status.isAvailable) return 'unavailable';
+    // Always run authenticate(): it presents biometric-or-passcode and is the authoritative
+    // gate. We do NOT short-circuit on checkStatus().isAvailable — that flag is false on a
+    // real iPhone that has a passcode but no *enrolled* biometric, and skipping there would
+    // drop the user-presence requirement on a device authenticate() could still gate.
     await plugin.authenticate(reason, {
       allowDeviceCredential: true,
       fallbackTitle: 'Use passcode',
@@ -64,7 +75,7 @@ export async function requireUserPresence(reason: string): Promise<PresenceOutco
     });
     return 'authenticated';
   } catch {
-    // The plugin rejects on user cancel or failed match — block the action.
+    // The plugin rejects on user cancel, failed match, or no credential enrolled — block.
     return 'denied';
   }
 }
