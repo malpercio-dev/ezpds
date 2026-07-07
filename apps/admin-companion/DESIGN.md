@@ -235,7 +235,31 @@ screens — Pair, Home, Settings, and the error/recovery states. The machine-rea
 layer lives in this file's frontmatter and the `.impeccable/design.json` sidecar (tonal
 ramps, shadows, motion, and the full component HTML/CSS the live panel renders).
 
-## 6. Do's and Don'ts
+## 6. Brand Mark & App Icon
+
+**The mark is the operator's prompt: `❯ _`** — a sealing-wax-gold shell chevron and a
+filament underscore cursor on the Console Slate ground. It is the app's own signature
+glyph promoted to brand: the `ezpds ▸` prompt line every screen leads with, waiting for
+input. Gold carries the prompt (the One Lamp — the brand mark is the accent's one
+sanctioned identity role per the Seal-vs-Signal rule); the cursor is cool filament, the
+machine's voice, not a second lamp. The chevron is an *open stroke* and the cursor an
+underscore deliberately: a filled `▸` beside a full-height bar reads as a media
+skip-track button at icon size.
+
+- **Files:** [`app-icon.svg`](app-icon.svg) (vector source of truth, geometry and color
+  documented inline) → `app-icon.png` (the 1024×1024 render `cargo tauri icon`
+  consumes). `just admin-postinit` (Patch G) regenerates the iOS asset catalog from it
+  after every `cargo tauri ios init`; `just admin-check` verifies via a sha256 marker.
+- **iOS 26 fit:** drawn full-bleed on the square with no baked-in corner radius, gloss,
+  or edge shadow — the system applies the squircle mask and Liquid Glass material. The
+  SVG's two groups (`layer-background` / `layer-glyph`) are Icon Composer seams if the
+  mark is ever rebuilt as a layered `.icon` file. Depth is a shallow vertical gradient
+  and one soft lift shadow, matte per the no-metallic-glint rule.
+- **Anti-reference check:** no scanlines/phosphor/fake chrome (kitsch), no coin or
+  glint (crypto), no filled play/skip triangle (media), dark ground held at the same
+  cool hue 250 as the app itself.
+
+## 7. Do's and Don'ts
 
 ### Do:
 - **Do** keep the ground cool slate (`oklch(0.18 0.012 250)`) and let brass and type carry the warmth.

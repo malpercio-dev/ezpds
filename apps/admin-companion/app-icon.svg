@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!--
+    Admin Companion app icon — "the operator's prompt" (❯ _).
+    Design rationale: DESIGN.md §6 (Brand Mark & App Icon).
+
+    Source of truth for app-icon.png (the 1024×1024 render that `cargo tauri icon`
+    consumes — regenerated into the iOS asset catalog by ios-postinit Patch G).
+
+    Drawn full-bleed on the square: iOS applies the squircle mask and (on iOS 26)
+    the Liquid Glass material itself — no baked-in corner radius, no baked-in gloss.
+    The two top-level groups are deliberate Icon Composer seams: `layer-background`
+    and `layer-glyph` map 1:1 onto foreground/background layers if this is ever
+    rebuilt as a layered .icon file.
+
+    Colors are the Brass Console tokens (src/lib/styles/tokens.css), OKLCH → sRGB:
+      ground   oklch(0.23/0.18/0.155 ~0.012 250)  #181e24 / #0e1217 / #090d11
+      brass    oklch(0.755/0.72/0.685 ~0.125 ~80) #d8a748 / #cc9c42 / #c48f30
+      filament oklch(~0.84/0.76 ~0.008 250)       #d3d7db / #b0b5ba
+    Gradients are shallow on purpose: matte brass, never metallic glint.
+  -->
+  <title>Admin Companion</title>
+  <defs>
+    <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#181e24"/>
+      <stop offset="0.55" stop-color="#0e1217"/>
+      <stop offset="1" stop-color="#090d11"/>
+    </linearGradient>
+    <linearGradient id="brass" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#d8a748"/>
+      <stop offset="0.5" stop-color="#cc9c42"/>
+      <stop offset="1" stop-color="#c48f30"/>
+    </linearGradient>
+    <linearGradient id="filament" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#d3d7db"/>
+      <stop offset="1" stop-color="#b0b5ba"/>
+    </linearGradient>
+    <filter id="lift" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="12" stdDeviation="18" flood-color="#020306" flood-opacity="0.5"/>
+    </filter>
+  </defs>
+  <g id="layer-background">
+    <rect width="1024" height="1024" fill="url(#ground)"/>
+  </g>
+  <!-- Glyph bounds: x 240..784, y 314..710 — optically centered on (512, 512). -->
+  <g id="layer-glyph" filter="url(#lift)">
+    <path d="M 294 368 L 470 512 L 294 656" fill="none" stroke="url(#brass)"
+          stroke-width="108" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="584" y="642" width="200" height="68" rx="34" fill="url(#filament)"/>
+  </g>
+</svg>
