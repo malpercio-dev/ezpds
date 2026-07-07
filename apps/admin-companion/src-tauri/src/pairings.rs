@@ -348,7 +348,10 @@ mod tests {
             entry.get("relayUrl").unwrap().as_str().unwrap(),
             "https://relay-a.example"
         );
-        assert_eq!(entry.get("deviceId").unwrap().as_str().unwrap(), "device-for-id-a");
+        assert_eq!(
+            entry.get("deviceId").unwrap().as_str().unwrap(),
+            "device-for-id-a"
+        );
         assert_eq!(
             entry.get("deviceLabel").unwrap().as_str().unwrap(),
             "Operator iPhone"
