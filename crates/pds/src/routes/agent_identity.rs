@@ -382,7 +382,14 @@ async fn existing_identity_assertion(
 ) -> Result<Response, AgentAuthError> {
     match existing.status {
         AgentIdentityStatus::Claimed => {
-            let scopes = parse_scopes(&existing.scopes);
+            // Clamp the scopes stored at registration to the operator's *current* config, so
+            // narrowing `[agent_auth] granted_scopes` narrows the minted assertion without
+            // re-registration (agent-scope-enforcement AC2.2) and the mint can never exceed the
+            // stored grant (AC2.1).
+            let scopes = crate::auth::oauth_scopes::intersect_scope_tokens(
+                &parse_scopes(&existing.scopes),
+                &state.config.agent_auth.granted_scopes,
+            );
             let minted = mint_identity_assertion(state, &existing.did, &existing.id, &scopes)?;
             set_agent_identity_assertion(
                 &state.db,
@@ -1121,13 +1128,15 @@ mod tests {
         let state = state_with(cfg).await;
         let did = "did:plc:claimed111111111111";
         insert_account(&state.db, did, "agent@example.com").await;
-        // Pre-seed a confirmed (claimed) registration for this (iss, sub).
+        // Pre-seed a confirmed (claimed) registration for this (iss, sub). The stored scopes match
+        // the default granular profile so the config-clamp intersection is a no-op here.
         sqlx::query(
             "INSERT INTO agent_identities \
              (id, did, registration_type, issuer, subject, email, scopes, identity_assertion, \
               assertion_expires_at, status, created_at, updated_at) \
              VALUES ('reg_seed', ?, 'identity_assertion', 'https://trusted.example', 'sub-known', \
-                     'agent@example.com', '[\"com.atproto.access\"]', NULL, \
+                     'agent@example.com', \
+                     '[\"atproto\",\"repo:*?action=create&action=update\",\"blob:*/*\"]', NULL, \
                      datetime('now', '+1 hour'), 'claimed', datetime('now'), datetime('now'))",
         )
         .bind(did)
@@ -1152,7 +1161,11 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["registration_id"], "reg_seed");
         assert_eq!(body["registration_type"], "identity_assertion");
-        assert_eq!(body["scopes"], json!(["com.atproto.access"]));
+        // Scopes are the config-clamped set, sorted by the intersection helper.
+        assert_eq!(
+            body["scopes"],
+            json!(["atproto", "blob:*/*", "repo:*?action=create&action=update"])
+        );
         let assertion = body["identity_assertion"].as_str().unwrap();
         assert_eq!(assertion.split('.').count(), 3, "assertion must be a JWT");
 
@@ -1164,6 +1177,60 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(stored.as_deref(), Some(assertion));
+    }
+
+    #[tokio::test]
+    async fn identity_assertion_mint_is_clamped_to_current_config() {
+        // agent-scope-enforcement AC2.2: narrowing the operator's granted_scopes narrows the scopes
+        // minted for an already-registered (claimed) identity, without re-registration.
+        let (priv_pem, pub_pem) = es256_keys();
+        let cfg = AgentAuthConfig {
+            trusted_issuers: vec![trusted("https://trusted.example", pub_pem)],
+            // Operator has since narrowed the config to drop blob uploads.
+            granted_scopes: vec![
+                "atproto".to_string(),
+                "repo:*?action=create&action=update".to_string(),
+            ],
+            ..AgentAuthConfig::default()
+        };
+        let state = state_with(cfg).await;
+        let did = "did:plc:clamped11111111111";
+        insert_account(&state.db, did, "agent@example.com").await;
+        // The registration was stored earlier with the broader default profile (incl. blob).
+        sqlx::query(
+            "INSERT INTO agent_identities \
+             (id, did, registration_type, issuer, subject, email, scopes, identity_assertion, \
+              assertion_expires_at, status, created_at, updated_at) \
+             VALUES ('reg_clamp', ?, 'identity_assertion', 'https://trusted.example', 'sub-clamp', \
+                     'agent@example.com', \
+                     '[\"atproto\",\"repo:*?action=create&action=update\",\"blob:*/*\"]', NULL, \
+                     datetime('now', '+1 hour'), 'claimed', datetime('now'), datetime('now'))",
+        )
+        .bind(did)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let jag = make_id_jag(
+            &priv_pem,
+            "https://trusted.example",
+            "sub-clamp",
+            PUBLIC_URL,
+            Some("agent@example.com"),
+            None,
+        );
+        let (status, body) = post(
+            state.clone(),
+            json!({ "type": "identity_assertion", "assertion": jag }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        // blob:*/* was dropped because the current config no longer grants it.
+        assert_eq!(
+            body["scopes"],
+            json!(["atproto", "repo:*?action=create&action=update"])
+        );
     }
 
     #[tokio::test]

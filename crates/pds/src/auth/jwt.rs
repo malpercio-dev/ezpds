@@ -51,6 +51,12 @@ pub(crate) struct AccessTokenClaims {
     pub scope: String,
     /// Confirmation claim — present on DPoP-bound tokens (RFC 9449 §4.3).
     pub cnf: Option<CnfClaim>,
+    /// Agent registration id — present only on tokens derived from an auth.md agent
+    /// `identity_assertion` (the jwt-bearer grant). Absent on ordinary session/OAuth tokens, so it
+    /// both marks a token as agent-derived and ties it back to the `agent_identities` row for
+    /// revocation and audit attribution.
+    #[serde(default)]
+    pub registration_id: Option<String>,
 }
 
 /// `cnf` (confirmation) claim carrying the JWK thumbprint for DPoP binding.

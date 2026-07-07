@@ -78,7 +78,9 @@ urls = []
 # claim_token_ttl_secs = 600        # lifetime of a claim token
 # user_code_ttl_secs = 600          # lifetime of a claim-ceremony user code
 # auth_time_max_age_secs = 3600     # ID-JAG auth_time older than this → login_required
-# granted_scopes = ["com.atproto.access"]
+# granted_scopes = ["atproto", "repo:*?action=create&action=update", "blob:*/*"]
+#   # conservative granular default; do NOT add account:*/identity:*/transition:generic unless you
+#   # intend agents to hold account-lifecycle control (see AgentAuthConfig docs)
 # verification_uri = "https://example.com/agent/claim"  # defaults to {public_url}/agent/claim
 #
 # identity_assertion issuer trust list — an ID-JAG whose `iss` is not listed is refused with

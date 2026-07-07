@@ -110,6 +110,26 @@ pub fn normalize_scope_request(requested: &str) -> Result<String, String> {
     Ok(canonical.into_iter().collect::<Vec<_>>().join(" "))
 }
 
+/// Intersect two scope-token sets by canonical token string, returning the tokens present in
+/// **both**, sorted and de-duplicated.
+///
+/// Used to clamp an agent registration's stored `granted_scopes` to the operator's *current*
+/// `[agent_auth] granted_scopes` config at assertion-mint time: the config acts as a live ceiling,
+/// so narrowing it narrows subsequently minted assertions without re-registration
+/// (agent-scope-enforcement AC2.2), while the result can never exceed what was stored at
+/// registration (AC2.1). The comparison is token-exact — both inputs are the same canonical scope
+/// tokens the config carries — so a merely reordered/rephrased config token is treated as a
+/// different capability; operators should change `granted_scopes` by adding/removing whole tokens.
+pub fn intersect_scope_tokens(a: &[String], b: &[String]) -> Vec<String> {
+    let in_b: BTreeSet<&str> = b.iter().map(String::as_str).collect();
+    let kept: BTreeSet<String> = a
+        .iter()
+        .filter(|t| in_b.contains(t.as_str()))
+        .cloned()
+        .collect();
+    kept.into_iter().collect()
+}
+
 /// Whether `scope` is a valid atproto OAuth scope string — every token parses
 /// and the set includes the `atproto` base scope.
 ///
@@ -1300,6 +1320,44 @@ mod tests {
         assert!(!is_atproto_oauth_scope("transition:generic")); // missing atproto
         assert!(!is_atproto_oauth_scope("atproto bogus:token"));
         assert!(!is_atproto_oauth_scope("com.atproto.access")); // legacy session scope, not granular
+    }
+
+    // ── scope-token intersection (agent scope clamping) ───────────────────────
+
+    #[test]
+    fn intersect_keeps_only_common_tokens_sorted() {
+        let stored = vec![
+            "atproto".to_string(),
+            "repo:*?action=create&action=update".to_string(),
+            "blob:*/*".to_string(),
+        ];
+        // Operator narrowed the config to drop blob uploads.
+        let config = vec![
+            "atproto".to_string(),
+            "repo:*?action=create&action=update".to_string(),
+        ];
+        assert_eq!(
+            intersect_scope_tokens(&stored, &config),
+            vec![
+                "atproto".to_string(),
+                "repo:*?action=create&action=update".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn intersect_never_widens_beyond_stored() {
+        // A config that grants more than the stored set can't add capabilities.
+        let stored = vec!["atproto".to_string(), "blob:*/*".to_string()];
+        let config = vec![
+            "atproto".to_string(),
+            "blob:*/*".to_string(),
+            "identity:*".to_string(),
+        ];
+        assert_eq!(
+            intersect_scope_tokens(&stored, &config),
+            vec!["atproto".to_string(), "blob:*/*".to_string()]
+        );
     }
 
     // ── idempotent normalization (parse→normalize→serialize round-trip) ────────

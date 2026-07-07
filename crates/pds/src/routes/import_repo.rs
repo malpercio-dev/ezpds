@@ -45,6 +45,8 @@ pub async fn import_repo(
             "access token required",
         ));
     }
+    // Repo import is an account-migration operation, never something an agent should perform.
+    user.require_not_agent()?;
     let did = user.did.clone();
 
     // Fast-path rejection: check Content-Length before reading the body (the lexicon requires it).

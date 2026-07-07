@@ -44,6 +44,8 @@ pub async fn list_app_passwords_handler(
             "full access token required",
         ));
     }
+    // Agent-derived tokens map to AuthScope::Access but must never see app-password metadata.
+    user.require_not_agent()?;
 
     let passwords = list_app_passwords(&state.db, &user.did)
         .await?

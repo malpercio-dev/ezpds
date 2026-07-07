@@ -166,6 +166,11 @@ struct AccessTokenClaims {
     /// is already key-bound upstream, so no DPoP proof is required at the token endpoint.
     #[serde(skip_serializing_if = "Option::is_none")]
     cnf: Option<CnfClaim>,
+    /// Agent registration id — set only on tokens minted from an auth.md agent `identity_assertion`
+    /// (the jwt-bearer grant). Carried through so `require_*` guards can recognise an agent-derived
+    /// token and the audit path can attribute its actions; omitted entirely on all other grants.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    registration_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -175,11 +180,14 @@ struct CnfClaim {
 
 /// Sign an ES256 `at+jwt` access token. `jkt` is the DPoP key thumbprint for a sender-constrained
 /// token, or `None` for a plain Bearer token (jwt-bearer grant) that carries no `cnf` binding.
+/// `registration_id` is set only for agent-derived tokens (jwt-bearer), marking them as such and
+/// tying them to their `agent_identities` row; `None` for ordinary session/OAuth grants.
 fn issue_access_token(
     signing_key: &crate::auth::OAuthSigningKey,
     did: &str,
     scope: &str,
     jkt: Option<&str>,
+    registration_id: Option<&str>,
     public_url: &str,
 ) -> Result<String, OAuthTokenError> {
     use uuid::Uuid;
@@ -200,6 +208,7 @@ fn issue_access_token(
         cnf: jkt.map(|jkt| CnfClaim {
             jkt: jkt.to_string(),
         }),
+        registration_id: registration_id.map(str::to_string),
     };
 
     let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
@@ -458,6 +467,7 @@ async fn handle_authorization_code(
         &auth_code.did,
         &granted_scope,
         Some(&jkt),
+        None,
         &state.config.public_url,
     ) {
         Ok(t) => t,
@@ -642,6 +652,7 @@ async fn handle_refresh_token(
         &stored.did,
         &granted_scope,
         Some(&jkt),
+        None,
         &state.config.public_url,
     ) {
         Ok(t) => t,
@@ -745,19 +756,22 @@ async fn handle_jwt_bearer(state: &AppState, form: TokenRequestForm) -> Response
 
     // State gate (the assertion stays cryptographically valid until it expires, so identity state
     // is enforced here at exchange time, per RFC 7523 §3.1). Require exactly `Claimed`: that is the
-    // only state for which the registration flow mints a service-signed assertion — `Active` still
-    // owes the claim ceremony and `Revoked` was turned off by an operator, so both → invalid_grant.
-    // Also require the stored DID to match the assertion's `sub`, so the state lookup and the token
-    // subject resolve to the same identity even if the issuance path ever drifts.
+    // only state for which the registration flow mints a service-signed assertion. A `Revoked`
+    // identity was turned off by its owner/operator — an explicit `access_denied` closes the
+    // credential (agent-scope-enforcement AC3.1). `Active` still owes the claim ceremony, and a
+    // missing/mismatched row can't be trusted, so both → `invalid_grant`. Also require the stored
+    // DID to match the assertion's `sub`, so the state lookup and the token subject resolve to the
+    // same identity even if the issuance path ever drifts.
     match get_agent_identity(&state.db, &claims.registration_id).await {
         Ok(Some(identity))
             if identity.status == AgentIdentityStatus::Claimed && identity.did == claims.sub => {}
+        Ok(Some(identity)) if identity.status == AgentIdentityStatus::Revoked => {
+            return OAuthTokenError::new("access_denied", "the agent identity has been revoked")
+                .into_response();
+        }
         Ok(_) => {
-            return OAuthTokenError::new(
-                "invalid_grant",
-                "the agent identity is not claimed or has been revoked",
-            )
-            .into_response();
+            return OAuthTokenError::new("invalid_grant", "the agent identity is not claimed")
+                .into_response();
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to load agent identity for jwt-bearer exchange");
@@ -765,12 +779,14 @@ async fn handle_jwt_bearer(state: &AppState, form: TokenRequestForm) -> Response
         }
     }
 
-    // Issue a sender-unconstrained Bearer access token carrying the assertion's granted scope.
+    // Issue a sender-unconstrained Bearer access token carrying the assertion's granted scope and
+    // its `registration_id` (marking the token agent-derived for guard/audit purposes).
     let access_token = match issue_access_token(
         &state.oauth_signing_keypair,
         &claims.sub,
         &claims.scope,
         None,
+        Some(&claims.registration_id),
         &state.config.public_url,
     ) {
         Ok(t) => t,
@@ -2426,7 +2442,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn jwt_bearer_revoked_identity_returns_invalid_grant() {
+    async fn jwt_bearer_revoked_identity_returns_access_denied() {
         let state = test_state().await;
         let did = "did:plc:agentbearer4444444444";
         seed_agent_identity(&state, "reg_revoked", did, "revoked").await;
@@ -2447,8 +2463,116 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         assert_eq!(
             json_body(resp).await["error"],
-            "invalid_grant",
-            "a revoked identity must not be able to exchange its assertion"
+            "access_denied",
+            "a revoked identity must be refused with access_denied (agent-scope-enforcement AC3.1)"
+        );
+    }
+
+    /// Drive the full jwt-bearer exchange and return the issued agent Bearer access token.
+    async fn exchange_agent_token(state: &AppState, did: &str, registration_id: &str) -> String {
+        seed_agent_identity(state, registration_id, did, "claimed").await;
+        let assertion = mint_assertion(
+            state,
+            did,
+            registration_id,
+            // The conservative default agent profile: repo writes + blobs, no account/identity.
+            "atproto repo:*?action=create&action=update blob:*/*",
+            now_secs() + 600,
+        );
+        let resp = app(state.clone())
+            .oneshot(post_token(&format!(
+                "grant_type={JWT_BEARER}&assertion={assertion}"
+            )))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        json_body(resp).await["access_token"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    fn bearer_post(uri: &str, token: &str, body: &str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    /// agent-scope-enforcement AC1.3: a bounded agent token is refused (403) on the account-lifecycle
+    /// and app-password-management surface — via the granular scope check (`deactivateAccount`) and
+    /// the agent-token guard (`createAppPassword`), respectively.
+    #[tokio::test]
+    async fn agent_token_is_forbidden_on_account_and_app_password_routes() {
+        let state = test_state().await;
+        let did = "did:plc:agentbounded00000000";
+        let at = exchange_agent_token(&state, did, "reg_bounded").await;
+
+        // createAppPassword: rejected by the agent-token guard (require_not_agent).
+        let resp = app(state.clone())
+            .oneshot(bearer_post(
+                "/xrpc/com.atproto.server.createAppPassword",
+                &at,
+                r#"{"name":"botpass"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "an agent token must not create app passwords"
+        );
+
+        // deactivateAccount: rejected by the granular scope check (no account:status?action=manage).
+        let resp = app(state)
+            .oneshot(bearer_post(
+                "/xrpc/com.atproto.server.deactivateAccount",
+                &at,
+                "{}",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "an agent token must not deactivate the account"
+        );
+    }
+
+    #[tokio::test]
+    async fn jwt_bearer_token_carries_registration_id_claim() {
+        // AC3.2: an agent-derived access token carries `registration_id`; ordinary tokens do not.
+        let state = test_state().await;
+        let did = "did:plc:agentbearer9999999999";
+        seed_agent_identity(&state, "reg_claim_present", did, "claimed").await;
+        let assertion = mint_assertion(
+            &state,
+            did,
+            "reg_claim_present",
+            "atproto repo:*?action=create&action=update",
+            now_secs() + 600,
+        );
+
+        let resp = app(state)
+            .oneshot(post_token(&format!(
+                "grant_type={JWT_BEARER}&assertion={assertion}"
+            )))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let at = json_body(resp).await["access_token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let payload_b64 = at.split('.').nth(1).unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload_b64).unwrap()).unwrap();
+        assert_eq!(
+            payload["registration_id"], "reg_claim_present",
+            "an agent-derived access token must carry its registration_id"
         );
     }
 
