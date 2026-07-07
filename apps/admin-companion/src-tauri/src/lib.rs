@@ -9,6 +9,10 @@
 
 mod device_key;
 mod keychain;
+// Consumed by `keychain`/`relay_client` at the end of this change-set; the allow keeps
+// intermediate commits clippy-clean and is removed when the relay client switches over.
+#[allow(dead_code)]
+mod pairings;
 mod relay_client;
 mod signing;
 

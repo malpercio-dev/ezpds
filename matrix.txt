@@ -1,0 +1,7 @@
+AC matrix:
+AC1.1 P1T2(doc)+P1T4(persist)  AC1.2 P1T4  AC1.3 P1T4  AC1.4 P1T4  AC1.5 P1T2+P1T4
+AC2.1 P2T2  AC2.2 P3T3/T4/T5/T7  AC2.3 P1T2(doc)+P2T2(cmd)  AC2.4 P1T5(wrapper)+P2T2  AC2.5 P1T2(doc)+P3T5(ui)
+AC3.1 P2(backend)+P3T5/T6(ui)  AC3.2 P2T2(backend)+P3T7(ui)  AC3.3 P2T2  AC3.4 P3T2/T4/T7
+AC4.1 design appendix (P4 notes verified-by-inspection)
+AC5.1 P4T1
+AC6.1 P1(fixture swap)+P2(untouched)  AC6.2 P2T2
