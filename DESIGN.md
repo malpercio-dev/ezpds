@@ -251,7 +251,32 @@ A deterministic identity mark — a hue derived by hash from the DID, so the sam
 ### Navigation
 The app is a calm state-machine flow, not a chrome-heavy shell. A single back affordance (Aubergine, sentence-case "Back"), a clear screen title, and nothing competing with it. No tab bars of decorative icons, no persistent dense nav.
 
-## 6. Do's and Don'ts
+## 6. Brand Mark & App Icon
+
+**The mark is the sealed credential made literal:** the app's own `SealEmblem` brand
+moment — a sealing-wax-gold seal holding the shield-check, the emblem every ceremonial
+screen already opens with — promoted to the home screen. The seal sits on the archival
+white-to-parchment page, pressed with the embossed pale ring and the near-white
+shield-check. Its edge is a *gentle, deterministic undulation*, not a perfect circle
+and not a splat: a circle would read as a coin (the Authenticity-Not-Currency rule);
+a wild blob would break the precision-and-restraint register.
+
+- **Files:** [`apps/identity-wallet/app-icon.svg`](apps/identity-wallet/app-icon.svg)
+  (vector source of truth, geometry and colors documented inline) →
+  `apps/identity-wallet/app-icon.png` (the 1024×1024 render `cargo tauri icon`
+  consumes). `just ios-postinit` (Patch G) regenerates the iOS asset catalog from it
+  after every `cargo tauri ios init`; `just ios-check` verifies via a sha256 marker.
+- **iOS 26 fit:** drawn full-bleed on the square with no baked-in corner radius or
+  gloss — the system applies the squircle mask and Liquid Glass material. The SVG's
+  `layer-background` / `layer-glyph` groups are Icon Composer seams if the mark is
+  ever rebuilt as a layered `.icon` file. Wax gradients are shallow and matte, never
+  metallic glint.
+- **Sibling relationship:** the deliberate inverse of the Custos Companion icon
+  (`apps/admin-companion/app-icon.svg`, its DESIGN.md §6) — same gold family, light
+  archival ground vs. cool console slate, the seal vs. the operator's prompt. The two
+  read as one house on a home screen without being a reskin of each other.
+
+## 7. Do's and Don'ts
 
 ### Do:
 - **Do** treat gold as a wax seal — matte, dry, editorial (`oklch(0.46 0.105 62)`). Authenticity, sovereignty, an official stamp.

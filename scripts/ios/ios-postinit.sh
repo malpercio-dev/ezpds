@@ -205,6 +205,48 @@ else
   echo "ios-postinit: libapp.a already absent from pbxproj Resources phase"
 fi
 
+# --- Patch G: populate the AppIcon asset catalog from the checked-in brand icon ---
+# `cargo tauri ios init` regenerates gen/apple with Tauri's default placeholder icons.
+# When the app ships a brand icon (apps/<app>/app-icon.png, 1024x1024 — its SVG source
+# of truth sits next to it), regenerate the full icon set. `-o src-tauri/icons-build`
+# (gitignored) keeps the desktop/android outputs out of the tracked tree; tauri-cli
+# still writes the iOS set into gen/apple/Assets.xcassets/AppIcon.appiconset because
+# it derives that path from the output dir's PARENT (src-tauri/) and only falls back
+# to the -o dir when the catalog is missing. --ios-color flattens any transparency
+# onto Console Slate rather than tauri's white default. The sha256 marker written at
+# the end is what ios-check verifies (catalog contents can't be byte-compared to the
+# source, since every size is a resample).
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+  else /usr/bin/shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+APP_ICON="${APP_DIR}/app-icon.png"
+APPICONSET="$(dirname "${PBXPROJ}")/../Assets.xcassets/AppIcon.appiconset"
+if [ ! -f "${APP_ICON}" ]; then
+  echo "ios-postinit: no app-icon.png in ${APP_DIR}; keeping template icons"
+else
+  if [ ! -d "${APPICONSET}" ]; then
+    echo "error: ${APPICONSET} not found — cannot install the app icon (Patch G)." >&2
+    echo "       Tauri's generated template may have moved the asset catalog;" >&2
+    echo "       adjust APPICONSET in $(basename "$0")." >&2
+    exit 1
+  fi
+  if ! cargo tauri icon --help >/dev/null 2>&1; then
+    echo "error: 'cargo tauri' unavailable — cannot regenerate the app icon (Patch G)." >&2
+    echo "       Enter the dev shell (nix develop) or install tauri-cli." >&2
+    exit 1
+  fi
+  (cd "${APP_DIR}" && cargo tauri icon app-icon.png -o src-tauri/icons-build --ios-color '#0e1217')
+  if [ ! -f "${APPICONSET}/AppIcon-512@2x.png" ]; then
+    echo "error: 'cargo tauri icon' did not write the 1024px marketing icon into" >&2
+    echo "       ${APPICONSET} (Patch G). tauri-cli's icon output layout may have" >&2
+    echo "       changed; adjust Patch G in $(basename "$0")." >&2
+    exit 1
+  fi
+  sha256_file "${APP_ICON}" > "${APPICONSET}/.ezpds-app-icon.sha256"
+  echo "ios-postinit: regenerated AppIcon.appiconset from app-icon.png"
+fi
+
 # Structural guard: the patched project MUST still parse. Catches quoting/encoding
 # corruption that a sentinel-only check would miss (plutil reads the pbxproj format).
 if command -v plutil >/dev/null 2>&1; then

@@ -138,5 +138,12 @@ Host build / tests (no Xcode): `cargo build -p admin-companion`, `cargo test -p 
   Apple `security-framework` toolchain. Built/checked on macOS via `just admin-*`.
 - **Grotesk UI font is provisional** (system SF Pro via `--font-sans`) until the
   `/impeccable` font pass; JetBrains Mono (the signature voice) is bundled in `static/fonts/`.
+- **App icon: `app-icon.svg` is the source of truth** (brand rationale in DESIGN.md §6);
+  `app-icon.png` is its 1024×1024 render and the input `cargo tauri icon` consumes.
+  `just admin-postinit` (Patch G) regenerates the gitignored AppIcon asset catalog from
+  it after every `cargo tauri ios init` (desktop/android outputs go to the gitignored
+  `src-tauri/icons-build/`), and `just admin-check` verifies the catalog was built from
+  the current PNG via a sha256 marker. To change the icon: edit the SVG, re-render the
+  PNG at 1024×1024 (e.g. resvg), commit both, re-run `just admin-postinit`.
 - **Distinct Keychain namespace** (`"ezpds-admin-companion"`) and bundle id
   (`dev.malpercio.admincompanion`) so the two apps never collide on one device.

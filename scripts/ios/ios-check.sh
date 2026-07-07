@@ -89,6 +89,21 @@ if [ -f "${PROJYML}" ] && grep -qE '^[[:space:]]*-[[:space:]]*path:[[:space:]]*E
   fail=1
 fi
 
+# Patch G: when the app ships a brand icon (apps/<app>/app-icon.png), the regenerated
+# asset catalog must have been built from exactly that file — postinit stamps its
+# sha256 into the catalog (resampled PNGs can't be byte-compared to the source).
+if [ -f "${APP_DIR}/app-icon.png" ]; then
+  sha256_file() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+    else /usr/bin/shasum -a 256 "$1" | cut -d' ' -f1; fi
+  }
+  marker="$(dirname "${PBXPROJ}")/../Assets.xcassets/AppIcon.appiconset/.ezpds-app-icon.sha256"
+  if [ ! -f "${marker}" ] || [ "$(cat "${marker}")" != "$(sha256_file "${APP_DIR}/app-icon.png")" ]; then
+    echo "ios-check: FAIL — AppIcon.appiconset not regenerated from app-icon.png (run 'just ${RECIPE}-postinit')" >&2
+    fail=1
+  fi
+fi
+
 # Structural guard: a sentinel-present-but-corrupt pbxproj must still fail the check.
 if command -v plutil >/dev/null 2>&1 && ! plutil -lint "${PBXPROJ}" >/dev/null 2>&1; then
   echo "ios-check: FAIL — project.pbxproj does not parse (plutil -lint); patching may have corrupted it" >&2
