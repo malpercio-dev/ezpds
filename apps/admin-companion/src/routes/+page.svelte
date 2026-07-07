@@ -18,7 +18,7 @@
   // iOS Share Pane or copy. An unpaired app routes to Pair; a no-active-pick app forces
   // a server selection before any action.
 
-  let state = $state<PairingsState | 'loading' | 'error'>('loading');
+  let pairingsView = $state<PairingsState | 'loading' | 'error'>('loading');
   let switcherOpen = $state(false);
 
   let claiming = $state(false);
@@ -31,11 +31,11 @@
   onMount(reloadPairings);
 
   async function reloadPairings() {
-    state = 'loading';
+    pairingsView = 'loading';
     try {
-      state = await listPairings();
+      pairingsView = await listPairings();
     } catch {
-      state = 'error';
+      pairingsView = 'error';
     }
   }
 
@@ -101,16 +101,18 @@
     }
   }
 
-  const pairings = $derived(
-    state !== null && state !== 'loading' && state !== 'error' ? state.pairings : [],
-  );
+  const loadedState = $derived.by(() => {
+    if (pairingsView !== null && pairingsView !== 'loading' && pairingsView !== 'error') {
+      return pairingsView;
+    }
+    return null;
+  });
+  const pairings = $derived(loadedState?.pairings ?? []);
   const activePairing = $derived(
-    state !== null && state !== 'loading' && state !== 'error'
-      ? state.pairings.find((p) => p.id === state.active) ?? null
-      : null,
+    loadedState ? loadedState.pairings.find((p) => p.id === loadedState.active) ?? null : null,
   );
   const needsPick = $derived(
-    state !== null && state !== 'loading' && state !== 'error' && state.pairings.length > 0 && state.active === null,
+    loadedState !== null && loadedState.pairings.length > 0 && loadedState.active === null,
   );
   const identity = $derived(activePairing ? serverIdentity(activePairing) : null);
 </script>
@@ -121,9 +123,9 @@
   server={identity}
   onservertap={() => (switcherOpen = !switcherOpen)}
 >
-  {#if state === 'loading'}
+  {#if pairingsView === 'loading'}
     <p class="resolving">checking servers…</p>
-  {:else if state === 'error'}
+  {:else if pairingsView === 'error'}
     <section class="panel" aria-label="Server check failed">
       <StatusChip status="error" label="check failed" />
       <p class="note" role="alert">
@@ -153,18 +155,18 @@
         {#each pairings as pairing}
           <button
             class="switcher-row"
-            class:active={pairing.id === state.active}
+            class:active={pairing.id === loadedState?.active}
             type="button"
             onclick={() => switchServer(pairing.id)}
           >
             <div class="switcher-left">
               <span class="switcher-label">{serverIdentity(pairing).nickname}</span>
-              {#if pairing.id === state.active}
+              {#if pairing.id === loadedState?.active}
                 <span class="switcher-active">active</span>
               {/if}
             </div>
             <span class="switcher-host">{serverIdentity(pairing).host}</span>
-            {#if pairing.id === state.active}
+            {#if pairing.id === loadedState?.active}
               <span class="switcher-glyph" aria-hidden="true">▸</span>
             {/if}
           </button>
