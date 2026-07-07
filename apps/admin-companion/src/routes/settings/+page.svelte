@@ -47,7 +47,9 @@
     new SvelteMap(),
   );
   let errorStates = $state<SvelteMap<string, ErrorView | undefined>>(new SvelteMap());
-  let actionStates = $state<SvelteMap<string, { busy: boolean }>>(new SvelteMap());
+  let savingStates = $state<SvelteMap<string, boolean>>(new SvelteMap());
+  let revokingStates = $state<SvelteMap<string, boolean>>(new SvelteMap());
+  let forgettingStates = $state<SvelteMap<string, boolean>>(new SvelteMap());
   let gateHint = $state<string | undefined>(undefined);
 
   onMount(async () => {
@@ -88,6 +90,7 @@
   async function saveNickname(id: string) {
     const state = renameStates.get(id);
     if (!state) return;
+    if (savingStates.get(id)) return;
 
     const newNick = state.value.trim();
     if (newNick.length === 0) {
@@ -98,24 +101,23 @@
       return;
     }
 
-    actionStates.set(id, { busy: true });
+    savingStates.set(id, true);
 
     try {
       renameStates.set(id, { ...state, error: undefined });
       await renamePairing(id, newNick);
       await reloadPairings();
-    } catch (e) {
+    } catch {
       renameStates.set(id, { ...state, error: 'Could not save the name. Try again.' });
     } finally {
-      actionStates.set(id, { busy: false });
+      savingStates.set(id, false);
     }
   }
 
   async function doRevoke(id: string) {
-    const actionState = actionStates.get(id) || { busy: false };
-    if (actionState.busy) return;
+    if (revokingStates.get(id)) return;
 
-    actionStates.set(id, { busy: true });
+    revokingStates.set(id, true);
     gateHint = undefined;
     errorStates.set(id, undefined);
 
@@ -132,15 +134,14 @@
       errorStates.set(id, classifyRelayError(e));
       await reloadPairings();
     } finally {
-      actionStates.set(id, { busy: false });
+      revokingStates.set(id, false);
     }
   }
 
   async function forgetLocally(id: string) {
-    const actionState = actionStates.get(id) || { busy: false };
-    if (actionState.busy) return;
+    if (forgettingStates.get(id)) return;
 
-    actionStates.set(id, { busy: true });
+    forgettingStates.set(id, true);
     gateHint = undefined;
 
     try {
@@ -149,7 +150,7 @@
     } catch {
       gateHint = "Couldn't forget this server locally. Try again.";
     } finally {
-      actionStates.set(id, { busy: false });
+      forgettingStates.set(id, false);
     }
   }
 
@@ -253,7 +254,7 @@
                   {/if}
                   <Button
                     variant="secondary"
-                    loading={actionStates.get(pairing.id)?.busy ?? false}
+                    loading={savingStates.get(pairing.id) ?? false}
                     onclick={() => saveNickname(pairing.id)}
                   >
                     Save name
@@ -270,7 +271,7 @@
                 <div class="revoke-block">
                   <Button
                     variant="destructive"
-                    loading={actionStates.get(pairing.id)?.busy ?? false}
+                    loading={revokingStates.get(pairing.id) ?? false}
                     onclick={async () => {
                       await doRevoke(pairing.id);
                     }}
@@ -282,12 +283,18 @@
                     <ErrorState
                       view={errorStates.get(pairing.id)!}
                       server={serverIdentity(pairing)}
+                      onretry={() => doRevoke(pairing.id)}
+                      onforget={() => forgetLocally(pairing.id)}
                       onforgetlocally={() => forgetLocally(pairing.id)}
                     />
                   {/if}
 
                   <!-- Forget locally fallback -->
-                  <Button variant="secondary" onclick={() => forgetLocally(pairing.id)}>
+                  <Button
+                    variant="secondary"
+                    loading={forgettingStates.get(pairing.id) ?? false}
+                    onclick={() => forgetLocally(pairing.id)}
+                  >
                     Forget locally
                   </Button>
                 </div>
