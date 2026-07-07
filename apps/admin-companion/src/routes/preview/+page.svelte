@@ -16,6 +16,7 @@
   let label = $state('');
   let loadingDemo = $state(false);
   let biometricOn = $state(true);
+  let switcherOpen = $state(false);
 
   function demoLoad() {
     loadingDemo = true;
@@ -28,10 +29,18 @@
   const unreachableView = classifyRelayError({ code: 'UNREACHABLE', message: 'connection refused' });
   const revokedView = classifyRelayError({ code: 'RELAY_REJECTED', status: 403, message: 'forbidden' });
   const clockSkewView = classifyRelayError({ code: 'RELAY_REJECTED', status: 401, message: 'unauthorized' });
+  const noSuchPairingView = classifyRelayError({ code: 'NO_SUCH_PAIRING' });
+
+  const stagingServer = { nickname: 'staging', host: 'staging.ezpds.example' };
   const noop = () => {};
 </script>
 
-<ScreenShell prompt="preview" title="Components">
+<ScreenShell
+  prompt="preview"
+  title="Components"
+  server={stagingServer}
+  onservertap={() => (switcherOpen = !switcherOpen)}
+>
   <section>
     <h2>Buttons</h2>
     <div class="stack">
@@ -85,10 +94,35 @@
     <div class="stack">
       <div class="panel-pad"><ErrorState view={notPairedView} onpair={noop} /></div>
       <div class="panel-pad">
-        <ErrorState view={unreachableView} relayUrl="https://relay.ezpds.com" onretry={noop} />
+        <ErrorState view={unreachableView} server={stagingServer} onretry={noop} onforgetlocally={noop} />
       </div>
-      <div class="panel-pad"><ErrorState view={revokedView} onpair={noop} /></div>
+      <div class="panel-pad">
+        <ErrorState view={revokedView} server={stagingServer} onforget={noop} onswitch={noop} />
+      </div>
       <div class="panel-pad"><ErrorState view={clockSkewView} onretry={noop} /></div>
+      <div class="panel-pad">
+        <ErrorState view={noSuchPairingView} server={stagingServer} />
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Server context</h2>
+    <div class="panel-pad">
+      <p class="static-label">Static server identity (Settings pattern):</p>
+      <div class="server-context-example">
+        <span class="server-nickname">production</span>
+        <span class="server-host">relay.example.com</span>
+      </div>
+    </div>
+    <div class="panel-pad">
+      <p class="static-label">Tappable server identity (Home pattern):</p>
+      <button type="button" class="server-context-button" onclick={() => console.log('Switcher toggled')}>
+        <span class="server-nickname">staging</span>
+        <span class="server-host">staging.ezpds.example</span>
+        <span class="server-affordance" aria-hidden="true">▾</span>
+        <span class="visually-hidden">Switch server</span>
+      </button>
     </div>
   </section>
 
@@ -117,6 +151,28 @@
         deviceId="did:key:zQx4tY7uI9oP2aS5dF8gH1jK3lZ6xC9vB2nM4qW7eR0tY5u"
         lastSeen="revoked 1d ago"
         status="revoked"
+        onclick={() => {}}
+      />
+    </div>
+  </section>
+
+  <section>
+    <h2>Server list (Settings)</h2>
+    <div class="panel">
+      <DeviceRow
+        label="staging"
+        deviceId="relay.staging.example"
+        lastSeen="staging.ezpds.example"
+        status="active"
+        current
+        onclick={() => {}}
+      />
+      <div class="divider"></div>
+      <DeviceRow
+        label="production"
+        deviceId="relay.prod.example"
+        lastSeen="relay.example.com"
+        status="ready"
         onclick={() => {}}
       />
     </div>
@@ -174,5 +230,57 @@
   .divider {
     height: var(--border-hairline);
     background: var(--color-line);
+  }
+  .static-label {
+    margin: 0 0 var(--space-sm) 0;
+    font-family: var(--font-sans);
+    font-size: var(--text-label);
+    color: var(--color-muted);
+  }
+  .server-context-example {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+  }
+  .server-context-button {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    align-self: flex-start;
+    padding: var(--space-xs) 0;
+    background: transparent;
+    border: none;
+    font-family: inherit;
+    text-align: inherit;
+    cursor: pointer;
+  }
+  .server-nickname {
+    display: block;
+    font-family: var(--font-sans);
+    font-size: var(--text-body);
+    font-weight: var(--weight-medium);
+    color: var(--color-ink);
+  }
+  .server-host {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: var(--text-data);
+    color: var(--color-ink-soft);
+  }
+  .server-affordance {
+    display: inline;
+    margin-left: var(--space-xs);
+    color: var(--color-muted);
+  }
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
   }
 </style>

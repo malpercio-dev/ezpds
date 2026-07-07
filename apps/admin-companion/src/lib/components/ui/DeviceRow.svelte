@@ -12,6 +12,7 @@
     lastSeen,
     status,
     current = false,
+    currentLabel = 'this device',
     onclick,
   }: {
     label: string;
@@ -20,6 +21,8 @@
     status: Status;
     /** Mark the operator's current device. */
     current?: boolean;
+    /** Label to show when current is true (default: 'this device'). */
+    currentLabel?: string;
     onclick?: () => void;
   } = $props();
 
@@ -34,7 +37,7 @@
   <div class="main">
     <div class="line1">
       <span class="label">{label}</span>
-      {#if current}<span class="current">this device</span>{/if}
+      {#if current}<span class="current">{currentLabel}</span>{/if}
     </div>
     <span class="id">{shorten(deviceId)}</span>
     <span class="meta">{lastSeen}</span>

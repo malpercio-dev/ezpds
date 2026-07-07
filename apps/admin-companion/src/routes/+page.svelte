@@ -181,7 +181,7 @@
       onboarding, or copy it.
     </p>
 
-    {#if claimCode}
+    {#if claimCode && identity}
       <div class="code-block">
         <div class="code-server">
           <span class="code-server-nickname">{identity.nickname}</span>
@@ -299,44 +299,51 @@
     display: flex;
     align-items: baseline;
     gap: var(--space-sm);
-    min-width: 0;
   }
   .switcher-label {
     font-family: var(--font-sans);
     font-size: var(--text-body);
+    font-weight: var(--weight-medium);
     color: var(--color-ink);
   }
   .switcher-active {
     font-family: var(--font-mono);
     font-size: var(--text-label);
-    color: var(--color-primary);
+    color: var(--color-muted);
   }
   .switcher-host {
     font-family: var(--font-mono);
     font-size: var(--text-data);
-    color: var(--color-muted);
+    color: var(--color-ink-soft);
   }
   .switcher-glyph {
+    font-size: var(--text-body);
     color: var(--color-primary);
+    margin-left: auto;
   }
   .code-block {
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
+    background: var(--color-surface);
+    border: var(--border-hairline) solid var(--color-line);
+    border-radius: var(--radius-lg);
+    padding: var(--space-md);
   }
   .code-server {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2xs);
+    gap: var(--space-xs);
   }
   .code-server-nickname {
     font-family: var(--font-sans);
-    font-size: var(--text-body);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
     color: var(--color-ink);
   }
   .code-server-host {
     font-family: var(--font-mono);
     font-size: var(--text-data);
-    color: var(--color-muted);
+    color: var(--color-ink-soft);
   }
 </style>

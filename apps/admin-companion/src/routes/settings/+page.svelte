@@ -224,18 +224,21 @@
               <div class="server-panel">
                 <!-- Rename -->
                 <div class="rename-block">
-                  <TextField
-                    label="Nickname"
-                    bind:value={(() => {
+                  {#key pairing.id}
+                    {@const renameState = (() => {
                       if (!renameStates.has(pairing.id)) {
                         renameStates.set(pairing.id, { value: serverIdentity(pairing).nickname });
                       }
-                      return renameStates.get(pairing.id)!.value;
+                      return renameStates.get(pairing.id)!;
                     })()}
-                    placeholder="staging"
-                    mono
-                    error={renameStates.get(pairing.id)?.error}
-                  />
+                    <TextField
+                      label="Nickname"
+                      bind:value={renameState.value}
+                      placeholder="staging"
+                      mono
+                      error={renameState.error}
+                    />
+                  {/key}
                   <Button
                     variant="secondary"
                     loading={actionStates.get(pairing.id)?.busy ?? false}
