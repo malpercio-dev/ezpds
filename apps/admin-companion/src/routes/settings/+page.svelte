@@ -283,6 +283,7 @@
                     <ErrorState
                       view={errorStates.get(pairing.id)!}
                       server={serverIdentity(pairing)}
+                      retrying={revokingStates.get(pairing.id) ?? false}
                       onretry={() => doRevoke(pairing.id)}
                       onforget={() => forgetLocally(pairing.id)}
                       onforgetlocally={() => forgetLocally(pairing.id)}
