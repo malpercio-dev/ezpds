@@ -28,7 +28,7 @@ pub struct Config {
     /// Human-readable display name for this instance, surfaced to end users (e.g. the
     /// `resource_name` field of the RFC 9728 protected-resource metadata). Distinct from
     /// `telemetry.service_name` (the machine-facing OTel `service.name` attribute). Defaults
-    /// to `"ezpds"`.
+    /// to `"custos"`.
     pub service_name: String,
     pub server_did: Option<String>,
     pub available_user_domains: Vec<String>,
@@ -1028,7 +1028,7 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         .service_name
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "ezpds".to_string());
+        .unwrap_or_else(|| "custos".to_string());
     let invite_code_required = raw.invite_code_required.unwrap_or(true);
     let plc_directory_url = raw
         .plc_directory_url
@@ -1688,9 +1688,9 @@ mod tests {
     }
 
     #[test]
-    fn service_name_defaults_to_ezpds() {
+    fn service_name_defaults_to_custos() {
         let config = validate_and_build(minimal_raw()).unwrap();
-        assert_eq!(config.service_name, "ezpds");
+        assert_eq!(config.service_name, "custos");
     }
 
     #[test]
@@ -1739,7 +1739,7 @@ mod tests {
         let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
         let config = validate_and_build(raw).unwrap();
 
-        assert_eq!(config.service_name, "ezpds");
+        assert_eq!(config.service_name, "custos");
     }
 
     #[test]

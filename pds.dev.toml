@@ -23,9 +23,9 @@ available_user_domains = ["localhost"]
 invite_code_required = true
 
 # Optional: human-readable display name for this instance, surfaced to end users (e.g. the
-# `resource_name` field of the OAuth protected-resource metadata). Defaults to "ezpds".
+# `resource_name` field of the OAuth protected-resource metadata). Defaults to "custos".
 # Override with EZPDS_SERVICE_NAME.
-# service_name = "ezpds"
+# service_name = "custos"
 
 # Optional: set to your server's DID once generated in Wave 3
 # server_did = "did:plc:..."

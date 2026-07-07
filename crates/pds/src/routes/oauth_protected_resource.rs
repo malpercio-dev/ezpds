@@ -21,7 +21,7 @@ use crate::app::AppState;
 /// `resource` and `authorization_servers[0]` are the same public origin.
 ///
 /// `resource_name` is the human-readable instance name from config (`service_name`,
-/// default `"ezpds"`), intended for display to an end user during an authorization flow.
+/// default `"custos"`), intended for display to an end user during an authorization flow.
 #[derive(Serialize)]
 struct OAuthProtectedResourceMetadata {
     resource: String,
@@ -165,9 +165,9 @@ mod tests {
 
     #[tokio::test]
     async fn resource_name_defaults_to_configured_service_name() {
-        // test_state() sets service_name = "ezpds" (the default).
+        // test_state() sets service_name = "custos" (the default).
         let json = metadata_json().await;
-        assert_eq!(json["resource_name"], "ezpds");
+        assert_eq!(json["resource_name"], "custos");
     }
 
     #[tokio::test]
