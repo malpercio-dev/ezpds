@@ -110,6 +110,44 @@ pub fn normalize_scope_request(requested: &str) -> Result<String, String> {
     Ok(canonical.into_iter().collect::<Vec<_>>().join(" "))
 }
 
+/// Intersect two scope-token sets by canonical token string, returning the tokens present in
+/// **both**, sorted and de-duplicated.
+///
+/// Used to clamp an agent registration's stored `granted_scopes` to the operator's *current*
+/// `[agent_auth] granted_scopes` config at assertion-mint time: the config acts as a live ceiling,
+/// so narrowing it narrows subsequently minted assertions without re-registration, while the
+/// result can never exceed what was stored at registration. The comparison is token-exact — both
+/// inputs are the same canonical scope
+/// tokens the config carries — so a merely reordered/rephrased config token is treated as a
+/// different capability; operators should change `granted_scopes` by adding/removing whole tokens.
+pub fn intersect_scope_tokens(a: &[String], b: &[String]) -> Vec<String> {
+    let in_b: BTreeSet<&str> = b.iter().map(String::as_str).collect();
+    let kept: BTreeSet<String> = a
+        .iter()
+        .filter(|t| in_b.contains(t.as_str()))
+        .cloned()
+        .collect();
+    kept.into_iter().collect()
+}
+
+/// Canonicalize a list of operator-configured agent scope tokens (`[agent_auth] granted_scopes` /
+/// `pre_claim_scopes`), returning each token in its canonical form.
+///
+/// Because scope clamping (`intersect_scope_tokens`) matches tokens by exact canonical string, a
+/// non-canonical-but-valid config token (e.g. reordered `action=` params) would silently fail to
+/// match and drop the capability at mint time. Canonicalizing the config at startup removes that
+/// hazard, and an unsupported/malformed token becomes a fail-fast startup error (naming the token)
+/// rather than a silent loss of access.
+pub fn canonicalize_agent_scopes(tokens: &[String]) -> Result<Vec<String>, String> {
+    tokens
+        .iter()
+        .map(|token| {
+            normalize_token(token)
+                .ok_or_else(|| format!("unsupported or malformed scope token: {token:?}"))
+        })
+        .collect()
+}
+
 /// Whether `scope` is a valid atproto OAuth scope string — every token parses
 /// and the set includes the `atproto` base scope.
 ///
@@ -1300,6 +1338,66 @@ mod tests {
         assert!(!is_atproto_oauth_scope("transition:generic")); // missing atproto
         assert!(!is_atproto_oauth_scope("atproto bogus:token"));
         assert!(!is_atproto_oauth_scope("com.atproto.access")); // legacy session scope, not granular
+    }
+
+    // ── scope-token intersection (agent scope clamping) ───────────────────────
+
+    #[test]
+    fn intersect_keeps_only_common_tokens_sorted() {
+        let stored = vec![
+            "atproto".to_string(),
+            "repo:*?action=create&action=update".to_string(),
+            "blob:*/*".to_string(),
+        ];
+        // Operator narrowed the config to drop blob uploads.
+        let config = vec![
+            "atproto".to_string(),
+            "repo:*?action=create&action=update".to_string(),
+        ];
+        assert_eq!(
+            intersect_scope_tokens(&stored, &config),
+            vec![
+                "atproto".to_string(),
+                "repo:*?action=create&action=update".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn canonicalize_agent_scopes_normalizes_and_rejects_bad_tokens() {
+        // A reordered-but-valid token is rewritten to canonical form so it matches at intersect time.
+        assert_eq!(
+            canonicalize_agent_scopes(&[
+                "atproto".to_string(),
+                "repo:*?action=update&action=create".to_string(),
+            ])
+            .unwrap(),
+            vec![
+                "atproto".to_string(),
+                "repo:*?action=create&action=update".to_string(),
+            ]
+        );
+        // An unsupported token fails fast, naming the offender.
+        let err = canonicalize_agent_scopes(&["repo:not-an-nsid".to_string()]).unwrap_err();
+        assert!(
+            err.contains("repo:not-an-nsid"),
+            "error should name the token: {err}"
+        );
+    }
+
+    #[test]
+    fn intersect_never_widens_beyond_stored() {
+        // A config that grants more than the stored set can't add capabilities.
+        let stored = vec!["atproto".to_string(), "blob:*/*".to_string()];
+        let config = vec![
+            "atproto".to_string(),
+            "blob:*/*".to_string(),
+            "identity:*".to_string(),
+        ];
+        assert_eq!(
+            intersect_scope_tokens(&stored, &config),
+            vec!["atproto".to_string(), "blob:*/*".to_string()]
+        );
     }
 
     // ── idempotent normalization (parse→normalize→serialize round-trip) ────────

@@ -352,10 +352,20 @@ pub struct AgentAuthConfig {
     /// (the assertion is too stale to trust). Default 3600 (1 hour).
     #[serde(default = "default_agent_auth_time_max_age_secs")]
     pub auth_time_max_age_secs: u64,
-    /// Scopes granted to a fully-registered agent identity. Default `["com.atproto.access"]`.
+    /// Scopes granted to a fully-registered agent identity. Defaults to a conservative granular
+    /// profile — write-to-own-repo plus blob uploads, with AppView reads reaching the agent through
+    /// the read-proxy (which any access-level token may use). See `default_agent_granted_scopes`.
+    ///
+    /// **Operator warning:** these are enforced through the same granular scope grammar as OAuth
+    /// tokens (`auth/oauth_scopes.rs`), so an agent token can only do what these scopes permit. Do
+    /// **not** add `account:*` or `identity:*` (or the legacy `com.atproto.access` full-access
+    /// scope, or `transition:generic`) unless you intend agents to change account settings, rotate
+    /// handles/PLC identity, or otherwise hold account-lifecycle control — that hands an agent the
+    /// same reach as the account owner's own wallet.
     #[serde(default = "default_agent_granted_scopes")]
     pub granted_scopes: Vec<String>,
-    /// Scopes carried by a pre-claim (anonymous) assertion. Default `["com.atproto.access"]`.
+    /// Scopes carried by a pre-claim (anonymous) assertion. Defaults to the same conservative
+    /// profile as `granted_scopes`.
     #[serde(default = "default_agent_granted_scopes")]
     pub pre_claim_scopes: Vec<String>,
     /// The human-facing URL where a user enters the claim-ceremony `user_code`. When `None` (the
@@ -417,8 +427,21 @@ fn default_agent_auth_time_max_age_secs() -> u64 {
     60 * 60 // 1 hour
 }
 
+/// The conservative default scope profile for agent-derived credentials.
+///
+/// A valid granular atproto scope set (per `auth/oauth_scopes.rs`): the required `atproto` base
+/// scope, write access to the account's own repo (create/update — deliberately not delete), and
+/// blob uploads. It grants **no** `account:*`, `identity:*`, `rpc:*`, or legacy full-access scope,
+/// so an agent token cannot change account settings, rotate the handle/PLC identity, manage app
+/// passwords, or mint service auth. AppView reads still work: the read-proxy admits any
+/// access-level token without requiring an `rpc:` grant. Operators override via
+/// `[agent_auth] granted_scopes` / `EZPDS_AGENT_AUTH_GRANTED_SCOPES`.
 fn default_agent_granted_scopes() -> Vec<String> {
-    vec!["com.atproto.access".to_string()]
+    vec![
+        "atproto".to_string(),
+        "repo:*?action=create&action=update".to_string(),
+        "blob:*/*".to_string(),
+    ]
 }
 
 fn default_idjag_algorithm() -> String {
@@ -1519,7 +1542,11 @@ mod tests {
         assert!(config.agent_auth.trusted_issuers.is_empty());
         assert_eq!(config.agent_auth.assertion_ttl_secs, 3600);
         assert_eq!(config.agent_auth.claim_token_ttl_secs, 600);
-        assert_eq!(config.agent_auth.granted_scopes, vec!["com.atproto.access"]);
+        // The default is a conservative granular profile, not the legacy full-access scope.
+        assert_eq!(
+            config.agent_auth.granted_scopes,
+            vec!["atproto", "repo:*?action=create&action=update", "blob:*/*"]
+        );
         assert!(config.agent_auth.verification_uri.is_none());
     }
 

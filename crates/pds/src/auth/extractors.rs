@@ -5,6 +5,8 @@ use common::ApiError;
 
 use crate::app::AppState;
 
+use common::ErrorCode;
+
 use super::bearer::extract_bearer_token;
 use super::dpop::validate_dpop;
 use super::jwt::{parse_scope, verify_access_token, AuthScope};
@@ -23,6 +25,32 @@ pub struct AuthenticatedUser {
     /// Raw `scope` claim. OAuth tokens carry the granular grant here; legacy
     /// session/app-password tokens carry their `com.atproto.*` scope string.
     pub scope_claim: String,
+    /// Agent registration id, present only when this token was derived from an auth.md agent
+    /// `identity_assertion`. `Some(_)` marks the caller as an agent; ordinary session/OAuth tokens
+    /// carry `None`.
+    pub registration_id: Option<String>,
+}
+
+impl AuthenticatedUser {
+    /// Whether this caller is an auth.md agent (its token carries a `registration_id`).
+    pub fn is_agent(&self) -> bool {
+        self.registration_id.is_some()
+    }
+
+    /// Reject an agent-derived caller from a route reserved for the account holder's own full
+    /// session. Agent tokens map to [`AuthScope::Access`] for coarse admission, so a route that
+    /// gates on `AuthScope::Access` alone (with no granular `require_*` mapping — e.g. app-password
+    /// management) would otherwise admit an agent; this closes that gap. Ordinary session/OAuth
+    /// callers are unaffected.
+    pub fn require_not_agent(&self) -> Result<(), ApiError> {
+        if self.is_agent() {
+            return Err(ApiError::new(
+                ErrorCode::InsufficientScope,
+                "this operation is not available to agent-derived credentials",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl FromRequestParts<AppState> for AuthenticatedUser {
@@ -102,6 +130,36 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
             did: claims.sub,
             scope,
             scope_claim: claims.scope,
+            registration_id: claims.registration_id,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn user(registration_id: Option<&str>) -> AuthenticatedUser {
+        AuthenticatedUser {
+            did: "did:plc:test000000000000000".to_string(),
+            scope: AuthScope::Access,
+            scope_claim: "atproto repo:*?action=create&action=update".to_string(),
+            registration_id: registration_id.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn require_not_agent_rejects_agent_and_allows_others() {
+        // An agent-derived caller (registration_id present) is refused with InsufficientScope (403).
+        let err = user(Some("reg_1")).require_not_agent().unwrap_err();
+        assert_eq!(err.status_code(), 403);
+        // An ordinary session/OAuth caller passes.
+        assert!(user(None).require_not_agent().is_ok());
+    }
+
+    #[test]
+    fn is_agent_reflects_registration_id_presence() {
+        assert!(user(Some("reg_1")).is_agent());
+        assert!(!user(None).is_agent());
     }
 }

@@ -138,7 +138,7 @@ The server verifies the ID-JAG's signature, `iss` (must be on the trust list),
     "registration_type": "identity_assertion",
     "identity_assertion": "<service-signed JWT>",
     "assertion_expires": "2026-01-01T00:00:00.000Z",
-    "scopes": ["com.atproto.access"]
+    "scopes": ["atproto", "blob:*/*", "repo:*?action=create&action=update"]
   }
   ```
 
@@ -236,14 +236,20 @@ grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer
 {
   "access_token": "<Bearer token>",
   "token_type": "Bearer",
-  "expires_in": 900,
-  "scope": "com.atproto.access"
+  "expires_in": 300,
+  "scope": "atproto blob:*/* repo:*?action=create&action=update"
 }
 ```
 
+The `scope` is a granular AT Protocol scope string — by default a conservative
+least-privilege profile (write to your own repo plus blob uploads; no account or
+identity management). Operators can widen or narrow it via configuration; the
+token grants exactly what the registration was clamped to, never more.
+
 The agent identity must be **claimed** and the assertion `sub` (a DID) must match
-it; an unclaimed, revoked, or unknown identity returns `invalid_grant`, and a
-`resource` other than this origin returns `invalid_target`.
+it; an unclaimed or unknown identity returns `invalid_grant`, a revoked identity
+returns `access_denied`, and a `resource` other than this origin returns
+`invalid_target`.
 
 ## 5. Use the access token
 
@@ -269,7 +275,7 @@ Failures use the OAuth-style `{ "error", "error_description" }` body.
 | `service_auth_not_enabled` | The operator has not enabled `service_auth`. | Use another flow, or ask the operator. |
 | `anonymous_not_enabled` | `anonymous` is unavailable here (see §3.3). | Use `identity_assertion` or `service_auth`. |
 | `issuer_not_enabled` | The ID-JAG `iss` is not on the trust list. | Present an assertion from a trusted issuer. |
-| `invalid_grant` | Bad assertion/signature, or the identity is unclaimed/revoked. | Re-register and finish the claim ceremony. |
+| `invalid_grant` | Bad assertion/signature, or the identity is unclaimed. | Re-register and finish the claim ceremony. |
 | `login_required` | The ID-JAG's `auth_time` is too old. | Re-authenticate the user, then retry. |
 | `interaction_required` | User confirmation is pending (carries a claim block). | Complete the ceremony (§3.4), then retry. |
 | `access_denied` | No local account matches, or the identity is revoked. | Verify the email/identity is hosted here. |
@@ -280,6 +286,6 @@ Failures use the OAuth-style `{ "error", "error_description" }` body.
 - **Credential layer.** Access tokens are short-lived (§5); stop using one and it
   lapses at `expires_in`.
 - **Registration layer.** A revoked agent identity can no longer exchange
-  assertions (§4 returns `invalid_grant`). Provider-driven revocation via a Security
+  assertions (§4 returns `access_denied`). Provider-driven revocation via a Security
   Event Token at the advertised `events_endpoint` is **not yet enabled on this
   deployment**; today an operator revokes a registration server-side.

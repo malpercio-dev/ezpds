@@ -81,6 +81,8 @@ pub async fn create_app_password(
             "full access token required",
         ));
     }
+    // Agent-derived tokens map to AuthScope::Access but must never manage app passwords.
+    user.require_not_agent()?;
 
     let name = payload.name;
     if name.trim().is_empty() {

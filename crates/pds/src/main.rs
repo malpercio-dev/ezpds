@@ -76,7 +76,7 @@ async fn run() -> anyhow::Result<()> {
 
     // Load config: if an explicit path is given via --config or EZPDS_CONFIG, error if missing.
     // Otherwise, tolerate a missing default pds.toml and load from env only.
-    let config = if let Some(config_path) = cli.config {
+    let mut config = if let Some(config_path) = cli.config {
         // Explicit config file: must exist
         common::load_config(&config_path)
             .with_context(|| format!("failed to load config from {}", config_path.display()))?
@@ -104,6 +104,16 @@ async fn run() -> anyhow::Result<()> {
     // immediately (Rust only keeps `_foo` bindings alive for the scope), which would
     // shut down the OTLP exporter before the server starts.
     let _otel_guard = telemetry::init_subscriber(&config.telemetry)?;
+
+    // Canonicalize the operator-configured agent scope tokens so scope clamping matches them by
+    // exact string; a mistyped/unsupported token fails fast here instead of silently dropping the
+    // capability when an agent assertion is minted.
+    config.agent_auth.granted_scopes =
+        auth::oauth_scopes::canonicalize_agent_scopes(&config.agent_auth.granted_scopes)
+            .map_err(|e| anyhow::anyhow!("invalid [agent_auth] granted_scopes: {e}"))?;
+    config.agent_auth.pre_claim_scopes =
+        auth::oauth_scopes::canonicalize_agent_scopes(&config.agent_auth.pre_claim_scopes)
+            .map_err(|e| anyhow::anyhow!("invalid [agent_auth] pre_claim_scopes: {e}"))?;
 
     tracing::info!(
         bind_address = %config.bind_address,
