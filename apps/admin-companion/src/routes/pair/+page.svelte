@@ -17,10 +17,13 @@
   // Pairing claims a single-use code the operator minted on the relay (master token)
   // and rendered as a QR. On a real iPhone the camera fills these fields from the QR;
   // on the simulator (no camera) the operator types them. Either way the Rust core
-  // self-signs `POST /v1/admin/devices`.
+  // self-signs `POST /v1/admin/devices`. The nickname is the operator's local name for
+  // the server and is always required.
   let relayUrl = $state('');
   let pairingCode = $state('');
   let label = $state('Operator iPhone');
+  let nickname = $state('');
+  let nicknameError = $state<string | undefined>(undefined);
 
   let scanning = $state(false);
   let pairing = $state(false);
@@ -37,7 +40,7 @@
   let triggerEl = $state<HTMLDivElement | undefined>();
 
   const canSubmit = $derived(
-    relayUrl.trim().length > 0 && pairingCode.trim().length > 0 && !pairing,
+    relayUrl.trim().length > 0 && pairingCode.trim().length > 0 && nickname.trim().length > 0 && !pairing,
   );
 
   // Scan mode makes the WebView see-through so the *windowed* camera — which
@@ -106,7 +109,15 @@
     // `type="url"`/required validation — so re-check the inputs here before any IPC.
     const url = relayUrl.trim();
     const code = pairingCode.trim();
-    if (!url || !code || pairing) return;
+    const nick = nickname.trim();
+    if (!url || !code || !nick || pairing) return;
+
+    // Validate nickname: required, no empty string.
+    if (nick.length === 0) {
+      nicknameError = "Give this server a name — it's how you'll tell environments apart.";
+      return;
+    }
+
     // Mirror the form's URL constraint: a bare host (no scheme) can't be paired against.
     try {
       new URL(url);
@@ -117,8 +128,9 @@
 
     pairing = true;
     pairError = undefined;
+    nicknameError = undefined;
     try {
-      await pairDevice(url, code, label.trim() || 'Operator iPhone');
+      await pairDevice(url, code, label.trim() || 'Operator iPhone', nick);
       await goto('/');
     } catch (e) {
       pairError = describeRelayError(e as RelayClientError);
@@ -162,6 +174,13 @@
         inputmode="url"
       />
       <TextField label="Pairing code" bind:value={pairingCode} placeholder="paste the code" mono />
+      <TextField
+        label="Nickname"
+        bind:value={nickname}
+        placeholder="staging"
+        mono
+        error={nicknameError}
+      />
       <TextField label="Device label" bind:value={label} placeholder="Operator iPhone" />
 
       {#if pairError}
