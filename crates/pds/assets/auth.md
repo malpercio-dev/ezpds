@@ -236,7 +236,7 @@ grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer
 {
   "access_token": "<Bearer token>",
   "token_type": "Bearer",
-  "expires_in": 900,
+  "expires_in": 300,
   "scope": "atproto repo:*?action=create&action=update blob:*/*"
 }
 ```

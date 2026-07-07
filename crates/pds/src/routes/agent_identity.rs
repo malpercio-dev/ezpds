@@ -1233,6 +1233,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn identity_assertion_mint_with_disjoint_config_yields_empty_scopes() {
+        // Fail-closed edge case: when the current config shares no token with the registration's
+        // stored scopes, the clamp yields an empty set — the agent's token is bounded to nothing
+        // rather than falling back to a broader grant.
+        let (priv_pem, pub_pem) = es256_keys();
+        let cfg = AgentAuthConfig {
+            trusted_issuers: vec![trusted("https://trusted.example", pub_pem)],
+            // Disjoint from the stored `blob:*/*` scope below.
+            granted_scopes: vec!["repo:*?action=create".to_string()],
+            ..AgentAuthConfig::default()
+        };
+        let state = state_with(cfg).await;
+        let did = "did:plc:disjoint111111111";
+        insert_account(&state.db, did, "agent@example.com").await;
+        sqlx::query(
+            "INSERT INTO agent_identities \
+             (id, did, registration_type, issuer, subject, email, scopes, identity_assertion, \
+              assertion_expires_at, status, created_at, updated_at) \
+             VALUES ('reg_disjoint', ?, 'identity_assertion', 'https://trusted.example', \
+                     'sub-disjoint', 'agent@example.com', '[\"blob:*/*\"]', NULL, \
+                     datetime('now', '+1 hour'), 'claimed', datetime('now'), datetime('now'))",
+        )
+        .bind(did)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let jag = make_id_jag(
+            &priv_pem,
+            "https://trusted.example",
+            "sub-disjoint",
+            PUBLIC_URL,
+            Some("agent@example.com"),
+            None,
+        );
+        let (status, body) = post(
+            state.clone(),
+            json!({ "type": "identity_assertion", "assertion": jag }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["scopes"], json!([]));
+    }
+
+    #[tokio::test]
     async fn identity_assertion_malformed_is_invalid_grant() {
         let (_priv, pub_pem) = es256_keys();
         let cfg = AgentAuthConfig {
