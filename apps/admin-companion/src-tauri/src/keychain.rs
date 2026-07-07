@@ -354,6 +354,299 @@ mod tests {
         clear_pairing().expect("unpair");
         assert!(!get_biometric_enabled().expect("pref persists across unpair"));
     }
+
+    // ── Pairing document persistence tests ──────────────────────────────────────
+
+    fn pairing_fixture(
+        id: &str,
+        nickname: &str,
+        relay_url: &str,
+        device_id: &str,
+    ) -> crate::pairings::Pairing {
+        crate::pairings::Pairing {
+            id: id.to_string(),
+            nickname: nickname.to_string(),
+            relay_url: relay_url.to_string(),
+            device_id: device_id.to_string(),
+            device_label: "Operator iPhone".to_string(),
+        }
+    }
+
+    #[test]
+    fn load_pairings_is_empty_on_a_fresh_install() {
+        clear_for_test();
+        let doc = load_pairings().expect("load");
+        assert_eq!(doc.pairings().len(), 0, "fresh install has no pairings");
+        assert_eq!(doc.active_id(), None, "fresh install has no active pairing");
+    }
+
+    #[test]
+    fn pairing_document_round_trips_two_relays() {
+        clear_for_test();
+        let mut doc = crate::pairings::PairingDoc::empty();
+        doc.append(pairing_fixture(
+            "id-1",
+            "relay-a",
+            "https://relay-a.example",
+            "device-a",
+        ));
+        doc.append(pairing_fixture(
+            "id-2",
+            "relay-b",
+            "https://relay-b.example",
+            "device-b",
+        ));
+        save_pairings(&doc).expect("save");
+
+        let loaded = load_pairings().expect("load");
+        assert_eq!(loaded.pairings().len(), 2, "both pairings present");
+
+        let first = &loaded.pairings()[0];
+        assert_eq!(first.id, "id-1", "first id correct");
+        assert_eq!(first.nickname, "relay-a", "first nickname correct");
+        assert_eq!(
+            first.relay_url, "https://relay-a.example",
+            "first relay_url correct"
+        );
+        assert_eq!(first.device_id, "device-a", "first device_id correct");
+        assert_eq!(
+            first.device_label, "Operator iPhone",
+            "first device_label correct"
+        );
+
+        let second = &loaded.pairings()[1];
+        assert_eq!(second.id, "id-2", "second id correct");
+        assert_eq!(second.nickname, "relay-b", "second nickname correct");
+        assert_eq!(
+            second.relay_url, "https://relay-b.example",
+            "second relay_url correct"
+        );
+        assert_eq!(second.device_id, "device-b", "second device_id correct");
+        assert_eq!(
+            second.device_label, "Operator iPhone",
+            "second device_label correct"
+        );
+
+        assert_eq!(
+            loaded.active_id(),
+            Some("id-2"),
+            "active is the second entry (last appended)"
+        );
+    }
+
+    #[test]
+    fn re_pairing_the_same_relay_url_persists_both_entries() {
+        clear_for_test();
+        let mut doc = crate::pairings::PairingDoc::empty();
+        doc.append(pairing_fixture(
+            "id-1",
+            "first-time",
+            "https://relay.example",
+            "device-1",
+        ));
+        doc.append(pairing_fixture(
+            "id-2",
+            "second-time",
+            "https://relay.example",
+            "device-2",
+        ));
+        save_pairings(&doc).expect("save");
+
+        let loaded = load_pairings().expect("load");
+        assert_eq!(
+            loaded.pairings().len(),
+            2,
+            "both entries present despite same URL"
+        );
+        assert_eq!(
+            loaded.pairings()[0].relay_url,
+            "https://relay.example",
+            "first relay_url matches"
+        );
+        assert_eq!(
+            loaded.pairings()[1].relay_url,
+            "https://relay.example",
+            "second relay_url matches"
+        );
+        assert_eq!(
+            loaded.pairings()[0].id,
+            "id-1",
+            "first entry retrievable by first id"
+        );
+        assert_eq!(
+            loaded.pairings()[1].id,
+            "id-2",
+            "second entry retrievable by second id"
+        );
+    }
+
+    #[test]
+    fn first_load_deletes_the_legacy_triple_and_yields_an_empty_document() {
+        clear_for_test();
+        // Seed the legacy accounts directly.
+        store_item(DEVICE_ID_ACCOUNT, b"device-old").expect("store id");
+        store_item(RELAY_URL_ACCOUNT, b"https://old.example").expect("store url");
+        store_item(LABEL_ACCOUNT, b"Old iPhone").expect("store label");
+
+        // First load should clean up the legacy triple and return empty.
+        let doc = load_pairings().expect("load");
+        assert_eq!(doc.pairings().len(), 0, "document is empty after cleanup");
+        assert_eq!(doc.active_id(), None, "no active pairing after cleanup");
+
+        // All three legacy accounts should now be gone.
+        assert!(
+            is_not_found(&get_item(DEVICE_ID_ACCOUNT).unwrap_err()),
+            "DEVICE_ID_ACCOUNT deleted"
+        );
+        assert!(
+            is_not_found(&get_item(RELAY_URL_ACCOUNT).unwrap_err()),
+            "RELAY_URL_ACCOUNT deleted"
+        );
+        assert!(
+            is_not_found(&get_item(LABEL_ACCOUNT).unwrap_err()),
+            "LABEL_ACCOUNT deleted"
+        );
+    }
+
+    #[test]
+    fn legacy_cleanup_spares_device_key_and_biometric_accounts() {
+        clear_for_test();
+        // Seed the legacy triple.
+        store_item(DEVICE_ID_ACCOUNT, b"device-old").expect("store id");
+        store_item(RELAY_URL_ACCOUNT, b"https://old.example").expect("store url");
+        store_item(LABEL_ACCOUNT, b"Old iPhone").expect("store label");
+
+        // Set the biometric pref before cleanup.
+        set_biometric_enabled(false).expect("disable biometric");
+
+        // Create a device key (this will store it in the keychain).
+        let key_before = crate::device_key::get_or_create().expect("create key");
+        let multibase_before = key_before.multibase.clone();
+
+        // Now load_pairings (which should cleanup the legacy triple).
+        let _ = load_pairings().expect("load");
+
+        // The biometric pref should still read false.
+        assert!(
+            !get_biometric_enabled().expect("read biometric"),
+            "biometric pref survives cleanup"
+        );
+
+        // The device key should be unchanged.
+        let key_after = crate::device_key::get_or_create().expect("read key");
+        assert_eq!(
+            key_after.multibase, multibase_before,
+            "device key unchanged after cleanup"
+        );
+    }
+
+    #[test]
+    fn corrupt_document_fails_loud_and_is_not_reset() {
+        clear_for_test();
+        // Store garbage that is not valid JSON.
+        store_item(PAIRINGS_ACCOUNT, b"{ not json").expect("store garbage");
+
+        // load_pairings should error.
+        let result = load_pairings();
+        assert!(result.is_err(), "corrupt document produces an error");
+        match result {
+            Err(KeychainError::CorruptPairingDoc(_)) => {
+                // Expected.
+            }
+            _ => panic!("expected CorruptPairingDoc error, got {:?}", result),
+        }
+
+        // The stored bytes should be unchanged (no silent reset).
+        let still_there = get_item(PAIRINGS_ACCOUNT).expect("read");
+        assert_eq!(still_there, b"{ not json", "corrupt bytes unchanged");
+
+        // A second load should error again, not return empty.
+        let result2 = load_pairings();
+        assert!(result2.is_err(), "second load still errors (no reset)");
+    }
+
+    #[test]
+    fn unsupported_version_fails_loud() {
+        clear_for_test();
+        store_item(PAIRINGS_ACCOUNT, br#"{"version":2,"pairings":[]}"#)
+            .expect("store unsupported version");
+
+        let result = load_pairings();
+        assert!(result.is_err(), "unsupported version errors");
+        match result {
+            Err(KeychainError::CorruptPairingDoc(msg)) => {
+                assert!(
+                    msg.contains("version 2"),
+                    "error message mentions version 2"
+                );
+            }
+            _ => panic!("expected CorruptPairingDoc, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn dangling_active_reference_fails_loud() {
+        clear_for_test();
+        // A syntactically valid doc whose "active" id is not in the pairings.
+        let json = br#"{"version":1,"active":"missing-id","pairings":[]}"#;
+        store_item(PAIRINGS_ACCOUNT, json).expect("store dangling active");
+
+        let result = load_pairings();
+        assert!(result.is_err(), "dangling active errors");
+        match result {
+            Err(KeychainError::CorruptPairingDoc(_)) => {
+                // Expected.
+            }
+            _ => panic!("expected CorruptPairingDoc, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn device_key_is_unchanged_by_pairing_document_writes() {
+        clear_for_test();
+        // Record the device key before any pairing writes.
+        let key_before = crate::device_key::get_or_create()
+            .expect("create key")
+            .multibase;
+
+        // Append + save one pairing.
+        let mut doc = crate::pairings::PairingDoc::empty();
+        doc.append(pairing_fixture(
+            "id-1",
+            "first",
+            "https://relay-1.example",
+            "device-1",
+        ));
+        save_pairings(&doc).expect("save first");
+
+        // Record the device key after the first write.
+        let key_after_first = crate::device_key::get_or_create()
+            .expect("read key")
+            .multibase;
+        assert_eq!(
+            key_after_first, key_before,
+            "device key unchanged after first pairing write"
+        );
+
+        // Append + save a second pairing (different relay URL).
+        let mut doc2 = load_pairings().expect("reload");
+        doc2.append(pairing_fixture(
+            "id-2",
+            "second",
+            "https://relay-2.example",
+            "device-2",
+        ));
+        save_pairings(&doc2).expect("save second");
+
+        // Device key should still be identical.
+        let key_after_second = crate::device_key::get_or_create()
+            .expect("read key again")
+            .multibase;
+        assert_eq!(
+            key_after_second, key_before,
+            "device key unchanged after second pairing write"
+        );
+    }
 }
 
 /// In-memory Keychain substitute used exclusively in test builds.
