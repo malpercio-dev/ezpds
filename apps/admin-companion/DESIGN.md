@@ -258,6 +258,9 @@ skip-track button at icon size.
 - **Anti-reference check:** no scanlines/phosphor/fake chrome (kitsch), no coin or
   glint (crypto), no filled play/skip triangle (media), dark ground held at the same
   cool hue 250 as the app itself.
+- **Sibling relationship:** the deliberate inverse of Obsign's icon (the wax seal,
+  root DESIGN.md §6) — same gold family, cool console slate vs. archival white, the
+  operator's prompt vs. the sealed credential. One house, two rooms.
 
 ## 7. Do's and Don'ts
 
