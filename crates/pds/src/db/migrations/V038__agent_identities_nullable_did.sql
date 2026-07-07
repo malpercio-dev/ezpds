@@ -8,12 +8,17 @@
 -- non-NULL values, so a bound identity is still checked against `accounts`.
 --
 -- SQLite cannot drop a column's NOT NULL constraint in place, so `agent_identities` is rebuilt.
--- It is referenced by `agent_claim_attempts(identity_id)`, and `PRAGMA foreign_keys` cannot be
--- toggled inside the migration transaction, so deferred enforcement is not usable here: dropping
--- the old parent implicit-deletes its rows while the child still references the table name, which
--- leaves an unbalanced deferred-violation counter that fails at COMMIT. Instead the child rows are
--- cycled through a temp stash — emptied before the parent swap and refilled after — so at no point
--- does a child row reference a missing parent and foreign-key enforcement can stay ON throughout.
+-- It is referenced by `agent_claim_attempts(identity_id)`, and neither pragma escape hatch works
+-- inside the migration transaction:
+--   * `PRAGMA foreign_keys` cannot be toggled mid-transaction, so FK enforcement can't be disabled
+--     for the swap.
+--   * `PRAGMA defer_foreign_keys` would defer checks to COMMIT, but SQLite tracks deferred
+--     violations with a counter, not a re-scan: dropping the old parent implicit-deletes its rows
+--     while the child still references the table *name*, incrementing the counter, and the rows in
+--     the renamed replacement table never decrement it — so COMMIT still fails.
+-- Instead the child rows are cycled through a temp stash — emptied before the parent swap and
+-- refilled after — so no child row ever references a missing parent and foreign-key enforcement
+-- can stay ON throughout.
 
 CREATE TABLE agent_identities_new (
     id                       TEXT NOT NULL,

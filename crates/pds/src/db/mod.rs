@@ -438,8 +438,9 @@ mod tests {
     /// V038 rebuilds `agent_identities` (referenced by `agent_claim_attempts`) to make `did`
     /// nullable. The fresh-DB migration run never has rows present during the rebuild, so this test
     /// exercises the production upgrade path: seed the V037 schema with a populated
-    /// identity→claim-attempt chain, then apply V038 and confirm the child FK survives (thanks to
-    /// `PRAGMA defer_foreign_keys`) and an anonymous NULL-did identity can now be inserted.
+    /// identity→claim-attempt chain, then apply V038 and confirm the child rows survive (V038
+    /// stashes and refills `agent_claim_attempts` around the parent swap) and an anonymous NULL-did
+    /// identity can now be inserted.
     #[tokio::test]
     async fn v038_rebuild_preserves_child_rows_and_allows_null_did() {
         let pool = in_memory_pool().await;
