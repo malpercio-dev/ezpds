@@ -79,8 +79,9 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
 - Keychain accounts: device-key accounts unchanged (`admin-device-key-priv`, `admin-device-key-pub` +
   `admin-device-key-app-label`); `admin-pairings` (the versioned multi-relay document, replaces the
   legacy triple); `admin-biometric-enabled` (the gate preference, unchanged). Removal semantics:
-  removing the active pairing auto-promotes the single remaining pairing if one exists; with two or
-  more remaining, the active selection clears and the UI must ask for an explicit pick (never silent
+  a sole remaining pairing is always auto-promoted to active (unambiguous — even when the selection
+  was already cleared by an earlier ambiguous removal); removing the active pairing with two or
+  more remaining clears the selection and the UI must ask for an explicit pick (never silent
   relay switch). A corrupt document (parse error, version mismatch, invalid active reference) is a
   hard error surfaced as `RelayClientError::Keychain` — never a silent reset, which would be
   indistinguishable from a successful unpair. Removing a pairing returns the `NO_SUCH_PAIRING` error

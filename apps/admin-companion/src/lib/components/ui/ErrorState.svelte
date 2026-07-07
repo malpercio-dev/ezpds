@@ -6,8 +6,8 @@
   // Renders a classified failure (errors.ts → ErrorView) as a recovery state: a status
   // chip (color + glyph + text, never color alone) over the message, server attribution
   // (when provided, shown for every classification to prevent misreading against the wrong
-  // relay), and the recovery affordances the classification calls for — Pair (revoked /
-  // not-paired), Retry ± local-forget fallback (unreachable), or forget/switch (revoked).
+  // relay), and the recovery affordances the classification calls for — Pair (not-paired),
+  // Retry ± local-forget fallback (unreachable/clock-skew), or forget/switch (revoked).
   // Used by Home and Settings so every failure reads the same way.
   let {
     view,

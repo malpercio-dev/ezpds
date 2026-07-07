@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { listPairings, setActivePairing, generateClaimCode, unpair, type PairingsState } from '$lib/ipc';
-  import { serverIdentity } from '$lib/server-identity';
+  import { serverIdentity, type ServerIdentity } from '$lib/server-identity';
   import { classifyRelayError, type ErrorView } from '$lib/errors';
   import { requireUserPresence, presenceAllows } from '$lib/biometric';
   import { shareText } from '$lib/share';
@@ -24,6 +24,9 @@
   let claiming = $state(false);
   let claimCode = $state<string | undefined>(undefined);
   let claimErrorView = $state<ErrorView | undefined>(undefined);
+  // The server a failure is attributed to — the *attempted* pairing for a switch error
+  // (the active selection is unchanged there, so `identity` would name the wrong relay).
+  let claimErrorServer = $state<ServerIdentity | null>(null);
   // A cancelled biometric prompt is not a failure — a quiet info hint, not an alarm.
   let gateHint = $state<string | undefined>(undefined);
   let shareHint = $state<string | undefined>(undefined);
@@ -55,11 +58,13 @@
         return;
       }
       claimErrorView = undefined;
+      claimErrorServer = null;
       // Drop the prior code so a failed mint never leaves a stale code beside the error.
       claimCode = undefined;
       claimCode = await generateClaimCode();
     } catch (e) {
       claimErrorView = classifyRelayError(e);
+      claimErrorServer = identity;
       await reloadPairings();
     } finally {
       claiming = false;
@@ -76,6 +81,10 @@
   }
 
   async function switchServer(id: string) {
+    // Capture the tapped pairing before anything can change the list, so a failure
+    // (e.g. a stale row → NO_SUCH_PAIRING) is attributed to the server the operator
+    // actually tried to select, not the unchanged active one.
+    const attempted = pairings.find((p) => p.id === id);
     try {
       await setActivePairing(id);
       await reloadPairings();
@@ -83,8 +92,10 @@
       // Clear stale code so a code minted for the old server never shows beside the new identity.
       claimCode = undefined;
       claimErrorView = undefined;
+      claimErrorServer = null;
     } catch (e) {
       claimErrorView = classifyRelayError(e);
+      claimErrorServer = attempted ? serverIdentity(attempted) : identity;
       await reloadPairings();
     }
   }
@@ -94,8 +105,14 @@
     try {
       await unpair(activePairing.id);
       await reloadPairings();
+      // Clear state scoped to the forgotten server — a code it minted or an error it
+      // produced must never render beside an auto-promoted successor's identity.
+      claimCode = undefined;
+      claimErrorView = undefined;
+      claimErrorServer = null;
     } catch (e) {
       claimErrorView = classifyRelayError(e);
+      claimErrorServer = identity;
       await reloadPairings();
     }
   }
@@ -141,13 +158,15 @@
         your phone.
       </p>
     </section>
-  {:else if needsPick}
-    <!-- Active was removed with two+ remaining — force an explicit pick. -->
-    <section class="panel" aria-label="Pick a server">
-      <StatusChip status="pending" label="pick a server" />
-      <p class="note">Two or more servers remain — choose which one this console acts on.</p>
-    </section>
   {:else}
+    {#if needsPick}
+      <!-- Active was removed with two+ remaining — force an explicit pick. -->
+      <section class="panel" aria-label="Pick a server">
+        <StatusChip status="pending" label="pick a server" />
+        <p class="note">Two or more servers remain — choose which one this console acts on.</p>
+      </section>
+    {/if}
+
     <!-- Inline switcher: shown when needsPick (forced open) or switcherOpen (tappable). -->
     {#if switcherOpen || needsPick}
       <section class="switcher" aria-label="Choose a server">
@@ -176,7 +195,9 @@
       </section>
     {/if}
 
-    <!-- Main claim-code flow (unchanged when paired with active pick). -->
+    <!-- Main claim-code flow — hidden while a pick is required (the forced-open
+         switcher is the only affordance in that state). -->
+    {#if !needsPick}
     <p class="lede">
       Mint a single-use account claim code, signed by this device. Share it with the person
       onboarding, or copy it.
@@ -201,7 +222,7 @@
     {#if claimErrorView}
       <ErrorState
         view={claimErrorView}
-        server={identity}
+        server={claimErrorServer ?? identity}
         retrying={claiming}
         onretry={mintClaimCode}
         onforget={forgetActive}
@@ -214,6 +235,7 @@
         <StatusChip status="info" label="confirm" />
         <span>{gateHint}</span>
       </p>
+    {/if}
     {/if}
   {/if}
 

@@ -11,14 +11,14 @@ The Brass Console (admin-companion) originally bound the device to exactly one r
 
 ## Decision
 
-**One global Secure-Enclave device key, registered independently with each relay.** The P-256 admin key is generated once per install and never leaves the Enclave. Pairing with a relay registers the same public key with that relay; each relay only ever knows "this public key is registered with me". Relays never learn about each other, and revocation is per-relay by design: revoking the credential on staging leaves production intact, and killing a lost device everywhere means revoking on each relay it was paired with.
+**One global admin device key, registered independently with each relay.** The P-256 admin key is generated once per install and never leaves the device — Secure-Enclave-backed on real iOS hardware, with a software P-256 fallback on macOS and the simulator, where no Enclave exists (see `device_key.rs`). Pairing with a relay registers the same public key with that relay; each relay only ever knows "this public key is registered with me". Relays never learn about each other, and revocation is per-relay by design: revoking the credential on staging leaves production intact, and killing a lost device everywhere means revoking on each relay it was paired with.
 
 **All pairings in one versioned JSON keychain item with a Rust-owned active pointer.** A single `kSecClassGenericPassword` item (account `admin-pairings`, service `ezpds-admin-companion`) holds `{ version, active, pairings[] }`. Entries are keyed by a locally generated UUID (relay-assigned device ids change on re-pair; URLs can repeat). Every mutation is read-modify-write of the whole document ending in one atomic keychain write, with the invariants (active always references an existing entry; auto-promote on removal only when unambiguous) enforced by a pure Rust module. Zero-argument commands like `generate_claim_code` resolve the active pairing on the Rust side, so the server identity the UI shows and the server actually acted on cannot diverge. A document that fails to parse or validate is a hard, loud error — never a silent reset, which would be indistinguishable from a successful unpair. A future format change bumps `version` and ships a deliberate migration.
 
 ## Consequences
 
 - Pairing to N relays requires zero server-side changes: every route the app calls already accepts the device signature, and each relay independently registers the key.
-- A compromise of the one device key is a compromise on every paired relay. Accepted: the key is hardware-held and non-exportable, and the response (per-relay revoke) is the same operation the app already ships.
+- A compromise of the one device key is a compromise on every paired relay. Accepted: on real devices the key is hardware-held and non-exportable (development builds on macOS/simulator use a software key), and the response (per-relay revoke) is the same operation the app already ships.
 - Whole-document rewrite per mutation is trivially cheap at the intended scale (2–5 pairings) and avoids the orphan/partial-write risk of dynamic per-pairing keychain items, which would also need raw `security_framework_sys` enumeration.
 - The legacy triple is deleted on first load with no migration: existing installs re-pair, and the stale relay-side device entry can be revoked from that relay's device list.
 

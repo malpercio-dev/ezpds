@@ -113,9 +113,10 @@ impl PairingDoc {
         Ok(())
     }
 
-    /// Remove a pairing, returning it. When the *active* entry is removed: exactly one
-    /// remaining pairing is auto-promoted (the choice is unambiguous); with two or more
-    /// remaining, `active` is cleared so the UI must ask for an explicit pick — the
+    /// Remove a pairing, returning it. A sole remaining pairing is always auto-promoted
+    /// to active (the choice is unambiguous — even when the selection was already cleared
+    /// by an earlier ambiguous removal); when the *active* entry is removed with two or
+    /// more remaining, `active` is cleared so the UI must ask for an explicit pick — the
     /// selection never silently lands on another relay.
     pub fn remove(&mut self, id: &str) -> Result<Pairing, NoSuchPairing> {
         let index = self
@@ -124,12 +125,10 @@ impl PairingDoc {
             .position(|p| p.id == id)
             .ok_or(NoSuchPairing)?;
         let removed = self.pairings.remove(index);
-        if self.active.as_deref() == Some(id) {
-            self.active = if self.pairings.len() == 1 {
-                Some(self.pairings[0].id.clone())
-            } else {
-                None
-            };
+        if self.pairings.len() == 1 {
+            self.active = Some(self.pairings[0].id.clone());
+        } else if self.active.as_deref() == Some(id) {
+            self.active = None;
         }
         Ok(removed)
     }
@@ -312,6 +311,23 @@ mod tests {
         assert_eq!(doc.pairings().len(), 2);
         assert_eq!(doc.get("id-a").unwrap().id, "id-a");
         assert_eq!(doc.get("id-b").unwrap().id, "id-b");
+    }
+
+    #[test]
+    fn removing_down_to_one_promotes_even_when_selection_was_cleared() {
+        let mut doc = PairingDoc::empty();
+        doc.append(pairing("id-a", "First", "https://relay-a.example"));
+        doc.append(pairing("id-b", "Second", "https://relay-b.example"));
+        doc.append(pairing("id-c", "Third", "https://relay-c.example"));
+
+        // Removing the active entry with two remaining clears the selection…
+        doc.remove("id-c").expect("remove");
+        assert_eq!(doc.active_id(), None);
+
+        // …but removing down to a single survivor is unambiguous and promotes it.
+        doc.remove("id-a").expect("remove");
+        assert_eq!(doc.active_id(), Some("id-b"));
+        assert_eq!(doc.pairings().len(), 1);
     }
 
     #[test]

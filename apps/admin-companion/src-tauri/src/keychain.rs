@@ -149,8 +149,11 @@ pub fn load_pairings() -> Result<PairingDoc, KeychainError> {
 
 /// Persist the whole pairing document as one keychain write. Every mutation is
 /// read-modify-write of the full document ending here, so a reader never observes a
-/// half-updated pairing list.
+/// half-updated pairing list. Validates before writing: the document's private fields
+/// make an invalid value unconstructible through its API, but the check keeps a future
+/// mutation bug from persisting a document every subsequent load would reject.
 pub fn save_pairings(doc: &PairingDoc) -> Result<(), KeychainError> {
+    doc.validate().map_err(KeychainError::CorruptPairingDoc)?;
     let bytes = serde_json::to_vec(doc).expect("PairingDoc serializes");
     store_item(PAIRINGS_ACCOUNT, &bytes)
 }
@@ -474,6 +477,29 @@ mod tests {
             }
             _ => panic!("expected CorruptPairingDoc, got {:?}", result),
         }
+    }
+
+    #[test]
+    fn save_refuses_an_invalid_document_and_writes_nothing() {
+        clear_for_test();
+        // Deserialization is the only way to hold an invariant-violating document; a
+        // future mutation bug would look the same at the save boundary.
+        let doc: crate::pairings::PairingDoc =
+            serde_json::from_str(r#"{"version":2,"pairings":[]}"#).expect("parse");
+
+        let result = save_pairings(&doc);
+        match result {
+            Err(KeychainError::CorruptPairingDoc(msg)) => {
+                assert!(
+                    msg.contains("version"),
+                    "message names the violation: {msg}"
+                );
+            }
+            _ => panic!("expected CorruptPairingDoc, got {:?}", result),
+        }
+        // Nothing was persisted — a fresh load still reports an empty document.
+        let loaded = load_pairings().expect("load after refused save");
+        assert!(loaded.pairings().is_empty(), "no document was written");
     }
 
     #[test]
