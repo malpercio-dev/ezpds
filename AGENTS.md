@@ -104,6 +104,7 @@ The two are **siblings** — shared security rigor (practice-what-you-preach, WC
 - For exhaustive label/wave scans use `linear_list_issues` with the `label` filter and `limit=50+`. `linear_search_issues` is relevance-ranked full-text search (good for keyword lookups, NOT for "list every issue in Wave N").
 - **Static plan:** [`docs/v01-issue-plan.md`](docs/v01-issue-plan.md) is the original wave breakdown (does not track live Done/Backlog state — use Linear for that). [`docs/unified-milestone-map.md`](docs/unified-milestone-map.md) is the phase model (v0.1–v2.0+).
 - Wave labels: Wave 2 (Auth), Wave 3 (Key Sovereignty), Wave 4 (Repo + Blobs), Wave 5 (Federation), Wave 7 (Hardening), Wave 8 (auth.md). Tag new issues with their wave on creation.
+- **When creating a Linear issue, always set the project to `ezpds`** (team `MM` alone is not enough — the project field is frequently missed, and wave labels don't attach the issue to the project).
 
 ## PDS Architecture
 See [`crates/pds/CLAUDE.md`](crates/pds/CLAUDE.md) for PDS-specific module structure,
