@@ -45,6 +45,21 @@ export async function keypairFromHex(privateKeyHex) {
 }
 
 /**
+ * Sign a did:plc operation (genesis or migration) with a rotation keypair.
+ *
+ * The signing primitive shared by every PLC op: DAG-CBOR encode the unsigned op,
+ * sign those bytes with the rotation key, and append the signature as base64url.
+ * Returns the signed op (all unsigned fields plus `sig`). This is the single
+ * source of truth for PLC signing — genesis and migration both consume it, so
+ * the two paths cannot silently diverge.
+ */
+export async function signPlcOp(unsignedOp, rotationKeypair) {
+  const unsignedBytes = dagCbor.encode(unsignedOp);
+  const signature = await rotationKeypair.sign(unsignedBytes);
+  return { ...unsignedOp, sig: Buffer.from(signature).toString('base64url') };
+}
+
+/**
  * Build and sign a did:plc genesis operation.
  *
  * rotationKeys[0] = the locally-held rotation key (signs this op),
@@ -71,9 +86,7 @@ export async function buildGenesisOp({ rotationKeyId, repoSigningKeyId, rotation
     },
   };
 
-  const unsignedBytes = dagCbor.encode(unsignedOp);
-  const signature = await rotationKeypair.sign(unsignedBytes);
-  const signedOp = { ...unsignedOp, sig: Buffer.from(signature).toString('base64url') };
+  const signedOp = await signPlcOp(unsignedOp, rotationKeypair);
 
   const signedBytes = dagCbor.encode(signedOp);
   const hash = crypto.createHash('sha256').update(signedBytes).digest();

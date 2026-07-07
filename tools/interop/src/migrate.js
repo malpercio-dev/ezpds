@@ -1,25 +1,13 @@
 // Outbound migration flow: self-signed PLC op + account repointing to a destination PDS.
 // Reuses account session helpers, identity/sync resolvers, and crypto primitives.
 
-import * as dagCbor from '@ipld/dag-cbor';
 import { BASE_URL, PLC_URL } from './config.js';
 import { request, xrpc, sleep } from './http.js';
 import { ensureSession } from './account.js';
-import { keypairFromHex } from './crypto.js';
+import { keypairFromHex, signPlcOp } from './crypto.js';
 import { resolveHandleViaPds, fetchPlcDocument, pdsEndpointFromDoc } from './identity.js';
 import { getRepoCar } from './sync.js';
 import { loadState, saveState, getAccount } from './state.js';
-
-/**
- * Sign a PLC operation (genesis or migration) with a rotation keypair.
- * Returns the signed op with sig appended.
- */
-async function signPlcOp(unsignedOp, rotationKeypair) {
-  const unsignedBytes = dagCbor.encode(unsignedOp);
-  const signature = await rotationKeypair.sign(unsignedBytes);
-  const signedOp = { ...unsignedOp, sig: Buffer.from(signature).toString('base64url') };
-  return signedOp;
-}
 
 /**
  * Build a migration PLC operation that repoints the DID from source to target PDS.
