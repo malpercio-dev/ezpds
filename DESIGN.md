@@ -3,6 +3,8 @@ name: Obsign
 description: A serious security instrument for holding and defending your self-sovereign identity.
 # Colors are OKLCH-canonical (impeccable's OKLCH-throughout doctrine). Stitch's linter
 # prefers hex and will warn; OKLCH is the source of truth here. Do not redefine these as hex elsewhere.
+# Values below are the LIGHT appearance (canonical). The dark-appearance counterparts live as
+# light-dark() pairs in apps/identity-wallet/src/lib/styles/tokens.css and are specified in §2.
 colors:
   # — Brand: The Seal —
   primary: "oklch(0.46 0.105 62)"        # Sealing-Wax Gold — primary actions, brand mark, the seal
@@ -135,7 +137,7 @@ This system explicitly rejects: **crypto/web3 hype** (neon, coins, gradients-to-
 **Key Characteristics:**
 - Sealing-wax gold + aubergine on pure white — authenticity, not currency.
 - A serious instrument: precision over polish, restraint over decoration.
-- Light and humane (Proton / 1Password lane), never dark-and-heavy.
+- Light and humane (Proton / 1Password lane) as the canonical appearance; follows the system into a warm "archive at night" dark appearance (§2) — humane dark, never dark-and-heavy, never dark-by-default.
 - Monospace tells the literal truth; progressive disclosure hides it until asked.
 - Status is *never* color alone — it is color + icon + label + position.
 - WCAG 2.2 AAA is the target, because a high-assurance tool owes a high-assurance interface.
@@ -171,7 +173,20 @@ Each state is a **tonal pair**: a pale surface ground plus a deep same-hue ink/i
 
 **The Authenticity-Not-Currency Rule.** Gold is always matte, dry, editorial — a wax seal. Never metallic gradients, never coin shapes, never glint. The moment gold looks like money, it has become a crypto anti-reference.
 
-**The Pure-Surface Rule.** The page is pure white (`oklch(1 0 0)`). Warmth comes from the seal and the type. Tinting the background "to feel warm" is forbidden — it's the AI-cream cliché and it muddies AAA contrast.
+**The Pure-Surface Rule.** In the light appearance the page is pure white (`oklch(1 0 0)`). Warmth comes from the seal and the type. Tinting the background "to feel warm" is forbidden — it's the AI-cream cliché and it muddies AAA contrast.
+
+### Dark appearance (system-follow)
+
+The app follows the iOS system appearance — `color-scheme: light dark`, with every color token a `light-dark()` pair in `apps/identity-wallet/src/lib/styles/tokens.css`. Dark exists for the *user*, not the brand: the alarm path — a person woken at 2 a.m. by a PLC alert, phone set to dark — must not open with a pure-white flash. The dark appearance is **the archive at night**, the same room with the lights low, not a different product:
+
+- **The Same-Seal Rule.** The wax seal is a physical object; it keeps its color at night. `primary`, `primary-deep`, `critical-solid`, `on-color`, the DID-avatar fill, and the emboss material effects are appearance-invariant.
+- **The Warm-Ground Rule.** The dark ground is the ink itself — near-black at the brand's warm hue (`oklch(0.18 0.012 60)`), never a cold blue-black. Cold-dark *is* the Ledger anti-reference; warm-dark is ours.
+- **The Inverted-Elevation Rule.** In light, raised surfaces step *darker* than the white page (parchment); in dark they step *lighter* (page `0.18` → card `0.23`, inset `0.205` between). Depth is still tonal layers + hairlines, never a shadow at rest.
+- **Status pairs invert; meaning survives.** Each tonal pair flips to a light same-hue ink on a dim same-hue ground (e.g. Alarm Red becomes `oklch(0.82 0.095 25)` on `oklch(0.26 0.055 25)`). Critical stays alarm, Expired stays ashen, and the two remain visually distinct in both appearances.
+- **Aubergine lifts to lavender-aubergine** (`oklch(0.76 0.07 330)`) so links and the 2px focus ring hold AAA on the dark ground; gold-as-text roles (`gold-ink`, `gold-soft`, `seal-glyph`) lift the same way while gold-as-fill stays put.
+- **AAA holds in both appearances.** Every text pairing is verified ≥7:1 (body and status text), ≥4.5:1 (labels), ≥3:1 (large glyphs and non-text) in dark exactly as in light. Never eyeball a dark value — verify it.
+
+Read the anti-reference precisely: "Ledger-style dark-technical heaviness" means dark **as brand register** — dark-by-default asset-vault gloom. Honoring the user's system setting with a humane warm dark is not that; shipping dark as the default would be.
 
 ## 3. Typography
 
@@ -205,6 +220,8 @@ Shadows appear only when an element genuinely floats above the page and the user
 ### Shadow Vocabulary
 - **Sheet** (`box-shadow: 0 -8px 32px oklch(0.23 0.012 60 / 0.14)`): the override/confirmation sheet rising from the bottom.
 - **Toast** (`box-shadow: 0 4px 20px oklch(0.23 0.012 60 / 0.16)`): transient status notifications.
+
+In the dark appearance both tokens deepen to true black at higher opacity (`oklch(0 0 0 / 0.55)` / `oklch(0 0 0 / 0.6)`) — an ink-tinted shadow vanishes against the night ground, and a floating surface must still read as floating.
 
 ### Named Rules
 **The Flat-At-Rest Rule.** Surfaces are flat with a hairline at rest. A shadow is a response to *floating* (modal, toast) — a state, not a decoration. If a card has a shadow just sitting there, the shadow is wrong.
@@ -280,8 +297,8 @@ a wild blob would break the precision-and-restraint register.
 
 ### Do:
 - **Do** treat gold as a wax seal — matte, dry, editorial (`oklch(0.46 0.105 62)`). Authenticity, sovereignty, an official stamp.
-- **Do** keep the page pure white (`oklch(1 0 0)`) and let the seal and type carry the brand.
-- **Do** hold WCAG 2.2 AAA — Archival Ink body on white is ~13:1; verify every text-on-color pairing.
+- **Do** keep the page pure white (`oklch(1 0 0)`) in the light appearance and let the seal and type carry the brand; in dark, the ground is the warm near-black of §2's Dark appearance.
+- **Do** hold WCAG 2.2 AAA in **both appearances** — Archival Ink body on white is ~13:1, night ink on the dark ground ~16:1; verify every text-on-color pairing, light and dark.
 - **Do** signal status with color **and** an icon **and** a text label **and** position — always all four.
 - **Do** keep Critical and Expired visually distinct: alarm-red that acts vs. ashen-slate that's closed.
 - **Do** set every DID, key, CID, and signature in JetBrains Mono — the literal truth, verifiable character by character.
@@ -294,7 +311,7 @@ a wild blob would break the precision-and-restraint register.
 - **Don't** build the **enterprise dashboard**: no dense admin panels, SaaS-cream backgrounds, or chart-soup. Reach depth by progressive disclosure, never by dumping density on screen one.
 - **Don't** go **playful / gamified**: no mascots, confetti, reward badges, streaks, or rainbow avatars. Losing an identity to an attacker is too real to gamify.
 - **Don't** ship **generic stock-iOS**: not system blue `#007aff`, not SF-only, not 12px pills on everything with no identity of its own.
-- **Don't** go **Ledger-dark**: dark-technical, asset-vault heaviness is the wrong register. This is light and humane.
+- **Don't** go **Ledger-dark**: dark-technical, asset-vault heaviness is the wrong register. This is light and humane — the dark appearance is §2's warm archive-at-night, system-follow only, never dark-by-default and never cold blue-black.
 - **Don't** signal urgency by color alone — a colorblind user under attack must never have to guess.
 - **Don't** tint the background "to feel warm" — that's the AI-cream cliché and it erodes contrast.
 - **Don't** use a `border-left`/`border-right` colored stripe on cards or alerts; use a full 1px hairline, a tonal ground, or a leading icon.

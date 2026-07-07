@@ -5,37 +5,61 @@
  * reference these custom properties via var(); never hardcode raw values.
  *
  * Colors are OKLCH — the brand's canonical color space.
+ *
+ * Two appearances, one token set: every color is a light-dark() pair that
+ * resolves against the element's color-scheme (set to `light dark` in
+ * base.css, so the app follows the iOS system setting). Light is archival
+ * paper; dark is the archive at night — the same warm ink hue carried into
+ * a near-black ground, never a cold Ledger-style blue-black. Tokens without
+ * a light-dark() pair are appearance-invariant. Every text pairing in both
+ * appearances is verified against WCAG 2.2 AAA (7:1 body/status text,
+ * 4.5:1 labels, 3:1 large glyphs & non-text); see DESIGN.md §2.
  */
 :root {
   /* ── Brand: the seal ──────────────────────────────────────────── */
+  /* The wax seal is a physical object: it keeps its color at night.  */
   --color-primary: oklch(0.46 0.105 62);      /* sealing-wax gold — primary actions, brand mark */
   --color-primary-deep: oklch(0.38 0.09 60);  /* pressed / active gold */
-  --color-accent: oklch(0.34 0.10 330);       /* aubergine — links, "reveal the machinery" affordances */
-  --color-accent-deep: oklch(0.28 0.09 330);
-  --color-seal-pale: oklch(0.92 0.055 80);    /* pale gold ground for sealed / verified marks (takes ink text) */
+  --color-accent: light-dark(oklch(0.34 0.10 330), oklch(0.76 0.07 330));       /* aubergine — links, "reveal the machinery" affordances */
+  --color-accent-deep: light-dark(oklch(0.28 0.09 330), oklch(0.68 0.08 330));
+  --color-seal-pale: light-dark(oklch(0.92 0.055 80), oklch(0.32 0.07 65));     /* gold ground for sealed / verified marks (takes ink text) */
+  --color-seal-tint: light-dark(oklch(0.98 0.01 80), oklch(0.26 0.03 70));      /* whisper of gold — pressed-state wash */
+  --color-seal-ring: light-dark(oklch(0.86 0.07 80), oklch(0.58 0.11 65));      /* gold ring around the unsealed wax stage */
+  --color-seal-glyph: light-dark(oklch(0.62 0.1 72), oklch(0.70 0.12 70));      /* the monogram before sealing (large display glyph) */
+  --color-gold-ink: light-dark(oklch(0.38 0.09 60), oklch(0.82 0.09 78));       /* gold as *text* on a sealed ground (diff restore titles) */
+  --color-gold-soft: light-dark(oklch(0.40 0.05 70), oklch(0.87 0.05 80));      /* secondary gold text on a sealed ground */
   --color-on-color: oklch(0.99 0.005 80);     /* near-white text on saturated fills */
 
-  /* ── Neutral: archival paper & ink ────────────────────────────── */
-  --color-bg: oklch(1 0 0);                   /* pure white — the seal & type carry the brand, not the surface */
-  --color-surface: oklch(0.975 0.004 75);     /* sealed parchment — cards, panels */
-  --color-surface-sunk: oklch(0.955 0.005 75);/* inset / nested panels */
-  --color-ink: oklch(0.23 0.012 60);          /* body text & headings (≈13:1 on bg, AAA) */
-  --color-ink-soft: oklch(0.31 0.012 60);     /* secondary prose that still must stay AAA (≈9:1) */
-  --color-muted: oklch(0.42 0.012 60);        /* labels & metadata; body copy uses --color-ink */
-  --color-line: oklch(0.90 0.004 75);         /* hairline borders & dividers — never a colored stripe */
+  /* ── Neutral: archival paper & ink (inverted at night) ─────────── */
+  --color-bg: light-dark(oklch(1 0 0), oklch(0.18 0.012 60));                   /* the page — pure white by day, warm near-black at night */
+  --color-surface: light-dark(oklch(0.975 0.004 75), oklch(0.23 0.012 60));     /* cards, panels — raised surfaces go *lighter* in dark */
+  --color-surface-sunk: light-dark(oklch(0.955 0.005 75), oklch(0.205 0.012 60));/* inset / nested panels */
+  --color-ink: light-dark(oklch(0.23 0.012 60), oklch(0.96 0.004 75));          /* body text & headings (≈13:1 light / ≈16:1 dark, AAA) */
+  --color-ink-soft: light-dark(oklch(0.31 0.012 60), oklch(0.85 0.006 70));     /* secondary prose that still must stay AAA */
+  --color-muted: light-dark(oklch(0.42 0.012 60), oklch(0.70 0.008 65));        /* labels & metadata; body copy uses --color-ink */
+  --color-ink-faint: light-dark(oklch(0.74 0.01 75), oklch(0.55 0.01 60));      /* non-text glyphs (chevrons); never for text */
+  --color-line: light-dark(oklch(0.90 0.004 75), oklch(0.32 0.012 60));         /* hairline borders & dividers — never a colored stripe */
+  --color-line-strong: light-dark(oklch(0.85 0.004 75), oklch(0.42 0.012 60));  /* pressed / emphasized hairline */
 
   /* ── Status (signal only — always pair color with icon + label) ─ */
-  --color-safe: oklch(0.40 0.10 150);
-  --color-safe-surface: oklch(0.95 0.045 150);
-  --color-warning: oklch(0.42 0.10 60);
-  --color-warning-surface: oklch(0.95 0.055 75);
-  --color-critical: oklch(0.44 0.16 25);
-  --color-critical-surface: oklch(0.95 0.045 25);
-  --color-critical-solid: oklch(0.52 0.20 25);/* solid alarm fill for the override CTA (takes --color-on-color) */
-  --color-expired: oklch(0.42 0.02 25);       /* deliberately ashen — distinct from critical */
-  --color-expired-surface: oklch(0.95 0.004 25);
-  --color-info: oklch(0.42 0.07 250);
-  --color-info-surface: oklch(0.95 0.03 250);
+  /* Tonal pairs invert at night: deep ink on pale ground becomes light
+     ink on a dim same-hue ground. Critical stays alarm; expired stays ashen. */
+  --color-safe: light-dark(oklch(0.40 0.10 150), oklch(0.82 0.10 150));
+  --color-safe-surface: light-dark(oklch(0.95 0.045 150), oklch(0.27 0.05 150));
+  --color-safe-soft: light-dark(oklch(0.38 0.06 150), oklch(0.78 0.07 150));    /* secondary text inside a safe context */
+  --color-safe-solid: light-dark(oklch(0.52 0.13 150), oklch(0.66 0.12 150));   /* the live-monitor pulse dot */
+  --color-warning: light-dark(oklch(0.42 0.10 60), oklch(0.84 0.095 65));
+  --color-warning-surface: light-dark(oklch(0.95 0.055 75), oklch(0.28 0.05 60));
+  --color-warning-soft: light-dark(oklch(0.42 0.08 70), oklch(0.80 0.08 55));   /* secondary text inside a warning context */
+  --color-critical: light-dark(oklch(0.44 0.16 25), oklch(0.82 0.095 25));
+  --color-critical-surface: light-dark(oklch(0.95 0.045 25), oklch(0.26 0.055 25));
+  --color-critical-soft: light-dark(oklch(0.40 0.10 25), oklch(0.78 0.08 25));  /* secondary text inside a critical context */
+  --color-critical-solid: oklch(0.52 0.20 25);      /* solid alarm fill for the override CTA (takes --color-on-color) */
+  --color-critical-solid-deep: oklch(0.39 0.17 25); /* hold-to-confirm progress fill on the alarm CTA */
+  --color-expired: light-dark(oklch(0.42 0.02 25), oklch(0.78 0.012 25));       /* deliberately ashen — distinct from critical */
+  --color-expired-surface: light-dark(oklch(0.95 0.004 25), oklch(0.25 0.004 25));
+  --color-info: light-dark(oklch(0.42 0.07 250), oklch(0.80 0.07 250));
+  --color-info-surface: light-dark(oklch(0.95 0.03 250), oklch(0.27 0.045 250));
 
   /* ── Type families ────────────────────────────────────────────── */
   --font-display: 'Libre Caslon Display', Georgia, 'Times New Roman', serif; /* the signet — display moments only */
@@ -69,9 +93,11 @@
   --radius-xl: 16px;
   --radius-full: 9999px;
 
-  /* ── Elevation (flat at rest; shadows only for floating surfaces) ─ */
-  --shadow-sheet: 0 -8px 32px oklch(0.23 0.012 60 / 0.14);
-  --shadow-toast: 0 4px 20px oklch(0.23 0.012 60 / 0.16);
+  /* ── Elevation (flat at rest; shadows only for floating surfaces) ─
+     Ink-tinted by day; true black and stronger at night, where a pale
+     shadow would vanish against the dark ground. */
+  --shadow-sheet: 0 -8px 32px light-dark(oklch(0.23 0.012 60 / 0.14), oklch(0 0 0 / 0.55));
+  --shadow-toast: 0 4px 20px light-dark(oklch(0.23 0.012 60 / 0.16), oklch(0 0 0 / 0.6));
 
   /* ── Motion (150–250ms, ease-out; state, not decoration) ──────── */
   --ease-standard: cubic-bezier(0.22, 1, 0.36, 1);

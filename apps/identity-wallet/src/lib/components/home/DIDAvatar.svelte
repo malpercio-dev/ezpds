@@ -48,6 +48,9 @@
     line-height: 1;
     flex-shrink: 0;
     user-select: none;
+    /* Emboss on the hash-hue wax fill — a material effect on the seal itself,
+       appearance-invariant like the fill (mid-lightness 0.55 holds its
+       near-white monogram in both appearances), so it stays literal. */
     box-shadow:
       inset 0 0 0 1.5px oklch(1 0 0 / 0.22),
       inset 0 -2px 5px oklch(0.2 0.05 60 / 0.18);

@@ -344,7 +344,7 @@
     color: var(--color-safe);
   }
   .monitor--safe .monitor-s {
-    color: oklch(0.38 0.06 150);
+    color: var(--color-safe-soft);
   }
   .monitor--alert {
     background: var(--color-critical-surface);
@@ -356,14 +356,14 @@
     color: var(--color-critical);
   }
   .monitor--alert .monitor-s {
-    color: oklch(0.40 0.10 25);
+    color: var(--color-critical-soft);
   }
 
   .pulse {
     width: 7px;
     height: 7px;
     border-radius: var(--radius-full);
-    background: oklch(0.52 0.13 150);
+    background: var(--color-safe-solid);
     flex-shrink: 0;
     position: relative;
   }
@@ -372,7 +372,7 @@
     position: absolute;
     inset: 0;
     border-radius: var(--radius-full);
-    background: oklch(0.52 0.13 150);
+    background: var(--color-safe-solid);
     animation: pulse 2.4s ease-out infinite;
   }
   @keyframes pulse {
@@ -410,7 +410,7 @@
   }
   .card:active {
     background: var(--color-surface);
-    border-color: oklch(0.85 0.004 75);
+    border-color: var(--color-line-strong);
   }
 
   .info {
@@ -479,7 +479,7 @@
   }
 
   .chev {
-    color: oklch(0.74 0.01 75);
+    color: var(--color-ink-faint);
     flex-shrink: 0;
   }
 
@@ -498,7 +498,7 @@
   }
   .add-card:active {
     border-color: var(--color-primary);
-    background: oklch(0.98 0.01 80);
+    background: var(--color-seal-tint);
   }
   .add-plus {
     width: 42px;
