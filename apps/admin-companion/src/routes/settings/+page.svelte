@@ -91,22 +91,23 @@
 
     const newNick = state.value.trim();
     if (newNick.length === 0) {
-      state.error = "Give this server a name — it's how you'll tell environments apart.";
+      renameStates.set(id, {
+        ...state,
+        error: "Give this server a name — it's how you'll tell environments apart.",
+      });
       return;
     }
 
-    const actionState = actionStates.get(id) || { busy: false };
-    actionState.busy = true;
-    actionStates.set(id, actionState);
+    actionStates.set(id, { busy: true });
 
     try {
-      state.error = undefined;
+      renameStates.set(id, { ...state, error: undefined });
       await renamePairing(id, newNick);
       await reloadPairings();
     } catch (e) {
-      state.error = 'Could not save the name. Try again.';
+      renameStates.set(id, { ...state, error: 'Could not save the name. Try again.' });
     } finally {
-      actionState.busy = false;
+      actionStates.set(id, { busy: false });
     }
   }
 
@@ -114,8 +115,7 @@
     const actionState = actionStates.get(id) || { busy: false };
     if (actionState.busy) return;
 
-    actionState.busy = true;
-    actionStates.set(id, actionState);
+    actionStates.set(id, { busy: true });
     gateHint = undefined;
     errorStates.set(id, undefined);
 
@@ -132,7 +132,7 @@
       errorStates.set(id, classifyRelayError(e));
       await reloadPairings();
     } finally {
-      actionState.busy = false;
+      actionStates.set(id, { busy: false });
     }
   }
 
@@ -140,8 +140,7 @@
     const actionState = actionStates.get(id) || { busy: false };
     if (actionState.busy) return;
 
-    actionState.busy = true;
-    actionStates.set(id, actionState);
+    actionStates.set(id, { busy: true });
     gateHint = undefined;
 
     try {
@@ -150,7 +149,7 @@
     } catch {
       gateHint = "Couldn't forget this server locally. Try again.";
     } finally {
-      actionState.busy = false;
+      actionStates.set(id, { busy: false });
     }
   }
 
