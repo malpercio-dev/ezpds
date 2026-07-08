@@ -99,7 +99,7 @@ expected_for() { # <workflow file> <app>...
 actual_for() { # <workflow file>
   awk '
     /^[[:space:]]*paths:[[:space:]]*$/ { inp = 1; next }
-    inp && /^[[:space:]]*#/ { next }
+    inp && /^[[:space:]]*(#|$)/ { next }
     inp && /^[[:space:]]*-[[:space:]]*"/ {
       s = $0
       sub(/^[[:space:]]*-[[:space:]]*"/, "", s)
