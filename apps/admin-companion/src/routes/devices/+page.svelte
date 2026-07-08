@@ -146,7 +146,13 @@
         {#each devicesView.devices as device (device.id)}
           {@const isCurrent = device.id === pairing.deviceId}
           <div class="device-item">
-            <button class="device-row" type="button" onclick={() => toggleExpanded(device.id)}>
+            <button
+              class="device-row"
+              type="button"
+              aria-expanded={expandedId === device.id}
+              aria-controls={`device-panel-${device.id}`}
+              onclick={() => toggleExpanded(device.id)}
+            >
               <DeviceRow
                 label={device.label}
                 deviceId={device.publicKey}
@@ -157,7 +163,7 @@
             </button>
 
             {#if expandedId === device.id}
-              <div class="device-panel">
+              <div class="device-panel" id={`device-panel-${device.id}`}>
                 <dl class="facts">
                   <dt>registration id</dt>
                   <dd>{device.id}</dd>

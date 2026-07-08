@@ -1192,6 +1192,35 @@ mod tests {
         assert_eq!(value.get("revokedAt").unwrap(), "2026-07-02 08:30:00");
     }
 
+    // Pins the wrapper envelopes around `AdminDevice` — `{"devices":[…]}` for the list
+    // and `{"device":{…}}` for the revoke response — so a relay-side wrapper-key rename
+    // breaks here, not as a runtime `BadResponse`.
+    #[test]
+    fn device_response_envelopes_deserialize() {
+        let device_json = r#"{
+            "id": "dev-1",
+            "label": "Operator iPhone",
+            "publicKey": "did:key:zDnaexample",
+            "platform": "ios",
+            "scopes": "full",
+            "status": "active",
+            "createdAt": "2026-07-01 12:00:00",
+            "lastSeenAt": "2026-07-02 08:30:00",
+            "revokedAt": null
+        }"#;
+
+        let list: ListDevicesResponseBody =
+            serde_json::from_str(&format!(r#"{{"devices":[{device_json}]}}"#))
+                .expect("list envelope deserializes");
+        assert_eq!(list.devices.len(), 1);
+        assert_eq!(list.devices[0].id, "dev-1");
+
+        let revoke: RevokeDeviceResponseBody =
+            serde_json::from_str(&format!(r#"{{"device":{device_json}}}"#))
+                .expect("revoke envelope deserializes");
+        assert_eq!(revoke.device.id, "dev-1");
+    }
+
     #[test]
     fn self_revoke_not_allowed_serializes_with_its_screaming_snake_code() {
         let value =
