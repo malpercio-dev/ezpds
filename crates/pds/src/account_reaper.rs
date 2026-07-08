@@ -133,6 +133,17 @@ mod tests {
 
         let stats = run_account_reaper(&state).await;
         assert_eq!(stats.deleted, 1);
+
+        // The pass's instruments fire: the deletion is counted and the pass is timestamped.
+        let rendered = state.metrics.render().unwrap().unwrap();
+        assert!(
+            rendered.contains("account_reaper_swept_total"),
+            "missing account_reaper_swept_total in:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("account_reaper_last_run_timestamp"),
+            "missing account_reaper_last_run_timestamp in:\n{rendered}"
+        );
         assert_eq!(stats.errors, 0);
         assert!(!account_exists(&state.db, "did:plc:reapdue").await);
     }

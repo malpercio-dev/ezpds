@@ -78,7 +78,30 @@ impl Harness {
     /// Boot a fresh server: mock plc.directory FIRST, pick a port, spawn the real binary against a
     /// temp-file SQLite DB, and await `/xrpc/_health` returning 200. Panics with a clear message on
     /// any failure — a harness that cannot start must never masquerade as a passing test.
+    ///
+    /// `free_port` releases its reservation before the child rebinds it, so a concurrent bind can
+    /// steal the port; that lost race surfaces as a health timeout. Retry the whole spawn with a
+    /// fresh port a bounded number of times so the race self-heals instead of flaking the run.
     pub async fn start() -> Self {
+        const ATTEMPTS: u32 = 3;
+        for attempt in 1..=ATTEMPTS {
+            let harness = Self::spawn_once().await;
+            match harness.wait_for_health().await {
+                Ok(()) => return harness,
+                Err(e) if attempt < ATTEMPTS => {
+                    // The failed harness's Drop kills the child before the next attempt.
+                    eprintln!(
+                        "harness start attempt {attempt} failed ({e}); retrying with a fresh port"
+                    );
+                }
+                Err(e) => panic!("pds server failed to start after {ATTEMPTS} attempts: {e}"),
+            }
+        }
+        unreachable!("the attempt loop either returns a healthy harness or panics");
+    }
+
+    /// One spawn attempt: everything in [`Harness::start`] except the health wait.
+    async fn spawn_once() -> Self {
         let plc = start_plc_mock().await;
         let plc_url = plc.uri();
 
@@ -133,31 +156,29 @@ impl Harness {
             .build()
             .expect("build reqwest client");
 
-        let harness = Harness {
+        Harness {
             child,
             base_url,
             authority,
             http,
             _temp: temp,
             _plc: plc,
-        };
-        harness.wait_for_health().await;
-        harness
+        }
     }
 
-    /// Poll `/xrpc/_health` until it returns 200 or a ~30s deadline elapses. A server that never
-    /// comes up panics rather than letting later steps fail with confusing connection errors.
-    async fn wait_for_health(&self) {
+    /// Poll `/xrpc/_health` until it returns 200 or a ~30s deadline elapses. The timeout is an
+    /// `Err` (not a panic) so [`Harness::start`] can retry a lost port race with a fresh port.
+    async fn wait_for_health(&self) -> Result<(), String> {
         let deadline = Instant::now() + Duration::from_secs(30);
         let url = format!("{}/xrpc/_health", self.base_url);
         loop {
             if let Ok(resp) = self.http.get(&url).send().await {
                 if resp.status().is_success() {
-                    return;
+                    return Ok(());
                 }
             }
             if Instant::now() >= deadline {
-                panic!("pds server did not become healthy at {url} within 30s");
+                return Err(format!("no healthy response from {url} within 30s"));
             }
             sleep(Duration::from_millis(100)).await;
         }

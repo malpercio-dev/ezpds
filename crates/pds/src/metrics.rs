@@ -161,9 +161,7 @@ impl Metrics {
                 .with_boundaries(LAG_BUCKETS_SECONDS.to_vec())
                 .build(),
             blob_gc_swept: meter.u64_counter(names::BLOB_GC_SWEPT).build(),
-            blob_gc_last_run_timestamp: meter
-                .f64_gauge(names::BLOB_GC_LAST_RUN_TIMESTAMP)
-                .build(),
+            blob_gc_last_run_timestamp: meter.f64_gauge(names::BLOB_GC_LAST_RUN_TIMESTAMP).build(),
             account_reaper_swept: meter.u64_counter(names::ACCOUNT_REAPER_SWEPT).build(),
             account_reaper_last_run_timestamp: meter
                 .f64_gauge(names::ACCOUNT_REAPER_LAST_RUN_TIMESTAMP)
@@ -289,7 +287,9 @@ mod tests {
             .firehose_events
             .add(1, &[label(names::LABEL_FRAME, "commit")]);
         metrics.proxy_upstream_lag_seconds.record(0.2, &[]);
-        metrics.blob_gc_last_run_timestamp.record(1_700_000_000.0, &[]);
+        metrics
+            .blob_gc_last_run_timestamp
+            .record(1_700_000_000.0, &[]);
 
         let rendered = metrics.render().unwrap().unwrap();
 
