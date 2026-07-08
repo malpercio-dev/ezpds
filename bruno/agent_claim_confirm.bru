@@ -1,0 +1,59 @@
+meta {
+  name: Agent Claim Confirm (auth.md POST /agent/identity/claim/confirm)
+  type: http
+  seq: 101
+}
+
+post {
+  url: {{baseUrl}}/agent/identity/claim/confirm
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+body:json {
+  {
+    "user_code": "{{userCode}}"
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # POST /agent/identity/claim/confirm
+
+  The human-in-the-loop gate of the auth.md claim ceremony (spec Step 4). The account owner —
+  authenticated with a **full-access** session/OAuth token (app-password and agent-derived tokens
+  are refused) — submits the `user_code` the agent showed them. This is the wallet-facing surface
+  (Obsign's claim-approval screen).
+
+  On success the server binds the registration to the caller's DID (for an ownerless `anonymous`
+  identity — a registration already bound at registration time may be confirmed only by that owner),
+  mints the post-claim `identity_assertion`, and flips the identity `active → claimed` so its
+  assertion can be exchanged at `POST /oauth/token` (jwt-bearer grant).
+
+  ## Response (200)
+
+  ```json
+  {
+    "registration_id": "reg_...",
+    "status": "claimed",
+    "did": "did:plc:..."
+  }
+  ```
+
+  ## Errors
+
+  - 401 (XRPC envelope): missing/invalid bearer token
+  - 401 invalid_token: the token is not full access (e.g. an app password)
+  - 403 access_denied: agent-derived token, a revoked identity, or a code bound to another account
+  - 400 invalid_request: missing `user_code`, or `registration_id` doesn't match the code
+  - 400 invalid_user_code: unknown code
+  - 400 claim_expired: the user code has expired
+  - 400 claimed_or_in_flight: the code/registration has already been claimed
+}

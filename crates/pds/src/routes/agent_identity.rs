@@ -22,11 +22,12 @@
 //     endpoint (the jwt-bearer grant requires a `claimed` identity with a bound DID).
 //
 // Claim-lifecycle interpretation (documented because auth.md leaves the exact status transitions to
-// the claim-ceremony endpoint, MM-170): an `agent_identities.status` of `active` means "registered,
+// the claim-ceremony endpoint): an `agent_identities.status` of `active` means "registered,
 // awaiting the user's claim confirmation" and `claimed` means "confirmed and bound". This handler
 // only ever *initiates* a registration (persisting the identity + a pending claim attempt and
-// returning the claim materials); the confirmation transition that flips `active → claimed` and the
-// polling exchange live in the claim-ceremony endpoint and the claim grant type respectively.
+// returning the claim materials); the confirmation transition that flips `active → claimed` lives in
+// the claim-ceremony endpoint (`routes/agent_claim.rs`), and the polling exchange in the claim grant
+// type (a separate ticket).
 
 use axum::{
     extract::State,
@@ -35,14 +36,18 @@ use axum::{
     Json,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use chrono::{Duration, SecondsFormat, Utc};
-use common::{ApiError, TrustedIssuer};
+use chrono::{Duration, Utc};
+use common::TrustedIssuer;
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::app::AppState;
+use crate::auth::agent_assertion::{
+    claim_block, mint_identity_assertion, new_claim_attempt_id, scopes_to_json, to_sqlite_datetime,
+    verification_uri, AgentAuthError,
+};
 use crate::code_gen::generate_code;
 use crate::db::accounts::resolve_by_email;
 use crate::db::agent_auth::{
@@ -101,73 +106,6 @@ struct ServiceAuthResponse {
     claim: Value,
 }
 
-/// auth.md / OAuth-style error body, distinct from the codebase's XRPC `ApiError` envelope. Carries
-/// an optional `claim` block and `claim_token` for the `interaction_required` / claim-ceremony
-/// responses.
-struct AgentAuthError {
-    status: StatusCode,
-    error: &'static str,
-    error_description: String,
-    claim: Option<Value>,
-    claim_token: Option<String>,
-}
-
-impl AgentAuthError {
-    fn new(status: StatusCode, error: &'static str, error_description: impl Into<String>) -> Self {
-        Self {
-            status,
-            error,
-            error_description: error_description.into(),
-            claim: None,
-            claim_token: None,
-        }
-    }
-
-    fn server_error() -> Self {
-        Self::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "server_error",
-            "internal server error",
-        )
-    }
-
-    /// The `interaction_required` response: 401 with a claim block the user must confirm.
-    fn interaction_required(claim: Value, claim_token: String) -> Self {
-        Self {
-            status: StatusCode::UNAUTHORIZED,
-            error: "interaction_required",
-            error_description: "user confirmation is required to bind this agent to the account"
-                .to_string(),
-            claim: Some(claim),
-            claim_token: Some(claim_token),
-        }
-    }
-}
-
-impl From<ApiError> for AgentAuthError {
-    /// DB / internal errors collapse to a 500 `server_error` — the agent-auth surface never leaks
-    /// the XRPC envelope.
-    fn from(_: ApiError) -> Self {
-        AgentAuthError::server_error()
-    }
-}
-
-impl IntoResponse for AgentAuthError {
-    fn into_response(self) -> Response {
-        let mut body = json!({
-            "error": self.error,
-            "error_description": self.error_description,
-        });
-        if let Some(claim) = self.claim {
-            body["claim"] = claim;
-        }
-        if let Some(claim_token) = self.claim_token {
-            body["claim_token"] = Value::String(claim_token);
-        }
-        (self.status, Json(body)).into_response()
-    }
-}
-
 // ── Handler ─────────────────────────────────────────────────────────────────────
 
 /// `POST /agent/identity` — dispatch on the registration `type`.
@@ -219,10 +157,12 @@ async fn handle_anonymous(state: &AppState) -> Result<Response, AgentAuthError> 
     // The pre-claim assertion's subject is the registration id — an anonymous identity has no DID to
     // name yet. It carries the pre-claim scope set and is marked `anonymous` in its claims.
     let minted = mint_identity_assertion(
-        state,
+        &state.oauth_signing_keypair,
+        &state.config.public_url,
+        state.config.agent_auth.assertion_ttl_secs,
         &registration_id,
         &registration_id,
-        RegistrationType::Anonymous,
+        RegistrationType::Anonymous.as_str(),
         pre_claim_scopes,
     )?;
 
@@ -346,7 +286,11 @@ async fn handle_service_auth(
     )
     .await?;
 
-    let claim = claim_block(&user_code, &verification_uri(state), &user_code_expiry);
+    let claim = claim_block(
+        &user_code,
+        &verification_uri(&state.config.agent_auth, &state.config.public_url),
+        &user_code_expiry,
+    );
     Ok(ok_json(&ServiceAuthResponse {
         registration_id,
         registration_type: RegistrationType::ServiceAuth.as_str(),
@@ -458,10 +402,12 @@ async fn existing_identity_assertion(
                 .as_deref()
                 .ok_or_else(AgentAuthError::server_error)?;
             let minted = mint_identity_assertion(
-                state,
+                &state.oauth_signing_keypair,
+                &state.config.public_url,
+                state.config.agent_auth.assertion_ttl_secs,
                 did,
                 &existing.id,
-                RegistrationType::IdentityAssertion,
+                RegistrationType::IdentityAssertion.as_str(),
                 &scopes,
             )?;
             set_agent_identity_assertion(
@@ -500,7 +446,11 @@ async fn existing_identity_assertion(
                 },
             )
             .await?;
-            let claim = claim_block(&user_code, &verification_uri(state), &user_code_expiry);
+            let claim = claim_block(
+                &user_code,
+                &verification_uri(&state.config.agent_auth, &state.config.public_url),
+                &user_code_expiry,
+            );
             Err(AgentAuthError::interaction_required(claim, claim_token))
         }
         AgentIdentityStatus::Revoked => Err(AgentAuthError::new(
@@ -587,7 +537,11 @@ async fn new_identity_assertion(
     )
     .await?;
 
-    let claim = claim_block(&user_code, &verification_uri(state), &user_code_expiry);
+    let claim = claim_block(
+        &user_code,
+        &verification_uri(&state.config.agent_auth, &state.config.public_url),
+        &user_code_expiry,
+    );
     Err(AgentAuthError::interaction_required(claim, claim_token))
 }
 
@@ -663,67 +617,6 @@ fn unverified_claim(jwt: &str, key: &str) -> Option<String> {
     value.get(key)?.as_str().map(str::to_string)
 }
 
-// ── Service-signed identity_assertion minting ────────────────────────────────────
-
-struct MintedAssertion {
-    jwt: String,
-    expires_sqlite: String,
-    expires_rfc3339: String,
-}
-
-/// Claims of a service-signed `identity_assertion` — the token the confirmed agent later exchanges
-/// at the token endpoint (jwt-bearer grant). Signed with the server's ES256 OAuth key.
-#[derive(Debug, Serialize)]
-struct ServiceAssertionClaims {
-    iss: String,
-    sub: String,
-    aud: String,
-    iat: u64,
-    exp: u64,
-    jti: String,
-    scope: String,
-    registration_id: String,
-    registration_type: &'static str,
-}
-
-fn mint_identity_assertion(
-    state: &AppState,
-    subject: &str,
-    registration_id: &str,
-    registration_type: RegistrationType,
-    scopes: &[String],
-) -> Result<MintedAssertion, AgentAuthError> {
-    let issued = Utc::now();
-    let expires = issued + Duration::seconds(state.config.agent_auth.assertion_ttl_secs as i64);
-    let base = state.config.public_url.trim_end_matches('/').to_string();
-
-    let claims = ServiceAssertionClaims {
-        iss: base.clone(),
-        sub: subject.to_string(),
-        aud: base,
-        iat: issued.timestamp().max(0) as u64,
-        exp: expires.timestamp().max(0) as u64,
-        jti: Uuid::new_v4().to_string(),
-        scope: scopes.join(" "),
-        registration_id: registration_id.to_string(),
-        registration_type: registration_type.as_str(),
-    };
-
-    let mut header = jsonwebtoken::Header::new(Algorithm::ES256);
-    header.kid = Some(state.oauth_signing_keypair.key_id.clone());
-    let jwt = jsonwebtoken::encode(&header, &claims, &state.oauth_signing_keypair.encoding_key)
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to sign agent identity assertion");
-            AgentAuthError::server_error()
-        })?;
-
-    Ok(MintedAssertion {
-        jwt,
-        expires_sqlite: to_sqlite_datetime(&expires),
-        expires_rfc3339: expires.to_rfc3339_opts(SecondsFormat::Millis, true),
-    })
-}
-
 // ── Small helpers ────────────────────────────────────────────────────────────────
 
 fn ok_json<T: Serialize>(body: &T) -> Response {
@@ -734,51 +627,14 @@ fn new_registration_id() -> String {
     format!("reg_{}", Uuid::new_v4().simple())
 }
 
-fn new_claim_attempt_id() -> String {
-    format!("cla_{}", Uuid::new_v4().simple())
-}
-
 /// An opaque, high-entropy claim token (`clm_` + 43-char base64url). Stored and looked up verbatim,
 /// matching the `agent_identities.claim_token` query layer.
 fn new_claim_token() -> String {
     format!("clm_{}", generate_token().plaintext)
 }
 
-/// Where the user enters the claim `user_code`. Configurable; defaults to `{public_url}/agent/claim`.
-fn verification_uri(state: &AppState) -> String {
-    state
-        .config
-        .agent_auth
-        .verification_uri
-        .clone()
-        .unwrap_or_else(|| {
-            format!(
-                "{}/agent/claim",
-                state.config.public_url.trim_end_matches('/')
-            )
-        })
-}
-
-fn claim_block(user_code: &str, verification_uri: &str, expires: &chrono::DateTime<Utc>) -> Value {
-    json!({
-        "user_code": user_code,
-        "verification_uri": verification_uri,
-        "expires_at": expires.to_rfc3339_opts(SecondsFormat::Millis, true),
-    })
-}
-
-fn scopes_to_json(scopes: &[String]) -> String {
-    serde_json::to_string(scopes).unwrap_or_else(|_| "[]".to_string())
-}
-
 fn parse_scopes(json_array: &str) -> Vec<String> {
     serde_json::from_str(json_array).unwrap_or_default()
-}
-
-/// SQLite `datetime()`-comparable timestamp (`YYYY-MM-DD HH:MM:SS`, UTC), matching the format
-/// `datetime('now')` produces so the DB layer's expiry comparisons parse it reliably.
-fn to_sqlite_datetime(dt: &chrono::DateTime<Utc>) -> String {
-    dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
 #[cfg(test)]
@@ -794,6 +650,7 @@ mod tests {
     use p256::pkcs8::spki::EncodePublicKey;
     use p256::pkcs8::EncodePrivateKey;
     use rand_core::OsRng;
+    use serde_json::json;
     use sqlx::SqlitePool;
     use tower::ServiceExt;
 

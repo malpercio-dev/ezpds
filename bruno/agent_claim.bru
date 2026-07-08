@@ -1,0 +1,59 @@
+meta {
+  name: Agent Claim Initiate (auth.md POST /agent/identity/claim)
+  type: http
+  seq: 100
+}
+
+post {
+  url: {{baseUrl}}/agent/identity/claim
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "claim_token": "{{claimToken}}"
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # POST /agent/identity/claim
+
+  Start (or resume) an auth.md claim ceremony (spec Step 4) for a registration the agent holds a
+  `claim_token` for. No auth: the `claim_token` returned by `POST /agent/identity` is the agent's
+  credential here — the *user* authorizes later at `.../claim/confirm`.
+
+  This mainly serves the `anonymous` flow, whose registration returned only a `claim_token` and no
+  `user_code`. For `service_auth` / first-seen `identity_assertion` a `user_code` was already minted
+  at registration, so re-initiating idempotently re-emits the same pending code.
+
+  ## Response (200)
+
+  ```json
+  {
+    "registration_id": "reg_...",
+    "claim_attempt_id": "cla_...",
+    "status": "initiated",
+    "expires_at": "2026-01-01T00:10:00.000Z",
+    "claim_attempt": {
+      "user_code": "AB3D9F",
+      "expires_in": 600,
+      "verification_uri": "https://.../agent/claim",
+      "interval": 5
+    }
+  }
+  ```
+
+  Show the user the `user_code` and direct them to the `verification_uri`, where they confirm.
+
+  ## Errors (OAuth-style `{ "error", "error_description" }` body)
+
+  - 400 invalid_request: missing `claim_token`
+  - 400 invalid_claim_token: unknown (or revoked) claim token
+  - 400 claim_expired: the claim token's TTL has elapsed — re-register
+  - 400 claimed_or_in_flight: this registration has already been claimed
+}
