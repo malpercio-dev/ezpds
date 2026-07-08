@@ -179,27 +179,37 @@ pub async fn refresh_session(
         ApiError::new(ErrorCode::InternalError, "failed to refresh session")
     })?;
 
-    let updated = sqlx::query("UPDATE refresh_tokens SET next_jti = ? WHERE jti = ?")
-        .bind(&new_refresh_jti)
-        .bind(&jti)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, did = %did, session_id = %session_id, jti = %jti, "failed to mark old refresh token as used");
-            ApiError::new(ErrorCode::InternalError, "failed to refresh session")
-        })?;
+    // Guard the rotation on `next_jti IS NULL` so it is a no-op if the token was already
+    // rotated. The replay check above reads `next_jti` outside this transaction, so two
+    // requests presenting the same jti can both observe it NULL; without this guard both
+    // would rotate and mint working token pairs, leaving two live refresh chains from one
+    // token with the theft never detected. With it, only one UPDATE finds the row unrotated
+    // — the loser gets 0 rows and fails closed (its freshly-inserted token is rolled back
+    // with the transaction), so one refresh token yields at most one live chain.
+    let updated =
+        sqlx::query("UPDATE refresh_tokens SET next_jti = ? WHERE jti = ? AND next_jti IS NULL")
+            .bind(&new_refresh_jti)
+            .bind(&jti)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, did = %did, session_id = %session_id, jti = %jti, "failed to mark old refresh token as used");
+                ApiError::new(ErrorCode::InternalError, "failed to refresh session")
+            })?;
 
     if updated.rows_affected() != 1 {
-        tracing::error!(
+        // 0 rows: between our read and this write the token was rotated (or deleted)
+        // concurrently. Fail closed and roll back — never commit a second rotation.
+        tracing::warn!(
             did = %did,
             session_id = %session_id,
             jti = %jti,
             rows = updated.rows_affected(),
-            "rotation UPDATE affected unexpected row count; token may have been deleted concurrently"
+            "concurrent refresh lost the rotation race; refusing to issue a second token chain"
         );
         return Err(ApiError::new(
-            ErrorCode::InternalError,
-            "failed to refresh session",
+            ErrorCode::InvalidToken,
+            "refresh token already used",
         ));
     }
 

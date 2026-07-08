@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use atrium_api::types::string::Tid;
 use atrium_repo::repo::Repository;
 use atrium_repo::Cid;
 use base64::Engine;
@@ -30,29 +31,58 @@ const BASE32_SORTABLE: &[u8; 32] = b"234567abcdefghijklmnopqrstuvwxyz";
 /// The random clock identifier provides collision resistance when multiple workers
 /// generate TIDs in the same microsecond.
 pub fn generate_tid() -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock before UNIX epoch");
-    let micros = now.as_micros() as u64;
+    encode_tid(now_tid_int())
+}
 
-    // Random 10-bit clock identifier for collision resistance.
-    // We use OsRng from rand_core which is already a dependency.
-    // The bitmask extracts the bottom 10 bits from a u32.
+/// The current time as a TID integer: microseconds since the UNIX epoch in the high bits, a
+/// random 10-bit clock identifier in the low bits (collision resistance across workers).
+fn now_tid_int() -> u64 {
     use rand_core::{OsRng, RngCore};
+    let micros = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock before UNIX epoch")
+        .as_micros() as u64;
     let clock_id: u64 = (OsRng.next_u32() & 0x3FF) as u64;
+    // 0 | micros (53 bits) | clock_id (10 bits).
+    (micros << 10) | clock_id
+}
 
-    // Compose the 64-bit integer: 0 | micros (53 bits) | clock_id (10 bits)
-    // Shift micros left by 10 bits to make room for clock_id.
-    let tid_int: u64 = (micros << 10) | clock_id;
-
-    // Encode as 13-character base32-sortable string.
+/// Encode a TID integer as a 13-character base32-sortable string (big-endian).
+fn encode_tid(mut v: u64) -> String {
     let mut chars = [0u8; 13];
     for i in (0..13).rev() {
-        let idx = (tid_int >> (i * 5)) & 0x1F;
-        chars[12 - i] = BASE32_SORTABLE[idx as usize];
+        chars[i] = BASE32_SORTABLE[(v & 0x1F) as usize];
+        v >>= 5;
     }
-
     String::from_utf8(chars.to_vec()).expect("base32 encoding is always valid ASCII")
+}
+
+/// Decode a 13-character base32-sortable TID string back to its integer value. An unknown
+/// character decodes as 0, so a malformed input only weakens the monotonicity bump below —
+/// it never panics.
+fn decode_tid(tid: &str) -> u64 {
+    let mut v = 0u64;
+    for b in tid.bytes() {
+        let idx = BASE32_SORTABLE.iter().position(|&c| c == b).unwrap_or(0) as u64;
+        v = (v << 5) | idx;
+    }
+    v
+}
+
+/// Compute the `rev` for a new commit: a fresh time-ordered TID guaranteed to be strictly
+/// greater than the previous commit's `rev`.
+///
+/// ATProto requires a repo's commit `rev`s to increase strictly — a relay drops any commit
+/// whose `rev` is ≤ the last one it saw as stale, silently desyncing the repo from the
+/// network. atrium's `CommitBuilder` derives `rev` purely from the wall clock with a zero
+/// clock id (`Tid::now(0)`), so two commits in the same microsecond collide and a backward
+/// clock step (NTP correction, VM migration) yields a *decreasing* `rev`. Bumping to
+/// `prev + 1` whenever the clock hasn't advanced past `prev` mirrors the reference PDS's
+/// monotonic-timestamp guard.
+fn next_commit_rev(prev_rev: &str) -> Result<Tid, RecordError> {
+    let next = now_tid_int().max(decode_tid(prev_rev).saturating_add(1));
+    Tid::new(encode_tid(next))
+        .map_err(|e| RecordError::Repo(format!("construct monotonic commit rev: {e}")))
 }
 
 /// Errors from record operations.
@@ -128,7 +158,9 @@ where
     for op in writes {
         let outcome = match op {
             WriteOp::Create { key, value } => {
-                if get_record_json(repo, key).await?.is_some() {
+                // Probe existence with a pure MST lookup (no record decode), matching the
+                // Update/Delete arms below.
+                if get_record_cid(repo, key).await?.is_some() {
                     return Err(RecordError::AlreadyExists(key.clone()));
                 }
                 let cid = put_record_json(repo, signer, key, value).await?;
@@ -423,11 +455,16 @@ where
     let has_more = entries.len() > limit;
     entries.truncate(limit);
 
-    // Resolve each record's value by its block CID.
+    // Resolve each record's value by its MST key. `get_raw_cid` would re-enumerate the
+    // entire MST per record (atrium walks every entry to prove the CID belongs to the
+    // repo), making a page O(limit × repo-size) — pathological on a mature repo. We
+    // already walked the tree to collect `(rkey, cid)`, so a keyed lookup (`get_raw`,
+    // one tree descent) is both membership-safe and O(log n) per record.
     let mut records = Vec::with_capacity(entries.len());
     for (rkey, cid) in entries {
+        let full_key = format!("{prefix}{rkey}");
         let value: Option<Ipld> = repo
-            .get_raw_cid(cid)
+            .get_raw(&full_key)
             .await
             .map_err(|e| RecordError::Repo(format!("read record block: {e}")))?;
         let value = value.ok_or(RecordError::NotFound)?;
@@ -576,12 +613,17 @@ where
 {
     // Choose create vs update by checking existence first — robust against atrium's
     // error message wording (which a string match would couple to).
-    let exists = repo
-        .get_raw::<serde_json::Value>(key)
-        .await
-        .map_err(|e| RecordError::Repo(format!("check record: {e}")))?
-        .is_some();
-    let (commit_builder, cid) = if exists {
+    //
+    // Probe with a pure MST lookup (key → CID), never by decoding the stored record.
+    // Decoding into a concrete type (e.g. `serde_json::Value`) fails for any record
+    // that embeds a CID link (`$link`, CBOR tag 42) or byte string (`$bytes`) —
+    // `serde_json::Value` cannot represent either — which would make every update of
+    // a profile-with-avatar or post-with-image return a spurious error.
+    let exists = get_record_cid(repo, key).await?.is_some();
+    // Capture the previous commit's rev before the builder borrows the repo mutably, so the
+    // new commit's rev can be forced strictly greater than it.
+    let prev_rev = repo.commit().rev();
+    let (mut commit_builder, cid) = if exists {
         repo.update_raw(key, data)
             .await
             .map_err(|e| RecordError::Repo(format!("update record: {e}")))?
@@ -590,6 +632,8 @@ where
             .await
             .map_err(|e| RecordError::Repo(format!("add record: {e}")))?
     };
+    // Force a strictly-increasing rev (atrium defaults it to the raw wall clock).
+    commit_builder.rev(next_commit_rev(prev_rev.as_ref())?);
 
     // Sign and finalize the commit.
     let sig = signer.sign(&commit_builder.bytes());
@@ -662,10 +706,14 @@ pub async fn delete_record<S>(
 where
     S: atrium_repo::blockstore::AsyncBlockStoreRead + atrium_repo::blockstore::AsyncBlockStoreWrite,
 {
-    let builder = repo
+    // Capture the previous commit's rev before the builder borrows the repo mutably.
+    let prev_rev = repo.commit().rev();
+    let mut builder = repo
         .delete_raw(key)
         .await
         .map_err(|e| RecordError::Repo(format!("delete record: {e}")))?;
+    // Force a strictly-increasing rev (atrium defaults it to the raw wall clock).
+    builder.rev(next_commit_rev(prev_rev.as_ref())?);
 
     let sig = signer.sign(&builder.bytes());
     builder
@@ -843,6 +891,72 @@ mod tests {
         assert_eq!(result, None);
     }
 
+    #[test]
+    fn tid_encode_decode_round_trips() {
+        for v in [
+            0u64,
+            1,
+            1023,
+            1 << 10,
+            (1_700_000_000_000_000u64 << 10) | 42,
+        ] {
+            assert_eq!(decode_tid(&encode_tid(v)), v, "round-trip failed for {v}");
+        }
+    }
+
+    /// `next_commit_rev` is strictly greater than the previous rev in every regime:
+    /// clock ahead of prev (normal), clock equal to / behind prev (same-microsecond
+    /// collision or backward clock step).
+    #[test]
+    fn next_commit_rev_is_strictly_monotonic() {
+        // Normal case: a real "now" TID; the next rev must exceed it.
+        let prev = generate_tid();
+        let next = next_commit_rev(&prev).unwrap();
+        assert!(
+            next.as_ref() > prev.as_str(),
+            "next {next:?} must exceed prev {prev}"
+        );
+
+        // Backward clock / future prev: prev is far ahead of the wall clock, so the bump path
+        // (prev + 1) must engage and still produce a strictly greater rev.
+        let future = encode_tid((4_000_000_000_000_000u64 << 10) | 1000);
+        let next = next_commit_rev(&future).unwrap();
+        assert!(
+            next.as_ref() > future.as_str(),
+            "next {next:?} must exceed a future prev {future}"
+        );
+        assert_eq!(
+            decode_tid(next.as_ref()),
+            decode_tid(&future) + 1,
+            "bump path must yield exactly prev + 1"
+        );
+    }
+
+    /// Consecutive commits (which land in the same or near-same microsecond) must carry
+    /// strictly increasing revs, or relays drop them as stale.
+    #[tokio::test]
+    async fn consecutive_commits_have_strictly_increasing_revs() {
+        let (mut repo, signer) = create_test_repo("did:plc:revmono").await;
+        let mut prev = repo.commit().rev().as_ref().to_string();
+        for i in 0..25 {
+            let key = format!("app.bsky.feed.post/rev{i}");
+            put_record_json(
+                &mut repo,
+                &signer,
+                &key,
+                &serde_json::json!({ "text": "x" }),
+            )
+            .await
+            .unwrap();
+            let rev = repo.commit().rev().as_ref().to_string();
+            assert!(
+                rev > prev,
+                "commit {i}: rev {rev} must be strictly greater than previous {prev}"
+            );
+            prev = rev;
+        }
+    }
+
     #[tokio::test]
     async fn put_then_update_record() {
         let (mut repo, signer) = create_test_repo("did:plc:update").await;
@@ -867,6 +981,49 @@ mod tests {
         // Read back — should be the updated version.
         let loaded: Option<TestRecord> = get_record(&mut repo, key).await.unwrap();
         assert_eq!(loaded, Some(record2));
+    }
+
+    /// Updating a record that embeds a blob ref (a `$link` CID) or `$bytes` must work.
+    /// This is the profile-with-avatar / post-with-image case: the existence probe in
+    /// `put_record` must not try to decode the stored record into a type that cannot
+    /// represent DAG-CBOR links or byte strings.
+    #[tokio::test]
+    async fn update_record_containing_link_and_bytes() {
+        let (mut repo, signer) = create_test_repo("did:plc:blobref").await;
+
+        let key = "app.bsky.actor.profile/self";
+        // A realistic profile: displayName + an avatar blob ref (CBOR tag-42 link).
+        let avatar_cid = "bafkreie5b5c5wxrxwqsc6xzjmkq2b6f3v6xq7q7q7q7q7q7q7q7q7q7q7q";
+        let v1 = serde_json::json!({
+            "displayName": "v1",
+            "avatar": {
+                "$type": "blob",
+                "ref": { "$link": avatar_cid },
+                "mimeType": "image/jpeg",
+                "size": 12345
+            },
+            "sig": { "$bytes": "aGVsbG8=" }
+        });
+        put_record_json(&mut repo, &signer, key, &v1).await.unwrap();
+
+        // The update must succeed — the existence probe reads the stored record.
+        let v2 = serde_json::json!({
+            "displayName": "v2",
+            "avatar": {
+                "$type": "blob",
+                "ref": { "$link": avatar_cid },
+                "mimeType": "image/jpeg",
+                "size": 12345
+            },
+            "sig": { "$bytes": "aGVsbG8=" }
+        });
+        put_record_json(&mut repo, &signer, key, &v2)
+            .await
+            .expect("updating a record with a $link/$bytes must succeed");
+
+        let loaded = get_record_json(&mut repo, key).await.unwrap().unwrap();
+        assert_eq!(loaded["displayName"], "v2");
+        assert_eq!(loaded["avatar"]["ref"]["$link"], avatar_cid);
     }
 
     #[tokio::test]
