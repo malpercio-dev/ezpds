@@ -7,8 +7,9 @@ use crate::claim::{ChangeType, ClaimResult, OpDiff, ServiceChange};
 use crate::identity_store::{IdentityStore, PerDidSignError};
 use crate::pds_client::PdsClient;
 use chrono::{DateTime, Duration, Utc};
-use crypto::{AuditEntry, DidKeyUri};
+use crypto::{AuditEntry, DidKeyUri, PlcService};
 use serde::Serialize;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Result of building a recovery override operation.
 /// Mirrors `VerifiedClaimOp` from `claim.rs` but without `warnings`.
@@ -99,32 +100,124 @@ pub(crate) fn find_fork_point(
 
 const RECOVERY_WINDOW_HOURS: i64 = 72;
 
-/// Computes the diff between the current unauthorized state and the state being
-/// restored by the recovery operation.
+/// The rotation keys and services of a single PLC operation — the two parts of
+/// the state a recovery diff compares.
+pub(crate) struct OpState {
+    pub rotation_keys: Vec<String>,
+    pub services: BTreeMap<String, PlcService>,
+}
+
+/// Reads the current (unauthorized) state from the tip of the audit log.
 ///
+/// A recovery counter-op has `prev` pointing at the fork point, so submitting it
+/// nullifies every operation after the fork — the state the user is actually
+/// living with, and the honest "before" for the diff, is the latest non-nullified
+/// entry (the tip), not just the single flagged operation.
+///
+/// This is display-only (the signed op is built independently from the fork-point
+/// state), so malformed fields degrade to empty rather than failing the recovery.
+pub(crate) fn current_state_from_audit_log(audit_log: &[AuditEntry]) -> OpState {
+    let Some(tip) = audit_log.iter().rev().find(|e| !e.nullified) else {
+        return OpState {
+            rotation_keys: vec![],
+            services: BTreeMap::new(),
+        };
+    };
+    let op = &tip.operation;
+
+    let rotation_keys = op
+        .get("rotationKeys")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let services = op
+        .get("services")
+        .cloned()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+
+    OpState {
+        rotation_keys,
+        services,
+    }
+}
+
+/// Computes a true before/after diff between the current unauthorized state and
+/// the fork-point state that the recovery operation restores.
+///
+/// The diff is expressed from the current state's perspective: a key present in
+/// the fork point but missing now is `added` (the recovery restores it), a key
+/// present now but not in the fork point is `removed` (the recovery drops the
+/// attacker's key), and a service is reported only when it is genuinely added,
+/// removed, or its endpoint changes — unchanged services are omitted.
+///
+/// `current`: the current (unauthorized) state, from the tip of the audit log
 /// `fork_point_state`: the VerifiedPlcOp at the fork point (state to restore)
 /// `fork_point_cid`: the CID of the fork point operation (becomes `prev` in counter-op)
 pub(crate) fn build_op_diff(
+    current: &OpState,
     fork_point_state: &crypto::VerifiedPlcOp,
     fork_point_cid: &str,
 ) -> OpDiff {
-    // The recovery op restores fork_point_state, so the "added" keys are those
-    // in the fork point but not in the current (unauthorized) state. Since we
-    // don't have the unauthorized state readily available as a VerifiedPlcOp,
-    // we report the full fork-point state as what's being restored.
-    OpDiff {
-        added_keys: fork_point_state.rotation_keys.clone(),
-        removed_keys: vec![],
-        changed_services: fork_point_state
-            .services
-            .iter()
-            .map(|(id, svc)| ServiceChange {
+    let current_keys: BTreeSet<&String> = current.rotation_keys.iter().collect();
+    let restored_keys: BTreeSet<&String> = fork_point_state.rotation_keys.iter().collect();
+
+    // Restored but not currently present → the recovery adds it back.
+    let added_keys = fork_point_state
+        .rotation_keys
+        .iter()
+        .filter(|k| !current_keys.contains(*k))
+        .cloned()
+        .collect();
+    // Currently present but not in the fork point → the recovery removes it.
+    let removed_keys = current
+        .rotation_keys
+        .iter()
+        .filter(|k| !restored_keys.contains(*k))
+        .cloned()
+        .collect();
+
+    // Walk the union of service IDs so we catch additions, removals, and endpoint
+    // changes; a service with an identical endpoint on both sides is unchanged and
+    // dropped from the diff.
+    let service_ids: BTreeSet<&String> = current
+        .services
+        .keys()
+        .chain(fork_point_state.services.keys())
+        .collect();
+    let changed_services = service_ids
+        .into_iter()
+        .filter_map(|id| {
+            let old = current.services.get(id).map(|s| s.endpoint.clone());
+            let new = fork_point_state
+                .services
+                .get(id)
+                .map(|s| s.endpoint.clone());
+            let change_type = match (&old, &new) {
+                (Some(o), Some(n)) if o == n => return None, // unchanged
+                (Some(_), Some(_)) => ChangeType::Modified,
+                (None, Some(_)) => ChangeType::Added,
+                (Some(_), None) => ChangeType::Removed,
+                (None, None) => return None, // unreachable: id came from a key set
+            };
+            Some(ServiceChange {
                 id: id.clone(),
-                change_type: ChangeType::Modified,
-                old_endpoint: None,
-                new_endpoint: Some(svc.endpoint.clone()),
+                change_type,
+                old_endpoint: old,
+                new_endpoint: new,
             })
-            .collect(),
+        })
+        .collect();
+
+    OpDiff {
+        added_keys,
+        removed_keys,
+        changed_services,
         prev_cid: Some(fork_point_cid.to_string()),
     }
 }
@@ -199,8 +292,11 @@ pub async fn build_recovery_override(
         find_fork_point(&audit_log, unauthorized_op_cid, &device_key_uri)?;
 
     // 5. Build the counter-operation restoring the fork-point state.
-    //    The `prev` field points to the fork point's CID.
-    let diff = build_op_diff(&fork_state, &fork_entry.cid);
+    //    The `prev` field points to the fork point's CID. Diff the current
+    //    (unauthorized) tip state against the fork-point state so the UI shows a
+    //    true before/after rather than the whole restored state as "added".
+    let current_state = current_state_from_audit_log(&audit_log);
+    let diff = build_op_diff(&current_state, &fork_state, &fork_entry.cid);
 
     // 6. Sign with the per-DID device key.
     //    On macOS/simulator: read private key bytes from Keychain, sign with P-256.
@@ -649,29 +745,57 @@ mod tests {
         assert!(matches!(result, Err(RecoveryError::SigningFailed { .. })));
     }
 
+    /// Helper: a verified genesis op used as the fork-point state in diff tests.
+    /// Genesis produces `rotationKeys = [rotation_key]` and a single `atproto_pds`
+    /// service pointing at `pds_endpoint`.
+    fn fork_point_verified(
+        rotation_key: &DidKeyUri,
+        device_key: &crypto::P256Keypair,
+        pds_endpoint: &str,
+    ) -> crypto::VerifiedPlcOp {
+        let genesis_op = crypto::build_did_plc_genesis_op(
+            rotation_key,
+            &device_key.key_id,
+            &device_key.private_key_bytes,
+            "test.bsky.social",
+            pds_endpoint,
+        )
+        .expect("build genesis op");
+        crypto::verify_plc_operation(
+            &genesis_op.signed_op_json,
+            std::slice::from_ref(&device_key.key_id),
+        )
+        .expect("verify genesis op")
+    }
+
+    fn op_state(keys: &[&str], services: &[(&str, &str)]) -> OpState {
+        OpState {
+            rotation_keys: keys.iter().map(|k| k.to_string()).collect(),
+            services: services
+                .iter()
+                .map(|(id, endpoint)| {
+                    (
+                        id.to_string(),
+                        PlcService {
+                            service_type: "AtprotoPersonalDataServer".to_string(),
+                            endpoint: endpoint.to_string(),
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
     /// build_op_diff includes fork-point CID as prev
     #[test]
     fn test_build_op_diff_includes_fork_cid() {
         let device_key = crypto::generate_p256_keypair().expect("device key gen");
         let rotation_key = crypto::generate_p256_keypair().expect("rotation key gen");
+        let verified = fork_point_verified(&rotation_key.key_id, &device_key, "https://pds.test");
 
-        let genesis_op = crypto::build_did_plc_genesis_op(
-            &rotation_key.key_id,
-            &device_key.key_id,
-            &device_key.private_key_bytes,
-            "test.bsky.social",
-            "https://pds.test",
-        )
-        .expect("build genesis op");
-
-        let verified = crypto::verify_plc_operation(
-            &genesis_op.signed_op_json,
-            std::slice::from_ref(&device_key.key_id),
-        )
-        .expect("verify genesis op");
-
-        // build_op_diff should include the fork-point CID as prev
-        let diff = build_op_diff(&verified, "bafy_genesis");
+        // Current tip is some unauthorized state; the diff's prev must be the fork CID.
+        let current = op_state(&["did:key:zAttacker"], &[]);
+        let diff = build_op_diff(&current, &verified, "bafy_genesis");
         assert_eq!(
             diff.prev_cid.as_deref(),
             Some("bafy_genesis"),
@@ -679,50 +803,172 @@ mod tests {
         );
     }
 
-    /// build_op_diff restores fork-point rotationKeys and services
+    /// A recovery that swaps the attacker's rotation key back to the legitimate set
+    /// reports the true delta: the fork-point keys added, the attacker key removed.
+    /// (A genesis op's rotationKeys are `[rotation_key, signing_key]` — two keys.)
     #[test]
-    fn test_build_op_diff_restores_keys_and_services() {
+    fn test_build_op_diff_true_key_delta() {
         let device_key = crypto::generate_p256_keypair().expect("device key gen");
         let rotation_key = crypto::generate_p256_keypair().expect("rotation key gen");
+        let verified = fork_point_verified(&rotation_key.key_id, &device_key, "https://pds.test");
 
-        let genesis_op = crypto::build_did_plc_genesis_op(
-            &rotation_key.key_id,
-            &device_key.key_id,
-            &device_key.private_key_bytes,
-            "test.bsky.social",
-            "https://pds.test",
-        )
-        .expect("build genesis op");
-
-        let verified = crypto::verify_plc_operation(
-            &genesis_op.signed_op_json,
-            std::slice::from_ref(&device_key.key_id),
-        )
-        .expect("verify genesis op");
-
-        // OpDiff should show what's being restored
-        let diff = build_op_diff(&verified, "bafy_genesis");
-
-        // Genesis has rotation_keys, so added_keys should reflect the fork-point state
-        assert!(
-            !diff.added_keys.is_empty(),
-            "Should have added_keys from fork point state"
+        // Attacker replaced the rotation key set with their own key.
+        let current = op_state(
+            &["did:key:zAttacker"],
+            &[("atproto_pds", "https://pds.test")],
         );
+        let diff = build_op_diff(&current, &verified, "bafy_genesis");
 
-        // Genesis has atproto_pds service, should be in changed_services
-        assert!(
-            !diff.changed_services.is_empty(),
-            "Should have changed_services from fork point state"
+        // added_keys: the fork-point keys being restored (not already present).
+        let mut added = diff.added_keys.clone();
+        added.sort();
+        let mut expected = vec![rotation_key.key_id.0.clone(), device_key.key_id.0.clone()];
+        expected.sort();
+        assert_eq!(
+            added, expected,
+            "added_keys should be exactly the restored fork-point keys"
         );
+        // removed_keys: the attacker key currently present but not in the fork point.
+        assert_eq!(
+            diff.removed_keys,
+            vec!["did:key:zAttacker".to_string()],
+            "removed_keys should be exactly the attacker key being dropped"
+        );
+    }
 
-        // All changes should be "Modified" since we're restoring the fork-point state
-        for svc in &diff.changed_services {
-            assert_eq!(
-                svc.change_type,
-                ChangeType::Modified,
-                "Service changes in recovery should all be Modified"
-            );
-        }
+    /// Keys already present in both current and fork-point state are NOT reported as
+    /// added or removed — only the genuine delta shows.
+    #[test]
+    fn test_build_op_diff_omits_unchanged_keys() {
+        let device_key = crypto::generate_p256_keypair().expect("device key gen");
+        let rotation_key = crypto::generate_p256_keypair().expect("rotation key gen");
+        let verified = fork_point_verified(&rotation_key.key_id, &device_key, "https://pds.test");
+
+        // Current state already contains both fork-point rotation keys plus an extra
+        // attacker key. Only the attacker key should be reported as removed.
+        let current = op_state(
+            &[
+                &rotation_key.key_id.0,
+                &device_key.key_id.0,
+                "did:key:zAttacker",
+            ],
+            &[("atproto_pds", "https://pds.test")],
+        );
+        let diff = build_op_diff(&current, &verified, "bafy_genesis");
+
+        assert!(
+            diff.added_keys.is_empty(),
+            "no keys to add when the fork-point keys are already present, got {:?}",
+            diff.added_keys
+        );
+        assert_eq!(
+            diff.removed_keys,
+            vec!["did:key:zAttacker".to_string()],
+            "only the attacker key should be removed"
+        );
+    }
+
+    /// An unchanged service endpoint is omitted, while a genuinely modified endpoint
+    /// is reported as Modified with both old and new endpoints populated.
+    #[test]
+    fn test_build_op_diff_service_changes() {
+        let device_key = crypto::generate_p256_keypair().expect("device key gen");
+        let rotation_key = crypto::generate_p256_keypair().expect("rotation key gen");
+        let verified = fork_point_verified(&rotation_key.key_id, &device_key, "https://real.pds");
+
+        // Attacker repointed the PDS service to their own endpoint.
+        let current = op_state(
+            &[&rotation_key.key_id.0],
+            &[("atproto_pds", "https://evil.pds")],
+        );
+        let diff = build_op_diff(&current, &verified, "bafy_genesis");
+
+        let svc = diff
+            .changed_services
+            .iter()
+            .find(|s| s.id == "atproto_pds")
+            .expect("atproto_pds service change present");
+        assert_eq!(svc.change_type, ChangeType::Modified);
+        assert_eq!(svc.old_endpoint.as_deref(), Some("https://evil.pds"));
+        assert_eq!(svc.new_endpoint.as_deref(), Some("https://real.pds"));
+    }
+
+    /// When current and fork-point states are identical, the diff is empty — the
+    /// recovery visibly changes nothing rather than re-listing the whole state.
+    #[test]
+    fn test_build_op_diff_identical_states_empty() {
+        let device_key = crypto::generate_p256_keypair().expect("device key gen");
+        let rotation_key = crypto::generate_p256_keypair().expect("rotation key gen");
+        let verified = fork_point_verified(&rotation_key.key_id, &device_key, "https://pds.test");
+
+        let current = op_state(
+            &[&rotation_key.key_id.0, &device_key.key_id.0],
+            &[("atproto_pds", "https://pds.test")],
+        );
+        let diff = build_op_diff(&current, &verified, "bafy_genesis");
+
+        assert!(diff.added_keys.is_empty(), "no key additions expected");
+        assert!(diff.removed_keys.is_empty(), "no key removals expected");
+        assert!(
+            diff.changed_services.is_empty(),
+            "identical service endpoints should be omitted, got {:?}",
+            diff.changed_services
+        );
+    }
+
+    /// current_state_from_audit_log reads the tip (latest non-nullified entry),
+    /// skipping any nullified tail.
+    #[test]
+    fn test_current_state_from_audit_log_reads_tip() {
+        let audit_log_json = serde_json::json!([
+            {
+                "did": "did:plc:test",
+                "cid": "bafy_genesis",
+                "createdAt": "2026-03-29T00:00:00Z",
+                "nullified": false,
+                "operation": {
+                    "type": "plc_operation",
+                    "rotationKeys": ["did:key:zLegit"],
+                    "services": { "atproto_pds": { "type": "AtprotoPersonalDataServer", "endpoint": "https://real.pds" } }
+                }
+            },
+            {
+                "did": "did:plc:test",
+                "cid": "bafy_unauth",
+                "createdAt": "2026-03-29T01:00:00Z",
+                "nullified": false,
+                "operation": {
+                    "type": "plc_operation",
+                    "rotationKeys": ["did:key:zAttacker"],
+                    "services": { "atproto_pds": { "type": "AtprotoPersonalDataServer", "endpoint": "https://evil.pds" } }
+                }
+            },
+            {
+                "did": "did:plc:test",
+                "cid": "bafy_nullified",
+                "createdAt": "2026-03-29T02:00:00Z",
+                "nullified": true,
+                "operation": {
+                    "type": "plc_operation",
+                    "rotationKeys": ["did:key:zNullified"],
+                    "services": { "atproto_pds": { "type": "AtprotoPersonalDataServer", "endpoint": "https://nullified.pds" } }
+                }
+            }
+        ]);
+        let audit_log =
+            crypto::parse_audit_log(&audit_log_json.to_string()).expect("parse audit log");
+
+        // The nullified tail must be skipped — the tip is the latest non-nullified
+        // entry, not the newest entry outright.
+        let state = current_state_from_audit_log(&audit_log);
+        assert_eq!(state.rotation_keys, vec!["did:key:zAttacker".to_string()]);
+        assert_eq!(
+            state
+                .services
+                .get("atproto_pds")
+                .map(|s| s.endpoint.as_str()),
+            Some("https://evil.pds")
+        );
     }
 
     /// build_recovery_override returns a SignedRecoveryOp that can be verified with device key.
@@ -837,6 +1083,26 @@ mod tests {
                 .contains(&rotation_key.key_id.0),
             "rotation_key should be in added_keys"
         );
+
+        // The attacker's rotation key (current tip) is dropped by the recovery, so
+        // the true diff must report it as removed — not silently omit it.
+        assert_eq!(
+            signed_recovery.diff.removed_keys,
+            vec![attacker_key.key_id.0.clone()],
+            "attacker key should be in removed_keys"
+        );
+
+        // The attacker cleared the atproto_pds service; restoring the fork point
+        // re-adds it, so the diff reports it as Added with the restored endpoint.
+        let pds_change = signed_recovery
+            .diff
+            .changed_services
+            .iter()
+            .find(|s| s.id == "atproto_pds")
+            .expect("atproto_pds service change present");
+        assert_eq!(pds_change.change_type, ChangeType::Added);
+        assert_eq!(pds_change.old_endpoint, None);
+        assert_eq!(pds_change.new_endpoint.as_deref(), Some("https://pds.test"));
 
         // Verify signed_op can be verified via crypto::verify_plc_operation with device key
         let signed_op_json =
