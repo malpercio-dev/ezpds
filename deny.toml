@@ -1,0 +1,69 @@
+# cargo-deny policy — dependency license + supply-chain gate. Run via `just deny`
+# (`cargo deny check licenses bans sources`) and wired into `just ci` / `just ci-pds`.
+#
+# Advisories are deliberately NOT checked here: `just audit` (cargo-audit, policy in
+# .cargo/audit.toml) owns the RustSec advisory scan, so cargo-deny would only double-report the
+# same CVEs. Keep the split — add advisory ignores to .cargo/audit.toml, never here.
+#
+# Every exception below (an allowed weak-copyleft/data license, a version guard-ban) MUST carry a
+# rationale comment — the same discipline .cargo/audit.toml requires for ignored advisories.
+
+[licenses]
+# Permissive + weak-copyleft/data licenses that appear across the whole-workspace dependency graph
+# (all targets, including the macOS-only Tauri/iOS stack). Most crates are dual-licensed
+# `MIT OR Apache-2.0`, so those two cover the bulk; the remaining ids are needed because some
+# crates use AND-expressions where every conjunct must be allowed (e.g. ring's
+# `ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND ... AND MIT-0`).
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "Unlicense",
+    "Unicode-3.0",
+    "BSL-1.0",
+    "CC0-1.0",
+    # MPL-2.0 (file-level copyleft) and CDLA-Permissive-2.0 (a permissive data license) impose no
+    # obligation on code that merely links the crate as a dependency — both are standard-accepted
+    # across the Rust ecosystem.
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+]
+# The workspace crates (`publish = false`) carry no license field; skip them rather than flag.
+private = { ignore = true }
+# Don't fail on an allow-list entry that happens not to match any crate: over-inclusion is
+# harmless (a license we'd accept anyway), while a MISSING id still fails, so the gate keeps its
+# teeth without churning every time a transitive dep drops out.
+unused-allowed-license = "allow"
+
+[bans]
+# The full graph carries unavoidable duplicate majors from transitive deps we don't control (the
+# Tauri/iOS stack especially), and the deployed PDS is built from the Dockerfile (`cargo build
+# -p pds`), not this whole graph — so a global duplicate-version DENY would be pure noise. Instead
+# we GUARD the specific crates the workspace deliberately unifies on a single major (tracked in
+# root Cargo.toml comments): if a forbidden major reappears, the gate fails and forces a deliberate
+# decision rather than a silent dual-major compile.
+multiple-versions = "allow"
+wildcards = "allow"
+deny = [
+    # tower-http: root Cargo.toml pins 0.6 (not 0.7) to avoid reintroducing a dual-major compile
+    # of tower-http via the tauri stack.
+    { name = "tower-http", version = ">=0.7" },
+    # reqwest: opentelemetry 0.32 unified the tree on reqwest 0.13; the older 0.12 was dropped.
+    { name = "reqwest", version = "<0.13" },
+    # tonic: unified on 0.14 alongside opentelemetry 0.32; the older 0.12 was dropped.
+    { name = "tonic", version = "<0.14" },
+]
+
+[sources]
+# A dependency must come from crates.io or an explicitly-allowed source. Fail on any unknown
+# registry or git remote so a dep can't quietly start pulling from an arbitrary host. The only
+# non-registry source in this workspace is the in-repo swift-rs [patch], which is a path override
+# (not a registry/git source) and so needs no allowance here.
+unknown-registry = "deny"
+unknown-git = "deny"

@@ -3,6 +3,9 @@
   packages = [
     pkgs.just
     pkgs.cargo-audit
+    # cargo-deny: dependency license + supply-chain gate (`just deny`, policy in deny.toml).
+    # Complements cargo-audit (advisories) — CI runs both, so the dev shell provides both.
+    pkgs.cargo-deny
     # jq: used by just recipes (verify-release-tag, the ios-ipa/admin-ipa build-number
     # stamp). CI runners preinstall it; the dev shell must provide it too.
     pkgs.jq

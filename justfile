@@ -29,6 +29,12 @@ docker-build:
 audit:
     cargo audit
 
+# Dependency license + supply-chain gate (cargo-deny; policy in deny.toml). Checks the license
+# allowlist, the duplicate-major version guard-bans, and crate sources. Advisories are NOT checked
+# here — `just audit` (cargo-audit) owns the RustSec scan, so we don't double-report the same CVEs.
+deny:
+    cargo deny check licenses bans sources
+
 # Verify Cargo.lock is in sync with the Cargo.toml manifests. `--locked` makes cargo
 # error instead of silently regenerating the lockfile, so accidental dependency drift
 # (an edited manifest with a stale lock) fails CI instead of being merged. `metadata`
@@ -92,7 +98,7 @@ interop *args:
     tools/interop/bin/interop {{args}}
 
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
-ci: fmt-check lock-check bruno-check font-check cap-check ios-paths-check swift-rs-check ios-template-check clippy test audit
+ci: fmt-check lock-check bruno-check font-check cap-check ios-paths-check swift-rs-check ios-template-check clippy test audit deny
 
 # CI gate for the Linux pds pipeline (GitHub Actions, .github/workflows/ci.yml). Excludes the
 # iOS apps (identity-wallet, admin-companion), which need the Apple toolchain (security-framework)
@@ -108,6 +114,7 @@ ci-pds: fmt-check
     cargo clippy --workspace --exclude identity-wallet --exclude admin-companion --all-targets -- -D warnings
     cargo test --workspace --exclude identity-wallet --exclude admin-companion
     just audit
+    just deny
 
 # Validate that the flake evaluates correctly (devShells + nixosModules).
 nix-check:
