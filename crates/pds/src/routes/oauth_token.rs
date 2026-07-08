@@ -169,7 +169,7 @@ async fn cleanup_expired_state(state: &AppState) {
     state
         .poll_tracker
         .lock()
-        .await
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .retain(|_, last| last.elapsed() < poll_window);
     cleanup_expired_auth_codes(&state.db)
         .await
@@ -799,7 +799,12 @@ async fn handle_claim_polling(state: &AppState, form: TokenRequestForm) -> Respo
     // makes progress while one that keeps hammering keeps getting `slow_down`.
     let poll_key = sha256_hex(claim_token.as_bytes());
     {
-        let mut tracker = state.poll_tracker.lock().await;
+        // A poisoned throttle map is non-fatal (it holds only advisory `Instant` marks), so recover
+        // the guard rather than failing token issuance.
+        let mut tracker = state
+            .poll_tracker
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(last) = tracker.get(&poll_key) {
             if last.elapsed() < Duration::from_secs(POLL_INTERVAL_SECS) {
                 return OAuthTokenError::new(
@@ -835,35 +840,56 @@ async fn handle_claim_polling(state: &AppState, form: TokenRequestForm) -> Respo
         AgentIdentityStatus::Claimed => claim_success(state, &identity),
         // Still awaiting the human confirmation gate — or the window has since lapsed.
         AgentIdentityStatus::Active => {
-            // The claim token's own pre-claim TTL: once it lapses the ceremony can't complete.
-            let claim_token_expired = identity
+            let attempt = match latest_agent_claim_attempt_for_identity(&state.db, &identity.id)
+                .await
+            {
+                Ok(attempt) => attempt,
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to load claim attempt for polling");
+                    return OAuthTokenError::new("server_error", "database error").into_response();
+                }
+            };
+
+            // A pending, unexpired `user_code` — or a ceremony not yet started — is unambiguously
+            // in-flight: confirm consumes the attempt atomically with the claim, so a still-pending
+            // (or absent) attempt means the identity cannot have flipped to `claimed`. Keep polling.
+            let claim_token_live = identity
                 .claim_token_expires_at
                 .as_deref()
-                .map(|exp| parse_sqlite_datetime(exp) <= chrono::Utc::now())
-                .unwrap_or(false);
-            if claim_token_expired {
-                return OAuthTokenError::new("expired_token", "the claim token has expired")
-                    .into_response();
-            }
-
-            match latest_agent_claim_attempt_for_identity(&state.db, &identity.id).await {
-                // A live user_code is still awaiting confirmation.
-                Ok(Some(attempt)) if attempt.is_pending() => OAuthTokenError::new(
+                .map(|exp| parse_sqlite_datetime(exp) > chrono::Utc::now())
+                .unwrap_or(true);
+            let in_flight = attempt.as_ref().map(|a| a.is_pending()).unwrap_or(true);
+            if claim_token_live && in_flight {
+                return OAuthTokenError::new(
                     "authorization_pending",
                     "the claim has not been confirmed yet",
                 )
-                .into_response(),
-                // The latest attempt exists but is no longer pending → the user_code window closed.
-                Ok(Some(_)) => OAuthTokenError::new("expired_token", "the user code has expired")
-                    .into_response(),
-                // No ceremony started yet (the agent hasn't called /agent/identity/claim): wait.
-                Ok(None) => OAuthTokenError::new(
-                    "authorization_pending",
-                    "the claim ceremony has not started yet",
-                )
-                .into_response(),
+                .into_response();
+            }
+
+            // The window looks lapsed — but the owner may have *just* confirmed, flipping the
+            // identity `active → claimed` between our two non-atomic reads (the single-connection
+            // pool releases the connection between the identity and attempt lookups). `claimed` is
+            // terminal/monotonic, so a re-read of the authoritative status resolves a race with
+            // confirm to success rather than a false `expired_token`.
+            match get_agent_identity(&state.db, &identity.id).await {
+                Ok(Some(fresh)) => match fresh.status {
+                    AgentIdentityStatus::Claimed => claim_success(state, &fresh),
+                    AgentIdentityStatus::Revoked => {
+                        OAuthTokenError::new("access_denied", "the agent identity has been revoked")
+                            .into_response()
+                    }
+                    AgentIdentityStatus::Active => {
+                        OAuthTokenError::new("expired_token", "the claim window has expired")
+                            .into_response()
+                    }
+                },
+                Ok(None) => {
+                    tracing::error!(registration_id = %identity.id, "agent identity vanished during claim polling");
+                    OAuthTokenError::new("server_error", "database error").into_response()
+                }
                 Err(e) => {
-                    tracing::error!(error = %e, "failed to load claim attempt for polling");
+                    tracing::error!(error = %e, "failed to re-read agent identity for claim polling");
                     OAuthTokenError::new("server_error", "database error").into_response()
                 }
             }

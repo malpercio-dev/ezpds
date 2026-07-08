@@ -10,7 +10,7 @@
 // (Imperative Shell), hence the Mixed pattern.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use axum::{
@@ -23,7 +23,6 @@ use common::{AgentAuthConfig, ApiError};
 use jsonwebtoken::Algorithm;
 use serde::Serialize;
 use serde_json::{json, Value};
-use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::auth::OAuthSigningKey;
@@ -41,6 +40,9 @@ pub(crate) const POLL_INTERVAL_SECS: u64 = 5;
 /// `Instant` of that agent's last *accepted* poll; a poll within [`POLL_INTERVAL_SECS`] of it is
 /// refused with `slow_down`. Ephemeral by design — a claim ceremony is short-lived, so a reset on
 /// process restart at most grants one extra fast poll, which is harmless.
+///
+/// A synchronous `std::sync::Mutex` (matching `AppState.failed_login_attempts`): every critical
+/// section is a plain `get`/`insert`/`retain` with no `.await` held across the guard.
 pub type ClaimPollTracker = Arc<Mutex<HashMap<String, Instant>>>;
 
 /// Create an empty [`ClaimPollTracker`].
