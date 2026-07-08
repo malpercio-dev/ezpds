@@ -333,13 +333,14 @@ async fn confirm(
         None => Some(user.did.as_str()),
     };
 
-    // Mint the post-claim assertion bound to the owner DID (always the authenticated caller here),
-    // carrying the operator's current full granted-scope profile. `intersect(granted, granted)`
-    // yields the canonical/sorted set, matching the `identity_assertion` mint path.
-    let scopes = intersect_scope_tokens(
-        &state.config.agent_auth.granted_scopes,
-        &state.config.agent_auth.granted_scopes,
-    );
+    // The post-claim assertion carries the operator's current full granted-scope profile. Normalize
+    // it into a deterministic, deduplicated set so this mint matches the `identity_assertion` mint
+    // path byte-for-byte: `intersect_scope_tokens(xs, xs)` is the crate's canonicalizer — it returns
+    // the tokens of `xs` sorted and deduped (a self-intersection, since every token is in both
+    // operands). There is no separate infallible canonicalizer helper; `canonicalize_agent_scopes`
+    // is the fallible startup validator, not this hot path.
+    let granted = &state.config.agent_auth.granted_scopes;
+    let scopes = intersect_scope_tokens(granted, granted);
     let minted = mint_identity_assertion(
         &state.oauth_signing_keypair,
         &state.config.public_url,

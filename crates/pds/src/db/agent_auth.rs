@@ -377,6 +377,11 @@ where
 /// `COALESCE(NULL, did)` leaves the existing owner untouched. The `status = 'active'` guard makes the
 /// claim idempotent-safe: a concurrent or repeat confirmation of an already-`claimed`/`revoked`
 /// identity affects no rows and returns `false`.
+///
+/// The `(? IS NULL OR did IS NULL)` guard is defense in depth: a DID can be *bound* only when the
+/// row is currently ownerless, so even a future caller that mistakenly passed `Some(did)` for an
+/// already-owned registration could never hijack its owner (the UPDATE would simply match no rows).
+/// Scope/assertion fields still update in the `bind_did = None` (already-owned) path.
 pub(crate) async fn claim_agent_identity<'e, E>(
     executor: E,
     id: &str,
@@ -396,13 +401,14 @@ where
              identity_assertion = ?, \
              assertion_expires_at = ?, \
              updated_at = datetime('now') \
-         WHERE id = ? AND status = 'active'",
+         WHERE id = ? AND status = 'active' AND (? IS NULL OR did IS NULL)",
     )
     .bind(bind_did)
     .bind(scopes)
     .bind(identity_assertion)
     .bind(assertion_expires_at)
     .bind(id)
+    .bind(bind_did)
     .execute(executor)
     .await
     .map_err(|e| {
@@ -891,5 +897,39 @@ mod tests {
             .unwrap();
         assert_eq!(row.did.as_deref(), Some(did));
         assert_eq!(row.status, AgentIdentityStatus::Claimed);
+    }
+
+    #[tokio::test]
+    async fn claim_cannot_overwrite_an_existing_owner() {
+        // Defense in depth: even a (mis)call that passes `Some(other_did)` for an already-owned
+        // active registration must not rebind it — the SQL guard matches no rows.
+        let pool = test_pool().await;
+        let owner = "did:plc:agentauthclaim3333333";
+        let intruder = "did:plc:agentauthclaim4444444";
+        insert_account(&pool, owner).await;
+        insert_account(&pool, intruder).await;
+
+        insert_agent_identity(&pool, &new_identity("reg_owned", owner))
+            .await
+            .unwrap();
+
+        assert!(!claim_agent_identity(
+            &pool,
+            "reg_owned",
+            Some(intruder),
+            r#"["atproto"]"#,
+            "hijack.jwt",
+            "2099-06-01T00:00:00Z",
+        )
+        .await
+        .unwrap());
+
+        // Owner and status are untouched.
+        let row = get_agent_identity(&pool, "reg_owned")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.did.as_deref(), Some(owner));
+        assert_eq!(row.status, AgentIdentityStatus::Active);
     }
 }
