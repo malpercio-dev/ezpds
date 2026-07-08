@@ -398,6 +398,14 @@ a dedicated helper called by the handler — not inside `db/` functions. `db/` f
 accept `&SqlitePool` or `&mut SqliteTransaction`; they never open transactions themselves
 unless the operation is inherently single-table.
 
+**Authentication must never be cookie-based; permissive CORS on the public surface depends on it.**
+`app.rs` applies `CorsLayer::permissive()` to the public surface (landing, `.well-known`, OAuth,
+agent registration, all XRPC, static assets) but deliberately **not** to the admin/provisioning
+`/v1/*` surface (same-origin only). Permissive CORS is safe only because every auth path is
+Bearer/DPoP/signed-request — never an ambient cookie — so a hostile origin cannot ride a logged-in
+user's credentials. If any future auth mechanism becomes cookie-based, the permissive CORS layer
+must be tightened (explicit origin allowlist + credentials handling) in the same change.
+
 ## Adding a New Route
 
 1. Create `src/routes/<name>.rs` with `// pattern: Imperative Shell` at the top.

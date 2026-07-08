@@ -243,12 +243,40 @@ pub struct AppState {
     pub metrics: Arc<crate::metrics::Metrics>,
 }
 
+/// Apply the middleware every route group shares, in the order axum layers them (outermost →
+/// inner): Trace, then HTTP metrics, then rate limiting. Applied to each group *before* that
+/// group's own (optional) CORS layer, so CORS — where present — stays the outermost layer:
+/// preflight `OPTIONS` are answered before throttling, and a 429 still carries the CORS headers a
+/// cross-origin client needs to read it. Trace stays outside the rate limiter so throttled
+/// requests are still traced; the metrics counter sits outside the rate limiter so a 429 still
+/// lands in `http_requests_total`, but inside CORS so short-circuited preflights don't pollute the
+/// series. `from_fn_with_state` needs its own state clone.
+fn apply_shared_layers(router: Router<AppState>, state: &AppState) -> Router<AppState> {
+    router
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::rate_limit::rate_limit_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::metrics::http_metrics_middleware,
+        ))
+        .layer(TraceLayer::new_for_http().make_span_with(OtelMakeSpan))
+}
+
 /// Build the Axum router with middleware and routes.
 ///
 /// Keeping router construction separate from `main` makes it testable without a real TCP
 /// listener — callers can use `tower::ServiceExt::oneshot` to drive requests in tests.
+///
+/// The router is split into two groups that differ only in CORS: the **public** surface
+/// (landing, `.well-known`, OAuth, agent registration, all XRPC, static assets) gets
+/// `CorsLayer::permissive()` because it has legitimate cross-origin callers; the **admin +
+/// provisioning** surface (`/v1/*`, including `/v1/admin/*`) gets no CORS layer at all, since it is
+/// only ever called same-origin by first-party native/mobile clients and operators. Both groups
+/// share the trace/metrics/rate-limit stack.
 pub fn app(state: AppState) -> Router {
-    let router = Router::new()
+    let public = Router::new()
         .route("/", get(landing))
         .route("/auth.md", get(serve_auth_md))
         .route("/.well-known/atproto-did", get(atproto_did_handler))
@@ -463,6 +491,18 @@ pub fn app(state: AppState) -> Router {
             post(put_preferences_handler),
         )
         .route("/xrpc/{method}", get(xrpc_handler).post(xrpc_handler))
+        .route("/static/{*path}", get(static_handler));
+    // Permissive CORS wraps only the public surface, applied *after* the shared layers so it stays
+    // the outermost layer (see `apply_shared_layers`). This is safe ONLY because authentication is
+    // never cookie-based (all Bearer/DPoP/signed-request), so a permissive policy cannot be abused
+    // to ride ambient cookie credentials — see the invariant in crates/pds/CLAUDE.md.
+    let public = apply_shared_layers(public, &state).layer(CorsLayer::permissive());
+
+    // Admin (`/v1/admin/*`) and provisioning (`/v1/*`) routes have no cross-origin use case — they
+    // are called same-origin by first-party native/mobile clients and operators, never a browser
+    // on another origin — so they get NO CORS layer, narrowing the browser-reachable surface. They
+    // still share the same trace/metrics/rate-limit stack as the public group.
+    let internal = Router::new()
         .route("/v1/accounts", post(create_account))
         .route("/v1/accounts/claim-codes", post(claim_codes))
         .route("/v1/accounts/mobile", post(create_mobile_account))
@@ -488,26 +528,10 @@ pub fn app(state: AppState) -> Router {
             "/v1/pds/keys",
             get(get_pds_signing_key).post(create_signing_key),
         )
-        .route("/v1/repo-signing-key", get(get_repo_signing_key))
-        .route("/static/{*path}", get(static_handler))
-        // Layer order matters (axum applies the *last* `.layer` outermost). We want, outermost →
-        // inner: CORS, then Trace, then HTTP metrics, then rate limiting. CORS must wrap the rate
-        // limiter so preflight `OPTIONS` are answered (and short-circuited) before any throttling,
-        // and so a 429 still carries the CORS headers a cross-origin client needs to read it.
-        // Trace stays outside the rate limiter so throttled requests are still traced. The metrics
-        // counter sits outside the rate limiter so a 429 still lands in `http_requests_total`, but
-        // inside CORS so short-circuited preflights don't pollute the series. `from_fn_with_state`
-        // needs its own state clone (`with_state` below consumes the original).
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            crate::rate_limit::rate_limit_middleware,
-        ))
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            crate::metrics::http_metrics_middleware,
-        ))
-        .layer(TraceLayer::new_for_http().make_span_with(OtelMakeSpan))
-        .layer(CorsLayer::permissive());
+        .route("/v1/repo-signing-key", get(get_repo_signing_key));
+    let internal = apply_shared_layers(internal, &state);
+
+    let router = public.merge(internal);
 
     // Registered *after* the layer stack, so the scrape endpoint sits outside permissive
     // CORS, tracing, and rate-limit accounting (`Router::layer` only wraps routes added
@@ -871,6 +895,50 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    }
+
+    #[tokio::test]
+    async fn cors_is_scoped_to_public_surface_only() {
+        // Permissive CORS covers the public XRPC/OAuth surface but not the admin/provisioning
+        // (`/v1/*`) surface, which has no cross-origin use case.
+        let router = app(test_state().await);
+
+        // Preflight against a public XRPC route → answered with Access-Control-Allow-Origin.
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/xrpc/com.atproto.server.describeServer")
+                    .header("origin", "https://example.com")
+                    .header("access-control-request-method", "GET")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            resp.headers().contains_key("access-control-allow-origin"),
+            "public XRPC surface must answer a CORS preflight with Access-Control-Allow-Origin"
+        );
+
+        // The same preflight against an admin route → no CORS header (same-origin only).
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/v1/admin/devices")
+                    .header("origin", "https://example.com")
+                    .header("access-control-request-method", "POST")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            !resp.headers().contains_key("access-control-allow-origin"),
+            "admin/provisioning surface must not emit Access-Control-Allow-Origin"
+        );
     }
 
     #[tokio::test]
