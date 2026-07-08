@@ -473,9 +473,12 @@ mod tests {
         let dpop = make_dpop_proof(&key, "POST", REVOKE_HTU, Some(&nonce), now_secs());
 
         // A well-formed base64url token that was never issued — non-disclosure means 200.
+        // Encoded from readable bytes at runtime so no opaque high-entropy literal (which a
+        // secret scanner flags) sits in the source.
+        let unknown_token = URL_SAFE_NO_PAD.encode(b"never-issued-refresh-token-value");
         let resp = app(state)
             .oneshot(post_revoke_with_dpop(
-                "token=dGhpcy10b2tlbi13YXMtbmV2ZXItaXNzdWVkLTEyMzQ1Ng",
+                &format!("token={unknown_token}"),
                 &dpop,
             ))
             .await
