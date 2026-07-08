@@ -368,6 +368,50 @@ where
     Ok(result.rows_affected() == 1)
 }
 
+/// Atomically claim an `active` agent identity: bind an owning DID (for a previously ownerless
+/// `anonymous` registration), store the freshly minted post-claim assertion and its granted scopes,
+/// and flip the status to `claimed` — all in one single-table UPDATE.
+///
+/// `bind_did` is `Some(did)` only for the `anonymous` flow (whose `did` was NULL); pass `None` for a
+/// registration already bound at registration time (`service_auth` / `identity_assertion`), where
+/// `COALESCE(NULL, did)` leaves the existing owner untouched. The `status = 'active'` guard makes the
+/// claim idempotent-safe: a concurrent or repeat confirmation of an already-`claimed`/`revoked`
+/// identity affects no rows and returns `false`.
+pub(crate) async fn claim_agent_identity<'e, E>(
+    executor: E,
+    id: &str,
+    bind_did: Option<&str>,
+    scopes: &str,
+    identity_assertion: &str,
+    assertion_expires_at: &str,
+) -> Result<bool, ApiError>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let result = sqlx::query(
+        "UPDATE agent_identities \
+         SET status = 'claimed', \
+             did = COALESCE(?, did), \
+             scopes = ?, \
+             identity_assertion = ?, \
+             assertion_expires_at = ?, \
+             updated_at = datetime('now') \
+         WHERE id = ? AND status = 'active'",
+    )
+    .bind(bind_did)
+    .bind(scopes)
+    .bind(identity_assertion)
+    .bind(assertion_expires_at)
+    .bind(id)
+    .execute(executor)
+    .await
+    .map_err(|e| {
+        tracing::error!(identity_id = %id, error = %e, "DB error claiming agent identity");
+        ApiError::new(ErrorCode::InternalError, "failed to claim agent identity")
+    })?;
+    Ok(result.rows_affected() == 1)
+}
+
 /// Insert a new claim ceremony attempt.
 pub(crate) async fn insert_agent_claim_attempt<'e, E>(
     executor: E,
@@ -763,5 +807,89 @@ mod tests {
             .unwrap();
         assert_eq!(attempt.status, ClaimAttemptStatus::Expired);
         assert!(attempt.is_expired);
+    }
+
+    #[tokio::test]
+    async fn claim_binds_owner_upgrades_assertion_and_flips_status() {
+        let pool = test_pool().await;
+        let did = "did:plc:agentauthclaim1111111";
+        insert_account(&pool, did).await;
+
+        // An ownerless (anonymous) registration: did NULL, active, narrow pre-claim scopes.
+        let anon = NewAgentIdentity {
+            did: None,
+            scopes: r#"["blob:*/*"]"#,
+            pre_claim_scopes: Some(r#"["blob:*/*"]"#),
+            identity_assertion: Some("pre.claim.jwt"),
+            ..new_identity("reg_claimbind", "unused")
+        };
+        insert_agent_identity(&pool, &anon).await.unwrap();
+
+        // The claim binds the owner, upgrades scopes + assertion, and flips to claimed.
+        assert!(claim_agent_identity(
+            &pool,
+            "reg_claimbind",
+            Some(did),
+            r#"["atproto","repo:*?action=create&action=update","blob:*/*"]"#,
+            "post.claim.jwt",
+            "2099-03-01T00:00:00Z",
+        )
+        .await
+        .unwrap());
+
+        let row = get_agent_identity(&pool, "reg_claimbind")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.did.as_deref(), Some(did));
+        assert_eq!(row.status, AgentIdentityStatus::Claimed);
+        assert_eq!(row.identity_assertion.as_deref(), Some("post.claim.jwt"));
+        assert_eq!(
+            row.scopes,
+            r#"["atproto","repo:*?action=create&action=update","blob:*/*"]"#
+        );
+
+        // Re-claiming an already-claimed identity is a no-op (status guard) → affects no rows.
+        assert!(!claim_agent_identity(
+            &pool,
+            "reg_claimbind",
+            Some(did),
+            r#"["atproto"]"#,
+            "other.jwt",
+            "2099-04-01T00:00:00Z",
+        )
+        .await
+        .unwrap());
+    }
+
+    #[tokio::test]
+    async fn claim_with_no_bind_did_preserves_prebound_owner() {
+        let pool = test_pool().await;
+        let did = "did:plc:agentauthclaim2222222";
+        insert_account(&pool, did).await;
+
+        // A service_auth-style registration already bound to an owner at registration time.
+        insert_agent_identity(&pool, &new_identity("reg_prebound", did))
+            .await
+            .unwrap();
+
+        // Claiming with no bind_did: COALESCE(NULL, did) keeps the existing owner.
+        assert!(claim_agent_identity(
+            &pool,
+            "reg_prebound",
+            None,
+            r#"["atproto"]"#,
+            "bound.jwt",
+            "2099-05-01T00:00:00Z",
+        )
+        .await
+        .unwrap());
+
+        let row = get_agent_identity(&pool, "reg_prebound")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.did.as_deref(), Some(did));
+        assert_eq!(row.status, AgentIdentityStatus::Claimed);
     }
 }

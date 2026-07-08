@@ -90,11 +90,13 @@ at the agent-registration surface:
 
 > **Not everything advertised is live yet.** This metadata declares the full
 > auth.md surface for forward compatibility, but on this deployment the
-> `claim_endpoint` and the `urn:workos:agent-auth:grant-type:claim` grant (§3.4)
-> and the `events_endpoint` revocation channel (§7) are **not yet implemented**.
-> The sections cross-referenced here give the working alternative for each. The
-> live path is: register (§3) → exchange the assertion with the JWT-bearer grant
-> (§4) → call the API (§5).
+> machine-pollable `urn:workos:agent-auth:grant-type:claim` grant (§3.4) and the
+> `events_endpoint` revocation channel (§7) are **not yet implemented**. The
+> `claim_endpoint` — the claim ceremony itself — *is* live. The sections
+> cross-referenced here give the working alternative for each not-yet-live
+> mechanism. The live path is: register (§3) → complete the claim ceremony if one
+> is required (§3.4) → exchange the assertion with the JWT-bearer grant (§4) →
+> call the API (§5).
 
 ## 2. Pick a method
 
@@ -221,23 +223,56 @@ This flow is **opt-in per operator**; when disabled it answers `anonymous_not_en
 The pre-claim identity stays unclaimed until a user completes a claim ceremony that
 binds it to their account, so its assertion **cannot yet be exchanged** at the token
 endpoint (the JWT-bearer grant requires a claimed identity — §4). Hold the
-`claim_token` for the claim ceremony (§3.4), which is not yet live on this deployment.
+`claim_token` and start the claim ceremony at the `claim_endpoint` (§3.4).
 
 ### 3.4 The claim ceremony
 
-Both first-seen `identity_assertion` and `service_auth` return a **claim block**:
-a `user_code`, a human-facing `verification_uri`, and an `expires_at`. Show the user
-the `user_code` and direct them to the `verification_uri`; there they confirm that
-this agent may act for them. Confirmation binds the registration to the account.
+A first-seen `identity_assertion` and `service_auth` return a **claim block** at
+registration (a `user_code`, a human-facing `verification_uri`, and an `expires_at`);
+`anonymous` returns only a `claim_token`. Either way the ceremony has two steps.
 
-> **Polling — read this.** The auth.md spec defines a machine-pollable claim grant
-> (`urn:workos:agent-auth:grant-type:claim`) and a `claim_endpoint`, both advertised
-> in the discovery metadata. **They are not yet implemented on this deployment.**
-> Until they are, complete the ceremony out of band: after the user confirms, an
-> `identity_assertion` agent obtains its credential by simply **re-issuing the same
-> `POST /agent/identity` request** — once the binding is confirmed the server returns
-> the minted `identity_assertion` (the 200 shape in §3.1) instead of
-> `interaction_required`. Back off between attempts and give up at the claim's
+**Start the ceremony** at the `claim_endpoint`. This is required for `anonymous`
+(which has no `user_code` yet) and idempotent for the others (it re-emits the pending
+`user_code` they already hold):
+
+```http
+POST {{public_url}}/agent/identity/claim
+Content-Type: application/json
+
+{ "claim_token": "clm_…" }
+```
+
+**200:**
+
+```json
+{
+  "registration_id": "reg_…",
+  "claim_attempt_id": "cla_…",
+  "status": "initiated",
+  "expires_at": "2026-01-01T00:10:00.000Z",
+  "claim_attempt": {
+    "user_code": "AB3D9F",
+    "expires_in": 600,
+    "verification_uri": "{{public_url}}/agent/claim",
+    "interval": 5
+  }
+}
+```
+
+**The user confirms.** Show the user the `user_code` and direct them to the
+`verification_uri`. There they confirm — with their own account credentials — that
+this agent may act for them. Confirmation binds the registration to their account and
+mints the agent's `identity_assertion`.
+
+> **Polling is not live yet.** The auth.md spec defines a machine-pollable claim
+> grant (`urn:workos:agent-auth:grant-type:claim`) so an agent can learn the moment
+> the user confirms and collect its credential. **That grant is not yet implemented
+> on this deployment.** In the meantime an `identity_assertion` agent can collect its
+> credential out of band — re-issue the same `POST /agent/identity` request and, once
+> the binding is confirmed, the server returns the minted `identity_assertion` (the
+> 200 shape in §3.1) instead of `interaction_required`. A `service_auth` or
+> `anonymous` agent has no out-of-band collection path yet and must wait for the
+> polling grant. Back off (honour the `interval`) and give up at the claim's
 > `expires_at`.
 
 ## 4. Exchange the assertion for an access token
