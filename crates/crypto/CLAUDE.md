@@ -213,7 +213,8 @@ pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<Aud
 
 - **did:key**: P-256 multicodec varint `[0x80, 0x24]` + compressed point, multibase base58btc encoded
 - **Encryption**: `base64(nonce(12) || ciphertext(32) || tag(16))` = 80 base64 chars; fresh nonce per call
-- **did:plc genesis op sig**: base64url (no padding) decoding to exactly 64 bytes (r‖s, big-endian, low-S canonical)
+- **did:plc genesis op sig**: base64url (no padding) decoding to exactly 64 bytes (r‖s, big-endian, low-S canonical). `build_did_plc_genesis_op` low-S normalizes its own signature; external-signer callbacks must return low-S themselves.
+- **Low-S enforced on verify**: every verification path (`verify_genesis_op`, `verify_plc_operation`, `verify_p256_signature`) rejects non-canonical high-S signatures, matching `@atproto/crypto`/plc.directory strict verification. Because DIDs/CIDs are derived from the *signed* CBOR, accepting a malleated high-S twin would let one signature yield a second valid op with a different DID/CID.
 
 ## Dependencies
 - **Uses**: p256 (ECDSA/key generation), aes-gcm (AES-256-GCM), multibase (base58btc encoding), rand_core (OS RNG), base64 (storage encoding), zeroize (secret cleanup), ciborium (CBOR serialization for did:plc), data-encoding (base32-lowercase), sha2 (SHA-256), serde/serde_json (struct serialization)
