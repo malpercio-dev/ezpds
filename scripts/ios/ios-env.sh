@@ -4,12 +4,14 @@
 #
 # This is the SINGLE shared implementation; each app keeps a thin sourcing wrapper at
 # apps/<app>/scripts/ios-env.sh because devenv.nix, the just recipes, and the Xcode
-# "Build Rust Code" Run Script (Patch C) all source that per-app path.
+# "Build Rust Code" Run Script (via the scripts/ios/project.yml template) all
+# source that per-app path.
 #
 # Sourced by:
 #   1. devenv.nix `enterShell` (CLI `cargo tauri ios dev`/`build`), and
-#   2. the Xcode "Build Rust Code" Run Script phase (patched by ios-postinit.sh) —
-#      that phase does NOT inherit the calling shell's environment.
+#   2. the Xcode "Build Rust Code" Run Script phase (rendered from the
+#      scripts/ios/project.yml template) — that phase does NOT inherit the
+#      calling shell's environment.
 #
 # Everything is resolved via `xcrun`/`xcode-select`, so the build follows whatever
 # Xcode `xcode-select` points at (survives Xcode moves, updates, beta switches).

@@ -1,0 +1,238 @@
+# ezpds-ios-template — shared custom XcodeGen project template for BOTH iOS apps
+# (identity-wallet, admin-companion), wired via `bundle > iOS > template` in each
+# app's tauri.conf.json. `cargo tauri ios init` renders this Handlebars template
+# into gen/apple/project.yml on EVERY init (unconditionally, unlike the other
+# generated files, which are only created when missing), then runs
+# `xcodegen generate` to rebuild project.pbxproj from it. That makes this file —
+# not the gitignored generated project — the durable home of the Xcode-project
+# workarounds that ios-postinit.sh used to re-apply by regex-patching the pbxproj
+# (see docs/ios-upstream-bugs.md for each workaround's upstream bug).
+#
+# upstream-version: tauri-cli 2.11.4
+# Forked from crates/tauri-cli/templates/mobile/ios/project.yml at that tag; the
+# pristine copy is committed next to this file as upstream-project.yml so the fork
+# can be diffed against it. When bumping the tauri-cli pin (the `cargo binstall
+# tauri-cli --version` lines in .github/workflows/*.yml), refresh
+# upstream-project.yml from the new tag, re-merge upstream's changes into this
+# fork, and bump the upstream-version line above — scripts/ios-template-check.sh
+# (part of `just ci` / `ci-pds`) fails until the versions are back in lockstep.
+#
+# ezpds changes vs upstream (each marked with an `ezpds:` comment inline):
+#   1. Externals gets `buildPhase: none` — keeps libapp.a out of Copy Bundle
+#      Resources (App Store rejects a raw staticlib in the .app; tauri#13578).
+#   2. Target settings force ENABLE_USER_SCRIPT_SANDBOXING off (macOS 26 blocks
+#      Cargo's readdir under the Run Script sandbox), allow the spurious
+#      "entitlements modified during build" (per-build pbxproj restamp race), and
+#      link the Apple frameworks the Rust staticlib needs via OTHER_LDFLAGS
+#      (rendered from `bundle > iOS > frameworks` in tauri.conf.json — rustc's
+#      #[link(kind="framework")] directives are invisible to Xcode when the crate
+#      is linked as a staticlib).
+#   3. The "Build Rust Code" phase re-creates the dev environment before invoking
+#      the Tauri CLI — Xcode runs it in a clean shell that inherits neither the
+#      devenv PATH nor the Apple-toolchain overrides from ios-env.sh.
+name: {{app.name}}
+options:
+  bundleIdPrefix: {{app.identifier}}
+  deploymentTarget:
+    iOS: {{apple.ios-version}}
+fileGroups: [{{join file-groups}}]
+configs:
+  debug: debug
+  release: release
+settingGroups:
+  app:
+    base:
+      PRODUCT_NAME: {{app.stylized-name}}
+      PRODUCT_BUNDLE_IDENTIFIER: {{app.identifier}}
+      {{#if apple.development-team}}
+      DEVELOPMENT_TEAM: {{apple.development-team}}
+      {{/if}}
+targetTemplates:
+  app:
+    type: application
+    sources:
+      - path: Sources
+    scheme:
+      environmentVariables:
+        RUST_BACKTRACE: full
+        RUST_LOG: info
+    settings:
+      groups: [app]
+targets:
+  {{app.name}}_iOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Assets.xcassets
+      # ezpds: no buildPhase for Externals — XcodeGen otherwise infers `resources`
+      # and copies the raw libapp.a into the .app, which App Store upload rejects
+      # ("Invalid bundle structure", tauri#13578). The staticlib is still LINKED
+      # via the `framework: libapp.a` dependency + LIBRARY_SEARCH_PATHS below.
+      - path: Externals
+        buildPhase: none
+      - path: {{app.name}}_iOS
+      - path: {{app.asset-dir}}
+        buildPhase: resources
+        type: folder
+      {{~#each asset-catalogs}}
+      - {{prefix-path this}}{{/each}}
+      {{~#each ios-additional-targets}}
+      - path: {{prefix-path this}}{{/each}}
+      - path: LaunchScreen.storyboard
+    info:
+      path: {{app.name}}_iOS/Info.plist
+      properties:
+        LSRequiresIPhoneOS: true
+        UILaunchStoryboardName: LaunchScreen
+        UIRequiredDeviceCapabilities: [arm64, metal]
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        CFBundleShortVersionString: {{apple.bundle-version-short}}
+        CFBundleVersion: "{{apple.bundle-version}}"
+        {{~#each apple.plist-pairs}}
+        {{this.key}}: {{this.value}}{{/each}}
+    entitlements:
+      path: {{app.name}}_iOS/{{app.name}}_iOS.entitlements
+    scheme:
+      environmentVariables:
+        RUST_BACKTRACE: full
+        RUST_LOG: info
+      {{~#if ios-command-line-arguments}}
+      commandLineArguments:
+      {{~#each ios-command-line-arguments}}
+        "{{this}}": true
+      {{/each}}{{~/if}}
+    settings:
+      base:
+        ENABLE_BITCODE: false
+        ARCHS: [{{join ios-valid-archs}}]
+        VALID_ARCHS: {{~#each ios-valid-archs}} {{this}} {{/each}}
+        LIBRARY_SEARCH_PATHS[arch=x86_64]: $(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)
+        LIBRARY_SEARCH_PATHS[arch=arm64]: $(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)
+        ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: true
+        EXCLUDED_ARCHS[sdk=iphoneos*]: x86_64
+        # ezpds: macOS 26's Run Script sandbox blocks Cargo's readdir during
+        # package fingerprinting (docs/ios-upstream-bugs.md Bug 2). Quoted so
+        # every YAML parser reads the same string (bare NO is a YAML 1.1 bool).
+        ENABLE_USER_SCRIPT_SANDBOXING: "NO"
+        # ezpds: `cargo tauri ios build` restamps the pbxproj on every run, which
+        # makes Xcode's incremental packaging intermittently flag the (empty,
+        # never-actually-modified) entitlements file as "modified during the
+        # build" (docs/ios-upstream-bugs.md Bug 3).
+        CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: "YES"
+        # ezpds: link the Apple frameworks the Rust staticlib's dependencies
+        # reference (from `bundle > iOS > frameworks` in tauri.conf.json). The
+        # same list also renders `- sdk:` dependencies below (upstream behavior);
+        # the explicit OTHER_LDFLAGS is belt-and-braces for staticlib symbol
+        # resolution — duplicate -framework flags are harmless to the linker.
+        OTHER_LDFLAGS: $(inherited){{#each ios-frameworks}} -framework {{this}}{{/each}}
+      groups: [app]
+    dependencies:
+      - framework: {{ lib-output-file-name }}
+        embed: false
+      {{~#each ios-libraries}}
+      - framework: {{this}}
+        embed: false{{/each}}{{#if ios-vendor-frameworks}}{{~#each ios-vendor-frameworks}}
+      - framework: {{this}}{{/each}}{{/if}}{{#if ios-vendor-sdks}}{{~#each ios-vendor-sdks}}
+      - sdk: {{prefix-path this}}{{/each}}{{/if}}
+      - sdk: CoreGraphics.framework
+      - sdk: Metal.framework
+      - sdk: MetalKit.framework
+      - sdk: QuartzCore.framework
+      - sdk: Security.framework
+      - sdk: UIKit.framework{{#if this.ios-frameworks}}{{~#each ios-frameworks}}
+      - sdk: {{this}}.framework{{/each}}{{/if}}
+      - sdk: WebKit.framework
+    preBuildScripts:
+      {{~#each ios-pre-build-scripts}}{{#if this.path}}
+      - path {{this.path}}{{/if}}{{#if this.script}}
+      - script: {{this.script}}{{/if}}{{#if this.name}}
+        name: {{this.name}}{{/if}}{{#if this.input-files}}
+        inputFiles: {{~#each this.input-files}}
+          - {{this}}{{/each}}{{/if}}{{#if this.output-files}}
+        outputFiles: {{~#each this.output-files}}
+          - {{this}}{{/each}}{{/if}}{{#if this.input-file-lists}}
+        inputFileLists: {{~#each this.output-files}}
+          - {{this}}{{/each}}{{/if}}{{#if this.output-file-lists}}
+        outputFileLists: {{~#each this.output-files}}
+          - {{this}}{{/each}}{{/if}}{{#if this.shell}}
+        shell: {{this.shell}}{{/if}}{{#if this.show-env-vars}}
+        showEnvVars: {{this.show_env_vars}}{{/if}}{{#if this.run-only-when-installing}}
+        runOnlyWhenInstalling: {{this.run-only-when-installing}}{{/if}}{{#if this.based-on-dependency-analysis}}
+        basedOnDependencyAnalysis: {{this.based-on-dependency-analysis}}{{/if}}{{#if this.discovered-dependency-file}}
+        discoveredDependencyFile: {{this.discovered-dependency-file}}{{/if}}
+      {{~/each}}
+
+      # ezpds: Xcode runs this phase in a clean shell that inherits neither the
+      # devenv PATH (cargo, cargo-tauri, node, pnpm) nor the Apple-toolchain
+      # overrides — re-create both before invoking the Tauri CLI. Paths are
+      # derived from $SRCROOT (= apps/<app>/src-tauri/gen/apple), never baked in,
+      # so the same committed template works on every machine and on CI.
+      - script: |
+          # >>> ezpds-ios-env >>>
+          export EZPDS_IOS_BUILD=1
+          if [ -d "$SRCROOT/../../../../../.devenv/profile/bin" ]; then
+            PATH="$SRCROOT/../../../../../.devenv/profile/bin:$PATH"
+          fi
+          PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+          export PATH
+          if [ -f "$SRCROOT/../../../scripts/ios-env.sh" ]; then
+            . "$SRCROOT/../../../scripts/ios-env.sh"
+          fi
+          # <<< ezpds-ios-env <<<
+          {{ tauri-binary }} {{ tauri-binary-args-str }} -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths "${FRAMEWORK_SEARCH_PATHS:?}" --header-search-paths "${HEADER_SEARCH_PATHS:?}" --gcc-preprocessor-definitions "${GCC_PREPROCESSOR_DEFINITIONS:-}" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}
+        name: Build Rust Code
+        basedOnDependencyAnalysis: false
+        outputFiles:
+          - $(SRCROOT)/Externals/x86_64/${CONFIGURATION}/{{ lib-output-file-name }}
+          - $(SRCROOT)/Externals/arm64/${CONFIGURATION}/{{ lib-output-file-name }}
+    {{~#if ios-post-compile-scripts}}
+    postCompileScripts:
+      {{~#each ios-post-compile-scripts}}{{#if this.path}}
+      - path {{this.path}}{{/if}}{{#if this.script}}
+      - script: {{this.script}}{{/if}}{{#if this.name}}
+        name: {{this.name}}{{/if}}{{#if this.input-files}}
+        inputFiles: {{~#each this.input-files}}
+          - {{this}}{{/each}}{{/if}}{{#if this.output-files}}
+        outputFiles: {{~#each this.output-files}}
+          - {{this}}{{/each}}{{/if}}{{#if this.input-file-lists}}
+        inputFileLists: {{~#each this.output-files}}
+          - {{this}}{{/each}}{{/if}}{{#if this.output-file-lists}}
+        outputFileLists: {{~#each this.output-files}}
+          - {{this}}{{/each}}{{/if}}{{#if this.shell}}
+        shell: {{this.shell}}{{/if}}{{#if this.show-env-vars}}
+        showEnvVars: {{this.show_env_vars}}{{/if}}{{#if this.run-only-when-installing}}
+        runOnlyWhenInstalling: {{this.run-only-when-installing}}{{/if}}{{#if this.based-on-dependency-analysis}}
+        basedOnDependencyAnalysis: {{this.based-on-dependency-analysis}}{{/if}}{{#if this.discovered-dependency-file}}
+        discoveredDependencyFile: {{this.discovered-dependency-file}}{{/if}}
+      {{~/each~}}
+    {{~/if~}}
+    {{~#if ios-post-build-scripts}}
+    postBuildScripts:
+      {{~#each ios-post-build-scripts}}{{#if this.path}}
+      - path {{this.path}}{{/if}}{{#if this.script}}
+      - script: {{this.script}}{{/if}}{{#if this.name}}
+        name: {{this.name}}{{/if}}{{#if this.input-files}}
+        inputFiles: {{~#each this.input-files}}
+          - {{this}}{{/each}}{{/if}}{{#if this.output-files}}
+        outputFiles: {{~#each this.output-files}}
+          - {{this}}{{/each}}{{/if}}{{#if this.input-file-lists}}
+        inputFileLists: {{~#each this.output-files}}
+          - {{this}}{{/each}}{{/if}}{{#if this.output-file-lists}}
+        outputFileLists: {{~#each this.output-files}}
+          - {{this}}{{/each}}{{/if}}{{#if this.shell}}
+        shell: {{this.shell}}{{/if}}{{#if this.show-env-vars}}
+        showEnvVars: {{this.show_env_vars}}{{/if}}{{#if this.run-only-when-installing}}
+        runOnlyWhenInstalling: {{this.run-only-when-installing}}{{/if}}{{#if this.based-on-dependency-analysis}}
+        basedOnDependencyAnalysis: {{this.based-on-dependency-analysis}}{{/if}}{{#if this.discovered-dependency-file}}
+        discoveredDependencyFile: {{this.discovered-dependency-file}}{{/if}}
+      {{~/each~}}
+    {{~/if}}

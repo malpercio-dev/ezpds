@@ -3,11 +3,12 @@ name: iOS · PR check
 # PR-time validation for the two Tauri iOS apps. The TestFlight lanes
 # (ios-testflight.yml, admin-testflight.yml) run only on push to main — they hold
 # signing secrets and must never run for pull_request — so without this workflow every
-# iOS breakage (a tauri-cli template drift defeating a postinit patch, a Rust compile
-# error on aarch64-apple-ios, a broken frontend) is discovered post-merge, inside a
-# signed release build. This lane needs NO secrets: it regenerates the Xcode project,
-# re-applies the postinit patches (each fails loudly on template drift), and
-# cross-compiles the app staticlib for the iOS device target, and runs the app's Rust
+# iOS breakage (a tauri-cli change defeating the custom project template, a Rust
+# compile error on aarch64-apple-ios, a broken frontend) is discovered post-merge,
+# inside a signed release build. This lane needs NO secrets: it regenerates the Xcode
+# project from the committed template (scripts/ios/project.yml, via bundle > iOS >
+# template), runs postinit + ios-check (which fail loudly if the template did not
+# apply), cross-compiles the app staticlib for the iOS device target, and runs the app's Rust
 # unit tests on the macOS host target (the only CI lane that can compile these crates —
 # the Linux ci-pds gate excludes them) — everything short of xcodebuild
 # archiving/signing. It also runs the frontend type-check and unit tests, which the
@@ -165,14 +166,17 @@ jobs:
           chmod +x "$RUNNER_TEMP/arm64-shims/brew"
           echo "$RUNNER_TEMP/arm64-shims" >> "$GITHUB_PATH"
 
-      # gen/apple is gitignored — regenerate it, then re-apply the postinit patches.
-      # This is the actual patch-seam gate: postinit fails loudly if the generated
-      # template no longer matches what a patch expects.
+      # gen/apple is gitignored — regenerate it. `cargo tauri ios init` renders the
+      # committed scripts/ios/project.yml template into gen/apple/project.yml (the
+      # `template` path in tauri.conf.json is cwd-relative, hence working-directory).
+      # Postinit then checks the swift-rs fork, installs the app icon, and runs the
+      # full ios-check — the template-seam gate: it fails loudly if the rendered
+      # project is missing any workaround.
       - name: Generate the Xcode project
         working-directory: apps/${{ matrix.app }}
         run: cargo tauri ios init
 
-      - name: Re-apply postinit patches
+      - name: Finish + verify the generated project (postinit)
         run: just ${{ matrix.recipe }}-postinit
 
       - name: Build frontend + cross-compile staticlib (aarch64-apple-ios)

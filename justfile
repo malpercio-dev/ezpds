@@ -73,6 +73,14 @@ ios-paths-check:
 swift-rs-check:
     scripts/swift-rs-patch-check.sh
 
+# Verify the forked XcodeGen iOS project template (scripts/ios/project.yml, wired via
+# bundle > iOS > template in both apps' tauri.conf.json) is in lockstep with the
+# tauri-cli version the workflows pin, still carries every required workaround, and is
+# still referenced by both apps. Runs on Linux — greps only; the macOS-side
+# `just ios-check`/`admin-check` verifies the same invariants in the GENERATED project.
+ios-template-check:
+    scripts/ios-template-check.sh
+
 # Install dependencies for the interop CLI (tools/interop) — one-time setup.
 interop-setup:
     cd tools/interop && pnpm install
@@ -84,7 +92,7 @@ interop *args:
     tools/interop/bin/interop {{args}}
 
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
-ci: fmt-check lock-check bruno-check font-check cap-check ios-paths-check swift-rs-check clippy test audit
+ci: fmt-check lock-check bruno-check font-check cap-check ios-paths-check swift-rs-check ios-template-check clippy test audit
 
 # CI gate for the Linux pds pipeline (GitHub Actions, .github/workflows/ci.yml). Excludes the
 # iOS apps (identity-wallet, admin-companion), which need the Apple toolchain (security-framework)
@@ -96,6 +104,7 @@ ci-pds: fmt-check
     just cap-check
     just ios-paths-check
     just swift-rs-check
+    just ios-template-check
     cargo clippy --workspace --exclude identity-wallet --exclude admin-companion --all-targets -- -D warnings
     cargo test --workspace --exclude identity-wallet --exclude admin-companion
     just audit
@@ -263,12 +272,15 @@ verify-release-tag:
 
 # --- iOS (identity-wallet) — run from repo root; requires macOS + Xcode ---
 
-# Re-apply the surviving Tauri/macOS patches to the generated Xcode project.
-# Run once after every `cargo tauri ios init`. Idempotent.
+# Finish setting up the generated Xcode project (swift-rs fork check + app icon), then
+# verify it. The Xcode-project workarounds themselves come from the committed template
+# scripts/ios/project.yml, rendered on every `cargo tauri ios init`. Run once after
+# every init. Idempotent.
 ios-postinit:
     apps/identity-wallet/scripts/ios-postinit.sh
 
-# Fail if the generated Xcode project is missing any required patch.
+# Fail if the generated Xcode project is missing any required workaround (i.e. the
+# scripts/ios/project.yml template did not apply, or gen/apple predates it).
 ios-check:
     apps/identity-wallet/scripts/ios-check.sh
 
@@ -293,8 +305,8 @@ ios-build: ios-check
 # time), cross-compiles the app's staticlib for the iOS device target, then runs the
 # app's Rust unit tests on the macOS host target (the only CI lane that can compile
 # this crate — the Linux ci-pds gate excludes it). Via the ios-check dependency this
-# exercises the whole Apple/Rust seam a PR can break: the tauri-cli template +
-# postinit patches, the swift-rs fork (vendored plugin Swift compilation), and the
+# exercises the whole Apple/Rust seam a PR can break: the scripts/ios/project.yml
+# template rendering, the swift-rs fork (vendored plugin Swift compilation), and the
 # shared workspace crates on aarch64-apple-ios. The host test run deliberately does
 # NOT set EZPDS_IOS_BUILD (that would clobber CC/AR with iOS toolchain overrides).
 # Assumes the Xcode project exists: run `cargo tauri ios init` + `just ios-postinit` first.
@@ -380,12 +392,14 @@ ios-release: ios-ipa ios-upload
 # The operator console, a second iOS app. Same toolchain seam as identity-wallet;
 # the scripts are path-relative so they patch this app's own generated Xcode project.
 
-# Re-apply the surviving Tauri/macOS patches to admin-companion's generated Xcode
-# project. Run once after every `cargo tauri ios init`. Idempotent.
+# Finish setting up admin-companion's generated Xcode project (swift-rs fork check +
+# app icon), then verify it — the workarounds come from the scripts/ios/project.yml
+# template. Run once after every `cargo tauri ios init`. Idempotent.
 admin-postinit:
     apps/admin-companion/scripts/ios-postinit.sh
 
-# Fail if admin-companion's generated Xcode project is missing any required patch.
+# Fail if admin-companion's generated Xcode project is missing any required workaround
+# (i.e. the scripts/ios/project.yml template did not apply, or gen/apple predates it).
 admin-check:
     apps/admin-companion/scripts/ios-check.sh
 

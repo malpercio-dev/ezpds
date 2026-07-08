@@ -4,8 +4,16 @@ These are macOS/Xcode bugs (not Nix-specific) that the identity-wallet iOS build
 works around locally. They are **not yet filed upstream** — file/PR them when
 convenient, then delete the corresponding workaround and the references below.
 
-Last updated: 2026-06-21. Environment where observed: macOS 26 (Tahoe), Xcode
+Last updated: 2026-07-08. Environment where observed: macOS 26 (Tahoe), Xcode
 (latest stable at time of writing), Tauri v2, swift-rs 1.0.7.
+
+Since 2026-07: Bugs 2 and 3 are worked around **declaratively** in the committed
+XcodeGen template `scripts/ios/project.yml` (rendered into `gen/apple/project.yml`
+on every `cargo tauri ios init` via `bundle > iOS > template` in each app's
+tauri.conf.json) rather than by regex-patching the generated pbxproj. Known
+related upstream issues: the env/PATH gap the template's Build Rust Code preamble
+covers is tauri#10672 / tauri#11899 (open); the libapp.a bundle-structure fix
+carried in the same template is tauri#13578 (open).
 
 ---
 
@@ -48,17 +56,19 @@ Caused by: Failed to update the excludes stack to see if a path is excluded
 `ENABLE_USER_SCRIPT_SANDBOXING = YES` (Xcode 14+ default). On macOS 26 the Run
 Script sandbox blocks Cargo's `readdir()` during package fingerprinting.
 
-**Workaround (in this repo):** `apps/identity-wallet/scripts/ios-postinit.sh` sets
-`ENABLE_USER_SCRIPT_SANDBOXING = NO` in the generated `project.pbxproj` (re-applied
-after every `cargo tauri ios init`).
+**Workaround (in this repo):** the committed XcodeGen template
+`scripts/ios/project.yml` sets `ENABLE_USER_SCRIPT_SANDBOXING: NO` in the target's
+build settings; `cargo tauri ios init` renders it into `gen/apple/project.yml` and
+xcodegen writes the setting into the generated pbxproj. `just ios-check` verifies
+the setting landed.
 
-**Reproduction:** `cargo tauri ios init` then build WITHOUT running
-`just ios-postinit` → fails with the symptom above.
+**Reproduction:** remove the `ENABLE_USER_SCRIPT_SANDBOXING: NO` line from the
+template, `cargo tauri ios init`, build → fails with the symptom above.
 
 **Upstream:** Tauri / cargo-tauri (https://github.com/tauri-apps/tauri). File:
 generated iOS projects should set `ENABLE_USER_SCRIPT_SANDBOXING = NO` (or declare
-the Cargo dirs as script inputs). **Remove the postinit sandbox patch when fixed
-upstream.**
+the Cargo dirs as script inputs). **Remove the template's
+`ENABLE_USER_SCRIPT_SANDBOXING: NO` setting when fixed upstream.**
 
 ---
 
@@ -79,17 +89,17 @@ the build" — even though it is an empty `<dict/>` that is **provably never mod
 (stamp it with an old mtime and it stays byte-identical through a failing build). It is
 intermittent (~1 in 3 builds fail), which is the signature of a race, not a real change.
 
-**Workaround (in this repo):** `apps/identity-wallet/scripts/ios-postinit.sh` Patch D adds
-`CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION = YES` next to each `CODE_SIGN_ENTITLEMENTS`
-build setting (the switch Xcode's own error names). Because the entitlements is empty,
-permitting the modification cannot produce incorrect entitlements — there is nothing to
-get wrong. The setting **survives** the per-build sync, which preserves existing
-buildSettings (same reason the injected Run Script phase survives).
+**Workaround (in this repo):** the committed XcodeGen template
+`scripts/ios/project.yml` sets `CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES` in
+the target's build settings (the switch Xcode's own error names). Because the
+entitlements is empty, permitting the modification cannot produce incorrect
+entitlements — there is nothing to get wrong. The setting **survives** the
+per-build sync, which preserves existing buildSettings.
 
-**Reproduction:** Remove the setting (or its `ios-postinit` patch), then run
+**Reproduction:** Remove the setting from the template, re-init, then run
 `just ios-build` repeatedly → intermittently fails with the symptom above.
 
 **Upstream:** Tauri / cargo-mobile2 (the per-build pbxproj restamp via
-`synchronize_project_config`) and/or Xcode (the spurious detection). **Remove Patch D
-if Tauri stops restamping the project on every build, or stops regenerating the
-entitlements.**
+`synchronize_project_config`) and/or Xcode (the spurious detection). **Remove the
+template's `CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION` setting if Tauri stops
+restamping the project on every build, or stops regenerating the entitlements.**

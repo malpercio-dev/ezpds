@@ -23,7 +23,8 @@
     "active": true,
     "iOS": {
       "frameworks": ["SystemConfiguration"],
-      "bundleVersion": "1"
+      "bundleVersion": "1",
+      "template": "../../scripts/ios/project.yml"
     }
   }
 }
