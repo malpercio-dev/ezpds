@@ -82,12 +82,52 @@ pub fn spawn_firehose_gc(state: AppState, interval: Duration) -> JoinHandle<()> 
     })
 }
 
-/// Run a single `repo_seq` retention pass.
-///
-/// Computes the low-water mark from the enabled retention knobs, clamps it below the live
-/// frontier, and deletes the contiguous prefix beneath it. A no-op when the log is empty or every
-/// retention knob is disabled.
+/// Run a single `repo_seq` retention pass, then record the sweep's instruments
+/// (`firehose_gc_swept_total`, `firehose_gc_last_run_timestamp`,
+/// `firehose_backfill_window_seconds`).
 pub async fn run_firehose_gc(state: &AppState) -> GcStats {
+    let stats = sweep(state).await;
+
+    state.metrics.firehose_gc_swept.add(stats.pruned, &[]);
+    state
+        .metrics
+        .firehose_gc_last_run_timestamp
+        .record(crate::metrics::unix_now(), &[]);
+    // The backfill window is how far back a reconnecting subscriber's cursor still replays
+    // exactly. Refreshed here (post-prune) rather than on every emit: the sweep is the only
+    // thing that shrinks the window, and emits only ever extend it by seconds.
+    match firehose_seq::oldest_sequenced_at(&state.db).await {
+        Ok(Some(oldest)) => match chrono::DateTime::parse_from_rfc3339(&oldest) {
+            Ok(ts) => {
+                let window = (chrono::Utc::now() - ts.with_timezone(&chrono::Utc))
+                    .num_seconds()
+                    .max(0) as f64;
+                state
+                    .metrics
+                    .firehose_backfill_window_seconds
+                    .record(window, &[]);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, oldest, "firehose GC: unparseable sequenced_at; backfill gauge not updated");
+            }
+        },
+        // An empty log means there is nothing to replay: the window is zero.
+        Ok(None) => state
+            .metrics
+            .firehose_backfill_window_seconds
+            .record(0.0, &[]),
+        Err(e) => {
+            tracing::warn!(error = %e, "firehose GC: failed to read oldest event; backfill gauge not updated");
+        }
+    }
+
+    stats
+}
+
+/// Compute the low-water mark from the enabled retention knobs, clamp it below the live
+/// frontier, and delete the contiguous prefix beneath it. A no-op when the log is empty or
+/// every retention knob is disabled.
+async fn sweep(state: &AppState) -> GcStats {
     let config = &state.config.firehose;
 
     // No policy enabled: the sweep is intentionally inert (append-only log, pre-retention

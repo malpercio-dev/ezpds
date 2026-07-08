@@ -1,7 +1,7 @@
 // pattern: Imperative Shell
 
 use anyhow::Context;
-use common::TelemetryConfig;
+use common::{LogFormat, TelemetryConfig};
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{trace::SdkTracerProvider, Resource};
@@ -36,6 +36,9 @@ impl Drop for OtelGuard {
 /// When `telemetry.enabled` is `false` (the default), only the `fmt` layer is installed —
 /// identical to the previous behaviour with zero OTel overhead.
 ///
+/// `telemetry.log_format` selects the stdout encoding for the `fmt` layer: human-readable
+/// text (default) or one JSON object per line for field-level filtering in log aggregators.
+///
 /// Returns an [`OtelGuard`] when telemetry is enabled. Drop it after the server shuts
 /// down to guarantee all buffered spans are flushed before the process exits.
 pub fn init_subscriber(telemetry: &TelemetryConfig) -> anyhow::Result<Option<OtelGuard>> {
@@ -44,12 +47,18 @@ pub fn init_subscriber(telemetry: &TelemetryConfig) -> anyhow::Result<Option<Ote
         eprintln!("RUST_LOG is invalid ({e}); defaulting to INFO");
         EnvFilter::new("info")
     });
-    let fmt_layer = tracing_subscriber::fmt::layer();
+    // Exactly one of the pair is Some; `Option<Layer>` is itself a layer, so both
+    // formats fit one subscriber type without boxing.
+    let (text_layer, json_layer) = match telemetry.log_format {
+        LogFormat::Text => (Some(tracing_subscriber::fmt::layer()), None),
+        LogFormat::Json => (None, Some(tracing_subscriber::fmt::layer().json())),
+    };
 
     if !telemetry.enabled {
         tracing_subscriber::registry()
             .with(env_filter)
-            .with(fmt_layer)
+            .with(text_layer)
+            .with(json_layer)
             .try_init()
             .map_err(|e| anyhow::anyhow!("failed to initialize tracing subscriber: {e}"))?;
         return Ok(None);
@@ -81,7 +90,8 @@ pub fn init_subscriber(telemetry: &TelemetryConfig) -> anyhow::Result<Option<Ote
 
     tracing_subscriber::registry()
         .with(env_filter)
-        .with(fmt_layer)
+        .with(text_layer)
+        .with(json_layer)
         .with(otel_layer)
         .try_init()
         .map_err(|e| anyhow::anyhow!("failed to initialize tracing subscriber: {e}"))?;

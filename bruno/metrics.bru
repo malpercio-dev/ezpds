@@ -1,0 +1,27 @@
+meta {
+  name: Metrics (Prometheus)
+  type: http
+  seq: 100
+}
+
+get {
+  url: {{baseUrl}}/metrics
+  body: none
+  auth: none
+}
+
+docs {
+  Prometheus text exposition of the PDS federation-health instrument set
+  (http_requests_total, firehose_subscribers, relay_crawl_requests_total, ...).
+
+  Served only when `[telemetry] metrics_enabled = true` (the default); 404 otherwise.
+  When `[telemetry] metrics_require_admin = true`, send the admin token:
+  Authorization: Bearer {{adminToken}}.
+
+  Registered outside the permissive CORS layer and rate-limit accounting — intended
+  for a private-network scraper, not for browsers.
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}

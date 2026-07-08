@@ -102,6 +102,18 @@ pub async fn retained_boundary_seq(
     }
 }
 
+/// The `sequenced_at` of the oldest retained event, or `None` when the log is empty.
+///
+/// Backs the `firehose_backfill_window_seconds` gauge: how far back a reconnecting
+/// subscriber's cursor can reach before replay degrades to best-effort. Because the writer
+/// always uses the same fixed-width RFC 3339 millis+`Z` form, `MIN()` over the text column
+/// is chronological.
+pub async fn oldest_sequenced_at(db: &SqlitePool) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT MIN(sequenced_at) FROM repo_seq")
+        .fetch_one(db)
+        .await
+}
+
 /// First replay page plus whether the cursor is inside the retained range.
 ///
 /// `cursor_present` is computed in the same SQL statement as the first page (`EXISTS(seq <=

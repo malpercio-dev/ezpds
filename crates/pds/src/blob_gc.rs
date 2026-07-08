@@ -138,6 +138,15 @@ pub async fn run_blob_gc(state: &AppState) -> GcStats {
         );
     }
 
+    // A failed-to-start pass (the early return above) deliberately does not touch the
+    // timestamp: a stale `blob_gc_last_run_timestamp` is the operator's signal that
+    // sweeps are not completing.
+    state.metrics.blob_gc_swept.add(stats.deleted, &[]);
+    state
+        .metrics
+        .blob_gc_last_run_timestamp
+        .record(crate::metrics::unix_now(), &[]);
+
     stats
 }
 
@@ -473,6 +482,17 @@ mod tests {
         let stats = run_blob_gc(&state).await;
         assert_eq!(stats.deleted, 1, "exactly the orphan blob is deleted");
         assert_eq!(stats.errors, 0);
+
+        // The sweep's instruments fire: the deletion is counted and the pass is timestamped.
+        let rendered = state.metrics.render().unwrap().unwrap();
+        assert!(
+            rendered.contains("blob_gc_swept_total"),
+            "missing blob_gc_swept_total in:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("blob_gc_last_run_timestamp"),
+            "missing blob_gc_last_run_timestamp in:\n{rendered}"
+        );
 
         // Referenced blob: pinned permanent, file intact.
         let kept = blobs::get_blob_by_cid(&state.db, &referenced)

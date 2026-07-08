@@ -51,6 +51,7 @@ use crate::routes::describe_server::describe_server;
 use crate::routes::get_blob::get_blob;
 use crate::routes::get_device_pds::get_device_pds;
 use crate::routes::get_did::get_did_handler;
+use crate::routes::get_metrics::get_metrics;
 use crate::routes::get_pds_signing_key::get_pds_signing_key;
 use crate::routes::get_preferences::get_preferences_handler;
 use crate::routes::get_recommended_did_credentials::get_recommended_did_credentials;
@@ -234,6 +235,10 @@ pub struct AppState {
     /// accepted alongside public ones, so tests can proxy to a local `wiremock` server standing in
     /// for a labeler. Always `false` in the real server (`main.rs`) — only `test_state()` sets it.
     pub allow_loopback_proxy_targets: bool,
+    /// Typed handles for every instrument the PDS records (see `crate::metrics`). Always
+    /// present — when `[telemetry] metrics_enabled = false` this is the reader-less
+    /// pipeline that drops measurements, so call sites never branch. Shared via Arc.
+    pub metrics: Arc<crate::metrics::Metrics>,
 }
 
 /// Build the Axum router with middleware and routes.
@@ -241,7 +246,7 @@ pub struct AppState {
 /// Keeping router construction separate from `main` makes it testable without a real TCP
 /// listener — callers can use `tower::ServiceExt::oneshot` to drive requests in tests.
 pub fn app(state: AppState) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/", get(landing))
         .route("/auth.md", get(serve_auth_md))
         .route("/.well-known/atproto-did", get(atproto_did_handler))
@@ -478,18 +483,34 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/repo-signing-key", get(get_repo_signing_key))
         .route("/static/{*path}", get(static_handler))
         // Layer order matters (axum applies the *last* `.layer` outermost). We want, outermost →
-        // inner: CORS, then Trace, then rate limiting. CORS must wrap the rate limiter so preflight
-        // `OPTIONS` are answered (and short-circuited) before any throttling, and so a 429 still
-        // carries the CORS headers a cross-origin client needs to read it. Trace stays outside the
-        // rate limiter so throttled requests are still traced. `from_fn_with_state` needs its own
-        // state clone (`with_state` below consumes the original).
+        // inner: CORS, then Trace, then HTTP metrics, then rate limiting. CORS must wrap the rate
+        // limiter so preflight `OPTIONS` are answered (and short-circuited) before any throttling,
+        // and so a 429 still carries the CORS headers a cross-origin client needs to read it.
+        // Trace stays outside the rate limiter so throttled requests are still traced. The metrics
+        // counter sits outside the rate limiter so a 429 still lands in `http_requests_total`, but
+        // inside CORS so short-circuited preflights don't pollute the series. `from_fn_with_state`
+        // needs its own state clone (`with_state` below consumes the original).
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::rate_limit::rate_limit_middleware,
         ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::metrics::http_metrics_middleware,
+        ))
         .layer(TraceLayer::new_for_http().make_span_with(OtelMakeSpan))
-        .layer(CorsLayer::permissive())
-        .with_state(state)
+        .layer(CorsLayer::permissive());
+
+    // Registered *after* the layer stack, so the scrape endpoint sits outside permissive
+    // CORS, tracing, and rate-limit accounting (`Router::layer` only wraps routes added
+    // before it). Not registering the route at all when metrics are disabled is what
+    // produces the documented 404.
+    let router = if state.config.telemetry.metrics_enabled {
+        router.route("/metrics", get(get_metrics))
+    } else {
+        router
+    };
+    router.with_state(state)
 }
 
 /// The three upstream namespaces the catch-all XRPC handler proxies to. `AppView` and `Chat`
@@ -607,7 +628,10 @@ async fn xrpc_handler(
     if matches!(upstream, ProxyUpstream::AppView)
         && READ_AFTER_WRITE_NSIDS.contains(&method.as_str())
     {
-        return crate::read_after_write::pipethrough_munged(&state, &method, &user.did, req).await;
+        let response =
+            crate::read_after_write::pipethrough_munged(&state, &method, &user.did, req).await;
+        count_proxy_request(&state, "appview", response.status().as_u16());
+        return response;
     }
 
     let (url, proxy_did, guard) = match upstream {
@@ -649,7 +673,7 @@ async fn xrpc_handler(
         }
     };
 
-    proxy_xrpc(
+    let response = proxy_xrpc(
         &state,
         &url,
         &proxy_did,
@@ -658,7 +682,30 @@ async fn xrpc_handler(
         guard.as_ref(),
         req,
     )
-    .await
+    .await;
+    let upstream_label = match upstream {
+        ProxyUpstream::AppView => "appview",
+        ProxyUpstream::Chat => "chat",
+        ProxyUpstream::Moderation => "moderation",
+    };
+    count_proxy_request(&state, upstream_label, response.status().as_u16());
+    response
+}
+
+/// Count one proxied upstream response into `proxy_requests_total{upstream, status_class}`.
+/// Called with the response actually returned to the client, so a transport failure shows
+/// up as the 503 the caller saw.
+fn count_proxy_request(state: &AppState, upstream: &'static str, status: u16) {
+    state.metrics.proxy_requests.add(
+        1,
+        &[
+            crate::metrics::label(crate::metrics::names::LABEL_UPSTREAM, upstream),
+            crate::metrics::label(
+                crate::metrics::names::LABEL_STATUS_CLASS,
+                crate::metrics::status_class(status),
+            ),
+        ],
+    );
 }
 
 #[cfg(test)]
@@ -712,13 +759,19 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
     };
     let dpop_nonces = new_nonce_store();
 
+    // Enabled in tests so instrument assertions can read the rendered output; each test
+    // state gets its own registry (no global exporter state to collide on).
+    let metrics = Arc::new(crate::metrics::Metrics::new("test-pds").expect("test metrics"));
+
     // Build the firehose before the struct literal: the `db` field below moves the pool, so the
     // sequencer needs its own clone first.
-    let firehose = Arc::new(
-        crate::firehose::Firehose::new(db.clone())
+    let firehose = Arc::new({
+        let mut f = crate::firehose::Firehose::new(db.clone())
             .await
-            .expect("test firehose"),
-    );
+            .expect("test firehose");
+        f.attach_metrics(metrics.clone());
+        f
+    });
 
     AppState {
         config: Arc::new(Config {
@@ -767,11 +820,15 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
         permission_set_cache: new_permission_set_cache(),
         failed_login_attempts: Arc::new(Mutex::new(HashMap::new())),
         firehose,
-        crawlers: Arc::new(crate::crawler::CrawlerNotifier::new(
-            http_client,
-            "test.example.com".to_string(),
-            &[],
-        )),
+        crawlers: Arc::new({
+            let mut c = crate::crawler::CrawlerNotifier::new(
+                http_client,
+                "test.example.com".to_string(),
+                &[],
+            );
+            c.attach_metrics(metrics.clone());
+            c
+        }),
         iroh: None,
         rate_limiter: Arc::new(crate::rate_limit::RateLimiterState::new(&RateLimitConfig {
             enabled: false,
@@ -780,6 +837,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
         // Tests never send real email: the default Log sender logs instead of delivering.
         email: Arc::new(crate::email::LogEmailSender),
         allow_loopback_proxy_targets: true,
+        metrics,
     }
 }
 

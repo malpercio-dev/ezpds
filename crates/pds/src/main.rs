@@ -22,6 +22,7 @@ mod genesis;
 mod handle;
 mod identity_resolution;
 mod iroh_tunnel;
+mod metrics;
 mod oauth_client_resolution;
 mod platform;
 mod plc_ops;
@@ -215,14 +216,31 @@ async fn run() -> anyhow::Result<()> {
         None
     };
 
+    // Build the metrics pipeline from config before `config` is moved into the AppState's Arc,
+    // and before the subsystems that record through it (crawler, firehose) are constructed.
+    // A broken exporter is fatal here rather than failing every scrape at runtime.
+    let metrics = Arc::new(if config.telemetry.metrics_enabled {
+        let m = metrics::Metrics::new(&config.telemetry.service_name)
+            .with_context(|| "failed to build metrics pipeline")?;
+        tracing::info!("metrics enabled: serving Prometheus exposition at /metrics");
+        m
+    } else {
+        tracing::info!("metrics disabled: /metrics is not registered");
+        metrics::Metrics::disabled()
+    });
+
     // Crawler notifier: after each commit, ping the configured relays/BGSes via requestCrawl.
     // The hostname advertised to crawlers is derived from the relay's public URL.
     let crawler_hostname = crawler::host_from_url(&config.public_url);
-    let crawlers = Arc::new(crawler::CrawlerNotifier::new(
-        http_client.clone(),
-        crawler_hostname,
-        &config.crawlers.urls,
-    ));
+    let crawlers = Arc::new({
+        let mut c = crawler::CrawlerNotifier::new(
+            http_client.clone(),
+            crawler_hostname,
+            &config.crawlers.urls,
+        );
+        c.attach_metrics(metrics.clone());
+        c
+    });
     if config.crawlers.urls.is_empty() {
         tracing::info!("crawler notifications disabled (no crawlers configured)");
     } else {
@@ -234,15 +252,17 @@ async fn run() -> anyhow::Result<()> {
 
     // Seed the firehose sequencer from the persisted event log so `seq` continues monotonically
     // across restarts and cursor replay survives redeploys (the log is read back from `repo_seq`).
-    let firehose = Arc::new(
-        firehose::Firehose::new(pool.clone())
+    let firehose = Arc::new({
+        let mut f = firehose::Firehose::new(pool.clone())
             .await
             .map_err(|e| {
                 tracing::error!(error = %e, "fatal: failed to initialise firehose sequencer");
                 e
             })
-            .with_context(|| "failed to initialise firehose sequencer from the event log")?,
-    );
+            .with_context(|| "failed to initialise firehose sequencer from the event log")?;
+        f.attach_metrics(metrics.clone());
+        f
+    });
 
     // Build the outbound email sender from config before `config` is moved into the AppState's Arc.
     // A misconfigured SMTP setup is fatal here rather than failing every send at runtime.
@@ -289,6 +309,7 @@ async fn run() -> anyhow::Result<()> {
         rate_limiter,
         email,
         allow_loopback_proxy_targets: false,
+        metrics,
     };
 
     let listener = tokio::net::TcpListener::bind(&addr)

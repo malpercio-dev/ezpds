@@ -237,6 +237,16 @@ impl FirehoseEvent {
             FirehoseEvent::Sync(s) => s.seq,
         }
     }
+
+    /// The wire frame type as a metrics label value (`firehose_events_total{frame=...}`).
+    pub fn frame_label(&self) -> &'static str {
+        match self {
+            FirehoseEvent::Commit(_) => "commit",
+            FirehoseEvent::Account(_) => "account",
+            FirehoseEvent::Identity(_) => "identity",
+            FirehoseEvent::Sync(_) => "sync",
+        }
+    }
 }
 
 /// Inputs to [`Firehose::emit_commit`] — everything about a commit except the
@@ -486,6 +496,9 @@ pub struct Firehose {
     /// diagnostics (`current_seq`) and under the lock for the subscribe frontier.
     last_seq: AtomicU64,
     tx: broadcast::Sender<FirehoseEvent>,
+    /// Counts broadcast frames into `firehose_events_total`. `None` for bare test
+    /// constructions; `main.rs`/`test_state()` attach the shared handle before Arc-wrapping.
+    metrics: Option<Arc<crate::metrics::Metrics>>,
 }
 
 impl Firehose {
@@ -506,7 +519,31 @@ impl Firehose {
             retention_replay_lock: tokio::sync::Mutex::new(()),
             last_seq: AtomicU64::new(last),
             tx,
+            metrics: None,
         })
+    }
+
+    /// Attach the shared metrics handle so broadcast frames are counted. Called before the
+    /// firehose is Arc-wrapped into `AppState`; constructions that never attach (bare unit
+    /// tests) simply record nothing.
+    pub fn attach_metrics(&mut self, metrics: Arc<crate::metrics::Metrics>) {
+        self.metrics = Some(metrics);
+    }
+
+    /// Broadcast one already-persisted event to live subscribers, counting it by frame type.
+    /// The send result is deliberately ignored: having no live subscribers is not an error
+    /// (the event is already durable and replayable).
+    fn broadcast(&self, event: FirehoseEvent) {
+        if let Some(metrics) = &self.metrics {
+            metrics.firehose_events.add(
+                1,
+                &[crate::metrics::label(
+                    crate::metrics::names::LABEL_FRAME,
+                    event.frame_label(),
+                )],
+            );
+        }
+        let _ = self.tx.send(event);
     }
 
     /// Subscribe to the live event stream only (no replay). Each subscriber receives every
@@ -638,7 +675,7 @@ impl Firehose {
             blocks: input.blocks,
         }));
         // A send error means "no subscribers"; that is expected, not a failure.
-        let _ = self.tx.send(event);
+        self.broadcast(event);
         Ok(seq)
     }
 
@@ -678,7 +715,7 @@ impl Firehose {
             active,
             status,
         }));
-        let _ = self.tx.send(event);
+        self.broadcast(event);
         Ok(seq)
     }
 
@@ -722,7 +759,7 @@ impl Firehose {
             did,
             handle,
         }));
-        let _ = self.tx.send(event);
+        self.broadcast(event);
         Ok(seq)
     }
 
@@ -767,7 +804,7 @@ impl Firehose {
             rev: input.rev,
             blocks: input.blocks,
         }));
-        let _ = self.tx.send(event);
+        self.broadcast(event);
         Ok(seq)
     }
 
@@ -928,7 +965,7 @@ impl<'f> PendingCommit<'f> {
             ops: self.input.ops,
             blocks: self.input.blocks,
         }));
-        let _ = self.firehose.tx.send(event);
+        self.firehose.broadcast(event);
     }
 
     /// Stage a Sync v1.1 `#sync` immediately after this `#commit`, in the *same* transaction and
@@ -1000,7 +1037,7 @@ impl<'f> PendingAccount<'f> {
             active: self.active,
             status: self.status,
         }));
-        let _ = self.firehose.tx.send(event);
+        self.firehose.broadcast(event);
     }
 
     /// Stage a Sync v1.1 `#sync` immediately after this `#account`, in the *same* transaction and
@@ -1091,7 +1128,7 @@ impl PendingWithSync<'_> {
         self.firehose
             .last_seq
             .store(self.sync_seq, Ordering::Release);
-        let _ = self.firehose.tx.send(self.primary);
+        self.firehose.broadcast(self.primary);
         let sync_event = FirehoseEvent::Sync(Arc::new(SyncEvent {
             seq: self.sync_seq,
             time: self.sync_time,
@@ -1099,7 +1136,7 @@ impl PendingWithSync<'_> {
             rev: self.sync_input.rev,
             blocks: self.sync_input.blocks,
         }));
-        let _ = self.firehose.tx.send(sync_event);
+        self.firehose.broadcast(sync_event);
     }
 }
 

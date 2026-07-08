@@ -87,6 +87,14 @@ pub async fn run_account_reaper(state: &AppState) -> ReaperStats {
         );
     }
 
+    // The failed-to-start early return above skips this on purpose: a stale
+    // `account_reaper_last_run_timestamp` signals that passes are not completing.
+    state.metrics.account_reaper_swept.add(stats.deleted, &[]);
+    state
+        .metrics
+        .account_reaper_last_run_timestamp
+        .record(crate::metrics::unix_now(), &[]);
+
     stats
 }
 

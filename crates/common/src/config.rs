@@ -599,6 +599,18 @@ fn default_crawler_urls() -> Vec<String> {
     vec!["https://bsky.network".to_string()]
 }
 
+/// Output encoding for the stdout log stream.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LogFormat {
+    /// Human-readable single-line text. The default.
+    #[default]
+    Text,
+    /// One JSON object per line, so log aggregators and `railway logs` consumers can
+    /// filter by field instead of by regex.
+    Json,
+}
+
 /// OpenTelemetry telemetry configuration.
 #[derive(Debug, Clone)]
 pub struct TelemetryConfig {
@@ -608,6 +620,15 @@ pub struct TelemetryConfig {
     pub otlp_endpoint: String,
     /// `service.name` resource attribute reported to the trace backend.
     pub service_name: String,
+    /// Whether to register the metrics meter and serve `GET /metrics`. On by default;
+    /// when off, no meter is registered and the route returns 404.
+    pub metrics_enabled: bool,
+    /// Require admin auth on `GET /metrics`. Off by default so a plain Prometheus
+    /// scraper works; operators exposing the endpoint beyond a private network can
+    /// turn it on.
+    pub metrics_require_admin: bool,
+    /// Encoding of the stdout log stream (independent of OTLP export).
+    pub log_format: LogFormat,
 }
 
 impl Default for TelemetryConfig {
@@ -616,6 +637,9 @@ impl Default for TelemetryConfig {
             enabled: false,
             otlp_endpoint: "http://localhost:4317".to_string(),
             service_name: "ezpds-pds".to_string(),
+            metrics_enabled: true,
+            metrics_require_admin: false,
+            log_format: LogFormat::Text,
         }
     }
 }
@@ -731,6 +755,9 @@ pub(crate) struct RawTelemetryConfig {
     pub(crate) enabled: Option<bool>,
     pub(crate) otlp_endpoint: Option<String>,
     pub(crate) service_name: Option<String>,
+    pub(crate) metrics_enabled: Option<bool>,
+    pub(crate) metrics_require_admin: Option<bool>,
+    pub(crate) log_format: Option<LogFormat>,
 }
 
 /// Raw TOML-deserialized config with all fields optional to support env-var overlays.
@@ -897,6 +924,31 @@ pub(crate) fn apply_env_overrides(
     }
     if let Some(v) = env.get("OTEL_SERVICE_NAME") {
         raw.telemetry.service_name = Some(v.clone());
+    }
+    if let Some(v) = env.get("EZPDS_METRICS_ENABLED") {
+        raw.telemetry.metrics_enabled = Some(v.parse::<bool>().map_err(|e| {
+            ConfigError::Invalid(format!(
+                "EZPDS_METRICS_ENABLED is not a valid boolean: '{v}': {e}"
+            ))
+        })?);
+    }
+    if let Some(v) = env.get("EZPDS_METRICS_REQUIRE_ADMIN") {
+        raw.telemetry.metrics_require_admin = Some(v.parse::<bool>().map_err(|e| {
+            ConfigError::Invalid(format!(
+                "EZPDS_METRICS_REQUIRE_ADMIN is not a valid boolean: '{v}': {e}"
+            ))
+        })?);
+    }
+    if let Some(v) = env.get("EZPDS_LOG_FORMAT") {
+        raw.telemetry.log_format = Some(match v.as_str() {
+            "text" => LogFormat::Text,
+            "json" => LogFormat::Json,
+            other => {
+                return Err(ConfigError::Invalid(format!(
+                    "EZPDS_LOG_FORMAT must be 'text' or 'json', got: '{other}'"
+                )))
+            }
+        });
     }
     if let Some(v) = env.get("EZPDS_IROH_ENABLED") {
         raw.iroh.enabled = v.parse::<bool>().map_err(|e| {
@@ -1232,6 +1284,18 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
             .telemetry
             .service_name
             .unwrap_or(telemetry_defaults.service_name),
+        metrics_enabled: raw
+            .telemetry
+            .metrics_enabled
+            .unwrap_or(telemetry_defaults.metrics_enabled),
+        metrics_require_admin: raw
+            .telemetry
+            .metrics_require_admin
+            .unwrap_or(telemetry_defaults.metrics_require_admin),
+        log_format: raw
+            .telemetry
+            .log_format
+            .unwrap_or(telemetry_defaults.log_format),
     };
 
     if raw.iroh.endpoint.as_deref() == Some("") {
@@ -2010,6 +2074,80 @@ mod tests {
         let config = validate_and_build(raw).unwrap();
 
         assert_eq!(config.telemetry.service_name, "from-env");
+    }
+
+    #[test]
+    fn metrics_and_log_format_defaults() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert!(config.telemetry.metrics_enabled);
+        assert!(!config.telemetry.metrics_require_admin);
+        assert_eq!(config.telemetry.log_format, LogFormat::Text);
+    }
+
+    #[test]
+    fn parses_metrics_and_log_format_from_toml() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [telemetry]
+            metrics_enabled = false
+            metrics_require_admin = true
+            log_format = "json"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert!(!config.telemetry.metrics_enabled);
+        assert!(config.telemetry.metrics_require_admin);
+        assert_eq!(config.telemetry.log_format, LogFormat::Json);
+    }
+
+    #[test]
+    fn env_override_metrics_enabled() {
+        let env = HashMap::from([("EZPDS_METRICS_ENABLED".to_string(), "false".to_string())]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert!(!config.telemetry.metrics_enabled);
+    }
+
+    #[test]
+    fn env_override_metrics_require_admin() {
+        let env = HashMap::from([(
+            "EZPDS_METRICS_REQUIRE_ADMIN".to_string(),
+            "true".to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert!(config.telemetry.metrics_require_admin);
+    }
+
+    #[test]
+    fn env_override_log_format() {
+        let env = HashMap::from([("EZPDS_LOG_FORMAT".to_string(), "json".to_string())]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert_eq!(config.telemetry.log_format, LogFormat::Json);
+    }
+
+    #[test]
+    fn env_override_log_format_invalid_returns_error() {
+        let env = HashMap::from([("EZPDS_LOG_FORMAT".to_string(), "yaml".to_string())]);
+        let err = apply_env_overrides(minimal_raw(), &env).unwrap_err();
+
+        assert!(matches!(err, ConfigError::Invalid(_)));
+    }
+
+    #[test]
+    fn env_override_metrics_enabled_invalid_returns_error() {
+        let env = HashMap::from([("EZPDS_METRICS_ENABLED".to_string(), "maybe".to_string())]);
+        let err = apply_env_overrides(minimal_raw(), &env).unwrap_err();
+
+        assert!(matches!(err, ConfigError::Invalid(_)));
     }
 
     #[test]

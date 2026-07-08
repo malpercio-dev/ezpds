@@ -61,15 +61,22 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 
 # Observability
 tracing = { version = "0.1", features = ["log"] }
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# json: the machine-readable stdout format behind `[telemetry] log_format = "json"`.
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # The four OTel crates move in lockstep (tracing-opentelemetry releases track the
 # opentelemetry minor). 0.32 also unifies the workspace on reqwest 0.13 and tonic
 # 0.14/tower 0.5 — older opentelemetry pinned reqwest 0.12 and tonic 0.12, keeping
 # a second major of each compiled into every build.
 tracing-opentelemetry = "0.33"
-opentelemetry = { version = "0.32", features = ["trace"] }
+opentelemetry = { version = "0.32", features = ["trace", "metrics"] }
 opentelemetry-otlp = { version = "0.32", features = ["trace", "grpc-tonic"] }
-opentelemetry_sdk = { version = "0.32", features = ["rt-tokio", "trace"] }
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio", "trace", "metrics"] }
+# Prometheus text-exposition bridge for the OTel meter behind `GET /metrics`. Chosen over a
+# parallel `metrics`-facade stack because it rides the same opentelemetry 0.32 line as the
+# trace pipeline (no second observability stack, shared Resource/service_name). Pulls
+# `prometheus` 0.14 with default features off (no protobuf).
+opentelemetry-prometheus = "0.32"
+prometheus = { version = "0.14", default-features = false }
 
 # HTTP middleware
 # tower-http 0.6 (not 0.7): unifies with the 0.6.x already in the tree via tauri —
