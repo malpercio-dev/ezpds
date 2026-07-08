@@ -942,11 +942,24 @@ mod tests {
                     "rotationKeys": ["did:key:zAttacker"],
                     "services": { "atproto_pds": { "type": "AtprotoPersonalDataServer", "endpoint": "https://evil.pds" } }
                 }
+            },
+            {
+                "did": "did:plc:test",
+                "cid": "bafy_nullified",
+                "createdAt": "2026-03-29T02:00:00Z",
+                "nullified": true,
+                "operation": {
+                    "type": "plc_operation",
+                    "rotationKeys": ["did:key:zNullified"],
+                    "services": { "atproto_pds": { "type": "AtprotoPersonalDataServer", "endpoint": "https://nullified.pds" } }
+                }
             }
         ]);
         let audit_log =
             crypto::parse_audit_log(&audit_log_json.to_string()).expect("parse audit log");
 
+        // The nullified tail must be skipped — the tip is the latest non-nullified
+        // entry, not the newest entry outright.
         let state = current_state_from_audit_log(&audit_log);
         assert_eq!(state.rotation_keys, vec!["did:key:zAttacker".to_string()]);
         assert_eq!(
