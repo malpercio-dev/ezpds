@@ -1,0 +1,65 @@
+meta {
+  name: OAuth Token — Agent Claim Polling
+  type: http
+  seq: 102
+}
+
+post {
+  url: {{baseUrl}}/oauth/token
+  body: formUrlEncoded
+  auth: none
+}
+
+body:form-urlencoded {
+  grant_type: urn:workos:agent-auth:grant-type:claim
+  claim_token: {{claimToken}}
+}
+
+vars:pre-request {
+  claimToken: <replace-with-claim-token-from-agent-identity-registration>
+}
+
+docs {
+  # Claim-polling grant (auth.md Step 4c)
+
+  The machine-pollable half of the agent claim ceremony. A `service_auth` or
+  `anonymous` agent that started a ceremony (`POST /agent/identity/claim`) polls
+  this endpoint with its one-time `claim_token` while the account owner confirms
+  out-of-band (`POST /agent/identity/claim/confirm`). No DPoP proof is required —
+  the agent may hold no key yet, and the `claim_token` is itself the credential.
+
+  ## Request
+
+  `application/x-www-form-urlencoded`:
+
+  - `grant_type` = `urn:workos:agent-auth:grant-type:claim`
+  - `claim_token` = the one-time claim token returned by `POST /agent/identity`
+
+  ## Response (200 — owner has confirmed)
+
+  A fresh **Bearer** access token plus the stored post-claim `identity_assertion`
+  (re-exchange it via the jwt-bearer grant once the access token expires). No
+  refresh token is issued.
+
+  ```json
+  {
+    "access_token": "<at+jwt>",
+    "token_type": "Bearer",
+    "expires_in": 300,
+    "scope": "repo:* blob:*/*",
+    "identity_assertion": "<service-signed-jwt>",
+    "assertion_expires": "2026-07-08T18:31:25.994Z"
+  }
+  ```
+
+  ## Polling states (OAuth `{ "error", "error_description" }` body, all 400)
+
+  - `authorization_pending`: the owner has not confirmed the ceremony yet — keep
+    polling, no faster than the advertised `interval`
+  - `slow_down`: polled faster than the permitted interval (5s)
+  - `expired_token`: the `claim_token` or the `user_code` window has lapsed —
+    re-register
+  - `access_denied`: the agent identity has been revoked
+  - `invalid_request`: missing `claim_token`
+  - `invalid_grant`: unknown `claim_token`
+}

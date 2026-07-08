@@ -14,6 +14,7 @@ mod bearer;
 pub(crate) use bearer::extract_bearer_token;
 
 // Re-export the public API so callers don't need to know the internal layout.
+pub use agent_assertion::{new_claim_poll_tracker, ClaimPollTracker};
 pub use dpop::{
     cleanup_expired_nonces, issue_nonce, new_nonce_store, validate_dpop_for_token_endpoint,
     DpopNonceStore, DpopTokenEndpointError,

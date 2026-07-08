@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use crate::app::AppState;
 use crate::auth::agent_assertion::{
     mint_identity_assertion, new_claim_attempt_id, parse_sqlite_datetime, scopes_to_json,
-    to_sqlite_datetime, verification_uri, AgentAuthError,
+    to_sqlite_datetime, verification_uri, AgentAuthError, POLL_INTERVAL_SECS,
 };
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
@@ -40,11 +40,6 @@ use crate::db::agent_auth::{
     latest_agent_claim_attempt_for_identity, AgentIdentityStatus, ClaimAttemptStatus,
     NewAgentClaimAttempt,
 };
-
-/// Seconds an agent should wait between claim-status polls (the auth.md claim block `interval`). The
-/// machine-pollable claim grant that consumes it is a separate ticket; the value is advertised now
-/// so a polling client can pace itself once that lands.
-const POLL_INTERVAL_SECS: u64 = 5;
 
 // ── POST /agent/identity/claim (initiate) ─────────────────────────────────────
 
