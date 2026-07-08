@@ -257,6 +257,13 @@ async fn confirm(
             )
         })?;
 
+    // Brute-forcing the `user_code` is bounded today by the global per-IP rate limiter, and this
+    // endpoint is already full-access authenticated — so the guessing surface is an *authenticated*
+    // caller racing a ~36^6-wide code within its short TTL (and success only lets them bind an
+    // ownerless anonymous registration to their own account, not take over a victim's). A dedicated
+    // per-code failure lockout is intentionally left to the follow-on wallet agent-consent/audit
+    // hardening work, which owns claim rate-limiting — consistent with the sibling short-code
+    // surface `/v1/transfer/accept`, which likewise relies on the shared limiter.
     let attempt = get_agent_claim_attempt_by_user_code(&state.db, user_code)
         .await?
         .ok_or_else(|| {
