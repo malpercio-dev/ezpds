@@ -942,6 +942,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rate_limited_public_response_still_carries_cors_headers() {
+        // Regression guard co-located with `apply_shared_layers`: on the public surface CORS must
+        // stay OUTSIDE the rate limiter, so a request throttled *before* the handler runs still
+        // carries the Access-Control-Allow-Origin header a cross-origin client needs to read the
+        // 429. If the layering is ever reordered so CORS sits inside the limiter (e.g. the
+        // `.layer(CorsLayer::permissive())` call is moved ahead of `apply_shared_layers`), the
+        // throttled response loses its CORS header and this fails.
+        let mut state = test_state().await;
+        state.rate_limiter = Arc::new(crate::rate_limit::RateLimiterState::new(
+            &common::RateLimitConfig {
+                enabled: true,
+                global_ip_per_5min: 1,
+                ..common::RateLimitConfig::default()
+            },
+        ));
+        let router = app(state);
+        let req = |ip: &str| {
+            Request::builder()
+                .uri("/xrpc/com.atproto.server.describeServer")
+                .header("origin", "https://example.com")
+                .header("x-forwarded-for", ip)
+                .body(Body::empty())
+                .unwrap()
+        };
+
+        // First request from the IP is within the cap of 1.
+        let first = router.clone().oneshot(req("203.0.113.40")).await.unwrap();
+        assert_ne!(first.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        // Second trips the global cap → 429, thrown by the rate limiter before the handler, yet
+        // it must still carry the CORS allow-origin header (CORS wraps the limiter).
+        let throttled = router.oneshot(req("203.0.113.40")).await.unwrap();
+        assert_eq!(throttled.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(
+            throttled
+                .headers()
+                .contains_key("access-control-allow-origin"),
+            "a throttled 429 on the public surface must still carry CORS headers"
+        );
+    }
+
+    #[tokio::test]
     async fn non_privileged_app_password_cannot_reach_chat_proxy() {
         // A plain `com.atproto.appPass` session must be refused before any request reaches the
         // chat (DM) service — only full access or a privileged app password may. The refusal
