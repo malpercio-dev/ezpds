@@ -132,7 +132,7 @@ mod tests {
     async fn test_state_with_keys() -> AppState {
         let base = test_state().await;
         let mut config = (*base.config).clone();
-        config.admin_token = Some("test-admin-token".to_string());
+        config.admin_token = Some(Sensitive("test-admin-token".to_string()));
         config.signing_key_master_key = Some(Sensitive(Zeroizing::new([
             0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
             0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
@@ -385,7 +385,7 @@ mod tests {
         // signing_key_master_key not configured → 503
         let base = test_state().await;
         let mut config = (*base.config).clone();
-        config.admin_token = Some("test-admin-token".to_string());
+        config.admin_token = Some(Sensitive("test-admin-token".to_string()));
         // signing_key_master_key intentionally left as None
         let state = AppState {
             config: Arc::new(config),

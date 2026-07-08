@@ -13,7 +13,8 @@
 //!    `subscribeRepos`, and `_health` are exempt so relay backfill/firehose and platform health
 //!    checks are never throttled.
 //! 2. **Per-endpoint per-IP** — tighter caps on the sensitive auth/account endpoints
-//!    (`createAccount`/`createSession`/`resetPassword`/`updateHandle`), keyed by client IP.
+//!    (`createAccount`/`createSession`/`resetPassword`/`updateHandle`) plus the short-code-
+//!    authenticated `/v1/transfer/accept`, keyed by client IP.
 //! 3. **Per-account write points** — the four repo-write routes spend create=3/update=2/delete=1
 //!    points against the *authenticated* DID over an hourly and a daily window. Enforced in
 //!    [`crate::record_write::commit_repo_write`] where the verified DID is known (keying on an
@@ -108,6 +109,15 @@ impl RateLimiterState {
         endpoints.insert(
             "/xrpc/com.atproto.identity.updateHandle",
             per_5min(cfg.update_handle_per_5min),
+        );
+        // Pattern: endpoints authenticated by a bare short code (rather than a session or bearer
+        // token) belong in this tight per-endpoint limiter by default — the code *is* the
+        // credential, so the generous global cap alone leaves too much room to brute-force it.
+        // `/v1/transfer/accept` (a 6-char transfer code) is the first; the wallet-consent
+        // claim-ceremony confirm endpoint joins here when it lands.
+        endpoints.insert(
+            "/v1/transfer/accept",
+            per_5min(cfg.transfer_accept_per_5min),
         );
 
         Self {
@@ -452,6 +462,78 @@ mod tests {
                 .unwrap();
             assert_ne!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
         }
+    }
+
+    async fn state_with_transfer_accept_cap(max: u64) -> AppState {
+        let mut state = test_state().await;
+        state.rate_limiter = std::sync::Arc::new(RateLimiterState::new(&RateLimitConfig {
+            enabled: true,
+            transfer_accept_per_5min: max,
+            ..RateLimitConfig::default()
+        }));
+        state
+    }
+
+    fn transfer_accept_req(ip: &str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/v1/transfer/accept")
+            .header("x-forwarded-for", ip)
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn transfer_accept_endpoint_cap_rejects_over_budget_with_headers() {
+        // `/v1/transfer/accept` authenticates on a bare 6-char code, so it lives in the tight
+        // per-endpoint limiter. The global cap stays at its high default here, so only the
+        // per-endpoint budget can trip.
+        let state = state_with_transfer_accept_cap(2).await;
+        let metrics = state.metrics.clone();
+        let router = app(state);
+
+        // The first two pass the limiter. The handler itself rejects the bogus code (some 4xx),
+        // but never with a 429 — that is the limiter's signal alone.
+        for _ in 0..2 {
+            let resp = router
+                .clone()
+                .oneshot(transfer_accept_req("203.0.113.20"))
+                .await
+                .unwrap();
+            assert_ne!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        }
+
+        // The third trips the per-endpoint cap: 429 with the standard envelope + RateLimit-* /
+        // Retry-After headers, matching the other limited endpoints.
+        let resp = router
+            .clone()
+            .oneshot(transfer_accept_req("203.0.113.20"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(resp.headers().contains_key("retry-after"));
+        assert!(resp.headers().contains_key("ratelimit-limit"));
+        assert!(resp.headers().contains_key("ratelimit-remaining"));
+        assert!(resp.headers().contains_key("ratelimit-reset"));
+        let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "RATE_LIMITED");
+
+        // The rejection is counted against the endpoint_ip limiter.
+        let rendered = metrics.render().unwrap().unwrap();
+        assert!(
+            rendered.contains("rate_limit_rejections_total")
+                && rendered.contains(r#"limiter="endpoint_ip""#),
+            "missing endpoint_ip rejection count in:\n{rendered}"
+        );
+
+        // A different IP has its own budget and is unaffected.
+        let resp = router
+            .oneshot(transfer_accept_req("203.0.113.21"))
+            .await
+            .unwrap();
+        assert_ne!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 
     #[tokio::test]

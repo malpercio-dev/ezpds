@@ -173,7 +173,7 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
     // Step 4: reclaim the on-disk blob files (best-effort; the DB row and firehose frame are the
     // source of truth for "deleted", so a stray file is a leak to clean up, not a failure).
     for (cid, storage_path) in &blob_files {
-        match crate::blob_store::delete_blob_file(&state.config.data_dir, storage_path) {
+        match crate::blob_store::delete_blob_file(&state.config.data_dir, storage_path).await {
             Ok(true) => {}
             Ok(false) => tracing::warn!(
                 did = %did,
@@ -371,8 +371,9 @@ mod tests {
         seed_account_with_repo(&state.db, did).await;
 
         // Store a blob on disk + its metadata row.
-        let stored =
-            crate::blob_store::store_blob(&state.config.data_dir, b"blob to reclaim").unwrap();
+        let stored = crate::blob_store::store_blob(&state.config.data_dir, b"blob to reclaim")
+            .await
+            .unwrap();
         crate::db::blobs::insert_blob(
             &state.db,
             &stored.cid,

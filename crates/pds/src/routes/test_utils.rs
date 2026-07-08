@@ -107,7 +107,7 @@ pub async fn state_with_failing_email() -> AppState {
 pub async fn test_state_with_admin_token() -> AppState {
     let base = test_state().await;
     let mut config = (*base.config).clone();
-    config.admin_token = Some("test-admin-token".to_string());
+    config.admin_token = Some(common::Sensitive("test-admin-token".to_string()));
     AppState {
         config: Arc::new(config),
         ..base

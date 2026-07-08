@@ -2,10 +2,9 @@
 //
 // Blob storage backend: filesystem I/O, CID computation, MIME type detection.
 // Blobs are stored at `{data_dir}/blobs/{cid[0:2]}/{cid}` with 2-char prefix fanout.
-
-// Dead code allow: `read_blob` and `delete_blob_file` are consumed by getBlob (MM-109)
-// and GC cleanup. All functions are tested here.
-#![allow(dead_code)]
+//
+// I/O is async (`tokio::fs`): blobs can be multiple MB, so the disk read/write must not
+// park a Tokio worker thread. Callers are async handlers/sweeps that `.await` these.
 
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -42,7 +41,7 @@ pub fn detect_mime_type(content: &[u8]) -> String {
 /// CID is a CIDv1 (raw codec, SHA-256 multihash) encoded in base32 (`bafk...`).
 /// MIME type is detected from the first 8192 bytes via magic bytes (`infer` crate).
 /// Falls back to `application/octet-stream` when no magic bytes match.
-pub fn store_blob(data_dir: &Path, content: &[u8]) -> Result<StoredBlob, BlobStoreError> {
+pub async fn store_blob(data_dir: &Path, content: &[u8]) -> Result<StoredBlob, BlobStoreError> {
     // 1. Detect MIME type from magic bytes; fall back to generic binary.
     let mime_type = detect_mime_type(content);
 
@@ -57,9 +56,9 @@ pub fn store_blob(data_dir: &Path, content: &[u8]) -> Result<StoredBlob, BlobSto
 
     // 4. Create parent directory and write.
     if let Some(parent) = abs_path.parent() {
-        std::fs::create_dir_all(parent)?;
+        tokio::fs::create_dir_all(parent).await?;
     }
-    std::fs::write(&abs_path, content)?;
+    tokio::fs::write(&abs_path, content).await?;
 
     Ok(StoredBlob {
         cid,
@@ -72,23 +71,28 @@ pub fn store_blob(data_dir: &Path, content: &[u8]) -> Result<StoredBlob, BlobSto
 /// Read a blob from disk by CID.
 ///
 /// `storage_path` is the relative path stored in the DB (e.g. "blobs/ba/bafy...").
-pub fn read_blob(data_dir: &Path, storage_path: &str) -> Result<Vec<u8>, BlobStoreError> {
+pub async fn read_blob(data_dir: &Path, storage_path: &str) -> Result<Vec<u8>, BlobStoreError> {
     let abs_path = data_dir.join(storage_path);
-    Ok(std::fs::read(abs_path)?)
+    Ok(tokio::fs::read(abs_path).await?)
 }
 
 /// Delete a blob from disk. Returns Ok(true) if the file existed, Ok(false) if not found.
 ///
 /// Avoids TOCTOU by attempting the delete directly and matching on the error kind,
 /// rather than checking `exists()` first.
-pub fn delete_blob_file(data_dir: &Path, storage_path: &str) -> Result<bool, BlobStoreError> {
+pub async fn delete_blob_file(data_dir: &Path, storage_path: &str) -> Result<bool, BlobStoreError> {
     let abs_path = data_dir.join(storage_path);
-    match std::fs::remove_file(&abs_path) {
+    match tokio::fs::remove_file(&abs_path).await {
         Ok(()) => {
-            // Best-effort: clean up the prefix directory if empty.
+            // Best-effort prefix-directory cleanup: the blob file is already gone, so a failure to
+            // read the directory or confirm it is empty must NOT turn a successful delete into an
+            // error. Callers (blob_gc, account_delete) key the DB-row delete on this `Ok(true)`;
+            // propagating a cleanup I/O error would strand the row pointing at a now-missing file.
             if let Some(parent) = abs_path.parent() {
-                if std::fs::read_dir(parent)?.next().is_none() {
-                    std::fs::remove_dir(parent).ok();
+                if let Ok(mut entries) = tokio::fs::read_dir(parent).await {
+                    if matches!(entries.next_entry().await, Ok(None)) {
+                        tokio::fs::remove_dir(parent).await.ok();
+                    }
                 }
             }
             Ok(true)
@@ -136,70 +140,70 @@ fn build_cid(hash: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn store_and_read_roundtrip() {
+    #[tokio::test]
+    async fn store_and_read_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let content = b"hello, blob world!";
 
-        let stored = store_blob(dir.path(), content).unwrap();
+        let stored = store_blob(dir.path(), content).await.unwrap();
 
         assert!(stored.cid.starts_with("bafk"), "CID must be base32 CIDv1");
         assert_eq!(stored.mime_type, "application/octet-stream"); // no magic bytes → fallback
         assert!(stored.storage_path.starts_with("blobs/"));
         assert_eq!(stored.size_bytes, content.len() as u64);
 
-        let read_back = read_blob(dir.path(), &stored.storage_path).unwrap();
+        let read_back = read_blob(dir.path(), &stored.storage_path).await.unwrap();
         assert_eq!(read_back, content);
     }
 
-    #[test]
-    fn jpeg_mime_detected() {
+    #[tokio::test]
+    async fn jpeg_mime_detected() {
         let dir = tempfile::tempdir().unwrap();
         // Minimal JPEG: SOI marker + EOI marker
         let jpeg_bytes = [
             0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0xFF, 0xD9,
         ];
 
-        let stored = store_blob(dir.path(), &jpeg_bytes).unwrap();
+        let stored = store_blob(dir.path(), &jpeg_bytes).await.unwrap();
         assert_eq!(stored.mime_type, "image/jpeg");
     }
 
-    #[test]
-    fn png_mime_detected() {
+    #[tokio::test]
+    async fn png_mime_detected() {
         let dir = tempfile::tempdir().unwrap();
         // PNG magic bytes (8-byte signature)
         let png_bytes = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00];
 
-        let stored = store_blob(dir.path(), &png_bytes).unwrap();
+        let stored = store_blob(dir.path(), &png_bytes).await.unwrap();
         assert_eq!(stored.mime_type, "image/png");
     }
 
-    #[test]
-    fn same_content_same_cid() {
+    #[tokio::test]
+    async fn same_content_same_cid() {
         let dir = tempfile::tempdir().unwrap();
         let content = b"deterministic";
 
-        let a = store_blob(dir.path(), content).unwrap();
+        let a = store_blob(dir.path(), content).await.unwrap();
         // Second write is idempotent (same CID, same path).
-        let b = store_blob(dir.path(), content).unwrap();
+        let b = store_blob(dir.path(), content).await.unwrap();
 
         assert_eq!(a.cid, b.cid);
         assert_eq!(a.storage_path, b.storage_path);
     }
 
-    #[test]
-    fn different_content_different_cid() {
+    #[tokio::test]
+    async fn different_content_different_cid() {
         let dir = tempfile::tempdir().unwrap();
-        let a = store_blob(dir.path(), b"alpha").unwrap();
-        let b = store_blob(dir.path(), b"bravo").unwrap();
+        let a = store_blob(dir.path(), b"alpha").await.unwrap();
+        let b = store_blob(dir.path(), b"bravo").await.unwrap();
 
         assert_ne!(a.cid, b.cid);
     }
 
-    #[test]
-    fn prefix_fanout_creates_two_char_directory() {
+    #[tokio::test]
+    async fn prefix_fanout_creates_two_char_directory() {
         let dir = tempfile::tempdir().unwrap();
-        let stored = store_blob(dir.path(), b"fanout test").unwrap();
+        let stored = store_blob(dir.path(), b"fanout test").await.unwrap();
 
         // storage_path should be like "blobs/ba/bafk..."
         let parts: Vec<&str> = stored.storage_path.split('/').collect();
@@ -208,22 +212,26 @@ mod tests {
         assert_eq!(parts[1].len(), 2, "prefix must be 2 chars");
     }
 
-    #[test]
-    fn delete_blob_removes_file() {
+    #[tokio::test]
+    async fn delete_blob_removes_file() {
         let dir = tempfile::tempdir().unwrap();
-        let stored = store_blob(dir.path(), b"delete me").unwrap();
+        let stored = store_blob(dir.path(), b"delete me").await.unwrap();
 
-        let deleted = delete_blob_file(dir.path(), &stored.storage_path).unwrap();
+        let deleted = delete_blob_file(dir.path(), &stored.storage_path)
+            .await
+            .unwrap();
         assert!(deleted);
 
-        let exists = read_blob(dir.path(), &stored.storage_path).is_ok();
+        let exists = read_blob(dir.path(), &stored.storage_path).await.is_ok();
         assert!(!exists, "file must be gone after delete");
     }
 
-    #[test]
-    fn delete_nonexistent_returns_false() {
+    #[tokio::test]
+    async fn delete_nonexistent_returns_false() {
         let dir = tempfile::tempdir().unwrap();
-        let deleted = delete_blob_file(dir.path(), "blobs/xx/nonexistent").unwrap();
+        let deleted = delete_blob_file(dir.path(), "blobs/xx/nonexistent")
+            .await
+            .unwrap();
         assert!(!deleted);
     }
 
@@ -253,22 +261,22 @@ mod tests {
         );
     }
 
-    #[test]
-    fn read_blob_nonexistent_returns_error() {
+    #[tokio::test]
+    async fn read_blob_nonexistent_returns_error() {
         let dir = tempfile::tempdir().unwrap();
-        let result = read_blob(dir.path(), "blobs/xx/nonexistent");
+        let result = read_blob(dir.path(), "blobs/xx/nonexistent").await;
         assert!(result.is_err(), "must return error for missing file");
     }
 
-    #[test]
-    fn empty_content_stores_successfully() {
+    #[tokio::test]
+    async fn empty_content_stores_successfully() {
         let dir = tempfile::tempdir().unwrap();
-        let stored = store_blob(dir.path(), b"").unwrap();
+        let stored = store_blob(dir.path(), b"").await.unwrap();
 
         assert_eq!(stored.size_bytes, 0);
         assert_eq!(stored.mime_type, "application/octet-stream");
 
-        let read_back = read_blob(dir.path(), &stored.storage_path).unwrap();
+        let read_back = read_blob(dir.path(), &stored.storage_path).await.unwrap();
         assert!(read_back.is_empty());
     }
 }

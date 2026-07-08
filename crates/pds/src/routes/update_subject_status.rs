@@ -452,7 +452,7 @@ mod tests {
         seed_account_with_repo(&state.db, &did).await;
 
         let mut config = (*state.config).clone();
-        config.admin_token = Some("test-admin-token".to_string());
+        config.admin_token = Some(common::Sensitive("test-admin-token".to_string()));
         let state = crate::app::AppState {
             config: std::sync::Arc::new(config),
             ..state

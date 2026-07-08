@@ -52,8 +52,10 @@ pub struct Config {
     pub telemetry: TelemetryConfig,
     /// Outbound email delivery (password reset, email confirmation, email update).
     pub email: EmailConfig,
-    // Operator authentication for management endpoints (e.g., POST /v1/pds/keys).
-    pub admin_token: Option<String>,
+    // Operator authentication for management endpoints (e.g., POST /v1/pds/keys). Wrapped in
+    // [`Sensitive`] so this break-glass bearer token never leaks via `Debug` (`Config` derives it),
+    // matching its sibling secrets `signing_key_master_key` / `email.smtp_password`.
+    pub admin_token: Option<Sensitive<String>>,
     // AES-256-GCM master key for encrypting signing key private keys at rest.
     pub signing_key_master_key: Option<Sensitive<Zeroizing<[u8; 32]>>>,
     // URL of the PLC directory service (default: https://plc.directory)
@@ -254,6 +256,11 @@ pub struct RateLimitConfig {
     /// `com.atproto.identity.updateHandle` requests per IP per 5 minutes (reference: 10). `0` disables.
     #[serde(default = "default_update_handle_per_5min")]
     pub update_handle_per_5min: u64,
+    /// `POST /v1/transfer/accept` requests per IP per 5 minutes. Default 30 (in line with
+    /// createSession): the endpoint authenticates on a bare 6-char transfer code, so it warrants
+    /// the tight per-endpoint cap rather than only the generous global one. `0` disables.
+    #[serde(default = "default_transfer_accept_per_5min")]
+    pub transfer_accept_per_5min: u64,
     /// Repo-write points per account per hour (reference: 5000). `0` disables the hourly budget.
     #[serde(default = "default_write_points_hourly")]
     pub write_points_hourly: u64,
@@ -271,6 +278,7 @@ impl Default for RateLimitConfig {
             create_session_per_5min: default_create_session_per_5min(),
             reset_password_per_5min: default_reset_password_per_5min(),
             update_handle_per_5min: default_update_handle_per_5min(),
+            transfer_accept_per_5min: default_transfer_accept_per_5min(),
             write_points_hourly: default_write_points_hourly(),
             write_points_daily: default_write_points_daily(),
         }
@@ -299,6 +307,10 @@ fn default_reset_password_per_5min() -> u64 {
 
 fn default_update_handle_per_5min() -> u64 {
     10
+}
+
+fn default_transfer_accept_per_5min() -> u64 {
+    30
 }
 
 fn default_write_points_hourly() -> u64 {
@@ -1019,6 +1031,10 @@ pub(crate) fn apply_env_overrides(
         raw.rate_limit.update_handle_per_5min =
             parse_u64("EZPDS_RATE_LIMIT_UPDATE_HANDLE_PER_5MIN", v)?;
     }
+    if let Some(v) = env.get("EZPDS_RATE_LIMIT_TRANSFER_ACCEPT_PER_5MIN") {
+        raw.rate_limit.transfer_accept_per_5min =
+            parse_u64("EZPDS_RATE_LIMIT_TRANSFER_ACCEPT_PER_5MIN", v)?;
+    }
     if let Some(v) = env.get("EZPDS_RATE_LIMIT_WRITE_POINTS_HOURLY") {
         raw.rate_limit.write_points_hourly = parse_u64("EZPDS_RATE_LIMIT_WRITE_POINTS_HOURLY", v)?;
     }
@@ -1438,7 +1454,7 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         rate_limit: raw.rate_limit,
         telemetry,
         email,
-        admin_token: raw.admin_token,
+        admin_token: raw.admin_token.map(Sensitive),
         signing_key_master_key: raw
             .signing_key_master_key
             .map(|k| Sensitive(Zeroizing::new(k))),
@@ -2304,7 +2320,10 @@ mod tests {
         let env = HashMap::from([("EZPDS_ADMIN_TOKEN".to_string(), "secret-token".to_string())]);
         let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
         let config = validate_and_build(raw).unwrap();
-        assert_eq!(config.admin_token.as_deref(), Some("secret-token"));
+        assert_eq!(
+            config.admin_token.as_ref().map(|s| s.0.as_str()),
+            Some("secret-token")
+        );
     }
 
     #[test]
@@ -2471,6 +2490,7 @@ mod tests {
         assert_eq!(rl.create_session_per_5min, 30);
         assert_eq!(rl.reset_password_per_5min, 50);
         assert_eq!(rl.update_handle_per_5min, 10);
+        assert_eq!(rl.transfer_accept_per_5min, 30);
         assert_eq!(rl.write_points_hourly, 5000);
         assert_eq!(rl.write_points_daily, 35000);
     }
@@ -2510,6 +2530,10 @@ mod tests {
                 "EZPDS_RATE_LIMIT_WRITE_POINTS_DAILY".to_string(),
                 "99".to_string(),
             ),
+            (
+                "EZPDS_RATE_LIMIT_TRANSFER_ACCEPT_PER_5MIN".to_string(),
+                "7".to_string(),
+            ),
         ]);
         let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
         let config = validate_and_build(raw).unwrap();
@@ -2517,6 +2541,7 @@ mod tests {
         assert_eq!(config.rate_limit.global_ip_per_5min, 1234);
         assert_eq!(config.rate_limit.write_points_hourly, 42);
         assert_eq!(config.rate_limit.write_points_daily, 99);
+        assert_eq!(config.rate_limit.transfer_accept_per_5min, 7);
     }
 
     #[test]
@@ -2971,6 +2996,23 @@ mod tests {
         assert!(
             !debug.contains("topsecret"),
             "password must not leak in Debug"
+        );
+        assert!(debug.contains("***"), "Sensitive should render as ***");
+    }
+
+    #[test]
+    fn admin_token_is_redacted_in_debug() {
+        // The break-glass admin bearer token must stay out of Debug output (Config derives Debug).
+        let env = HashMap::from([(
+            "EZPDS_ADMIN_TOKEN".to_string(),
+            "super-secret-admin".to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        let debug = format!("{config:?}");
+        assert!(
+            !debug.contains("super-secret-admin"),
+            "admin token must not leak in Debug"
         );
         assert!(debug.contains("***"), "Sensitive should render as ***");
     }
