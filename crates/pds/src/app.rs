@@ -73,6 +73,7 @@ use crate::routes::oauth_client_metadata::oauth_client_metadata;
 use crate::routes::oauth_jwks::oauth_jwks;
 use crate::routes::oauth_par::post_par;
 use crate::routes::oauth_protected_resource::oauth_protected_resource_metadata;
+use crate::routes::oauth_revoke::post_revoke;
 use crate::routes::oauth_server_metadata::oauth_server_metadata;
 use crate::routes::oauth_token::post_token;
 use crate::routes::provisioning_session::create_provisioning_session;
@@ -261,6 +262,7 @@ pub fn app(state: AppState) -> Router {
         .route("/oauth/jwks", get(oauth_jwks))
         .route("/oauth/par", post(post_par))
         .route("/oauth/token", post(post_token))
+        .route("/oauth/revoke", post(post_revoke))
         .route("/agent/identity", post(post_agent_identity))
         .route("/xrpc/_health", get(health))
         .route(

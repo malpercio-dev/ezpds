@@ -31,6 +31,7 @@ use crate::db::oauth::{
     delete_oauth_refresh_token, get_authorization_code, get_oauth_refresh_token,
     store_oauth_refresh_token,
 };
+use crate::routes::oauth_errors::OAuthTokenError;
 use crate::token::generate_token;
 
 // ── Request / response types ──────────────────────────────────────────────────
@@ -62,84 +63,6 @@ pub struct TokenResponse {
     pub expires_in: u64,
     pub refresh_token: String,
     pub scope: String,
-}
-
-/// OAuth 2.0 error response body (RFC 6749 §5.2).
-///
-/// All token endpoint errors use this format, distinct from the codebase's
-/// `ApiError` envelope (`{ "error": { "code": "...", "message": "..." } }`).
-pub struct OAuthTokenError {
-    pub error: &'static str,
-    pub error_description: &'static str,
-    /// Optional DPoP-Nonce value to include in the response header.
-    /// Required for `use_dpop_nonce` errors so the client can retry.
-    pub dpop_nonce: Option<String>,
-}
-
-impl OAuthTokenError {
-    pub fn new(error: &'static str, error_description: &'static str) -> Self {
-        Self {
-            error,
-            error_description,
-            dpop_nonce: None,
-        }
-    }
-
-    pub fn with_nonce(error: &'static str, error_description: &'static str, nonce: String) -> Self {
-        Self {
-            error,
-            error_description,
-            dpop_nonce: Some(nonce),
-        }
-    }
-}
-
-impl IntoResponse for OAuthTokenError {
-    fn into_response(self) -> Response {
-        let body = serde_json::json!({
-            "error": self.error,
-            "error_description": self.error_description,
-        });
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert(
-            axum::http::header::CONTENT_TYPE,
-            axum::http::HeaderValue::from_static("application/json"),
-        );
-        if let Some(nonce) = self.dpop_nonce {
-            match axum::http::HeaderValue::from_str(&nonce) {
-                Ok(hval) => {
-                    headers.insert("DPoP-Nonce", hval);
-                }
-                Err(e) => {
-                    // This should never happen: nonces are base64url ASCII, always valid
-                    // header values. If it does happen, returning use_dpop_nonce without
-                    // the nonce header leaves the client with no retry path (RFC 9449 §7.1).
-                    // Return server_error instead.
-                    tracing::error!(nonce = ?nonce, error = %e, "nonce string cannot be encoded as HTTP header value; this is a server bug");
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        [(
-                            axum::http::header::CONTENT_TYPE,
-                            axum::http::HeaderValue::from_static("application/json"),
-                        )],
-                        Json(serde_json::json!({
-                            "error": "server_error",
-                            "error_description": "internal server error",
-                        })),
-                    )
-                        .into_response();
-                }
-            }
-        }
-
-        // RFC 6749 §5.2: most errors are 400, but server_error is 500.
-        let status = if self.error == "server_error" {
-            StatusCode::INTERNAL_SERVER_ERROR
-        } else {
-            StatusCode::BAD_REQUEST
-        };
-        (status, headers, Json(body)).into_response()
-    }
 }
 
 // ── Helper functions ────────────────────────────────────────────────────────────
