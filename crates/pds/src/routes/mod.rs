@@ -98,3 +98,6 @@ pub(crate) mod test_utils;
 
 #[cfg(test)]
 mod outbound_migration_test;
+
+#[cfg(test)]
+mod agent_auth_test;
