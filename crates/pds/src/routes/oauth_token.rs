@@ -764,7 +764,8 @@ async fn handle_jwt_bearer(state: &AppState, form: TokenRequestForm) -> Response
     // same identity even if the issuance path ever drifts.
     match get_agent_identity(&state.db, &claims.registration_id).await {
         Ok(Some(identity))
-            if identity.status == AgentIdentityStatus::Claimed && identity.did == claims.sub => {}
+            if identity.status == AgentIdentityStatus::Claimed
+                && identity.did.as_deref() == Some(claims.sub.as_str()) => {}
         Ok(Some(identity)) if identity.status == AgentIdentityStatus::Revoked => {
             return OAuthTokenError::new("access_denied", "the agent identity has been revoked")
                 .into_response();

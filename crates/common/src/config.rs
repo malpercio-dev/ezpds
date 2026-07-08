@@ -321,9 +321,9 @@ pub struct OAuthConfig {}
 /// but performs no agent registration until deliberately configured.
 ///
 /// - `service_auth_enabled` gates the `service_auth` (login-hint → claim-ceremony) flow.
-/// - `anonymous_enabled` gates the `anonymous` flow (not yet implemented; see the deferred
-///   follow-up — the V037 schema binds every identity to an existing account DID, which an
-///   anonymous agent lacks).
+/// - `anonymous_enabled` gates the `anonymous` flow (register an ownerless identity — no user
+///   identity yet — and receive a pre-claim assertion plus a `claim_token` for an optional later
+///   claim ceremony).
 /// - `trusted_issuers` gates `identity_assertion`: an ID-JAG whose `iss` is not listed is refused
 ///   with `issuer_not_enabled`. Each entry carries the issuer's verification key inline (PEM). The
 ///   dynamic JWKS-URL form of the trust list is a separate follow-up.
@@ -332,7 +332,7 @@ pub struct AgentAuthConfig {
     /// Enable the `service_auth` registration flow. Default `false`.
     #[serde(default)]
     pub service_auth_enabled: bool,
-    /// Enable the `anonymous` registration flow. Default `false`. Currently inert (deferred).
+    /// Enable the `anonymous` registration flow. Default `false`.
     #[serde(default)]
     pub anonymous_enabled: bool,
     /// Issuers whose ID-JAGs are accepted by the `identity_assertion` flow. Empty (the default)

@@ -5,7 +5,7 @@
 // Returns: JSON registration result on success; OAuth-style `{error, error_description}` on failure
 //
 // `POST /agent/identity` — the auth.md agent-registration endpoint (auth.md spec Step 3). Three
-// registration flows are advertised in the AS metadata; this handler implements two of them:
+// registration flows are advertised in the AS metadata, and this handler implements all three:
 //
 //   - `identity_assertion` — the agent presents an ID-JAG (a JWT issued by a trusted external
 //     identity provider). The ID-JAG is verified against a configured issuer trust list; a known
@@ -14,10 +14,12 @@
 //     ceremony and returns `interaction_required`.
 //   - `service_auth` — the agent knows only the user's email (`login_hint`). We start a claim
 //     ceremony bound to that account and return the `claim_token` + claim block.
-//
-// The `anonymous` flow is deferred: the V037 schema binds every `agent_identities` row to an
-// existing `accounts.did`, which an anonymous agent (no user identity) lacks. Enabling it needs a
-// schema change to make the owning DID nullable; until then this handler refuses `anonymous`.
+//   - `anonymous` — the agent has no user identity yet. We register an ownerless identity
+//     (`agent_identities.did` is NULL until a claim binds one — V038 made it nullable), mint a
+//     pre-claim service-signed `identity_assertion` carrying the operator's `pre_claim_scopes`, and
+//     return it alongside a `claim_token` for an optional later claim ceremony. The pre-claim
+//     identity stays `active` (unclaimed), so its assertion cannot yet be exchanged at the token
+//     endpoint (the jwt-bearer grant requires a `claimed` identity with a bound DID).
 //
 // Claim-lifecycle interpretation (documented because auth.md leaves the exact status transitions to
 // the claim-ceremony endpoint, MM-170): an `agent_identities.status` of `active` means "registered,
@@ -76,6 +78,18 @@ struct IdentityAssertionResponse {
     identity_assertion: String,
     assertion_expires: String,
     scopes: Vec<String>,
+}
+
+/// Success body for an `anonymous` registration: a pre-claim assertion plus the `claim_token` for
+/// an optional later claim ceremony.
+#[derive(Debug, Serialize)]
+struct AnonymousResponse {
+    registration_id: String,
+    registration_type: &'static str,
+    identity_assertion: String,
+    assertion_expires: String,
+    scopes: Vec<String>,
+    claim_token: String,
 }
 
 /// Success body for a `service_auth` registration (a started claim ceremony).
@@ -164,7 +178,7 @@ pub async fn post_agent_identity(
     let result = match req.typ.as_deref() {
         Some("identity_assertion") => handle_identity_assertion(&state, &req).await,
         Some("service_auth") => handle_service_auth(&state, &req).await,
-        Some("anonymous") => handle_anonymous(&state),
+        Some("anonymous") => handle_anonymous(&state).await,
         Some(other) => Err(AgentAuthError::new(
             StatusCode::BAD_REQUEST,
             "invalid_request",
@@ -182,8 +196,11 @@ pub async fn post_agent_identity(
     }
 }
 
-/// `anonymous` is deferred (see the module doc). Reports the flow's enablement honestly.
-fn handle_anonymous(state: &AppState) -> Result<Response, AgentAuthError> {
+/// `anonymous` — register an ownerless agent identity (auth.md §3.3). Mints a pre-claim service
+/// assertion carrying `pre_claim_scopes` and returns it plus a `claim_token` for an optional later
+/// claim ceremony. The identity persists with a NULL `did` (V038) and `active` status until a claim
+/// binds an account.
+async fn handle_anonymous(state: &AppState) -> Result<Response, AgentAuthError> {
     if !state.config.agent_auth.anonymous_enabled {
         return Err(AgentAuthError::new(
             StatusCode::BAD_REQUEST,
@@ -191,12 +208,57 @@ fn handle_anonymous(state: &AppState) -> Result<Response, AgentAuthError> {
             "anonymous agent registration is not enabled on this server",
         ));
     }
-    // Enabled by config but not yet implementable under the current schema.
-    Err(AgentAuthError::new(
-        StatusCode::NOT_IMPLEMENTED,
-        "temporarily_unavailable",
-        "anonymous agent registration is not yet implemented on this server",
-    ))
+
+    let registration_id = new_registration_id();
+    let claim_token = new_claim_token();
+    let pre_claim_scopes = &state.config.agent_auth.pre_claim_scopes;
+    let scopes_json = scopes_to_json(pre_claim_scopes);
+    let claim_expiry =
+        Utc::now() + Duration::seconds(state.config.agent_auth.claim_token_ttl_secs as i64);
+
+    // The pre-claim assertion's subject is the registration id — an anonymous identity has no DID to
+    // name yet. It carries the pre-claim scope set and is marked `anonymous` in its claims.
+    let minted = mint_identity_assertion(
+        state,
+        &registration_id,
+        &registration_id,
+        RegistrationType::Anonymous,
+        pre_claim_scopes,
+    )?;
+
+    let outcome = insert_agent_identity(
+        &state.db,
+        &NewAgentIdentity {
+            id: &registration_id,
+            did: None,
+            registration_type: RegistrationType::Anonymous,
+            issuer: None,
+            subject: None,
+            email: None,
+            scopes: &scopes_json,
+            identity_assertion: Some(&minted.jwt),
+            assertion_expires_at: &minted.expires_sqlite,
+            pre_claim_scopes: Some(&scopes_json),
+            claim_token: Some(&claim_token),
+            claim_token_expires_at: Some(&to_sqlite_datetime(&claim_expiry)),
+        },
+    )
+    .await?;
+    if outcome == InsertAgentIdentityOutcome::Duplicate {
+        // Random registration id / claim token collided — astronomically unlikely; treat as a
+        // transient server fault rather than a client error.
+        tracing::error!(registration_id = %registration_id, "anonymous agent identity insert reported an unexpected duplicate");
+        return Err(AgentAuthError::server_error());
+    }
+
+    Ok(ok_json(&AnonymousResponse {
+        registration_id,
+        registration_type: RegistrationType::Anonymous.as_str(),
+        identity_assertion: minted.jwt,
+        assertion_expires: minted.expires_rfc3339,
+        scopes: pre_claim_scopes.clone(),
+        claim_token,
+    }))
 }
 
 // ── service_auth ─────────────────────────────────────────────────────────────────
@@ -251,7 +313,7 @@ async fn handle_service_auth(
         &state.db,
         &NewAgentIdentity {
             id: &registration_id,
-            did: &account.did,
+            did: Some(&account.did),
             registration_type: RegistrationType::ServiceAuth,
             issuer: None,
             subject: None,
@@ -389,7 +451,19 @@ async fn existing_identity_assertion(
                 &parse_scopes(&existing.scopes),
                 &state.config.agent_auth.granted_scopes,
             );
-            let minted = mint_identity_assertion(state, &existing.did, &existing.id, &scopes)?;
+            // A claimed `identity_assertion` registration always has a bound DID; a missing one is
+            // a corrupt row, not a client error.
+            let did = existing
+                .did
+                .as_deref()
+                .ok_or_else(AgentAuthError::server_error)?;
+            let minted = mint_identity_assertion(
+                state,
+                did,
+                &existing.id,
+                RegistrationType::IdentityAssertion,
+                &scopes,
+            )?;
             set_agent_identity_assertion(
                 &state.db,
                 &existing.id,
@@ -476,7 +550,7 @@ async fn new_identity_assertion(
         &state.db,
         &NewAgentIdentity {
             id: &registration_id,
-            did: &account.did,
+            did: Some(&account.did),
             registration_type: RegistrationType::IdentityAssertion,
             issuer: Some(iss),
             subject: Some(&claims.sub),
@@ -614,8 +688,9 @@ struct ServiceAssertionClaims {
 
 fn mint_identity_assertion(
     state: &AppState,
-    did: &str,
+    subject: &str,
     registration_id: &str,
+    registration_type: RegistrationType,
     scopes: &[String],
 ) -> Result<MintedAssertion, AgentAuthError> {
     let issued = Utc::now();
@@ -624,14 +699,14 @@ fn mint_identity_assertion(
 
     let claims = ServiceAssertionClaims {
         iss: base.clone(),
-        sub: did.to_string(),
+        sub: subject.to_string(),
         aud: base,
         iat: issued.timestamp().max(0) as u64,
         exp: expires.timestamp().max(0) as u64,
         jti: Uuid::new_v4().to_string(),
         scope: scopes.join(" "),
         registration_id: registration_id.to_string(),
-        registration_type: RegistrationType::IdentityAssertion.as_str(),
+        registration_type: registration_type.as_str(),
     };
 
     let mut header = jsonwebtoken::Header::new(Algorithm::ES256);
@@ -869,14 +944,72 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn anonymous_enabled_reports_not_implemented() {
+    async fn anonymous_enabled_registers_pre_claim_identity() {
         let cfg = AgentAuthConfig {
             anonymous_enabled: true,
             ..AgentAuthConfig::default()
         };
-        let (status, body) = post(state_with(cfg).await, json!({ "type": "anonymous" })).await;
-        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
-        assert_eq!(body["error"], "temporarily_unavailable");
+        let state = state_with(cfg).await;
+        let (status, body) = post(state.clone(), json!({ "type": "anonymous" })).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["registration_type"], "anonymous");
+        let registration_id = body["registration_id"].as_str().unwrap();
+        assert!(registration_id.starts_with("reg_"));
+        assert!(body["claim_token"].as_str().unwrap().starts_with("clm_"));
+        assert!(!body["assertion_expires"].as_str().unwrap().is_empty());
+        // The pre-claim assertion is a JWT carrying the default pre-claim scope profile.
+        let assertion = body["identity_assertion"].as_str().unwrap();
+        assert_eq!(assertion.split('.').count(), 3, "assertion must be a JWT");
+        assert_eq!(
+            body["scopes"],
+            json!(["atproto", "repo:*?action=create&action=update", "blob:*/*"])
+        );
+
+        // The identity was persisted ownerless (NULL did), active, with the assertion stored.
+        let row: (Option<String>, String, Option<String>) = sqlx::query_as(
+            "SELECT did, status, identity_assertion FROM agent_identities WHERE id = ?",
+        )
+        .bind(registration_id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(row.0, None, "anonymous identity has no owning did");
+        assert_eq!(row.1, "active");
+        assert_eq!(row.2.as_deref(), Some(assertion));
+    }
+
+    #[tokio::test]
+    async fn anonymous_pre_claim_assertion_cannot_be_exchanged_yet() {
+        // The pre-claim identity is `active`, not `claimed`, so the jwt-bearer grant refuses to
+        // exchange its assertion for an access token until a claim ceremony binds a DID.
+        let cfg = AgentAuthConfig {
+            anonymous_enabled: true,
+            ..AgentAuthConfig::default()
+        };
+        let state = state_with(cfg).await;
+        let (_status, body) = post(state.clone(), json!({ "type": "anonymous" })).await;
+        let assertion = body["identity_assertion"].as_str().unwrap().to_string();
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/token")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(format!(
+                        "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion={assertion}"
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"], "invalid_grant");
     }
 
     // ── service_auth ─────────────────────────────────────────────────────
