@@ -276,6 +276,7 @@ fn collect_blob_links(value: &serde_json::Value, out: &mut HashMap<String, i64>)
 /// expected to stay in lockstep. The row is removed only after the file delete succeeds.
 async fn delete_blob_fully(state: &AppState, blob: &BlobRow) -> Result<(), GcError> {
     let existed = blob_store::delete_blob_file(&state.config.data_dir, &blob.storage_path)
+        .await
         .map_err(|e| GcError::BlobStore(format!("delete blob file: {e}")))?;
     if !existed {
         tracing::warn!(
@@ -367,7 +368,9 @@ mod tests {
     /// Store `content` as a blob on disk and insert its metadata row with the given
     /// `temp_until`. Returns the blob CID.
     async fn add_blob(state: &AppState, did: &str, content: &[u8], temp_until: &str) -> String {
-        let stored = blob_store::store_blob(&state.config.data_dir, content).unwrap();
+        let stored = blob_store::store_blob(&state.config.data_dir, content)
+            .await
+            .unwrap();
         blobs::insert_blob(
             &state.db,
             &stored.cid,

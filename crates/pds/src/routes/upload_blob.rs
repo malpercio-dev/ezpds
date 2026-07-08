@@ -110,10 +110,12 @@ pub async fn upload_blob(
     }
 
     // 4. Store blob on filesystem (CID computation + MIME detection + write).
-    let stored = blob_store::store_blob(&state.config.data_dir, &bytes).map_err(|e| {
-        tracing::error!(error = %e, "failed to store blob on filesystem");
-        ApiError::new(ErrorCode::InternalError, "failed to store blob")
-    })?;
+    let stored = blob_store::store_blob(&state.config.data_dir, &bytes)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to store blob on filesystem");
+            ApiError::new(ErrorCode::InternalError, "failed to store blob")
+        })?;
 
     // 5. Compute temp_until = now + the configured grace TTL. Until a repo record
     //    references this blob, it is a garbage-collection candidate after this instant.

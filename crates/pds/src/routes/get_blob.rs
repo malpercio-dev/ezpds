@@ -58,8 +58,9 @@ pub async fn get_blob(
     }
 
     // 3. Read blob content from filesystem.
-    let content =
-        blob_store::read_blob(&state.config.data_dir, &blob.storage_path).map_err(|e| {
+    let content = blob_store::read_blob(&state.config.data_dir, &blob.storage_path)
+        .await
+        .map_err(|e| {
             tracing::error!(
                 error = %e,
                 cid = %params.cid,
