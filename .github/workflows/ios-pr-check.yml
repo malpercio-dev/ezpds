@@ -16,18 +16,22 @@ name: iOS · PR check
 on:
   pull_request:
     branches: [main]
-    # Mirror the union of the two TestFlight lanes' path filters. crates/** is included
-    # because the apps link shared workspace crates.
+    # Mirror the union of the two TestFlight lanes' path filters. The apps' only
+    # workspace-crate dependency is `crypto` (itself free of path deps), so
+    # crates/pds, crates/repo-engine, and crates/common changes deliberately do NOT
+    # run this lane. If an app gains a new workspace-crate dependency, add its path
+    # here AND in both TestFlight lanes.
     paths:
       - "apps/identity-wallet/**"
       - "apps/admin-companion/**"
-      - "crates/**"
+      - "crates/crypto/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "justfile"
-      # The shared iOS toolchain/patch scripts live at the repo root (per-app
-      # scripts are thin wrappers), so changes there can break this lane too.
-      - "scripts/**"
+      # The shared iOS toolchain/patch scripts live in scripts/ios/ (per-app
+      # scripts are thin wrappers). PDS-only scripts directly under scripts/
+      # (bruno-parity, font-parity, ...) are deliberately excluded.
+      - "scripts/ios/**"
       - "rust-toolchain.toml"
       - ".github/workflows/ios-pr-check.yml"
   workflow_dispatch:
