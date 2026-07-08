@@ -259,6 +259,7 @@
       <Button variant="primary" loading={claiming} onclick={mintClaimCode}>
         {claimCode ? 'Generate another code' : 'Generate claim code'}
       </Button>
+      <Button variant="secondary" onclick={() => goto('/devices')}>Devices</Button>
       <Button variant="secondary" onclick={() => goto('/settings')}>Settings</Button>
     {:else if pairings.length === 0}
       <Button variant="primary" onclick={() => goto('/pair')}>Pair this device</Button>

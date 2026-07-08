@@ -40,7 +40,8 @@ export type RelayClientError =
   | { code: 'UNREACHABLE'; message: string }
   | { code: 'RELAY_REJECTED'; status: number; message: string }
   | { code: 'BAD_RESPONSE'; message: string }
-  | { code: 'NO_SUCH_PAIRING' };
+  | { code: 'NO_SUCH_PAIRING' }
+  | { code: 'SELF_REVOKE_NOT_ALLOWED' };
 
 /** One stored relay pairing. `id` is the stable local handle (a UUID minted at pair
  * time); `deviceId` is relay-assigned and changes on re-pair. `nickname` is the
@@ -127,6 +128,43 @@ export async function revokeSelf(id: string): Promise<void> {
  */
 export async function unpair(id: string): Promise<void> {
   return invoke('unpair', { id });
+}
+
+/**
+ * One registered companion device on a relay, as the relay reports it. `id` is the
+ * relay-assigned registration id — the row where it equals a pairing's `deviceId` is
+ * the device in your hand. Timestamps are the relay's SQLite UTC datetime strings.
+ */
+export interface AdminDevice {
+  id: string;
+  label: string;
+  /** The device's P-256 public key as a did:key URI. */
+  publicKey: string;
+  platform: string;
+  scopes: string;
+  /** Derived server-side: 'active' while revokedAt is null, 'revoked' once stamped. */
+  status: 'active' | 'revoked';
+  createdAt: string;
+  lastSeenAt: string | null;
+  revokedAt: string | null;
+}
+
+/**
+ * List every device registered on the given pairing's relay — active and revoked,
+ * newest first — via a signed request. Throws a {@link RelayClientError}.
+ */
+export function listAdminDevices(pairingId: string): Promise<AdminDevice[]> {
+  return invoke<AdminDevice[]>('list_admin_devices', { pairingId });
+}
+
+/**
+ * Revoke another device's registration on the given pairing's relay — the loss
+ * response. Refused for the pairing's own registration (`SELF_REVOKE_NOT_ALLOWED`);
+ * self-revoke is {@link revokeSelf}, which also forgets the pairing locally. Returns
+ * the device's post-revoke state.
+ */
+export function revokeAdminDevice(pairingId: string, deviceId: string): Promise<AdminDevice> {
+  return invoke<AdminDevice>('revoke_admin_device', { pairingId, deviceId });
 }
 
 /** Whether the biometric (user-presence) gate on signing actions is enabled (default on). */

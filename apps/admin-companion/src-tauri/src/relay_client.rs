@@ -39,6 +39,11 @@ pub enum RelayClientError {
     /// (e.g. the entry was removed on another screen between load and tap).
     #[error("no such pairing")]
     NoSuchPairing,
+    /// A remote revoke addressed this pairing's own registration. Refused: self-revoke
+    /// is a distinct flow ([`revoke_self`]) that also removes the local pairing entry,
+    /// and letting the remote path revoke self would strand a dead local pairing.
+    #[error("target is this device's own registration")]
+    SelfRevokeNotAllowed,
     /// The device key could not be created, found, or used to sign.
     #[error("device key error: {message}")]
     DeviceKey { message: String },
@@ -212,6 +217,15 @@ fn resolve_active() -> Result<Pairing, RelayClientError> {
         .ok_or(RelayClientError::NotPaired)
 }
 
+/// Resolve an id-addressed pairing, or `NoSuchPairing` when the entry was removed
+/// (e.g. on another screen between load and tap).
+fn resolve_pairing(id: &str) -> Result<Pairing, RelayClientError> {
+    keychain::load_pairings()?
+        .get(id)
+        .cloned()
+        .ok_or(RelayClientError::NoSuchPairing)
+}
+
 /// Mint a single account claim code via a signed `POST /v1/accounts/claim-codes`.
 /// The demo-lifesaver action: an operator generates a claim code from their phone.
 pub async fn generate_claim_code() -> Result<String, RelayClientError> {
@@ -265,11 +279,7 @@ pub fn rename_pairing(id: &str, nickname: &str) -> Result<(), RelayClientError> 
 /// a failed revoke leaves the entry intact so the operator can retry or fall back to a
 /// local-only [`unpair`].
 pub async fn revoke_self(id: &str) -> Result<(), RelayClientError> {
-    let doc = keychain::load_pairings()?;
-    let pairing = doc
-        .get(id)
-        .cloned()
-        .ok_or(RelayClientError::NoSuchPairing)?;
+    let pairing = resolve_pairing(id)?;
     let path = format!("/v1/admin/devices/{}/revoke", pairing.device_id);
     // The revoke endpoint takes no body. The signature still binds method + path, so a
     // signature minted to revoke this device cannot be replayed to revoke another.
@@ -293,6 +303,65 @@ pub fn unpair(id: &str) -> Result<(), RelayClientError> {
     doc.remove(id)?;
     keychain::save_pairings(&doc)?;
     Ok(())
+}
+
+// ── Device management (list / remote revoke) ─────────────────────────────────
+
+/// Build the signed remote-revoke request for another device on `pairing`'s relay.
+///
+/// Refuses this pairing's own registration ([`RelayClientError::SelfRevokeNotAllowed`]):
+/// self-revoke is [`revoke_self`], which also removes the local pairing entry. Pure
+/// apart from the device-key sign, so the refusal and the path-binding are testable
+/// without a network.
+pub fn build_revoke_device_request(
+    pairing: &Pairing,
+    device_id: &str,
+    timestamp: i64,
+    nonce: &str,
+) -> Result<SignedRequest, RelayClientError> {
+    if device_id == pairing.device_id {
+        return Err(RelayClientError::SelfRevokeNotAllowed);
+    }
+    let path = format!("/v1/admin/devices/{device_id}/revoke");
+    // The revoke endpoint takes no body; the signature binds method + path, so a
+    // signature minted to revoke this device cannot be replayed against another.
+    build_signed_request(pairing, "POST", &path, b"", timestamp, nonce)
+}
+
+/// List every device registered on the given pairing's relay — active and revoked,
+/// newest first — via a signed `GET /v1/admin/devices`. The devices screen's data
+/// source; id-addressed so the list always comes from (and is signed for) the relay
+/// the screen was opened for, never a concurrently-switched active pairing.
+pub async fn list_devices(pairing_id: &str) -> Result<Vec<AdminDevice>, RelayClientError> {
+    let pairing = resolve_pairing(pairing_id)?;
+    let signed = build_signed_request(
+        &pairing,
+        "GET",
+        "/v1/admin/devices",
+        b"",
+        unix_now(),
+        &fresh_nonce(),
+    )?;
+    let response = send(signed).await?;
+    Ok(parse_success::<ListDevicesResponseBody>(response)
+        .await?
+        .devices)
+}
+
+/// Revoke another device's registration on the given pairing's relay — the loss
+/// response: kill a lost device's credential from this one. Self-targets are refused
+/// (see [`build_revoke_device_request`]). Returns the device's post-revoke state as
+/// the relay reports it.
+pub async fn revoke_device(
+    pairing_id: &str,
+    device_id: &str,
+) -> Result<AdminDevice, RelayClientError> {
+    let pairing = resolve_pairing(pairing_id)?;
+    let signed = build_revoke_device_request(&pairing, device_id, unix_now(), &fresh_nonce())?;
+    let response = send(signed).await?;
+    Ok(parse_success::<RevokeDeviceResponseBody>(response)
+        .await?
+        .device)
 }
 
 /// Send an already-built [`SignedRequest`] and return the raw response.
@@ -326,6 +395,38 @@ struct RegisterDeviceResponse {
 #[derive(serde::Deserialize)]
 struct ClaimCodesResponseBody {
     codes: Vec<String>,
+}
+
+/// One registered companion device as the relay reports it — the shape of
+/// `AdminDeviceView` in `crates/pds/src/routes/admin_devices.rs` (camelCase on the
+/// wire; re-serialized camelCase over IPC). The `pds` crate is binary-only, so this
+/// contract is shared by value, not import — a deserialization test pins it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminDevice {
+    /// Relay-assigned id — the value a phone sends as `X-Admin-Device`. Matching this
+    /// against a pairing's `device_id` identifies "this device" in the list.
+    pub id: String,
+    pub label: String,
+    /// The device's P-256 public key as a `did:key:` URI.
+    pub public_key: String,
+    pub platform: String,
+    pub scopes: String,
+    /// `"active"` or `"revoked"`, derived server-side from `revoked_at`.
+    pub status: String,
+    pub created_at: String,
+    pub last_seen_at: Option<String>,
+    pub revoked_at: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct ListDevicesResponseBody {
+    devices: Vec<AdminDevice>,
+}
+
+#[derive(serde::Deserialize)]
+struct RevokeDeviceResponseBody {
+    device: AdminDevice,
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -959,6 +1060,174 @@ mod tests {
             )
             .is_err(),
             "B's revoke signature must NOT verify against A's path"
+        );
+    }
+
+    // The device-list read, proven without a live relay: a signed `GET /v1/admin/devices`
+    // over an empty body carries a signature the relay's OWN verifier accepts — the same
+    // envelope gates reads and writes.
+    #[test]
+    fn signed_device_list_request_is_accepted_by_relay_verifier() {
+        keychain::clear_for_test();
+        let key = device_key::get_or_create().expect("device key");
+        let pairing = test_pairing("device-xyz", "https://relay.example");
+
+        let req = build_signed_request(
+            &pairing,
+            "GET",
+            "/v1/admin/devices",
+            b"",
+            1_700_000_000,
+            "nonce-list",
+        )
+        .expect("build signed list request");
+
+        assert_eq!(req.url, "https://relay.example/v1/admin/devices");
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.body, b"");
+        assert_eq!(header(&req, signing::ADMIN_DEVICE_HEADER), "device-xyz");
+
+        let sign_string = signing::request_sign_string(
+            "GET",
+            "/v1/admin/devices",
+            1_700_000_000,
+            "nonce-list",
+            b"",
+        );
+        verify_p256_signature(
+            &DidKeyUri(key.key_id),
+            sign_string.as_bytes(),
+            &decode_sig(header(&req, signing::ADMIN_SIGNATURE_HEADER)),
+        )
+        .expect("the relay's verifier must accept this signed list request");
+    }
+
+    // Remote revoke of ANOTHER device (the loss response): the signature binds the
+    // target's path, and a self-target is refused before anything is signed —
+    // self-revoke is `revoke_self`, which also removes the local pairing.
+    #[test]
+    fn remote_revoke_request_is_path_bound_and_refuses_self_target() {
+        keychain::clear_for_test();
+        let key = device_key::get_or_create().expect("device key");
+        let pairing = test_pairing("device-self", "https://relay.example");
+
+        let req = build_revoke_device_request(&pairing, "device-lost", 1_700_000_000, "nonce-rev")
+            .expect("build remote revoke request");
+
+        // The request targets the LOST device's path, authenticated as THIS device.
+        assert_eq!(
+            req.url,
+            "https://relay.example/v1/admin/devices/device-lost/revoke"
+        );
+        assert_eq!(req.body, b"");
+        assert_eq!(header(&req, signing::ADMIN_DEVICE_HEADER), "device-self");
+
+        let path = "/v1/admin/devices/device-lost/revoke";
+        let sign_string =
+            signing::request_sign_string("POST", path, 1_700_000_000, "nonce-rev", b"");
+        verify_p256_signature(
+            &DidKeyUri(key.key_id.clone()),
+            sign_string.as_bytes(),
+            &decode_sig(header(&req, signing::ADMIN_SIGNATURE_HEADER)),
+        )
+        .expect("the relay's verifier must accept this remote revoke");
+
+        // Path-binding: the same signature must NOT verify against another target.
+        let other_path = "/v1/admin/devices/device-other/revoke";
+        let other_sign_string =
+            signing::request_sign_string("POST", other_path, 1_700_000_000, "nonce-rev", b"");
+        assert!(
+            verify_p256_signature(
+                &DidKeyUri(key.key_id),
+                other_sign_string.as_bytes(),
+                &decode_sig(header(&req, signing::ADMIN_SIGNATURE_HEADER)),
+            )
+            .is_err(),
+            "a remote-revoke signature must be bound to its target's path"
+        );
+
+        // A self-target is refused before signing.
+        assert!(matches!(
+            build_revoke_device_request(&pairing, "device-self", 1_700_000_000, "nonce-rev"),
+            Err(RelayClientError::SelfRevokeNotAllowed)
+        ));
+    }
+
+    // Pins the relay's `AdminDeviceView` wire shape by value (the `pds` crate is
+    // binary-only, so the contract can't be shared by import). If the relay renames or
+    // retypes a field, this literal — and the screen consuming it — must change together.
+    #[test]
+    fn admin_device_deserializes_the_relay_camel_case_shape() {
+        let json = r#"{
+            "id": "dev-1",
+            "label": "Operator iPhone",
+            "publicKey": "did:key:zDnaexample",
+            "platform": "ios",
+            "scopes": "full",
+            "status": "revoked",
+            "createdAt": "2026-07-01 12:00:00",
+            "lastSeenAt": null,
+            "revokedAt": "2026-07-02 08:30:00"
+        }"#;
+        let device: AdminDevice = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(
+            device,
+            AdminDevice {
+                id: "dev-1".to_string(),
+                label: "Operator iPhone".to_string(),
+                public_key: "did:key:zDnaexample".to_string(),
+                platform: "ios".to_string(),
+                scopes: "full".to_string(),
+                status: "revoked".to_string(),
+                created_at: "2026-07-01 12:00:00".to_string(),
+                last_seen_at: None,
+                revoked_at: Some("2026-07-02 08:30:00".to_string()),
+            }
+        );
+
+        // And it re-serializes camelCase for IPC — the frontend sees the relay's names.
+        let value = serde_json::to_value(&device).expect("serialize");
+        assert_eq!(value.get("publicKey").unwrap(), "did:key:zDnaexample");
+        assert_eq!(value.get("lastSeenAt").unwrap(), &serde_json::Value::Null);
+        assert_eq!(value.get("revokedAt").unwrap(), "2026-07-02 08:30:00");
+    }
+
+    // Pins the wrapper envelopes around `AdminDevice` — `{"devices":[…]}` for the list
+    // and `{"device":{…}}` for the revoke response — so a relay-side wrapper-key rename
+    // breaks here, not as a runtime `BadResponse`.
+    #[test]
+    fn device_response_envelopes_deserialize() {
+        let device_json = r#"{
+            "id": "dev-1",
+            "label": "Operator iPhone",
+            "publicKey": "did:key:zDnaexample",
+            "platform": "ios",
+            "scopes": "full",
+            "status": "active",
+            "createdAt": "2026-07-01 12:00:00",
+            "lastSeenAt": "2026-07-02 08:30:00",
+            "revokedAt": null
+        }"#;
+
+        let list: ListDevicesResponseBody =
+            serde_json::from_str(&format!(r#"{{"devices":[{device_json}]}}"#))
+                .expect("list envelope deserializes");
+        assert_eq!(list.devices.len(), 1);
+        assert_eq!(list.devices[0].id, "dev-1");
+
+        let revoke: RevokeDeviceResponseBody =
+            serde_json::from_str(&format!(r#"{{"device":{device_json}}}"#))
+                .expect("revoke envelope deserializes");
+        assert_eq!(revoke.device.id, "dev-1");
+    }
+
+    #[test]
+    fn self_revoke_not_allowed_serializes_with_its_screaming_snake_code() {
+        let value =
+            serde_json::to_value(RelayClientError::SelfRevokeNotAllowed).expect("serialize");
+        assert_eq!(
+            value.get("code").unwrap().as_str().unwrap(),
+            "SELF_REVOKE_NOT_ALLOWED"
         );
     }
 

@@ -1,7 +1,7 @@
 # Admin Companion (operator console) Mobile App
 
 Last verified: 2026-07-08
-Last updated: 2026-07-08
+Last updated: 2026-07-08 (device list + remote revoke)
 
 ## Purpose
 
@@ -31,7 +31,13 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
 - **Relay client** — `src-tauri/src/relay_client.rs` (Imperative Shell, reqwest): `pair`
   (self-signed `POST /v1/admin/devices`), `generate_claim_code` (signed
   `POST /v1/accounts/claim-codes`), `revoke_self` (signed `POST /v1/admin/devices/:id/revoke`
-  for the target pairing's device id), `unpair` (local-only forget — no relay call), plus
+  for the target pairing's device id), `unpair` (local-only forget — no relay call),
+  `list_devices` (signed `GET /v1/admin/devices` for an id-addressed pairing; returns the
+  relay's `AdminDeviceView` rows — active and revoked — as `AdminDevice`, a by-value copy
+  of that wire shape pinned by a deserialization test), `revoke_device` (signed remote
+  revoke of ANOTHER device on that pairing's relay; a self-target is refused with
+  `SELF_REVOKE_NOT_ALLOWED` before signing — self-revoke is `revoke_self`, which also
+  removes the local pairing), plus
   pairing-document mutations (`list_pairings`, `set_active_pairing`, `rename_pairing`). Request
   construction is factored into pure `build_*` fns so a test verifies a built request with
   `crypto::verify_p256_signature` — the relay's own verifier — proving acceptance (and path-binding
@@ -48,13 +54,22 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   active), `list_pairings` (`{ active, pairings[] }`), `set_active_pairing(id)`, `rename_pairing(id, nickname)`
   (local-only), `generate_claim_code` (acts on the active pairing; `NOT_PAIRED` when none), `revoke_self(id)`
   (signed revoke on that pairing's relay, then local removal), `unpair(id)` (local-only forget),
+  `list_admin_devices(pairing_id)` (signed device list from that pairing's relay),
+  `revoke_admin_device(pairing_id, device_id)` (signed remote revoke of another device;
+  self-target → `SELF_REVOKE_NOT_ALLOWED`),
   `biometric_enabled`, `set_biometric_enabled` (plus Phase 6's `get_or_create_device_key`,
   `sign_with_device_key`). `pairing_state` is gone — superseded by `list_pairings`.
 - **Screens**: **Pair** (`src/routes/pair/` — QR/manual + required nickname, reachable while
   paired), **Home** (`src/routes/+page.svelte` — biometric-gated claim code for the *active*
   server, tappable identity block → inline switcher, explicit-pick state when no active pairing),
   **Settings** (`src/routes/settings/` — per-server list with per-entry rename / revoke-on-server /
-  forget-locally, global admin key display, biometric toggle, all revokes biometric-gated). The
+  forget-locally / view-devices link, global admin key display, biometric toggle, all revokes
+  biometric-gated), **Devices** (`src/routes/devices/` — the loss-response screen: every
+  device registered on ONE relay, active and revoked, with a biometric-gated remote revoke for a
+  lost device. Pinned to a single pairing at entry — `?server=<pairingId>` from Settings, else the
+  active pairing — so a concurrent active switch on Home can't redirect what it shows or signs.
+  The row whose relay id equals the pairing's `deviceId` is marked "this device" and its revoke
+  defers to Settings). The
   error-state matrix (not-paired / clock-skew / revoked / unreachable) is rendered by the shared
   `ui/ErrorState.svelte` off `errors.ts`'s `classifyRelayError`. Server identity display (`src/lib/server-identity.ts`)
   pairs the operator nickname with the relay host in monospace everywhere, so staging and production
