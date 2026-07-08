@@ -8,9 +8,9 @@
     regenerated into the iOS asset catalog by ios-postinit Patch G).
 
     Drawn full-bleed on the square: iOS applies the squircle mask and (on iOS 26) the
-    Liquid Glass material itself — no baked-in corner radius, no gloss. The two top-level
-    groups (`layer-background` / `layer-glyph`) are Icon Composer seams if this is ever
-    rebuilt as a layered .icon file.
+    Liquid Glass material itself — no baked-in corner radius, no gloss. The layered
+    Icon Composer build lives in AppIcon.icon/ (parchment fill + seal.svg + shield.svg
+    split from this master); keep its layer geometry in lockstep with this file.
 
     The seal outline is a deterministic gentle undulation (sin composition around
     r=298: 0.017·sin(9t+0.8) + 0.010·sin(4t+2.3) + 0.005·sin(13t+4.6)) — a pressed wax

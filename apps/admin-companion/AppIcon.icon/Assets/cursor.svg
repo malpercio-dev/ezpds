@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="filament" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#d3d7db"/>
+      <stop offset="1" stop-color="#b0b5ba"/>
+    </linearGradient>
+  </defs>
+  <rect x="584" y="642" width="200" height="68" rx="34" fill="url(#filament)"/>
+</svg>

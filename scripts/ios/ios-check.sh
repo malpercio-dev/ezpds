@@ -145,6 +145,28 @@ if [ -f "${APP_DIR}/app-icon.png" ]; then
   fi
 fi
 
+# The layered Icon Composer document (apps/<app>/AppIcon.icon, the iOS 26 Liquid
+# Glass icon) must be registered by the template: referenced in place in project.yml
+# (with the fileTypes .icon=file mapping, else XcodeGen explodes the package into
+# loose resources — XcodeGen#1556) and linked into the pbxproj Resources phase.
+# Two pbxproj occurrences required: the PBXBuildFile definition AND the
+# Resources-phase files entry both carry the "AppIcon.icon in Resources" comment —
+# a bare -q would be satisfied by the definition alone.
+if [ -d "${APP_DIR}/AppIcon.icon" ]; then
+  if [ -f "${PROJYML}" ]; then
+    if ! grep -A2 -E '^[[:space:]]*fileTypes:' "${PROJYML}" | grep -q 'icon:' \
+       || ! grep -qE '^[[:space:]]*-[[:space:]]*path:[[:space:]]*\.\./\.\./\.\./AppIcon\.icon[[:space:]]*$' "${PROJYML}"; then
+      echo "ios-check: FAIL — project.yml missing the AppIcon.icon resource or the fileTypes .icon=file mapping ${REINIT_HINT}" >&2
+      fail=1
+    fi
+  fi
+  icon_res_count=$(grep -c 'AppIcon\.icon in Resources' "${PBXPROJ}" || true)
+  if [ "${icon_res_count}" -lt 2 ]; then
+    echo "ios-check: FAIL — pbxproj does not link AppIcon.icon into the Resources phase ${REINIT_HINT}" >&2
+    fail=1
+  fi
+fi
+
 # Structural guard: a sentinel-present-but-corrupt pbxproj must still fail the check.
 if command -v plutil >/dev/null 2>&1 && ! plutil -lint "${PBXPROJ}" >/dev/null 2>&1; then
   echo "ios-check: FAIL — project.pbxproj does not parse (plutil -lint)" >&2

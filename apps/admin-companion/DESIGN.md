@@ -251,10 +251,16 @@ skip-track button at icon size.
   consumes). `just admin-postinit` (Patch G) regenerates the iOS asset catalog from it
   after every `cargo tauri ios init`; `just admin-check` verifies via a sha256 marker.
 - **iOS 26 fit:** drawn full-bleed on the square with no baked-in corner radius, gloss,
-  or edge shadow — the system applies the squircle mask and Liquid Glass material. The
-  SVG's two groups (`layer-background` / `layer-glyph`) are Icon Composer seams if the
-  mark is ever rebuilt as a layered `.icon` file. Depth is a shallow vertical gradient
-  and one soft lift shadow, matte per the no-metallic-glint rule.
+  or edge shadow — the system applies the squircle mask and Liquid Glass material.
+  Depth is a shallow vertical gradient and one soft lift shadow, matte per the
+  no-metallic-glint rule.
+- **Layered Liquid Glass build:** [`AppIcon.icon/`](AppIcon.icon/) is the Icon
+  Composer document — the Console Slate fill plus two glass layers split from the
+  master (`chevron.svg`, `cursor.svg`), specular on, neutral shadow, drop shadows
+  deliberately NOT baked (the material supplies lighting). Referenced in place by
+  the committed XcodeGen template (`scripts/ios/project.yml`) and compiled by actool
+  in `just admin-pr-check`; the flat Patch G appiconset remains the older-toolchain
+  fallback. Keep layer geometry in lockstep with `app-icon.svg`.
 - **Anti-reference check:** no scanlines/phosphor/fake chrome (kitsch), no coin or
   glint (crypto), no filled play/skip triangle (media), dark ground held at the same
   cool hue 250 as the app itself.

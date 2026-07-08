@@ -76,6 +76,20 @@ if ! grep -A1 -E '^[[:space:]]*-[[:space:]]*path:[[:space:]]*Externals[[:space:]
   echo "ios-template-check: FAIL — template's Externals source lost 'buildPhase: none' (libapp.a would be bundled; tauri#13578)" >&2
   fail=1
 fi
+require '- path: ../../../AppIcon.icon' "the layered Icon Composer document (iOS 26 Liquid Glass icon), referenced in place"
+# The fileTypes mapping must keep .icon packages single-file (XcodeGen#1556 —
+# without it the package is exploded into loose resources Xcode won't use).
+if ! grep -A2 -E '^[[:space:]]*fileTypes:' "${TEMPLATE}" | grep -q 'icon:'; then
+  echo "ios-template-check: FAIL — template lost the fileTypes .icon=file mapping (XcodeGen would explode the AppIcon.icon package; XcodeGen#1556)" >&2
+  fail=1
+fi
+# Both apps must actually ship the document the template references for every app.
+for app in identity-wallet admin-companion; do
+  if [ ! -f "${REPO_ROOT}/apps/${app}/AppIcon.icon/icon.json" ]; then
+    echo "ios-template-check: FAIL — apps/${app}/AppIcon.icon/icon.json missing (the template references ../../../AppIcon.icon for every app)" >&2
+    fail=1
+  fi
+done
 
 # --- Both apps must actually point at the template ---
 for app in identity-wallet admin-companion; do
