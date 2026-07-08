@@ -10,6 +10,7 @@ const REJECTED_403: RelayClientError = { code: 'RELAY_REJECTED', status: 403, me
 const REJECTED_401: RelayClientError = { code: 'RELAY_REJECTED', status: 401, message: 'unauthorized' };
 const REJECTED_500: RelayClientError = { code: 'RELAY_REJECTED', status: 500, message: 'server error' };
 const NO_SUCH_PAIRING: RelayClientError = { code: 'NO_SUCH_PAIRING' };
+const SELF_REVOKE: RelayClientError = { code: 'SELF_REVOKE_NOT_ALLOWED' };
 const DEVICE_KEY: RelayClientError = { code: 'DEVICE_KEY', message: 'no key' };
 const KEYCHAIN: RelayClientError = { code: 'KEYCHAIN', message: 'locked' };
 const BAD_RESPONSE: RelayClientError = { code: 'BAD_RESPONSE', message: 'not json' };
@@ -47,6 +48,15 @@ describe('classifyRelayError', () => {
       status: 'error',
       chipLabel: 'no such server',
       message: describeRelayError(NO_SUCH_PAIRING),
+      recovery: 'none',
+    });
+  });
+
+  it('classifies SELF_REVOKE_NOT_ALLOWED as info redirect, with no recovery affordance', () => {
+    expect(classifyRelayError(SELF_REVOKE)).toEqual({
+      status: 'info',
+      chipLabel: 'this device',
+      message: describeRelayError(SELF_REVOKE),
       recovery: 'none',
     });
   });
@@ -130,6 +140,7 @@ describe('describeRelayError', () => {
     ['RELAY_REJECTED (401)', REJECTED_401],
     ['RELAY_REJECTED (other)', REJECTED_500],
     ['NO_SUCH_PAIRING', NO_SUCH_PAIRING],
+    ['SELF_REVOKE_NOT_ALLOWED', SELF_REVOKE],
     ['DEVICE_KEY', DEVICE_KEY],
     ['KEYCHAIN', KEYCHAIN],
     ['BAD_RESPONSE', BAD_RESPONSE],
@@ -162,6 +173,7 @@ describe('describeRelayError', () => {
       REJECTED_401,
       REJECTED_500,
       NO_SUCH_PAIRING,
+      SELF_REVOKE,
       DEVICE_KEY,
       KEYCHAIN,
       BAD_RESPONSE,

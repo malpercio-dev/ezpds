@@ -54,6 +54,10 @@ export function classifyRelayError(error: unknown): ErrorView {
       // The pairing has been removed (likely on another screen). It may have been
       // auto-promoted or deleted, so list_pairings() will resolve the actual state.
       return { status: 'error', chipLabel: 'no such server', message, recovery: 'none' };
+    case 'SELF_REVOKE_NOT_ALLOWED':
+      // The remote revoke was aimed at the device in hand — not a failure to retry,
+      // a redirect: self-revoke lives in Settings, where the local cleanup happens too.
+      return { status: 'info', chipLabel: 'this device', message, recovery: 'none' };
     case 'DEVICE_KEY':
     case 'KEYCHAIN':
     case 'BAD_RESPONSE':
@@ -84,6 +88,8 @@ export function describeRelayError(error: unknown): string {
       return `The relay rejected the request (HTTP ${e.status}).`;
     case 'NO_SUCH_PAIRING':
       return 'That server is no longer in this device list. It may have been removed on another screen.';
+    case 'SELF_REVOKE_NOT_ALLOWED':
+      return 'This is the device in your hand. To revoke it, use Settings → Revoke on this server.';
     case 'DEVICE_KEY':
       return 'Could not use this device admin key.';
     case 'KEYCHAIN':

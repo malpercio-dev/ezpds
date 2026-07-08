@@ -267,6 +267,15 @@
                   <p class="device-label-value">{pairing.deviceLabel}</p>
                 </div>
 
+                <!-- Devices registered on this server (the loss-response screen),
+                     pinned to THIS pairing regardless of the active selection. -->
+                <Button
+                  variant="secondary"
+                  onclick={() => goto(`/devices?server=${pairing.id}`)}
+                >
+                  View devices on this server
+                </Button>
+
                 <!-- Revoke -->
                 <div class="revoke-block">
                   <Button

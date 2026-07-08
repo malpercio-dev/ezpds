@@ -5,9 +5,10 @@
 //! selection), **claim a QR pairing code** (→ register this device's public key with a new
 //! relay, append and activate), **signed admin requests** (every call carries the canonical
 //! `X-Admin-*` envelope the relay verifies — the demo action is `generate_claim_code`),
-//! **self-revoke** (a signed request sent to a specific relay's revoke endpoint), and the
-//! **biometric-gate preference** that backs the Settings screen. The terminal-native operator
-//! screens consume these commands over IPC.
+//! **self-revoke** (a signed request sent to a specific relay's revoke endpoint),
+//! **device management** (list a relay's registered devices and remotely revoke a lost
+//! one — the loss response), and the **biometric-gate preference** that backs the
+//! Settings screen. The terminal-native operator screens consume these commands over IPC.
 
 mod device_key;
 mod keychain;
@@ -85,6 +86,26 @@ fn unpair(id: String) -> Result<(), relay_client::RelayClientError> {
     relay_client::unpair(&id)
 }
 
+/// List every device registered on the given pairing's relay (active and revoked,
+/// newest first) via a signed request — the Devices screen's data source.
+#[tauri::command]
+async fn list_admin_devices(
+    pairing_id: String,
+) -> Result<Vec<relay_client::AdminDevice>, relay_client::RelayClientError> {
+    relay_client::list_devices(&pairing_id).await
+}
+
+/// Revoke another device's registration on the given pairing's relay — the loss
+/// response: kill a lost device's credential from this one. Self-targets are refused
+/// (`SELF_REVOKE_NOT_ALLOWED`); that flow is `revoke_self`.
+#[tauri::command]
+async fn revoke_admin_device(
+    pairing_id: String,
+    device_id: String,
+) -> Result<relay_client::AdminDevice, relay_client::RelayClientError> {
+    relay_client::revoke_device(&pairing_id, &device_id).await
+}
+
 /// Whether the biometric (user-presence) gate on signing actions is enabled. Defaults to
 /// `true` on a fresh install — signing is gated until the operator opts out in Settings.
 /// Errors serialize through `RelayClientError::Keychain` (the app's one Serialize error).
@@ -125,6 +146,8 @@ pub fn run() {
             generate_claim_code,
             revoke_self,
             unpair,
+            list_admin_devices,
+            revoke_admin_device,
             biometric_enabled,
             set_biometric_enabled
         ])
