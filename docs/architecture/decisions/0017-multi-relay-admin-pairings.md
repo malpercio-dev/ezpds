@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-07-06
 - **Deciders:** ezpds maintainers
-- **Related:** [design plan](../../design-plans/2026-07-06-admin-multi-server.md) · [ADR-0005](0005-functional-core-imperative-shell.md)
+- **Related:** [design plan](../../archive/design-plans/2026-07-06-admin-multi-server.md) · [ADR-0005](0005-functional-core-imperative-shell.md)
 
 ## Context
 
