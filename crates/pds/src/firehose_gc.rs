@@ -353,11 +353,20 @@ mod tests {
 
         let stats = run_firehose_gc(&state).await;
         assert!(stats.skipped);
+        assert!(!stats.failed, "disabled retention is a benign no-op");
         assert_eq!(stats.pruned, 0);
         assert_eq!(
             crate::db::firehose_seq::max_seq(&state.db).await.unwrap(),
             5,
             "nothing pruned"
+        );
+
+        // A benign no-op still refreshes the pass instruments: the sweeper ran, by policy it
+        // had nothing to do.
+        let rendered = state.metrics.render().unwrap().unwrap();
+        assert!(
+            rendered.contains("firehose_gc_last_run_timestamp"),
+            "benign no-op must timestamp the pass in:\n{rendered}"
         );
     }
 
@@ -373,10 +382,19 @@ mod tests {
 
         let stats = run_firehose_gc(&state).await;
         assert!(stats.skipped);
+        assert!(stats.failed, "a config overflow is an operational failure");
         assert_eq!(stats.pruned, 0);
         assert_eq!(
             crate::db::firehose_seq::max_seq(&state.db).await.unwrap(),
             3
+        );
+
+        // A failed pass records nothing: the absent timestamp (stale, in production) is the
+        // operator's signal that sweeps are not completing.
+        let rendered = state.metrics.render().unwrap().unwrap();
+        assert!(
+            !rendered.contains("firehose_gc_last_run_timestamp"),
+            "failed pass must not timestamp itself in:\n{rendered}"
         );
     }
 
