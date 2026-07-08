@@ -19,8 +19,9 @@ on:
     # Mirror the union of the two TestFlight lanes' path filters. The apps' only
     # workspace-crate dependency is `crypto` (itself free of path deps), so
     # crates/pds, crates/repo-engine, and crates/common changes deliberately do NOT
-    # run this lane. If an app gains a new workspace-crate dependency, add its path
-    # here AND in both TestFlight lanes.
+    # run this lane. CI-enforced: `just ios-paths-check` (part of the Linux gate)
+    # recomputes this list from `cargo metadata` and fails on any drift — an
+    # unwatched app dependency or a re-widened entry alike.
     paths:
       - "apps/identity-wallet/**"
       - "apps/admin-companion/**"

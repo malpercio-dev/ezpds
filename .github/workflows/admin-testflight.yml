@@ -20,8 +20,9 @@ on:
     # Skip rebuilds for changes that cannot affect the app. The app's only
     # workspace-crate dependency is `crypto` (itself free of path deps), so
     # crates/pds, crates/repo-engine, and crates/common changes deliberately do
-    # NOT trigger a rebuild. If the app gains a new workspace-crate dependency,
-    # add its path here AND in ios-pr-check.yml.
+    # NOT trigger a rebuild. CI-enforced: `just ios-paths-check` (part of the
+    # Linux gate) recomputes this list from `cargo metadata` and fails on any
+    # drift — an unwatched app dependency or a re-widened entry alike.
     paths:
       - "apps/admin-companion/**"
       - "crates/crypto/**"

@@ -57,6 +57,14 @@ font-check:
 cap-check:
     scripts/capability-check.sh
 
+# Verify the iOS workflows' `paths:` trigger filters match the apps' real dependency
+# graph (cargo metadata), both directions: every in-repo crate an app links is watched
+# (a new workspace-crate dependency can't ship without widening the filters), and no
+# entry is broader than the graph (pure-PDS changes can't re-acquire the macOS lanes
+# through a re-widened crates/** or scripts/**). Runs on Linux — reads metadata + YAML.
+ios-paths-check:
+    scripts/ios-paths-check.sh
+
 # Verify the swift-rs --disable-sandbox fork ([patch.crates-io] in Cargo.toml) is both
 # DECLARED and ACTUALLY APPLIED (Cargo.lock resolves swift-rs from the path, not the
 # registry). Cargo silently stops applying a [patch] when a dependency bump requires a
@@ -76,7 +84,7 @@ interop *args:
     tools/interop/bin/interop {{args}}
 
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
-ci: fmt-check lock-check bruno-check font-check cap-check swift-rs-check clippy test audit
+ci: fmt-check lock-check bruno-check font-check cap-check ios-paths-check swift-rs-check clippy test audit
 
 # CI gate for the Linux pds pipeline (GitHub Actions, .github/workflows/ci.yml). Excludes the
 # iOS apps (identity-wallet, admin-companion), which need the Apple toolchain (security-framework)
@@ -86,6 +94,7 @@ ci-pds: fmt-check
     just bruno-check
     just font-check
     just cap-check
+    just ios-paths-check
     just swift-rs-check
     cargo clippy --workspace --exclude identity-wallet --exclude admin-companion --all-targets -- -D warnings
     cargo test --workspace --exclude identity-wallet --exclude admin-companion
