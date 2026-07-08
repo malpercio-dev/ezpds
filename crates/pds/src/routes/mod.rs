@@ -29,6 +29,7 @@ pub mod describe_server;
 pub mod get_blob;
 pub mod get_device_pds;
 pub mod get_did;
+pub mod get_metrics;
 pub mod get_pds_signing_key;
 pub mod get_preferences;
 pub mod get_recommended_did_credentials;

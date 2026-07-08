@@ -39,6 +39,23 @@ pub async fn import_repo(
     user: AuthenticatedUser,
     request: Request<Body>,
 ) -> Result<StatusCode, ApiError> {
+    let metrics = state.metrics.clone();
+    let result = import_repo_inner(state, user, request).await;
+    metrics.migration_imports.add(
+        1,
+        &[crate::metrics::label(
+            crate::metrics::names::LABEL_OUTCOME,
+            if result.is_ok() { "ok" } else { "error" },
+        )],
+    );
+    result
+}
+
+async fn import_repo_inner(
+    state: AppState,
+    user: AuthenticatedUser,
+    request: Request<Body>,
+) -> Result<StatusCode, ApiError> {
     if user.scope != AuthScope::Access {
         return Err(ApiError::new(
             ErrorCode::InvalidToken,

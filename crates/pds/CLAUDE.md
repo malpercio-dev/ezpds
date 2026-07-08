@@ -13,7 +13,8 @@ crates (`crypto`, `repo-engine`, `common`) are pure Functional Cores that the PD
 ```
 src/
   main.rs          — startup: open pool, run migrations, bind server
-  telemetry.rs     — OTel tracing-subscriber init (`init_subscriber`) + shutdown-flushing `OtelGuard`; wired by main.rs at startup, dropped after graceful shutdown
+  telemetry.rs     — OTel tracing-subscriber init (`init_subscriber`) + shutdown-flushing `OtelGuard`; wired by main.rs at startup, dropped after graceful shutdown. `[telemetry] log_format = "json"` switches the stdout fmt layer to one-JSON-object-per-line
+  metrics.rs       — OTel meter + Prometheus registry behind `GET /metrics` (see "Metrics" section below): typed `Metrics` handle in AppState, instrument/label name constants (`metrics::names`), the `http_requests_total` middleware, and the `SubscriberGuard` RAII gauge
   app.rs           — AppState definition and construction
   firehose.rs      — persistent subscribeRepos event pipeline (durable sequencer + broadcast fan-out)
   firehose_gc.rs   — periodic `repo_seq` retention sweep (age/count pruning below the live frontier)
@@ -337,6 +338,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `standard_signup.rs` | `POST /xrpc/com.atproto.server.createInviteCode` (admin-authed, single-use only), `POST /xrpc/com.atproto.server.createInviteCodes` (admin-authed, account-bound batches unsupported), `GET /xrpc/com.atproto.server.getAccountInviteCodes` (always an empty list — ezpds codes are operator-issued, not per-account), `GET /xrpc/com.atproto.temp.checkHandleAvailability`, `GET /xrpc/com.atproto.temp.checkSignupQueue` (always `activated: true`) — maps ezpds's operator-issued claim-code and handle-uniqueness primitives onto the standard-client signup NSIDs, without changing the custom mobile provisioning flow |
 | `get_pds_signing_key.rs` | `GET /v1/pds/keys` (deprecated alias: `GET /v1/relay/keys`) |
 | `health.rs` | `GET /xrpc/_health` |
+| `get_metrics.rs` | `GET /metrics` — Prometheus text exposition of the instrument set (see "Metrics" below). Registered **after** the router's layer stack, so it sits outside permissive CORS, tracing, and rate-limit accounting; not registered at all when `[telemetry] metrics_enabled = false` (→ 404). `metrics_require_admin = true` adds the `require_admin` gate |
 | `delete_session.rs` | `POST /xrpc/com.atproto.server.deleteSession` (session revocation) |
 | `deactivate_account.rs` | `POST /xrpc/com.atproto.server.deactivateAccount` (flip account to deactivated, store optional `deleteAfter`, emit `#account` firehose event on transition) |
 | `activate_account.rs` | `POST /xrpc/com.atproto.server.activateAccount` (clear deactivation, emit `#account` firehose event on transition) |
@@ -346,6 +348,33 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `oauth_client_metadata.rs` | `GET /oauth/client-metadata.json` (OAuth client metadata per ATProto spec) |
 | `provisioning_session.rs` | Provisioning session creation (email + password → session token) |
 | `test_utils.rs` | Test helpers (excluded from production builds) |
+
+## Metrics
+
+The federation-health instrument set served by `GET /metrics`. Names and label keys are
+constants in `metrics::names` — **this table mirrors that module; change them together.**
+Counters are constructed *without* the `_total` suffix (the Prometheus exporter appends it;
+a unit test in `metrics.rs` pins the rendered names). All instruments record through the
+typed `AppState.metrics` handle; when `[telemetry] metrics_enabled = false` the same handle
+drops measurements at the SDK boundary, so call sites never branch.
+
+| Rendered name | Type | Labels | Recorded by |
+|---|---|---|---|
+| `http_requests_total` | counter | `route` (matched template or `unmatched`), `status_class` | `metrics::http_metrics_middleware` (outside the rate limiter → 429s count; inside CORS → preflights don't) |
+| `firehose_subscribers` | gauge | — | `SubscriberGuard` in `sync_subscribe_repos.rs` (+1 connect, −1 on any exit path) |
+| `firehose_events_total` | counter | `frame` (`commit`/`account`/`identity`/`sync`) | `Firehose::broadcast` — the single fan-out choke point |
+| `firehose_backfill_window_seconds` | gauge | — | `firehose_gc.rs` after each sweep (age of `MIN(sequenced_at)`; 0 when the log is empty) |
+| `firehose_gc_swept_total` / `firehose_gc_last_run_timestamp` | counter / gauge | — | `firehose_gc.rs` after each completed pass |
+| `blob_gc_swept_total` / `blob_gc_last_run_timestamp` | counter / gauge | — | `blob_gc.rs` after each completed pass (a failed-to-start pass leaves the timestamp stale on purpose — that staleness is the alarm) |
+| `account_reaper_swept_total` / `account_reaper_last_run_timestamp` | counter / gauge | — | `account_reaper.rs` after each completed pass |
+| `relay_crawl_requests_total` | counter | `outcome` (`ok`/`rejected`/`exhausted`) | `crawler.rs` per finished notification |
+| `proxy_requests_total` | counter | `upstream` (`appview`/`chat`/`moderation`), `status_class` | `app.rs::xrpc_handler` on both the streaming and munged paths |
+| `proxy_upstream_lag_seconds` | histogram | — | `read_after_write/mod.rs`, same conditional value as the `Atproto-Upstream-Lag` header |
+| `rate_limit_rejections_total` | counter | `limiter` (`global_ip`/`endpoint_ip`/`account_writes`) | `rate_limit.rs` middleware; `record_write.rs` for write points |
+| `migration_imports_total` | counter | `outcome` (`ok`/`error`) | `routes/import_repo.rs` |
+
+Cardinality rule: label values are always drawn from small fixed sets or the route table —
+never from request data (raw URIs, rkeys, DIDs, hostnames).
 
 ## Hard Rules
 

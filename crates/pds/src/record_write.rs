@@ -374,7 +374,18 @@ pub async fn commit_repo_write(
             crate::firehose::OpAction::Delete => crate::rate_limit::WRITE_COST_DELETE,
         })
         .sum();
-    state.rate_limiter.check_write_points(did, write_cost)?;
+    state
+        .rate_limiter
+        .check_write_points(did, write_cost)
+        .inspect_err(|_| {
+            state.metrics.rate_limit_rejections.add(
+                1,
+                &[crate::metrics::label(
+                    crate::metrics::names::LABEL_LIMITER,
+                    "account_writes",
+                )],
+            );
+        })?;
 
     let mut store = SqliteBlockStore::new(state.db.clone(), did.to_string());
 

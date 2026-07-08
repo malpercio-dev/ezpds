@@ -63,6 +63,30 @@ pub struct GcStats {
     /// Passes that did not delete anything because retention was disabled, the log/frontier made
     /// pruning unsafe, or an operational error forced this sweep to leave the log untouched.
     pub skipped: bool,
+    /// `true` only when an operational error (DB read/prune failure, config overflow) forced the
+    /// skip — as opposed to a benign no-op. A failed pass records no instruments, so a stale
+    /// `firehose_gc_last_run_timestamp` stays visible as the operator's failure signal.
+    pub failed: bool,
+}
+
+impl GcStats {
+    /// A benign no-op pass: retention disabled, empty log, or no prunable watermark.
+    fn inert() -> Self {
+        Self {
+            pruned: 0,
+            skipped: true,
+            failed: false,
+        }
+    }
+
+    /// A pass aborted by an operational error; instruments are left untouched.
+    fn failed_pass() -> Self {
+        Self {
+            pruned: 0,
+            skipped: true,
+            failed: true,
+        }
+    }
 }
 
 /// Spawn the periodic `repo_seq` retention sweep.
@@ -82,22 +106,66 @@ pub fn spawn_firehose_gc(state: AppState, interval: Duration) -> JoinHandle<()> 
     })
 }
 
-/// Run a single `repo_seq` retention pass.
-///
-/// Computes the low-water mark from the enabled retention knobs, clamps it below the live
-/// frontier, and deletes the contiguous prefix beneath it. A no-op when the log is empty or every
-/// retention knob is disabled.
+/// Run a single `repo_seq` retention pass, then record the sweep's instruments
+/// (`firehose_gc_swept_total`, `firehose_gc_last_run_timestamp`,
+/// `firehose_backfill_window_seconds`).
 pub async fn run_firehose_gc(state: &AppState) -> GcStats {
+    let stats = sweep(state).await;
+
+    // A failed pass records nothing — same posture as blob_gc: a stale
+    // `firehose_gc_last_run_timestamp` is the operator's signal that sweeps are not
+    // completing. Benign no-ops (retention disabled, empty log) still refresh it.
+    if stats.failed {
+        return stats;
+    }
+
+    state.metrics.firehose_gc_swept.add(stats.pruned, &[]);
+    state
+        .metrics
+        .firehose_gc_last_run_timestamp
+        .record(crate::metrics::unix_now(), &[]);
+    // The backfill window is how far back a reconnecting subscriber's cursor still replays
+    // exactly. Refreshed here (post-prune) rather than on every emit: the sweep is the only
+    // thing that shrinks the window, and emits only ever extend it by seconds.
+    match firehose_seq::oldest_sequenced_at(&state.db).await {
+        Ok(Some(oldest)) => match chrono::DateTime::parse_from_rfc3339(&oldest) {
+            Ok(ts) => {
+                let window = (chrono::Utc::now() - ts.with_timezone(&chrono::Utc))
+                    .num_seconds()
+                    .max(0) as f64;
+                state
+                    .metrics
+                    .firehose_backfill_window_seconds
+                    .record(window, &[]);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, oldest, "firehose GC: unparseable sequenced_at; backfill gauge not updated");
+            }
+        },
+        // An empty log means there is nothing to replay: the window is zero.
+        Ok(None) => state
+            .metrics
+            .firehose_backfill_window_seconds
+            .record(0.0, &[]),
+        Err(e) => {
+            tracing::warn!(error = %e, "firehose GC: failed to read oldest event; backfill gauge not updated");
+        }
+    }
+
+    stats
+}
+
+/// Compute the low-water mark from the enabled retention knobs, clamp it below the live
+/// frontier, and delete the contiguous prefix beneath it. A no-op when the log is empty or
+/// every retention knob is disabled.
+async fn sweep(state: &AppState) -> GcStats {
     let config = &state.config.firehose;
 
     // No policy enabled: the sweep is intentionally inert (append-only log, pre-retention
     // behaviour). Checked up front so an operator who disables retention doesn't pay a per-pass
     // MAX(seq) round-trip.
     if config.log_retention_secs == 0 && config.log_retention_count == 0 {
-        return GcStats {
-            pruned: 0,
-            skipped: true,
-        };
+        return GcStats::inert();
     }
 
     // Coordinate with cursor replay: either this GC pass wins the lock and a later subscription
@@ -109,18 +177,12 @@ pub async fn run_firehose_gc(state: &AppState) -> GcStats {
         Ok(max) => max,
         Err(e) => {
             tracing::error!(error = %e, "firehose GC: failed to read MAX(seq); skipping pass");
-            return GcStats {
-                pruned: 0,
-                skipped: true,
-            };
+            return GcStats::failed_pass();
         }
     };
     // An empty log (or a single-row log where nothing is prunable) needs no work.
     if max_seq == 0 {
-        return GcStats {
-            pruned: 0,
-            skipped: true,
-        };
+        return GcStats::inert();
     }
 
     // Each enabled policy contributes how far it wants to prune (0 = prune nothing). The
@@ -142,10 +204,7 @@ pub async fn run_firehose_gc(state: &AppState) -> GcStats {
                     value = config.log_retention_secs,
                     "firehose GC: log_retention_secs overflows i64; skipping pass"
                 );
-                return GcStats {
-                    pruned: 0,
-                    skipped: true,
-                };
+                return GcStats::failed_pass();
             }
         };
         let retention = match chrono::Duration::try_seconds(retention_secs) {
@@ -155,10 +214,7 @@ pub async fn run_firehose_gc(state: &AppState) -> GcStats {
                     value = config.log_retention_secs,
                     "firehose GC: log_retention_secs exceeds chrono duration bounds; skipping pass"
                 );
-                return GcStats {
-                    pruned: 0,
-                    skipped: true,
-                };
+                return GcStats::failed_pass();
             }
         };
         let cutoff = match chrono::Utc::now().checked_sub_signed(retention) {
@@ -168,10 +224,7 @@ pub async fn run_firehose_gc(state: &AppState) -> GcStats {
                     value = config.log_retention_secs,
                     "firehose GC: retention cutoff overflowed; skipping pass"
                 );
-                return GcStats {
-                    pruned: 0,
-                    skipped: true,
-                };
+                return GcStats::failed_pass();
             }
         };
         let cutoff_rfc3339 = cutoff.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
@@ -189,10 +242,7 @@ pub async fn run_firehose_gc(state: &AppState) -> GcStats {
                     cutoff = %cutoff_rfc3339,
                     "firehose GC: failed to compute age boundary; skipping pass"
                 );
-                return GcStats {
-                    pruned: 0,
-                    skipped: true,
-                };
+                return GcStats::failed_pass();
             }
         }
     }
@@ -207,10 +257,7 @@ pub async fn run_firehose_gc(state: &AppState) -> GcStats {
     // Neither knob produced a pruning watermark (both disabled, or every contribution was 0):
     // nothing to prune this pass.
     if watermark == 0 {
-        return GcStats {
-            pruned: 0,
-            skipped: true,
-        };
+        return GcStats::inert();
     }
 
     // Never prune the live frontier row: a reconnecting relay must be able to resume from at
@@ -224,10 +271,7 @@ pub async fn run_firehose_gc(state: &AppState) -> GcStats {
 
     // A watermark of 0 prunes nothing (every `seq` is >= 1) — the log stays fully retained.
     if watermark == 0 {
-        return GcStats {
-            pruned: 0,
-            skipped: true,
-        };
+        return GcStats::inert();
     }
 
     let pruned = match firehose_seq::prune_below(&state.db, watermark).await {
@@ -238,10 +282,7 @@ pub async fn run_firehose_gc(state: &AppState) -> GcStats {
                 watermark,
                 "firehose GC: failed to prune repo_seq; skipping pass"
             );
-            return GcStats {
-                pruned: 0,
-                skipped: true,
-            };
+            return GcStats::failed_pass();
         }
     };
 
@@ -254,6 +295,7 @@ pub async fn run_firehose_gc(state: &AppState) -> GcStats {
     GcStats {
         pruned,
         skipped: false,
+        failed: false,
     }
 }
 
@@ -311,11 +353,20 @@ mod tests {
 
         let stats = run_firehose_gc(&state).await;
         assert!(stats.skipped);
+        assert!(!stats.failed, "disabled retention is a benign no-op");
         assert_eq!(stats.pruned, 0);
         assert_eq!(
             crate::db::firehose_seq::max_seq(&state.db).await.unwrap(),
             5,
             "nothing pruned"
+        );
+
+        // A benign no-op still refreshes the pass instruments: the sweeper ran, by policy it
+        // had nothing to do.
+        let rendered = state.metrics.render().unwrap().unwrap();
+        assert!(
+            rendered.contains("firehose_gc_last_run_timestamp"),
+            "benign no-op must timestamp the pass in:\n{rendered}"
         );
     }
 
@@ -331,10 +382,19 @@ mod tests {
 
         let stats = run_firehose_gc(&state).await;
         assert!(stats.skipped);
+        assert!(stats.failed, "a config overflow is an operational failure");
         assert_eq!(stats.pruned, 0);
         assert_eq!(
             crate::db::firehose_seq::max_seq(&state.db).await.unwrap(),
             3
+        );
+
+        // A failed pass records nothing: the absent timestamp (stale, in production) is the
+        // operator's signal that sweeps are not completing.
+        let rendered = state.metrics.render().unwrap().unwrap();
+        assert!(
+            !rendered.contains("firehose_gc_last_run_timestamp"),
+            "failed pass must not timestamp itself in:\n{rendered}"
         );
     }
 

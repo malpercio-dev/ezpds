@@ -97,6 +97,30 @@ When `LITESTREAM_S3_BUCKET` is set on the production environment — together wi
 
 Rollback: because migrations are **forward-only** (no down-path), redeploying a previous `v*` tag is safe only when the schema change was backward-compatible (expand-contract). Otherwise, roll back by restoring the database from the Litestream replica (`litestream restore`) to a pre-promote point.
 
+### Observability: metrics and logs
+
+The PDS serves a Prometheus text exposition at `GET /metrics` (on by default; the
+federation-health instrument set is documented in `crates/pds/CLAUDE.md` → "Metrics"). The
+route is deliberately outside the permissive CORS layer and rate-limit accounting — it is a
+scrape/diagnostic surface, not a browser API.
+
+**Intended posture on Railway: read it over the project's private network, not the public
+domain.** Railway sandboxes join the private network with `railway sandbox create
+--private-network`, and `railway ssh` reaches the service container — so an operator (or an
+agent harness running in a sandbox) can `curl http://<service>.railway.internal:<port>/metrics`
+for a point-in-time federation-health snapshot with zero public exposure. Because the
+public Railway domain fronts the same process, `/metrics` **is** also reachable publicly by
+default; operators who care should set `EZPDS_METRICS_REQUIRE_ADMIN=true` (admin-token gate,
+scrape-compatible via `Authorization: Bearer`) or `EZPDS_METRICS_ENABLED=false`. The
+exposition contains no per-user data either way (labels are route templates and small fixed
+enums only).
+
+`EZPDS_LOG_FORMAT=json` switches stdout logging to one JSON object per line, so `railway
+logs` output can be filtered by field instead of by regex. Default stays human-readable text.
+
+Persistent scraping/dashboards (a collector service inside the project) are deliberately
+out of scope for v0.1 — see MM-250 for the operator debug kit follow-up.
+
 ## Marketing Site (static)
 
 The static marketing site (`sites/marketing/`, the Obsign + Custos pages) deploys as a

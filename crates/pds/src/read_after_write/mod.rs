@@ -465,9 +465,14 @@ pub(crate) async fn pipethrough_munged(
 
     // Advertise upstream lag only when the munge actually merged the requester's records into
     // this response (i.e. the body changed). A pure passthrough of another user's data carries no
-    // lag, even though the requester happens to have unindexed writes of their own.
+    // lag, even though the requester happens to have unindexed writes of their own. The histogram
+    // records the same conditional value, so its distribution matches what clients observe.
     if munged != original {
         if let Some(lag_ms) = local_lag_ms(&local) {
+            state
+                .metrics
+                .proxy_upstream_lag_seconds
+                .record(lag_ms.max(0) as f64 / 1000.0, &[]);
             builder = builder.header("Atproto-Upstream-Lag", lag_ms.to_string());
         }
     }

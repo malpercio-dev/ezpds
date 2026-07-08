@@ -45,6 +45,9 @@ pub struct CrawlerNotifier {
     min_interval: Duration,
     max_attempts: u32,
     base_backoff: Duration,
+    /// Counts notification outcomes into `relay_crawl_requests_total`. `None` for bare test
+    /// constructions; `main.rs`/`test_state()` attach the shared handle before Arc-wrapping.
+    metrics: Option<Arc<crate::metrics::Metrics>>,
 }
 
 impl CrawlerNotifier {
@@ -80,6 +83,27 @@ impl CrawlerNotifier {
             min_interval,
             max_attempts,
             base_backoff,
+            metrics: None,
+        }
+    }
+
+    /// Attach the shared metrics handle so notification outcomes are counted. Called before
+    /// the notifier is Arc-wrapped into `AppState`; constructions that never attach (bare
+    /// unit tests) simply record nothing.
+    pub fn attach_metrics(&mut self, metrics: Arc<crate::metrics::Metrics>) {
+        self.metrics = Some(metrics);
+    }
+
+    /// Count one finished notification into `relay_crawl_requests_total{outcome=...}`.
+    fn count_outcome(&self, outcome: &'static str) {
+        if let Some(metrics) = &self.metrics {
+            metrics.relay_crawl_requests.add(
+                1,
+                &[crate::metrics::label(
+                    crate::metrics::names::LABEL_OUTCOME,
+                    outcome,
+                )],
+            );
         }
     }
 
@@ -138,6 +162,7 @@ impl CrawlerNotifier {
             match self.client.post(&endpoint).json(&body).send().await {
                 Ok(resp) if resp.status().is_success() => {
                     tracing::info!(crawler = %base_url, "requestCrawl accepted");
+                    self.count_outcome("ok");
                     return;
                 }
                 // A 4xx means the request itself is wrong or unauthorised: the crawler has
@@ -148,6 +173,7 @@ impl CrawlerNotifier {
                         status = %resp.status(),
                         "requestCrawl rejected with a client error; not retrying"
                     );
+                    self.count_outcome("rejected");
                     return;
                 }
                 Ok(resp) => {
@@ -176,6 +202,7 @@ impl CrawlerNotifier {
             attempts = self.max_attempts,
             "requestCrawl gave up after exhausting retries"
         );
+        self.count_outcome("exhausted");
     }
 
     /// Exponential backoff for a 1-based attempt number: `base * 2^(attempt - 1)`.

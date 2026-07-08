@@ -199,6 +199,18 @@ fn apply_rate_limit_headers(resp: &mut Response, decision: &RateLimitDecision) {
     );
 }
 
+/// Count one 429 into `rate_limit_rejections_total{limiter=...}`. The write-points limiter
+/// counts at its call site in `record_write` (it rejects deep in the write path, not here).
+fn count_rejection(state: &AppState, limiter: &'static str) {
+    state.metrics.rate_limit_rejections.add(
+        1,
+        &[crate::metrics::label(
+            crate::metrics::names::LABEL_LIMITER,
+            limiter,
+        )],
+    );
+}
+
 /// Build the 429 response for a rejected request: the standard error envelope plus the
 /// `RateLimit-*` headers and a `Retry-After` delta.
 fn rate_limited_response(decision: &RateLimitDecision, scope: &str) -> Response {
@@ -243,6 +255,7 @@ pub async fn rate_limit_middleware(
     if !is_global_exempt(&path) {
         let decision = lock(&limiter.global_ip).check(&ip, 1, now);
         if !decision.allowed {
+            count_rejection(&state, "global_ip");
             return rate_limited_response(&decision, "global");
         }
         tightest = Some(decision);
@@ -251,6 +264,7 @@ pub async fn rate_limit_middleware(
     if let Some(endpoint) = limiter.endpoints.get(path.as_str()) {
         let decision = lock(endpoint).check(&ip, 1, now);
         if !decision.allowed {
+            count_rejection(&state, "endpoint_ip");
             return rate_limited_response(&decision, "endpoint");
         }
         tightest = Some(match tightest {
@@ -354,7 +368,9 @@ mod tests {
 
     #[tokio::test]
     async fn global_limit_rejects_over_cap_with_headers() {
-        let router = app(state_with_global_cap(2).await);
+        let state = state_with_global_cap(2).await;
+        let metrics = state.metrics.clone();
+        let router = app(state);
 
         // First two from the same IP pass and carry RateLimit headers.
         for _ in 0..2 {
@@ -378,6 +394,14 @@ mod tests {
         let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "RATE_LIMITED");
+
+        // The rejection is counted against the limiter that tripped.
+        let rendered = metrics.render().unwrap().unwrap();
+        assert!(
+            rendered.contains("rate_limit_rejections_total")
+                && rendered.contains(r#"limiter="global_ip""#),
+            "missing global_ip rejection count in:\n{rendered}"
+        );
 
         // A different IP is unaffected.
         let resp = router.oneshot(describe_req("203.0.113.2")).await.unwrap();

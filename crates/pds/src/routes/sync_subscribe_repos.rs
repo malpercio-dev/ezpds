@@ -101,6 +101,10 @@ async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) 
         }
     };
 
+    // Gauge the connection for its whole remaining lifetime: the guard's Drop decrements on
+    // every exit path below. Failed subscriptions (the early returns above) never counted.
+    let _subscriber_gauge = crate::metrics::SubscriberGuard::connect(state.metrics.clone());
+
     let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
     // The first tick fires immediately; consume it so the first real Ping waits a full interval.
     heartbeat.tick().await;
