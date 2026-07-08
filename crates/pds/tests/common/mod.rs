@@ -145,6 +145,9 @@ impl Harness {
             .env("EZPDS_CRAWLERS", "")
             // All plc.directory traffic is redirected to the mock.
             .env("EZPDS_PLC_DIRECTORY_URL", &plc_url)
+            // Reaper every second, so the deactivate→reap lifecycle leg can poll for the purge
+            // instead of waiting out the 1-hour default.
+            .env("EZPDS_ACCOUNTS_DELETION_REAPER_INTERVAL_SECS", "1")
             .env("EZPDS_SIGNING_KEY_MASTER_KEY", MASTER_KEY_HEX);
 
         let child = cmd

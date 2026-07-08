@@ -1025,6 +1025,19 @@ pub(crate) fn apply_env_overrides(
     if let Some(v) = env.get("EZPDS_RATE_LIMIT_WRITE_POINTS_DAILY") {
         raw.rate_limit.write_points_daily = parse_u64("EZPDS_RATE_LIMIT_WRITE_POINTS_DAILY", v)?;
     }
+    // Periodic-sweep interval overrides (blob GC, firehose retention, deletion reaper). Only the
+    // u64 parse happens here — a zero interval is rejected later by `validate_and_build`, the same
+    // check the TOML path goes through (a zero period would panic `tokio::time::interval`).
+    if let Some(v) = env.get("EZPDS_BLOBS_GC_INTERVAL_SECS") {
+        raw.blobs.gc_interval_secs = parse_u64("EZPDS_BLOBS_GC_INTERVAL_SECS", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_FIREHOSE_GC_INTERVAL_SECS") {
+        raw.firehose.gc_interval_secs = parse_u64("EZPDS_FIREHOSE_GC_INTERVAL_SECS", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_ACCOUNTS_DELETION_REAPER_INTERVAL_SECS") {
+        raw.accounts.deletion_reaper_interval_secs =
+            parse_u64("EZPDS_ACCOUNTS_DELETION_REAPER_INTERVAL_SECS", v)?;
+    }
     // Agent-auth (auth.md) scalar/bool overrides. The issuer trust list is a list of structs
     // carrying PEM keys, which does not map to a flat env var — it stays TOML-only.
     if let Some(v) = env.get("EZPDS_AGENT_AUTH_SERVICE_AUTH_ENABLED") {
@@ -1766,6 +1779,64 @@ mod tests {
         assert!(matches!(err, ConfigError::Invalid(_)));
         assert!(err.to_string().contains("EZPDS_PORT"));
         assert!(err.to_string().contains("not_a_port"));
+    }
+
+    #[test]
+    fn env_override_blobs_gc_interval() {
+        let env = HashMap::from([("EZPDS_BLOBS_GC_INTERVAL_SECS".to_string(), "5".to_string())]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert_eq!(config.blobs.gc_interval_secs, 5);
+    }
+
+    #[test]
+    fn env_override_firehose_gc_interval() {
+        let env = HashMap::from([(
+            "EZPDS_FIREHOSE_GC_INTERVAL_SECS".to_string(),
+            "7".to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert_eq!(config.firehose.gc_interval_secs, 7);
+    }
+
+    #[test]
+    fn env_override_deletion_reaper_interval() {
+        let env = HashMap::from([(
+            "EZPDS_ACCOUNTS_DELETION_REAPER_INTERVAL_SECS".to_string(),
+            "1".to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert_eq!(config.accounts.deletion_reaper_interval_secs, 1);
+    }
+
+    #[test]
+    fn env_override_invalid_sweep_interval_returns_error() {
+        let env = HashMap::from([(
+            "EZPDS_ACCOUNTS_DELETION_REAPER_INTERVAL_SECS".to_string(),
+            "soon".to_string(),
+        )]);
+        let err = apply_env_overrides(minimal_raw(), &env).unwrap_err();
+
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err
+            .to_string()
+            .contains("EZPDS_ACCOUNTS_DELETION_REAPER_INTERVAL_SECS"));
+        assert!(err.to_string().contains("soon"));
+    }
+
+    #[test]
+    fn env_override_zero_sweep_interval_rejected_by_validation() {
+        let env = HashMap::from([("EZPDS_BLOBS_GC_INTERVAL_SECS".to_string(), "0".to_string())]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("blobs.gc_interval_secs"));
     }
 
     #[test]
