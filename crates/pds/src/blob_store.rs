@@ -84,15 +84,15 @@ pub async fn delete_blob_file(data_dir: &Path, storage_path: &str) -> Result<boo
     let abs_path = data_dir.join(storage_path);
     match tokio::fs::remove_file(&abs_path).await {
         Ok(()) => {
-            // Best-effort: clean up the prefix directory if empty.
+            // Best-effort prefix-directory cleanup: the blob file is already gone, so a failure to
+            // read the directory or confirm it is empty must NOT turn a successful delete into an
+            // error. Callers (blob_gc, account_delete) key the DB-row delete on this `Ok(true)`;
+            // propagating a cleanup I/O error would strand the row pointing at a now-missing file.
             if let Some(parent) = abs_path.parent() {
-                if tokio::fs::read_dir(parent)
-                    .await?
-                    .next_entry()
-                    .await?
-                    .is_none()
-                {
-                    tokio::fs::remove_dir(parent).await.ok();
+                if let Ok(mut entries) = tokio::fs::read_dir(parent).await {
+                    if matches!(entries.next_entry().await, Ok(None)) {
+                        tokio::fs::remove_dir(parent).await.ok();
+                    }
                 }
             }
             Ok(true)

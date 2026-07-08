@@ -2490,6 +2490,7 @@ mod tests {
         assert_eq!(rl.create_session_per_5min, 30);
         assert_eq!(rl.reset_password_per_5min, 50);
         assert_eq!(rl.update_handle_per_5min, 10);
+        assert_eq!(rl.transfer_accept_per_5min, 30);
         assert_eq!(rl.write_points_hourly, 5000);
         assert_eq!(rl.write_points_daily, 35000);
     }
