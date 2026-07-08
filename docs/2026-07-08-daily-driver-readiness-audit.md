@@ -141,8 +141,10 @@ filed for the HIGH items.
 ### Verified sound (for confidence)
 Shamir GF(2⁸) arithmetic and AES-256-GCM key wrapping; commit signing (low-S, correct signed
 bytes); DAG-CBOR canonicity (golden-tested against `@ipld/dag-cbor`); MST layering/split/merge
-(interop-fixture-pinned); CAR export framing; firehose ordering (persist-before-broadcast,
-disjoint replay/live boundary, restart-safe seq); account lifecycle transitions and the
+(interop-fixture-pinned); CAR export framing; firehose *ordering* specifically —
+persist-before-broadcast, disjoint replay/live boundary, restart-safe seq (this covers ordering
+and replay correctness only; the frontier-advance liveness gap under a cancelled request is the
+separate open finding M1/MM-262, not resolved here); account lifecycle transitions and the
 write-path active-status re-check at commit; token TTL math and app-password privilege
 re-derivation on refresh. Request-path panic sweep came back clean (every `unwrap`/index is
 invariant-guarded and unreachable from user input).

@@ -293,6 +293,9 @@ where
             sig_bytes.len()
         )));
     }
+    // Reject a non-canonical high-S callback signature before it can build an op that
+    // silently fails downstream verification.
+    ensure_low_s_callback_signature(&sig_bytes)?;
 
     // Step 4: base64url-encode the signature (no padding).
     let sig_str = URL_SAFE_NO_PAD.encode(&sig_bytes);
@@ -425,6 +428,8 @@ where
             sig_bytes.len()
         )));
     }
+    // Reject a non-canonical high-S callback signature (see genesis builder).
+    ensure_low_s_callback_signature(&sig_bytes)?;
     let sig_str = URL_SAFE_NO_PAD.encode(&sig_bytes);
 
     // Build the signed operation.
@@ -590,6 +595,30 @@ pub fn verify_plc_operation(
         "no authorized rotation key verified the signature: {}",
         key_errors.join("; ")
     )))
+}
+
+/// Reject a non-canonical high-S signature returned by an external signing callback.
+///
+/// The callbacks passed to [`build_did_plc_genesis_op_with_external_signer`] and
+/// [`build_did_plc_rotation_op`] are contractually required to return low-S signatures, but a
+/// buggy HSM/Secure-Enclave integration that forgot to normalize would otherwise build an op
+/// that looks fine yet silently fails every downstream `verify_*` (and whose malleable twin
+/// would derive a different DID/CID). Failing fast at build time makes that a loud, local
+/// error instead. Callbacks that already normalize (the convenience wrapper, `CommitSigner`,
+/// the wallet signers) pass unchanged.
+fn ensure_low_s_callback_signature(sig_bytes: &[u8]) -> Result<(), CryptoError> {
+    let sig = Signature::try_from(sig_bytes).map_err(|e| {
+        CryptoError::PlcOperation(format!(
+            "signing callback returned invalid signature bytes: {e}"
+        ))
+    })?;
+    if sig.normalize_s().is_some() {
+        return Err(CryptoError::PlcOperation(
+            "signing callback returned a non-canonical high-S signature (atproto requires low-S)"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Parse a did:key URI into a P-256 VerifyingKey and verify a signature.
@@ -1941,6 +1970,36 @@ mod tests {
             }
             other => panic!("expected CryptoError::PlcOperation, got: {other:?}"),
         }
+    }
+
+    /// An external signer that returns a high-S signature is rejected at build time, so a
+    /// non-canonical op can never be produced (it would fail every downstream verify).
+    #[test]
+    fn external_signer_high_s_signature_is_rejected_at_build() {
+        let rotation_kp = generate_p256_keypair().expect("rotation keypair");
+        let signing_kp = generate_p256_keypair().expect("signing keypair");
+        let sk = SigningKey::from_bytes(&(*signing_kp.private_key_bytes).into())
+            .expect("valid signing key");
+
+        let result = build_did_plc_genesis_op_with_external_signer(
+            &rotation_kp.key_id,
+            &signing_kp.key_id,
+            "alice.example.com",
+            "https://pds.example.com",
+            |data| {
+                // Deliberately return the malleable high-S twin the callback should have normalized.
+                let sig: Signature = Signer::sign(&sk, data);
+                let low = sig.normalize_s().unwrap_or(sig);
+                let high = Signature::from_scalars(low.r().to_bytes(), (-*low.s()).to_bytes())
+                    .expect("high-S twin");
+                Ok(high.to_bytes().to_vec())
+            },
+        );
+
+        assert!(
+            matches!(result, Err(CryptoError::PlcOperation(ref msg)) if msg.contains("high-S")),
+            "high-S callback signature must be rejected at build time, got: {result:?}"
+        );
     }
 
     // ── verify_p256_signature tests ────────────────────────────────────────
