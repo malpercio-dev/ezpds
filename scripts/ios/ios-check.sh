@@ -154,7 +154,7 @@ fi
 # a bare -q would be satisfied by the definition alone.
 if [ -d "${APP_DIR}/AppIcon.icon" ]; then
   if [ -f "${PROJYML}" ]; then
-    if ! grep -qE '^[[:space:]]*fileTypes:' "${PROJYML}" \
+    if ! grep -A2 -E '^[[:space:]]*fileTypes:' "${PROJYML}" | grep -q 'icon:' \
        || ! grep -qE '^[[:space:]]*-[[:space:]]*path:[[:space:]]*\.\./\.\./\.\./AppIcon\.icon[[:space:]]*$' "${PROJYML}"; then
       echo "ios-check: FAIL — project.yml missing the AppIcon.icon resource or the fileTypes .icon=file mapping ${REINIT_HINT}" >&2
       fail=1
