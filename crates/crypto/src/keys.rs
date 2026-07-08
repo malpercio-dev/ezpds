@@ -125,10 +125,13 @@ pub fn decrypt_private_key(
         .map_err(|e| CryptoError::Decryption(format!("invalid master key length: {e}")))?;
 
     // Use decrypt() — NOT decrypt_in_place_detached — to avoid GHSA-423w-p2w9-r7vq.
-    // Tag is verified before plaintext is returned.
-    let plaintext = cipher
-        .decrypt(nonce, ciphertext_with_tag)
-        .map_err(|_| CryptoError::Decryption("authentication tag mismatch".to_string()))?;
+    // Tag is verified before plaintext is returned. Wrap the returned buffer in
+    // Zeroizing immediately so the decrypted key never outlives this scope unscrubbed.
+    let plaintext = Zeroizing::new(
+        cipher
+            .decrypt(nonce, ciphertext_with_tag)
+            .map_err(|_| CryptoError::Decryption("authentication tag mismatch".to_string()))?,
+    );
 
     let mut out = Zeroizing::new([0u8; 32]);
     out.copy_from_slice(&plaintext);

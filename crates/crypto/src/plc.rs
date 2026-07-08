@@ -293,6 +293,9 @@ where
             sig_bytes.len()
         )));
     }
+    // Reject a non-canonical high-S callback signature before it can build an op that
+    // silently fails downstream verification.
+    ensure_low_s_callback_signature(&sig_bytes)?;
 
     // Step 4: base64url-encode the signature (no padding).
     let sig_str = URL_SAFE_NO_PAD.encode(&sig_bytes);
@@ -362,6 +365,10 @@ pub fn build_did_plc_genesis_op(
         service_endpoint,
         |data| {
             let sig: Signature = Signer::sign(&sk, data);
+            // atproto requires canonical low-S signatures; ~half of raw P-256
+            // signatures are high-S and would be rejected by plc.directory.
+            // normalize_s() returns Some only when the signature was high-S.
+            let sig = sig.normalize_s().unwrap_or(sig);
             Ok(sig.to_bytes().to_vec())
         },
     )
@@ -421,6 +428,8 @@ where
             sig_bytes.len()
         )));
     }
+    // Reject a non-canonical high-S callback signature (see genesis builder).
+    ensure_low_s_callback_signature(&sig_bytes)?;
     let sig_str = URL_SAFE_NO_PAD.encode(&sig_bytes);
 
     // Build the signed operation.
@@ -588,13 +597,46 @@ pub fn verify_plc_operation(
     )))
 }
 
+/// Reject a non-canonical high-S signature returned by an external signing callback.
+///
+/// The callbacks passed to [`build_did_plc_genesis_op_with_external_signer`] and
+/// [`build_did_plc_rotation_op`] are contractually required to return low-S signatures, but a
+/// buggy HSM/Secure-Enclave integration that forgot to normalize would otherwise build an op
+/// that looks fine yet silently fails every downstream `verify_*` (and whose malleable twin
+/// would derive a different DID/CID). Failing fast at build time makes that a loud, local
+/// error instead. Callbacks that already normalize (the convenience wrapper, `CommitSigner`,
+/// the wallet signers) pass unchanged.
+fn ensure_low_s_callback_signature(sig_bytes: &[u8]) -> Result<(), CryptoError> {
+    let sig = Signature::try_from(sig_bytes).map_err(|e| {
+        CryptoError::PlcOperation(format!(
+            "signing callback returned invalid signature bytes: {e}"
+        ))
+    })?;
+    if sig.normalize_s().is_some() {
+        return Err(CryptoError::PlcOperation(
+            "signing callback returned a non-canonical high-S signature (atproto requires low-S)"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Parse a did:key URI into a P-256 VerifyingKey and verify a signature.
 /// Returns Ok(()) on success, Err(message) on failure.
+///
+/// Rejects non-canonical high-S signatures: `p256`'s verify accepts a
+/// mathematically valid but malleable high-S form, which atproto verifiers
+/// (plc.directory, `@atproto/crypto`) reject. Because PLC DIDs and CIDs are
+/// derived from the *signed* CBOR, accepting a malleated sig would let the
+/// same signature yield a second valid op with a different DID/CID.
 fn verify_signature_with_key(
     key: &DidKeyUri,
     message: &[u8],
     signature: &Signature,
 ) -> Result<(), String> {
+    if signature.normalize_s().is_some() {
+        return Err("signature is not low-S canonical (atproto requires low-S)".to_string());
+    }
     let key_str = key
         .0
         .strip_prefix("did:key:")
@@ -762,24 +804,10 @@ pub fn verify_genesis_op(
     into_writer(&unsigned_op, &mut unsigned_cbor)
         .map_err(|e| CryptoError::PlcOperation(format!("cbor encode unsigned op: {e}")))?;
 
-    // Step 7: Parse rotation key URI → P-256 VerifyingKey.
-    let key_str = rotation_key.0.strip_prefix("did:key:").ok_or_else(|| {
-        CryptoError::PlcOperation("rotation key missing did:key: prefix".to_string())
-    })?;
-    let (_, multikey_bytes) = multibase::decode(key_str)
-        .map_err(|e| CryptoError::PlcOperation(format!("decode rotation key multibase: {e}")))?;
-    if multikey_bytes.get(..2) != Some(P256_MULTICODEC_PREFIX) {
-        return Err(CryptoError::PlcOperation(
-            "rotation key is not a P-256 key (wrong multicodec prefix)".to_string(),
-        ));
-    }
-    let verifying_key = VerifyingKey::from_sec1_bytes(&multikey_bytes[2..])
-        .map_err(|e| CryptoError::PlcOperation(format!("invalid P-256 public key: {e}")))?;
-
-    // Step 8: Verify the ECDSA-SHA256 signature (SHA-256 applied internally by p256).
-    verifying_key
-        .verify(&unsigned_cbor, &signature)
-        .map_err(|e| CryptoError::PlcOperation(format!("signature verification failed: {e}")))?;
+    // Steps 7–8: Parse the rotation key and verify the ECDSA-SHA256 signature
+    // (SHA-256 applied internally by p256; low-S canonical form enforced).
+    verify_signature_with_key(rotation_key, &unsigned_cbor, &signature)
+        .map_err(CryptoError::PlcOperation)?;
 
     // Step 9: CBOR-encode the signed op and derive the DID.
     let mut signed_cbor = Vec::new();
@@ -1144,6 +1172,85 @@ mod tests {
         );
     }
 
+    /// Every signature emitted by the convenience builder is canonical low-S —
+    /// plc.directory (via @atproto/crypto) rejects high-S ops, and ~half of raw
+    /// P-256 signatures are high-S without normalization.
+    #[test]
+    fn genesis_op_signatures_are_low_s() {
+        for i in 0..32 {
+            let (_, _, _, op) = make_genesis_op();
+            let v: serde_json::Value =
+                serde_json::from_str(&op.signed_op_json).expect("valid JSON");
+            let sig_bytes = URL_SAFE_NO_PAD
+                .decode(v["sig"].as_str().expect("sig is a string"))
+                .expect("sig decodes");
+            let sig = Signature::try_from(sig_bytes.as_slice()).expect("parseable signature");
+            assert!(
+                sig.normalize_s().is_none(),
+                "signature must already be canonical low-S (iteration {i})"
+            );
+        }
+    }
+
+    /// Flip a valid op's signature to its high-S (malleable) twin and assert every
+    /// verify path rejects it, matching @atproto/crypto's strict verification.
+    /// Before low-S enforcement, the twin verified AND derived a different DID.
+    #[test]
+    fn verify_paths_reject_high_s_signature() {
+        let (signing_key, op) = make_op_for_verify();
+
+        let mut v: serde_json::Value =
+            serde_json::from_str(&op.signed_op_json).expect("valid JSON");
+        let sig_bytes = URL_SAFE_NO_PAD
+            .decode(v["sig"].as_str().expect("sig is a string"))
+            .expect("sig decodes");
+        let low = Signature::try_from(sig_bytes.as_slice()).expect("parseable signature");
+        assert!(low.normalize_s().is_none(), "builder must emit low-S");
+        // s → n − s: still mathematically valid for the same message and key.
+        let high = Signature::from_scalars(low.r().to_bytes(), (-*low.s()).to_bytes())
+            .expect("high-S twin is a well-formed signature");
+        v["sig"] = serde_json::json!(URL_SAFE_NO_PAD.encode(high.to_bytes()));
+        let malleated_json = serde_json::to_string(&v).expect("re-serialize");
+
+        assert!(
+            matches!(
+                verify_genesis_op(&malleated_json, &signing_key),
+                Err(CryptoError::PlcOperation(ref msg)) if msg.contains("low-S")
+            ),
+            "verify_genesis_op must reject the high-S twin"
+        );
+        assert!(
+            matches!(
+                verify_plc_operation(&malleated_json, std::slice::from_ref(&signing_key)),
+                Err(CryptoError::PlcOperation(_))
+            ),
+            "verify_plc_operation must reject the high-S twin"
+        );
+    }
+
+    /// verify_p256_signature (admin-request auth) also rejects high-S signatures.
+    #[test]
+    fn verify_p256_signature_rejects_high_s() {
+        let message = b"admin request canonical string";
+        let (public_key, sig) = sign_message(message);
+        let low = Signature::try_from(sig.as_slice()).expect("parseable signature");
+        let low = low.normalize_s().unwrap_or(low);
+        assert!(
+            verify_p256_signature(&public_key, message, &low.to_bytes().into()).is_ok(),
+            "low-S signature must verify"
+        );
+        let high = Signature::from_scalars(low.r().to_bytes(), (-*low.s()).to_bytes())
+            .expect("high-S twin is a well-formed signature");
+        let high_bytes: [u8; 64] = high.to_bytes().into();
+        assert!(
+            matches!(
+                verify_p256_signature(&public_key, message, &high_bytes),
+                Err(CryptoError::SignatureVerification(ref msg)) if msg.contains("low-S")
+            ),
+            "high-S signature must be rejected"
+        );
+    }
+
     /// alsoKnownAs contains at://{handle}
     #[test]
     fn also_known_as_contains_at_uri() {
@@ -1385,6 +1492,7 @@ mod tests {
             "https://pds.example.com",
             |data| {
                 let sig: Signature = Signer::sign(&sk, data);
+                let sig = sig.normalize_s().unwrap_or(sig);
                 Ok(sig.to_bytes().to_vec())
             },
         )
@@ -1502,6 +1610,7 @@ mod tests {
             services,
             |data| {
                 let sig: Signature = Signer::sign(&sk, data);
+                let sig = sig.normalize_s().unwrap_or(sig);
                 Ok(sig.to_bytes().to_vec())
             },
         )
@@ -1758,6 +1867,7 @@ mod tests {
             services,
             |data| {
                 let sig: Signature = Signer::sign(&sk, data);
+                let sig = sig.normalize_s().unwrap_or(sig);
                 Ok(sig.to_bytes().to_vec())
             },
         )
@@ -1799,6 +1909,7 @@ mod tests {
             services,
             |data| {
                 let sig: Signature = Signer::sign(&sk, data);
+                let sig = sig.normalize_s().unwrap_or(sig);
                 Ok(sig.to_bytes().to_vec())
             },
         )
@@ -1861,6 +1972,36 @@ mod tests {
         }
     }
 
+    /// An external signer that returns a high-S signature is rejected at build time, so a
+    /// non-canonical op can never be produced (it would fail every downstream verify).
+    #[test]
+    fn external_signer_high_s_signature_is_rejected_at_build() {
+        let rotation_kp = generate_p256_keypair().expect("rotation keypair");
+        let signing_kp = generate_p256_keypair().expect("signing keypair");
+        let sk = SigningKey::from_bytes(&(*signing_kp.private_key_bytes).into())
+            .expect("valid signing key");
+
+        let result = build_did_plc_genesis_op_with_external_signer(
+            &rotation_kp.key_id,
+            &signing_kp.key_id,
+            "alice.example.com",
+            "https://pds.example.com",
+            |data| {
+                // Deliberately return the malleable high-S twin the callback should have normalized.
+                let sig: Signature = Signer::sign(&sk, data);
+                let low = sig.normalize_s().unwrap_or(sig);
+                let high = Signature::from_scalars(low.r().to_bytes(), (-*low.s()).to_bytes())
+                    .expect("high-S twin");
+                Ok(high.to_bytes().to_vec())
+            },
+        );
+
+        assert!(
+            matches!(result, Err(CryptoError::PlcOperation(ref msg)) if msg.contains("high-S")),
+            "high-S callback signature must be rejected at build time, got: {result:?}"
+        );
+    }
+
     // ── verify_p256_signature tests ────────────────────────────────────────
 
     /// Sign `message` with a fresh keypair and return (public_key, raw 64-byte sig).
@@ -1869,6 +2010,7 @@ mod tests {
         let field_bytes: FieldBytes = (*kp.private_key_bytes).into();
         let sk = SigningKey::from_bytes(&field_bytes).expect("valid signing key");
         let sig: Signature = Signer::sign(&sk, message);
+        let sig = sig.normalize_s().unwrap_or(sig);
         let sig_bytes: [u8; 64] = sig.to_bytes().into();
         (kp.key_id, sig_bytes)
     }
