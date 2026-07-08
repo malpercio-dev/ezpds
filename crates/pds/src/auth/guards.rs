@@ -43,7 +43,8 @@ pub fn require_admin_token(headers: &HeaderMap, state: &AppState) -> Result<(), 
     let expected_token = state
         .config
         .admin_token
-        .as_deref()
+        .as_ref()
+        .map(|t| t.0.as_str())
         .ok_or_else(|| ApiError::new(ErrorCode::Unauthorized, "admin token not configured"))?;
 
     let auth_value = headers
@@ -589,7 +590,7 @@ mod tests {
     async fn state_with_token(token: &str) -> AppState {
         let base = test_state().await;
         let mut config = (*base.config).clone();
-        config.admin_token = Some(token.to_string());
+        config.admin_token = Some(common::Sensitive(token.to_string()));
         AppState {
             config: Arc::new(config),
             ..base
@@ -1155,7 +1156,7 @@ mod require_admin_tests {
         // No X-Admin-* headers → master-token path is taken, unchanged.
         let mut state = test_state().await;
         let config = std::sync::Arc::make_mut(&mut state.config);
-        config.admin_token = Some("secret".to_string());
+        config.admin_token = Some(common::Sensitive("secret".to_string()));
 
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -1175,7 +1176,7 @@ mod require_admin_tests {
         // header — preserving the "master token OR device signature" contract.
         let mut state = test_state().await;
         let config = std::sync::Arc::make_mut(&mut state.config);
-        config.admin_token = Some("secret".to_string());
+        config.admin_token = Some(common::Sensitive("secret".to_string()));
 
         let mut headers = HeaderMap::new();
         headers.insert(

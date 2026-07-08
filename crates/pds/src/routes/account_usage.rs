@@ -157,7 +157,7 @@ mod tests {
     async fn admin_state_with_repo_support() -> crate::app::AppState {
         let base = crate::routes::test_utils::state_with_master_key().await;
         let mut config = (*base.config).clone();
-        config.admin_token = Some(ADMIN.to_string());
+        config.admin_token = Some(common::Sensitive(ADMIN.to_string()));
         crate::app::AppState {
             config: std::sync::Arc::new(config),
             ..base
