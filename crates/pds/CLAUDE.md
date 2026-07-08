@@ -140,7 +140,9 @@ sets this):
    peer), default 3000/5min. `com.atproto.sync.getRepo`, `subscribeRepos`, and `_health` are exempt
    so relay backfill/firehose and platform health checks are never throttled.
 2. **Per-endpoint per-IP** — tighter caps on `createAccount`/`createSession`/`resetPassword`/
-   `updateHandle` (plus the native `/v1/accounts[/mobile]` signup routes), keyed by IP.
+   `updateHandle` (plus the native `/v1/accounts[/mobile]` signup routes) and `/v1/transfer/accept`
+   (authenticated by a bare 6-char code, so a short-code endpoint belongs here by default), keyed
+   by IP.
 3. **Per-account write points** — create=3/update=2/delete=1 over an hourly + daily window, charged
    in `record_write::commit_repo_write` (the single choke point for all four repo-write routes),
    keyed by the **authenticated** DID. Keying on the verified DID — not an unverified token subject —
