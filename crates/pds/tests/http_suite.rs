@@ -389,12 +389,12 @@ async fn http_golden_path_suite() {
     })
     .await;
 
-    // 10. deactivateAccount → subsequent createRecord is 403; getRepoStatus reflects deactivated.
-    //     The reap leg is intentionally skipped: the account-deletion reaper interval
-    //     (`accounts.deletion_reaper_interval_secs`) has no EZPDS_* env override — it is TOML-only —
-    //     so it cannot be tuned down to seconds for a poll without a config file, and a
-    //     minutes-long wait would blow the CI budget. The reaper has its own unit tests
-    //     (`account_reaper.rs`), so this suite validates only the deactivation gate.
+    // 10. deactivateAccount → subsequent createRecord is 403; getRepoStatus reflects deactivated;
+    //     then re-deactivate with a `deleteAfter` already in the past and poll until the reaper
+    //     (running every second via EZPDS_ACCOUNTS_DELETION_REAPER_INTERVAL_SECS in the harness)
+    //     permanently purges the account. The first deactivation carries no `deleteAfter` so the
+    //     403/getRepoStatus assertions can't race the purge; re-deactivating is idempotent and
+    //     refreshes `deleteAfter`.
     step("deactivateAccount", || async {
         let resp = h
             .http
@@ -455,6 +455,49 @@ async fn http_golden_path_suite() {
             body["status"], "deactivated",
             "status must be deactivated: {body}"
         );
+    })
+    .await;
+
+    step("reaper purges account past deleteAfter", || async {
+        let resp = h
+            .http
+            .post(h.url("/xrpc/com.atproto.server.deactivateAccount"))
+            .bearer_auth(&token)
+            .json(&json!({ "deleteAfter": "2020-01-01T00:00:00Z" }))
+            .send()
+            .await
+            .expect("deactivateAccount (deleteAfter) request");
+        assert!(
+            resp.status().is_success(),
+            "deactivateAccount with deleteAfter status: {}",
+            resp.status()
+        );
+
+        // The account is now due immediately; with a 1s reaper interval the purge should land
+        // within a few passes. 30s is deliberately generous for a loaded CI runner — the loop
+        // exits on the first 404.
+        let status_url = h.url(&format!(
+            "/xrpc/com.atproto.sync.getRepoStatus?did={}",
+            enc(&did)
+        ));
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let resp = h
+                .http
+                .get(&status_url)
+                .send()
+                .await
+                .expect("getRepoStatus poll request");
+            let status = resp.status();
+            if status.as_u16() == 404 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "account was not reaped within 30s: getRepoStatus still returns {status}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
     })
     .await;
 }
