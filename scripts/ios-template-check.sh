@@ -59,7 +59,10 @@ fi
 # --- Structural invariants of the fork (source-side mirror of ios-check.sh) ---
 require() {
   local pattern="$1" why="$2"
-  if ! grep -q "${pattern}" "${TEMPLATE}"; then
+  # -F: the "patterns" are literal template text full of regex metacharacters
+  # ($(inherited), {{#each ...}}) — fixed-string matching keeps a future edit
+  # from accidentally forming a valid regex with different semantics.
+  if ! grep -qF -- "${pattern}" "${TEMPLATE}"; then
     echo "ios-template-check: FAIL — template lost '${pattern}' (${why})" >&2
     fail=1
   fi

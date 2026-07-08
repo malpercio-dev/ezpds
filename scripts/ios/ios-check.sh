@@ -87,11 +87,13 @@ fi
 # (`|| true`: grep -c exits 1 on zero matches, which would trip `set -e`.)
 CONF="${APP_DIR}/src-tauri/tauri.conf.json"
 # python3 ships with Xcode's CLT (dev Macs) and the GitHub macOS runners.
-FRAMEWORKS=( $(python3 -c "
+# `read -a` (not mapfile: absent from the bash 3.2 on dev Macs) splits the
+# space-separated names without the glob expansion an unquoted $() would risk.
+IFS=' ' read -r -a FRAMEWORKS <<< "$(python3 -c "
 import json
 conf = json.load(open('${CONF}'))
 print(' '.join(conf.get('bundle', {}).get('iOS', {}).get('frameworks', [])))
-") )
+")"
 if [ "${#FRAMEWORKS[@]}" -eq 0 ]; then
   echo "ios-check: FAIL — no bundle > iOS > frameworks in ${CONF} (SystemConfiguration is required by the system-configuration crate)" >&2
   fail=1
