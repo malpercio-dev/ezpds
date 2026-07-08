@@ -308,8 +308,13 @@ Failures use the OAuth-style `{ "error", "error_description" }` body.
 
 ## 7. Revocation
 
-- **Credential layer.** Access tokens are short-lived (§5); stop using one and it
-  lapses at `expires_in`.
+- **Credential layer.** The agent access token is a short-lived Bearer with no
+  refresh token (§5): stop using one and it lapses at `expires_in`. The standard
+  OAuth 2.0 revocation endpoint (RFC 7009), advertised as `revocation_endpoint`
+  (`POST {{public_url}}/oauth/revoke`), revokes the **refresh token** an interactive
+  OAuth client holds — a DPoP-bound request, keyed to the token's own proof-of-
+  possession key, that answers `200` whether or not the token existed. An agent's
+  refresh-token-less Bearer has nothing to revoke there and simply expires.
 - **Registration layer.** A revoked agent identity can no longer exchange
   assertions (§4 returns `access_denied`). Provider-driven revocation via a Security
   Event Token at the advertised `events_endpoint` is **not yet enabled on this

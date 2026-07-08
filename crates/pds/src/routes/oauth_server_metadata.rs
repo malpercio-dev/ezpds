@@ -28,12 +28,14 @@ struct OAuthServerMetadata {
     issuer: String,
     authorization_endpoint: String,
     token_endpoint: String,
+    revocation_endpoint: String,
     pushed_authorization_request_endpoint: String,
     jwks_uri: String,
     scopes_supported: Vec<String>,
     response_types_supported: Vec<String>,
     grant_types_supported: Vec<String>,
     token_endpoint_auth_methods_supported: Vec<String>,
+    revocation_endpoint_auth_methods_supported: Vec<String>,
     code_challenge_methods_supported: Vec<String>,
     dpop_signing_alg_values_supported: Vec<String>,
     require_pushed_authorization_requests: bool,
@@ -62,6 +64,7 @@ pub async fn oauth_server_metadata(State(state): State<AppState>) -> impl IntoRe
         issuer: base.to_string(),
         authorization_endpoint: format!("{base}/oauth/authorize"),
         token_endpoint: format!("{base}/oauth/token"),
+        revocation_endpoint: format!("{base}/oauth/revoke"),
         pushed_authorization_request_endpoint: format!("{base}/oauth/par"),
         jwks_uri: format!("{base}/oauth/jwks"),
         scopes_supported: crate::auth::oauth_scopes::supported_scopes()
@@ -76,6 +79,10 @@ pub async fn oauth_server_metadata(State(state): State<AppState>) -> impl IntoRe
             "urn:workos:agent-auth:grant-type:claim".to_string(),
         ],
         token_endpoint_auth_methods_supported: vec![
+            "none".to_string(),
+            "private_key_jwt".to_string(),
+        ],
+        revocation_endpoint_auth_methods_supported: vec![
             "none".to_string(),
             "private_key_jwt".to_string(),
         ],
@@ -191,6 +198,23 @@ mod tests {
             "https://test.example.com/oauth/par"
         );
         assert_eq!(json["jwks_uri"], "https://test.example.com/oauth/jwks");
+    }
+
+    #[tokio::test]
+    async fn advertises_revocation_endpoint_and_auth_methods() {
+        let json = metadata_json().await;
+        assert_eq!(
+            json["revocation_endpoint"], "https://test.example.com/oauth/revoke",
+            "RFC 8414 revocation_endpoint must point at /oauth/revoke"
+        );
+        let methods: Vec<&str> = json["revocation_endpoint_auth_methods_supported"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(methods.contains(&"none"), "must support public clients");
+        assert!(methods.contains(&"private_key_jwt"));
     }
 
     #[tokio::test]
@@ -357,6 +381,10 @@ mod tests {
         assert_eq!(
             json["token_endpoint"],
             "https://pds.example.com/oauth/token"
+        );
+        assert_eq!(
+            json["revocation_endpoint"],
+            "https://pds.example.com/oauth/revoke"
         );
         assert_eq!(
             json["pushed_authorization_request_endpoint"],

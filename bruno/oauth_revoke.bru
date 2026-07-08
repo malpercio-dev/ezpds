@@ -1,0 +1,42 @@
+meta {
+  name: OAuth Token Revocation
+  type: http
+  seq: 100
+}
+
+post {
+  url: {{baseUrl}}/oauth/revoke
+  body: formUrlEncoded
+  auth: none
+}
+
+headers {
+  DPoP: {{dpopProof}}
+}
+
+body:form-urlencoded {
+  token: {{refreshToken}}
+  token_type_hint: refresh_token
+  client_id: https://app.example.com/client-metadata.json
+}
+
+vars:pre-request {
+  dpopProof: <replace-with-dpop-proof-jwt>
+  refreshToken: <replace-with-refresh-token>
+}
+
+docs {
+  RFC 7009 token revocation. Revokes the stateful refresh token bound to the
+  presenting DPoP key. Access tokens are short-lived ES256 JWTs with no server-side
+  store, so they cannot be revoked here — they expire on their own within 5 minutes.
+
+  Authentication is DPoP proof-of-possession: the proof's key thumbprint must match
+  the one the refresh token is bound to (mirroring the refresh_token grant), so a
+  party that only observed the token string cannot revoke it. Obtain a DPoP nonce the
+  same way as the token endpoint (an initial call returns use_dpop_nonce with a
+  DPoP-Nonce header; retry with that nonce embedded in the proof).
+
+  Per RFC 7009 the response is always 200 with an empty body for a well-formed,
+  authenticated request — revoking an unknown, expired, or unauthorized token is
+  indistinguishable from revoking a live one.
+}
