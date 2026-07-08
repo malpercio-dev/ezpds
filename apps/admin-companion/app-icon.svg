@@ -8,9 +8,9 @@
 
     Drawn full-bleed on the square: iOS applies the squircle mask and (on iOS 26)
     the Liquid Glass material itself — no baked-in corner radius, no baked-in gloss.
-    The two top-level groups are deliberate Icon Composer seams: `layer-background`
-    and `layer-glyph` map 1:1 onto foreground/background layers if this is ever
-    rebuilt as a layered .icon file.
+    The layered Icon Composer build lives in AppIcon.icon/ (fill + chevron.svg +
+    cursor.svg split from this master); keep its layer geometry in lockstep with
+    this file.
 
     Colors are the Brass Console tokens (src/lib/styles/tokens.css), OKLCH → sRGB:
       ground   oklch(0.23/0.18/0.155 ~0.012 250)  #181e24 / #0e1217 / #090d11

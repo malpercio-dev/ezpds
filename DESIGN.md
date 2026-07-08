@@ -284,10 +284,15 @@ a wild blob would break the precision-and-restraint register.
   consumes). `just ios-postinit` (Patch G) regenerates the iOS asset catalog from it
   after every `cargo tauri ios init`; `just ios-check` verifies via a sha256 marker.
 - **iOS 26 fit:** drawn full-bleed on the square with no baked-in corner radius or
-  gloss — the system applies the squircle mask and Liquid Glass material. The SVG's
-  `layer-background` / `layer-glyph` groups are Icon Composer seams if the mark is
-  ever rebuilt as a layered `.icon` file. Wax gradients are shallow and matte, never
-  metallic glint.
+  gloss — the system applies the squircle mask and Liquid Glass material. Wax
+  gradients are shallow and matte, never metallic glint.
+- **Layered Liquid Glass build:** `apps/identity-wallet/AppIcon.icon/` is the Icon
+  Composer document — the parchment fill plus two glass layers split from the master
+  (`seal.svg` behind, `shield.svg` in front), specular on, neutral shadow, drop
+  shadows deliberately NOT baked (the material supplies lighting). Referenced in
+  place by the committed XcodeGen template (`scripts/ios/project.yml`) and compiled
+  by actool in `just ios-pr-check`; the flat Patch G appiconset remains the
+  older-toolchain fallback. Keep layer geometry in lockstep with `app-icon.svg`.
 - **Sibling relationship:** the deliberate inverse of the Custos Companion icon
   (`apps/admin-companion/app-icon.svg`, its DESIGN.md §6) — same gold family, light
   archival ground vs. cool console slate, the seal vs. the operator's prompt. The two

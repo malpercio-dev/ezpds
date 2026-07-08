@@ -310,10 +310,42 @@ ios-build: ios-check
 # shared workspace crates on aarch64-apple-ios. The host test run deliberately does
 # NOT set EZPDS_IOS_BUILD (that would clobber CC/AR with iOS toolchain overrides).
 # Assumes the Xcode project exists: run `cargo tauri ios init` + `just ios-postinit` first.
-ios-pr-check: ios-check
+ios-pr-check: ios-check (_icon-compile "apps/identity-wallet")
     cd apps/identity-wallet && pnpm build
     cd apps/identity-wallet && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && cargo build --locked --lib --target aarch64-apple-ios -p identity-wallet
     cargo test --locked -p identity-wallet
+
+# Compile the app's Icon Composer document (AppIcon.icon, referenced in place by
+# the scripts/ios/project.yml template) with actool — the same compiler Xcode's
+# build invokes — so a malformed icon.json or a layer SVG the Apple toolchain
+# can't parse fails the PR gate instead of the post-merge TestFlight archive.
+# macOS-only (xcrun); the callers are the macOS pr-check recipes. actool's exit
+# code alone is not trustworthy, so the recipe also requires an Assets.car and
+# greps the tool output for errors. A MISSING bundle fails too: both apps ship
+# one, so absence in this gate means a miswired path, not an icon-less app.
+_icon-compile app_dir:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    icon="{{app_dir}}/AppIcon.icon"
+    if [ ! -d "$icon" ]; then
+      echo "✗ missing AppIcon.icon in {{app_dir}} — both apps ship one; a missing bundle here means a miswired path" >&2
+      exit 1
+    fi
+    out="$(mktemp -d)"
+    log="$(xcrun actool "$icon" --compile "$out" \
+      --platform iphoneos --minimum-deployment-target 14.0 \
+      --app-icon AppIcon --output-partial-info-plist "$out/AppIcon-partial.plist" \
+      --output-format human-readable-text --notices --warnings 2>&1)" || { echo "$log" >&2; exit 1; }
+    echo "$log"
+    if echo "$log" | grep -qi ': error:'; then
+      echo "✗ actool reported errors compiling $icon" >&2
+      exit 1
+    fi
+    if [ ! -f "$out/Assets.car" ]; then
+      echo "✗ actool produced no Assets.car from $icon" >&2
+      exit 1
+    fi
+    echo "✓ actool compiled $icon"
 
 # --- iOS release -> TestFlight (macOS + Xcode) ---
 # CI runs these on a GitHub macOS runner (.github/workflows/ios-testflight.yml);
@@ -416,7 +448,7 @@ admin-build: admin-check
 # signing/secrets; frontend build + staticlib cross-compile for aarch64-apple-ios +
 # host-target Rust unit tests, which no other CI lane can compile).
 # Assumes the Xcode project exists: `cargo tauri ios init` + `just admin-postinit` first.
-admin-pr-check: admin-check
+admin-pr-check: admin-check (_icon-compile "apps/admin-companion")
     cd apps/admin-companion && pnpm build
     cd apps/admin-companion && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && cargo build --locked --lib --target aarch64-apple-ios -p admin-companion
     cargo test --locked -p admin-companion

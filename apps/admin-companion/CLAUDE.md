@@ -166,5 +166,12 @@ Host build / tests (no Xcode): `cargo build -p admin-companion`, `cargo test -p 
   `src-tauri/icons-build/`), and `just admin-check` verifies the catalog was built from
   the current PNG via a sha256 marker. To change the icon: edit the SVG, re-render the
   PNG at 1024×1024 (e.g. resvg), commit both, re-run `just admin-postinit`.
+  **`AppIcon.icon/` is the layered Icon Composer document** (icon.json + `Assets/*.svg`
+  layers split from the same master — no baked shadows; Liquid Glass supplies lighting):
+  the XcodeGen template (`scripts/ios/project.yml`) references it in place as a resource
+  so Xcode 26 renders the layered iOS 26 icon (the flat appiconset stays as the
+  older-toolchain fallback), and `just admin-pr-check` compiles it with actool
+  (`just _icon-compile`) so a bad icon.json fails the PR gate. Keep the layer geometry
+  in sync with `app-icon.svg`.
 - **Distinct Keychain namespace** (`"ezpds-admin-companion"`) and bundle id
   (`dev.malpercio.admincompanion`) so the two apps never collide on one device.
