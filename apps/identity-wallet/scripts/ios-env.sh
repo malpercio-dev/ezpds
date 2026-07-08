@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Thin wrapper — the shared implementation lives in scripts/ios/ios-env.sh (single
 # source of truth for both app lanes). This per-app path is kept because devenv.nix,
-# the just recipes, and the Xcode "Build Rust Code" Run Script (injected by Patch C)
+# the just recipes, and the Xcode "Build Rust Code" Run Script (rendered from the
+# scripts/ios/project.yml template)
 # all source apps/identity-wallet/scripts/ios-env.sh.
 #
 # SOURCED, never executed (same contract as the shared script: no `exit`, no `set -e`).

@@ -38,8 +38,9 @@ sign → package → ship).
   commands CI runs; usable locally as an escape hatch).
 - **PR gate:** [`.github/workflows/ios-pr-check.yml`](../.github/workflows/ios-pr-check.yml)
   runs on `pull_request` with **no secrets**: frontend type-check + unit tests (ubuntu) and,
-  on the same `macos-26` runner image, `cargo tauri ios init` → `just ios-postinit` /
-  `admin-postinit` (the patch-seam gate) → `just ios-pr-check` / `admin-pr-check`
+  on the same `macos-26` runner image, `cargo tauri ios init` (renders the committed
+  `scripts/ios/project.yml` template) → `just ios-postinit` / `admin-postinit` (the
+  template-seam gate) → `just ios-pr-check` / `admin-pr-check`
   (frontend build + staticlib cross-compile for `aarch64-apple-ios`). Everything short of
   xcodebuild archiving/signing, so iOS breakage surfaces on the PR instead of post-merge.
 
@@ -107,9 +108,10 @@ Each run on `macos-26`:
    and export `APPLE_API_KEY_PATH` (for the `altool` upload). Signing itself is **explicit**:
    Tauri reads `IOS_CERTIFICATE` / `IOS_CERTIFICATE_PASSWORD` / `IOS_MOBILE_PROVISION`
    directly and signs with your Apple Distribution cert + App Store profile.
-3. `cargo tauri ios init` regenerates the **gitignored** Xcode project, then
-   `just ios-postinit` re-applies the pbxproj patches — including **Patch F**, which keeps
-   the Rust staticlib `libapp.a` out of the app bundle (App Store rejects loose libraries).
+3. `cargo tauri ios init` regenerates the **gitignored** Xcode project from the committed
+   `scripts/ios/project.yml` template (which keeps the Rust staticlib `libapp.a` out of the
+   app bundle — App Store rejects loose libraries); `just ios-postinit` then checks the
+   swift-rs fork, installs the app icon, and verifies the rendered project.
 4. `just ios-ipa` **stamps** a unique, monotonic `bundle.iOS.bundleVersion` (UTC epoch
    seconds; TestFlight rejects duplicate build numbers) and then runs
    `cargo tauri ios build --export-method app-store-connect`, producing a signed IPA at
@@ -155,9 +157,11 @@ for the first time inside a CI log.
   docs (Xcode 15+ renamed `app-store` → `app-store-connect`). If a Tauri/Xcode version
   rejects it, confirm the accepted values with `cargo tauri ios build --help` and
   update the `ios-ipa` recipe.
-- **`bundle.iOS.frameworks` is cosmetic.** The Tauri config schema doesn't define it;
-  the real `SystemConfiguration.framework` link is enforced by `ios-postinit.sh`
-  Patch E. CI runs `ios-postinit`, so this is covered. See
+- **`bundle.iOS.frameworks` is the framework-link source of truth.** The
+  `scripts/ios/project.yml` template renders it into `OTHER_LDFLAGS` (plus xcodegen `sdk:`
+  dependencies) on every `cargo tauri ios init`, and `just ios-check` verifies every listed
+  framework landed. (Historically this config was cosmetic — it only seeded a fresh
+  project.yml — and a pbxproj patch enforced the link instead.) See
   [`apps/identity-wallet/CLAUDE.md`](../apps/identity-wallet/CLAUDE.md) (Troubleshooting).
 - **First TestFlight upload.** It can only succeed after the App Store Connect app
   record exists for the bundle ID, and each upload's build number must exceed anything
@@ -170,9 +174,10 @@ for the first time inside a CI log.
   GNU `base64` shadows macOS's BSD one, but Tauri's cert decode uses BSD flags. `ios-env.sh`
   shims `/usr/bin/base64` ahead of it under `EZPDS_IOS_BUILD`. No-op on CI (BSD base64 there).
 - **`libapp.a … is not permitted` / `Invalid bundle structure`.** cargo-mobile2 copies the
-  Rust staticlib into the `.app`; App Store rejects loose libraries (tauri#13578).
-  `ios-postinit.sh` **Patch F** strips it (project.yml `Externals → buildPhase: none` + the
-  pbxproj `in Resources` entry); the `in Frameworks` link entry stays. CI runs `ios-postinit`.
+  Rust staticlib into the `.app`; App Store rejects loose libraries (tauri#13578). The
+  `scripts/ios/project.yml` template sets `Externals → buildPhase: none`, so the generated
+  project never bundles it; the `framework: libapp.a` link entry stays. `just ios-check`
+  verifies. CI runs `ios-postinit`, which ends with that check.
 - **Export compliance ("Missing Compliance" in TestFlight).** `src-tauri/Info.ios.plist`
   sets `ITSAppUsesNonExemptEncryption = false` (standard-crypto exemption), merged into the
   Info.plist on every build, so uploads clear the encryption gate automatically — no per-build
@@ -216,7 +221,7 @@ cert (`IOS_CERTIFICATE` / `IOS_CERTIFICATE_PASSWORD`), the App Store Connect API
    `IOS_MOBILE_PROVISION` env var Tauri reads, so the admin build signs with the admin
    profile while the wallet lane keeps using its own `IOS_MOBILE_PROVISION` secret.
 
-Everything else is identical — Patch F (`libapp.a` strip), the build-number stamp, the
+Everything else is identical — the template's `libapp.a` bundle exclusion, the build-number stamp, the
 `ITSAppUsesNonExemptEncryption=false` plist, and the Rosetta `brew` shim — so the
 [Gotchas](#gotchas--verification) above apply unchanged (admin-companion links only
 `SystemConfiguration`, not `AuthenticationServices`, since it has no OAuth auth-session).

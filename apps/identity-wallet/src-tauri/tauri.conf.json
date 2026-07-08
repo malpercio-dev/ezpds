@@ -22,8 +22,9 @@
   "bundle": {
     "active": true,
     "iOS": {
-      "frameworks": ["SystemConfiguration"],
-      "bundleVersion": "2"
+      "frameworks": ["SystemConfiguration", "AuthenticationServices"],
+      "bundleVersion": "2",
+      "template": "../../scripts/ios/project.yml"
     }
   }
 }

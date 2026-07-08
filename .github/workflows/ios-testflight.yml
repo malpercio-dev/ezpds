@@ -145,14 +145,17 @@ jobs:
           chmod +x "$RUNNER_TEMP/arm64-shims/brew"
           echo "$RUNNER_TEMP/arm64-shims" >> "$GITHUB_PATH"
 
-      # gen/apple is gitignored — regenerate it from scratch, then re-apply the
-      # pbxproj/project.yml patches (sandbox, Run Script env, entitlements,
-      # SystemConfiguration + AuthenticationServices frameworks, libapp.a strip).
+      # gen/apple is gitignored — regenerate it from scratch. `cargo tauri ios init`
+      # renders the committed scripts/ios/project.yml template (bundle > iOS >
+      # template; the path is cwd-relative, hence working-directory), which carries
+      # every workaround: sandbox off, Run Script env, entitlements allowance,
+      # framework linking, libapp.a strip. Postinit checks the swift-rs fork,
+      # installs the app icon, and runs the full ios-check.
       - name: Generate the Xcode project
         working-directory: apps/identity-wallet
         run: cargo tauri ios init
 
-      - name: Re-apply ios-postinit patches
+      - name: Finish + verify the generated project (postinit)
         run: just ios-postinit
 
       # No build-number step here: `just ios-ipa` stamps a unique, monotonic

@@ -1,7 +1,7 @@
 # Admin Companion (operator console) Mobile App
 
-Last verified: 2026-07-06
-Last updated: 2026-07-06
+Last verified: 2026-07-08
+Last updated: 2026-07-08
 
 ## Purpose
 
@@ -131,8 +131,8 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
 ```bash
 nix develop --impure --accept-flake-config   # from workspace ROOT
 cd apps/admin-companion && pnpm install
-cargo tauri ios init                          # generates gitignored src-tauri/gen/
-cd ../.. && just admin-postinit               # re-apply Xcode patches (idempotent)
+cargo tauri ios init                          # generates gitignored src-tauri/gen/ (renders scripts/ios/project.yml)
+cd ../.. && just admin-postinit               # swift-rs check + app icon + verify (idempotent)
 just admin-dev                                # simulator   (or: just admin-build)
 ```
 
@@ -143,9 +143,13 @@ Host build / tests (no Xcode): `cargo build -p admin-companion`, `cargo test -p 
 - **Toolchain scripts are SHARED, design is forked.** The iOS toolchain scripts
   (`scripts/ios-env.sh`, `ios-postinit.sh`, `ios-check.sh`) are thin wrappers over the
   single shared implementation in the repo-root `scripts/ios/` (each wrapper pins this
-  app's dir, the `admin` recipe prefix, and its Patch E framework list — just
+  app's dir and the `admin` recipe prefix), and the Xcode-project workarounds come from
+  the SHARED XcodeGen template `scripts/ios/project.yml` (rendered on every
+  `cargo tauri ios init` via `bundle > iOS > template`), so neither the script logic nor
+  the project workarounds can diverge between the two app lanes. This app's framework
+  list lives in its `tauri.conf.json` `bundle > iOS > frameworks` — just
   `SystemConfiguration`; no AuthenticationServices, this app has no in-app OAuth
-  plugin), so the patch logic can never diverge between the two app lanes again. The
+  plugin. The
   OKLCH token *architecture* is forked from identity-wallet — but the token *values*,
   components, and product/design briefs are this app's own terminal-native register.
   See the root `apps/identity-wallet/CLAUDE.md` for the full explanation of every iOS
@@ -157,7 +161,7 @@ Host build / tests (no Xcode): `cargo build -p admin-companion`, `cargo test -p 
   `/impeccable` font pass; JetBrains Mono (the signature voice) is bundled in `static/fonts/`.
 - **App icon: `app-icon.svg` is the source of truth** (brand rationale in DESIGN.md §6);
   `app-icon.png` is its 1024×1024 render and the input `cargo tauri icon` consumes.
-  `just admin-postinit` (Patch G) regenerates the gitignored AppIcon asset catalog from
+  `just admin-postinit` regenerates the gitignored AppIcon asset catalog from
   it after every `cargo tauri ios init` (desktop/android outputs go to the gitignored
   `src-tauri/icons-build/`), and `just admin-check` verifies the catalog was built from
   the current PNG via a sha256 marker. To change the icon: edit the SVG, re-render the

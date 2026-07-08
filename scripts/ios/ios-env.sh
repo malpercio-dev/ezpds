@@ -4,7 +4,8 @@
 #
 # This is the SINGLE shared implementation; each app keeps a thin sourcing wrapper at
 # apps/<app>/scripts/ios-env.sh because devenv.nix, the just recipes, and the Xcode
-# "Build Rust Code" Run Script (Patch C) all source that per-app path.
+# "Build Rust Code" Run Script (via the scripts/ios/project.yml template) all
+# source that per-app path.
 #
 # Sourced by:
 #   1. devenv.nix `enterShell` (CLI `cargo tauri ios dev`/`build`), and

@@ -21,7 +21,8 @@ Last verified: 2026-07-06
 - `just font-check` - Verify the four vendored font copies haven't drifted (scripts/font-parity.sh; same-named font files must be byte-identical across copies)
 - `just cap-check` - Verify the Tauri IPC capability allowlists stay minimal (scripts/capability-check.sh; no `core:default`, mobile schema, withGlobalTauri off — the static half of the least-privilege boundary in docs/security/tauri-ipc-boundary.md)
 - `just ios-paths-check` - Verify the iOS workflows' `paths:` filters match the apps' cargo dependency graph exactly (scripts/ios-paths-check.sh; an unwatched app dependency or an entry re-widened to `crates/**` both fail — keeps pure-PDS changes from triggering the macOS lanes)
-- `just ci` - Full local gate (fmt-check, lock-check, bruno-check, font-check, cap-check, ios-paths-check, swift-rs-check, clippy, test, audit) — the same checks CI runs
+- `just ios-template-check` - Verify the forked XcodeGen iOS project template (scripts/ios/project.yml, rendered on every `cargo tauri ios init` via `bundle > iOS > template`) is in lockstep with the workflows' tauri-cli pin, still carries every workaround, and is referenced by both apps (scripts/ios-template-check.sh; Linux-runnable)
+- `just ci` - Full local gate (fmt-check, lock-check, bruno-check, font-check, cap-check, ios-paths-check, swift-rs-check, ios-template-check, clippy, test, audit) — the same checks CI runs
 - `just interop-setup` / `just interop <args>` - Install deps for and run the interop CLI (`tools/interop/`) against a live deployment
 
 ## CI/CD
@@ -36,7 +37,7 @@ Release flow: `just set-version X.Y.Z` (PR) → merge → `just release` (cuts/p
 
 **iOS (`.github/workflows/ios-testflight.yml`).** Builds the `identity-wallet` Tauri app on a free public-repo `macos-26` runner and uploads to TestFlight on every push to `main` (App Store Connect API-key signing; never runs on `pull_request`, keeping secrets off fork PRs). The build/upload core is shared `just` recipes (`ios-ipa`, `ios-upload`, `ios-release`) usable locally. The **admin-companion** operator console ships through its own parallel lane — `.github/workflows/admin-testflight.yml` + `just admin-ipa`/`admin-upload`/`admin-release`, triggered on `apps/admin-companion/**` — reusing every signing secret except its own bundle-id-bound provisioning profile (`IOS_MOBILE_PROVISION_ADMIN`). See [docs/ios-cicd.md](docs/ios-cicd.md).
 
-**iOS PR gate (`.github/workflows/ios-pr-check.yml`).** Because the TestFlight lanes hold signing secrets and never run on `pull_request`, a secret-free PR lane validates both apps before merge: an ubuntu job runs the frontend type-check (`pnpm check`) and unit tests, and a `macos-26` job regenerates the Xcode project, re-applies the postinit patches (the patch-seam gate — each fails loudly on tauri-cli template drift), cross-compiles the app staticlib for `aarch64-apple-ios`, and runs the app's Rust unit tests on the macOS host target (the only CI lane that can compile these crates) via `just ios-pr-check` / `just admin-pr-check` — everything short of xcodebuild archiving/signing.
+**iOS PR gate (`.github/workflows/ios-pr-check.yml`).** Because the TestFlight lanes hold signing secrets and never run on `pull_request`, a secret-free PR lane validates both apps before merge: an ubuntu job runs the frontend type-check (`pnpm check`) and unit tests, and a `macos-26` job regenerates the Xcode project from the committed scripts/ios/project.yml template, runs postinit + ios-check (the template-seam gate — it fails loudly if the rendered project is missing any workaround), cross-compiles the app staticlib for `aarch64-apple-ios`, and runs the app's Rust unit tests on the macOS host target (the only CI lane that can compile these crates) via `just ios-pr-check` / `just admin-pr-check` — everything short of xcodebuild archiving/signing.
 
 ## Dev Environment
 - Managed entirely by Nix flake + devenv; do not install tools globally
@@ -65,8 +66,8 @@ Release flow: `just set-version X.Y.Z` (PR) → merge → `just release` (cuts/p
 
 - `apps/identity-wallet/` — Tauri v2 iOS app (SvelteKit 2 + Svelte 5 frontend, Rust backend)
 - Developer setup and iOS workstation guide: see [`apps/identity-wallet/CLAUDE.md`](apps/identity-wallet/CLAUDE.md)
-- iOS build commands: `just ios-dev` / `just ios-build` (run from repo root; macOS + Xcode required). Toolchain resolved by `apps/identity-wallet/scripts/ios-env.sh`; patches re-applied via `just ios-postinit` after `cargo tauri ios init`.
-- The per-app `scripts/ios-{env,postinit,check}.sh` files are thin wrappers over ONE shared implementation in `scripts/ios/` (repo root) — each wrapper pins its app dir, recipe prefix, and Patch E framework list. Edit the shared scripts, never a wrapper copy.
+- iOS build commands: `just ios-dev` / `just ios-build` (run from repo root; macOS + Xcode required). Toolchain resolved by `apps/identity-wallet/scripts/ios-env.sh`. The Xcode-project workarounds live in the committed XcodeGen template `scripts/ios/project.yml` (rendered by every `cargo tauri ios init` via `bundle > iOS > template`); run `just ios-postinit` after each init (swift-rs fork check + app icon + full verification).
+- The per-app `scripts/ios-{env,postinit,check}.sh` files are thin wrappers over ONE shared implementation in `scripts/ios/` (repo root) — each wrapper pins its app dir and recipe prefix (per-app framework lists live in each app's `tauri.conf.json` `bundle > iOS > frameworks`). Edit the shared scripts, never a wrapper copy.
 
 ## Design Context
 The repo has **two UI surfaces, each with its own scoped design brief.** Read the brief for the app you're working on before any frontend design/UX work, and target `/impeccable` at that app's path so it loads the right brief:

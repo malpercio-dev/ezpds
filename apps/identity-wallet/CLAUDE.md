@@ -1,7 +1,7 @@
 # Obsign (identity-wallet) Mobile App
 
-Last verified: 2026-07-05
-Last updated: 2026-07-05
+Last verified: 2026-07-08
+Last updated: 2026-07-08
 
 ## Purpose
 
@@ -175,7 +175,7 @@ pnpm install
 # 3. Generate the Xcode project (output is in src-tauri/gen/apple/ — gitignored)
 cargo tauri ios init
 
-# 4. Apply post-init patches (Run Script phase PATH + sandbox config + swift-rs patch)
+# 4. Finish + verify the generated project (swift-rs fork check + app icon + ios-check)
 cd .. # back to workspace root
 just ios-postinit
 ```
@@ -185,29 +185,32 @@ Note: `src-tauri/gen/` contains a machine-specific Xcode project. It is gitignor
 ### After every `cargo tauri ios init`: run `just ios-postinit`
 
 `cargo tauri ios init` regenerates the gitignored Xcode project at
-`src-tauri/gen/apple/`. Six workarounds must be (re-)applied to it. This is now
-a single idempotent command, run from the repo root:
+`src-tauri/gen/apple/`. The Xcode-project workarounds are **not patched in
+afterwards** — they come from the committed XcodeGen template
+`scripts/ios/project.yml`, which the init renders into `gen/apple/project.yml`
+on every run (via `bundle > iOS > template` in `tauri.conf.json`; the template
+path is cwd-relative, so run the init from `apps/identity-wallet/`). The template
+carries: `ENABLE_USER_SCRIPT_SANDBOXING: NO` (macOS 26 + Xcode sandbox blocks
+Cargo's directory walk), the dev-env preamble in the "Build Rust Code" Run Script
+phase (`EZPDS_IOS_BUILD=1` + PATH + `source scripts/ios-env.sh` — that phase does
+not inherit the dev-shell environment), `CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION:
+YES` (tolerates Xcode's spurious "entitlements modified during build" failure
+caused by the per-build project sync), `OTHER_LDFLAGS` linking every framework in
+`tauri.conf.json`'s `bundle > iOS > frameworks` (see Troubleshooting), and
+`Externals → buildPhase: none` (keeps the Rust staticlib `libapp.a` out of the app
+bundle — App Store rejects a loose `.a`; see Troubleshooting).
+
+After every init, run (from the repo root):
 
 ```bash
 just ios-postinit
 ```
 
-It (1) verifies the `swift-rs` `--disable-sandbox` patch is wired in the workspace
-`Cargo.toml`, (2) sets `ENABLE_USER_SCRIPT_SANDBOXING = NO` (macOS 26 + Xcode
-sandbox blocks Cargo's directory walk), (3) injects `PATH` + `source
-scripts/ios-env.sh` into the "Build Rust Code" Run Script phase (that phase does
-not inherit the dev-shell environment), (4) sets
-`CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION = YES` (tolerates Xcode's spurious
-"entitlements modified during build" failure caused by the per-build project sync),
-and (5) injects `OTHER_LDFLAGS = -framework SystemConfiguration -framework
-AuthenticationServices` (the `system-configuration` crate — pulled in by
-`hickory-resolver` + `reqwest` — needs `SystemConfiguration.framework`; the vendored
-`tauri-plugin-auth-session` — `ASWebAuthenticationSession` — needs
-`AuthenticationServices.framework`; both share one `OTHER_LDFLAGS` line, see
-Troubleshooting), and (6) keeps the Rust staticlib
-`libapp.a` out of the app bundle (sets `Externals → buildPhase: none` in `project.yml` and
-strips the `libapp.a in Resources` entry from the pbxproj — App Store rejects a loose `.a`;
-see Troubleshooting). Verify at any time with `just ios-check`.
+It verifies the `swift-rs` `--disable-sandbox` fork is wired in the workspace
+`Cargo.toml`, regenerates the AppIcon asset catalog from `app-icon.png`, and runs
+the full `just ios-check`, which fails loudly if the template did not apply (e.g.
+a stale pre-template `gen/apple`, or the `template` key dropped from
+`tauri.conf.json`). Verify at any time with `just ios-check`.
 
 ### Why rustup instead of Nix-managed Rust
 
@@ -260,7 +263,7 @@ just ios-dev "iPhone 17 Pro Max"   # force a specific simulator
 just ios-build
 ```
 
-Both commands first run `just ios-check`, which fails fast if the Xcode project is missing a required patch — run `just ios-postinit` to apply them. Each recipe then **re-sources `ios-env.sh`** (with `EZPDS_IOS_BUILD=1`) before invoking `cargo tauri`, so the build's outer process starts from a freshly-resolved Apple toolchain even when the surrounding shell carries **stale** `CARGO_TARGET_*`/`CC_*`/`AR_*` from an earlier `ios-env.sh` sourcing (e.g. a long-lived dev shell entered before a fix). A stale outer env reaches the build through the shared `target/` even though the Xcode Run Script re-sources `ios-env.sh`, so correcting it at the recipe is what makes the build robust. The Apple toolchain env is thus applied at three points: the dev shell (`enterShell` sources `ios-env.sh`), the recipe re-source, and the `ios-env.sh` line `ios-postinit` injects into the Xcode Run Script phase.
+Both commands first run `just ios-check`, which fails fast if the Xcode project is missing a required patch — run `just ios-postinit` to apply them. Each recipe then **re-sources `ios-env.sh`** (with `EZPDS_IOS_BUILD=1`) before invoking `cargo tauri`, so the build's outer process starts from a freshly-resolved Apple toolchain even when the surrounding shell carries **stale** `CARGO_TARGET_*`/`CC_*`/`AR_*` from an earlier `ios-env.sh` sourcing (e.g. a long-lived dev shell entered before a fix). A stale outer env reaches the build through the shared `target/` even though the Xcode Run Script re-sources `ios-env.sh`, so correcting it at the recipe is what makes the build robust. The Apple toolchain env is thus applied at three points: the dev shell (`enterShell` sources `ios-env.sh`), the recipe re-source, and the `ios-env.sh` preamble the `scripts/ios/project.yml` template puts into the Xcode Run Script phase.
 
 **Do not click Run in Xcode directly.** `just ios-dev` starts a JSON-RPC server that
 Xcode's build phase connects to; bypassing it causes "Connection refused" in the build log.
@@ -304,7 +307,7 @@ Full setup (mirror dual-push, App Store Connect, GitHub secrets) and gotchas:
 - **`generate_context!()` is compile-time**: `tauri.conf.json` must exist when `src-tauri/` is compiled — the macro embeds the config at compile time and will fail to compile if the file is missing.
 - **`src-tauri/gen/` is gitignored**: The Xcode project generated by `cargo tauri ios init` is machine-specific. Committing it causes merge conflicts and bloats the repo.
 - **`tauri` and `tauri-build` declared locally**: These crates are not in `[workspace.dependencies]` because no other workspace crate uses them. `serde` and `serde_json` use `{ workspace = true }` per the standard workspace pattern.
-- **Toolchain configuration via `ios-env.sh` (no hardcoded Xcode paths)**: `apps/identity-wallet/scripts/ios-env.sh` derives the Apple toolchain dynamically for cross-compiling to iOS — it resolves `DEVELOPER_DIR` via `/usr/bin/xcode-select -p` and sets `CC`/`AR`/linker overrides as environment variables rather than baking paths into a committed file. iOS-target overrides always apply; macOS-host overrides (needed only for the iOS build's host-side proc-macros and `security-framework`'s C build, which fail under Nix's cc-wrapper) are gated on `EZPDS_IOS_BUILD=1` so non-iOS workspace builds are untouched. The script is sourced by the devenv `enterShell` and by the Xcode "Build Rust Code" Run Script phase (injected by `just ios-postinit`), so CLI and Xcode builds resolve the toolchain identically. `src-tauri/.cargo/config.toml` now holds only `RUST_TEST_THREADS=1`; all toolchain overrides moved to the shell script for de-Nix compliance. See the Troubleshooting section for the full explanation.
+- **Toolchain configuration via `ios-env.sh` (no hardcoded Xcode paths)**: `apps/identity-wallet/scripts/ios-env.sh` derives the Apple toolchain dynamically for cross-compiling to iOS — it resolves `DEVELOPER_DIR` via `/usr/bin/xcode-select -p` and sets `CC`/`AR`/linker overrides as environment variables rather than baking paths into a committed file. iOS-target overrides always apply; macOS-host overrides (needed only for the iOS build's host-side proc-macros and `security-framework`'s C build, which fail under Nix's cc-wrapper) are gated on `EZPDS_IOS_BUILD=1` so non-iOS workspace builds are untouched. The script is sourced by the devenv `enterShell` and by the Xcode "Build Rust Code" Run Script phase (rendered from the `scripts/ios/project.yml` template), so CLI and Xcode builds resolve the toolchain identically. `src-tauri/.cargo/config.toml` now holds only `RUST_TEST_THREADS=1`; all toolchain overrides moved to the shell script for de-Nix compliance. See the Troubleshooting section for the full explanation.
 - **Runtime-configurable PDS URL**: `http.rs` provides a compile-time default via `#[cfg(debug_assertions)]` (`http://localhost:8080` debug, `https://obsign.org` release). At runtime, the user configures the PDS URL on first launch via `PdsConfigScreen`; the URL is persisted to Keychain and restored on subsequent launches via `AppState::set_custos_client()`. The compile-time default is used only as the pre-filled value in the configuration UI.
 - **Device key module (`device_key.rs`) with `#[cfg]` dispatch**: Two compile-time paths share the same public API (`get_or_create`, `sign`). macOS and iOS Simulator use software P-256 via `crypto` crate with private key bytes in Keychain. Real iOS device uses Secure Enclave -- private key never leaves the SE; only the compressed public key and application_label (SE-assigned SHA1) are stored in regular Keychain for lookup.
 - **Idempotent key lifecycle**: `get_or_create()` generates on first call, returns the same key on subsequent calls. `create_account` delegates to `device_key::get_or_create()` so the same device key is sent to the PDS on every attempt (retries are safe).
@@ -410,8 +413,9 @@ Full setup (mirror dual-push, App Store Connect, GitHub secrets) and gotchas:
 - `src-tauri/src/http.rs` -- CustosClient with runtime-configurable base URL; OAuth methods (par, token_exchange)
 - `src-tauri/.cargo/config.toml` -- Cargo configuration: `RUST_TEST_THREADS=1` (prevent test race conditions)
 - `apps/identity-wallet/scripts/ios-env.sh` -- thin sourcing wrapper over the SHARED implementation `scripts/ios/ios-env.sh` (repo root; one copy for both app lanes): Apple toolchain derivation for iOS cross-compilation — resolves `DEVELOPER_DIR` via `/usr/bin/xcode-select -p`, exports iOS-target `CC`/`AR`/linker overrides unconditionally and macOS-host overrides only under `EZPDS_IOS_BUILD=1`. Sourced (never executed) by devenv `enterShell` and the patched Xcode Run Script phase
-- `apps/identity-wallet/scripts/ios-postinit.sh` -- thin wrapper over the SHARED `scripts/ios/ios-postinit.sh` (repo root), pinning this app's dir, `ios` recipe prefix, and Patch E framework list (SystemConfiguration + AuthenticationServices); re-applies the surviving workarounds to the gitignored Xcode project after every `cargo tauri ios init` (idempotent): verifies the swift-rs `[patch.crates-io]` entry, sets `ENABLE_USER_SCRIPT_SANDBOXING = NO`, injects `EZPDS_IOS_BUILD=1` + `PATH` + `source ios-env.sh` into the "Build Rust Code" Run Script phase, sets `CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION = YES`, injects `OTHER_LDFLAGS = -framework SystemConfiguration -framework AuthenticationServices` to link `SystemConfiguration.framework` (needed by the `system-configuration` crate) and `AuthenticationServices.framework` (needed by the vendored `tauri-plugin-auth-session`'s `ASWebAuthenticationSession`) on one shared `OTHER_LDFLAGS` line, strips `libapp.a` from the app bundle (Patch F: project.yml `Externals → buildPhase: none` + pbxproj `in Resources` entry; App Store rejects a loose `.a`), and — when the app ships a brand icon at `apps/<app>/app-icon.png` — regenerates the AppIcon asset catalog from it via `cargo tauri icon` into the gitignored catalog + `src-tauri/icons-build/` (Patch G; both apps ship one) (sentinel/grep-guarded; `plutil -lint` structural check)
-- `apps/identity-wallet/scripts/ios-check.sh` -- thin wrapper over the SHARED `scripts/ios/ios-check.sh` (repo root; same wrapper arguments as ios-postinit.sh); read-only verifier: fails if any `ios-postinit` patch is missing (including the `SystemConfiguration` + `AuthenticationServices` links, and — for an app with `app-icon.png` — the Patch G sha256 marker in the AppIcon catalog) or the pbxproj no longer parses; gates `just ios-dev`/`ios-build`
+- `scripts/ios/project.yml` (repo root) -- the SHARED forked XcodeGen project template for BOTH iOS apps, rendered into `gen/apple/project.yml` by every `cargo tauri ios init` (via `bundle > iOS > template` in `tauri.conf.json`). Carries every Xcode-project workaround declaratively: `ENABLE_USER_SCRIPT_SANDBOXING: NO`, the dev-env preamble in the "Build Rust Code" phase (`EZPDS_IOS_BUILD=1` + PATH + `source ios-env.sh`, all `$SRCROOT`-derived — no machine paths), `CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES`, `OTHER_LDFLAGS` rendered from `bundle > iOS > frameworks` (this app: SystemConfiguration for the `system-configuration` crate + AuthenticationServices for the vendored `tauri-plugin-auth-session`), and `Externals → buildPhase: none` (no loose `libapp.a` in the bundle). Forked from tauri-cli's built-in template; the pristine copy sits next to it as `upstream-project.yml`, and `just ios-template-check` (Linux, part of `just ci`) keeps the fork in lockstep with the workflows' tauri-cli pin
+- `apps/identity-wallet/scripts/ios-postinit.sh` -- thin wrapper over the SHARED `scripts/ios/ios-postinit.sh` (repo root), pinning this app's dir and `ios` recipe prefix; run after every `cargo tauri ios init` (idempotent): verifies the swift-rs `[patch.crates-io]` entry, asserts the generated project.yml was rendered from the template, regenerates the AppIcon asset catalog from `app-icon.png` via `cargo tauri icon` (into the gitignored catalog + `src-tauri/icons-build/`), then runs the full ios-check
+- `apps/identity-wallet/scripts/ios-check.sh` -- thin wrapper over the SHARED `scripts/ios/ios-check.sh` (repo root; same wrapper arguments as ios-postinit.sh); read-only verifier of the GENERATED project's end state: template sentinel in project.yml, every template-carried setting in the pbxproj (frameworks read from `tauri.conf.json`), the app-icon sha256 marker, and `plutil -lint`; gates `just ios-dev`/`ios-build`
 - `apps/identity-wallet/app-icon.svg` -- the Obsign app icon's vector source of truth (the SealEmblem wax seal + shield-check; rationale in the root DESIGN.md §6); `app-icon.png` is its 1024×1024 render and the input `cargo tauri icon` consumes (Patch G regenerates the gitignored AppIcon asset catalog from it after every `cargo tauri ios init`). To change the icon: edit the SVG, re-render the PNG at 1024×1024 (e.g. resvg), commit both, re-run `just ios-postinit`
 - `src/lib/ipc.ts` -- Typed TypeScript wrappers for all Tauri IPC commands (getPdsUrl, savePdsUrl, createAccount, getOrCreateDeviceKey, signWithDeviceKey, performDIDCeremony, startOAuthFlow, loadHomeData, logOut, resolveIdentity, startPdsAuth, requestClaimVerification, signAndVerifyClaim, submitClaim, listIdentities, getStoredDidDoc, getDeviceKeyId, checkIdentityStatus, checkHandleResolution, buildRecoveryOverride, submitRecoveryOverride, buildMigrationOp, submitMigrationOp)
 - `src/lib/components/onboarding/` -- Eighteen onboarding screen components (ModeSelectScreen, PdsConfigScreen, WelcomeScreen, ClaimCodeScreen, EmailScreen, HandleScreen, PasswordScreen, LoadingScreen, DIDCeremonyScreen, DIDSuccessScreen, ShamirBackupScreen, HandleRegistrationScreen, AuthenticatingScreen, IdentityInputScreen, PdsAuthScreen, EmailVerificationScreen, ReviewOperationScreen, ClaimSuccessScreen)
@@ -469,7 +473,7 @@ error: failed to determine package fingerprint for build script for identity-wal
 Caused by: Failed to update the excludes stack to see if a path is excluded
 ```
 
-**Fix:** Already resolved automatically. `just ios-postinit` sets `ENABLE_USER_SCRIPT_SANDBOXING = NO` in the generated `project.pbxproj` after each `cargo tauri ios init`, and `just ios-check` verifies the setting is in place.
+**Fix:** Already resolved automatically. The `scripts/ios/project.yml` template sets `ENABLE_USER_SCRIPT_SANDBOXING: NO`, which every `cargo tauri ios init` renders into the generated project; `just ios-check` verifies the setting is in place.
 
 ---
 
@@ -479,7 +483,7 @@ The Rust code compiles, then Xcode's link step fails with `Undefined symbols for
 
 Host builds (`cargo test` / `cargo build`) link fine because **rustc** does the final link and honors the crate's `#[link(name = "...", kind = "framework")]`. On iOS the crate is built as a `staticlib` (`libapp.a`) and **Xcode** does the final link — it never sees that embedded directive, so the framework must be declared in the Xcode project or the symbols stay undefined. A `build.rs` `cargo:rustc-link-lib=framework=...` does NOT help (same staticlib → Xcode gap).
 
-**Fix:** Already resolved automatically. `just ios-postinit` (Patch E) injects `OTHER_LDFLAGS = "$(inherited) -framework SystemConfiguration -framework AuthenticationServices"` into the generated `project.pbxproj`, and `just ios-check` verifies both. `bundle.iOS.frameworks` in `tauri.conf.json` is best-effort only: `cargo tauri ios init` preserves an existing `project.yml` rather than regenerating it, so that config seeds only a fresh project and the pbxproj patch is the enforced mechanism. To link another Apple framework a new Rust dep requires, **add `-framework <Name>` to Patch E's single `OTHER_LDFLAGS` line** — do *not* add a second `OTHER_LDFLAGS` assignment, because in a pbxproj a later assignment for the same build config shadows (does not append to) the earlier one, silently dropping a framework.
+**Fix:** Already resolved automatically. The `scripts/ios/project.yml` template renders `OTHER_LDFLAGS = "$(inherited) -framework SystemConfiguration -framework AuthenticationServices"` from `bundle > iOS > frameworks` in `tauri.conf.json` (the same list also produces xcodegen `sdk:` link dependencies), and `just ios-check` verifies every listed framework. The historical footgun this design removes: `bundle.iOS.frameworks` used to seed only a FRESH project.yml, because `cargo tauri ios init` preserves an existing one — with the custom template, project.yml is re-rendered from config on every init, so the config is now the enforced mechanism. To link another Apple framework a new Rust dep requires, **add it to `bundle > iOS > frameworks` in `tauri.conf.json`** and re-run `cargo tauri ios init` + `just ios-postinit` — never hand-edit `OTHER_LDFLAGS` in the generated project (a second `OTHER_LDFLAGS` assignment for the same build config shadows, not appends to, the first, silently dropping a framework — `just ios-check` detects that state).
 
 ---
 
@@ -489,7 +493,7 @@ Host builds (`cargo test` / `cargo build`) link fine because **rustc** does the 
 
 cargo-mobile2 lists the `Externals` directory (which holds the Rust staticlib `libapp.a`) as a project source with **no explicit `buildPhase`**, so XcodeGen infers `resources` and copies the raw `.a` into the `.app` — which App Store validation forbids. The library is also (correctly) **linked** via the separate `framework: libapp.a` entry + `LIBRARY_SEARCH_PATHS`, so excluding it from resources is safe.
 
-**Fix:** Already resolved automatically. `just ios-postinit` (Patch F) sets `Externals → buildPhase: none` in `gen/apple/project.yml` (the source the per-build sync regenerates from) **and** strips the `libapp.a in Resources` entry from the generated `project.pbxproj` (the `in Frameworks` link entry is kept). `just ios-check` verifies both.
+**Fix:** Already resolved automatically. The `scripts/ios/project.yml` template sets `Externals → buildPhase: none`, so xcodegen never emits a `libapp.a in Resources` entry (the `framework: libapp.a` link dependency is kept). `just ios-check` verifies both layers.
 
 ---
 
