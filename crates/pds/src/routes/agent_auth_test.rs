@@ -20,8 +20,6 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine as _;
 use chrono::Utc;
 use common::{AgentAuthConfig, TrustedIssuer};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
@@ -85,24 +83,14 @@ fn owner_token(state: &AppState, did: &str) -> String {
 
 // ── ID-JAG helpers (self-contained so `exp`/`auth_time` are controllable) ──────
 
-fn der_to_pem(label: &str, der: &[u8]) -> String {
-    let b64 = STANDARD.encode(der);
-    let mut body = String::new();
-    for chunk in b64.as_bytes().chunks(64) {
-        body.push_str(std::str::from_utf8(chunk).unwrap());
-        body.push('\n');
-    }
-    format!("-----BEGIN {label}-----\n{body}-----END {label}-----\n")
-}
-
-/// A fresh ES256 keypair as (PKCS#8 private PEM, SPKI public PEM).
+/// A fresh ES256 keypair as (PKCS#8 private PEM, SPKI public PEM), via p256's built-in PEM encoders.
 fn es256_keys() -> (String, String) {
     let sk = p256::SecretKey::random(&mut OsRng);
-    let priv_pem = der_to_pem("PRIVATE KEY", sk.to_pkcs8_der().unwrap().as_bytes());
-    let pub_pem = der_to_pem(
-        "PUBLIC KEY",
-        sk.public_key().to_public_key_der().unwrap().as_bytes(),
-    );
+    let priv_pem = sk.to_pkcs8_pem(Default::default()).unwrap().to_string();
+    let pub_pem = sk
+        .public_key()
+        .to_public_key_pem(Default::default())
+        .unwrap();
     (priv_pem, pub_pem)
 }
 
@@ -143,11 +131,10 @@ fn trusted(issuer: &str, public_key_pem: String) -> TrustedIssuer {
 
 // ── request helpers ────────────────────────────────────────────────────────────
 
-async fn get_json(state: AppState, uri: &str) -> (StatusCode, Value) {
-    let response = app(state)
-        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
-        .await
-        .unwrap();
+/// Drive a built request through the real router and decode the JSON response. Shared by the
+/// verb-specific helpers so the send-and-decode flow (byte cap, fallback-to-`Null`) lives once.
+async fn send(state: AppState, request: Request<Body>) -> (StatusCode, Value) {
+    let response = app(state).oneshot(request).await.unwrap();
     let status = response.status();
     let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
         .await
@@ -156,6 +143,14 @@ async fn get_json(state: AppState, uri: &str) -> (StatusCode, Value) {
         status,
         serde_json::from_slice(&bytes).unwrap_or(Value::Null),
     )
+}
+
+async fn get_json(state: AppState, uri: &str) -> (StatusCode, Value) {
+    send(
+        state,
+        Request::builder().uri(uri).body(Body::empty()).unwrap(),
+    )
+    .await
 }
 
 async fn post_json(
@@ -171,40 +166,17 @@ async fn post_json(
     if let Some(t) = token {
         builder = builder.header("Authorization", format!("Bearer {t}"));
     }
-    let response = app(state)
-        .oneshot(builder.body(Body::from(body.to_string())).unwrap())
-        .await
-        .unwrap();
-    let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
-        .await
-        .unwrap();
-    (
-        status,
-        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-    )
+    send(state, builder.body(Body::from(body.to_string())).unwrap()).await
 }
 
 async fn post_form(state: AppState, uri: &str, body: &str) -> (StatusCode, Value) {
-    let response = app(state)
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
+    let request = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(body.to_string()))
         .unwrap();
-    let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
-        .await
-        .unwrap();
-    (
-        status,
-        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-    )
+    send(state, request).await
 }
 
 /// jwt-bearer token exchange for a service-signed `identity_assertion`.
@@ -241,6 +213,33 @@ fn reset_poll_throttle(state: &AppState) {
 
 fn config_scopes() -> Vec<String> {
     AgentAuthConfig::default().granted_scopes
+}
+
+/// Register an `anonymous` identity and open its claim ceremony, returning the ceremony's
+/// `claim_token` (the agent's polling credential) and `user_code` (the code the human confirms).
+/// The flagship `anonymous_full_ceremony_*` test inlines these steps instead, because it polls and
+/// asserts between them and needs the intermediate `registration_id`.
+async fn register_and_initiate_anonymous_claim(state: &AppState) -> (String, String) {
+    let (_s, reg) = post_json(
+        state.clone(),
+        "/agent/identity",
+        json!({ "type": "anonymous" }),
+        None,
+    )
+    .await;
+    let claim_token = reg["claim_token"].as_str().unwrap().to_string();
+    let (_is, ibody) = post_json(
+        state.clone(),
+        "/agent/identity/claim",
+        json!({ "claim_token": claim_token }),
+        None,
+    )
+    .await;
+    let user_code = ibody["claim_attempt"]["user_code"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    (claim_token, user_code)
 }
 
 // ── discovery round-trip ─────────────────────────────────────────────────────
@@ -568,25 +567,7 @@ async fn confirm_with_expired_user_code_is_claim_expired() {
     insert_account(&state.db, owner, "owner@example.com").await;
 
     // Register anonymously and open a ceremony through the real endpoints...
-    let (_s, reg) = post_json(
-        state.clone(),
-        "/agent/identity",
-        json!({ "type": "anonymous" }),
-        None,
-    )
-    .await;
-    let claim_token = reg["claim_token"].as_str().unwrap().to_string();
-    let (_is, ibody) = post_json(
-        state.clone(),
-        "/agent/identity/claim",
-        json!({ "claim_token": claim_token }),
-        None,
-    )
-    .await;
-    let user_code = ibody["claim_attempt"]["user_code"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let (_claim_token, user_code) = register_and_initiate_anonymous_claim(&state).await;
 
     // ...then age the user_code past its expiry.
     sqlx::query(
@@ -630,25 +611,7 @@ async fn granted_scopes_flow_from_config_through_to_the_issued_token() {
     let owner = "did:plc:scopeflow11111111";
     insert_account(&state.db, owner, "owner@example.com").await;
 
-    let (_s, reg) = post_json(
-        state.clone(),
-        "/agent/identity",
-        json!({ "type": "anonymous" }),
-        None,
-    )
-    .await;
-    let claim_token = reg["claim_token"].as_str().unwrap().to_string();
-    let (_is, ibody) = post_json(
-        state.clone(),
-        "/agent/identity/claim",
-        json!({ "claim_token": claim_token }),
-        None,
-    )
-    .await;
-    let user_code = ibody["claim_attempt"]["user_code"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let (claim_token, user_code) = register_and_initiate_anonymous_claim(&state).await;
     post_json(
         state.clone(),
         "/agent/identity/claim/confirm",
