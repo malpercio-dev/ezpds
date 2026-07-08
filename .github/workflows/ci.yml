@@ -1,6 +1,6 @@
 name: CI
 
-# The Linux half of CI — the PDS test gate (fmt, lock-check, clippy, test, audit) via
+# The Linux half of CI — the PDS test gate (fmt, lock-check, clippy, test, audit, deny) via
 # `just ci-pds`. Replaces the retired tangled spindle workflows (pr/staging/release.yaml).
 #
 # Deploys are now **native Railway GitHub integrations** — Railway connects to this repo
@@ -63,15 +63,19 @@ jobs:
           # when ci-pds runs it. Keep caching the registry/git/target (the real speedup), not bin.
           cache-bin: false
 
-      - name: Install cargo-audit
+      - name: Install cargo-audit + cargo-deny
         # Pinned release tag (not @main): a mutable branch ref would let upstream changes
         # land in every CI run with no reviewable version bump.
         uses: cargo-bins/cargo-binstall@732870f031d2fb36309d0deaf36abcc704a7be65 # v1.20.1
-        # `&& cargo audit --version` verifies the binary is actually on PATH, so a future install
-        # regression fails here with a clear message instead of deep inside `just ci-pds`.
-      - run: cargo binstall -y --locked cargo-audit && cargo audit --version
+        # cargo-deny is pinned to an exact version: its deny.toml schema shifts across releases, so
+        # — like the rust-toolchain pin — a fixed version keeps local and CI from diverging on how
+        # deny.toml parses (bump deliberately). cargo-audit tracks latest (it reads only the remote
+        # advisory DB, no local schema). `&& … --version` verifies both binaries are actually on
+        # PATH, so an install regression fails here with a clear message instead of deep inside
+        # `just ci-pds`.
+      - run: cargo binstall -y --locked cargo-audit cargo-deny@0.16.4 && cargo audit --version && cargo deny --version
 
-      - name: CI gate (fmt, lock-check, clippy, test, audit)
+      - name: CI gate (fmt, lock-check, clippy, test, audit, deny)
         run: just ci-pds
 
   verify-release:
