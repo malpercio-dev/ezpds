@@ -20,7 +20,8 @@ Last verified: 2026-07-06
 - `just bruno-check` - Verify route ⇄ Bruno-collection parity (scripts/bruno-parity.sh)
 - `just font-check` - Verify the four vendored font copies haven't drifted (scripts/font-parity.sh; same-named font files must be byte-identical across copies)
 - `just cap-check` - Verify the Tauri IPC capability allowlists stay minimal (scripts/capability-check.sh; no `core:default`, mobile schema, withGlobalTauri off — the static half of the least-privilege boundary in docs/security/tauri-ipc-boundary.md)
-- `just ci` - Full local gate (fmt-check, lock-check, bruno-check, font-check, cap-check, swift-rs-check, clippy, test, audit) — the same checks CI runs
+- `just ios-paths-check` - Verify the iOS workflows' `paths:` filters match the apps' cargo dependency graph exactly (scripts/ios-paths-check.sh; an unwatched app dependency or an entry re-widened to `crates/**` both fail — keeps pure-PDS changes from triggering the macOS lanes)
+- `just ci` - Full local gate (fmt-check, lock-check, bruno-check, font-check, cap-check, ios-paths-check, swift-rs-check, clippy, test, audit) — the same checks CI runs
 - `just interop-setup` / `just interop <args>` - Install deps for and run the interop CLI (`tools/interop/`) against a live deployment
 
 ## CI/CD

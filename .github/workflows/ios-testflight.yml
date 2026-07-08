@@ -14,18 +14,23 @@ name: iOS · TestFlight
 on:
   push:
     branches: [main]
-    # Skip iOS rebuilds for changes that cannot affect the app (e.g. pds-only
-    # docs). crates/** is included because the app links shared workspace crates.
+    # Skip iOS rebuilds for changes that cannot affect the app (pds-only code,
+    # docs). The app's only workspace-crate dependency is `crypto` (itself free
+    # of path deps), so crates/pds, crates/repo-engine, and crates/common changes
+    # deliberately do NOT trigger a rebuild. CI-enforced: `just ios-paths-check`
+    # (part of the Linux gate) recomputes this list from `cargo metadata` and
+    # fails on any drift — an unwatched app dependency or a re-widened entry alike.
     paths:
       - "apps/identity-wallet/**"
-      - "crates/**"
+      - "crates/crypto/**"
       - "Cargo.toml"
       - "Cargo.lock"
       # The build/upload delegate to `just ios-*`, so a recipe change can break the lane.
       - "justfile"
-      # The shared iOS toolchain/patch scripts live at the repo root (per-app
-      # scripts are thin wrappers), so changes there can break this lane too.
-      - "scripts/**"
+      # The shared iOS toolchain/patch scripts live in scripts/ios/ (per-app
+      # scripts are thin wrappers). PDS-only scripts directly under scripts/
+      # (bruno-parity, font-parity, ...) are deliberately excluded.
+      - "scripts/ios/**"
       - "rust-toolchain.toml"
       - ".github/workflows/ios-testflight.yml"
   workflow_dispatch:
