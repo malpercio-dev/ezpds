@@ -108,7 +108,13 @@ one of them (each would hold what the other is waiting for). The caller commits 
 and only then calls `Pending*::finish` to advance `last_seq` and broadcast; a failed insert rolls
 the whole transaction back (via `?`/`Drop`) rather than landing the state change with a
 silently-dropped event, and dropping a `Pending*` without finishing never advances the sequence,
-so the seq is retried by the next emit. `subscribe_from(cursor)` snapshots the live receiver and
+so the seq is retried by the next emit. The one asymmetric drop — a handler future cancelled
+(client disconnect) *after* its `tx.commit()` made the staged row durable but before `finish` —
+leaves `last_seq` behind the durable log; every insert goes through
+`Firehose::insert_at_frontier`, which detects the resulting PRIMARY KEY collision, re-derives the
+frontier from the durable `MAX(seq)`, and retries once, so one cancelled request costs one
+never-broadcast event (still replayable from the log, like any pre-restart event) instead of
+wedging all writes until restart. `subscribe_from(cursor)` snapshots the live receiver and
 the sequence frontier `upper` together under
 `emit_lock`; the `sync_subscribe_repos` handler then pages the durable log for `(cursor, upper]`
 (`events_in_range`, decoded via `decode_stored_event`) and streams live events (`seq > upper`)
