@@ -1,7 +1,7 @@
 // pattern: Imperative Shell
 //
 // Gathers: query params (did, cid), AppState
-// Processes: look up blob metadata by CID → verify DID ownership → read blob from filesystem
+// Processes: look up blob metadata via the DID's ownership row → read blob from filesystem
 // Returns: raw blob bytes with Content-Type header
 //
 // Implements: GET /xrpc/com.atproto.sync.getBlob
@@ -38,26 +38,19 @@ pub async fn get_blob(
     State(state): State<AppState>,
     Query(params): Query<GetBlobParams>,
 ) -> Result<Response, ApiError> {
-    // 1. Look up blob metadata by CID.
-    let blob = blobs::get_blob_by_cid(&state.db, &params.cid)
+    // 1. Look up blob metadata by CID, scoped to the requested DID's ownership rows
+    //    (`blob_owners` — the same content may be owned by several accounts). A missing CID
+    //    and a CID owned only by another DID return the same generic 404, so an attacker
+    //    cannot enumerate which CIDs exist on the server.
+    let blob = blobs::get_owned_blob(&state.db, &params.did, &params.cid)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, cid = %params.cid, "failed to query blob metadata");
             ApiError::new(ErrorCode::InternalError, "failed to query blob metadata")
         })?
-        .ok_or_else(|| {
-            // Generic message: do not confirm whether a CID exists.
-            ApiError::new(ErrorCode::NotFound, "blob not found")
-        })?;
+        .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "blob not found"))?;
 
-    // 2. Verify DID ownership — blob must belong to the specified DID's repo.
-    // Same 404 as above to prevent CID enumeration: an attacker must not be able
-    // to distinguish "CID doesn't exist" from "CID exists but belongs to another DID".
-    if blob.account_did != params.did {
-        return Err(ApiError::new(ErrorCode::NotFound, "blob not found"));
-    }
-
-    // 3. Read blob content from filesystem.
+    // 2. Read blob content from filesystem.
     let content = blob_store::read_blob(&state.config.data_dir, &blob.storage_path)
         .await
         .map_err(|e| {
@@ -70,7 +63,7 @@ pub async fn get_blob(
             ApiError::new(ErrorCode::InternalError, "failed to read blob")
         })?;
 
-    // 4. Build response with correct Content-Type.
+    // 3. Build response with correct Content-Type.
     // Use the stored MIME type string directly; fall back to application/octet-stream
     // if somehow empty (shouldn't happen with current blob_store logic).
     let content_type = if blob.mime_type.is_empty() {
@@ -120,14 +113,23 @@ mod tests {
         std::fs::write(&abs_path, b"test blob content").unwrap();
 
         sqlx::query(
-            "INSERT INTO blobs (cid, account_did, mime_type, size_bytes, storage_path, temp_until) \
-             VALUES (?, ?, ?, ?, ?, NULL)",
+            "INSERT INTO blobs (cid, account_did, mime_type, size_bytes, storage_path) \
+             VALUES (?, ?, ?, ?, ?) ON CONFLICT(cid) DO NOTHING",
         )
         .bind(cid)
         .bind(did)
         .bind(mime_type)
         .bind(17i64) // len of "test blob content"
         .bind(&storage_path)
+        .execute(&state.db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO blob_owners (cid, account_did, ref_count, temp_until) \
+             VALUES (?, ?, 1, NULL)",
+        )
+        .bind(cid)
+        .bind(did)
         .execute(&state.db)
         .await
         .unwrap();
@@ -176,6 +178,49 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let body = body_json(response).await;
         assert_eq!(body["error"]["code"], "NOT_FOUND");
+    }
+
+    /// A blob uploaded by two accounts is served for both DIDs: ownership is per-account
+    /// (`blob_owners`), not a single-owner column on the physical row.
+    #[tokio::test]
+    async fn shared_blob_is_served_for_every_owner() {
+        let state = test_state().await;
+        seed_blob(&state, "did:plc:sharefirst", "bafkreishared", "image/png").await;
+
+        // A second account owns a reference to the same CID (same bytes, same file).
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES ('did:plc:sharesecond', 'blob2@example.com', NULL, datetime('now'), datetime('now'))",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO blob_owners (cid, account_did, ref_count, temp_until) \
+             VALUES ('bafkreishared', 'did:plc:sharesecond', 1, NULL)",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        for did in ["did:plc:sharefirst", "did:plc:sharesecond"] {
+            let response = app_with_state(state.clone())
+                .oneshot(
+                    Request::builder()
+                        .uri(format!(
+                            "/xrpc/com.atproto.sync.getBlob?did={did}&cid=bafkreishared"
+                        ))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "owner {did} must be served"
+            );
+        }
     }
 
     /// DID mismatch returns 404 (same as not found — prevents CID enumeration).

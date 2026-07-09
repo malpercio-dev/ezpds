@@ -83,10 +83,10 @@ const DELETE_BLOCKS: &str = "DELETE FROM block_owners WHERE account_did = ?";
 /// Steps, in order:
 /// 1. Under the firehose sequencer lock (acquired before the transaction, per `lock_emit`'s
 ///    ordering contract), open a transaction and delete every child table in FK order — including
-///    the account's `blobs` rows via `DELETE ... RETURNING cid, storage_path`, so the list of
-///    files to reclaim is captured atomically with the rows actually deleted (a pre-transaction
-///    snapshot could miss a blob inserted by a concurrent upload in the window before the
-///    transaction, orphaning its file) — then delete the `accounts` row.
+///    the account's `blob_owners` rows, reclaiming (with `RETURNING cid, storage_path`) only the
+///    physical blobs left with no owner, so the list of files to remove is captured atomically
+///    with the rows actually deleted and a blob another account still owns keeps its file —
+///    then delete the `accounts` row.
 /// 2. If the `accounts` row did not exist, roll back and report [`PurgeOutcome::NotFound`] —
 ///    idempotent, no frame emitted, and the rolled-back blob deletes leave the files on disk.
 /// 3. Otherwise stage an `#account` (`active=false`, `status="deleted"`) frame in the same
@@ -127,17 +127,14 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
         .await
         .map_err(map_err)?;
 
-    // Delete the blob rows and capture their on-disk paths in the same statement, so the reclaim
-    // list is exactly the set of rows removed — no pre-transaction snapshot that a racing upload
-    // could slip past. Files are removed after the transaction commits (below). Unlike repo
-    // blocks, blobs remain keyed directly by `(account_did, cid)` metadata, so blob deletion still
-    // removes this account's blob files.
-    let blob_files: Vec<(String, String)> =
-        sqlx::query_as("DELETE FROM blobs WHERE account_did = ? RETURNING cid, storage_path")
-            .bind(did)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(map_err)?;
+    // Blobs follow the same ownership model as repo blocks (V039): delete this account's
+    // `blob_owners` rows, then reclaim only the physical rows left with no owner — a CID
+    // another account still references keeps its row and its on-disk file. The reclaim list is
+    // captured by the same transaction that removes the rows, so a racing upload can't slip a
+    // blob past it. Files are removed after the transaction commits (below).
+    let blob_files = crate::db::blobs::delete_owners_and_unowned_blobs_in_tx(&mut tx, did)
+        .await
+        .map_err(map_err)?;
 
     let deleted = sqlx::query("DELETE FROM accounts WHERE did = ?")
         .bind(did)
@@ -390,8 +387,61 @@ mod tests {
 
         purge_account(&state, did).await.unwrap();
 
-        assert_eq!(row_count(&state.db, "blobs", "account_did", did).await, 0);
+        assert_eq!(
+            row_count(&state.db, "blob_owners", "account_did", did).await,
+            0
+        );
+        assert_eq!(row_count(&state.db, "blobs", "cid", &stored.cid).await, 0);
         assert!(!file.exists(), "blob file must be reclaimed from disk");
+    }
+
+    /// The MM-261 regression: purging one owner of a shared blob must not destroy the file
+    /// (or physical row) another account still owns.
+    #[tokio::test]
+    async fn purge_keeps_blob_still_owned_by_another_account() {
+        let (state, _dir) = purge_state().await;
+        let did = "did:plc:purgeshareblob";
+        let other = "did:plc:keepshareblob";
+        seed_account_with_repo(&state.db, did).await;
+        seed_account_with_repo(&state.db, other).await;
+
+        // Both accounts upload the same bytes → one file, one physical row, two owner rows.
+        let stored = crate::blob_store::store_blob(&state.config.data_dir, b"shared blob bytes")
+            .await
+            .unwrap();
+        for owner in [did, other] {
+            crate::db::blobs::insert_blob(
+                &state.db,
+                &stored.cid,
+                owner,
+                &stored.mime_type,
+                stored.size_bytes as i64,
+                &stored.storage_path,
+                "2030-01-01 00:00:00",
+            )
+            .await
+            .unwrap();
+        }
+        let file = state.config.data_dir.join(&stored.storage_path);
+        assert!(file.exists());
+
+        purge_account(&state, did).await.unwrap();
+
+        assert_eq!(
+            row_count(&state.db, "blob_owners", "account_did", did).await,
+            0
+        );
+        assert_eq!(
+            row_count(&state.db, "blob_owners", "account_did", other).await,
+            1,
+            "the surviving account's ownership row must remain"
+        );
+        assert_eq!(
+            row_count(&state.db, "blobs", "cid", &stored.cid).await,
+            1,
+            "the shared physical row must remain"
+        );
+        assert!(file.exists(), "the shared blob file must remain on disk");
     }
 
     #[tokio::test]

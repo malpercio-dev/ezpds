@@ -137,15 +137,15 @@ mod tests {
     }
 
     async fn insert_blob(db: &sqlx::SqlitePool, did: &str, cid: &str, size: i64) {
-        sqlx::query(
-            "INSERT INTO blobs (cid, account_did, mime_type, size_bytes, storage_path, temp_until) \
-             VALUES (?, ?, 'image/jpeg', ?, ?, NULL)",
+        crate::db::blobs::insert_blob(
+            db,
+            cid,
+            did,
+            "image/jpeg",
+            size,
+            &format!("blobs/xx/{cid}"),
+            "2030-01-01 00:00:00",
         )
-        .bind(cid)
-        .bind(did)
-        .bind(size)
-        .bind(format!("blobs/xx/{cid}"))
-        .execute(db)
         .await
         .unwrap();
     }
