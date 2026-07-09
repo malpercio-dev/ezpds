@@ -539,22 +539,50 @@ where
     Ok(count)
 }
 
-/// Validate that `collection` is a syntactically valid NSID per the ATProto spec:
-/// at least three dot-separated segments, each non-empty and `[A-Za-z0-9-]`, with a
-/// total length of 1..=317 and no slashes.
+/// Validate that `collection` is a syntactically valid NSID, matching the ATProto
+/// reference grammar (`@atproto/syntax`'s `ensureValidNsid`) so a collection accepted
+/// here is also accepted by relays and AppViews — a collection that passes local
+/// validation but fails theirs produces records that write locally yet are silently
+/// rejected downstream, a confusing one-way sync.
+///
+/// - total length 1..=317, at least three dot-separated segments, no slashes;
+/// - every segment is 1..=63 chars of `[A-Za-z0-9-]` and neither starts nor ends with a hyphen;
+/// - the first (authority) segment does not start with a digit;
+/// - the final (name) segment is a letter followed by letters/digits only (no hyphens).
+///
+/// The digit restriction is deliberately only on the *first* segment (not every authority
+/// segment) to mirror the reference implementation exactly — being stricter would reject
+/// collections the network accepts, the opposite one-way divergence.
 pub fn validate_collection(collection: &str) -> Result<(), RecordError> {
+    let invalid =
+        || RecordError::InvalidPath(format!("collection is not a valid NSID: {collection}"));
+
     if collection.is_empty() || collection.len() > 317 {
-        return Err(RecordError::InvalidPath("collection length".into()));
+        return Err(invalid());
     }
     let segments: Vec<&str> = collection.split('.').collect();
-    if segments.len() < 3
-        || segments
-            .iter()
-            .any(|s| s.is_empty() || !s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
-    {
-        return Err(RecordError::InvalidPath(format!(
-            "collection is not a valid NSID: {collection}"
-        )));
+    if segments.len() < 3 {
+        return Err(invalid());
+    }
+    let last = segments.len() - 1;
+    for (i, seg) in segments.iter().enumerate() {
+        let bytes = seg.as_bytes();
+        if seg.is_empty() || seg.len() > 63 {
+            return Err(invalid());
+        }
+        if !seg.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Err(invalid());
+        }
+        if bytes[0] == b'-' || bytes[bytes.len() - 1] == b'-' {
+            return Err(invalid());
+        }
+        if i == 0 && bytes[0].is_ascii_digit() {
+            return Err(invalid());
+        }
+        // Final (name) segment: a letter followed by letters/digits only (no hyphens).
+        if i == last && (!bytes[0].is_ascii_alphabetic() || seg.chars().any(|c| c == '-')) {
+            return Err(invalid());
+        }
     }
     Ok(())
 }
@@ -562,8 +590,9 @@ pub fn validate_collection(collection: &str) -> Result<(), RecordError> {
 /// Validate a record's collection (NSID) and record key per the ATProto spec,
 /// before any repo mutation.
 ///
-/// - `collection` must be a valid NSID: at least three dot-separated segments,
-///   each alphanumeric-or-hyphen and non-empty, total length 1..=317, no slashes.
+/// - `collection` must be a valid NSID (see [`validate_collection`]): at least three
+///   dot-separated segments, each 1..=63 chars of `[A-Za-z0-9-]` not hyphen-bounded, the
+///   first not digit-led and the last a letter followed by letters/digits only.
 /// - `rkey` must be 1..=512 chars from `[A-Za-z0-9._:~-]`, and not `.` or `..`.
 pub fn validate_record_path(collection: &str, rkey: &str) -> Result<(), RecordError> {
     validate_collection(collection)?;
@@ -818,7 +847,8 @@ mod tests {
     #[test]
     fn validate_record_path_accepts_valid() {
         assert!(validate_record_path("app.bsky.feed.post", "3jzfcijpj2z2a").is_ok());
-        assert!(validate_record_path("com.example.a-b", "self").is_ok());
+        // A hyphen is allowed inside an authority segment (but not the name segment).
+        assert!(validate_record_path("com.ex-ample.foo", "self").is_ok());
         assert!(validate_record_path("app.bsky.feed.post", "a.b_c~d:e-f").is_ok());
     }
 
@@ -830,6 +860,36 @@ mod tests {
         assert!(validate_record_path("app..post", "x").is_err()); // empty segment
         assert!(validate_record_path("app/bsky/post", "x").is_err()); // slashes
         assert!(validate_record_path("app.bsky.po st", "x").is_err()); // space
+    }
+
+    /// The tightened NSID grammar (matching `@atproto/syntax`'s `ensureValidNsid`): segment
+    /// length ≤ 63, no hyphen-bounded segments, first segment not digit-led, and a name
+    /// segment that is a letter followed by letters/digits only.
+    #[test]
+    fn validate_collection_matches_atproto_nsid_grammar() {
+        // Accepted: canonical NSIDs, a hyphen inside an authority segment, and a digit-led
+        // *interior* authority segment (the reference impl restricts digit-leading to the
+        // first segment only).
+        assert!(validate_collection("app.bsky.feed.post").is_ok());
+        assert!(validate_collection("com.ex-ample.foo").is_ok());
+        assert!(validate_collection("com.4chan.post").is_ok());
+        assert!(validate_collection("com.example.name2").is_ok()); // digit inside name ok
+
+        // Segment longer than 63 chars.
+        let long_seg = "a".repeat(64);
+        assert!(validate_collection(&format!("com.example.{long_seg}")).is_err());
+        assert!(validate_collection(&format!("com.{long_seg}.post")).is_err());
+
+        // Hyphen at a segment boundary.
+        assert!(validate_collection("com.-example.post").is_err()); // leading hyphen
+        assert!(validate_collection("com.example-.post").is_err()); // trailing hyphen
+
+        // First segment starts with a digit.
+        assert!(validate_collection("4com.example.post").is_err());
+
+        // Name (final) segment must be a letter then letters/digits only.
+        assert!(validate_collection("com.example.a-b").is_err()); // hyphen in name
+        assert!(validate_collection("com.example.1abc").is_err()); // digit-led name
     }
 
     #[test]
