@@ -1,3 +1,4 @@
+pub mod agents;
 pub mod claim;
 pub mod device_key;
 pub mod home;
@@ -943,6 +944,11 @@ pub fn run() {
             claim::request_claim_verification,
             claim::sign_and_verify_claim,
             claim::submit_claim,
+            agents::list_agents,
+            agents::revoke_agent,
+            agents::get_agent_audit,
+            agents::preview_agent_claim,
+            agents::confirm_agent_claim,
             plc_monitor::check_identity_status,
             recovery::build_recovery_override_cmd,
             recovery::submit_recovery_override_cmd,

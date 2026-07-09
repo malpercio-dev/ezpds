@@ -45,11 +45,12 @@ use uuid::Uuid;
 
 use crate::app::AppState;
 use crate::auth::agent_assertion::{
-    claim_block, mint_identity_assertion, new_claim_attempt_id, scopes_to_json, to_sqlite_datetime,
-    verification_uri, AgentAuthError,
+    claim_block, mint_identity_assertion, new_claim_attempt_id, record_agent_audit, scopes_to_json,
+    to_sqlite_datetime, verification_uri, AgentAuthError,
 };
 use crate::code_gen::generate_code;
 use crate::db::accounts::resolve_by_email;
+use crate::db::agent_audit::AgentAuditEventType;
 use crate::db::agent_auth::{
     get_agent_identity_by_issuer_subject, insert_agent_claim_attempt, insert_agent_identity,
     set_agent_identity_assertion, AgentIdentityRow, AgentIdentityStatus,
@@ -191,6 +192,18 @@ async fn handle_anonymous(state: &AppState) -> Result<Response, AgentAuthError> 
         return Err(AgentAuthError::server_error());
     }
 
+    record_agent_audit(
+        &state.db,
+        &registration_id,
+        None,
+        AgentAuditEventType::Registered,
+        serde_json::json!({
+            "registration_type": RegistrationType::Anonymous.as_str(),
+            "scopes": pre_claim_scopes,
+        }),
+    )
+    .await?;
+
     Ok(ok_json(&AnonymousResponse {
         registration_id,
         registration_type: RegistrationType::Anonymous.as_str(),
@@ -274,15 +287,37 @@ async fn handle_service_auth(
         return Err(AgentAuthError::server_error());
     }
 
+    record_agent_audit(
+        &state.db,
+        &registration_id,
+        Some(&account.did),
+        AgentAuditEventType::Registered,
+        serde_json::json!({
+            "registration_type": RegistrationType::ServiceAuth.as_str(),
+            "scopes": state.config.agent_auth.granted_scopes,
+        }),
+    )
+    .await?;
+
+    let claim_attempt_id = new_claim_attempt_id();
     insert_agent_claim_attempt(
         &state.db,
         &NewAgentClaimAttempt {
-            id: &new_claim_attempt_id(),
+            id: &claim_attempt_id,
             identity_id: &registration_id,
             user_code: &user_code,
             user_code_expires_at: &to_sqlite_datetime(&user_code_expiry),
             email: Some(login_hint),
         },
+    )
+    .await?;
+
+    record_agent_audit(
+        &state.db,
+        &registration_id,
+        Some(&account.did),
+        AgentAuditEventType::ClaimInitiated,
+        serde_json::json!({ "claim_attempt_id": claim_attempt_id }),
     )
     .await?;
 
@@ -435,15 +470,24 @@ async fn existing_identity_assertion(
             let user_code = generate_code();
             let user_code_expiry =
                 Utc::now() + Duration::seconds(state.config.agent_auth.user_code_ttl_secs as i64);
+            let claim_attempt_id = new_claim_attempt_id();
             insert_agent_claim_attempt(
                 &state.db,
                 &NewAgentClaimAttempt {
-                    id: &new_claim_attempt_id(),
+                    id: &claim_attempt_id,
                     identity_id: &existing.id,
                     user_code: &user_code,
                     user_code_expires_at: &to_sqlite_datetime(&user_code_expiry),
                     email: existing.email.as_deref(),
                 },
+            )
+            .await?;
+            record_agent_audit(
+                &state.db,
+                &existing.id,
+                existing.did.as_deref(),
+                AgentAuditEventType::ClaimInitiated,
+                serde_json::json!({ "claim_attempt_id": claim_attempt_id }),
             )
             .await?;
             let claim = claim_block(
@@ -525,15 +569,37 @@ async fn new_identity_assertion(
         return Err(AgentAuthError::server_error());
     }
 
+    record_agent_audit(
+        &state.db,
+        &registration_id,
+        Some(&account.did),
+        AgentAuditEventType::Registered,
+        serde_json::json!({
+            "registration_type": RegistrationType::IdentityAssertion.as_str(),
+            "scopes": state.config.agent_auth.granted_scopes,
+        }),
+    )
+    .await?;
+
+    let claim_attempt_id = new_claim_attempt_id();
     insert_agent_claim_attempt(
         &state.db,
         &NewAgentClaimAttempt {
-            id: &new_claim_attempt_id(),
+            id: &claim_attempt_id,
             identity_id: &registration_id,
             user_code: &user_code,
             user_code_expires_at: &to_sqlite_datetime(&user_code_expiry),
             email: Some(email),
         },
+    )
+    .await?;
+
+    record_agent_audit(
+        &state.db,
+        &registration_id,
+        Some(&account.did),
+        AgentAuditEventType::ClaimInitiated,
+        serde_json::json!({ "claim_attempt_id": claim_attempt_id }),
     )
     .await?;
 

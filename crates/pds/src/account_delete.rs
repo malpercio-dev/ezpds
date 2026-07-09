@@ -41,8 +41,11 @@ pub enum PurgeOutcome {
 /// * `transfer_audit_events` before `transfers` before `transfer_devices`
 ///   (`transfer_audit_events.transfer_id → transfers.id`, `transfers.accepted_device_id →
 ///   transfer_devices.id`)
-/// * `agent_claim_attempts` before `agent_identities`
-///   (`agent_claim_attempts.identity_id → agent_identities.id`)
+/// * `agent_audit_events` and `agent_claim_attempts` before `agent_identities`
+///   (`agent_audit_events.registration_id → agent_identities.id`,
+///   `agent_claim_attempts.identity_id → agent_identities.id`); audit events are keyed through
+///   the identity rather than their own `did` column because pre-claim events on an anonymous
+///   registration carry a NULL `did` but still pin the identity row via the FK
 ///
 /// `did_documents` and `reserved_signing_keys` carry the DID with no FK to `accounts`, but are
 /// scoped by `did` so removing this account's rows is correct. `repo_seq` (the durable firehose
@@ -62,6 +65,7 @@ const DELETE_BY_DID: &[&str] = &[
     "DELETE FROM password_reset_tokens WHERE did = ?",
     "DELETE FROM plc_operation_tokens WHERE did = ?",
     "DELETE FROM account_deletion_tokens WHERE did = ?",
+    "DELETE FROM agent_audit_events WHERE registration_id IN (SELECT id FROM agent_identities WHERE did = ?)",
     "DELETE FROM agent_claim_attempts WHERE identity_id IN (SELECT id FROM agent_identities WHERE did = ?)",
     "DELETE FROM agent_identities WHERE did = ?",
     "DELETE FROM transfer_audit_events WHERE did = ?",
@@ -299,6 +303,16 @@ mod tests {
         .execute(&state.db)
         .await
         .unwrap();
+        // A NULL-did audit event still pins the identity via its registration_id FK, so the
+        // purge must remove it by identity, not by the event's own did column.
+        sqlx::query(
+            "INSERT INTO agent_audit_events \
+             (id, registration_id, did, event_type, detail, created_at) \
+             VALUES ('evt_purge', 'reg_purge', NULL, 'registered', NULL, datetime('now'))",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
 
         let other_did = "did:plc:purge-other";
         seed_account_with_repo(&state.db, other_did).await;
@@ -336,6 +350,13 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(claim_attempts, 0);
+        let audit_events: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM agent_audit_events WHERE registration_id = 'reg_purge'",
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(audit_events, 0);
         assert_eq!(
             row_count(&state.db, "block_owners", "account_did", did).await,
             0

@@ -28,6 +28,8 @@
   import RecoveryInfoScreen from '$lib/components/home/RecoveryInfoScreen.svelte';
   import AlertDetailScreen from '$lib/components/home/AlertDetailScreen.svelte';
   import RecoveryOverrideScreen from '$lib/components/home/RecoveryOverrideScreen.svelte';
+  import MyAgentsScreen from '$lib/components/home/MyAgentsScreen.svelte';
+  import AgentClaimApprovalScreen from '$lib/components/home/AgentClaimApprovalScreen.svelte';
   import { createAccount, registerCreatedIdentity, listIdentities, checkIdentityStatus, type CreateAccountError, type OAuthError, type HomeData, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type UnauthorizedChange } from '$lib/ipc';
   import { normalizePlcDocToW3c } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
@@ -66,6 +68,8 @@
     | 'recovery_info'
     | 'alert_detail'
     | 'recovery_override'
+    | 'my_agents'
+    | 'agent_approval'
     | 'auth_failed'
     | 'identity_input'
     | 'pds_auth'
@@ -396,7 +400,14 @@
         selectedAlertChanges = changes;
         goTo('alert_detail');
       }}
+      onagents={() => goTo('my_agents')}
     />
+
+  {:else if step === 'my_agents'}
+    <MyAgentsScreen onback={() => goTo('home')} onapprove={() => goTo('agent_approval')} />
+
+  {:else if step === 'agent_approval'}
+    <AgentClaimApprovalScreen onback={() => goTo('my_agents')} ondone={() => goTo('my_agents')} />
 
   {:else if step === 'identity_detail'}
     <DIDDocumentScreen

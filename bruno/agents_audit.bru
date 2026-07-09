@@ -1,0 +1,56 @@
+meta {
+  name: Agent Audit Trail (GET /v1/agents/:registration_id/audit)
+  type: http
+  seq: 105
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/{{registrationId}}/audit?limit=50
+  body: none
+  auth: bearer
+}
+
+params:query {
+  limit: 50
+  ~cursor: {{auditCursor}}
+}
+
+auth:bearer {
+  token: {{sessionToken}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # GET /v1/agents/{registration_id}/audit
+
+  Page one agent's append-only audit trail, newest first. Owner-authenticated (wallet session
+  token or full-access access token); unknown/foreign registrations are a uniform 404.
+
+  Query: `limit` (default 50, max 100) and `cursor` (opaque; pass the previous response's
+  `cursor` to fetch the next page — absent cursor in a response means the trail is exhausted).
+
+  ## Response (200)
+
+  ```json
+  {
+    "events": [
+      {
+        "id": "…uuid…",
+        "eventType": "repo_write",
+        "did": "did:plc:owner",
+        "detail": { "creates": 1, "updates": 0, "deletes": 0, "collections": ["app.bsky.feed.post"], "rev": "…" },
+        "createdAt": "2026-01-02T12:00:00.000Z"
+      }
+    ],
+    "cursor": "42"
+  }
+  ```
+
+  Event types: `registered`, `claim_initiated`, `claim_confirmed`, `claim_expired`,
+  `token_exchanged`, `repo_write`, `blob_upload`, `revoked`. `did` is absent on pre-claim events
+  of an anonymous registration (no account was bound yet). `detail` carries mechanical facts only
+  — never record bodies, user codes, or token material.
+}

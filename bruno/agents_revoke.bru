@@ -1,0 +1,40 @@
+meta {
+  name: Revoke Agent (POST /v1/agents/:registration_id/revoke)
+  type: http
+  seq: 104
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/{{registrationId}}/revoke
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sessionToken}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # POST /v1/agents/{registration_id}/revoke
+
+  Turn an agent identity off. Sets `status = 'revoked'`: the next token exchange of its assertion
+  (or claim poll) is refused with `access_denied` immediately; an already-issued access token
+  rides out its remaining TTL (≤ 5 minutes — there is no live-token revocation list).
+
+  Owner-authenticated (wallet session token or full-access access token). A registration bound to
+  a different account — or an unknown one — is a uniform 404. Idempotent: revoking an
+  already-revoked agent returns 200 and records no duplicate audit event.
+
+  ## Response (200)
+
+  ```json
+  {
+    "registrationId": "reg_...",
+    "status": "revoked"
+  }
+  ```
+}

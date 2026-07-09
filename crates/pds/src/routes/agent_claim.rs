@@ -27,8 +27,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
 use crate::auth::agent_assertion::{
-    mint_identity_assertion, new_claim_attempt_id, parse_sqlite_datetime, scopes_to_json,
-    to_sqlite_datetime, verification_uri, AgentAuthError, POLL_INTERVAL_SECS,
+    mint_identity_assertion, new_claim_attempt_id, parse_sqlite_datetime, record_agent_audit,
+    scopes_to_json, to_sqlite_datetime, verification_uri, AgentAuthError, POLL_INTERVAL_SECS,
 };
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
@@ -168,6 +168,14 @@ async fn initiate(
                     },
                 )
                 .await?;
+                record_agent_audit(
+                    &state.db,
+                    &identity.id,
+                    identity.did.as_deref(),
+                    crate::db::agent_audit::AgentAuditEventType::ClaimInitiated,
+                    serde_json::json!({ "claim_attempt_id": attempt_id }),
+                )
+                .await?;
                 (attempt_id, user_code, expiry)
             }
         };
@@ -252,13 +260,12 @@ async fn confirm(
             )
         })?;
 
-    // Brute-forcing the `user_code` is bounded today by the global per-IP rate limiter, and this
-    // endpoint is already full-access authenticated — so the guessing surface is an *authenticated*
-    // caller racing a ~36^6-wide code within its short TTL (and success only lets them bind an
-    // ownerless anonymous registration to their own account, not take over a victim's). A dedicated
-    // per-code failure lockout is intentionally left to the follow-on wallet agent-consent/audit
-    // hardening work, which owns claim rate-limiting — consistent with the sibling short-code
-    // surface `/v1/transfer/accept`, which likewise relies on the shared limiter.
+    // Brute-forcing the `user_code` is bounded by the tight per-endpoint IP limiter this route
+    // shares with `/v1/agents/claim-preview` (`rate_limit.rs`, `agent_claim_confirm_per_5min` —
+    // the same short-code posture as `/v1/transfer/accept`), on top of the full-access auth
+    // requirement — so the guessing surface is an *authenticated* caller racing a ~36^6-wide code
+    // within its short TTL and a shared per-IP budget (and success only lets them bind an
+    // ownerless anonymous registration to their own account, not take over a victim's).
     let attempt = get_agent_claim_attempt_by_user_code(&state.db, user_code)
         .await?
         .ok_or_else(|| {
@@ -386,6 +393,22 @@ async fn confirm(
             "this registration is no longer active",
         ));
     }
+    // The confirmation audit row commits atomically with the claim itself: the human gate is the
+    // audit trail's anchor event, so it must never be missing from a claimed identity's history.
+    let confirm_detail = serde_json::json!({
+        "claim_attempt_id": attempt.id,
+        "scopes": scopes,
+    })
+    .to_string();
+    crate::db::agent_audit::insert_agent_audit_event(
+        &mut *tx,
+        &uuid::Uuid::new_v4().to_string(),
+        &identity.id,
+        Some(&user.did),
+        crate::db::agent_audit::AgentAuditEventType::ClaimConfirmed,
+        Some(&confirm_detail),
+    )
+    .await?;
     tx.commit().await.map_err(|e| {
         tracing::error!(error = %e, "failed to commit agent claim confirm");
         AgentAuthError::server_error()

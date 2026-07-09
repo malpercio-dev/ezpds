@@ -27,6 +27,7 @@ use crate::routes::admin_devices::{
 };
 use crate::routes::agent_claim::{post_agent_claim, post_agent_claim_confirm};
 use crate::routes::agent_identity::post_agent_identity;
+use crate::routes::agents::{agent_audit_log, claim_preview, list_agents, revoke_agent};
 use crate::routes::apply_writes::apply_writes;
 use crate::routes::atproto_did::atproto_did_handler;
 use crate::routes::auth_md::serve_auth_md;
@@ -517,6 +518,10 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/accounts/sessions", post(create_provisioning_session))
         .route("/v1/accounts/{id}/usage", get(account_usage))
         .route("/v1/accounts/{id}/storage", get(account_storage))
+        .route("/v1/agents", get(list_agents))
+        .route("/v1/agents/claim-preview", post(claim_preview))
+        .route("/v1/agents/{registration_id}/revoke", post(revoke_agent))
+        .route("/v1/agents/{registration_id}/audit", get(agent_audit_log))
         .route("/v1/admin/pairing-codes", post(mint_pairing_code))
         .route(
             "/v1/admin/devices",

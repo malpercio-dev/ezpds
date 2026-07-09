@@ -1,0 +1,52 @@
+meta {
+  name: Preview Agent Claim (POST /v1/agents/claim-preview)
+  type: http
+  seq: 106
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/claim-preview
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sessionToken}}
+}
+
+body:json {
+  {
+    "userCode": "{{userCode}}"
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # POST /v1/agents/claim-preview
+
+  Look up what confirming a claim-ceremony `user_code` would grant, so the wallet can show the
+  agent's registration type, issuer/subject, and the exact scope list *before* the biometric
+  approval gate (informed consent). Owner-authenticated (wallet session token or full-access
+  access token); authorization mirrors `POST /agent/identity/claim/confirm`.
+
+  Every failure shape — unknown code, expired attempt, a registration bound to a different
+  account, already claimed/revoked — is a uniform 404. Shares the confirm endpoint's per-IP
+  rate-limit budget (same 6-digit-code guessing surface).
+
+  ## Response (200)
+
+  ```json
+  {
+    "registrationId": "reg_...",
+    "registrationType": "service_auth",
+    "scopes": ["repo:app.bsky.feed.post?action=create", "blob:image/*"],
+    "userCodeExpiresAt": "2026-01-01T00:10:00.000Z"
+  }
+  ```
+
+  `issuer`/`subject` appear for `identity_assertion` registrations. `scopes` is the operator's
+  current granted-scope profile — canonicalized exactly as confirmation will store it.
+}

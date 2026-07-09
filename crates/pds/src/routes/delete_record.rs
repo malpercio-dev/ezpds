@@ -188,6 +188,7 @@ pub async fn delete_record(
         Some(prev_data),
         vec![op],
         &root_cid_str,
+        claims.registration_id.as_deref(),
     )
     .await?;
 

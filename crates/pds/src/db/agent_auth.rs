@@ -341,6 +341,105 @@ where
     Ok(result.rows_affected() == 1)
 }
 
+/// Summary row for the wallet's "My agents" list (`GET /v1/agents`). `last_used_at` is the most
+/// recent *activity* audit event (token exchange, repo write, blob upload) — ceremony events do
+/// not count as use.
+#[derive(Debug, Clone)]
+pub(crate) struct AgentIdentitySummary {
+    pub(crate) id: String,
+    pub(crate) registration_type: RegistrationType,
+    pub(crate) issuer: Option<String>,
+    pub(crate) subject: Option<String>,
+    pub(crate) scopes: String,
+    pub(crate) status: AgentIdentityStatus,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
+    pub(crate) last_used_at: Option<String>,
+}
+
+/// List the agent identities bound to `did`, newest first.
+pub(crate) async fn list_agent_identities_for_did(
+    db: &sqlx::SqlitePool,
+    did: &str,
+) -> Result<Vec<AgentIdentitySummary>, ApiError> {
+    type Row = (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+    );
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT a.id, a.registration_type, a.issuer, a.subject, a.scopes, a.status, \
+                a.created_at, a.updated_at, \
+                (SELECT MAX(e.created_at) FROM agent_audit_events e \
+                 WHERE e.registration_id = a.id \
+                   AND e.event_type IN ('token_exchanged', 'repo_write', 'blob_upload')) \
+         FROM agent_identities a \
+         WHERE a.did = ? \
+         ORDER BY a.created_at DESC, a.id",
+    )
+    .bind(did)
+    .fetch_all(db)
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "DB error listing agent identities");
+        ApiError::new(ErrorCode::InternalError, "failed to list agent identities")
+    })?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(
+                id,
+                registration_type,
+                issuer,
+                subject,
+                scopes,
+                status,
+                created_at,
+                updated_at,
+                last_used_at,
+            )| AgentIdentitySummary {
+                id,
+                registration_type: RegistrationType::from_string(registration_type),
+                issuer,
+                subject,
+                scopes,
+                status: AgentIdentityStatus::from_string(status),
+                created_at,
+                updated_at,
+                last_used_at,
+            },
+        )
+        .collect())
+}
+
+/// Revoke an identity, reporting whether this call made the transition. The `status != 'revoked'`
+/// guard makes revocation idempotent-safe: a repeat revoke affects no rows and returns `false`,
+/// so the caller records exactly one `revoked` audit event.
+pub(crate) async fn revoke_agent_identity<'e, E>(executor: E, id: &str) -> Result<bool, ApiError>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let result = sqlx::query(
+        "UPDATE agent_identities SET status = 'revoked', updated_at = datetime('now') \
+         WHERE id = ? AND status != 'revoked'",
+    )
+    .bind(id)
+    .execute(executor)
+    .await
+    .map_err(|e| {
+        tracing::error!(identity_id = %id, error = %e, "DB error revoking agent identity");
+        ApiError::new(ErrorCode::InternalError, "failed to revoke agent identity")
+    })?;
+    Ok(result.rows_affected() == 1)
+}
+
 /// Store a freshly minted service assertion for an identity.
 pub(crate) async fn set_agent_identity_assertion<'e, E>(
     executor: E,
@@ -510,6 +609,47 @@ where
         ApiError::new(ErrorCode::InternalError, "failed to complete claim attempt")
     })?;
     Ok(result.rows_affected() == 1)
+}
+
+/// A pending claim attempt whose user-code window has lapsed, joined with its owning identity —
+/// the sweep's unit of work (the identity id and DID attribute the `claim_expired` audit event).
+#[derive(Debug, Clone)]
+pub(crate) struct ExpiredClaimAttempt {
+    pub(crate) attempt_id: String,
+    pub(crate) identity_id: String,
+    pub(crate) did: Option<String>,
+}
+
+/// List the pending attempts that have lapsed. Run inside the same transaction as the
+/// `expire_pending_agent_claim_attempts` UPDATE so the listed set and the flipped set agree.
+pub(crate) async fn expired_pending_claim_attempts<'e, E>(
+    executor: E,
+) -> Result<Vec<ExpiredClaimAttempt>, ApiError>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT c.id, c.identity_id, i.did \
+         FROM agent_claim_attempts c JOIN agent_identities i ON i.id = c.identity_id \
+         WHERE c.status = 'pending' AND datetime(c.user_code_expires_at) <= datetime('now')",
+    )
+    .fetch_all(executor)
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "DB error listing expired claim attempts");
+        ApiError::new(
+            ErrorCode::InternalError,
+            "failed to list expired claim attempts",
+        )
+    })?;
+    Ok(rows
+        .into_iter()
+        .map(|(attempt_id, identity_id, did)| ExpiredClaimAttempt {
+            attempt_id,
+            identity_id,
+            did,
+        })
+        .collect())
 }
 
 /// Mark any expired pending attempts as expired. Returns the number of affected rows.
