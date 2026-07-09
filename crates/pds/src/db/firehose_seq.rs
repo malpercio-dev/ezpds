@@ -22,11 +22,19 @@ pub struct StoredEventRow {
 /// The highest sequence number persisted so far, or 0 if the log is empty.
 ///
 /// Read once at startup to seed the in-memory sequence counter so `seq` continues
-/// monotonically across restarts rather than resetting to 0.
-pub async fn max_seq(db: &SqlitePool) -> Result<u64, sqlx::Error> {
+/// monotonically across restarts rather than resetting to 0, and again by the sequencer's
+/// unique-violation self-heal (`firehose.rs`) to re-derive the frontier from the durable log.
+///
+/// Generic over the executor so the self-heal can read through a caller-owned transaction
+/// (the single-connection pool cannot serve a pool query while that transaction holds the
+/// connection) as well as against the bare pool.
+pub async fn max_seq<'e, E>(executor: E) -> Result<u64, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     // COALESCE keeps the empty-table case as 0 rather than NULL.
     let seq: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(seq), 0) FROM repo_seq")
-        .fetch_one(db)
+        .fetch_one(executor)
         .await?;
     Ok(seq.max(0) as u64)
 }

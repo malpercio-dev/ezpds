@@ -44,7 +44,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{Sqlite, SqliteConnection, SqlitePool, Transaction};
 use tokio::sync::broadcast;
 use tokio::sync::MutexGuard;
 
@@ -493,7 +493,10 @@ pub struct Firehose {
     retention_replay_lock: tokio::sync::Mutex<()>,
     /// The last sequence number assigned. Written only under `emit_lock` (after the row is
     /// persisted), so a value `<= last_seq` is always already durable. Read locklessly for
-    /// diagnostics (`current_seq`) and under the lock for the subscribe frontier.
+    /// diagnostics (`current_seq`) and under the lock for the subscribe frontier. May lag the
+    /// durable log when a caller is cancelled between its transaction commit and
+    /// `Pending*::finish`; the next insert detects the collision and re-derives the frontier
+    /// from `MAX(seq)` (see [`Firehose::insert_at_frontier`]).
     last_seq: AtomicU64,
     tx: broadcast::Sender<FirehoseEvent>,
     /// Counts broadcast frames into `firehose_events_total`. `None` for bare test
@@ -551,6 +554,58 @@ impl Firehose {
     /// capacity behind observes `RecvError::Lagged` on its next `recv`.
     pub fn subscribe(&self) -> broadcast::Receiver<FirehoseEvent> {
         self.tx.subscribe()
+    }
+
+    /// Insert one event row at the sequence frontier, self-healing a stale in-memory frontier.
+    ///
+    /// Must be called under `emit_lock`. Normally the next seq is `last_seq + 1`, but a caller
+    /// cancelled between its `tx.commit()` and `Pending*::finish()` (a client disconnect in that
+    /// window drops the handler future) leaves a durable `repo_seq` row *above* `last_seq` —
+    /// the row landed, the frontier never advanced. Every later insert would then collide with
+    /// that orphaned row's PRIMARY KEY forever (a full write outage until a restart re-seeds the
+    /// counter). On a unique violation, re-derive the next seq from the durable `MAX(seq)` and
+    /// retry once; a second collision is a real sequencer bug and propagates. The orphaned event
+    /// is never broadcast live — exactly as after a restart, subscribers pick it up from the
+    /// durable log via cursor replay.
+    ///
+    /// Takes a bare connection (not an executor) because the retry needs to reuse it: the
+    /// staged paths pass their caller's open transaction, which holds the single-connection
+    /// pool's only connection.
+    async fn insert_at_frontier(
+        &self,
+        conn: &mut SqliteConnection,
+        did: &str,
+        event_type: &str,
+        blob: &[u8],
+        time: &str,
+    ) -> Result<u64, FirehoseError> {
+        let seq = self.last_seq.load(Ordering::Acquire) + 1;
+        match crate::db::firehose_seq::insert_event(&mut *conn, seq, did, event_type, blob, time)
+            .await
+        {
+            Ok(()) => Ok(seq),
+            Err(e) if crate::db::is_unique_violation(&e) => {
+                let durable = crate::db::firehose_seq::max_seq(&mut *conn).await?;
+                let healed_seq = durable + 1;
+                // The wedge no longer surfaces as an outage, so this log line is the only
+                // signal the cancellation window was actually hit in production.
+                tracing::warn!(
+                    did,
+                    event_type,
+                    collided_seq = seq,
+                    healed_seq,
+                    "firehose sequencer self-heal: frontier lagged the durable log (a caller \
+                     was cancelled between its transaction commit and finish); re-seeded from \
+                     MAX(seq) and retrying"
+                );
+                crate::db::firehose_seq::insert_event(
+                    &mut *conn, healed_seq, did, event_type, blob, time,
+                )
+                .await?;
+                Ok(healed_seq)
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Subscribe with optional cursor replay.
@@ -658,9 +713,11 @@ impl Firehose {
             };
             serde_ipld_dagcbor::to_vec(&stored).map_err(|e| FirehoseError::Encode(e.to_string()))?
         };
-        let seq = self.last_seq.load(Ordering::Acquire) + 1;
-        crate::db::firehose_seq::insert_event(&self.db, seq, &input.repo, "commit", &blob, &time)
+        let mut conn = self.db.acquire().await?;
+        let seq = self
+            .insert_at_frontier(&mut conn, &input.repo, "commit", &blob, &time)
             .await?;
+        drop(conn);
         self.last_seq.store(seq, Ordering::Release);
 
         let event = FirehoseEvent::Commit(Arc::new(CommitEvent {
@@ -704,8 +761,11 @@ impl Firehose {
             };
             serde_ipld_dagcbor::to_vec(&stored).map_err(|e| FirehoseError::Encode(e.to_string()))?
         };
-        let seq = self.last_seq.load(Ordering::Acquire) + 1;
-        crate::db::firehose_seq::insert_event(&self.db, seq, &did, "account", &blob, &time).await?;
+        let mut conn = self.db.acquire().await?;
+        let seq = self
+            .insert_at_frontier(&mut conn, &did, "account", &blob, &time)
+            .await?;
+        drop(conn);
         self.last_seq.store(seq, Ordering::Release);
 
         let event = FirehoseEvent::Account(Arc::new(AccountEvent {
@@ -748,9 +808,11 @@ impl Firehose {
             };
             serde_ipld_dagcbor::to_vec(&stored).map_err(|e| FirehoseError::Encode(e.to_string()))?
         };
-        let seq = self.last_seq.load(Ordering::Acquire) + 1;
-        crate::db::firehose_seq::insert_event(&self.db, seq, &did, "identity", &blob, &time)
+        let mut conn = self.db.acquire().await?;
+        let seq = self
+            .insert_at_frontier(&mut conn, &did, "identity", &blob, &time)
             .await?;
+        drop(conn);
         self.last_seq.store(seq, Ordering::Release);
 
         let event = FirehoseEvent::Identity(Arc::new(IdentityEvent {
@@ -792,9 +854,11 @@ impl Firehose {
             };
             serde_ipld_dagcbor::to_vec(&stored).map_err(|e| FirehoseError::Encode(e.to_string()))?
         };
-        let seq = self.last_seq.load(Ordering::Acquire) + 1;
-        crate::db::firehose_seq::insert_event(&self.db, seq, &input.did, "sync", &blob, &time)
+        let mut conn = self.db.acquire().await?;
+        let seq = self
+            .insert_at_frontier(&mut conn, &input.did, "sync", &blob, &time)
             .await?;
+        drop(conn);
         self.last_seq.store(seq, Ordering::Release);
 
         let event = FirehoseEvent::Sync(Arc::new(SyncEvent {
@@ -878,8 +942,8 @@ impl<'f> EmitGuard<'f> {
             };
             serde_ipld_dagcbor::to_vec(&stored).map_err(|e| FirehoseError::Encode(e.to_string()))?
         };
-        let seq = firehose.last_seq.load(Ordering::Acquire) + 1;
-        crate::db::firehose_seq::insert_event(&mut **tx, seq, &input.repo, "commit", &blob, &time)
+        let seq = firehose
+            .insert_at_frontier(&mut *tx, &input.repo, "commit", &blob, &time)
             .await?;
 
         Ok(PendingCommit {
@@ -913,8 +977,8 @@ impl<'f> EmitGuard<'f> {
             };
             serde_ipld_dagcbor::to_vec(&stored).map_err(|e| FirehoseError::Encode(e.to_string()))?
         };
-        let seq = firehose.last_seq.load(Ordering::Acquire) + 1;
-        crate::db::firehose_seq::insert_event(&mut **tx, seq, &did, "account", &blob, &time)
+        let seq = firehose
+            .insert_at_frontier(&mut *tx, &did, "account", &blob, &time)
             .await?;
 
         Ok(PendingAccount {
@@ -936,7 +1000,10 @@ impl<'f> EmitGuard<'f> {
 /// — only on that success path — to advance the sequence counter and broadcast the event.
 /// Dropping this handle without finishing (e.g. because the caller rolled the transaction back
 /// instead) releases `emit_lock` without advancing `last_seq`, so the seq is retried by the next
-/// emit, exactly as an outright `emit_commit` failure would.
+/// emit, exactly as an outright `emit_commit` failure would. The one asymmetric drop — the
+/// handler future cancelled *after* its `tx.commit()` made the row durable but before `finish`
+/// — leaves the frontier behind the log; the next insert self-heals past the orphaned row (see
+/// [`Firehose::insert_at_frontier`]) rather than colliding with it until restart.
 #[must_use = "a staged commit does nothing until the caller commits its transaction and calls `finish`"]
 pub struct PendingCommit<'f> {
     firehose: &'f Firehose,
@@ -2377,6 +2444,77 @@ mod tests {
             0,
             "seq must not advance on a failed stage"
         );
+    }
+
+    #[tokio::test]
+    async fn emit_recovers_after_a_request_cancelled_between_commit_and_finish() {
+        // A handler future dropped during its `tx.commit().await` (client disconnect) can leave
+        // the staged `repo_seq` row durable while `finish()` — the only place `last_seq`
+        // advances — never runs. The next emit computes the same seq, hits the PRIMARY KEY, and
+        // without self-healing every subsequent write fails until the process restarts.
+        let fh = test_firehose().await;
+
+        let mut tx = fh.db.begin().await.unwrap();
+        let pending = fh
+            .lock_emit()
+            .await
+            .stage_commit(&mut tx, commit_input("did:plc:a"))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        // The cancellation: the row at seq 1 is durable, but finish() never runs.
+        drop(pending);
+        assert_eq!(
+            fh.current_seq(),
+            0,
+            "the cancelled request must not have advanced the frontier"
+        );
+
+        let seq = fh
+            .emit_commit(commit_input("did:plc:b"))
+            .await
+            .expect("the next emit must re-seed from the durable log, not collide forever");
+        assert_eq!(seq, 2, "the orphaned durable row holds seq 1");
+        assert_eq!(fh.current_seq(), 2);
+    }
+
+    #[tokio::test]
+    async fn staged_write_recovers_after_a_request_cancelled_between_commit_and_finish() {
+        // Same wedge as above, healed on the staged path — the one every record write and
+        // account-status transition goes through.
+        let fh = test_firehose().await;
+        let mut rx = fh.subscribe();
+
+        let mut tx = fh.db.begin().await.unwrap();
+        let pending = fh
+            .lock_emit()
+            .await
+            .stage_commit(&mut tx, commit_input("did:plc:a"))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        drop(pending);
+
+        let mut tx = fh.db.begin().await.unwrap();
+        let pending = fh
+            .lock_emit()
+            .await
+            .stage_commit(&mut tx, commit_input("did:plc:b"))
+            .await
+            .expect("the next staged write must re-seed from the durable log, not fail");
+        tx.commit().await.unwrap();
+        pending.finish();
+
+        assert_eq!(
+            fh.current_seq(),
+            2,
+            "the healed write takes the next free seq"
+        );
+        let FirehoseEvent::Commit(c) = rx.recv().await.unwrap() else {
+            panic!("expected a #commit event");
+        };
+        assert_eq!(c.seq, 2);
+        assert_eq!(c.repo, "did:plc:b");
     }
 
     #[tokio::test]
