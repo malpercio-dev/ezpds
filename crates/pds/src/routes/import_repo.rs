@@ -310,6 +310,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn import_hostile_frame_returns_400() {
+        let state = state_with_master_key().await;
+        let did = "did:plc:importhostile";
+        seed_account_with_repo(&state.db, did).await;
+
+        // A valid CAR with a trailing hostile frame: declared length (2) shorter than its CID
+        // (36 bytes). Unvalidated, this underflows inside the CAR parser and panics the request
+        // task; the validated front-end must reject it as a plain 400.
+        let mut car = export_then_reset(&state, did).await;
+        car.push(0x02);
+        car.extend_from_slice(&[0x01, 0x71, 0x12, 0x20]);
+        car.extend_from_slice(&[0u8; 32]);
+
+        let token = access_jwt(&state.jwt_secret, did);
+        let app = crate::app::app(state);
+        let resp = app.oneshot(import_req(car, Some(&token))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn import_round_trip_makes_repo_serveable() {
         let state = state_with_master_key().await;
         let did = "did:plc:importroundtrip";
