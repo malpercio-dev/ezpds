@@ -226,6 +226,8 @@
             <button
               class="server-row"
               type="button"
+              aria-expanded={expandedId === pairing.id}
+              aria-controls={`server-panel-${pairing.id}`}
               onclick={() => toggleExpandedRow(pairing.id)}
             >
               <DeviceRow
@@ -239,7 +241,7 @@
             </button>
 
             {#if expandedId === pairing.id}
-              <div class="server-panel">
+              <div class="server-panel" id={`server-panel-${pairing.id}`}>
                 <!-- Rename -->
                 <div class="rename-block">
                   {#if renameStates.get(pairing.id) !== undefined}
