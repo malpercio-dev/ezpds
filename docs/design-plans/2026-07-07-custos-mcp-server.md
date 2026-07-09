@@ -19,10 +19,10 @@ concrete finish line: the backlog endpoints become "whatever Custos MCP needs to
 - MM-169 — claim polling grant (`urn:workos:agent-auth:grant-type:claim`) so the MCP server can
   poll for ceremony completion.
 - MM-170 — claim ceremony endpoint (covered by the
-  [wallet consent & audit plan](2026-07-07-wallet-agent-consent-and-audit.md)).
+  [wallet consent & audit plan](../archive/design-plans/2026-07-07-wallet-agent-consent-and-audit.md)).
 - MM-176 — serve the `auth.md` discovery file at the service root (small; can be folded into
   this effort if unstarted).
-- [Agent scope enforcement](2026-07-07-agent-scope-enforcement.md) — **hard prerequisite**; do
+- [Agent scope enforcement](../archive/design-plans/2026-07-07-agent-scope-enforcement.md) — **hard prerequisite**; do
   not ship an agent-onboarding tool while agent tokens are full-access.
 
 ## Definition of Done
