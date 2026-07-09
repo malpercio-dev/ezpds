@@ -636,3 +636,363 @@ async fn granted_scopes_flow_from_config_through_to_the_issued_token() {
     assert!(!token_scopes.iter().any(|s| s.starts_with("account:")));
     assert!(!token_scopes.iter().any(|s| s.starts_with("identity:")));
 }
+
+// ── /v1/agents management API (the wallet's "My agents" surface) ───────────────
+
+/// GET with a Bearer token — the management API is authenticated, unlike the discovery GETs.
+async fn get_json_authed(state: AppState, uri: &str, token: &str) -> (StatusCode, Value) {
+    send(
+        state,
+        Request::builder()
+            .uri(uri)
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+}
+
+/// Register a `service_auth` agent for `email` and confirm it as `owner`, returning the
+/// registration id.
+async fn register_and_confirm_service_auth(state: &AppState, owner: &str, email: &str) -> String {
+    let (_s, reg) = post_json(
+        state.clone(),
+        "/agent/identity",
+        json!({ "type": "service_auth", "login_hint": email }),
+        None,
+    )
+    .await;
+    let registration_id = reg["registration_id"].as_str().unwrap().to_string();
+    let user_code = reg["claim"]["user_code"].as_str().unwrap().to_string();
+    let (cstatus, _c) = post_json(
+        state.clone(),
+        "/agent/identity/claim/confirm",
+        json!({ "user_code": user_code }),
+        Some(&owner_token(state, owner)),
+    )
+    .await;
+    assert_eq!(cstatus, StatusCode::OK, "confirm must succeed in setup");
+    registration_id
+}
+
+/// agent-consent.AC2.1: the list is scoped to the authenticated DID, and a foreign registration
+/// id is a uniform 404 for both revoke and audit (no cross-account existence oracle).
+#[tokio::test]
+async fn management_api_isolates_accounts() {
+    let state = state_with(AgentAuthConfig {
+        service_auth_enabled: true,
+        ..AgentAuthConfig::default()
+    })
+    .await;
+    let owner_a = "did:plc:mgmtownera1111111";
+    let owner_b = "did:plc:mgmtownerb1111111";
+    insert_account(&state.db, owner_a, "mgmt-a@example.com").await;
+    insert_account(&state.db, owner_b, "mgmt-b@example.com").await;
+    let registration_id =
+        register_and_confirm_service_auth(&state, owner_a, "mgmt-a@example.com").await;
+
+    // Owner A sees exactly their agent, with the configured scopes and claimed status.
+    let (astatus, abody) =
+        get_json_authed(state.clone(), "/v1/agents", &owner_token(&state, owner_a)).await;
+    assert_eq!(astatus, StatusCode::OK);
+    let agents = abody["agents"].as_array().unwrap();
+    assert_eq!(agents.len(), 1);
+    assert_eq!(agents[0]["registrationId"], registration_id.as_str());
+    assert_eq!(agents[0]["registrationType"], "service_auth");
+    assert_eq!(agents[0]["status"], "claimed");
+    assert!(!agents[0]["scopes"].as_array().unwrap().is_empty());
+    assert!(
+        agents[0].get("lastUsedAt").is_none(),
+        "an agent that never exchanged a token has no lastUsedAt"
+    );
+
+    // Owner B sees an empty list and cannot revoke or audit A's registration.
+    let (bstatus, bbody) =
+        get_json_authed(state.clone(), "/v1/agents", &owner_token(&state, owner_b)).await;
+    assert_eq!(bstatus, StatusCode::OK);
+    assert_eq!(bbody["agents"].as_array().unwrap().len(), 0);
+
+    let (rstatus, _r) = post_json(
+        state.clone(),
+        &format!("/v1/agents/{registration_id}/revoke"),
+        json!({}),
+        Some(&owner_token(&state, owner_b)),
+    )
+    .await;
+    assert_eq!(rstatus, StatusCode::NOT_FOUND, "foreign revoke must 404");
+    let (austatus, _au) = get_json_authed(
+        state.clone(),
+        &format!("/v1/agents/{registration_id}/audit"),
+        &owner_token(&state, owner_b),
+    )
+    .await;
+    assert_eq!(austatus, StatusCode::NOT_FOUND, "foreign audit must 404");
+}
+
+/// agent-consent.AC2.2: revocation through the API immediately blocks the next token exchange,
+/// is idempotent, and lands exactly one `revoked` audit event.
+#[tokio::test]
+async fn revoke_via_api_blocks_reexchange_and_audits_once() {
+    let state = state_with(AgentAuthConfig {
+        service_auth_enabled: true,
+        ..AgentAuthConfig::default()
+    })
+    .await;
+    let owner = "did:plc:mgmtrevoke111111";
+    insert_account(&state.db, owner, "mgmt-revoke@example.com").await;
+    let registration_id =
+        register_and_confirm_service_auth(&state, owner, "mgmt-revoke@example.com").await;
+
+    let assertion: String =
+        sqlx::query_scalar("SELECT identity_assertion FROM agent_identities WHERE id = ?")
+            .bind(&registration_id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    let (x1, _b1) = exchange_assertion(state.clone(), &assertion).await;
+    assert_eq!(x1, StatusCode::OK, "pre-revocation exchange must succeed");
+
+    for round in 0..2 {
+        let (rstatus, rbody) = post_json(
+            state.clone(),
+            &format!("/v1/agents/{registration_id}/revoke"),
+            json!({}),
+            Some(&owner_token(&state, owner)),
+        )
+        .await;
+        assert_eq!(rstatus, StatusCode::OK, "revoke round {round} must be 200");
+        assert_eq!(rbody["status"], "revoked");
+    }
+
+    let (x2, x2body) = exchange_assertion(state.clone(), &assertion).await;
+    assert_eq!(x2, StatusCode::BAD_REQUEST);
+    assert_eq!(x2body["error"], "access_denied");
+
+    // The list reflects revocation immediately, the trail shows a token exchange happened, and
+    // the repeat revoke did not duplicate the `revoked` event.
+    let (_ls, lbody) =
+        get_json_authed(state.clone(), "/v1/agents", &owner_token(&state, owner)).await;
+    assert_eq!(lbody["agents"][0]["status"], "revoked");
+    assert!(lbody["agents"][0].get("lastUsedAt").is_some());
+
+    let (_as, abody) = get_json_authed(
+        state.clone(),
+        &format!("/v1/agents/{registration_id}/audit"),
+        &owner_token(&state, owner),
+    )
+    .await;
+    let events = abody["events"].as_array().unwrap();
+    let revoked = events
+        .iter()
+        .filter(|e| e["eventType"] == "revoked")
+        .count();
+    assert_eq!(revoked, 1, "idempotent revoke must audit exactly once");
+}
+
+/// agent-consent.AC3.1 (ceremony legs) + AC3.2: register → claim initiated → confirmed → token
+/// exchanged → revoked appear in order, attributed to this registration, and no event carries
+/// token material or the user code.
+#[tokio::test]
+async fn lifecycle_audit_trail_is_ordered_and_leak_free() {
+    let state = state_with(AgentAuthConfig {
+        service_auth_enabled: true,
+        ..AgentAuthConfig::default()
+    })
+    .await;
+    let owner = "did:plc:mgmttrail1111111";
+    insert_account(&state.db, owner, "mgmt-trail@example.com").await;
+
+    let (_s, reg) = post_json(
+        state.clone(),
+        "/agent/identity",
+        json!({ "type": "service_auth", "login_hint": "mgmt-trail@example.com" }),
+        None,
+    )
+    .await;
+    let registration_id = reg["registration_id"].as_str().unwrap().to_string();
+    let claim_token = reg["claim_token"].as_str().unwrap().to_string();
+    let user_code = reg["claim"]["user_code"].as_str().unwrap().to_string();
+    let (cstatus, _c) = post_json(
+        state.clone(),
+        "/agent/identity/claim/confirm",
+        json!({ "user_code": user_code }),
+        Some(&owner_token(&state, owner)),
+    )
+    .await;
+    assert_eq!(cstatus, StatusCode::OK);
+    let assertion: String =
+        sqlx::query_scalar("SELECT identity_assertion FROM agent_identities WHERE id = ?")
+            .bind(&registration_id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    let (xstatus, _x) = exchange_assertion(state.clone(), &assertion).await;
+    assert_eq!(xstatus, StatusCode::OK);
+    let (rstatus, _r) = post_json(
+        state.clone(),
+        &format!("/v1/agents/{registration_id}/revoke"),
+        json!({}),
+        Some(&owner_token(&state, owner)),
+    )
+    .await;
+    assert_eq!(rstatus, StatusCode::OK);
+
+    let (astatus, abody) = get_json_authed(
+        state.clone(),
+        &format!("/v1/agents/{registration_id}/audit"),
+        &owner_token(&state, owner),
+    )
+    .await;
+    assert_eq!(astatus, StatusCode::OK);
+    let events = abody["events"].as_array().unwrap();
+    let types: Vec<&str> = events
+        .iter()
+        .map(|e| e["eventType"].as_str().unwrap())
+        .collect();
+    // Newest first.
+    assert_eq!(
+        types,
+        vec![
+            "revoked",
+            "token_exchanged",
+            "claim_confirmed",
+            "claim_initiated",
+            "registered"
+        ]
+    );
+
+    // AC3.2: no secrets in the trail — not the user code, the claim token, or the assertion JWT.
+    let rendered = abody.to_string();
+    assert!(
+        !rendered.contains(&user_code),
+        "audit trail must not contain the user code"
+    );
+    assert!(
+        !rendered.contains(&claim_token),
+        "audit trail must not contain the claim token"
+    );
+    assert!(
+        !rendered.contains(&assertion),
+        "audit trail must not contain the identity assertion"
+    );
+}
+
+/// An agent-derived token must not drive the management API — not even to read its own entry.
+#[tokio::test]
+async fn agent_tokens_cannot_use_management_api() {
+    let state = state_with(AgentAuthConfig {
+        service_auth_enabled: true,
+        ..AgentAuthConfig::default()
+    })
+    .await;
+    let owner = "did:plc:mgmtagentself1111";
+    insert_account(&state.db, owner, "mgmt-self@example.com").await;
+    let registration_id =
+        register_and_confirm_service_auth(&state, owner, "mgmt-self@example.com").await;
+    let agent_token = crate::routes::test_utils::agent_jwt(
+        &state.jwt_secret,
+        owner,
+        "com.atproto.access",
+        &registration_id,
+    );
+
+    let (lstatus, _l) = get_json_authed(state.clone(), "/v1/agents", &agent_token).await;
+    assert_eq!(lstatus, StatusCode::FORBIDDEN);
+    let (rstatus, _r) = post_json(
+        state.clone(),
+        &format!("/v1/agents/{registration_id}/revoke"),
+        json!({}),
+        Some(&agent_token),
+    )
+    .await;
+    assert_eq!(
+        rstatus,
+        StatusCode::FORBIDDEN,
+        "an agent must not revoke itself"
+    );
+}
+
+/// agent-consent.AC4.1 (server half): the wallet can preview exactly what confirming a code
+/// grants — type + scopes — before the biometric gate; a foreign owner gets a uniform 404; the
+/// previewed scopes equal what confirmation then stores.
+#[tokio::test]
+async fn claim_preview_shows_grant_before_confirm_and_isolates_owners() {
+    let state = state_with(AgentAuthConfig {
+        service_auth_enabled: true,
+        ..AgentAuthConfig::default()
+    })
+    .await;
+    let owner = "did:plc:previewowner11111";
+    let other = "did:plc:previewother11111";
+    insert_account(&state.db, owner, "preview@example.com").await;
+    insert_account(&state.db, other, "preview-other@example.com").await;
+
+    let (_s, reg) = post_json(
+        state.clone(),
+        "/agent/identity",
+        json!({ "type": "service_auth", "login_hint": "preview@example.com" }),
+        None,
+    )
+    .await;
+    let registration_id = reg["registration_id"].as_str().unwrap().to_string();
+    let user_code = reg["claim"]["user_code"].as_str().unwrap().to_string();
+
+    // The bound owner sees the grant; scopes match the operator profile confirmation will store.
+    let (pstatus, pbody) = post_json(
+        state.clone(),
+        "/v1/agents/claim-preview",
+        json!({ "userCode": user_code }),
+        Some(&owner_token(&state, owner)),
+    )
+    .await;
+    assert_eq!(pstatus, StatusCode::OK);
+    assert_eq!(pbody["registrationId"], registration_id.as_str());
+    assert_eq!(pbody["registrationType"], "service_auth");
+    let previewed: Vec<&str> = pbody["scopes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap())
+        .collect();
+    for expected in config_scopes() {
+        assert!(previewed.contains(&expected.as_str()));
+    }
+
+    // A different account cannot preview it, and a garbage code is the same uniform 404.
+    let (fstatus, _f) = post_json(
+        state.clone(),
+        "/v1/agents/claim-preview",
+        json!({ "userCode": user_code }),
+        Some(&owner_token(&state, other)),
+    )
+    .await;
+    assert_eq!(fstatus, StatusCode::NOT_FOUND);
+    let (gstatus, _g) = post_json(
+        state.clone(),
+        "/v1/agents/claim-preview",
+        json!({ "userCode": "000000" }),
+        Some(&owner_token(&state, owner)),
+    )
+    .await;
+    assert_eq!(gstatus, StatusCode::NOT_FOUND);
+
+    // Preview is read-only: the ceremony still confirms afterwards.
+    let (cstatus, _c) = post_json(
+        state.clone(),
+        "/agent/identity/claim/confirm",
+        json!({ "user_code": user_code }),
+        Some(&owner_token(&state, owner)),
+    )
+    .await;
+    assert_eq!(cstatus, StatusCode::OK);
+
+    // And a confirmed (no longer pending) code no longer previews.
+    let (dstatus, _d) = post_json(
+        state.clone(),
+        "/v1/agents/claim-preview",
+        json!({ "userCode": user_code }),
+        Some(&owner_token(&state, owner)),
+    )
+    .await;
+    assert_eq!(dstatus, StatusCode::NOT_FOUND);
+}

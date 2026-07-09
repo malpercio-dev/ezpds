@@ -113,12 +113,19 @@ impl RateLimiterState {
         // Pattern: endpoints authenticated by a bare short code (rather than a session or bearer
         // token) belong in this tight per-endpoint limiter by default — the code *is* the
         // credential, so the generous global cap alone leaves too much room to brute-force it.
-        // `/v1/transfer/accept` (a 6-char transfer code) is the first; the wallet-consent
-        // claim-ceremony confirm endpoint joins here when it lands.
+        // `/v1/transfer/accept` (a 6-char transfer code) was the first; the claim-ceremony
+        // confirm endpoint carries the same 6-digit-code guessing surface (its session auth
+        // gates *who* may confirm, not *how many* codes they can try).
         endpoints.insert(
             "/v1/transfer/accept",
             per_5min(cfg.transfer_accept_per_5min),
         );
+        // The preview endpoint shares the confirm limiter *instance* (like the createAccount
+        // trio): both validate the same guessable 6-digit user_code, so splitting the budget
+        // would double an attacker's guess allowance by alternating endpoints.
+        let claim_confirm = per_5min(cfg.agent_claim_confirm_per_5min);
+        endpoints.insert("/agent/identity/claim/confirm", claim_confirm.clone());
+        endpoints.insert("/v1/agents/claim-preview", claim_confirm);
 
         Self {
             enabled: cfg.enabled,

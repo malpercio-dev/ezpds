@@ -735,6 +735,21 @@ async fn handle_jwt_bearer(state: &AppState, form: TokenRequestForm) -> Response
         Err(e) => return e.into_response(),
     };
 
+    if let Err(e) = crate::auth::agent_assertion::record_agent_audit(
+        &state.db,
+        &claims.registration_id,
+        Some(&claims.sub),
+        crate::db::agent_audit::AgentAuditEventType::TokenExchanged,
+        serde_json::json!({ "grant": "jwt_bearer", "scope": claims.scope }),
+    )
+    .await
+    {
+        // Fail closed: a credential issuance the audit trail cannot account for must not leave
+        // the building. The token above was never returned to the caller.
+        tracing::error!(error = %e, registration_id = %claims.registration_id, "failed to record token-exchange audit event");
+        return OAuthTokenError::new("server_error", "database error").into_response();
+    }
+
     let mut headers = axum::http::HeaderMap::new();
     headers.insert(
         axum::http::header::CACHE_CONTROL,
@@ -837,7 +852,7 @@ async fn handle_claim_polling(state: &AppState, form: TokenRequestForm) -> Respo
                 .into_response()
         }
         // The owner confirmed the ceremony: collect the credential.
-        AgentIdentityStatus::Claimed => claim_success(state, &identity),
+        AgentIdentityStatus::Claimed => claim_success(state, &identity).await,
         // Still awaiting the human confirmation gate — or the window has since lapsed.
         AgentIdentityStatus::Active => {
             let attempt = match latest_agent_claim_attempt_for_identity(&state.db, &identity.id)
@@ -874,7 +889,7 @@ async fn handle_claim_polling(state: &AppState, form: TokenRequestForm) -> Respo
             // confirm to success rather than a false `expired_token`.
             match get_agent_identity(&state.db, &identity.id).await {
                 Ok(Some(fresh)) => match fresh.status {
-                    AgentIdentityStatus::Claimed => claim_success(state, &fresh),
+                    AgentIdentityStatus::Claimed => claim_success(state, &fresh).await,
                     AgentIdentityStatus::Revoked => {
                         OAuthTokenError::new("access_denied", "the agent identity has been revoked")
                             .into_response()
@@ -901,7 +916,7 @@ async fn handle_claim_polling(state: &AppState, form: TokenRequestForm) -> Respo
 /// identity's granted scopes + `registration_id`, plus the stored post-claim assertion the agent
 /// re-exchanges (jwt-bearer) once the token expires. A `claimed` identity always has a bound DID and
 /// a stored assertion; a missing one is an internal inconsistency → `server_error`.
-fn claim_success(state: &AppState, identity: &AgentIdentityRow) -> Response {
+async fn claim_success(state: &AppState, identity: &AgentIdentityRow) -> Response {
     let (Some(did), Some(assertion)) = (
         identity.did.as_deref(),
         identity.identity_assertion.as_deref(),
@@ -934,6 +949,20 @@ fn claim_success(state: &AppState, identity: &AgentIdentityRow) -> Response {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };
+
+    if let Err(e) = crate::auth::agent_assertion::record_agent_audit(
+        &state.db,
+        &identity.id,
+        Some(did),
+        crate::db::agent_audit::AgentAuditEventType::TokenExchanged,
+        serde_json::json!({ "grant": "claim", "scope": scope }),
+    )
+    .await
+    {
+        // Fail closed, mirroring the jwt-bearer path: the token was never returned to the caller.
+        tracing::error!(error = %e, registration_id = %identity.id, "failed to record token-exchange audit event");
+        return OAuthTokenError::new("server_error", "database error").into_response();
+    }
 
     let assertion_expires = parse_sqlite_datetime(&identity.assertion_expires_at)
         .to_rfc3339_opts(SecondsFormat::Millis, true);

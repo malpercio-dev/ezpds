@@ -54,6 +54,10 @@ pub mod names {
     pub const ACCOUNT_REAPER_SWEPT: &str = "account_reaper_swept";
     /// Gauge: unix timestamp (seconds) of the last completed account-reaper run.
     pub const ACCOUNT_REAPER_LAST_RUN_TIMESTAMP: &str = "account_reaper_last_run_timestamp";
+    /// Counter (`_total`): claim attempts marked expired by the agent-claim sweep.
+    pub const AGENT_CLAIM_SWEEP_SWEPT: &str = "agent_claim_sweep_swept";
+    /// Gauge: unix timestamp (seconds) of the last completed agent-claim-sweep run.
+    pub const AGENT_CLAIM_SWEEP_LAST_RUN_TIMESTAMP: &str = "agent_claim_sweep_last_run_timestamp";
     /// Counter (`_total`): `repo_seq` rows pruned by the firehose-GC sweep.
     pub const FIREHOSE_GC_SWEPT: &str = "firehose_gc_swept";
     /// Gauge: unix timestamp (seconds) of the last completed firehose-GC run.
@@ -111,6 +115,8 @@ pub struct Metrics {
     pub blob_gc_last_run_timestamp: Gauge<f64>,
     pub account_reaper_swept: Counter<u64>,
     pub account_reaper_last_run_timestamp: Gauge<f64>,
+    pub agent_claim_sweep_swept: Counter<u64>,
+    pub agent_claim_sweep_last_run_timestamp: Gauge<f64>,
     pub firehose_gc_swept: Counter<u64>,
     pub firehose_gc_last_run_timestamp: Gauge<f64>,
     pub rate_limit_rejections: Counter<u64>,
@@ -165,6 +171,10 @@ impl Metrics {
             account_reaper_swept: meter.u64_counter(names::ACCOUNT_REAPER_SWEPT).build(),
             account_reaper_last_run_timestamp: meter
                 .f64_gauge(names::ACCOUNT_REAPER_LAST_RUN_TIMESTAMP)
+                .build(),
+            agent_claim_sweep_swept: meter.u64_counter(names::AGENT_CLAIM_SWEEP_SWEPT).build(),
+            agent_claim_sweep_last_run_timestamp: meter
+                .f64_gauge(names::AGENT_CLAIM_SWEEP_LAST_RUN_TIMESTAMP)
                 .build(),
             firehose_gc_swept: meter.u64_counter(names::FIREHOSE_GC_SWEPT).build(),
             firehose_gc_last_run_timestamp: meter

@@ -1,0 +1,51 @@
+meta {
+  name: List My Agents (GET /v1/agents)
+  type: http
+  seq: 103
+}
+
+get {
+  url: {{baseUrl}}/v1/agents
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sessionToken}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # GET /v1/agents
+
+  List the auth.md agent identities bound to the authenticated account — the wallet's "My agents"
+  surface. Authenticate as the account owner with either a wallet session token or a full-access
+  OAuth/XRPC access token; agent-derived and app-password credentials are refused (403).
+
+  ## Response (200)
+
+  ```json
+  {
+    "agents": [
+      {
+        "registrationId": "reg_...",
+        "registrationType": "service_auth",
+        "issuer": "https://idp.example",
+        "subject": "agent-123",
+        "scopes": ["repo:app.bsky.feed.post?action=create", "blob:image/*"],
+        "status": "claimed",
+        "createdAt": "2026-01-01T00:00:00.000Z",
+        "updatedAt": "2026-01-01T00:05:00.000Z",
+        "lastUsedAt": "2026-01-02T12:00:00.000Z"
+      }
+    ]
+  }
+  ```
+
+  `status` is `active` (registered, awaiting the claim ceremony), `claimed`, or `revoked`.
+  `issuer`/`subject` appear only for `identity_assertion` registrations; `lastUsedAt` is the most
+  recent token exchange / repo write / blob upload, absent for a never-used agent.
+}

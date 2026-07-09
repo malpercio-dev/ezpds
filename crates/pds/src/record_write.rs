@@ -367,6 +367,7 @@ pub async fn write_record(
         Some(prev_data),
         vec![op],
         &root_cid_str,
+        claims.registration_id.as_deref(),
     )
     .await?;
 
@@ -413,6 +414,7 @@ pub async fn commit_repo_write(
     prev_data: Option<String>,
     ops: Vec<crate::firehose::RepoOp>,
     expected_root: &str,
+    agent_registration_id: Option<&str>,
 ) -> Result<(), ApiError> {
     // Charge this commit against the account's repo-write point budget (create=3/update=2/delete=1)
     // before doing any diff/CAR work, so an over-budget account is rejected cheaply. Keyed by the
@@ -437,6 +439,35 @@ pub async fn commit_repo_write(
                 )],
             );
         })?;
+
+    // Summarize the ops for the agent audit trail before `ops` is moved into the firehose
+    // staging below. Mechanical facts only — action counts, distinct collections, the new rev —
+    // never record values.
+    let agent_audit_detail = agent_registration_id.map(|_| {
+        let mut creates = 0u32;
+        let mut updates = 0u32;
+        let mut deletes = 0u32;
+        let mut collections: Vec<&str> = Vec::new();
+        for op in &ops {
+            match op.action {
+                crate::firehose::OpAction::Create => creates += 1,
+                crate::firehose::OpAction::Update => updates += 1,
+                crate::firehose::OpAction::Delete => deletes += 1,
+            }
+            if !collections.contains(&op.collection.as_str()) {
+                collections.push(op.collection.as_str());
+            }
+        }
+        collections.sort_unstable();
+        serde_json::json!({
+            "creates": creates,
+            "updates": updates,
+            "deletes": deletes,
+            "collections": collections,
+            "rev": new_rev,
+        })
+        .to_string()
+    });
 
     let mut store = SqliteBlockStore::new(state.db.clone(), did.to_string());
 
@@ -508,6 +539,21 @@ pub async fn commit_repo_write(
             ErrorCode::Conflict,
             "repository was modified concurrently; retry against the current root",
         ));
+    }
+
+    // An agent-attributed commit records its audit row atomically with the CAS: the audit trail
+    // is the product's accountability guarantee, so an agent write must not land without one
+    // (same fail-closed posture as the firehose staging below — `?` rolls the whole write back).
+    if let Some(registration_id) = agent_registration_id {
+        crate::db::agent_audit::insert_agent_audit_event(
+            &mut *tx,
+            &uuid::Uuid::new_v4().to_string(),
+            registration_id,
+            Some(did),
+            crate::db::agent_audit::AgentAuditEventType::RepoWrite,
+            agent_audit_detail.as_deref(),
+        )
+        .await?;
     }
 
     let pending = match blocks {
@@ -714,6 +760,79 @@ mod tests {
             .await
             .expect("record lookup must not error");
         assert!(record.is_some(), "committed record lost to stale-root GC");
+    }
+
+    /// An agent-derived token's commit records a `repo_write` audit row attributed to its
+    /// `registration_id`, with the mechanical op summary and never the record value; an ordinary
+    /// session token's commit records nothing.
+    #[tokio::test]
+    async fn agent_commit_writes_attributed_audit_row() {
+        let state = state_with_master_key().await;
+        let did = "did:plc:agentauditwrite";
+        seed_account_with_repo(&state.db, did).await;
+        sqlx::query(
+            "INSERT INTO agent_identities \
+             (id, did, registration_type, scopes, assertion_expires_at, status, created_at, updated_at) \
+             VALUES ('reg_write_audit', ?, 'service_auth', '[]', '2099-01-01 00:00:00', 'claimed', \
+                     datetime('now'), datetime('now'))",
+        )
+        .bind(did)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let secret_text = "agent-written post body";
+        let agent_token = crate::routes::test_utils::agent_jwt(
+            &state.jwt_secret,
+            did,
+            "com.atproto.access",
+            "reg_write_audit",
+        );
+        let response = crate::app::app(state.clone())
+            .oneshot(put_record_request(
+                did,
+                "app.bsky.feed.post",
+                "agentaudit1",
+                serde_json::json!({"record": {"text": secret_text}}),
+                Some(&agent_token),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let events =
+            crate::db::agent_audit::list_agent_audit_events(&state.db, "reg_write_audit", None, 10)
+                .await
+                .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "repo_write");
+        assert_eq!(events[0].did.as_deref(), Some(did));
+        let detail = events[0].detail.as_deref().unwrap();
+        assert!(detail.contains("app.bsky.feed.post"), "detail: {detail}");
+        assert!(detail.contains("\"creates\":1"), "detail: {detail}");
+        assert!(
+            !detail.contains(secret_text),
+            "record bodies must never reach the audit trail: {detail}"
+        );
+
+        // A non-agent write to the same repo adds no audit rows.
+        let session_token = access_jwt(&state.jwt_secret, did);
+        let response = crate::app::app(state.clone())
+            .oneshot(put_record_request(
+                did,
+                "app.bsky.feed.post",
+                "plainwrite1",
+                serde_json::json!({"record": {"text": "owner post"}}),
+                Some(&session_token),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let events =
+            crate::db::agent_audit::list_agent_audit_events(&state.db, "reg_write_audit", None, 10)
+                .await
+                .unwrap();
+        assert_eq!(events.len(), 1, "owner writes are not agent-attributed");
     }
 
     /// Two clients writing to the same repo concurrently (the official app pipelining a post and

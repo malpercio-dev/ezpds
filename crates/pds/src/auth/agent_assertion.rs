@@ -234,3 +234,24 @@ pub(crate) fn parse_sqlite_datetime(s: &str) -> DateTime<Utc> {
         .map(|n| n.and_utc())
         .unwrap_or_else(|_| Utc::now())
 }
+
+/// Append one agent audit event (V040), minting the row id. Shared by the registration and
+/// claim-ceremony routes (which may not import each other) and the token endpoint. `detail`
+/// carries mechanical facts only — never request bodies, user codes, or token material.
+pub(crate) async fn record_agent_audit(
+    db: &sqlx::SqlitePool,
+    registration_id: &str,
+    did: Option<&str>,
+    event_type: crate::db::agent_audit::AgentAuditEventType,
+    detail: Value,
+) -> Result<(), ApiError> {
+    crate::db::agent_audit::insert_agent_audit_event(
+        db,
+        &Uuid::new_v4().to_string(),
+        registration_id,
+        did,
+        event_type,
+        Some(&detail.to_string()),
+    )
+    .await
+}

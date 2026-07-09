@@ -261,6 +261,12 @@ pub struct RateLimitConfig {
     /// the tight per-endpoint cap rather than only the generous global one. `0` disables.
     #[serde(default = "default_transfer_accept_per_5min")]
     pub transfer_accept_per_5min: u64,
+    /// `POST /agent/identity/claim/confirm` requests per IP per 5 minutes. Default 30: the body
+    /// carries a guessable 6-digit `user_code` (the same short-code class as `transfer/accept`),
+    /// so it warrants the tight per-endpoint cap even though the caller is session-authenticated.
+    /// `0` disables.
+    #[serde(default = "default_agent_claim_confirm_per_5min")]
+    pub agent_claim_confirm_per_5min: u64,
     /// Repo-write points per account per hour (reference: 5000). `0` disables the hourly budget.
     #[serde(default = "default_write_points_hourly")]
     pub write_points_hourly: u64,
@@ -279,6 +285,7 @@ impl Default for RateLimitConfig {
             reset_password_per_5min: default_reset_password_per_5min(),
             update_handle_per_5min: default_update_handle_per_5min(),
             transfer_accept_per_5min: default_transfer_accept_per_5min(),
+            agent_claim_confirm_per_5min: default_agent_claim_confirm_per_5min(),
             write_points_hourly: default_write_points_hourly(),
             write_points_daily: default_write_points_daily(),
         }
@@ -310,6 +317,10 @@ fn default_update_handle_per_5min() -> u64 {
 }
 
 fn default_transfer_accept_per_5min() -> u64 {
+    30
+}
+
+fn default_agent_claim_confirm_per_5min() -> u64 {
     30
 }
 
@@ -384,6 +395,11 @@ pub struct AgentAuthConfig {
     /// default) the handler derives `{public_url}/agent/claim`.
     #[serde(default)]
     pub verification_uri: Option<String>,
+    /// How often the claim-attempt expiry sweep runs, in seconds. Default: 300 (5 minutes — the
+    /// user-code TTL is 600, so a lapsed ceremony is marked expired within half its window). Must
+    /// be > 0 (like the GC intervals, a zero period would panic `tokio::time::interval`).
+    #[serde(default = "default_agent_claim_sweep_interval_secs")]
+    pub claim_sweep_interval_secs: u64,
 }
 
 impl Default for AgentAuthConfig {
@@ -399,6 +415,7 @@ impl Default for AgentAuthConfig {
             granted_scopes: default_agent_granted_scopes(),
             pre_claim_scopes: default_agent_granted_scopes(),
             verification_uri: None,
+            claim_sweep_interval_secs: default_agent_claim_sweep_interval_secs(),
         }
     }
 }
@@ -433,6 +450,10 @@ fn default_agent_claim_token_ttl_secs() -> u64 {
 
 fn default_agent_user_code_ttl_secs() -> u64 {
     10 * 60 // 10 minutes
+}
+
+fn default_agent_claim_sweep_interval_secs() -> u64 {
+    5 * 60 // 5 minutes
 }
 
 fn default_agent_auth_time_max_age_secs() -> u64 {
@@ -1035,6 +1056,10 @@ pub(crate) fn apply_env_overrides(
         raw.rate_limit.transfer_accept_per_5min =
             parse_u64("EZPDS_RATE_LIMIT_TRANSFER_ACCEPT_PER_5MIN", v)?;
     }
+    if let Some(v) = env.get("EZPDS_RATE_LIMIT_AGENT_CLAIM_CONFIRM_PER_5MIN") {
+        raw.rate_limit.agent_claim_confirm_per_5min =
+            parse_u64("EZPDS_RATE_LIMIT_AGENT_CLAIM_CONFIRM_PER_5MIN", v)?;
+    }
     if let Some(v) = env.get("EZPDS_RATE_LIMIT_WRITE_POINTS_HOURLY") {
         raw.rate_limit.write_points_hourly = parse_u64("EZPDS_RATE_LIMIT_WRITE_POINTS_HOURLY", v)?;
     }
@@ -1044,6 +1069,10 @@ pub(crate) fn apply_env_overrides(
     // Periodic-sweep interval overrides (blob GC, firehose retention, deletion reaper). Only the
     // u64 parse happens here — a zero interval is rejected later by `validate_and_build`, the same
     // check the TOML path goes through (a zero period would panic `tokio::time::interval`).
+    if let Some(v) = env.get("EZPDS_AGENT_CLAIM_SWEEP_INTERVAL_SECS") {
+        raw.agent_auth.claim_sweep_interval_secs =
+            parse_u64("EZPDS_AGENT_CLAIM_SWEEP_INTERVAL_SECS", v)?;
+    }
     if let Some(v) = env.get("EZPDS_BLOBS_GC_INTERVAL_SECS") {
         raw.blobs.gc_interval_secs = parse_u64("EZPDS_BLOBS_GC_INTERVAL_SECS", v)?;
     }
@@ -1399,6 +1428,12 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
     if raw.agent_auth.user_code_ttl_secs == 0 {
         return Err(ConfigError::Invalid(
             "agent_auth.user_code_ttl_secs must be > 0".to_string(),
+        ));
+    }
+    if raw.agent_auth.claim_sweep_interval_secs == 0 {
+        return Err(ConfigError::Invalid(
+            "agent_auth.claim_sweep_interval_secs must be > 0 (tokio::time::interval panics on a zero period)"
+                .to_string(),
         ));
     }
     if let Some(uri) = &raw.agent_auth.verification_uri {
@@ -2491,6 +2526,7 @@ mod tests {
         assert_eq!(rl.reset_password_per_5min, 50);
         assert_eq!(rl.update_handle_per_5min, 10);
         assert_eq!(rl.transfer_accept_per_5min, 30);
+        assert_eq!(rl.agent_claim_confirm_per_5min, 30);
         assert_eq!(rl.write_points_hourly, 5000);
         assert_eq!(rl.write_points_daily, 35000);
     }
@@ -2534,6 +2570,10 @@ mod tests {
                 "EZPDS_RATE_LIMIT_TRANSFER_ACCEPT_PER_5MIN".to_string(),
                 "7".to_string(),
             ),
+            (
+                "EZPDS_RATE_LIMIT_AGENT_CLAIM_CONFIRM_PER_5MIN".to_string(),
+                "9".to_string(),
+            ),
         ]);
         let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
         let config = validate_and_build(raw).unwrap();
@@ -2542,6 +2582,7 @@ mod tests {
         assert_eq!(config.rate_limit.write_points_hourly, 42);
         assert_eq!(config.rate_limit.write_points_daily, 99);
         assert_eq!(config.rate_limit.transfer_accept_per_5min, 7);
+        assert_eq!(config.rate_limit.agent_claim_confirm_per_5min, 9);
     }
 
     #[test]

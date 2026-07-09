@@ -5,6 +5,7 @@ pub mod admin_devices;
 mod admin_subject_defs;
 pub mod agent_claim;
 pub mod agent_identity;
+pub mod agents;
 pub mod apply_writes;
 pub mod atproto_did;
 pub mod auth_md;

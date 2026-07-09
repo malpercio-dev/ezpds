@@ -7,6 +7,7 @@ use std::{path::PathBuf, sync::Arc};
 
 mod account_delete;
 mod account_reaper;
+mod agent_claim_sweep;
 mod app;
 mod auth;
 mod blob_gc;
@@ -352,6 +353,19 @@ async fn run() -> anyhow::Result<()> {
     tracing::info!(
         interval_secs = state.config.accounts.deletion_reaper_interval_secs,
         "scheduled account-deletion reaper started"
+    );
+
+    // Spawn the agent-claim-attempt expiry sweep. Each pass flips lapsed pending claim attempts to
+    // `expired` and records a `claim_expired` audit event for each, so a wallet's per-agent history
+    // reports how every ceremony ended; like the GC tasks it is best-effort and runs for the life
+    // of the process, so the handle is dropped on shutdown rather than joined.
+    let claim_sweep_interval =
+        std::time::Duration::from_secs(state.config.agent_auth.claim_sweep_interval_secs);
+    let _agent_claim_sweep =
+        agent_claim_sweep::spawn_agent_claim_sweep(state.clone(), claim_sweep_interval);
+    tracing::info!(
+        interval_secs = state.config.agent_auth.claim_sweep_interval_secs,
+        "agent claim-attempt expiry sweep started"
     );
 
     // Spawn the Iroh accept loop when the tunnel is enabled. Like the blob GC it is detached

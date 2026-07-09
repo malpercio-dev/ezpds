@@ -379,6 +379,36 @@ pub(crate) fn access_jwt(secret: &[u8; 32], sub: &str) -> String {
     .unwrap()
 }
 
+/// Mint a short-lived HS256 access JWT carrying a `registration_id` claim — the shape of an
+/// agent-derived token from the jwt-bearer / claim-polling grants. Used by tests that exercise
+/// agent attribution (audit rows) and the agent-refusal gates. Callers must seed a matching
+/// `agent_identities` row first: the audit table's FK rejects an unknown registration id.
+pub(crate) fn agent_jwt(
+    secret: &[u8; 32],
+    sub: &str,
+    scope: &str,
+    registration_id: &str,
+) -> String {
+    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    encode(
+        &Header::new(Algorithm::HS256),
+        &serde_json::json!({
+            "scope": scope,
+            "sub": sub,
+            "iat": now,
+            "exp": now + 7200_u64,
+            "registration_id": registration_id,
+        }),
+        &EncodingKey::from_secret(secret),
+    )
+    .unwrap()
+}
+
 /// Mint a short-lived HS256 access JWT with an app-password scope (`com.atproto.appPass` or,
 /// when `privileged`, `com.atproto.appPassPrivileged`) for `sub`. Used by tests that exercise
 /// the app-password scope gates.

@@ -142,6 +142,27 @@ pub async fn upload_blob(
         ApiError::new(ErrorCode::InternalError, "failed to record blob metadata")
     })?;
 
+    // An agent-attributed upload records its audit row before the success response: the audit
+    // trail is the accountability guarantee, so a failure here fails the request (the stored
+    // blob is content-addressed — a retry is an idempotent duplicate-CID upload).
+    if let Some(registration_id) = user.registration_id.as_deref() {
+        let detail = serde_json::json!({
+            "cid": stored.cid,
+            "mime_type": stored.mime_type,
+            "size": stored.size_bytes,
+        })
+        .to_string();
+        crate::db::agent_audit::insert_agent_audit_event(
+            &state.db,
+            &uuid::Uuid::new_v4().to_string(),
+            registration_id,
+            Some(&user.did),
+            crate::db::agent_audit::AgentAuditEventType::BlobUpload,
+            Some(&detail),
+        )
+        .await?;
+    }
+
     tracing::info!(
         did = %user.did,
         cid = %stored.cid,
@@ -254,6 +275,53 @@ mod tests {
         .execute(&state.db)
         .await
         .unwrap();
+    }
+
+    /// An agent-derived upload records a `blob_upload` audit row attributed to its
+    /// `registration_id`, carrying only mechanical facts (cid/mime/size).
+    #[tokio::test]
+    async fn agent_upload_writes_attributed_audit_row() {
+        let state = test_state().await;
+        seed_account(&state, "did:plc:agentblobaudit").await;
+        sqlx::query(
+            "INSERT INTO agent_identities \
+             (id, did, registration_type, scopes, assertion_expires_at, status, created_at, updated_at) \
+             VALUES ('reg_blob_audit', 'did:plc:agentblobaudit', 'service_auth', '[]', \
+                     '2099-01-01 00:00:00', 'claimed', datetime('now'), datetime('now'))",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+        let jwt = crate::routes::test_utils::agent_jwt(
+            &state.jwt_secret,
+            "did:plc:agentblobaudit",
+            "com.atproto.access",
+            "reg_blob_audit",
+        );
+
+        let png_bytes: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00];
+        let response = app_with_state(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.repo.uploadBlob")
+                    .header("authorization", format!("Bearer {jwt}"))
+                    .body(Body::from(png_bytes.to_vec()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let events =
+            crate::db::agent_audit::list_agent_audit_events(&state.db, "reg_blob_audit", None, 10)
+                .await
+                .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "blob_upload");
+        let detail = events[0].detail.as_deref().unwrap();
+        assert!(detail.contains("image/png"), "detail: {detail}");
+        assert!(detail.contains("\"size\":10"), "detail: {detail}");
     }
 
     /// Unauthenticated request must return 401.

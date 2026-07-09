@@ -337,6 +337,7 @@ pub async fn apply_writes(
             Some(prev_data),
             fh_ops,
             &root_cid_str,
+            claims.registration_id.as_deref(),
         )
         .await?;
 
