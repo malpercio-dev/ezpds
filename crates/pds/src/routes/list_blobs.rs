@@ -99,14 +99,15 @@ mod tests {
 
         for i in 0..count {
             let cid = format!("bafkrilist{i:03}");
-            sqlx::query(
-                "INSERT INTO blobs (cid, account_did, mime_type, size_bytes, storage_path, temp_until) \
-                 VALUES (?, ?, 'image/png', 100, ?, NULL)",
+            crate::db::blobs::insert_blob(
+                &state.db,
+                &cid,
+                did,
+                "image/png",
+                100,
+                &format!("blobs/{}/{}", &cid[..2], cid),
+                "2030-01-01 00:00:00",
             )
-            .bind(&cid)
-            .bind(did)
-            .bind(format!("blobs/{}/{}", &cid[..2], cid))
-            .execute(&state.db)
             .await
             .unwrap();
         }

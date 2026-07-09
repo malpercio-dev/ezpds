@@ -1,35 +1,68 @@
 // pattern: Imperative Shell
 
+//! Blob metadata store.
+//!
+//! Mirrors the repo-block split (`db/blocks.rs`, V035): `blobs` stores the physical
+//! content-addressed metadata once per CID (the on-disk file is likewise stored once), while
+//! `blob_owners` records each account's reference to that CID together with the per-account
+//! lifecycle (`ref_count`, `temp_until`). One account releasing or deleting its reference never
+//! destroys a file another account's records still link — the physical row and file are
+//! reclaimed only when the last owner is gone.
+
 use sqlx::SqlitePool;
 
-/// Row returned from the `blobs` table.
+use super::blocks::SqliteTransaction;
+
+/// Row returned from the physical `blobs` table.
+///
+/// `account_did` is the first uploader, kept for diagnostics only — `blob_owners` is
+/// authoritative for ownership. Lifecycle columns live on the ownership rows ([`BlobOwnerRow`]).
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct BlobRow {
+    // `cid`/`account_did`/`size_bytes`/`created_at` are mapped from `SELECT *` so the row
+    // mirrors the table, but the live read paths only consume `mime_type`/`storage_path`;
+    // the rest back tests and diagnostics.
+    #[allow(dead_code)]
     pub cid: String,
+    #[allow(dead_code)]
     pub account_did: String,
     pub mime_type: String,
+    #[allow(dead_code)]
     pub size_bytes: i64,
     pub storage_path: String,
-    // `ref_count`/`temp_until`/`created_at` are mapped from `SELECT *` so the row
-    // mirrors the table, but the blob read paths only consume the columns above.
-    // Reference-counting and the temp-blob sweep operate in SQL, not off the struct.
-    #[allow(dead_code)]
-    pub ref_count: i64,
-    #[allow(dead_code)]
-    pub temp_until: Option<String>,
     #[allow(dead_code)]
     pub created_at: String,
 }
 
-/// Insert a new blob metadata row.
+/// One account's ownership row for a blob CID.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct BlobOwnerRow {
+    pub cid: String,
+    /// Number of this account's repo records referencing the blob (maintained by blob GC).
+    /// Read by tests; the lifecycle transitions themselves operate in SQL, not off the struct.
+    #[allow(dead_code)]
+    pub ref_count: i64,
+    /// Grace-period deadline while the blob is unreferenced by this account; NULL = permanent.
+    /// Read by tests; the expiry sweep operates in SQL, not off the struct.
+    #[allow(dead_code)]
+    pub temp_until: Option<String>,
+}
+
+/// Insert blob metadata for an upload: the physical row (once per CID) and this account's
+/// ownership row.
 ///
-/// `temp_until` should be set to now + 6 hours for newly uploaded blobs that
-/// haven't been referenced by a repo record yet.
+/// `temp_until` should be set to now + the configured grace TTL for uploads that haven't been
+/// referenced by a repo record yet.
 ///
-/// Uses `ON CONFLICT(cid) DO UPDATE` for idempotency: if the same content
-/// (same CID) is uploaded by different users, the existing row is returned
-/// and `ref_count` is unchanged. This matches ATProto's uploadBlob semantics
-/// (content-addressable, same content = same CID = no error).
+/// Both statements are idempotent, matching ATProto's uploadBlob semantics (content-addressable,
+/// same content = same CID = no error). The physical row keeps the first uploader's metadata;
+/// the ownership upsert restarts *this account's* grace clock on a re-upload — but only while
+/// the account's reference count is zero, so re-uploading an already-referenced (permanent)
+/// blob never puts it back on a deletion countdown.
+///
+/// The two inserts run in one transaction (a single logical "record this upload" operation,
+/// like the paired physical/ownership write in `blocks::put_block`): a physical row committed
+/// without its ownership row would never be revisited by GC's sweep, which walks `blob_owners`.
 pub async fn insert_blob(
     pool: &SqlitePool,
     cid: &str,
@@ -39,47 +72,62 @@ pub async fn insert_blob(
     storage_path: &str,
     temp_until: &str,
 ) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
     sqlx::query(
-        "INSERT INTO blobs (cid, account_did, mime_type, size_bytes, storage_path, temp_until)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(cid) DO UPDATE SET ref_count = ref_count",
+        "INSERT INTO blobs (cid, account_did, mime_type, size_bytes, storage_path)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(cid) DO NOTHING",
     )
     .bind(cid)
     .bind(account_did)
     .bind(mime_type)
     .bind(size_bytes)
     .bind(storage_path)
-    .bind(temp_until)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
-    Ok(())
+    sqlx::query(
+        "INSERT INTO blob_owners (cid, account_did, temp_until)
+         VALUES (?, ?, ?)
+         ON CONFLICT(account_did, cid) DO UPDATE SET temp_until = excluded.temp_until
+         WHERE blob_owners.ref_count = 0",
+    )
+    .bind(cid)
+    .bind(account_did)
+    .bind(temp_until)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await
 }
 
-/// Sum of bytes uploaded by a specific account.
+/// Sum of bytes referenced by a specific account's blob ownership rows.
 ///
-/// Used to enforce per-user storage quotas.
+/// Used to enforce per-user storage quotas. Content shared across accounts counts against
+/// every owner — each account pays for what its records keep alive.
 pub async fn account_storage_bytes(
     pool: &SqlitePool,
     account_did: &str,
 ) -> Result<i64, sqlx::Error> {
-    let row: (i64,) =
-        sqlx::query_as("SELECT COALESCE(SUM(size_bytes), 0) FROM blobs WHERE account_did = ?")
-            .bind(account_did)
-            .fetch_one(pool)
-            .await?;
+    let row: (i64,) = sqlx::query_as(
+        "SELECT COALESCE(SUM(b.size_bytes), 0) FROM blob_owners o \
+         JOIN blobs b ON b.cid = o.cid WHERE o.account_did = ?",
+    )
+    .bind(account_did)
+    .fetch_one(pool)
+    .await?;
     Ok(row.0)
 }
 
 /// Blob count and total bytes for a specific account, in a single query.
 ///
-/// Counts every blob row regardless of `ref_count`/`temp_until`: an operator's view of
+/// Counts every ownership row regardless of `ref_count`/`temp_until`: an operator's view of
 /// "blobs stored" includes still-temporary uploads that occupy disk. Returns `(count, bytes)`.
 pub async fn account_blob_metrics(
     pool: &SqlitePool,
     account_did: &str,
 ) -> Result<(i64, i64), sqlx::Error> {
     let row: (i64, i64) = sqlx::query_as(
-        "SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM blobs WHERE account_did = ?",
+        "SELECT COUNT(*), COALESCE(SUM(b.size_bytes), 0) FROM blob_owners o \
+         JOIN blobs b ON b.cid = o.cid WHERE o.account_did = ?",
     )
     .bind(account_did)
     .fetch_one(pool)
@@ -87,7 +135,7 @@ pub async fn account_blob_metrics(
     Ok(row)
 }
 
-/// Return the account's largest blob as `(cid, size_bytes)`, or `None` when it has none.
+/// Return the account's largest owned blob as `(cid, size_bytes)`, or `None` when it has none.
 ///
 /// Ties on size are broken by CID (lexicographic) so the result is deterministic.
 pub async fn account_largest_blob(
@@ -95,15 +143,20 @@ pub async fn account_largest_blob(
     account_did: &str,
 ) -> Result<Option<(String, i64)>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT cid, size_bytes FROM blobs WHERE account_did = ? \
-         ORDER BY size_bytes DESC, cid ASC LIMIT 1",
+        "SELECT b.cid, b.size_bytes FROM blob_owners o \
+         JOIN blobs b ON b.cid = o.cid WHERE o.account_did = ? \
+         ORDER BY b.size_bytes DESC, b.cid ASC LIMIT 1",
     )
     .bind(account_did)
     .fetch_optional(pool)
     .await
 }
 
-/// Look up a blob by its CID.
+/// Look up a blob's physical metadata by CID, regardless of owner.
+///
+/// Part of the blob-store query surface; the live read paths are all ownership-scoped
+/// ([`get_owned_blob`]), so only tests consume the global lookup today.
+#[allow(dead_code)]
 pub async fn get_blob_by_cid(pool: &SqlitePool, cid: &str) -> Result<Option<BlobRow>, sqlx::Error> {
     sqlx::query_as::<_, BlobRow>("SELECT * FROM blobs WHERE cid = ?")
         .bind(cid)
@@ -111,7 +164,47 @@ pub async fn get_blob_by_cid(pool: &SqlitePool, cid: &str) -> Result<Option<Blob
         .await
 }
 
-/// Return which of `cids` already have a blob row for `account_did`.
+/// Look up a blob's physical metadata by CID, but only if `account_did` owns a reference to it.
+///
+/// Backs `com.atproto.sync.getBlob`'s ownership check: a CID owned solely by another account
+/// reads as absent, so callers can return the same 404 for "no such CID" and "not this DID's
+/// blob" (no CID enumeration).
+pub async fn get_owned_blob(
+    pool: &SqlitePool,
+    account_did: &str,
+    cid: &str,
+) -> Result<Option<BlobRow>, sqlx::Error> {
+    sqlx::query_as::<_, BlobRow>(
+        "SELECT b.* FROM blobs b \
+         JOIN blob_owners o ON o.cid = b.cid \
+         WHERE o.account_did = ? AND b.cid = ?",
+    )
+    .bind(account_did)
+    .bind(cid)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Look up one account's ownership row for a blob CID.
+///
+/// Part of the blob-store query surface; the live paths check ownership via joins
+/// ([`get_owned_blob`], `present_cids`), so only tests consume the row directly today.
+#[allow(dead_code)]
+pub async fn get_owner(
+    pool: &SqlitePool,
+    account_did: &str,
+    cid: &str,
+) -> Result<Option<BlobOwnerRow>, sqlx::Error> {
+    sqlx::query_as::<_, BlobOwnerRow>(
+        "SELECT cid, ref_count, temp_until FROM blob_owners WHERE account_did = ? AND cid = ?",
+    )
+    .bind(account_did)
+    .bind(cid)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Return which of `cids` already have a blob ownership row for `account_did`.
 ///
 /// Backs `com.atproto.repo.listMissingBlobs`: the repo's referenced blob CIDs minus this set is
 /// exactly the blobs still to be uploaded. Scoped by `account_did` to mirror
@@ -128,8 +221,9 @@ pub async fn present_cids(
     }
     for chunk in cids.chunks(500) {
         let placeholders = vec!["?"; chunk.len()].join(",");
-        let sql =
-            format!("SELECT cid FROM blobs WHERE account_did = ? AND cid IN ({placeholders})");
+        let sql = format!(
+            "SELECT cid FROM blob_owners WHERE account_did = ? AND cid IN ({placeholders})"
+        );
         let mut q = sqlx::query_scalar::<_, String>(&sql).bind(account_did);
         for cid in chunk {
             q = q.bind(cid);
@@ -139,122 +233,194 @@ pub async fn present_cids(
     Ok(present)
 }
 
-/// Mark a blob as referenced: increment `ref_count` and clear `temp_until`.
-///
-/// Intended for when a repo record references an already-uploaded blob; the
-/// blob-reference wiring is not in place yet, so no route calls this so far.
-#[allow(dead_code)]
-pub async fn mark_referenced(pool: &SqlitePool, cid: &str) -> Result<bool, sqlx::Error> {
-    let result =
-        sqlx::query("UPDATE blobs SET ref_count = ref_count + 1, temp_until = NULL WHERE cid = ?")
-            .bind(cid)
-            .execute(pool)
-            .await?;
-    Ok(result.rows_affected() > 0)
-}
-
-/// Return all blobs whose temporary period has expired and that no record references.
+/// Return all ownership rows whose grace period has expired and whose account no longer
+/// references the blob, as `(account_did, cid)` pairs.
 ///
 /// These are the garbage-collection deletion candidates: a `temp_until` in the past with a
-/// zero `ref_count` means the blob was either uploaded and never referenced, or it lost its
-/// last reference and outlived the grace period. The `ref_count = 0` guard ensures an
-/// in-use blob is never returned even if its `temp_until` somehow lingered.
-pub async fn list_expired_temps(pool: &SqlitePool) -> Result<Vec<BlobRow>, sqlx::Error> {
-    sqlx::query_as::<_, BlobRow>(
-        "SELECT * FROM blobs \
+/// zero `ref_count` means this account uploaded the blob and never referenced it, or its last
+/// reference outlived the grace period. The `ref_count = 0` guard ensures an in-use reference
+/// is never returned even if its `temp_until` somehow lingered. Expiring one account's row
+/// says nothing about the physical file — that goes only when the last owner is gone
+/// ([`delete_blob_if_unowned`]).
+pub async fn list_expired_temp_owners(
+    pool: &SqlitePool,
+) -> Result<Vec<(String, String)>, sqlx::Error> {
+    sqlx::query_as::<_, (String, String)>(
+        "SELECT account_did, cid FROM blob_owners \
          WHERE temp_until IS NOT NULL AND temp_until < datetime('now') AND ref_count = 0",
     )
     .fetch_all(pool)
     .await
 }
 
-/// Return the distinct DIDs that own at least one blob.
-///
-/// The garbage collector walks each such repo to reconcile blob references against the MST,
-/// so bounding the scan to accounts that actually hold blobs avoids opening every repo.
-pub async fn list_blob_owner_dids(pool: &SqlitePool) -> Result<Vec<String>, sqlx::Error> {
-    sqlx::query_scalar::<_, String>("SELECT DISTINCT account_did FROM blobs")
-        .fetch_all(pool)
-        .await
-}
-
-/// Mark a blob as actively referenced by `ref_count` repo records.
-///
-/// Sets `ref_count` to the exact count and clears `temp_until`, making the blob permanent.
-/// Unlike [`mark_referenced`] (which increments), this assigns an absolute count and is
-/// therefore idempotent — the GC recomputes references from the MST on every pass and can
-/// call this repeatedly without inflating the counter.
-///
-/// The `ref_count != ? OR temp_until IS NOT NULL` guard skips rows already in the desired
-/// state, so the statement only writes blobs that actually need correcting. Returns true
-/// only when a row was changed — letting callers count real churn rather than every
-/// referenced blob they visited (SQLite reports a value-identical UPDATE as a changed row).
-pub async fn set_blob_referenced(
-    pool: &SqlitePool,
-    cid: &str,
-    ref_count: i64,
-) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query(
-        "UPDATE blobs SET ref_count = ?, temp_until = NULL \
-         WHERE cid = ? AND (ref_count != ? OR temp_until IS NOT NULL)",
+/// Return the DIDs blob GC must reconcile: every account that owns a blob reference, plus
+/// every account with a repo (whose records may reference blob CIDs it has no ownership row
+/// for yet — the reconcile pass adopts those, healing pre-V039 implicit sharing).
+pub async fn list_gc_candidate_dids(pool: &SqlitePool) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT account_did FROM blob_owners \
+         UNION \
+         SELECT did FROM accounts WHERE repo_root_cid IS NOT NULL",
     )
-    .bind(ref_count)
-    .bind(cid)
-    .bind(ref_count)
-    .execute(pool)
-    .await?;
-    Ok(result.rows_affected() > 0)
+    .fetch_all(pool)
+    .await
 }
 
-/// Release a blob that no record references any longer: zero its `ref_count` and start the
-/// grace clock by setting `temp_until`.
-///
-/// The `temp_until IS NULL` guard makes this a one-shot transition from permanent to
-/// temporary: it only fires for a blob that was previously referenced (and thus had a null
-/// `temp_until`). A blob already counting down its grace period is left untouched so each GC
-/// pass does not keep resetting the clock and the blob can actually expire. Returns true if
-/// a row transitioned.
-pub async fn release_blob(
-    pool: &SqlitePool,
-    cid: &str,
-    temp_until: &str,
-) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query(
-        "UPDATE blobs SET ref_count = 0, temp_until = ? WHERE cid = ? AND temp_until IS NULL",
-    )
-    .bind(temp_until)
-    .bind(cid)
-    .execute(pool)
-    .await?;
-    Ok(result.rows_affected() > 0)
-}
-
-/// Delete blob metadata by CID. Returns true if a row was removed.
-pub async fn delete_blob(pool: &SqlitePool, cid: &str) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query("DELETE FROM blobs WHERE cid = ?")
-        .bind(cid)
-        .execute(pool)
-        .await?;
-    Ok(result.rows_affected() > 0)
-}
-
-/// List all blobs for an account.
-pub async fn list_blobs_for_account(
+/// List one account's blob ownership rows.
+pub async fn list_owned_blobs(
     pool: &SqlitePool,
     account_did: &str,
-) -> Result<Vec<BlobRow>, sqlx::Error> {
-    sqlx::query_as::<_, BlobRow>(
-        "SELECT * FROM blobs WHERE account_did = ? ORDER BY created_at DESC",
+) -> Result<Vec<BlobOwnerRow>, sqlx::Error> {
+    sqlx::query_as::<_, BlobOwnerRow>(
+        "SELECT cid, ref_count, temp_until FROM blob_owners WHERE account_did = ?",
     )
     .bind(account_did)
     .fetch_all(pool)
     .await
 }
 
-/// List blob CIDs for a DID with cursor-based pagination.
+/// Record that `account_did`'s repo references `cid` in `ref_count` records: upsert the
+/// ownership row with that exact count and clear its `temp_until`, making the reference
+/// permanent.
 ///
-/// Returns up to `limit` CIDs (default 500, max 2000) for blobs owned by the given DID.
-/// Results are ordered by CID (lexicographic). If `cursor` is provided, only CIDs
+/// The INSERT arm *adopts* a blob the account references but never uploaded (possible for
+/// records imported or written before the blob's owner rows existed, and for pre-V039 uploads
+/// whose row credited the first uploader); the `WHERE EXISTS` guard makes the call a no-op for
+/// CID links that aren't blobs at all, which the GC's reference walk cannot distinguish. The
+/// count is assigned absolutely (not incremented), so the GC can recompute references from the
+/// MST and call this repeatedly without inflating the counter; the conflict arm's change guard
+/// skips rows already in the desired state. Returns true only when a row was inserted or
+/// actually changed, letting callers count real churn.
+pub async fn upsert_owner_referenced(
+    pool: &SqlitePool,
+    account_did: &str,
+    cid: &str,
+    ref_count: i64,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "INSERT INTO blob_owners (cid, account_did, ref_count, temp_until)
+         SELECT ?, ?, ?, NULL WHERE EXISTS (SELECT 1 FROM blobs WHERE cid = ?)
+         ON CONFLICT(account_did, cid) DO UPDATE SET ref_count = excluded.ref_count, temp_until = NULL
+         WHERE blob_owners.ref_count != excluded.ref_count OR blob_owners.temp_until IS NOT NULL",
+    )
+    .bind(cid)
+    .bind(account_did)
+    .bind(ref_count)
+    .bind(cid)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Release one account's reference to a blob that none of its records use any longer: zero the
+/// row's `ref_count` and start the grace clock by setting `temp_until`.
+///
+/// The `temp_until IS NULL` guard makes this a one-shot transition from permanent to
+/// temporary: it only fires for a reference that was previously permanent. A row already
+/// counting down its grace period is left untouched so each GC pass does not keep resetting
+/// the clock and the reference can actually expire. Returns true if a row transitioned.
+pub async fn release_owner(
+    pool: &SqlitePool,
+    account_did: &str,
+    cid: &str,
+    temp_until: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE blob_owners SET ref_count = 0, temp_until = ? \
+         WHERE account_did = ? AND cid = ? AND temp_until IS NULL",
+    )
+    .bind(temp_until)
+    .bind(account_did)
+    .bind(cid)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Delete one account's expired, unreferenced ownership row. Returns true if a row was removed.
+///
+/// Re-checks the expiry conditions in the DELETE itself so a reference that was re-uploaded or
+/// re-referenced between the candidate scan and this call survives.
+pub async fn delete_expired_owner(
+    pool: &SqlitePool,
+    account_did: &str,
+    cid: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "DELETE FROM blob_owners \
+         WHERE account_did = ? AND cid = ? \
+           AND temp_until IS NOT NULL AND temp_until < datetime('now') AND ref_count = 0",
+    )
+    .bind(account_did)
+    .bind(cid)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Delete a blob's physical row if no ownership row remains, returning its `storage_path` for
+/// on-disk reclamation.
+///
+/// The no-owner check and the delete are one statement, so a concurrent upload that re-adds an
+/// owner can never lose the physical row. Callers unlink the file *after* this returns a path:
+/// the DB is the source of truth, and the failure mode of that ordering is an orphaned file (a
+/// benign leak to log), never a live row pointing at deleted bytes.
+pub async fn delete_blob_if_unowned(
+    pool: &SqlitePool,
+    cid: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar::<_, String>(
+        "DELETE FROM blobs WHERE cid = ? \
+           AND NOT EXISTS (SELECT 1 FROM blob_owners o WHERE o.cid = blobs.cid) \
+         RETURNING storage_path",
+    )
+    .bind(cid)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Delete every blob ownership row for an account and reclaim the physical rows that are left
+/// with no owner, inside the caller's transaction. Returns the deleted physical blobs as
+/// `(cid, storage_path)` pairs so the caller can unlink the files once the transaction commits.
+///
+/// The account-deletion counterpart to `blocks::delete_unowned_unprotected_blocks_in_tx`: a CID
+/// still owned by another account keeps its row and file.
+pub async fn delete_owners_and_unowned_blobs_in_tx(
+    tx: &mut SqliteTransaction<'_>,
+    account_did: &str,
+) -> Result<Vec<(String, String)>, sqlx::Error> {
+    let cids: Vec<String> = sqlx::query_scalar("SELECT cid FROM blob_owners WHERE account_did = ?")
+        .bind(account_did)
+        .fetch_all(&mut **tx)
+        .await?;
+    sqlx::query("DELETE FROM blob_owners WHERE account_did = ?")
+        .bind(account_did)
+        .execute(&mut **tx)
+        .await?;
+
+    let mut reclaimed = Vec::new();
+    // Batch to stay well under SQLite's bound-parameter limit.
+    for chunk in cids.chunks(500) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql = format!(
+            "DELETE FROM blobs \
+             WHERE cid IN ({placeholders}) \
+               AND NOT EXISTS (SELECT 1 FROM blob_owners o WHERE o.cid = blobs.cid) \
+             RETURNING cid, storage_path"
+        );
+        let mut q = sqlx::query_as::<_, (String, String)>(&sql);
+        for cid in chunk {
+            q = q.bind(cid);
+        }
+        reclaimed.extend(q.fetch_all(&mut **tx).await?);
+    }
+    Ok(reclaimed)
+}
+
+/// List blob CIDs owned by a DID with cursor-based pagination.
+///
+/// Returns up to `limit` CIDs (default 500, max 2000) for blobs the given DID owns a reference
+/// to. Results are ordered by CID (lexicographic). If `cursor` is provided, only CIDs
 /// strictly greater than the cursor are returned.
 pub async fn list_blob_cids(
     pool: &SqlitePool,
@@ -267,7 +433,8 @@ pub async fn list_blob_cids(
     match cursor {
         Some(cursor_cid) => {
             sqlx::query_scalar::<_, String>(
-                "SELECT cid FROM blobs WHERE account_did = ? AND cid > ? ORDER BY cid ASC LIMIT ?",
+                "SELECT cid FROM blob_owners WHERE account_did = ? AND cid > ? \
+                 ORDER BY cid ASC LIMIT ?",
             )
             .bind(account_did)
             .bind(cursor_cid)
@@ -277,7 +444,7 @@ pub async fn list_blob_cids(
         }
         None => {
             sqlx::query_scalar::<_, String>(
-                "SELECT cid FROM blobs WHERE account_did = ? ORDER BY cid ASC LIMIT ?",
+                "SELECT cid FROM blob_owners WHERE account_did = ? ORDER BY cid ASC LIMIT ?",
             )
             .bind(account_did)
             .bind(limit + 1)
@@ -298,18 +465,22 @@ mod tests {
         pool
     }
 
-    /// Insert a test account (required for the FK on account_did).
-    async fn insert_test_account(pool: &SqlitePool) -> String {
-        let did = "did:plc:testblob";
+    /// Insert a test account (required for the FK on blob_owners.account_did).
+    async fn insert_account(pool: &SqlitePool, did: &str) -> String {
         sqlx::query(
             "INSERT INTO accounts (did, email, password_hash, created_at, updated_at)
-             VALUES (?, 'blob@example.com', 'hash', datetime('now'), datetime('now'))",
+             VALUES (?, ?, 'hash', datetime('now'), datetime('now'))",
         )
         .bind(did)
+        .bind(format!("{did}@example.com"))
         .execute(pool)
         .await
         .unwrap();
         did.to_string()
+    }
+
+    async fn insert_test_account(pool: &SqlitePool) -> String {
+        insert_account(pool, "did:plc:testblob").await
     }
 
     #[tokio::test]
@@ -324,7 +495,7 @@ mod tests {
             "image/jpeg",
             1024,
             "blobs/ba/bafkreitest123",
-            "2026-01-01T12:00:00Z",
+            "2026-01-01 12:00:00",
         )
         .await
         .unwrap();
@@ -339,8 +510,13 @@ mod tests {
         assert_eq!(blob.mime_type, "image/jpeg");
         assert_eq!(blob.size_bytes, 1024);
         assert_eq!(blob.storage_path, "blobs/ba/bafkreitest123");
-        assert_eq!(blob.ref_count, 0);
-        assert!(blob.temp_until.is_some());
+
+        let owner = get_owner(&pool, &account_did, "bafkreitest123")
+            .await
+            .unwrap()
+            .expect("owner row must exist");
+        assert_eq!(owner.ref_count, 0);
+        assert!(owner.temp_until.is_some());
     }
 
     #[tokio::test]
@@ -351,139 +527,523 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mark_referenced_clears_temp_until() {
+    async fn second_uploader_gets_own_ownership_row() {
         let pool = test_pool().await;
-        let account_did = insert_test_account(&pool).await;
+        let a = insert_account(&pool, "did:plc:sharea").await;
+        let b = insert_account(&pool, "did:plc:shareb").await;
 
         insert_blob(
             &pool,
-            "bafkrieref",
-            &account_did,
+            "bafshared",
+            &a,
             "image/png",
-            512,
-            "blobs/ba/bafkrieref",
-            "2026-01-01T12:00:00Z",
+            64,
+            "p",
+            "2030-01-01 00:00:00",
+        )
+        .await
+        .unwrap();
+        insert_blob(
+            &pool,
+            "bafshared",
+            &b,
+            "image/png",
+            64,
+            "p",
+            "2030-06-01 00:00:00",
         )
         .await
         .unwrap();
 
-        let changed = mark_referenced(&pool, "bafkrieref").await.unwrap();
-        assert!(changed, "row must be updated");
+        // The physical row keeps the first uploader's diagnostics...
+        let blob = get_blob_by_cid(&pool, "bafshared").await.unwrap().unwrap();
+        assert_eq!(blob.account_did, a);
 
-        let blob = get_blob_by_cid(&pool, "bafkrieref").await.unwrap().unwrap();
-        assert_eq!(blob.ref_count, 1);
+        // ...but both accounts own a reference, each with its own grace clock.
+        let owner_a = get_owner(&pool, &a, "bafshared").await.unwrap().unwrap();
+        let owner_b = get_owner(&pool, &b, "bafshared").await.unwrap().unwrap();
+        assert_eq!(owner_a.temp_until.as_deref(), Some("2030-01-01 00:00:00"));
+        assert_eq!(owner_b.temp_until.as_deref(), Some("2030-06-01 00:00:00"));
+
+        // Both see the blob through the ownership-checked lookup.
+        assert!(get_owned_blob(&pool, &a, "bafshared")
+            .await
+            .unwrap()
+            .is_some());
+        assert!(get_owned_blob(&pool, &b, "bafshared")
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn get_owned_blob_hides_other_accounts_blob() {
+        let pool = test_pool().await;
+        let a = insert_account(&pool, "did:plc:ownedonly").await;
+        insert_account(&pool, "did:plc:notowner").await;
+
+        insert_blob(
+            &pool,
+            "bafowned",
+            &a,
+            "image/png",
+            8,
+            "p",
+            "2030-01-01 00:00:00",
+        )
+        .await
+        .unwrap();
+
+        assert!(get_owned_blob(&pool, &a, "bafowned")
+            .await
+            .unwrap()
+            .is_some());
+        assert!(get_owned_blob(&pool, "did:plc:notowner", "bafowned")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn reupload_refreshes_grace_clock_only_while_unreferenced() {
+        let pool = test_pool().await;
+        let did = insert_test_account(&pool).await;
+
+        insert_blob(
+            &pool,
+            "bafreup",
+            &did,
+            "image/png",
+            8,
+            "p",
+            "2020-01-01 00:00:00",
+        )
+        .await
+        .unwrap();
+
+        // Re-upload while unreferenced: the grace clock restarts.
+        insert_blob(
+            &pool,
+            "bafreup",
+            &did,
+            "image/png",
+            8,
+            "p",
+            "2040-01-01 00:00:00",
+        )
+        .await
+        .unwrap();
+        let owner = get_owner(&pool, &did, "bafreup").await.unwrap().unwrap();
+        assert_eq!(owner.temp_until.as_deref(), Some("2040-01-01 00:00:00"));
+
+        // Once referenced (permanent), a re-upload must NOT restart a countdown.
+        assert!(upsert_owner_referenced(&pool, &did, "bafreup", 1)
+            .await
+            .unwrap());
+        insert_blob(
+            &pool,
+            "bafreup",
+            &did,
+            "image/png",
+            8,
+            "p",
+            "2050-01-01 00:00:00",
+        )
+        .await
+        .unwrap();
+        let owner = get_owner(&pool, &did, "bafreup").await.unwrap().unwrap();
+        assert_eq!(owner.ref_count, 1);
         assert!(
-            blob.temp_until.is_none(),
-            "temp_until must be cleared after reference"
+            owner.temp_until.is_none(),
+            "referenced blob must stay permanent"
         );
     }
 
     #[tokio::test]
-    async fn mark_referenced_nonexistent_returns_false() {
+    async fn upsert_owner_referenced_sets_count_and_clears_temp() {
         let pool = test_pool().await;
-        let changed = mark_referenced(&pool, "bafkrinoexist").await.unwrap();
-        assert!(!changed);
-    }
-
-    #[tokio::test]
-    async fn delete_blob_removes_row() {
-        let pool = test_pool().await;
-        let account_did = insert_test_account(&pool).await;
+        let did = insert_test_account(&pool).await;
 
         insert_blob(
             &pool,
-            "bafkridel",
-            &account_did,
-            "image/gif",
-            256,
-            "blobs/ba/bafkridel",
-            "2026-01-01T12:00:00Z",
+            "bafkrisetref",
+            &did,
+            "image/png",
+            512,
+            "p",
+            "2026-01-01 12:00:00",
         )
         .await
         .unwrap();
 
-        let deleted = delete_blob(&pool, "bafkridel").await.unwrap();
-        assert!(deleted);
+        let changed = upsert_owner_referenced(&pool, &did, "bafkrisetref", 3)
+            .await
+            .unwrap();
+        assert!(changed);
 
-        let blob = get_blob_by_cid(&pool, "bafkridel").await.unwrap();
-        assert!(blob.is_none());
+        let owner = get_owner(&pool, &did, "bafkrisetref")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(owner.ref_count, 3);
+        assert!(owner.temp_until.is_none());
+
+        // Idempotent and a true no-op: setting the same count again must not report a
+        // change (so the GC's churn counter is not inflated) and keeps ref_count at 3.
+        let unchanged = upsert_owner_referenced(&pool, &did, "bafkrisetref", 3)
+            .await
+            .unwrap();
+        assert!(
+            !unchanged,
+            "re-setting the same state must report no change"
+        );
+        let owner = get_owner(&pool, &did, "bafkrisetref")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(owner.ref_count, 3);
     }
 
     #[tokio::test]
-    async fn list_expired_temps_finds_old_entries() {
+    async fn upsert_owner_referenced_adopts_unowned_blob() {
         let pool = test_pool().await;
-        let account_did = insert_test_account(&pool).await;
+        let a = insert_account(&pool, "did:plc:adopta").await;
+        let b = insert_account(&pool, "did:plc:adoptb").await;
 
-        // Insert a blob with temp_until in the past.
+        insert_blob(
+            &pool,
+            "bafadopt",
+            &a,
+            "image/png",
+            8,
+            "p",
+            "2030-01-01 00:00:00",
+        )
+        .await
+        .unwrap();
+        assert!(get_owner(&pool, &b, "bafadopt").await.unwrap().is_none());
+
+        // B's repo references the CID: the reconcile upsert creates B's ownership row.
+        assert!(upsert_owner_referenced(&pool, &b, "bafadopt", 2)
+            .await
+            .unwrap());
+        let owner = get_owner(&pool, &b, "bafadopt").await.unwrap().unwrap();
+        assert_eq!(owner.ref_count, 2);
+        assert!(owner.temp_until.is_none());
+    }
+
+    #[tokio::test]
+    async fn upsert_owner_referenced_ignores_non_blob_cids() {
+        let pool = test_pool().await;
+        let did = insert_test_account(&pool).await;
+
+        // A record cross-link that is not a blob: no physical row, so no adoption.
+        let changed = upsert_owner_referenced(&pool, &did, "bafyreinotablob", 1)
+            .await
+            .unwrap();
+        assert!(!changed);
+        assert!(get_owner(&pool, &did, "bafyreinotablob")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn list_expired_temp_owners_finds_old_entries() {
+        let pool = test_pool().await;
+        let did = insert_test_account(&pool).await;
+
         insert_blob(
             &pool,
             "bafkriexpired",
-            &account_did,
+            &did,
             "video/mp4",
             4096,
-            "blobs/ba/bafkriexpired",
-            "2020-01-01T00:00:00Z",
+            "p",
+            "2020-01-01 00:00:00",
         )
         .await
         .unwrap();
 
-        let expired = list_expired_temps(&pool).await.unwrap();
-        assert_eq!(expired.len(), 1);
-        assert_eq!(expired[0].cid, "bafkriexpired");
+        let expired = list_expired_temp_owners(&pool).await.unwrap();
+        assert_eq!(expired, vec![(did, "bafkriexpired".to_string())]);
     }
 
     #[tokio::test]
-    async fn list_expired_temps_skips_null_temp_until() {
+    async fn list_expired_temp_owners_skips_permanent_and_referenced() {
         let pool = test_pool().await;
-        let account_did = insert_test_account(&pool).await;
+        let did = insert_test_account(&pool).await;
 
-        // Insert a permanent blob (temp_until = NULL).
-        sqlx::query(
-            "INSERT INTO blobs (cid, account_did, mime_type, size_bytes, storage_path, temp_until)
-             VALUES ('bafkriperm', ?, 'image/png', 100, 'blobs/ba/bafkriperm', NULL)",
+        // A permanent reference (temp_until = NULL).
+        insert_blob(
+            &pool,
+            "bafkriperm",
+            &did,
+            "image/png",
+            100,
+            "p1",
+            "2020-01-01 00:00:00",
         )
-        .bind(&account_did)
+        .await
+        .unwrap();
+        upsert_owner_referenced(&pool, &did, "bafkriperm", 1)
+            .await
+            .unwrap();
+
+        // An expired temp_until but with a live reference must never be a deletion candidate.
+        insert_blob(
+            &pool,
+            "bafkrirefexp",
+            &did,
+            "image/png",
+            100,
+            "p2",
+            "2030-01-01 00:00:00",
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE blob_owners SET ref_count = 2, temp_until = '2020-01-01 00:00:00' \
+             WHERE account_did = ? AND cid = 'bafkrirefexp'",
+        )
+        .bind(&did)
         .execute(&pool)
         .await
         .unwrap();
 
-        let expired = list_expired_temps(&pool).await.unwrap();
+        let expired = list_expired_temp_owners(&pool).await.unwrap();
         assert!(expired.is_empty());
     }
 
     #[tokio::test]
-    async fn insert_duplicate_cid_is_idempotent() {
+    async fn list_expired_temp_owners_uses_sqlite_comparable_format() {
+        // Regression guard: temp_until must be stored in the same `YYYY-MM-DD HH:MM:SS` form
+        // SQLite's datetime('now') returns. A `T`/`Z` ISO form sorts lexicographically after
+        // the space-separated form, hiding same-day-expired blobs from this query.
         let pool = test_pool().await;
-        let account_did = insert_test_account(&pool).await;
+        let did = insert_test_account(&pool).await;
+
+        let past = (chrono::Utc::now() - chrono::Duration::minutes(5))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        insert_blob(&pool, "bafkripast", &did, "image/png", 1, "p1", &past)
+            .await
+            .unwrap();
+
+        let future = (chrono::Utc::now() + chrono::Duration::hours(1))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        insert_blob(&pool, "bafkrifuture", &did, "image/png", 1, "p2", &future)
+            .await
+            .unwrap();
+
+        let expired = list_expired_temp_owners(&pool).await.unwrap();
+        let cids: Vec<&str> = expired.iter().map(|(_, c)| c.as_str()).collect();
+        assert!(
+            cids.contains(&"bafkripast"),
+            "a same-day past deadline must be collected"
+        );
+        assert!(
+            !cids.contains(&"bafkrifuture"),
+            "a future deadline must not be collected"
+        );
+    }
+
+    #[tokio::test]
+    async fn release_owner_only_transitions_permanent_references() {
+        let pool = test_pool().await;
+        let did = insert_test_account(&pool).await;
 
         insert_blob(
             &pool,
-            "bafkridup",
-            &account_did,
-            "image/jpeg",
-            1024,
-            "blobs/ba/bafkridup",
-            "2026-01-01T12:00:00Z",
+            "bafkrirelease",
+            &did,
+            "image/png",
+            100,
+            "p",
+            "2030-01-01 00:00:00",
+        )
+        .await
+        .unwrap();
+        upsert_owner_referenced(&pool, &did, "bafkrirelease", 1)
+            .await
+            .unwrap();
+
+        let released = release_owner(&pool, &did, "bafkrirelease", "2030-01-01 00:00:00")
+            .await
+            .unwrap();
+        assert!(released);
+
+        let owner = get_owner(&pool, &did, "bafkrirelease")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(owner.ref_count, 0);
+        assert_eq!(owner.temp_until.as_deref(), Some("2030-01-01 00:00:00"));
+
+        // Second release must be a no-op: temp_until is already set, so the grace clock
+        // is not reset to a new value.
+        let released_again = release_owner(&pool, &did, "bafkrirelease", "2040-01-01 00:00:00")
+            .await
+            .unwrap();
+        assert!(!released_again);
+        let owner = get_owner(&pool, &did, "bafkrirelease")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(owner.temp_until.as_deref(), Some("2030-01-01 00:00:00"));
+    }
+
+    #[tokio::test]
+    async fn delete_expired_owner_recheck_spares_live_rows() {
+        let pool = test_pool().await;
+        let did = insert_test_account(&pool).await;
+
+        insert_blob(
+            &pool,
+            "bafkrialive",
+            &did,
+            "image/png",
+            1,
+            "p",
+            "2020-01-01 00:00:00",
+        )
+        .await
+        .unwrap();
+        // The reference was pinned after the candidate scan: the delete must not fire.
+        upsert_owner_referenced(&pool, &did, "bafkrialive", 1)
+            .await
+            .unwrap();
+        assert!(!delete_expired_owner(&pool, &did, "bafkrialive")
+            .await
+            .unwrap());
+
+        // A genuinely expired, unreferenced row is removed.
+        insert_blob(
+            &pool,
+            "bafkrigone",
+            &did,
+            "image/png",
+            1,
+            "p2",
+            "2020-01-01 00:00:00",
+        )
+        .await
+        .unwrap();
+        assert!(delete_expired_owner(&pool, &did, "bafkrigone")
+            .await
+            .unwrap());
+        assert!(get_owner(&pool, &did, "bafkrigone")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_blob_if_unowned_spares_shared_blob() {
+        let pool = test_pool().await;
+        let a = insert_account(&pool, "did:plc:sparea").await;
+        let b = insert_account(&pool, "did:plc:spareb").await;
+
+        insert_blob(
+            &pool,
+            "bafspare",
+            &a,
+            "image/png",
+            8,
+            "blobs/ba/bafspare",
+            "2020-01-01 00:00:00",
+        )
+        .await
+        .unwrap();
+        insert_blob(
+            &pool,
+            "bafspare",
+            &b,
+            "image/png",
+            8,
+            "blobs/ba/bafspare",
+            "2030-01-01 00:00:00",
         )
         .await
         .unwrap();
 
-        // Second insert with same CID — must succeed (upsert).
+        // A's reference expires and is removed; B still owns the CID → physical row stays.
+        assert!(delete_expired_owner(&pool, &a, "bafspare").await.unwrap());
+        assert!(delete_blob_if_unowned(&pool, "bafspare")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(get_blob_by_cid(&pool, "bafspare").await.unwrap().is_some());
+
+        // B's reference goes too → the physical row is reclaimed and its path returned.
+        sqlx::query("DELETE FROM blob_owners WHERE account_did = ? AND cid = 'bafspare'")
+            .bind(&b)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            delete_blob_if_unowned(&pool, "bafspare").await.unwrap(),
+            Some("blobs/ba/bafspare".to_string())
+        );
+        assert!(get_blob_by_cid(&pool, "bafspare").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_owners_and_unowned_blobs_spares_shared_cids() {
+        let pool = test_pool().await;
+        let a = insert_account(&pool, "did:plc:purgea").await;
+        let b = insert_account(&pool, "did:plc:purgeb").await;
+
         insert_blob(
             &pool,
-            "bafkridup",
-            &account_did,
-            "image/jpeg",
-            1024,
-            "blobs/ba/bafkridup",
-            "2026-01-01T12:00:00Z",
+            "bafsolo",
+            &a,
+            "image/png",
+            8,
+            "blobs/ba/bafsolo",
+            "2030-01-01 00:00:00",
+        )
+        .await
+        .unwrap();
+        insert_blob(
+            &pool,
+            "bafboth",
+            &a,
+            "image/png",
+            8,
+            "blobs/ba/bafboth",
+            "2030-01-01 00:00:00",
+        )
+        .await
+        .unwrap();
+        insert_blob(
+            &pool,
+            "bafboth",
+            &b,
+            "image/png",
+            8,
+            "blobs/ba/bafboth",
+            "2030-01-01 00:00:00",
         )
         .await
         .unwrap();
 
-        // Verify only one row exists.
-        let blob = get_blob_by_cid(&pool, "bafkridup").await.unwrap().unwrap();
-        assert_eq!(blob.ref_count, 0);
+        let mut tx = pool.begin().await.unwrap();
+        let mut reclaimed = delete_owners_and_unowned_blobs_in_tx(&mut tx, &a)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        reclaimed.sort();
+        assert_eq!(
+            reclaimed,
+            vec![("bafsolo".to_string(), "blobs/ba/bafsolo".to_string())],
+            "only the unshared blob is reclaimed"
+        );
+        assert!(get_owner(&pool, &a, "bafboth").await.unwrap().is_none());
+        assert!(get_blob_by_cid(&pool, "bafboth").await.unwrap().is_some());
+        assert!(get_blob_by_cid(&pool, "bafsolo").await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -499,7 +1059,7 @@ mod tests {
                 "image/jpeg",
                 100 * (i as i64 + 1),
                 &format!("blobs/ba/bafkristorage{i}"),
-                "2026-01-01T12:00:00Z",
+                "2026-01-01 12:00:00",
             )
             .await
             .unwrap();
@@ -507,6 +1067,39 @@ mod tests {
 
         let total = account_storage_bytes(&pool, &account_did).await.unwrap();
         assert_eq!(total, 100 + 200 + 300); // 600
+    }
+
+    #[tokio::test]
+    async fn account_storage_bytes_counts_shared_content_for_each_owner() {
+        let pool = test_pool().await;
+        let a = insert_account(&pool, "did:plc:quotaa").await;
+        let b = insert_account(&pool, "did:plc:quotab").await;
+
+        insert_blob(
+            &pool,
+            "bafquota",
+            &a,
+            "image/png",
+            500,
+            "p",
+            "2030-01-01 00:00:00",
+        )
+        .await
+        .unwrap();
+        insert_blob(
+            &pool,
+            "bafquota",
+            &b,
+            "image/png",
+            500,
+            "p",
+            "2030-01-01 00:00:00",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(account_storage_bytes(&pool, &a).await.unwrap(), 500);
+        assert_eq!(account_storage_bytes(&pool, &b).await.unwrap(), 500);
     }
 
     #[tokio::test]
@@ -534,7 +1127,7 @@ mod tests {
                 "image/jpeg",
                 100,
                 &format!("blobs/ba/bafkricount{i}"),
-                "2026-01-01T12:00:00Z",
+                "2026-01-01 12:00:00",
             )
             .await
             .unwrap();
@@ -564,7 +1157,7 @@ mod tests {
             "image/jpeg",
             100,
             "p1",
-            "2026-01-01T12:00:00Z",
+            "2026-01-01 12:00:00",
         )
         .await
         .unwrap();
@@ -575,7 +1168,7 @@ mod tests {
             "image/jpeg",
             9000,
             "p2",
-            "2026-01-01T12:00:00Z",
+            "2026-01-01 12:00:00",
         )
         .await
         .unwrap();
@@ -586,7 +1179,7 @@ mod tests {
             "image/jpeg",
             500,
             "p3",
-            "2026-01-01T12:00:00Z",
+            "2026-01-01 12:00:00",
         )
         .await
         .unwrap();
@@ -612,7 +1205,7 @@ mod tests {
             "image/jpeg",
             200,
             "p1",
-            "2026-01-01T12:00:00Z",
+            "2026-01-01 12:00:00",
         )
         .await
         .unwrap();
@@ -623,7 +1216,7 @@ mod tests {
             "image/jpeg",
             200,
             "p2",
-            "2026-01-01T12:00:00Z",
+            "2026-01-01 12:00:00",
         )
         .await
         .unwrap();
@@ -636,26 +1229,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_blobs_for_account_returns_owners_blobs() {
+    async fn list_gc_candidate_dids_unions_owners_and_repo_accounts() {
         let pool = test_pool().await;
-        let account_did = insert_test_account(&pool).await;
+        let uploader = insert_account(&pool, "did:plc:gcuploader").await;
+        let repo_only = insert_account(&pool, "did:plc:gcrepoonly").await;
+        insert_account(&pool, "did:plc:gcneither").await;
 
-        for i in 0..3 {
-            insert_blob(
-                &pool,
-                &format!("bafkriacct{i}"),
-                &account_did,
-                "image/jpeg",
-                100 * i as i64,
-                &format!("blobs/ba/bafkriacct{i}"),
-                "2026-01-01T12:00:00Z",
-            )
+        insert_blob(
+            &pool,
+            "bafgccand",
+            &uploader,
+            "image/png",
+            8,
+            "p",
+            "2030-01-01 00:00:00",
+        )
+        .await
+        .unwrap();
+        sqlx::query("UPDATE accounts SET repo_root_cid = 'bafyroot' WHERE did = ?")
+            .bind(&repo_only)
+            .execute(&pool)
             .await
             .unwrap();
-        }
 
-        let blobs = list_blobs_for_account(&pool, &account_did).await.unwrap();
-        assert_eq!(blobs.len(), 3);
+        let mut dids = list_gc_candidate_dids(&pool).await.unwrap();
+        dids.sort();
+        assert_eq!(dids, vec![repo_only, uploader]);
     }
 
     #[tokio::test]
@@ -671,7 +1270,7 @@ mod tests {
                 "image/jpeg",
                 100,
                 &format!("blobs/ba/bafkricid{i}"),
-                "2026-01-01T12:00:00Z",
+                "2026-01-01 12:00:00",
             )
             .await
             .unwrap();
@@ -707,7 +1306,7 @@ mod tests {
                 "image/jpeg",
                 100,
                 &format!("blobs/ba/bafkrilimit{i}"),
-                "2026-01-01T12:00:00Z",
+                "2026-01-01 12:00:00",
             )
             .await
             .unwrap();
@@ -731,7 +1330,7 @@ mod tests {
                 "image/jpeg",
                 100,
                 &format!("blobs/ba/bafkricursor{i}"),
-                "2026-01-01T12:00:00Z",
+                "2026-01-01 12:00:00",
             )
             .await
             .unwrap();
@@ -772,7 +1371,7 @@ mod tests {
             "image/jpeg",
             100,
             "blobs/ba/bafkriclamp",
-            "2026-01-01T12:00:00Z",
+            "2026-01-01 12:00:00",
         )
         .await
         .unwrap();
@@ -786,181 +1385,5 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(cids.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn list_expired_temps_skips_referenced_blobs() {
-        let pool = test_pool().await;
-        let account_did = insert_test_account(&pool).await;
-
-        // An expired temp_until but with a live reference must never be a deletion candidate.
-        sqlx::query(
-            "INSERT INTO blobs (cid, account_did, mime_type, size_bytes, storage_path, ref_count, temp_until)
-             VALUES ('bafkrirefexpired', ?, 'image/png', 100, 'blobs/ba/bafkrirefexpired', 2, '2020-01-01T00:00:00Z')",
-        )
-        .bind(&account_did)
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let expired = list_expired_temps(&pool).await.unwrap();
-        assert!(
-            expired.is_empty(),
-            "a referenced blob must not be returned even with an expired temp_until"
-        );
-    }
-
-    #[tokio::test]
-    async fn list_blob_owner_dids_returns_distinct() {
-        let pool = test_pool().await;
-        let account_did = insert_test_account(&pool).await;
-
-        for i in 0..2 {
-            insert_blob(
-                &pool,
-                &format!("bafkriowner{i}"),
-                &account_did,
-                "image/jpeg",
-                100,
-                &format!("blobs/ba/bafkriowner{i}"),
-                "2026-01-01T12:00:00Z",
-            )
-            .await
-            .unwrap();
-        }
-
-        let dids = list_blob_owner_dids(&pool).await.unwrap();
-        assert_eq!(dids, vec![account_did]);
-    }
-
-    #[tokio::test]
-    async fn set_blob_referenced_sets_count_and_clears_temp() {
-        let pool = test_pool().await;
-        let account_did = insert_test_account(&pool).await;
-
-        insert_blob(
-            &pool,
-            "bafkrisetref",
-            &account_did,
-            "image/png",
-            512,
-            "blobs/ba/bafkrisetref",
-            "2026-01-01T12:00:00Z",
-        )
-        .await
-        .unwrap();
-
-        let changed = set_blob_referenced(&pool, "bafkrisetref", 3).await.unwrap();
-        assert!(changed);
-
-        let blob = get_blob_by_cid(&pool, "bafkrisetref")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(blob.ref_count, 3);
-        assert!(blob.temp_until.is_none());
-
-        // Idempotent and a true no-op: setting the same count again must not report a
-        // change (so the GC's churn counter is not inflated) and keeps ref_count at 3.
-        let unchanged = set_blob_referenced(&pool, "bafkrisetref", 3).await.unwrap();
-        assert!(
-            !unchanged,
-            "re-setting the same state must report no change"
-        );
-        let blob = get_blob_by_cid(&pool, "bafkrisetref")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(blob.ref_count, 3);
-    }
-
-    #[tokio::test]
-    async fn list_expired_temps_uses_sqlite_comparable_format() {
-        // Regression guard: temp_until must be stored in the same `YYYY-MM-DD HH:MM:SS` form
-        // SQLite's datetime('now') returns. A `T`/`Z` ISO form sorts lexicographically after
-        // the space-separated form, hiding same-day-expired blobs from this query.
-        let pool = test_pool().await;
-        let account_did = insert_test_account(&pool).await;
-
-        let past = (chrono::Utc::now() - chrono::Duration::minutes(5))
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string();
-        insert_blob(
-            &pool,
-            "bafkripast",
-            &account_did,
-            "image/png",
-            1,
-            "blobs/ba/bafkripast",
-            &past,
-        )
-        .await
-        .unwrap();
-
-        let future = (chrono::Utc::now() + chrono::Duration::hours(1))
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string();
-        insert_blob(
-            &pool,
-            "bafkrifuture",
-            &account_did,
-            "image/png",
-            1,
-            "blobs/ba/bafkrifuture",
-            &future,
-        )
-        .await
-        .unwrap();
-
-        let expired = list_expired_temps(&pool).await.unwrap();
-        let cids: Vec<&str> = expired.iter().map(|b| b.cid.as_str()).collect();
-        assert!(
-            cids.contains(&"bafkripast"),
-            "a same-day past deadline must be collected"
-        );
-        assert!(
-            !cids.contains(&"bafkrifuture"),
-            "a future deadline must not be collected"
-        );
-    }
-
-    #[tokio::test]
-    async fn release_blob_only_transitions_permanent_blobs() {
-        let pool = test_pool().await;
-        let account_did = insert_test_account(&pool).await;
-
-        // A permanent, referenced blob (temp_until NULL, ref_count 1).
-        sqlx::query(
-            "INSERT INTO blobs (cid, account_did, mime_type, size_bytes, storage_path, ref_count, temp_until)
-             VALUES ('bafkrirelease', ?, 'image/png', 100, 'blobs/ba/bafkrirelease', 1, NULL)",
-        )
-        .bind(&account_did)
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let released = release_blob(&pool, "bafkrirelease", "2030-01-01T00:00:00Z")
-            .await
-            .unwrap();
-        assert!(released);
-
-        let blob = get_blob_by_cid(&pool, "bafkrirelease")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(blob.ref_count, 0);
-        assert_eq!(blob.temp_until.as_deref(), Some("2030-01-01T00:00:00Z"));
-
-        // Second release must be a no-op: temp_until is already set, so the grace clock
-        // is not reset to a new value.
-        let released_again = release_blob(&pool, "bafkrirelease", "2040-01-01T00:00:00Z")
-            .await
-            .unwrap();
-        assert!(!released_again);
-        let blob = get_blob_by_cid(&pool, "bafkrirelease")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(blob.temp_until.as_deref(), Some("2030-01-01T00:00:00Z"));
     }
 }

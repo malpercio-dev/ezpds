@@ -2,22 +2,26 @@
 //
 //! Blob garbage collection.
 //!
-//! A periodic background task that reclaims blobs no other part of the system needs. It runs
-//! in two phases on each pass:
+//! A periodic background task that reclaims blobs no other part of the system needs. Blob
+//! ownership is per-account (`blob_owners`, V039) over globally content-addressed bytes, so the
+//! collector works reference-by-reference and touches the shared file only when the last owner
+//! is gone. It runs in two phases on each pass:
 //!
-//! 1. **Reconcile** — for every repo that owns blobs, recompute which blob CIDs its records
-//!    actually reference (by walking the MST) and write that truth back to the `blobs` table:
-//!    referenced blobs become permanent (`ref_count` set, `temp_until` cleared); a blob that
-//!    has lost its last reference is *released* — its grace clock (`temp_until`) starts.
-//! 2. **Sweep** — delete every blob whose grace period has expired and which nothing
-//!    references (`temp_until < now AND ref_count = 0`), removing both the filesystem file and
-//!    the SQLite row.
+//! 1. **Reconcile** — for every account that owns a blob reference *or has a repo*, recompute
+//!    which blob CIDs its records actually reference (by walking the MST) and write that truth
+//!    back to `blob_owners`: referenced blobs get a permanent ownership row (`ref_count` set,
+//!    `temp_until` cleared — created on the spot if the account references a stored blob it
+//!    never uploaded, which also heals pre-V039 rows that credited only the first uploader);
+//!    a reference that has lost its last record is *released* — its grace clock starts.
+//! 2. **Sweep** — delete every ownership row whose grace period has expired and which the
+//!    account no longer references (`temp_until < now AND ref_count = 0`); when a CID's last
+//!    ownership row goes, delete the physical metadata row and the filesystem file.
 //!
 //! Recomputing references from the MST each pass makes the collector authoritative rather than
-//! trusting an incrementally maintained counter: a blob that is still reachable from a repo
+//! trusting an incrementally maintained counter: a blob that is still reachable from any repo
 //! record is never deleted, and a blob that fell out of every record is eventually collected
-//! even if some earlier decrement was missed. The grace period means a blob is only ever
-//! deleted on a *later* pass than the one that released it, leaving a window for in-flight
+//! even if some earlier decrement was missed. The grace period means a reference is only ever
+//! expired on a *later* pass than the one that released it, leaving a window for in-flight
 //! uploads and writes.
 
 use std::collections::HashMap;
@@ -28,7 +32,7 @@ use tokio::task::JoinHandle;
 use crate::app::AppState;
 use crate::blob_store;
 use crate::db::accounts;
-use crate::db::blobs::{self, BlobRow};
+use crate::db::blobs;
 use crate::db::blocks::SqliteBlockStore;
 use repo_engine::{Cid, Repository};
 
@@ -52,11 +56,13 @@ pub enum GcError {
 /// Tally of what one garbage-collection pass did, for logging and tests.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct GcStats {
-    /// Blobs confirmed still referenced and (re)marked permanent.
+    /// Ownership rows confirmed still referenced and (re)marked permanent (or newly adopted).
     pub reconciled: u64,
-    /// Blobs that lost their last reference this pass and started their grace clock.
+    /// Ownership rows that lost their last reference this pass and started their grace clock.
     pub released: u64,
-    /// Blobs deleted (filesystem file + SQLite row).
+    /// Expired ownership rows removed this pass.
+    pub expired: u64,
+    /// Physical blobs deleted (filesystem file + SQLite row) after their last owner expired.
     pub deleted: u64,
     /// Accounts or blobs skipped due to an error.
     pub errors: u64,
@@ -79,22 +85,24 @@ pub fn spawn_blob_gc(state: AppState, interval: Duration) -> JoinHandle<()> {
     })
 }
 
-/// Run a single garbage-collection pass over every repo that owns blobs.
+/// Run a single garbage-collection pass over every account that owns blobs or has a repo.
 ///
 /// Resilient by design: an error reconciling one account, or deleting one blob, is logged and
-/// counted in [`GcStats::errors`] but does not stop the pass.
+/// counted in [`GcStats::errors`] but does not stop the pass. Reconciling (which adopts
+/// referenced-but-unowned blobs into `blob_owners`) always runs before the sweep, so a
+/// reference discovered this pass is protected before any file can be reclaimed.
 pub async fn run_blob_gc(state: &AppState) -> GcStats {
     let mut stats = GcStats::default();
 
-    // Phase 1: reconcile each repo's blob references against its MST.
-    let owner_dids = match blobs::list_blob_owner_dids(&state.db).await {
+    // Phase 1: reconcile each account's blob references against its MST.
+    let candidate_dids = match blobs::list_gc_candidate_dids(&state.db).await {
         Ok(dids) => dids,
         Err(e) => {
-            tracing::error!(error = %e, "blob GC: failed to list blob owners; skipping pass");
+            tracing::error!(error = %e, "blob GC: failed to list candidate accounts; skipping pass");
             return stats;
         }
     };
-    for did in owner_dids {
+    for did in candidate_dids {
         match reconcile_account(state, &did).await {
             Ok((reconciled, released)) => {
                 stats.reconciled += reconciled;
@@ -107,26 +115,31 @@ pub async fn run_blob_gc(state: &AppState) -> GcStats {
         }
     }
 
-    // Phase 2: sweep blobs whose grace period has expired and which nothing references.
-    match blobs::list_expired_temps(&state.db).await {
+    // Phase 2: sweep ownership rows whose grace period has expired; reclaim the physical row
+    // and file once a CID's last owner is gone.
+    match blobs::list_expired_temp_owners(&state.db).await {
         Ok(expired) => {
-            for blob in expired {
-                match delete_blob_fully(state, &blob).await {
-                    Ok(()) => stats.deleted += 1,
+            for (did, cid) in expired {
+                match sweep_expired_owner(state, &did, &cid).await {
+                    Ok((owner_expired, file_deleted)) => {
+                        stats.expired += u64::from(owner_expired);
+                        stats.deleted += u64::from(file_deleted);
+                    }
                     Err(e) => {
                         stats.errors += 1;
-                        tracing::warn!(error = %e, cid = %blob.cid, "blob GC: failed to delete expired blob");
+                        tracing::warn!(error = %e, did = %did, cid = %cid, "blob GC: failed to sweep expired blob reference");
                     }
                 }
             }
         }
-        Err(e) => tracing::error!(error = %e, "blob GC: failed to list expired blobs"),
+        Err(e) => tracing::error!(error = %e, "blob GC: failed to list expired blob references"),
     }
 
-    if stats.deleted > 0 || stats.released > 0 || stats.errors > 0 {
+    if stats.deleted > 0 || stats.expired > 0 || stats.released > 0 || stats.errors > 0 {
         tracing::info!(
             reconciled = stats.reconciled,
             released = stats.released,
+            expired = stats.expired,
             deleted = stats.deleted,
             errors = stats.errors,
             "blob GC pass complete"
@@ -150,39 +163,41 @@ pub async fn run_blob_gc(state: &AppState) -> GcStats {
     stats
 }
 
-/// Reconcile one account's blobs against the references in its repo.
+/// Reconcile one account's blob ownership rows against the references in its repo.
 ///
-/// Returns `(reconciled, released)`: the number of blobs (re)marked permanent and the number
-/// that transitioned from permanent to temporary (lost their last reference) this pass.
+/// Returns `(reconciled, released)`: the number of ownership rows (re)marked permanent —
+/// created on the spot when the account references a stored blob it has no row for — and the
+/// number that transitioned from permanent to temporary (lost their last reference) this pass.
 async fn reconcile_account(state: &AppState, did: &str) -> Result<(u64, u64), GcError> {
     let referenced = collect_referenced_blob_cids(state, did).await?;
-    let owned = blobs::list_blobs_for_account(&state.db, did).await?;
+    let owned = blobs::list_owned_blobs(&state.db, did).await?;
 
-    // A fresh grace deadline for blobs that lose their last reference this pass.
+    // A fresh grace deadline for references that lose their last record this pass.
     // Format must match SQLite's `datetime('now')` (`YYYY-MM-DD HH:MM:SS`): `temp_until` is
     // stored as TEXT and compared lexicographically, so a `T`/`Z` ISO form would sort after
-    // the space-separated form and hide same-day deadlines from `list_expired_temps`.
+    // the space-separated form and hide same-day deadlines from `list_expired_temp_owners`.
     let grace =
         chrono::Utc::now() + chrono::Duration::seconds(state.config.blobs.temp_ttl_secs as i64);
     let grace_str = grace.format("%Y-%m-%d %H:%M:%S").to_string();
 
     let mut reconciled = 0;
     let mut released = 0;
-    for blob in owned {
-        match referenced.get(&blob.cid).copied() {
-            Some(n) if n > 0 => {
-                // Still referenced: pin it permanent with the true reference count.
-                if blobs::set_blob_referenced(&state.db, &blob.cid, n).await? {
-                    reconciled += 1;
-                }
-            }
-            _ => {
-                // No record references it. If it was permanent, start its grace clock;
-                // a blob already counting down (temp_until set) is left to expire.
-                if blobs::release_blob(&state.db, &blob.cid, &grace_str).await? {
-                    released += 1;
-                }
-            }
+
+    // Every CID this account's records reference: pin (or adopt) it permanent with the true
+    // count. Non-blob CID links in the reference walk are no-ops (no physical `blobs` row).
+    for (cid, n) in &referenced {
+        if blobs::upsert_owner_referenced(&state.db, did, cid, *n).await? {
+            reconciled += 1;
+        }
+    }
+
+    // Every owned reference no record uses any longer: if it was permanent, start its grace
+    // clock; a reference already counting down (temp_until set) is left to expire.
+    for owner in owned {
+        if !referenced.contains_key(&owner.cid)
+            && blobs::release_owner(&state.db, did, &owner.cid, &grace_str).await?
+        {
+            released += 1;
         }
     }
 
@@ -270,32 +285,42 @@ fn collect_blob_links(value: &serde_json::Value, out: &mut HashMap<String, i64>)
     }
 }
 
-/// Delete a blob entirely: remove its filesystem file, then its SQLite row.
+/// Sweep one expired ownership row, reclaiming the physical blob when it was the last owner.
 ///
-/// A missing file is tolerated (the delete is idempotent) but logged, since file and row are
-/// expected to stay in lockstep. The row is removed only after the file delete succeeds.
-async fn delete_blob_fully(state: &AppState, blob: &BlobRow) -> Result<(), GcError> {
-    let existed = blob_store::delete_blob_file(&state.config.data_dir, &blob.storage_path)
+/// Returns `(owner_expired, file_deleted)`. The ownership delete re-checks the expiry
+/// conditions (a reference re-pinned since the candidate scan survives), and the physical
+/// delete checks for remaining owners in the same statement that removes the row, so a CID
+/// another account still owns is never touched. The file is unlinked only after its row is
+/// gone: the DB is the source of truth, and that ordering's failure mode is an orphaned file
+/// (a benign leak, logged), never a live row pointing at deleted bytes.
+async fn sweep_expired_owner(
+    state: &AppState,
+    did: &str,
+    cid: &str,
+) -> Result<(bool, bool), GcError> {
+    if !blobs::delete_expired_owner(&state.db, did, cid).await? {
+        return Ok((false, false));
+    }
+    tracing::debug!(cid = %cid, did = %did, "blob GC: expired blob reference removed");
+
+    let Some(storage_path) = blobs::delete_blob_if_unowned(&state.db, cid).await? else {
+        // Another account still owns the CID; its bytes stay.
+        return Ok((true, false));
+    };
+
+    let existed = blob_store::delete_blob_file(&state.config.data_dir, &storage_path)
         .await
         .map_err(|e| GcError::BlobStore(format!("delete blob file: {e}")))?;
     if !existed {
         tracing::warn!(
-            cid = %blob.cid,
-            path = %blob.storage_path,
-            "blob GC: file already absent on disk; removing row anyway"
+            cid = %cid,
+            path = %storage_path,
+            "blob GC: file already absent on disk; row already removed"
         );
     }
 
-    blobs::delete_blob(&state.db, &blob.cid).await?;
-
-    tracing::info!(
-        cid = %blob.cid,
-        did = %blob.account_did,
-        size = blob.size_bytes,
-        "blob GC: deleted unreferenced blob"
-    );
-
-    Ok(())
+    tracing::info!(cid = %cid, "blob GC: deleted unreferenced blob");
+    Ok((true, true))
 }
 
 #[cfg(test)]
@@ -484,6 +509,7 @@ mod tests {
 
         let stats = run_blob_gc(&state).await;
         assert_eq!(stats.deleted, 1, "exactly the orphan blob is deleted");
+        assert_eq!(stats.expired, 1, "only the orphan's ownership row expired");
         assert_eq!(stats.errors, 0);
 
         // The sweep's instruments fire: the deletion is counted and the pass is timestamped.
@@ -498,10 +524,14 @@ mod tests {
         );
 
         // Referenced blob: pinned permanent, file intact.
-        let kept = blobs::get_blob_by_cid(&state.db, &referenced)
+        assert!(blobs::get_blob_by_cid(&state.db, &referenced)
             .await
             .unwrap()
-            .expect("referenced blob must survive");
+            .is_some());
+        let kept = blobs::get_owner(&state.db, did, &referenced)
+            .await
+            .unwrap()
+            .expect("referenced blob's ownership row must survive");
         assert_eq!(kept.ref_count, 1);
         assert!(
             kept.temp_until.is_none(),
@@ -527,7 +557,7 @@ mod tests {
         let cid = add_blob(&state, did, b"soon to be orphaned", "2020-01-01T00:00:00Z").await;
         write_record(&state, did, "app.bsky.feed.post/1", blob_record(&cid)).await;
         run_blob_gc(&state).await;
-        assert!(blobs::get_blob_by_cid(&state.db, &cid)
+        assert!(blobs::get_owner(&state.db, did, &cid)
             .await
             .unwrap()
             .unwrap()
@@ -539,7 +569,7 @@ mod tests {
         let stats = run_blob_gc(&state).await;
         assert_eq!(stats.released, 1);
         assert_eq!(stats.deleted, 0, "still within grace period");
-        let released = blobs::get_blob_by_cid(&state.db, &cid)
+        let released = blobs::get_owner(&state.db, did, &cid)
             .await
             .unwrap()
             .unwrap();
@@ -548,7 +578,7 @@ mod tests {
         assert!(blob_file_exists(&state, &cid), "file kept during grace");
 
         // Force the grace clock into the past; the next pass deletes the blob.
-        sqlx::query("UPDATE blobs SET temp_until = '2020-01-01T00:00:00Z' WHERE cid = ?")
+        sqlx::query("UPDATE blob_owners SET temp_until = '2020-01-01T00:00:00Z' WHERE cid = ?")
             .bind(&cid)
             .execute(&state.db)
             .await
@@ -567,5 +597,95 @@ mod tests {
         let (state, _dir) = gc_state().await;
         let stats = run_blob_gc(&state).await;
         assert_eq!(stats, GcStats::default());
+    }
+
+    /// Two accounts upload the same bytes; only B references them. A's expired
+    /// reference must never destroy the file B's record still links.
+    #[tokio::test]
+    async fn gc_keeps_shared_blob_while_any_owner_references_it() {
+        let (state, _dir) = gc_state().await;
+        let did_a = "did:plc:gcshare-a";
+        let did_b = "did:plc:gcshare-b";
+        seed_account_with_repo(&state.db, did_a).await;
+        seed_account_with_repo(&state.db, did_b).await;
+
+        // Both upload identical bytes; A's grace clock is already expired, B references it.
+        let cid = add_blob(&state, did_a, b"shared blob bytes", "2020-01-01T00:00:00Z").await;
+        let cid_b = add_blob(&state, did_b, b"shared blob bytes", "2020-01-01T00:00:00Z").await;
+        assert_eq!(cid, cid_b, "same content must produce the same CID");
+        write_record(&state, did_b, "app.bsky.feed.post/1", blob_record(&cid)).await;
+
+        let stats = run_blob_gc(&state).await;
+        assert_eq!(stats.expired, 1, "A's unreferenced ownership row expires");
+        assert_eq!(stats.deleted, 0, "the shared file must survive");
+        assert_eq!(stats.errors, 0);
+
+        assert!(
+            blobs::get_owner(&state.db, did_a, &cid)
+                .await
+                .unwrap()
+                .is_none(),
+            "A's expired reference is gone"
+        );
+        let owner_b = blobs::get_owner(&state.db, did_b, &cid)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(owner_b.ref_count, 1);
+        assert!(owner_b.temp_until.is_none(), "B's reference is permanent");
+        assert!(blobs::get_blob_by_cid(&state.db, &cid)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(
+            blob_file_exists(&state, &cid),
+            "B's referenced file must survive"
+        );
+
+        // Once B's record goes too, the blob is released, expires, and only then is deleted.
+        delete_record(&state, did_b, "app.bsky.feed.post/1").await;
+        run_blob_gc(&state).await;
+        sqlx::query("UPDATE blob_owners SET temp_until = '2020-01-01T00:00:00Z' WHERE cid = ?")
+            .bind(&cid)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let stats = run_blob_gc(&state).await;
+        assert_eq!(stats.deleted, 1);
+        assert!(!blob_file_exists(&state, &cid));
+    }
+
+    /// Pre-V039 implicit sharing: B's record references a stored blob B has no ownership row
+    /// for (the old single-owner row credited A). The reconcile pass must adopt the reference
+    /// into `blob_owners` before any sweep can reclaim the file.
+    #[tokio::test]
+    async fn gc_adopts_referenced_blob_the_account_never_uploaded() {
+        let (state, _dir) = gc_state().await;
+        let did_a = "did:plc:gcadopt-a";
+        let did_b = "did:plc:gcadopt-b";
+        seed_account_with_repo(&state.db, did_a).await;
+        seed_account_with_repo(&state.db, did_b).await;
+
+        // Only A holds an (expired, unreferenced) ownership row; B references the CID.
+        let cid = add_blob(
+            &state,
+            did_a,
+            b"implicitly shared bytes",
+            "2020-01-01T00:00:00Z",
+        )
+        .await;
+        write_record(&state, did_b, "app.bsky.feed.post/1", blob_record(&cid)).await;
+
+        let stats = run_blob_gc(&state).await;
+        assert_eq!(stats.deleted, 0, "adoption must beat the sweep");
+        assert_eq!(stats.errors, 0);
+
+        let owner_b = blobs::get_owner(&state.db, did_b, &cid)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(owner_b.ref_count, 1);
+        assert!(owner_b.temp_until.is_none());
+        assert!(blob_file_exists(&state, &cid), "adopted file must survive");
     }
 }

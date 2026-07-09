@@ -19,13 +19,13 @@ src/
   firehose.rs      — persistent subscribeRepos event pipeline (durable sequencer + broadcast fan-out)
   firehose_gc.rs   — periodic `repo_seq` retention sweep (age/count pruning below the live frontier)
   blob_store.rs    — blob storage backend: filesystem I/O, CID computation, MIME-type detection; blobs live at `{data_dir}/blobs/{cid[0:2]}/{cid}`
-  blob_gc.rs       — periodic blob GC: reconciles each repo's MST-referenced blobs into the `blobs` table (permanent vs released-with-grace), then sweeps blobs whose grace period elapsed and are still unreferenced
+  blob_gc.rs       — periodic blob GC over per-account ownership rows (`blob_owners`, V039): reconciles each account's MST-referenced blobs into its ownership rows (permanent vs released-with-grace, adopting referenced-but-unowned stored CIDs), then sweeps expired unreferenced rows — the shared physical row + file are deleted only when the last owner is gone
   crawler.rs       — outbound requestCrawl notifier (rate-limited, retrying, fire-and-forget)
   email.rs         — pluggable outbound email sender (`Arc<dyn EmailSender>` in AppState): `LogEmailSender` (default; logs instead of sending — keeps tests/fresh installs offline) + `SmtpEmailSender` (real delivery via `lettre`, rustls). Backs the password-reset / email-confirmation / email-update / PLC-op / account-delete token deliveries. Configured by `[email]` in `pds.toml` / `EZPDS_EMAIL_*`
   rate_limit.rs    — request rate-limiting middleware + shared limiter state (global IP, per-endpoint IP, per-account write points)
   iroh_tunnel.rs   — Iroh QUIC endpoint: NAT-traversing device↔pds tunnel (opt-in)
   record_write.rs  — shared repo write flow + firehose commit emission
-  account_delete.rs— shared permanent account-deletion transaction (all child tables in FK order — there is no ON DELETE CASCADE — plus on-disk blob reclamation and an `#account` deleted frame), used by deleteAccount and the reaper
+  account_delete.rs— shared permanent account-deletion transaction (all child tables in FK order — no account-keyed FK cascades exist — plus on-disk reclamation of blob files no other account owns and an `#account` deleted frame), used by deleteAccount and the reaper
   account_reaper.rs— periodic sweep that permanently deletes deactivated accounts past their `deleteAfter` (template: firehose_gc.rs)
   genesis.rs       — shared did:plc genesis-op machinery (verify/validate, DID-doc + CAR builders, plc.directory POST), used by both create_did.rs and create_account_xrpc.rs
   plc_ops.rs       — shared did:plc rotation/update-op machinery for the interop PLC-signing surface: fetch a DID's current PLC state (audit-log GET), render a DID doc from op fields, parse request verificationMethods/services; used by the identity.*PlcOperation routes
@@ -231,7 +231,7 @@ and async query functions; no business logic lives here.
 | `handles.rs` | `handles` table (V002): `resolve_handle` (handle→DID local lookup, shared by `updateHandle`/`deleteHandle`/`.well-known/atproto-did`), `insert_handle` (+ `InsertHandleOutcome`, UNIQUE→`HandleTaken`, for `createHandle`). `updateHandle`'s atomic DELETE-then-INSERT swap and `deleteHandle`'s DNS-ordered delete stay in their route handlers |
 | `dids.rs` | `did_documents` table (V002) cache queries: `get_did_document`/`did_document_exists` (cached DID-doc lookup/existence probe), `fetch_also_known_as` (a DID's handles rendered as `at://<handle>` for the doc's `alsoKnownAs` array) + `update_also_known_as` (read-modify-write that field back into the stored document) |
 | `blocks.rs` | content-addressed repo-block byte store + per-account `block_owners` metadata, `SqliteBlockStore` adapter; `account_block_stats` (owned block refs, total referenced bytes, distinct-rev commit count for the usage endpoint) |
-| `blobs.rs` | blob metadata store; `account_storage_bytes`, `account_blob_metrics`, `account_largest_blob` (blob-storage metrics) |
+| `blobs.rs` | blob metadata store: physical `blobs` rows (bytes metadata once per CID) + per-account `blob_owners` lifecycle rows (V039, mirroring `block_owners`); `account_storage_bytes`, `account_blob_metrics`, `account_largest_blob` (blob-storage metrics, per owner) |
 | `oauth.rs` | OAuth client lookup, auth code storage, token management |
 | `password_reset.rs` | `insert_reset_token`, `get_reset_token`, `mark_reset_token_used`, `update_password_hash` |
 | `plc_operation_tokens.rs` | PLC-operation email-token store (V033): `insert_plc_operation_token` (1-hour TTL) + `consume_plc_operation_token` (atomic single-use, bound to `(token_hash, did)`), gating `signPlcOperation` on the interop migration path |
@@ -310,7 +310,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `get_device_pds.rs` | `GET /v1/devices/:id/pds` |
 | `describe_server.rs` | `GET /xrpc/com.atproto.server.describeServer` |
 | `upload_blob.rs` | `POST /xrpc/com.atproto.repo.uploadBlob` — size check → `blob_store::store_blob` on the filesystem → insert blob metadata; returns `{ blob: { $type, ref, mimeType, size } }` |
-| `get_blob.rs` | `GET /xrpc/com.atproto.sync.getBlob` — look up blob metadata by `(did, cid)`, verify DID ownership, stream the raw bytes back with the stored `Content-Type` |
+| `get_blob.rs` | `GET /xrpc/com.atproto.sync.getBlob` — look up blob metadata via the DID's `blob_owners` row (the same CID may be owned by several accounts), stream the raw bytes back with the stored `Content-Type` |
 | `sync_get_blocks.rs` | `GET /xrpc/com.atproto.sync.getBlocks` — return requested repo blocks (MST nodes/records) by CID as a rootless CAR (empty `roots`, matching the reference PDS); a CID owned by a different account reads as `BlockNotFound` |
 | `sync_get_latest_commit.rs` | `GET /xrpc/com.atproto.sync.getLatestCommit` — report the current commit CID and rev for a repo |
 | `sync_get_record.rs` | `GET /xrpc/com.atproto.sync.getRecord` — export a single record with its MST proof as a CAR: a present record yields a 200 inclusion proof, an absent record in an existing repo yields a 200 exclusion proof; only an unknown DID/account 404s |
