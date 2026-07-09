@@ -78,13 +78,18 @@ urls = []
 # claim_token_ttl_secs = 600        # lifetime of a claim token
 # user_code_ttl_secs = 600          # lifetime of a claim-ceremony user code
 # auth_time_max_age_secs = 3600     # ID-JAG auth_time older than this → login_required
+# jwks_cache_ttl_secs = 3600        # how long a fetched issuer JWKS (jwks_url) is reused
 # granted_scopes = ["atproto", "repo:*?action=create&action=update", "blob:*/*"]
 #   # conservative granular default; do NOT add account:*/identity:*/transition:generic unless you
 #   # intend agents to hold account-lifecycle control (see AgentAuthConfig docs)
 # verification_uri = "https://example.com/agent/claim"  # defaults to {public_url}/agent/claim
 #
 # identity_assertion issuer trust list — an ID-JAG whose `iss` is not listed is refused with
-# issuer_not_enabled. Repeat the block per issuer.
+# issuer_not_enabled. Repeat the block per issuer. Each entry supplies the issuer's verification
+# key EXACTLY ONE of two ways: an inline `public_key_pem` (static trust) OR an https `jwks_url`
+# the relay fetches and caches, selecting the key by the ID-JAG's `kid` header (dynamic trust).
+#
+# Static-trust issuer (inline PEM):
 # [[agent_auth.trusted_issuers]]
 # issuer = "https://issuer.example.com"
 # audience = "https://your-pds.example.com"   # optional; defaults to public_url
@@ -94,3 +99,9 @@ urls = []
 # ...
 # -----END PUBLIC KEY-----
 # """
+#
+# Dynamic-trust issuer (fetched JWKS):
+# [[agent_auth.trusted_issuers]]
+# issuer = "https://issuer.example.com"
+# algorithm = "ES256"                          # expected ID-JAG alg
+# jwks_url = "https://issuer.example.com/.well-known/jwks.json"  # https only

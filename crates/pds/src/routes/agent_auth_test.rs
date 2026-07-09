@@ -124,7 +124,8 @@ fn trusted(issuer: &str, public_key_pem: String) -> TrustedIssuer {
     TrustedIssuer {
         issuer: issuer.to_string(),
         audience: None,
-        public_key_pem,
+        public_key_pem: Some(public_key_pem),
+        jwks_url: None,
         algorithm: "ES256".to_string(),
     }
 }

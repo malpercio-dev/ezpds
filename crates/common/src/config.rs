@@ -360,8 +360,11 @@ pub struct OAuthConfig {}
 ///   identity yet — and receive a pre-claim assertion plus a `claim_token` for an optional later
 ///   claim ceremony).
 /// - `trusted_issuers` gates `identity_assertion`: an ID-JAG whose `iss` is not listed is refused
-///   with `issuer_not_enabled`. Each entry carries the issuer's verification key inline (PEM). The
-///   dynamic JWKS-URL form of the trust list is a separate follow-up.
+///   with `issuer_not_enabled`. Each entry supplies the issuer's verification key one of two ways:
+///   an inline `public_key_pem` (static trust) or a `jwks_url` the relay fetches and caches
+///   (dynamic trust, so a rotating issuer key set is picked up without a config edit). Exactly one
+///   of the two per entry.
+/// - `jwks_cache_ttl_secs` bounds how long a fetched issuer JWKS is reused before it is re-fetched.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentAuthConfig {
     /// Enable the `service_auth` registration flow. Default `false`.
@@ -412,6 +415,11 @@ pub struct AgentAuthConfig {
     /// be > 0 (like the GC intervals, a zero period would panic `tokio::time::interval`).
     #[serde(default = "default_agent_claim_sweep_interval_secs")]
     pub claim_sweep_interval_secs: u64,
+    /// TTL, in seconds, of a fetched issuer JWKS before it is re-fetched (dynamic `jwks_url`
+    /// trust). A rotated key whose `kid` isn't in the cached set triggers an immediate re-fetch, so
+    /// this only bounds how long a *removed* key stays trusted. Default 3600 (1 hour).
+    #[serde(default = "default_agent_jwks_cache_ttl_secs")]
+    pub jwks_cache_ttl_secs: u64,
 }
 
 impl Default for AgentAuthConfig {
@@ -428,16 +436,22 @@ impl Default for AgentAuthConfig {
             pre_claim_scopes: default_agent_granted_scopes(),
             verification_uri: None,
             claim_sweep_interval_secs: default_agent_claim_sweep_interval_secs(),
+            jwks_cache_ttl_secs: default_agent_jwks_cache_ttl_secs(),
         }
     }
 }
 
 /// One entry in the `identity_assertion` issuer trust list.
 ///
-/// `public_key_pem` is the issuer's public key (PEM) used to verify ID-JAG signatures; `algorithm`
-/// names the JWS algorithm (`ES256` by default, also `RS256`/`EdDSA` and their larger cousins).
-/// `audience`, when set, overrides the expected `aud` claim (which otherwise defaults to this
-/// server's `public_url`).
+/// The issuer's verification key is supplied one of two ways — **exactly one** per entry, enforced
+/// at config load:
+/// - `public_key_pem`: the issuer's public key inline (static trust).
+/// - `jwks_url`: an `https` JWKS endpoint the relay fetches and caches, selecting the key by the
+///   ID-JAG's `kid` header (dynamic trust — a rotating issuer key set needs no config edit).
+///
+/// `algorithm` names the expected JWS algorithm (`ES256` by default, also `RS256`/`EdDSA` and their
+/// larger cousins). `audience`, when set, overrides the expected `aud` claim (which otherwise
+/// defaults to this server's `public_url`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct TrustedIssuer {
     /// Exact `iss` claim value this entry matches.
@@ -445,8 +459,14 @@ pub struct TrustedIssuer {
     /// Expected `aud` claim. `None` → the server's `public_url`.
     #[serde(default)]
     pub audience: Option<String>,
-    /// PEM-encoded public key used to verify the ID-JAG signature.
-    pub public_key_pem: String,
+    /// PEM-encoded public key used to verify the ID-JAG signature (static trust). Mutually
+    /// exclusive with `jwks_url`.
+    #[serde(default)]
+    pub public_key_pem: Option<String>,
+    /// `https` JWKS endpoint the relay fetches and caches to verify the ID-JAG (dynamic trust).
+    /// Mutually exclusive with `public_key_pem`.
+    #[serde(default)]
+    pub jwks_url: Option<String>,
     /// JWS algorithm of the ID-JAG. Default `ES256`.
     #[serde(default = "default_idjag_algorithm")]
     pub algorithm: String,
@@ -469,6 +489,10 @@ fn default_agent_claim_sweep_interval_secs() -> u64 {
 }
 
 fn default_agent_auth_time_max_age_secs() -> u64 {
+    60 * 60 // 1 hour
+}
+
+fn default_agent_jwks_cache_ttl_secs() -> u64 {
     60 * 60 // 1 hour
 }
 
@@ -1101,7 +1125,8 @@ pub(crate) fn apply_env_overrides(
             parse_u64("EZPDS_ACCOUNTS_DELETION_REAPER_INTERVAL_SECS", v)?;
     }
     // Agent-auth (auth.md) scalar/bool overrides. The issuer trust list is a list of structs
-    // carrying PEM keys, which does not map to a flat env var — it stays TOML-only.
+    // (each carrying a PEM key or a JWKS URL), which does not map to a flat env var — it stays
+    // TOML-only.
     if let Some(v) = env.get("EZPDS_AGENT_AUTH_SERVICE_AUTH_ENABLED") {
         raw.agent_auth.service_auth_enabled = v.parse::<bool>().map_err(|e| {
             ConfigError::Invalid(format!(
@@ -1132,6 +1157,9 @@ pub(crate) fn apply_env_overrides(
     }
     if let Some(v) = env.get("EZPDS_AGENT_AUTH_VERIFICATION_URI") {
         raw.agent_auth.verification_uri = Some(v.clone());
+    }
+    if let Some(v) = env.get("EZPDS_AGENT_AUTH_JWKS_CACHE_TTL_SECS") {
+        raw.agent_auth.jwks_cache_ttl_secs = parse_u64("EZPDS_AGENT_AUTH_JWKS_CACHE_TTL_SECS", v)?;
     }
     // Email overrides. `provider` and `smtp_tls` parse from the same lowercase tokens the TOML
     // form accepts; an unrecognised value is a hard config error rather than a silent fallback.
@@ -1467,11 +1495,41 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
                 "agent_auth.trusted_issuers entries must set a non-empty issuer".to_string(),
             ));
         }
-        if issuer.public_key_pem.trim().is_empty() {
-            return Err(ConfigError::Invalid(format!(
-                "agent_auth trusted issuer {:?} must set a non-empty public_key_pem",
-                issuer.issuer
-            )));
+        // A trusted issuer supplies its verification key one of two ways: an inline PEM (static
+        // trust) or a JWKS URL the relay fetches and caches (dynamic trust). Exactly one — neither
+        // leaves nothing to verify against; both is ambiguous.
+        let has_pem = issuer
+            .public_key_pem
+            .as_deref()
+            .is_some_and(|p| !p.trim().is_empty());
+        let has_jwks = issuer
+            .jwks_url
+            .as_deref()
+            .is_some_and(|u| !u.trim().is_empty());
+        match (has_pem, has_jwks) {
+            (false, false) => {
+                return Err(ConfigError::Invalid(format!(
+                    "agent_auth trusted issuer {:?} must set exactly one of public_key_pem or jwks_url",
+                    issuer.issuer
+                )))
+            }
+            (true, true) => {
+                return Err(ConfigError::Invalid(format!(
+                    "agent_auth trusted issuer {:?} sets both public_key_pem and jwks_url; set only one",
+                    issuer.issuer
+                )))
+            }
+            _ => {}
+        }
+        // A JWKS URL delivers the issuer's signing keys over the wire, so require TLS — a plaintext
+        // endpoint would let a network attacker substitute keys and forge acceptable ID-JAGs.
+        if let Some(url) = issuer.jwks_url.as_deref().filter(|u| !u.trim().is_empty()) {
+            if !url.starts_with("https://") {
+                return Err(ConfigError::Invalid(format!(
+                    "agent_auth trusted issuer {:?} jwks_url must be https, got: {url:?}",
+                    issuer.issuer
+                )));
+            }
         }
         if !SUPPORTED_IDJAG_ALGORITHMS.contains(&issuer.algorithm.as_str()) {
             return Err(ConfigError::Invalid(format!(
@@ -1793,6 +1851,93 @@ mod tests {
         let raw: RawConfig = toml::from_str(toml).unwrap();
         let err = validate_and_build(raw).unwrap_err();
         assert!(matches!(err, ConfigError::Invalid(_)));
+    }
+
+    #[test]
+    fn agent_auth_parses_jwks_url_issuer_from_toml() {
+        // A dynamic-trust issuer supplies a jwks_url instead of an inline PEM.
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [[agent_auth.trusted_issuers]]
+            issuer = "https://issuer.example.com"
+            jwks_url = "https://issuer.example.com/.well-known/jwks.json"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        let issuer = &config.agent_auth.trusted_issuers[0];
+        assert_eq!(
+            issuer.jwks_url.as_deref(),
+            Some("https://issuer.example.com/.well-known/jwks.json")
+        );
+        assert!(issuer.public_key_pem.is_none());
+        // The JWKS cache TTL falls back to its default (3600) when unset.
+        assert_eq!(config.agent_auth.jwks_cache_ttl_secs, 3600);
+        assert_eq!(issuer.algorithm, "ES256"); // ES256 default
+    }
+
+    #[test]
+    fn agent_auth_issuer_requires_pem_or_jwks() {
+        // Neither key source set: nothing to verify against → rejected.
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [[agent_auth.trusted_issuers]]
+            issuer = "https://issuer.example.com"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+    }
+
+    #[test]
+    fn agent_auth_issuer_rejects_both_pem_and_jwks() {
+        // Both key sources set is ambiguous → rejected.
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [[agent_auth.trusted_issuers]]
+            issuer = "https://issuer.example.com"
+            public_key_pem = "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----"
+            jwks_url = "https://issuer.example.com/.well-known/jwks.json"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+    }
+
+    #[test]
+    fn agent_auth_jwks_url_must_be_https() {
+        // A plaintext JWKS URL would let a network attacker substitute keys → rejected.
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [[agent_auth.trusted_issuers]]
+            issuer = "https://issuer.example.com"
+            jwks_url = "http://issuer.example.com/.well-known/jwks.json"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+    }
+
+    #[test]
+    fn agent_auth_jwks_cache_ttl_env_override() {
+        let env = HashMap::from([(
+            "EZPDS_AGENT_AUTH_JWKS_CACHE_TTL_SECS".to_string(),
+            "120".to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.agent_auth.jwks_cache_ttl_secs, 120);
     }
 
     #[test]

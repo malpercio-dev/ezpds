@@ -38,7 +38,7 @@ use axum::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{Duration, Utc};
 use common::TrustedIssuer;
-use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -395,7 +395,8 @@ async fn handle_identity_assertion(
             )
         })?;
 
-    let claims = verify_id_jag(assertion, issuer_cfg, &state.config.public_url)?;
+    let (key, alg) = resolve_decoding_key(state, issuer_cfg, assertion).await?;
+    let claims = verify_id_jag(assertion, &key, alg, issuer_cfg, &state.config.public_url)?;
 
     // Reject a stale authentication (`login_required`) so a long-lived ID-JAG can't be replayed
     // indefinitely against a session the user has since ended.
@@ -613,19 +614,63 @@ async fn new_identity_assertion(
 
 // ── ID-JAG verification ──────────────────────────────────────────────────────────
 
-/// Verify an ID-JAG's signature and standard claims against a trusted issuer.
+/// Resolve the decoding key + expected algorithm for a trusted issuer's ID-JAG.
 ///
-/// Enforces the signature (issuer's configured key/alg), `iss`, `aud` (the issuer's configured
-/// audience or this server's `public_url`), and `exp`.
+/// A static-trust issuer carries its key inline (`public_key_pem`); a dynamic-trust issuer names a
+/// `jwks_url`, whose key set is fetched (cached) and indexed by the ID-JAG's `kid` header. The
+/// expected algorithm is the issuer's configured `algorithm` in both cases (already validated at
+/// config load), so verification is otherwise identical.
+///
+/// Error mapping matches the PEM path's existing posture: an unusable configured key or unsupported
+/// algorithm is `server_error` (operator misconfiguration), a fetch/transport failure is
+/// `server_error` (transient), and a `kid` absent from the issuer's JWKS is `invalid_grant` (the
+/// client presented an assertion signed by a key the issuer doesn't publish).
+async fn resolve_decoding_key(
+    state: &AppState,
+    issuer: &TrustedIssuer,
+    assertion: &str,
+) -> Result<(DecodingKey, Algorithm), AgentAuthError> {
+    if let Some(jwks_url) = issuer.jwks_url.as_deref().filter(|u| !u.is_empty()) {
+        let alg = algorithm_from_str(&issuer.algorithm).ok_or_else(|| {
+            tracing::error!(issuer = %issuer.issuer, algorithm = %issuer.algorithm, "trusted issuer has an unsupported algorithm");
+            AgentAuthError::server_error()
+        })?;
+        let kid = decode_header(assertion).ok().and_then(|h| h.kid);
+        let key = state
+            .jwks_cache
+            .decoding_key(jwks_url, kid.as_deref())
+            .await
+            .map_err(|e| {
+                tracing::error!(issuer = %issuer.issuer, jwks_url, error = %e, "failed to resolve issuer JWKS");
+                AgentAuthError::server_error()
+            })?
+            .ok_or_else(|| {
+                AgentAuthError::new(
+                    StatusCode::UNAUTHORIZED,
+                    "invalid_grant",
+                    "the assertion's signing key (kid) is not present in the issuer's JWKS",
+                )
+            })?;
+        Ok((key, alg))
+    } else {
+        pem_decoding_key(issuer).ok_or_else(|| {
+            tracing::error!(issuer = %issuer.issuer, "trusted issuer has an unusable public_key_pem/algorithm");
+            AgentAuthError::server_error()
+        })
+    }
+}
+
+/// Verify an ID-JAG's signature and standard claims against a trusted issuer's resolved key.
+///
+/// Enforces the signature (the resolved key + expected algorithm), `iss`, `aud` (the issuer's
+/// configured audience or this server's `public_url`), and `exp`.
 fn verify_id_jag(
     assertion: &str,
+    key: &DecodingKey,
+    alg: Algorithm,
     issuer: &TrustedIssuer,
     public_url: &str,
 ) -> Result<IdJagClaims, AgentAuthError> {
-    let (key, alg) = decoding_key(issuer).ok_or_else(|| {
-        tracing::error!(issuer = %issuer.issuer, "trusted issuer has an unusable public_key_pem/algorithm");
-        AgentAuthError::server_error()
-    })?;
     let expected_aud = issuer
         .audience
         .clone()
@@ -636,7 +681,7 @@ fn verify_id_jag(
     validation.set_audience(&[&expected_aud]);
     validation.set_required_spec_claims(&["exp", "aud", "iss"]);
 
-    decode::<IdJagClaims>(assertion, &key, &validation)
+    decode::<IdJagClaims>(assertion, key, &validation)
         .map(|data| data.claims)
         .map_err(|e| {
             AgentAuthError::new(
@@ -647,29 +692,33 @@ fn verify_id_jag(
         })
 }
 
-/// Build a `jsonwebtoken` decoding key + algorithm for a trusted issuer. `None` on an unusable PEM
-/// or an algorithm outside the supported set (the latter is also rejected at config load).
-fn decoding_key(issuer: &TrustedIssuer) -> Option<(DecodingKey, Algorithm)> {
-    let pem = issuer.public_key_pem.as_bytes();
-    match issuer.algorithm.as_str() {
-        "ES256" => DecodingKey::from_ec_pem(pem)
-            .ok()
-            .map(|k| (k, Algorithm::ES256)),
-        "ES384" => DecodingKey::from_ec_pem(pem)
-            .ok()
-            .map(|k| (k, Algorithm::ES384)),
-        "RS256" => DecodingKey::from_rsa_pem(pem)
-            .ok()
-            .map(|k| (k, Algorithm::RS256)),
-        "RS384" => DecodingKey::from_rsa_pem(pem)
-            .ok()
-            .map(|k| (k, Algorithm::RS384)),
-        "RS512" => DecodingKey::from_rsa_pem(pem)
-            .ok()
-            .map(|k| (k, Algorithm::RS512)),
-        "EdDSA" => DecodingKey::from_ed_pem(pem)
-            .ok()
-            .map(|k| (k, Algorithm::EdDSA)),
+/// Build a `jsonwebtoken` decoding key + algorithm from a trusted issuer's inline PEM. `None` on an
+/// absent/unusable PEM or an algorithm outside the supported set (both also rejected at config
+/// load).
+fn pem_decoding_key(issuer: &TrustedIssuer) -> Option<(DecodingKey, Algorithm)> {
+    let pem = issuer.public_key_pem.as_deref()?.as_bytes();
+    let alg = algorithm_from_str(&issuer.algorithm)?;
+    let key = match alg {
+        Algorithm::ES256 | Algorithm::ES384 => DecodingKey::from_ec_pem(pem).ok()?,
+        Algorithm::RS256 | Algorithm::RS384 | Algorithm::RS512 => {
+            DecodingKey::from_rsa_pem(pem).ok()?
+        }
+        Algorithm::EdDSA => DecodingKey::from_ed_pem(pem).ok()?,
+        _ => return None,
+    };
+    Some((key, alg))
+}
+
+/// Map an ID-JAG algorithm name to a `jsonwebtoken::Algorithm`. `None` outside the supported set
+/// (`config::SUPPORTED_IDJAG_ALGORITHMS`, the config-load allowlist this mirrors).
+fn algorithm_from_str(alg: &str) -> Option<Algorithm> {
+    match alg {
+        "ES256" => Some(Algorithm::ES256),
+        "ES384" => Some(Algorithm::ES384),
+        "RS256" => Some(Algorithm::RS256),
+        "RS384" => Some(Algorithm::RS384),
+        "RS512" => Some(Algorithm::RS512),
+        "EdDSA" => Some(Algorithm::EdDSA),
         _ => None,
     }
 }
@@ -782,6 +831,122 @@ mod tests {
         jsonwebtoken::encode(&Header::new(Algorithm::ES256), &claims, &key).unwrap()
     }
 
+    // ── dynamic (jwks_url) trust helpers ─────────────────────────────────
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A fresh ES256 keypair as (PKCS#8 private PEM, single-key JWKS carrying `kid`), for the
+    /// dynamic (`jwks_url`) trust path. Mirrors [`es256_keys`] but emits the public half as a JWK
+    /// set a `DecodingKey::from_jwk` accepts.
+    fn es256_keys_jwks(kid: &str) -> (String, jsonwebtoken::jwk::JwkSet) {
+        let sk = p256::ecdsa::SigningKey::random(&mut OsRng);
+        let priv_pem = der_to_pem("PRIVATE KEY", sk.to_pkcs8_der().unwrap().as_bytes());
+        let point = sk.verifying_key().to_encoded_point(false);
+        let x = URL_SAFE_NO_PAD.encode(point.x().unwrap());
+        let y = URL_SAFE_NO_PAD.encode(point.y().unwrap());
+        let set = serde_json::from_value(json!({
+            "keys": [{ "kty": "EC", "crv": "P-256", "x": x, "y": y, "kid": kid, "alg": "ES256", "use": "sig" }]
+        }))
+        .unwrap();
+        (priv_pem, set)
+    }
+
+    /// Like [`make_id_jag`] but stamps a `kid` into the JWT header, so the JWKS trust path can
+    /// select the signing key. `auth_time` is always current (this helper's callers test the JWKS
+    /// mechanics, not staleness).
+    fn make_id_jag_kid(
+        priv_pem: &str,
+        kid: &str,
+        iss: &str,
+        sub: &str,
+        aud: &str,
+        email: Option<&str>,
+    ) -> String {
+        let now = Utc::now().timestamp().max(0) as u64;
+        let claims = IdJagTestClaims {
+            iss,
+            sub,
+            aud,
+            iat: now,
+            exp: now + 600,
+            email,
+            auth_time: None,
+        };
+        let key = EncodingKey::from_ec_pem(priv_pem.as_bytes()).unwrap();
+        let mut header = Header::new(Algorithm::ES256);
+        header.kid = Some(kid.to_string());
+        jsonwebtoken::encode(&header, &claims, &key).unwrap()
+    }
+
+    /// A counting mock [`crate::jwks::JwksFetcher`]: returns `set` (or a failure) and records how
+    /// many times it was called, so a test can assert the cache elided a second fetch.
+    struct TestJwksFetcher {
+        set: jsonwebtoken::jwk::JwkSet,
+        calls: Arc<AtomicUsize>,
+        fail: bool,
+    }
+
+    impl crate::jwks::JwksFetcher for TestJwksFetcher {
+        fn fetch<'a>(
+            &'a self,
+            _url: &'a str,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<jsonwebtoken::jwk::JwkSet, crate::jwks::JwksError>,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            let set = self.set.clone();
+            let calls = self.calls.clone();
+            let fail = self.fail;
+            Box::pin(async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                if fail {
+                    Err(crate::jwks::JwksError("mock fetch failed".to_string()))
+                } else {
+                    Ok(set)
+                }
+            })
+        }
+    }
+
+    /// Build a state whose `jwks_cache` is backed by a mock fetcher returning `set`; returns the
+    /// state and the call counter.
+    async fn state_with_jwks(
+        agent_auth: AgentAuthConfig,
+        set: jsonwebtoken::jwk::JwkSet,
+    ) -> (AppState, Arc<AtomicUsize>) {
+        let base = state_with(agent_auth).await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let fetcher = Arc::new(TestJwksFetcher {
+            set,
+            calls: calls.clone(),
+            fail: false,
+        });
+        let jwks_cache = Arc::new(crate::jwks::JwksCache::new(
+            fetcher,
+            std::time::Duration::from_secs(3600),
+        ));
+        (AppState { jwks_cache, ..base }, calls)
+    }
+
+    /// Build a state whose `jwks_cache` fetcher always fails, to exercise the fetch-failure path.
+    async fn state_with_jwks_err(agent_auth: AgentAuthConfig) -> AppState {
+        let base = state_with(agent_auth).await;
+        let fetcher = Arc::new(TestJwksFetcher {
+            set: serde_json::from_value(json!({ "keys": [] })).unwrap(),
+            calls: Arc::new(AtomicUsize::new(0)),
+            fail: true,
+        });
+        let jwks_cache = Arc::new(crate::jwks::JwksCache::new(
+            fetcher,
+            std::time::Duration::from_secs(3600),
+        ));
+        AppState { jwks_cache, ..base }
+    }
+
     // ── state + request helpers ──────────────────────────────────────────
 
     async fn state_with(agent_auth: AgentAuthConfig) -> AppState {
@@ -830,7 +995,20 @@ mod tests {
         TrustedIssuer {
             issuer: issuer.to_string(),
             audience: None,
-            public_key_pem,
+            public_key_pem: Some(public_key_pem),
+            jwks_url: None,
+            algorithm: "ES256".to_string(),
+        }
+    }
+
+    /// A dynamic-trust issuer entry (jwks_url instead of an inline PEM). The URL is a marker only —
+    /// the JWKS tests inject a mock fetcher, so it is never dereferenced over the network.
+    fn trusted_jwks(issuer: &str, jwks_url: &str) -> TrustedIssuer {
+        TrustedIssuer {
+            issuer: issuer.to_string(),
+            audience: None,
+            public_key_pem: None,
+            jwks_url: Some(jwks_url.to_string()),
             algorithm: "ES256".to_string(),
         }
     }
@@ -1348,5 +1526,172 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["error"], "invalid_grant");
+    }
+
+    // ── identity_assertion — dynamic (jwks_url) trust ────────────────────
+
+    #[tokio::test]
+    async fn identity_assertion_jwks_issuer_verifies() {
+        // A dynamic-trust (jwks_url) issuer: the ID-JAG is signed by a key present in the fetched
+        // JWKS and names its kid. Verification passes, so the flow proceeds past the signature
+        // gate — with no local account for the asserted email it lands on `access_denied`, which
+        // (unlike `issuer_not_enabled` / `invalid_grant`) proves the JWKS key verified the JAG.
+        let (priv_pem, set) = es256_keys_jwks("key-1");
+        let cfg = AgentAuthConfig {
+            trusted_issuers: vec![trusted_jwks(
+                "https://trusted.example",
+                "https://trusted.example/jwks",
+            )],
+            ..AgentAuthConfig::default()
+        };
+        let (state, calls) = state_with_jwks(cfg, set).await;
+        let jag = make_id_jag_kid(
+            &priv_pem,
+            "key-1",
+            "https://trusted.example",
+            "sub-1",
+            PUBLIC_URL,
+            Some("nobody@example.com"),
+        );
+        let (status, body) = post(
+            state,
+            json!({ "type": "identity_assertion", "assertion": jag }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["error"], "access_denied");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "one JWKS fetch backed the verification"
+        );
+    }
+
+    #[tokio::test]
+    async fn identity_assertion_jwks_unknown_kid_is_invalid_grant() {
+        // The ID-JAG names a kid the issuer's JWKS does not contain → invalid_grant.
+        let (priv_pem, set) = es256_keys_jwks("key-1");
+        let cfg = AgentAuthConfig {
+            trusted_issuers: vec![trusted_jwks(
+                "https://trusted.example",
+                "https://trusted.example/jwks",
+            )],
+            ..AgentAuthConfig::default()
+        };
+        let (state, _calls) = state_with_jwks(cfg, set).await;
+        let jag = make_id_jag_kid(
+            &priv_pem,
+            "unknown-kid",
+            "https://trusted.example",
+            "sub-1",
+            PUBLIC_URL,
+            Some("nobody@example.com"),
+        );
+        let (status, body) = post(
+            state,
+            json!({ "type": "identity_assertion", "assertion": jag }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "invalid_grant");
+    }
+
+    #[tokio::test]
+    async fn identity_assertion_jwks_bad_signature_is_invalid_grant() {
+        // Correct kid (so the JWKS key is selected), but the JAG is signed by a different key.
+        let (_priv, set) = es256_keys_jwks("key-1");
+        let (wrong_priv, _wrong_set) = es256_keys_jwks("key-1");
+        let cfg = AgentAuthConfig {
+            trusted_issuers: vec![trusted_jwks(
+                "https://trusted.example",
+                "https://trusted.example/jwks",
+            )],
+            ..AgentAuthConfig::default()
+        };
+        let (state, _calls) = state_with_jwks(cfg, set).await;
+        let jag = make_id_jag_kid(
+            &wrong_priv,
+            "key-1",
+            "https://trusted.example",
+            "sub-1",
+            PUBLIC_URL,
+            Some("nobody@example.com"),
+        );
+        let (status, body) = post(
+            state,
+            json!({ "type": "identity_assertion", "assertion": jag }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "invalid_grant");
+    }
+
+    #[tokio::test]
+    async fn identity_assertion_jwks_fetch_failure_is_server_error() {
+        // The issuer's JWKS can't be fetched → server_error (transport/operator failure, not the
+        // client's fault), matching how an unusable inline PEM already behaves.
+        let (priv_pem, _set) = es256_keys_jwks("key-1");
+        let cfg = AgentAuthConfig {
+            trusted_issuers: vec![trusted_jwks(
+                "https://trusted.example",
+                "https://trusted.example/jwks",
+            )],
+            ..AgentAuthConfig::default()
+        };
+        let state = state_with_jwks_err(cfg).await;
+        let jag = make_id_jag_kid(
+            &priv_pem,
+            "key-1",
+            "https://trusted.example",
+            "sub-1",
+            PUBLIC_URL,
+            Some("nobody@example.com"),
+        );
+        let (status, _body) = post(
+            state,
+            json!({ "type": "identity_assertion", "assertion": jag }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn identity_assertion_jwks_is_cached_across_requests() {
+        // Two verifications against the same dynamic issuer trigger exactly one JWKS fetch — the
+        // second is served from the shared (Arc) cache.
+        let (priv_pem, set) = es256_keys_jwks("key-1");
+        let cfg = AgentAuthConfig {
+            trusted_issuers: vec![trusted_jwks(
+                "https://trusted.example",
+                "https://trusted.example/jwks",
+            )],
+            ..AgentAuthConfig::default()
+        };
+        let (state, calls) = state_with_jwks(cfg, set).await;
+        let make = || {
+            make_id_jag_kid(
+                &priv_pem,
+                "key-1",
+                "https://trusted.example",
+                "sub-1",
+                PUBLIC_URL,
+                Some("nobody@example.com"),
+            )
+        };
+        let _ = post(
+            state.clone(),
+            json!({ "type": "identity_assertion", "assertion": make() }),
+        )
+        .await;
+        let _ = post(
+            state.clone(),
+            json!({ "type": "identity_assertion", "assertion": make() }),
+        )
+        .await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the second request must hit the JWKS cache"
+        );
     }
 }
