@@ -112,25 +112,15 @@ mod tests {
         std::fs::create_dir_all(abs_path.parent().unwrap()).unwrap();
         std::fs::write(&abs_path, b"test blob content").unwrap();
 
-        sqlx::query(
-            "INSERT INTO blobs (cid, account_did, mime_type, size_bytes, storage_path) \
-             VALUES (?, ?, ?, ?, ?) ON CONFLICT(cid) DO NOTHING",
+        crate::db::blobs::insert_blob(
+            &state.db,
+            cid,
+            did,
+            mime_type,
+            17, // len of "test blob content"
+            &storage_path,
+            "2030-01-01 00:00:00",
         )
-        .bind(cid)
-        .bind(did)
-        .bind(mime_type)
-        .bind(17i64) // len of "test blob content"
-        .bind(&storage_path)
-        .execute(&state.db)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO blob_owners (cid, account_did, ref_count, temp_until) \
-             VALUES (?, ?, 1, NULL)",
-        )
-        .bind(cid)
-        .bind(did)
-        .execute(&state.db)
         .await
         .unwrap();
     }
@@ -187,7 +177,7 @@ mod tests {
         let state = test_state().await;
         seed_blob(&state, "did:plc:sharefirst", "bafkreishared", "image/png").await;
 
-        // A second account owns a reference to the same CID (same bytes, same file).
+        // A second account uploads the same bytes: same CID, same file, its own ownership row.
         sqlx::query(
             "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
              VALUES ('did:plc:sharesecond', 'blob2@example.com', NULL, datetime('now'), datetime('now'))",
@@ -195,11 +185,15 @@ mod tests {
         .execute(&state.db)
         .await
         .unwrap();
-        sqlx::query(
-            "INSERT INTO blob_owners (cid, account_did, ref_count, temp_until) \
-             VALUES ('bafkreishared', 'did:plc:sharesecond', 1, NULL)",
+        crate::db::blobs::insert_blob(
+            &state.db,
+            "bafkreishared",
+            "did:plc:sharesecond",
+            "image/png",
+            17,
+            "blobs/ba/bafkreishared",
+            "2030-01-01 00:00:00",
         )
-        .execute(&state.db)
         .await
         .unwrap();
 

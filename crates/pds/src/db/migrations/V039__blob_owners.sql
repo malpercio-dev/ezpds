@@ -6,10 +6,11 @@
 -- account deletion from destroying a file another account's records still reference.
 --
 -- Rebuild order matters: `blob_owners` must be backfilled from the old rows' `ref_count`/
--- `temp_until` *before* those columns are dropped, and it must not exist while the old parent
--- table is dropped (with foreign keys on, DROP TABLE implicit-deletes the parent's rows, which
--- would cascade-wipe the freshly backfilled owner rows). So the old table is renamed aside,
--- both new tables are created and filled from it, and only then is it dropped.
+-- `temp_until` *before* those columns are dropped with the old table. So the old table is
+-- renamed aside first, the new physical `blobs` table is created and populated under the
+-- original name, `blob_owners` is created (its FK binds to that new `blobs` — SQLite resolves
+-- FK parents by name against the schema at child-creation time) and backfilled, and only then
+-- is the renamed-aside table dropped; nothing references it, so the drop is inert.
 
 ALTER TABLE blobs RENAME TO blobs_old;
 

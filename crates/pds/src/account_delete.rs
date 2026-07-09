@@ -395,8 +395,8 @@ mod tests {
         assert!(!file.exists(), "blob file must be reclaimed from disk");
     }
 
-    /// The MM-261 regression: purging one owner of a shared blob must not destroy the file
-    /// (or physical row) another account still owns.
+    /// Purging one owner of a shared blob must not destroy the file (or physical row)
+    /// another account still owns.
     #[tokio::test]
     async fn purge_keeps_blob_still_owned_by_another_account() {
         let (state, _dir) = purge_state().await;

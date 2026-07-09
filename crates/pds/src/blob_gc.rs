@@ -599,8 +599,8 @@ mod tests {
         assert_eq!(stats, GcStats::default());
     }
 
-    /// The MM-261 regression: two accounts upload the same bytes; only B references them.
-    /// A's expired reference must never destroy the file B's record still links.
+    /// Two accounts upload the same bytes; only B references them. A's expired
+    /// reference must never destroy the file B's record still links.
     #[tokio::test]
     async fn gc_keeps_shared_blob_while_any_owner_references_it() {
         let (state, _dir) = gc_state().await;

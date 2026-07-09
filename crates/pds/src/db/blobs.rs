@@ -59,6 +59,10 @@ pub struct BlobOwnerRow {
 /// the ownership upsert restarts *this account's* grace clock on a re-upload — but only while
 /// the account's reference count is zero, so re-uploading an already-referenced (permanent)
 /// blob never puts it back on a deletion countdown.
+///
+/// The two inserts run in one transaction (a single logical "record this upload" operation,
+/// like the paired physical/ownership write in `blocks::put_block`): a physical row committed
+/// without its ownership row would never be revisited by GC's sweep, which walks `blob_owners`.
 pub async fn insert_blob(
     pool: &SqlitePool,
     cid: &str,
@@ -68,6 +72,7 @@ pub async fn insert_blob(
     storage_path: &str,
     temp_until: &str,
 ) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
     sqlx::query(
         "INSERT INTO blobs (cid, account_did, mime_type, size_bytes, storage_path)
          VALUES (?, ?, ?, ?, ?)
@@ -78,7 +83,7 @@ pub async fn insert_blob(
     .bind(mime_type)
     .bind(size_bytes)
     .bind(storage_path)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
     sqlx::query(
         "INSERT INTO blob_owners (cid, account_did, temp_until)
@@ -89,9 +94,9 @@ pub async fn insert_blob(
     .bind(cid)
     .bind(account_did)
     .bind(temp_until)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
-    Ok(())
+    tx.commit().await
 }
 
 /// Sum of bytes referenced by a specific account's blob ownership rows.
