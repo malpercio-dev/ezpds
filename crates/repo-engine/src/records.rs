@@ -257,28 +257,46 @@ pub fn json_to_record_value(json: &serde_json::Value) -> Result<Ipld, RecordErro
 
 /// Convert a stored record (ATProto data model) back to JSON for API responses:
 /// CID links become `{"$link": "<cid>"}` and byte strings become `{"$bytes": "<base64>"}`.
-pub fn record_value_to_json(ipld: &Ipld) -> serde_json::Value {
+///
+/// Errors with [`RecordError::InvalidRecord`] if the record holds an `Ipld::Integer` outside
+/// the JSON-representable range (fits neither `i64` nor `u64`). Local writes can't produce such
+/// a value — `json_to_record_value` only accepts `i64`/`u64` — but a record imported via CAR
+/// carries whatever the DAG-CBOR bytes encode. Surfacing the error keeps a malformed import from
+/// reading back as a silently-substituted `null` (lossy data mutation).
+pub fn record_value_to_json(ipld: &Ipld) -> Result<serde_json::Value, RecordError> {
     use serde_json::Value;
-    match ipld {
+    Ok(match ipld {
         Ipld::Null => Value::Null,
         Ipld::Bool(b) => Value::Bool(*b),
-        Ipld::Integer(i) => i64::try_from(*i)
-            .map(|n| Value::Number(n.into()))
-            .or_else(|_| u64::try_from(*i).map(|n| Value::Number(n.into())))
-            .unwrap_or(Value::Null),
+        Ipld::Integer(i) => {
+            let n = i64::try_from(*i)
+                .map(serde_json::Number::from)
+                .or_else(|_| u64::try_from(*i).map(serde_json::Number::from))
+                .map_err(|_| {
+                    RecordError::InvalidRecord(format!(
+                        "integer {i} is outside the JSON-representable range (i64/u64)"
+                    ))
+                })?;
+            Value::Number(n)
+        }
         Ipld::Float(f) => serde_json::Number::from_f64(*f).map_or(Value::Null, Value::Number),
         Ipld::String(s) => Value::String(s.clone()),
         Ipld::Bytes(b) => {
             serde_json::json!({ "$bytes": base64::engine::general_purpose::STANDARD.encode(b) })
         }
-        Ipld::List(items) => Value::Array(items.iter().map(record_value_to_json).collect()),
+        Ipld::List(items) => Value::Array(
+            items
+                .iter()
+                .map(record_value_to_json)
+                .collect::<Result<_, _>>()?,
+        ),
         Ipld::Map(map) => Value::Object(
             map.iter()
-                .map(|(k, v)| (k.clone(), record_value_to_json(v)))
-                .collect(),
+                .map(|(k, v)| record_value_to_json(v).map(|jv| (k.clone(), jv)))
+                .collect::<Result<_, _>>()?,
         ),
         Ipld::Link(cid) => serde_json::json!({ "$link": cid.to_string() }),
-    }
+    })
 }
 
 /// Collect the blob-reference CIDs contained in a single decoded record value.
@@ -358,7 +376,7 @@ where
     S: atrium_repo::blockstore::AsyncBlockStoreRead + atrium_repo::blockstore::AsyncBlockStoreWrite,
 {
     let value: Option<Ipld> = get_record(repo, key).await?;
-    Ok(value.map(|v| record_value_to_json(&v)))
+    value.map(|v| record_value_to_json(&v)).transpose()
 }
 
 /// A single record returned by [`list_records_json`].
@@ -471,7 +489,7 @@ where
         records.push(ListedRecord {
             rkey,
             cid,
-            value: record_value_to_json(&value),
+            value: record_value_to_json(&value)?,
         });
     }
 
@@ -780,7 +798,36 @@ mod tests {
             "nested": { "list": [1, 2, 3], "flag": true, "nothing": null }
         });
         let ipld = json_to_record_value(&json).unwrap();
-        assert_eq!(record_value_to_json(&ipld), json);
+        assert_eq!(record_value_to_json(&ipld).unwrap(), json);
+    }
+
+    #[test]
+    fn record_value_to_json_errors_on_out_of_range_integer() {
+        // A CAR import can carry a DAG-CBOR integer outside both `i64` and `u64` range
+        // (`json_to_record_value` can't produce one). Reading it back must error, not
+        // silently substitute `null` — the historical bug.
+        let too_big = Ipld::Integer(i128::from(u64::MAX) + 1);
+        assert!(record_value_to_json(&too_big).is_err());
+
+        let too_negative = Ipld::Integer(i128::from(i64::MIN) - 1);
+        assert!(record_value_to_json(&too_negative).is_err());
+
+        // The error must propagate up when the offending value is nested inside a record.
+        let nested = Ipld::Map(BTreeMap::from([(
+            "embed".to_string(),
+            Ipld::List(vec![Ipld::Integer(i128::from(u64::MAX) + 1)]),
+        )]));
+        assert!(record_value_to_json(&nested).is_err());
+
+        // The boundary values still round-trip: `u64::MAX` and `i64::MIN` are in range.
+        assert_eq!(
+            record_value_to_json(&Ipld::Integer(i128::from(u64::MAX))).unwrap(),
+            serde_json::json!(u64::MAX)
+        );
+        assert_eq!(
+            record_value_to_json(&Ipld::Integer(i128::from(i64::MIN))).unwrap(),
+            serde_json::json!(i64::MIN)
+        );
     }
 
     #[tokio::test]
