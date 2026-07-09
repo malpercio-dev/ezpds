@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Wrapper for the Custos MCP server: wires Node's fetch/TLS to an egress proxy when
+# one is configured (e.g. Claude Code remote sessions), then execs the stdio server.
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [ -n "${HTTPS_PROXY:-}" ]; then
+  # Node >= 22.21: make built-in fetch honor HTTPS_PROXY.
+  export NODE_USE_ENV_PROXY=1
+fi
+
+# Trust a re-terminating proxy CA if present and nothing else is configured.
+if [ -z "${NODE_EXTRA_CA_CERTS:-}" ] && [ -f /root/.ccr/ca-bundle.crt ]; then
+  export NODE_EXTRA_CA_CERTS=/root/.ccr/ca-bundle.crt
+fi
+
+# Node's TS type-stripping warning would land on stderr of every MCP session.
+exec node --disable-warning=ExperimentalWarning "$here/../src/server.ts" "$@"

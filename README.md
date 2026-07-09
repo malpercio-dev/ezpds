@@ -26,7 +26,7 @@ ezpds is a self-hosted PDS implementation for the AT Protocol (the protocol behi
 - **Obsign**, an iOS identity wallet ([`apps/identity-wallet`](apps/identity-wallet/)) — a Tauri v2 app (SvelteKit 2 + Svelte 5 frontend, Rust backend) that walks users through account creation, DID ceremony, handle registration, and identity recovery. Keys are backed by the device Secure Enclave.
 - **An admin companion** ([`apps/admin-companion`](apps/admin-companion/)) — a second Tauri v2 iOS app: a terminal-native operator console for the PDS operator (claim codes, admin device pairing/revocation via Secure-Enclave-signed requests).
 
-Supporting pieces: [`sites/marketing/`](sites/marketing/) (zero-build static marketing site for Obsign + Custos), [`tools/interop/`](tools/interop/) (interop CLI that exercises a live deployment against the real ATProto network), [`bruno/`](bruno/) (HTTP request collection covering every route, CI-enforced parity), and [`docs/architecture/`](docs/architecture/) (living architecture docs + the ADR log).
+Supporting pieces: [`sites/marketing/`](sites/marketing/) (zero-build static marketing site for Obsign + Custos), [`tools/interop/`](tools/interop/) (interop CLI that exercises a live deployment against the real ATProto network), [`tools/mcp/`](tools/mcp/) (Custos MCP — a first-party MCP server that onboards itself to a Custos PDS through the auth.md agent flow, then exposes the PDS as tools to AI agents), [`bruno/`](bruno/) (HTTP request collection covering every route, CI-enforced parity), and [`docs/architecture/`](docs/architecture/) (living architecture docs + the ADR log).
 
 ## Architecture
 
@@ -191,6 +191,7 @@ ezpds is under active development. The PDS server, repo engine, and crypto libra
 - Federation — firehose (`subscribeRepos` with durable sequencer), `getRepo`, `requestCrawl`
 - App proxy — AppView/chat proxying with read-after-write for the account's own writes
 - Interop test CLI ([`tools/interop/`](tools/interop/)) exercising a live deployment against the real ATProto network
+- Agent auth (auth.md) — agent registration, human claim ceremony, JWT-bearer exchange, granular scopes — with a first-party MCP server ([`tools/mcp/`](tools/mcp/)) that onboards itself through that flow
 - PDS signing key management, provisioning transfer endpoints
 - Shamir secret sharing for recovery
 - OpenTelemetry observability

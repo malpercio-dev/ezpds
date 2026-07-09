@@ -1,0 +1,27 @@
+{
+  "name": "ezpds-mcp",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Custos MCP: first-party MCP stdio server that self-onboards to a Custos PDS via the auth.md agent flow and exposes the PDS as MCP tools.",
+  "engines": {
+    "node": ">=22.21"
+  },
+  "bin": {
+    "custos-mcp": "./bin/custos-mcp"
+  },
+  "scripts": {
+    "start": "node src/server.ts",
+    "check": "tsc --noEmit",
+    "test": "node test/run.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "ezpds-interop": "file:../interop",
+    "typescript": "^5.8.0"
+  }
+}
