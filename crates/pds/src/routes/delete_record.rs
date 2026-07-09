@@ -191,11 +191,8 @@ pub async fn delete_record(
         claims.registration_id.as_deref(),
     )
     .await?;
-
-    // Best-effort GC: reclaim blocks superseded by this commit (non-fatal on error).
-    if let Err(e) = crate::record_write::gc_repo_blocks(&state.db, did, repo.root()).await {
-        tracing::warn!(error = %e, did = %did, "post-commit block GC failed (non-fatal)");
-    }
+    // `commit_repo_write` reclaims this commit's superseded blocks incrementally; no separate
+    // full-repo reachability sweep runs on the write path.
 
     Ok((StatusCode::OK, axum::Json(serde_json::json!({}))))
 }

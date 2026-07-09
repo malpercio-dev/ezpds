@@ -24,7 +24,7 @@ src/
   email.rs         — pluggable outbound email sender (`Arc<dyn EmailSender>` in AppState): `LogEmailSender` (default; logs instead of sending — keeps tests/fresh installs offline) + `SmtpEmailSender` (real delivery via `lettre`, rustls). Backs the password-reset / email-confirmation / email-update / PLC-op / account-delete token deliveries. Configured by `[email]` in `pds.toml` / `EZPDS_EMAIL_*`
   rate_limit.rs    — request rate-limiting middleware + shared limiter state (global IP, per-endpoint IP, per-account write points)
   iroh_tunnel.rs   — Iroh QUIC endpoint: NAT-traversing device↔pds tunnel (opt-in)
-  record_write.rs  — shared repo write flow + firehose commit emission
+  record_write.rs  — shared repo write flow + firehose commit emission + post-commit block GC (reuses the firehose diff's `reachable(new)` set as the GC keep-set, so a commit walks repo reachability once, not again per write — see `gc_repo_blocks`)
   account_delete.rs— shared permanent account-deletion transaction (all child tables in FK order — no account-keyed FK cascades exist — plus on-disk reclamation of blob files no other account owns and an `#account` deleted frame), used by deleteAccount and the reaper
   account_reaper.rs— periodic sweep that permanently deletes deactivated accounts past their `deleteAfter` (template: firehose_gc.rs)
   agent_claim_sweep.rs— periodic sweep flipping lapsed pending agent claim attempts to `expired` and recording a `claim_expired` audit event per attempt, in one transaction (template: account_reaper.rs; interval: `[agent_auth] claim_sweep_interval_secs` / `EZPDS_AGENT_CLAIM_SWEEP_INTERVAL_SECS`)
@@ -51,7 +51,8 @@ The **persistent** event pipeline behind `com.atproto.sync.subscribeRepos`. Hold
 monotonic sequencer (backed by the `repo_seq` table, V028) and a Tokio `broadcast` channel;
 `AppState.firehose: Arc<Firehose>` is shared by every handler. Each repo commit calls
 `record_write::commit_repo_write`, which builds the commit's block diff
-(`repo_engine::collect_commit_diff_cids` + `build_car_from_cids`, run *before* post-commit GC) and
+(`repo_engine::collect_commit_diff` — one walk of the new root, yielding both the `added` diff
+blocks and the `new_reachable` keep-set — + `build_car_from_cids`, run *before* post-commit GC) and
 publishes a sequenced `CommitEvent` carrying the DID, rev, `since`, `prevData` (the previous
 commit's MST root CID — Sync v1.1's inductive-validation anchor, captured before the write mutates
 the repo; `None` for genesis), per-record `RepoOp`s (action + collection/rkey + cid + prev + value;

@@ -170,8 +170,9 @@ pub async fn delete_blocks_for_account(
 ///
 /// Returns the number of account-owned block references reclaimed. The caller computes `keep` from
 /// the current repo root (`repo_engine::collect_reachable_cids`); everything else for the account
-/// is garbage (superseded MST nodes, orphans from conflicted writes). Physical bytes are deleted
-/// only when no owner remains and the row is not a legacy-protected migrated block.
+/// is garbage (superseded MST nodes, intermediate blocks from a multi-write batch, orphans from
+/// conflicted writes). Physical bytes are deleted only when no owner remains and the row is not a
+/// legacy-protected migrated block.
 pub async fn delete_unreachable_blocks(
     pool: &SqlitePool,
     account_did: &str,

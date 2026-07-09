@@ -18,9 +18,9 @@ pub use atrium_repo::mst::Tree;
 pub use atrium_repo::repo::{CommitBuilder, RepoBuilder, Repository};
 pub use atrium_repo::Cid;
 pub use car_export::{
-    build_blocks_car, build_car_from_cids, car_v1_block_frame, car_v1_header,
+    build_blocks_car, build_car_from_cids, car_v1_block_frame, car_v1_header, collect_commit_diff,
     collect_commit_diff_cids, collect_reachable_cids, export_commit_blocks_car,
-    export_record_proof_car, export_repo_car, CarExportError,
+    export_record_proof_car, export_repo_car, CarExportError, CommitDiff,
 };
 pub use car_import::{import_repo_car, CarImportError, ImportedRepo};
 pub use genesis::{build_genesis_repo, create_genesis_repo, CapturingBlockStore, GenesisError};
