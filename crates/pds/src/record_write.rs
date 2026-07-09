@@ -9,6 +9,9 @@
 //! The `create_only` flag distinguishes `createRecord` (must reject pre-existing rkeys)
 //! from `putRecord` (upsert semantics) and `deleteRecord` (always removes).
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use axum::http::HeaderMap;
 use sqlx::SqlitePool;
 
@@ -16,6 +19,50 @@ use crate::app::AppState;
 use crate::db::blocks::SqliteBlockStore;
 use common::{ApiError, ErrorCode};
 use repo_engine::Repository;
+
+/// Per-DID async locks serializing each repository's logical write sequence.
+///
+/// A repo write is not one SQL statement but a multi-query sequence spanning await points: read
+/// the root, open the repo, write the new blocks (each durable immediately via
+/// [`SqliteBlockStore`]), CAS the root, then garbage-collect superseded blocks. The
+/// single-connection pool serializes individual statements, not that sequence — so without this
+/// lock two in-flight writes to the same DID interleave, and one request's post-commit GC deletes
+/// the other's freshly written (not yet root-reachable) blocks, leaving the persisted root
+/// pointing at missing blocks and the repo permanently unopenable.
+///
+/// Every path that mutates a repo's block set or root (`createRecord`/`putRecord` via
+/// [`write_record`], `deleteRecord`, `applyWrites`) must hold this lock from before it reads the
+/// repo root until after its GC pass. Lock ordering: this lock is acquired *before* the firehose
+/// emit lock (inside [`commit_repo_write`]); nothing acquires them in the reverse order.
+///
+/// Entries are never evicted: the map is bounded by the number of accounts that ever wrote, and
+/// one mutex per account is negligible next to the account's rows.
+pub struct RepoWriteLocks {
+    locks: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+}
+
+impl RepoWriteLocks {
+    pub fn new() -> Self {
+        Self {
+            locks: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Acquire the write lock for `did`, waiting behind any in-flight write to the same repo.
+    pub async fn lock(&self, did: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = {
+            let mut map = self.locks.lock().expect("repo write lock map poisoned");
+            Arc::clone(map.entry(did.to_string()).or_default())
+        };
+        lock.lock_owned().await
+    }
+}
+
+impl Default for RepoWriteLocks {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Result of a successful record write operation.
 ///
@@ -170,6 +217,10 @@ pub async fn write_record(
             "authenticated account does not own this repository",
         ));
     }
+
+    // Serialize this repo's whole logical write (root read → commit → GC) against concurrent
+    // writers — see [`RepoWriteLocks`]. Held until this function returns, past the GC pass.
+    let _write_guard = state.repo_write_locks.lock(did).await;
 
     // Look up the repo root CID and active status in one query.
     let write_state = crate::db::accounts::get_repo_write_state(&state.db, did)
@@ -543,12 +594,33 @@ pub(crate) fn split_record_path(mst_key: &str) -> (String, String) {
 /// Computes the transitive closure of reachable CIDs from the commit, MST nodes,
 /// and record blocks, then deletes any blocks for this account that are not in
 /// that set. Returns the number of blocks removed.
+///
+/// Callers must hold the account's [`RepoWriteLocks`] lock: the reachability walk and the delete
+/// span many statements, and a concurrent write's fresh blocks are exactly the "unreachable" rows
+/// this sweep would destroy. As a second line of defense, the sweep is skipped entirely when
+/// `root` is no longer the persisted head — a reachable set computed from a superseded root does
+/// not contain the current head's blocks, so deleting against it corrupts the repo.
 pub async fn gc_repo_blocks(
     pool: &SqlitePool,
     did: &str,
     root: repo_engine::Cid,
 ) -> Result<u64, ApiError> {
     use std::collections::HashSet;
+
+    let current_root = crate::db::accounts::current_repo_root(pool, did)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, did = %did, "failed to read repo head for GC");
+            ApiError::new(ErrorCode::InternalError, "block GC failed")
+        })?;
+    if current_root.as_deref() != Some(root.to_string().as_str()) {
+        tracing::warn!(
+            did = %did,
+            gc_root = %root,
+            "skipping block GC: repo head is no longer the GC root"
+        );
+        return Ok(0);
+    }
 
     let mut store = SqliteBlockStore::new(pool.clone(), did.to_string());
     let reachable: HashSet<String> = repo_engine::collect_reachable_cids(&mut store, root)
@@ -567,4 +639,153 @@ pub async fn gc_repo_blocks(
             tracing::error!(error = %e, did = %did, "failed to delete unreachable blocks");
             ApiError::new(ErrorCode::InternalError, "block GC failed")
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::StatusCode;
+    use tower::ServiceExt;
+
+    use crate::db::blocks::SqliteBlockStore;
+    use crate::routes::test_utils::{
+        access_jwt, put_record_request, seed_account_with_repo, state_with_master_key,
+    };
+
+    async fn repo_root(db: &sqlx::SqlitePool, did: &str) -> String {
+        sqlx::query_scalar::<_, Option<String>>("SELECT repo_root_cid FROM accounts WHERE did = ?")
+            .bind(did)
+            .fetch_one(db)
+            .await
+            .unwrap()
+            .expect("account must have a repo root")
+    }
+
+    /// A GC pass computed against a root that is no longer the persisted head must not delete
+    /// blocks belonging to the current head. This is the MM-260 corruption vector reduced to its
+    /// deterministic core: write B advances the root between write A's commit and A's post-commit
+    /// GC, so A's reachable set does not contain B's new commit/MST/record blocks. B's commit is
+    /// applied without its own GC pass here because in the race A's delete runs while B's blocks
+    /// are freshly written and B's GC hasn't run yet.
+    #[tokio::test]
+    async fn stale_root_gc_preserves_committed_repo() {
+        let state = state_with_master_key().await;
+        let did = "did:plc:gcstaleroot";
+        let kp = seed_account_with_repo(&state.db, did).await;
+        let stale_root = repo_root(&state.db, did).await;
+
+        // Write B: advance the repo past the captured root (commit + CAS, no GC yet).
+        let signer = repo_engine::CommitSigner::from_bytes(&kp.private_key_bytes).unwrap();
+        let store = SqliteBlockStore::new(state.db.clone(), did.to_string());
+        let stale_cid = repo_engine::Cid::try_from(stale_root.as_str()).unwrap();
+        let mut repo = repo_engine::Repository::open(store, stale_cid)
+            .await
+            .unwrap();
+        repo_engine::put_record_json(
+            &mut repo,
+            &signer,
+            "app.bsky.feed.post/current",
+            &serde_json::json!({"text": "must survive stale GC"}),
+        )
+        .await
+        .unwrap();
+        let advanced = crate::db::accounts::advance_repo_root_if_active(
+            &state.db,
+            did,
+            &repo.root().to_string(),
+            repo.commit().rev().as_str(),
+            &stale_root,
+        )
+        .await
+        .unwrap();
+        assert!(advanced);
+        let current_root = repo_root(&state.db, did).await;
+        assert_ne!(current_root, stale_root);
+
+        // A straggling GC keyed on the superseded root must leave the current head intact.
+        let stale_cid = repo_engine::Cid::try_from(stale_root.as_str()).unwrap();
+        let _ = super::gc_repo_blocks(&state.db, did, stale_cid).await;
+
+        let store = SqliteBlockStore::new(state.db.clone(), did.to_string());
+        let current_cid = repo_engine::Cid::try_from(current_root.as_str()).unwrap();
+        let mut repo = repo_engine::Repository::open(store, current_cid)
+            .await
+            .expect("repo must still open at the persisted head after a stale-root GC");
+        let record = repo_engine::get_record_cid(&mut repo, "app.bsky.feed.post/current")
+            .await
+            .expect("record lookup must not error");
+        assert!(record.is_some(), "committed record lost to stale-root GC");
+    }
+
+    /// Two clients writing to the same repo concurrently (the official app pipelining a post and
+    /// a like) must never corrupt it: every write that returned 200 must remain readable, and the
+    /// persisted head must stay openable. On an unserialized write path, one request's
+    /// post-commit GC deletes the other request's freshly written blocks.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_same_repo_writes_never_corrupt_repo() {
+        let state = state_with_master_key().await;
+        let did = "did:plc:gcwriterace";
+        seed_account_with_repo(&state.db, did).await;
+        let token = access_jwt(&state.jwt_secret, did);
+
+        let mut tasks = Vec::new();
+        for task in 0..2 {
+            let state = state.clone();
+            let token = token.clone();
+            tasks.push(tokio::spawn(async move {
+                let app = crate::app::app(state);
+                let mut written = Vec::new();
+                for i in 0..8 {
+                    let rkey = format!("t{task}k{i}");
+                    let mut attempts = 0;
+                    loop {
+                        let response = app
+                            .clone()
+                            .oneshot(put_record_request(
+                                did,
+                                "app.bsky.feed.post",
+                                &rkey,
+                                serde_json::json!({"record": {"text": format!("post {rkey}")}}),
+                                Some(&token),
+                            ))
+                            .await
+                            .unwrap();
+                        match response.status() {
+                            StatusCode::OK => {
+                                written.push(rkey);
+                                break;
+                            }
+                            // A concurrent-write CAS conflict is a legitimate retryable outcome;
+                            // anything else (500 = repo no longer opens) is the corruption this
+                            // test exists to catch.
+                            StatusCode::CONFLICT => {
+                                attempts += 1;
+                                assert!(attempts < 50, "write {rkey} starved by conflicts");
+                            }
+                            status => panic!("write {rkey} failed with {status} — repo corrupted"),
+                        }
+                    }
+                }
+                written
+            }));
+        }
+
+        let mut written = Vec::new();
+        for task in tasks {
+            written.extend(task.await.unwrap());
+        }
+
+        let root = repo_root(&state.db, did).await;
+        let root_cid = repo_engine::Cid::try_from(root.as_str()).unwrap();
+        let store = SqliteBlockStore::new(state.db.clone(), did.to_string());
+        let mut repo = repo_engine::Repository::open(store, root_cid)
+            .await
+            .expect("repo must open at the persisted head after concurrent writes");
+        for rkey in &written {
+            let record =
+                repo_engine::get_record_cid(&mut repo, &format!("app.bsky.feed.post/{rkey}"))
+                    .await
+                    .expect("record lookup must not error");
+            assert!(record.is_some(), "acknowledged record {rkey} lost");
+        }
+    }
 }

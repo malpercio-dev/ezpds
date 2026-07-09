@@ -194,6 +194,10 @@ pub async fn apply_writes(
         kinds.push(kind);
     }
 
+    // Serialize this repo's whole logical write (root read → commit → GC) against concurrent
+    // writers — see `record_write::RepoWriteLocks`. Held until this handler returns.
+    let _write_guard = state.repo_write_locks.lock(did).await;
+
     // Look up the repo root CID and active status in one query.
     let write_state = crate::db::accounts::get_repo_write_state(&state.db, did)
         .await

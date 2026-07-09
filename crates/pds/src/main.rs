@@ -311,6 +311,7 @@ async fn run() -> anyhow::Result<()> {
         email,
         allow_loopback_proxy_targets: false,
         metrics,
+        repo_write_locks: Arc::new(record_write::RepoWriteLocks::new()),
     };
 
     let listener = tokio::net::TcpListener::bind(&addr)
