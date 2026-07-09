@@ -21,6 +21,11 @@ pub struct CreateRecordBody {
     rkey: Option<String>,
     /// The record data as a JSON object.
     record: serde_json::Value,
+    /// `swapCommit`: when present, only write if the repo head matches this commit CID.
+    /// `createRecord`'s lexicon defines no `swapRecord` — create-only semantics already
+    /// require the target key to be absent.
+    #[serde(default, rename = "swapCommit")]
+    swap_commit: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -53,6 +58,13 @@ pub async fn create_record(
 
     let mst_key = format!("{collection}/{rkey}");
 
+    // `swapCommit` is the only precondition createRecord's lexicon carries; create-only
+    // semantics stand in for the record-absent check `swapRecord: null` would express.
+    let swap = crate::record_write::SwapCheck {
+        commit: body.swap_commit,
+        record: None,
+    };
+
     // Delegate to the shared write helper with create_only=true.
     let (_result, record_cid) = crate::record_write::write_record(
         &state,
@@ -61,7 +73,7 @@ pub async fn create_record(
         &mst_key,
         &body.record,
         true, // create_only: reject if record already exists
-        &crate::record_write::SwapCheck::default(),
+        &swap,
     )
     .await?;
 
@@ -794,6 +806,73 @@ mod tests {
             "second commit's prevData must be the first commit's MST root"
         );
         assert_eq!(c2.since.as_deref(), Some(c1.rev.as_str()));
+    }
+
+    #[tokio::test]
+    async fn create_record_swap_commit_stale_returns_invalid_swap() {
+        let (state, did) = setup_account_with_repo().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        let app = crate::app::app(state);
+
+        // A bogus commit CID never matches the head → 409 InvalidSwap.
+        let bogus = "bafyreie5cvv4h45feadgeuwhbcutmh6t2ceseocckahdoe6uat64zmz454";
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri("/xrpc/com.atproto.repo.createRecord")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({
+                    "repo": did,
+                    "collection": "app.bsky.feed.post",
+                    "rkey": "swapstale",
+                    "record": {"text": "should not land"},
+                    "swapCommit": bogus
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "InvalidSwap");
+    }
+
+    #[tokio::test]
+    async fn create_record_swap_commit_matching_head_succeeds() {
+        let (state, did) = setup_account_with_repo().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        let db = state.db.clone();
+        let app = crate::app::app(state);
+
+        // Read the current repo head, then create with swapCommit = head → succeeds.
+        let head = crate::db::accounts::get_repo_root_cid(&db, &did)
+            .await
+            .unwrap()
+            .unwrap();
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri("/xrpc/com.atproto.repo.createRecord")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({
+                    "repo": did,
+                    "collection": "app.bsky.feed.post",
+                    "rkey": "swapmatch",
+                    "record": {"text": "lands"},
+                    "swapCommit": head
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[test]
