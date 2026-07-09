@@ -61,6 +61,15 @@ pub async fn upload_blob(
 ) -> Result<(StatusCode, Json<UploadBlobResponse>), ApiError> {
     let max_size = state.config.blobs.max_blob_size as usize;
 
+    // Capture the client-declared blob type before the body is consumed. The reference PDS
+    // records this `Content-Type` (reconciled against a content sniff) rather than sniffing
+    // alone, so formats without magic bytes (SVG, JSON, VTT) keep their real type.
+    let declared_content_type = request
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
     // 1. Fast-path rejection: check Content-Length header before reading the body.
     if let Some(content_length) = request
         .headers()
@@ -85,7 +94,11 @@ pub async fn upload_blob(
 
     // 2. Read the full request body, enforcing max size.
     let bytes = collect_body_with_limit(request.into_body(), max_size).await?;
-    let mime_type = blob_store::detect_mime_type(&bytes);
+    // Resolve the stored MIME type from the declared Content-Type reconciled against a content
+    // sniff (blob_store::resolve_mime_type). The same value gates the granular blob-scope check,
+    // is persisted, and is served back by getBlob — so a `blob:image/*` token accepts a
+    // legitimate SVG avatar instead of being rejected against a sniff-only octet-stream.
+    let mime_type = blob_store::resolve_mime_type(declared_content_type.as_deref(), &bytes);
     if user.scope == crate::auth::jwt::AuthScope::Access {
         oauth_scopes::require_blob(&user.scope_claim, &mime_type)?;
     }
@@ -109,8 +122,8 @@ pub async fn upload_blob(
         ));
     }
 
-    // 4. Store blob on filesystem (CID computation + MIME detection + write).
-    let stored = blob_store::store_blob(&state.config.data_dir, &bytes)
+    // 4. Store blob on filesystem (CID computation + write); persist the resolved MIME type.
+    let stored = blob_store::store_blob(&state.config.data_dir, &bytes, &mime_type)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to store blob on filesystem");
@@ -445,6 +458,87 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(allowed.status(), StatusCode::OK);
+    }
+
+    /// A `blob:image/*` token may upload an SVG avatar: the declared `Content-Type` is honored
+    /// (SVG has no magic bytes), so the scope check sees `image/svg+xml`, not `octet-stream`.
+    #[tokio::test]
+    async fn svg_upload_with_image_scope_uses_declared_content_type() {
+        let state = test_state().await;
+        seed_account(&state, "did:plc:svgblob").await;
+        let image_jwt =
+            issue_test_jwt_with_scope(&state, "did:plc:svgblob", "atproto blob:image/*");
+
+        let response = app_with_state(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.repo.uploadBlob")
+                    .header("authorization", format!("Bearer {image_jwt}"))
+                    .header("content-type", "image/svg+xml")
+                    .body(Body::from(
+                        b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>".to_vec(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["blob"]["mimeType"], "image/svg+xml");
+    }
+
+    /// An unsniffable format (JSON) keeps its declared `Content-Type` in the stored metadata.
+    #[tokio::test]
+    async fn declared_content_type_recorded_for_unsniffable_content() {
+        let state = test_state().await;
+        seed_account(&state, "did:plc:jsonblob").await;
+        let jwt = issue_test_jwt(&state, "did:plc:jsonblob");
+
+        let response = app_with_state(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.repo.uploadBlob")
+                    .header("authorization", format!("Bearer {jwt}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(b"{\"hello\":\"world\"}".to_vec()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["blob"]["mimeType"], "application/json");
+    }
+
+    /// A confident binary sniff overrides a mismatched declared type: PNG bytes announced as
+    /// `text/html` are stored as `image/png`, so the blob can never be served as HTML.
+    #[tokio::test]
+    async fn binary_sniff_overrides_mismatched_content_type() {
+        let state = test_state().await;
+        seed_account(&state, "did:plc:lyingblob").await;
+        let jwt = issue_test_jwt(&state, "did:plc:lyingblob");
+
+        let png_bytes: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00];
+        let response = app_with_state(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.repo.uploadBlob")
+                    .header("authorization", format!("Bearer {jwt}"))
+                    .header("content-type", "text/html")
+                    .body(Body::from(png_bytes.to_vec()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["blob"]["mimeType"], "image/png");
     }
 
     /// Oversized body via Content-Length header returns 413 before reading the body.

@@ -390,9 +390,13 @@ mod tests {
         seed_account_with_repo(&state.db, did).await;
 
         // Store a blob on disk + its metadata row.
-        let stored = crate::blob_store::store_blob(&state.config.data_dir, b"blob to reclaim")
-            .await
-            .unwrap();
+        let stored = crate::blob_store::store_blob(
+            &state.config.data_dir,
+            b"blob to reclaim",
+            "application/octet-stream",
+        )
+        .await
+        .unwrap();
         crate::db::blobs::insert_blob(
             &state.db,
             &stored.cid,
@@ -428,9 +432,13 @@ mod tests {
         seed_account_with_repo(&state.db, other).await;
 
         // Both accounts upload the same bytes → one file, one physical row, two owner rows.
-        let stored = crate::blob_store::store_blob(&state.config.data_dir, b"shared blob bytes")
-            .await
-            .unwrap();
+        let stored = crate::blob_store::store_blob(
+            &state.config.data_dir,
+            b"shared blob bytes",
+            "application/octet-stream",
+        )
+        .await
+        .unwrap();
         for owner in [did, other] {
             crate::db::blobs::insert_blob(
                 &state.db,

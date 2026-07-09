@@ -393,9 +393,10 @@ mod tests {
     /// Store `content` as a blob on disk and insert its metadata row with the given
     /// `temp_until`. Returns the blob CID.
     async fn add_blob(state: &AppState, did: &str, content: &[u8], temp_until: &str) -> String {
-        let stored = blob_store::store_blob(&state.config.data_dir, content)
-            .await
-            .unwrap();
+        let stored =
+            blob_store::store_blob(&state.config.data_dir, content, "application/octet-stream")
+                .await
+                .unwrap();
         blobs::insert_blob(
             &state.db,
             &stored.cid,

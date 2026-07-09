@@ -63,9 +63,14 @@ pub async fn get_blob(
             ApiError::new(ErrorCode::InternalError, "failed to read blob")
         })?;
 
-    // 3. Build response with correct Content-Type.
-    // Use the stored MIME type string directly; fall back to application/octet-stream
-    // if somehow empty (shouldn't happen with current blob_store logic).
+    // 3. Build response with the stored Content-Type, hardened against a stored-XSS vector.
+    //    A blob's type is client-controlled (an uploader can declare image/svg+xml, which
+    //    browsers execute script from) and this endpoint is same-origin with the OAuth/landing
+    //    surface, so a rendered blob could script that origin. `default-src 'none'; sandbox`
+    //    neutralizes any script if the blob is navigated to as a document, and `nosniff` stops
+    //    a declared image/* being sniffed into HTML — matching the reference PDS's blob headers.
+    //    (Embedding via `<img>` is unaffected: the CSP only binds the blob as a top-level
+    //    document, not as a sub-resource.)
     let content_type = if blob.mime_type.is_empty() {
         "application/octet-stream".to_string()
     } else {
@@ -74,7 +79,14 @@ pub async fn get_blob(
 
     Ok((
         StatusCode::OK,
-        [(header::CONTENT_TYPE, content_type)],
+        [
+            (header::CONTENT_TYPE, content_type),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                "default-src 'none'; sandbox".to_string(),
+            ),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+        ],
         Body::from(content),
     )
         .into_response())
@@ -148,6 +160,44 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(body.as_ref(), b"test blob content");
+    }
+
+    /// Blob responses carry hardening headers so a client-controlled active type (e.g.
+    /// image/svg+xml) can't execute as stored XSS on this same-origin endpoint.
+    #[tokio::test]
+    async fn serves_content_security_and_nosniff_headers() {
+        let state = test_state().await;
+        seed_blob(
+            &state,
+            "did:plc:svgserve",
+            "bafkreisvgserve",
+            "image/svg+xml",
+        )
+        .await;
+
+        let response = app_with_state(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/xrpc/com.atproto.sync.getBlob?did=did:plc:svgserve&cid=bafkreisvgserve")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "image/svg+xml"
+        );
+        assert_eq!(
+            response.headers().get("content-security-policy").unwrap(),
+            "default-src 'none'; sandbox"
+        );
+        assert_eq!(
+            response.headers().get("x-content-type-options").unwrap(),
+            "nosniff"
+        );
     }
 
     /// Non-existent blob returns 404.

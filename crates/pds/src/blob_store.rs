@@ -20,7 +20,7 @@ pub enum BlobStoreError {
 pub struct StoredBlob {
     /// Content-addressable identifier (base32 CIDv1 with raw codec + SHA-256).
     pub cid: String,
-    /// Detected MIME type (e.g. "image/jpeg").
+    /// Resolved MIME type (e.g. "image/jpeg"), as reconciled by [`resolve_mime_type`].
     pub mime_type: String,
     /// Relative storage path under `data_dir` (e.g. "blobs/ba/bafy...").
     pub storage_path: String,
@@ -28,33 +28,87 @@ pub struct StoredBlob {
     pub size_bytes: u64,
 }
 
-/// Detect a blob MIME type from magic bytes, falling back to generic binary.
-pub fn detect_mime_type(content: &[u8]) -> String {
-    infer::get(content)
-        .map(|t| t.to_string())
-        .unwrap_or_else(|| "application/octet-stream".to_string())
+/// Resolve a blob's MIME type from the client-declared `Content-Type` reconciled against a
+/// content sniff, matching the reference PDS (`sniffedMime ?? userSuggestedMime`).
+///
+/// A confident magic-byte match for a concrete binary/media format always wins — a client
+/// cannot mislabel binary content (e.g. PNG bytes announced as `text/html`). `infer`'s
+/// heuristic *text* matchers (`text/html`, `text/xml`, ...) are deliberately not treated as
+/// confident: text-family formats (SVG, JSON, VTT, ...) have no reliable magic bytes, so a
+/// valid client-declared `Content-Type` is authoritative for them. Falls back to
+/// `application/octet-stream` when neither yields a usable type.
+pub fn resolve_mime_type(declared: Option<&str>, content: &[u8]) -> String {
+    if let Some(kind) = infer::get(content) {
+        if kind.matcher_type() != infer::MatcherType::Text {
+            return kind.mime_type().to_string();
+        }
+    }
+    normalize_declared_mime(declared).unwrap_or_else(|| "application/octet-stream".to_string())
+}
+
+/// Normalize a client-declared `Content-Type` to a bare, validated `type/subtype` essence,
+/// or `None` when it is absent or not a well-formed MIME type. Strips any parameters
+/// (`; charset=...`), trims surrounding whitespace, and lowercases (MIME types are
+/// case-insensitive).
+fn normalize_declared_mime(declared: Option<&str>) -> Option<String> {
+    let essence = declared?
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    is_valid_mime_essence(&essence).then_some(essence)
+}
+
+/// Whether `s` is a syntactically valid `type/subtype` MIME essence: exactly one `/`, both
+/// halves non-empty RFC-6838/RFC-2045 token chars, and ≤255 bytes.
+fn is_valid_mime_essence(s: &str) -> bool {
+    if s.is_empty() || s.len() > 255 {
+        return false;
+    }
+    let mut parts = s.split('/');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(kind), Some(sub), None) => {
+            !kind.is_empty()
+                && !sub.is_empty()
+                && kind.bytes().all(is_mime_token_byte)
+                && sub.bytes().all(is_mime_token_byte)
+        }
+        _ => false,
+    }
+}
+
+/// A MIME token byte: ASCII alphanumerics plus the small punctuation set MIME essences use
+/// (notably `+` for `image/svg+xml`, `.` for `application/vnd.foo`).
+fn is_mime_token_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric()
+        || matches!(
+            b,
+            b'!' | b'#' | b'$' | b'&' | b'-' | b'^' | b'_' | b'.' | b'+'
+        )
 }
 
 /// Store a blob on disk and return its CID, MIME type, and storage path.
 ///
-/// Content is written to `{data_dir}/blobs/{cid[0:2]}/{cid}`.
-/// CID is a CIDv1 (raw codec, SHA-256 multihash) encoded in base32 (`bafk...`).
-/// MIME type is detected from the first 8192 bytes via magic bytes (`infer` crate).
-/// Falls back to `application/octet-stream` when no magic bytes match.
-pub async fn store_blob(data_dir: &Path, content: &[u8]) -> Result<StoredBlob, BlobStoreError> {
-    // 1. Detect MIME type from magic bytes; fall back to generic binary.
-    let mime_type = detect_mime_type(content);
-
-    // 2. Compute SHA-256 multihash.
+/// Content is written to `{data_dir}/blobs/{cid[0:2]}/{cid}`. The CID is a CIDv1 (raw codec,
+/// SHA-256 multihash) encoded in base32 (`bafk...`). `mime_type` is stored verbatim — the
+/// caller resolves it (see [`resolve_mime_type`]) so the scope check that gates the upload,
+/// the persisted row, and the later `getBlob` response all agree on one type.
+pub async fn store_blob(
+    data_dir: &Path,
+    content: &[u8],
+    mime_type: &str,
+) -> Result<StoredBlob, BlobStoreError> {
+    // 1. Compute SHA-256 multihash.
     let hash = Sha256::digest(content);
     let cid = build_cid(hash.as_slice());
 
-    // 3. Build storage path: blobs/{prefix}/{cid}
+    // 2. Build storage path: blobs/{prefix}/{cid}
     let prefix = &cid[..2.min(cid.len())];
     let rel_path = format!("blobs/{prefix}/{cid}");
     let abs_path = data_dir.join(&rel_path);
 
-    // 4. Create parent directory and write.
+    // 3. Create parent directory and write.
     if let Some(parent) = abs_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
@@ -62,7 +116,7 @@ pub async fn store_blob(data_dir: &Path, content: &[u8]) -> Result<StoredBlob, B
 
     Ok(StoredBlob {
         cid,
-        mime_type,
+        mime_type: mime_type.to_string(),
         storage_path: rel_path,
         size_bytes: content.len() as u64,
     })
@@ -145,10 +199,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let content = b"hello, blob world!";
 
-        let stored = store_blob(dir.path(), content).await.unwrap();
+        let stored = store_blob(dir.path(), content, "application/octet-stream")
+            .await
+            .unwrap();
 
         assert!(stored.cid.starts_with("bafk"), "CID must be base32 CIDv1");
-        assert_eq!(stored.mime_type, "application/octet-stream"); // no magic bytes → fallback
+        assert_eq!(stored.mime_type, "application/octet-stream");
         assert!(stored.storage_path.starts_with("blobs/"));
         assert_eq!(stored.size_bytes, content.len() as u64);
 
@@ -157,25 +213,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn jpeg_mime_detected() {
+    async fn store_blob_persists_the_resolved_mime_verbatim() {
+        // store_blob no longer sniffs — it stores exactly the type the caller resolved.
         let dir = tempfile::tempdir().unwrap();
-        // Minimal JPEG: SOI marker + EOI marker
-        let jpeg_bytes = [
-            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0xFF, 0xD9,
-        ];
-
-        let stored = store_blob(dir.path(), &jpeg_bytes).await.unwrap();
-        assert_eq!(stored.mime_type, "image/jpeg");
-    }
-
-    #[tokio::test]
-    async fn png_mime_detected() {
-        let dir = tempfile::tempdir().unwrap();
-        // PNG magic bytes (8-byte signature)
-        let png_bytes = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00];
-
-        let stored = store_blob(dir.path(), &png_bytes).await.unwrap();
-        assert_eq!(stored.mime_type, "image/png");
+        let stored = store_blob(dir.path(), b"<svg></svg>", "image/svg+xml")
+            .await
+            .unwrap();
+        assert_eq!(stored.mime_type, "image/svg+xml");
     }
 
     #[tokio::test]
@@ -183,9 +227,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let content = b"deterministic";
 
-        let a = store_blob(dir.path(), content).await.unwrap();
+        let a = store_blob(dir.path(), content, "application/octet-stream")
+            .await
+            .unwrap();
         // Second write is idempotent (same CID, same path).
-        let b = store_blob(dir.path(), content).await.unwrap();
+        let b = store_blob(dir.path(), content, "application/octet-stream")
+            .await
+            .unwrap();
 
         assert_eq!(a.cid, b.cid);
         assert_eq!(a.storage_path, b.storage_path);
@@ -194,8 +242,12 @@ mod tests {
     #[tokio::test]
     async fn different_content_different_cid() {
         let dir = tempfile::tempdir().unwrap();
-        let a = store_blob(dir.path(), b"alpha").await.unwrap();
-        let b = store_blob(dir.path(), b"bravo").await.unwrap();
+        let a = store_blob(dir.path(), b"alpha", "application/octet-stream")
+            .await
+            .unwrap();
+        let b = store_blob(dir.path(), b"bravo", "application/octet-stream")
+            .await
+            .unwrap();
 
         assert_ne!(a.cid, b.cid);
     }
@@ -203,7 +255,9 @@ mod tests {
     #[tokio::test]
     async fn prefix_fanout_creates_two_char_directory() {
         let dir = tempfile::tempdir().unwrap();
-        let stored = store_blob(dir.path(), b"fanout test").await.unwrap();
+        let stored = store_blob(dir.path(), b"fanout test", "application/octet-stream")
+            .await
+            .unwrap();
 
         // storage_path should be like "blobs/ba/bafk..."
         let parts: Vec<&str> = stored.storage_path.split('/').collect();
@@ -215,7 +269,9 @@ mod tests {
     #[tokio::test]
     async fn delete_blob_removes_file() {
         let dir = tempfile::tempdir().unwrap();
-        let stored = store_blob(dir.path(), b"delete me").await.unwrap();
+        let stored = store_blob(dir.path(), b"delete me", "application/octet-stream")
+            .await
+            .unwrap();
 
         let deleted = delete_blob_file(dir.path(), &stored.storage_path)
             .await
@@ -271,12 +327,86 @@ mod tests {
     #[tokio::test]
     async fn empty_content_stores_successfully() {
         let dir = tempfile::tempdir().unwrap();
-        let stored = store_blob(dir.path(), b"").await.unwrap();
+        let stored = store_blob(dir.path(), b"", "application/octet-stream")
+            .await
+            .unwrap();
 
         assert_eq!(stored.size_bytes, 0);
         assert_eq!(stored.mime_type, "application/octet-stream");
 
         let read_back = read_blob(dir.path(), &stored.storage_path).await.unwrap();
         assert!(read_back.is_empty());
+    }
+
+    // ── resolve_mime_type ─────────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_prefers_binary_sniff_over_declared() {
+        // A concrete magic-byte match wins even against a (mis)declared type: a client can't
+        // relabel PNG bytes as text/html and have them served as HTML.
+        let png = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00];
+        assert_eq!(resolve_mime_type(Some("text/html"), &png), "image/png");
+        // JPEG likewise (SOI + EOI).
+        let jpeg = [
+            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0xFF, 0xD9,
+        ];
+        assert_eq!(resolve_mime_type(None, &jpeg), "image/jpeg");
+    }
+
+    #[test]
+    fn resolve_uses_declared_when_content_is_unsniffable() {
+        // A plain <svg> has no magic bytes `infer` recognizes, so the declared type is used —
+        // this is the case that lets a blob:image/* scoped token accept an SVG avatar.
+        assert_eq!(
+            resolve_mime_type(
+                Some("image/svg+xml"),
+                b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>"
+            ),
+            "image/svg+xml"
+        );
+        assert_eq!(
+            resolve_mime_type(Some("application/json"), b"{\"hello\":\"world\"}"),
+            "application/json"
+        );
+    }
+
+    #[test]
+    fn resolve_ignores_heuristic_text_sniff_in_favor_of_declared() {
+        // An SVG carrying an XML prolog sniffs to text/xml (a heuristic Text match), which must
+        // NOT override the client's declared image/svg+xml.
+        assert_eq!(
+            resolve_mime_type(Some("image/svg+xml"), b"<?xml version=\"1.0\"?><svg></svg>"),
+            "image/svg+xml"
+        );
+    }
+
+    #[test]
+    fn resolve_strips_parameters_and_normalizes_case() {
+        assert_eq!(
+            resolve_mime_type(Some("image/svg+xml; charset=utf-8"), b"<svg></svg>"),
+            "image/svg+xml"
+        );
+        assert_eq!(
+            resolve_mime_type(Some("IMAGE/SVG+XML"), b"<svg></svg>"),
+            "image/svg+xml"
+        );
+    }
+
+    #[test]
+    fn resolve_falls_back_to_octet_stream() {
+        // No declared type and nothing to sniff.
+        assert_eq!(
+            resolve_mime_type(None, b"just some bytes"),
+            "application/octet-stream"
+        );
+        // A malformed declared type is rejected rather than stored.
+        assert_eq!(
+            resolve_mime_type(Some("not-a-mime-type"), b"just some bytes"),
+            "application/octet-stream"
+        );
+        assert_eq!(
+            resolve_mime_type(Some(""), b"just some bytes"),
+            "application/octet-stream"
+        );
     }
 }
