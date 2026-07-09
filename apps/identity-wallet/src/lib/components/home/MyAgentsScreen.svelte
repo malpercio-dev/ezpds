@@ -127,44 +127,62 @@
 
   async function loadMoreAudit() {
     if (!selected) return;
+    // Capture the request's context: the user can navigate to another agent (or back to the
+    // list) while the fetch is in flight, and a stale page must never land in the new view.
+    const registrationId = selected.registrationId;
+    const cursor = auditCursor;
     auditLoading = true;
     auditError = null;
     try {
-      const page = await getAgentAudit(selected.registrationId, auditCursor);
+      const page = await getAgentAudit(registrationId, cursor);
+      if (selected?.registrationId !== registrationId) return;
       auditEvents = [...auditEvents, ...page.events];
       auditCursor = page.cursor;
     } catch (e) {
       console.error('Failed to load audit trail:', e);
-      auditError = 'Could not load the activity record.';
+      if (selected?.registrationId === registrationId) {
+        auditError = 'Could not load the activity record.';
+      }
     } finally {
-      auditLoading = false;
+      if (selected?.registrationId === registrationId) {
+        auditLoading = false;
+      }
     }
   }
 
   async function doRevoke() {
-    if (!selected) return;
+    if (!selected || revoking) return;
+    const registrationId = selected.registrationId;
     revokeError = null;
+    // Set the in-flight flag before the biometric prompt so a second tap during the Face ID
+    // wait cannot fire a duplicate prompt/revocation.
+    revoking = true;
     try {
       await authenticateBiometric('Revoke this agent’s access');
     } catch {
+      revoking = false;
       return; // gate rejected — nothing changes.
     }
-    revoking = true;
     try {
-      await revokeAgent(selected.registrationId);
-      confirmingRevoke = false;
-      // Reflect the revocation immediately in both views, then reload the trail so the
-      // `revoked` audit event appears.
-      selected = { ...selected, status: 'revoked' };
+      await revokeAgent(registrationId);
+      // Reflect the revocation in the list unconditionally; touch the detail view only if the
+      // user is still looking at this agent (they may have navigated away mid-flight).
       agents = agents.map((a) =>
-        a.registrationId === selected?.registrationId ? { ...a, status: 'revoked' } : a
+        a.registrationId === registrationId ? { ...a, status: 'revoked' } : a
       );
-      auditEvents = [];
-      auditCursor = undefined;
-      await loadMoreAudit();
+      if (selected?.registrationId === registrationId) {
+        confirmingRevoke = false;
+        selected = { ...selected, status: 'revoked' };
+        auditEvents = [];
+        auditCursor = undefined;
+        revoking = false;
+        await loadMoreAudit();
+      }
     } catch (e) {
       console.error('Revocation failed:', e);
-      revokeError = 'Revocation did not go through. Check your connection and try again.';
+      if (selected?.registrationId === registrationId) {
+        revokeError = 'Revocation did not go through. Check your connection and try again.';
+      }
     } finally {
       revoking = false;
     }
@@ -210,8 +228,17 @@
     <p class="section-label">Permissions</p>
     <ul class="grants">
       {#each describeScopes(selected.scopes) as scope (scope.token)}
-        <li class="grant">
-          <span class="grant-t">{scope.summary}</span>
+        <li class="grant" class:grant--elevated={scope.elevated}>
+          {#if scope.elevated}
+            <span class="grant-warn-row">
+              <span class="grant-warn-ic" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.2 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.2a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+              </span>
+              <span class="grant-t">{scope.summary} <em class="grant-warn">(elevated access)</em></span>
+            </span>
+          {:else}
+            <span class="grant-t">{scope.summary}</span>
+          {/if}
           <code class="grant-token">{scope.token}</code>
         </li>
       {/each}
@@ -634,6 +661,25 @@
     font-size: var(--text-data);
     color: var(--color-muted);
     overflow-wrap: anywhere;
+  }
+  .grant--elevated {
+    border-color: var(--color-warning);
+    background: var(--color-warning-surface);
+  }
+  .grant-warn-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+  }
+  .grant-warn-ic {
+    color: var(--color-warning);
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+  .grant-warn {
+    font-style: normal;
+    font-weight: var(--weight-semibold);
+    color: var(--color-warning);
   }
 
   .trail {

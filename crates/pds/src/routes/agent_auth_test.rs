@@ -675,8 +675,8 @@ async fn register_and_confirm_service_auth(state: &AppState, owner: &str, email:
     registration_id
 }
 
-/// agent-consent.AC2.1: the list is scoped to the authenticated DID, and a foreign registration
-/// id is a uniform 404 for both revoke and audit (no cross-account existence oracle).
+/// The list is scoped to the authenticated DID, and a foreign registration id is a uniform 404
+/// for both revoke and audit (no cross-account existence oracle).
 #[tokio::test]
 async fn management_api_isolates_accounts() {
     let state = state_with(AgentAuthConfig {
@@ -729,8 +729,8 @@ async fn management_api_isolates_accounts() {
     assert_eq!(austatus, StatusCode::NOT_FOUND, "foreign audit must 404");
 }
 
-/// agent-consent.AC2.2: revocation through the API immediately blocks the next token exchange,
-/// is idempotent, and lands exactly one `revoked` audit event.
+/// Revocation through the API immediately blocks the next token exchange, is idempotent, and
+/// lands exactly one `revoked` audit event.
 #[tokio::test]
 async fn revoke_via_api_blocks_reexchange_and_audits_once() {
     let state = state_with(AgentAuthConfig {
@@ -789,9 +789,8 @@ async fn revoke_via_api_blocks_reexchange_and_audits_once() {
     assert_eq!(revoked, 1, "idempotent revoke must audit exactly once");
 }
 
-/// agent-consent.AC3.1 (ceremony legs) + AC3.2: register → claim initiated → confirmed → token
-/// exchanged → revoked appear in order, attributed to this registration, and no event carries
-/// token material or the user code.
+/// register → claim initiated → confirmed → token exchanged → revoked appear in order,
+/// attributed to this registration, and no event carries token material or the user code.
 #[tokio::test]
 async fn lifecycle_audit_trail_is_ordered_and_leak_free() {
     let state = state_with(AgentAuthConfig {
@@ -861,7 +860,7 @@ async fn lifecycle_audit_trail_is_ordered_and_leak_free() {
         ]
     );
 
-    // AC3.2: no secrets in the trail — not the user code, the claim token, or the assertion JWT.
+    // No secrets in the trail — not the user code, the claim token, or the assertion JWT.
     let rendered = abody.to_string();
     assert!(
         !rendered.contains(&user_code),
@@ -912,9 +911,9 @@ async fn agent_tokens_cannot_use_management_api() {
     );
 }
 
-/// agent-consent.AC4.1 (server half): the wallet can preview exactly what confirming a code
-/// grants — type + scopes — before the biometric gate; a foreign owner gets a uniform 404; the
-/// previewed scopes equal what confirmation then stores.
+/// The wallet can preview exactly what confirming a code grants — type + scopes — before the
+/// biometric gate; a foreign owner gets a uniform 404; the previewed scopes equal what
+/// confirmation then stores.
 #[tokio::test]
 async fn claim_preview_shows_grant_before_confirm_and_isolates_owners() {
     let state = state_with(AgentAuthConfig {
@@ -995,4 +994,75 @@ async fn claim_preview_shows_grant_before_confirm_and_isolates_owners() {
     )
     .await;
     assert_eq!(dstatus, StatusCode::NOT_FOUND);
+}
+
+/// The audit endpoint's cursor pages the trail without skipping or duplicating: a full lifecycle
+/// (5 events) read at `limit=2` yields three pages whose concatenation equals the single-page
+/// read, and the short final page carries no cursor.
+#[tokio::test]
+async fn audit_cursor_pages_without_gaps_or_duplicates() {
+    let state = state_with(AgentAuthConfig {
+        service_auth_enabled: true,
+        ..AgentAuthConfig::default()
+    })
+    .await;
+    let owner = "did:plc:mgmtpaging111111";
+    insert_account(&state.db, owner, "mgmt-paging@example.com").await;
+    let registration_id =
+        register_and_confirm_service_auth(&state, owner, "mgmt-paging@example.com").await;
+    let assertion: String =
+        sqlx::query_scalar("SELECT identity_assertion FROM agent_identities WHERE id = ?")
+            .bind(&registration_id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    let (xstatus, _x) = exchange_assertion(state.clone(), &assertion).await;
+    assert_eq!(xstatus, StatusCode::OK);
+    let (rstatus, _r) = post_json(
+        state.clone(),
+        &format!("/v1/agents/{registration_id}/revoke"),
+        json!({}),
+        Some(&owner_token(&state, owner)),
+    )
+    .await;
+    assert_eq!(rstatus, StatusCode::OK);
+
+    let (_fs, full) = get_json_authed(
+        state.clone(),
+        &format!("/v1/agents/{registration_id}/audit"),
+        &owner_token(&state, owner),
+    )
+    .await;
+    let all_ids: Vec<String> = full["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(all_ids.len(), 5, "full lifecycle should have 5 events");
+
+    let mut paged_ids: Vec<String> = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let uri = match &cursor {
+            Some(c) => format!("/v1/agents/{registration_id}/audit?limit=2&cursor={c}"),
+            None => format!("/v1/agents/{registration_id}/audit?limit=2"),
+        };
+        let (pstatus, page) =
+            get_json_authed(state.clone(), &uri, &owner_token(&state, owner)).await;
+        assert_eq!(pstatus, StatusCode::OK);
+        let events = page["events"].as_array().unwrap();
+        paged_ids.extend(events.iter().map(|e| e["id"].as_str().unwrap().to_string()));
+        match page["cursor"].as_str() {
+            Some(c) => {
+                assert_eq!(events.len(), 2, "a page carrying a cursor must be full");
+                cursor = Some(c.to_string());
+            }
+            None => break,
+        }
+    }
+    assert_eq!(
+        paged_ids, all_ids,
+        "paged reads must reproduce the single-page read exactly — no gaps, no duplicates"
+    );
 }

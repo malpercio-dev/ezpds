@@ -217,7 +217,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_swept_attempt_cannot_be_confirmed() {
-        // AC1.3: once swept, the attempt is terminal — `complete_agent_claim_attempt` guards on
+        // Once swept, the attempt is terminal — `complete_agent_claim_attempt` guards on
         // `status = 'pending'`, so confirmation of the swept row affects no rows.
         let state = test_state().await;
         seed_identity(&state.db, "reg_gone", None).await;

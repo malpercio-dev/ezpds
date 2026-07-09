@@ -1066,9 +1066,10 @@ pub(crate) fn apply_env_overrides(
     if let Some(v) = env.get("EZPDS_RATE_LIMIT_WRITE_POINTS_DAILY") {
         raw.rate_limit.write_points_daily = parse_u64("EZPDS_RATE_LIMIT_WRITE_POINTS_DAILY", v)?;
     }
-    // Periodic-sweep interval overrides (blob GC, firehose retention, deletion reaper). Only the
-    // u64 parse happens here — a zero interval is rejected later by `validate_and_build`, the same
-    // check the TOML path goes through (a zero period would panic `tokio::time::interval`).
+    // Periodic-sweep interval overrides (agent-claim sweep, blob GC, firehose retention, deletion
+    // reaper). Only the u64 parse happens here — a zero interval is rejected later by
+    // `validate_and_build`, the same check the TOML path goes through (a zero period would panic
+    // `tokio::time::interval`).
     if let Some(v) = env.get("EZPDS_AGENT_CLAIM_SWEEP_INTERVAL_SECS") {
         raw.agent_auth.claim_sweep_interval_secs =
             parse_u64("EZPDS_AGENT_CLAIM_SWEEP_INTERVAL_SECS", v)?;
@@ -1598,6 +1599,33 @@ mod tests {
         assert_eq!(config.firehose.gc_interval_secs, 300);
         assert_eq!(config.firehose.log_retention_secs, 0);
         assert_eq!(config.firehose.log_retention_count, 5000);
+    }
+
+    #[test]
+    fn agent_claim_sweep_interval_secs_zero_is_rejected() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [agent_auth]
+            claim_sweep_interval_secs = 0
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("claim_sweep_interval_secs"));
+    }
+
+    #[test]
+    fn env_override_agent_claim_sweep_interval() {
+        let env = HashMap::from([(
+            "EZPDS_AGENT_CLAIM_SWEEP_INTERVAL_SECS".to_string(),
+            "42".to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.agent_auth.claim_sweep_interval_secs, 42);
     }
 
     #[test]

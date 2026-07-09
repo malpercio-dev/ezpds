@@ -60,6 +60,11 @@
           title: 'This request belongs to a different account',
           body: 'The agent asked to connect to another account on this server. Nothing was approved.',
         };
+      case 'RATE_LIMITED':
+        return {
+          title: 'Too many attempts',
+          body: 'Your server paused code checks for a few minutes. Wait, then try again.',
+        };
       default:
         return null;
     }

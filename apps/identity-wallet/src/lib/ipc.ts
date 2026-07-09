@@ -903,6 +903,7 @@ export type AgentsError = {
     | 'ALREADY_CLAIMED'
     | 'ACCESS_DENIED'
     | 'AGENT_NOT_FOUND'
+    | 'RATE_LIMITED'
     | 'NETWORK_ERROR'
     | 'UNKNOWN';
 };

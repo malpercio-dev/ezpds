@@ -121,6 +121,10 @@ pub enum AgentsError {
     /// Unknown registration id (or one not bound to this account).
     #[error("unknown agent registration")]
     AgentNotFound,
+    /// Too many attempts in the window (the claim endpoints share a tight per-IP limiter);
+    /// the caller should back off and retry.
+    #[error("rate limited")]
+    RateLimited,
     /// Transport-level failure reaching the PDS.
     #[error("network error: {message}")]
     NetworkError { message: String },
@@ -181,6 +185,7 @@ async fn list_agents_impl(
             Ok(body.agents)
         }
         401 | 403 => Err(AgentsError::NotAuthenticated),
+        429 => Err(AgentsError::RateLimited),
         other => Err(AgentsError::Unknown {
             message: format!("GET /v1/agents returned {other}"),
         }),
@@ -204,6 +209,7 @@ async fn revoke_agent_impl(
         200 => Ok(()),
         401 | 403 => Err(AgentsError::NotAuthenticated),
         404 => Err(AgentsError::AgentNotFound),
+        429 => Err(AgentsError::RateLimited),
         other => Err(AgentsError::Unknown {
             message: format!("revoke returned {other}"),
         }),
@@ -233,6 +239,7 @@ async fn get_agent_audit_impl(
         }),
         401 | 403 => Err(AgentsError::NotAuthenticated),
         404 => Err(AgentsError::AgentNotFound),
+        429 => Err(AgentsError::RateLimited),
         other => Err(AgentsError::Unknown {
             message: format!("audit returned {other}"),
         }),
@@ -259,6 +266,7 @@ async fn preview_agent_claim_impl(
         401 | 403 => Err(AgentsError::NotAuthenticated),
         // The preview endpoint deliberately collapses every failure shape into one uniform 404.
         404 => Err(AgentsError::CodeNotFound),
+        429 => Err(AgentsError::RateLimited),
         other => Err(AgentsError::Unknown {
             message: format!("claim preview returned {other}"),
         }),
@@ -286,6 +294,9 @@ async fn confirm_agent_claim_impl(
     }
     if status.as_u16() == 401 {
         return Err(AgentsError::NotAuthenticated);
+    }
+    if status.as_u16() == 429 {
+        return Err(AgentsError::RateLimited);
     }
     match resp.json::<CeremonyErrorBody>().await {
         Ok(body) => Err(map_ceremony_error(&body.error)),
@@ -435,6 +446,21 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, AgentsError::AgentNotFound));
+    }
+
+    #[tokio::test]
+    async fn preview_maps_429_to_rate_limited() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/claim-preview");
+            then.status(429)
+                .json_body(serde_json::json!({ "error": { "code": "RATE_LIMITED" } }));
+        });
+
+        let err = preview_agent_claim_impl(&client_for(&server), "tok", "123456")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AgentsError::RateLimited));
     }
 
     #[tokio::test]
