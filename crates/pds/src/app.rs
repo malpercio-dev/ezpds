@@ -245,6 +245,10 @@ pub struct AppState {
     /// present — when `[telemetry] metrics_enabled = false` this is the reader-less
     /// pipeline that drops measurements, so call sites never branch. Shared via Arc.
     pub metrics: Arc<crate::metrics::Metrics>,
+    /// Per-DID locks serializing each repo's logical write sequence (root read → commit CAS →
+    /// post-commit GC) so one request's GC can never delete a concurrent same-repo write's
+    /// freshly written blocks. Shared via Arc; see [`crate::record_write::RepoWriteLocks`].
+    pub repo_write_locks: Arc<crate::record_write::RepoWriteLocks>,
 }
 
 /// Apply the middleware every route group shares, in the order axum layers them (outermost →
@@ -875,6 +879,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
         email: Arc::new(crate::email::LogEmailSender),
         allow_loopback_proxy_targets: true,
         metrics,
+        repo_write_locks: Arc::new(crate::record_write::RepoWriteLocks::new()),
     }
 }
 

@@ -585,6 +585,23 @@ pub(crate) async fn get_repo_write_state(
     ))
 }
 
+/// Fetch the account's persisted repo head, unfiltered by lifecycle status.
+///
+/// Backs `record_write::gc_repo_blocks`'s stale-root guard: GC must compare against whatever root
+/// is actually persisted, so unlike [`get_repo_write_state`] this deliberately ignores
+/// deactivation/suspension/takedown. Returns `None` when the account is missing or has no repo.
+pub(crate) async fn current_repo_root(
+    db: &sqlx::SqlitePool,
+    did: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<Option<String>> =
+        sqlx::query_scalar("SELECT repo_root_cid FROM accounts WHERE did = ?")
+            .bind(did)
+            .fetch_optional(db)
+            .await?;
+    Ok(row.flatten())
+}
+
 /// Advance an account's repo root with optimistic concurrency, only while it is still active.
 ///
 /// The commit compare-and-swap shared by every write path (`createRecord`/`putRecord` via

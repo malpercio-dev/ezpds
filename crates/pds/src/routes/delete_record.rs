@@ -74,6 +74,10 @@ pub async fn delete_record(
         )?;
     }
 
+    // Serialize this repo's whole logical write (root read → commit → GC) against concurrent
+    // writers — see `record_write::RepoWriteLocks`. Held until this handler returns.
+    let _write_guard = state.repo_write_locks.lock(did).await;
+
     let write_state = crate::db::accounts::get_repo_write_state(&state.db, did)
         .await
         .map_err(|e| {
