@@ -46,7 +46,6 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, SqliteConnection, SqlitePool, Transaction};
 use tokio::sync::broadcast;
-use tokio::sync::MutexGuard;
 
 /// Default capacity of the broadcast ring buffer: the number of events retained for slow
 /// consumers before they begin to observe `Lagged`.
@@ -302,13 +301,14 @@ const REPLAY_BATCH: u32 = 256;
 
 /// Paged cursor replay over the durable firehose log.
 ///
-/// Holds the retention/replay lock until the reader is dropped, so the retained `(cursor, upper]`
-/// snapshot cannot be pruned while the WebSocket handler drains it a page at a time. Each call to
-/// [`next_batch`](Self::next_batch) returns at most `REPLAY_BATCH` decoded events, keeping memory
-/// bounded and allowing the socket loop to interleave replay with heartbeat/read-timeout work.
+/// Does **not** lock out the retention sweep: instead each [`next_batch`](Self::next_batch)
+/// consults the firehose's [`prune_floor`](Firehose::prune_floor), so a sweep that prunes past this
+/// reader's position mid-drain is classified as a prune (best-effort re-anchor) rather than a
+/// durability hole. That keeps a slow reader from serialising against other readers or blocking the
+/// sweep. Each call returns at most `REPLAY_BATCH` decoded events, keeping memory bounded and
+/// allowing the socket loop to interleave replay with heartbeat/read-timeout work.
 pub struct ReplayReader<'f> {
     firehose: &'f Firehose,
-    _retention_guard: MutexGuard<'f, ()>,
     cursor: u64,
     upper: u64,
     after: u64,
@@ -319,15 +319,9 @@ pub struct ReplayReader<'f> {
 }
 
 impl<'f> ReplayReader<'f> {
-    fn new(
-        firehose: &'f Firehose,
-        retention_guard: MutexGuard<'f, ()>,
-        cursor: u64,
-        upper: u64,
-    ) -> Self {
+    fn new(firehose: &'f Firehose, cursor: u64, upper: u64) -> Self {
         Self {
             firehose,
-            _retention_guard: retention_guard,
             cursor,
             upper,
             after: cursor,
@@ -356,9 +350,17 @@ impl<'f> ReplayReader<'f> {
     /// at or below the cursor, replay is dense from the cursor and any jump on the first row is a
     /// mid-range gap that fails closed. The first replay page projects that cursor-presence bit in
     /// the same SQL statement that reads the rows, so the pruned-prefix decision observes one
-    /// SQLite snapshot (no TOCTOU between the batch and the cursor-presence check). The strict
-    /// consecutive-row check still catches a *mid-range* hole (a durability bug, not a prune) on
-    /// the second row onward, and the frontier-reach check still catches a missing tail.
+    /// SQLite snapshot (no TOCTOU between the batch and the cursor-presence check).
+    ///
+    /// **Best-effort mid-drain, too.** Because replay no longer locks out the sweep, a *slow*
+    /// reader can have rows pruned out from under it between pages. Each gap or short/empty tail is
+    /// therefore also checked against the firehose's [`prune_floor`](Firehose::prune_floor): when
+    /// the next expected `seq` is at or below the floor, the missing rows were pruned, so the reader
+    /// re-anchors to the retained suffix (best-effort) instead of failing closed. A gap or missing
+    /// tail *above* the floor is a genuine mid-range hole (a durability bug, not a prune) and still
+    /// fails closed. The floor is published before the sweep's `DELETE` (see
+    /// [`Firehose::note_pruned`]) and read here after the page query, so the classification never
+    /// misreads a prune as a hole.
     pub async fn next_batch(&mut self) -> Result<Vec<FirehoseEvent>, FirehoseError> {
         if self.done {
             return Ok(Vec::new());
@@ -385,9 +387,21 @@ impl<'f> ReplayReader<'f> {
             .await?
         };
 
+        // Read the prune floor *after* the page query so it reflects any sweep whose deletions this
+        // page could have observed (`note_pruned` is published before the `DELETE`). The floor only
+        // grows, so a value read here is a safe lower bound for the whole page's decisions.
+        let prune_floor = self.firehose.prune_floor();
+
         if batch.is_empty() {
             self.done = true;
             if self.after < self.upper {
+                // The remaining `(after, upper]` range is empty. If a sweep pruned past our
+                // position (its floor reaches our next expected seq), the tail we were still owed
+                // was pruned — degrade to best-effort (deliver nothing more) rather than fail
+                // closed. Otherwise the missing rows are a genuine durability hole.
+                if prune_floor > self.after {
+                    return Ok(Vec::new());
+                }
                 return Err(FirehoseError::Decode(format!(
                     "firehose replay backlog ended at seq {} before the frontier {}",
                     self.after, self.upper
@@ -403,17 +417,30 @@ impl<'f> ReplayReader<'f> {
                 FirehoseError::Decode(format!("negative stored firehose seq {}", row.seq))
             })?;
             if seq != self.after + 1 {
-                // A gap. If we've already anchored, this is a mid-range hole — fail closed.
+                // A gap. Decide pruned run vs mid-range hole. If the next expected seq
+                // (`after + 1`) is at or below the prune floor — i.e. `after < prune_floor` — a
+                // sweep removed the run we were about to read, so re-anchor to this (retained) row
+                // and continue best-effort. This covers both a first-row gap and one that opened up
+                // mid-drain after we had already anchored.
+                if self.after < prune_floor {
+                    self.anchored = true;
+                    self.after = seq;
+                    events.push(decode_stored_event(seq, &row.event_type, &row.event)?);
+                    continue;
+                }
+                // Not explained by pruning, and we've already anchored: a mid-range hole — fail
+                // closed.
                 if self.anchored {
                     return Err(FirehoseError::Decode(format!(
                         "firehose replay gap: expected seq {}, found {seq}",
                         self.after + 1
                     )));
                 }
-                // First-row gap: decide pruned-prefix vs mid-range hole from the same SQL
-                // snapshot as the first page. If the cursor still has a retained row, the gap is
-                // a real mid-range hole → fail closed. If the cursor row is gone, a sweep pruned
-                // the prefix → degrade to best-effort from here.
+                // First-row gap not below the floor: fall back to the same-snapshot cursor-presence
+                // bit. If a row still exists at or below the cursor, the gap is a real mid-range
+                // hole → fail closed; if the cursor row is gone, a sweep pruned the prefix →
+                // best-effort. (The floor can lag a prefix prune performed before this reader was
+                // constructed, so the SQL-snapshot check is the authority for the first row.)
                 if self.cursor_present {
                     return Err(FirehoseError::Decode(format!(
                         "firehose replay gap: expected seq {}, found {seq}",
@@ -434,11 +461,17 @@ impl<'f> ReplayReader<'f> {
         if self.after >= self.upper {
             self.done = true;
         } else if (page_len as u32) < REPLAY_BATCH {
+            // A short page that didn't reach the frontier: the rows between `after` and `upper` are
+            // missing. Prefix pruning removes *low* seqs, so within the retained suffix the range
+            // stays dense — a short tail here is a genuine hole unless the sweep's floor has climbed
+            // past our position (the retained tail we snapshotted was pruned out from under us).
             self.done = true;
-            return Err(FirehoseError::Decode(format!(
-                "firehose replay backlog ended at seq {} before the frontier {}",
-                self.after, self.upper
-            )));
+            if prune_floor <= self.after {
+                return Err(FirehoseError::Decode(format!(
+                    "firehose replay backlog ended at seq {} before the frontier {}",
+                    self.after, self.upper
+                )));
+            }
         }
 
         Ok(events)
@@ -448,8 +481,7 @@ impl<'f> ReplayReader<'f> {
     ///
     /// This lets route code keep a single in-flight page-read future pinned across `select!`
     /// iterations without borrowing the reader from an outer slot. When the future completes, the
-    /// caller gets the reader back with its updated cursor state and retention/replay lock still
-    /// intact.
+    /// caller gets the reader back with its updated cursor state intact.
     pub async fn into_next_batch(mut self) -> (Self, Result<Vec<FirehoseEvent>, FirehoseError>) {
         let result = self.next_batch().await;
         (self, result)
@@ -487,10 +519,14 @@ pub struct Firehose {
     /// `tokio::sync::Mutex`. Also taken (briefly, no await) by `subscribe_from` so it can snapshot
     /// the live receiver and the sequence frontier atomically against emission.
     emit_lock: tokio::sync::Mutex<()>,
-    /// Serialises retention pruning with cursor replay. A subscription with a cursor holds this
-    /// from before it captures `upper` until the replay reader is drained/dropped, so the retention
-    /// sweep cannot delete `(cursor, upper]` after the subscription snapshot is established.
-    retention_replay_lock: tokio::sync::Mutex<()>,
+    /// The highest `seq` the retention sweep (`firehose_gc`) has pruned, or 0 if it has pruned
+    /// nothing this process. Monotonic (advanced via `fetch_max`). A cursor-replay reader consults
+    /// it per page: when its next expected `seq` sits at or below this floor, a sweep removed rows
+    /// it was about to read, so the reader degrades to best-effort (re-anchors to the retained
+    /// suffix) rather than misreading the gap as a durability hole and failing closed. This replaces
+    /// the old exclusive lock that made replay readers serialise against each other and blocked the
+    /// sweep for a slow reader's whole drain (see [`ReplayReader::next_batch`]).
+    prune_floor: AtomicU64,
     /// The last sequence number assigned. Written only under `emit_lock` (after the row is
     /// persisted), so a value `<= last_seq` is always already durable. Read locklessly for
     /// diagnostics (`current_seq`) and under the lock for the subscribe frontier. May lag the
@@ -519,7 +555,7 @@ impl Firehose {
         Ok(Self {
             db,
             emit_lock: tokio::sync::Mutex::new(()),
-            retention_replay_lock: tokio::sync::Mutex::new(()),
+            prune_floor: AtomicU64::new(0),
             last_seq: AtomicU64::new(last),
             tx,
             metrics: None,
@@ -617,29 +653,21 @@ impl Firehose {
     ///
     /// The live receiver and the `upper` frontier are captured together under `emit_lock`, so no
     /// concurrent emit can slip an event past both the replay range and the receiver, nor advance
-    /// the counter into a spurious `FutureCursor`. For cursor subscriptions, the
-    /// `retention_replay_lock` is acquired *before* this snapshot and carried by the returned
-    /// [`ReplayReader`] until replay is drained, so `firehose_gc` cannot prune rows in
-    /// `(cursor, upper]` after the subscription snapshot is established. Replay pages are then read
-    /// outside `emit_lock`, bounded by `upper`, so they stay disjoint from the live stream. If a GC
-    /// pass wins the retention/replay lock before the subscription snapshots, a cursor inside the
-    /// already-pruned prefix degrades to best-effort replay (see [`ReplayReader::next_batch`])
-    /// rather than failing closed.
+    /// the counter into a spurious `FutureCursor`. Replay pages are then read outside `emit_lock`,
+    /// bounded by `upper`, so they stay disjoint from the live stream. The retention sweep is *not*
+    /// serialised against replay: a reader that falls behind while `firehose_gc` prunes past its
+    /// position observes the [`prune_floor`](Self::prune_floor) and degrades to best-effort replay
+    /// per page (see [`ReplayReader::next_batch`]) instead of blocking the sweep or other readers.
     ///
     /// Replay errors surface from [`ReplayReader::next_batch`]: a DB read failure, a stored row
-    /// that won't decode, or a *mid-range* gap in the `(cursor, upper]` range. A cursor that falls
-    /// inside a **pruned prefix** degrades to best-effort instead — the subscriber receives the
-    /// retained suffix — because the retention sweep only ever removes a contiguous prefix below
-    /// the live frontier.
+    /// that won't decode, or a *mid-range* gap in the `(cursor, upper]` range not explained by
+    /// pruning. A cursor (or a slow reader's position) that falls inside a **pruned prefix**
+    /// degrades to best-effort instead — the subscriber receives the retained suffix — because the
+    /// retention sweep only ever removes a contiguous prefix below the live frontier.
     pub async fn subscribe_from(
         &self,
         cursor: Option<u64>,
     ) -> Result<SubscribeOutcome<'_>, FirehoseError> {
-        let retention_guard = if cursor.is_some() {
-            Some(self.retention_replay_lock.lock().await)
-        } else {
-            None
-        };
         let (rx, upper) = {
             let _guard = self.emit_lock.lock().await;
             // Subscribe to the live channel *before* releasing the lock so that no event emitted
@@ -650,21 +678,30 @@ impl Firehose {
 
         let replay = match cursor {
             Some(c) if c > upper => return Ok(SubscribeOutcome::FutureCursor { current: upper }),
-            Some(c) => Some(ReplayReader::new(
-                self,
-                retention_guard.expect("cursor locks replay"),
-                c,
-                upper,
-            )),
+            Some(c) => Some(ReplayReader::new(self, c, upper)),
             None => None,
         };
 
         Ok(SubscribeOutcome::Subscribed(Subscription { replay, rx }))
     }
 
-    /// Lock out retention pruning while a cursor replay snapshot is captured/drained.
-    pub(crate) async fn lock_retention_replay(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.retention_replay_lock.lock().await
+    /// Publish that the retention sweep has pruned every row with `seq <= watermark`.
+    ///
+    /// Advances the [`prune_floor`](Self::prune_floor) monotonically. `firehose_gc` calls this
+    /// *before* it issues the `DELETE`, so any in-flight replay reader that later observes the
+    /// resulting gap sees a floor already high enough to classify it as a prune (best-effort)
+    /// rather than a durability hole (fail closed). Publishing before the delete — and reading the
+    /// floor with `Acquire` after the page read — is what keeps that classification race-free over
+    /// the single-connection pool (the reader only consults the floor once it has actually observed
+    /// a missing row, which cannot happen until the delete this call precedes has committed).
+    pub(crate) fn note_pruned(&self, watermark: u64) {
+        self.prune_floor.fetch_max(watermark, Ordering::Release);
+    }
+
+    /// The highest `seq` the retention sweep has pruned so far (0 if none). Read by
+    /// [`ReplayReader::next_batch`] to tell a prune-induced gap from a genuine mid-range hole.
+    pub(crate) fn prune_floor(&self) -> u64 {
+        self.prune_floor.load(Ordering::Acquire)
     }
 
     /// Number of live subscribers. Primarily for diagnostics and tests.
@@ -1792,6 +1829,92 @@ mod tests {
             panic!("cursor 3 is inside the retained window");
         };
         assert_eq!(collect_replay_seqs(sub.replay).await.unwrap(), vec![4, 5]);
+    }
+
+    #[tokio::test]
+    async fn replay_degrades_to_best_effort_when_pruned_mid_drain() {
+        // Regression: replay no longer locks out the retention sweep, so a slow reader can
+        // have rows pruned out from under it between pages. A gap that opens up mid-drain because of
+        // that prune must degrade to best-effort (re-anchor to the retained suffix), not fail
+        // closed as if it were a durability hole.
+        let fh = test_firehose().await;
+        for _ in 0..(REPLAY_BATCH + 5) {
+            fh.emit_commit(commit_input("did:plc:a")).await.unwrap(); // seq 1..=261
+        }
+
+        let SubscribeOutcome::Subscribed(mut sub) = fh.subscribe_from(Some(0)).await.unwrap()
+        else {
+            panic!("expected a subscription");
+        };
+        let mut replay = sub.replay.take().expect("cursor creates replay reader");
+
+        // First page: the dense prefix 1..=REPLAY_BATCH (upper = REPLAY_BATCH + 5).
+        let first = replay.next_batch().await.unwrap();
+        assert_eq!(first.len(), REPLAY_BATCH as usize);
+        assert_eq!(
+            first.last().map(FirehoseEvent::seq),
+            Some(u64::from(REPLAY_BATCH))
+        );
+
+        // Simulate a retention sweep pruning past the reader's position between pages: delete
+        // through REPLAY_BATCH + 2 and publish the floor, exactly as `firehose_gc::sweep` does.
+        let watermark = u64::from(REPLAY_BATCH) + 2;
+        sqlx::query("DELETE FROM repo_seq WHERE seq <= ?")
+            .bind(watermark as i64)
+            .execute(&fh.db)
+            .await
+            .unwrap();
+        fh.note_pruned(watermark);
+
+        // Second page: the pruned run (REPLAY_BATCH+1, +2) is skipped best-effort and the retained
+        // suffix (REPLAY_BATCH+3 ..= +5) is delivered dense — no error.
+        let second = replay.next_batch().await.unwrap();
+        assert_eq!(
+            second.iter().map(FirehoseEvent::seq).collect::<Vec<_>>(),
+            vec![
+                u64::from(REPLAY_BATCH) + 3,
+                u64::from(REPLAY_BATCH) + 4,
+                u64::from(REPLAY_BATCH) + 5
+            ],
+            "the pruned run is skipped best-effort and the retained suffix is delivered"
+        );
+        assert!(replay.next_batch().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn replay_degrades_to_best_effort_when_whole_tail_pruned_mid_drain() {
+        // The empty-page counterpart of the test above: when a sweep prunes the *entire* remaining
+        // snapshot tail between pages, the next page is empty and never reaches `upper`. That is a
+        // prune (the floor covers our position), not a durability hole, so it ends best-effort
+        // rather than raising "backlog ended before the frontier".
+        let fh = test_firehose().await;
+        for _ in 0..(REPLAY_BATCH + 5) {
+            fh.emit_commit(commit_input("did:plc:a")).await.unwrap(); // seq 1..=261
+        }
+
+        let SubscribeOutcome::Subscribed(mut sub) = fh.subscribe_from(Some(0)).await.unwrap()
+        else {
+            panic!("expected a subscription");
+        };
+        let mut replay = sub.replay.take().expect("cursor creates replay reader");
+        let first = replay.next_batch().await.unwrap();
+        assert_eq!(first.len(), REPLAY_BATCH as usize); // after = REPLAY_BATCH, upper = +5
+
+        // Prune the whole remaining snapshot tail (everything above REPLAY_BATCH) and publish it.
+        let watermark = u64::from(REPLAY_BATCH) + 5;
+        sqlx::query("DELETE FROM repo_seq WHERE seq > ?")
+            .bind(u64::from(REPLAY_BATCH) as i64)
+            .execute(&fh.db)
+            .await
+            .unwrap();
+        fh.note_pruned(watermark);
+
+        // The empty tail is a prune, not a hole: an empty best-effort page, no error.
+        let second = replay.next_batch().await.unwrap();
+        assert!(
+            second.is_empty(),
+            "a fully-pruned tail ends replay best-effort instead of failing closed"
+        );
     }
 
     #[tokio::test]
