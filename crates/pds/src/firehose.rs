@@ -586,10 +586,23 @@ impl Firehose {
             Ok(()) => Ok(seq),
             Err(e) if crate::db::is_unique_violation(&e) => {
                 let durable = crate::db::firehose_seq::max_seq(&mut *conn).await?;
-                let seq = durable + 1;
-                crate::db::firehose_seq::insert_event(&mut *conn, seq, did, event_type, blob, time)
-                    .await?;
-                Ok(seq)
+                let healed_seq = durable + 1;
+                // The wedge no longer surfaces as an outage, so this log line is the only
+                // signal the cancellation window was actually hit in production.
+                tracing::warn!(
+                    did,
+                    event_type,
+                    collided_seq = seq,
+                    healed_seq,
+                    "firehose sequencer self-heal: frontier lagged the durable log (a caller \
+                     was cancelled between its transaction commit and finish); re-seeded from \
+                     MAX(seq) and retrying"
+                );
+                crate::db::firehose_seq::insert_event(
+                    &mut *conn, healed_seq, did, event_type, blob, time,
+                )
+                .await?;
+                Ok(healed_seq)
             }
             Err(e) => Err(e.into()),
         }
