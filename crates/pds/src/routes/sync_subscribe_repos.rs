@@ -151,10 +151,9 @@ async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) 
                 let (reader, result) = batch;
                 match result {
                     Ok(events) if events.is_empty() => {
+                        // The replay backlog is fully drained; `reader` falls out of scope here
+                        // (it only borrows the firehose — no lock to release), so switch to live.
                         replay_done = true;
-                        // Drop the reader promptly so its retention/replay lock is released before
-                        // live streaming begins.
-                        drop(reader);
                         replay = None;
                     }
                     Ok(events) => {

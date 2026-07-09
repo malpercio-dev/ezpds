@@ -168,11 +168,6 @@ async fn sweep(state: &AppState) -> GcStats {
         return GcStats::inert();
     }
 
-    // Coordinate with cursor replay: either this GC pass wins the lock and a later subscription
-    // snapshots the post-prune log, or an active replay holds the lock and this pass waits until
-    // the snapshotted `(cursor, upper]` backlog has been materialised.
-    let _replay_guard = state.firehose.lock_retention_replay().await;
-
     let max_seq = match firehose_seq::max_seq(&state.db).await {
         Ok(max) => max,
         Err(e) => {
@@ -261,18 +256,23 @@ async fn sweep(state: &AppState) -> GcStats {
     }
 
     // Never prune the live frontier row: a reconnecting relay must be able to resume from at
-    // least the newest retained event, and `read_replay` must be able to reach the `upper`
-    // frontier it snapshotted. The watermark is the highest prunable seq, so this keeps `MAX(seq)`
-    // and guarantees the retained suffix is non-empty. Replay safety is provided by the
-    // retention/replay lock acquired at the start of this pass; emit safety does not require the
+    // least the newest retained event. The watermark is the highest prunable seq, so this keeps
+    // `MAX(seq)` and guarantees the retained suffix is non-empty. Emit safety does not require the
     // firehose `emit_lock` because a row emitted during this pass has `seq` greater than the
     // `max_seq` we read, hence greater than the watermark, so the range delete can't touch it.
+    // Replay safety no longer needs a lock either: a cursor reader whose snapshotted `(cursor,
+    // upper]` range this prune eats degrades to best-effort via the prune floor published below
+    // (see `firehose.rs::ReplayReader::next_batch`), instead of the sweep blocking on the reader.
     let watermark = watermark.min(max_seq.saturating_sub(1));
 
     // A watermark of 0 prunes nothing (every `seq` is >= 1) — the log stays fully retained.
     if watermark == 0 {
         return GcStats::inert();
     }
+
+    // Publish the prune floor *before* the delete so any in-flight replay reader that observes the
+    // resulting gap classifies it as a prune (best-effort) rather than a durability hole.
+    state.firehose.note_pruned(watermark);
 
     let pruned = match firehose_seq::prune_below(&state.db, watermark).await {
         Ok(n) => n,
@@ -606,5 +606,35 @@ mod tests {
             vec![8, 9, 10],
             "retained suffix is dense and reaches frontier"
         );
+    }
+
+    #[tokio::test]
+    async fn gc_prunes_while_a_replay_reader_is_alive() {
+        // Regression: a slow cursor reader must not block the retention sweep. The sweep no
+        // longer takes an exclusive lock the reader holds for its whole drain, so this pass prunes
+        // even while an undrained reader is still alive (previously it would deadlock on the lock).
+        let state = state_with(FirehoseConfig {
+            gc_interval_secs: 3600,
+            log_retention_secs: 0,
+            log_retention_count: 3,
+        })
+        .await;
+        emit_n(&state, 10).await; // seq 1..=10
+
+        // Attach a cursor subscription and hold its replay reader UNDRAINED across the sweep.
+        let crate::firehose::SubscribeOutcome::Subscribed(sub) =
+            state.firehose.subscribe_from(Some(0)).await.unwrap()
+        else {
+            panic!("expected a subscription");
+        };
+        let _held_reader = sub.replay;
+
+        // The sweep completes and prunes (keep newest 3) even though the reader is still alive.
+        let stats = run_firehose_gc(&state).await;
+        assert_eq!(
+            stats.pruned, 7,
+            "GC must prune even while a replay reader is alive"
+        );
+        assert!(!stats.skipped);
     }
 }
