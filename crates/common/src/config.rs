@@ -17,6 +17,18 @@ impl<T> std::fmt::Debug for Sensitive<T> {
     }
 }
 
+/// Transparent deserialization: a `Sensitive<T>` deserializes exactly as its inner `T`, so a
+/// secret field can be wrapped in [`Sensitive`] directly in a serde struct (e.g. [`RawConfig`])
+/// and gain the redacting `Debug` without any bespoke logic at the field.
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Sensitive<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        T::deserialize(deserializer).map(Sensitive)
+    }
+}
+
 /// Validated, fully-resolved pds configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -747,8 +759,8 @@ fn default_smtp_port_for(tls: SmtpTls) -> u16 {
 }
 
 /// Raw TOML form of [`EmailConfig`] — all fields optional so a partial `[email]` section (or env
-/// overlay) is valid. `smtp_password` is a plain `Option<String>` here (TOML/env carry the raw
-/// value); it is wrapped in [`Sensitive`] when the built [`EmailConfig`] is constructed.
+/// overlay) is valid. `smtp_password` is wrapped in [`Sensitive`] so the raw config never leaks the
+/// SMTP password via `Debug` (this struct derives it); the built [`EmailConfig`] re-wraps it too.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub(crate) struct RawEmailConfig {
     pub(crate) provider: Option<EmailProvider>,
@@ -757,7 +769,7 @@ pub(crate) struct RawEmailConfig {
     pub(crate) smtp_host: Option<String>,
     pub(crate) smtp_port: Option<u16>,
     pub(crate) smtp_username: Option<String>,
-    pub(crate) smtp_password: Option<String>,
+    pub(crate) smtp_password: Option<Sensitive<String>>,
     pub(crate) smtp_tls: Option<SmtpTls>,
     pub(crate) smtp_timeout_secs: Option<u64>,
 }
@@ -812,14 +824,18 @@ pub(crate) struct RawConfig {
     pub(crate) telemetry: RawTelemetryConfig,
     #[serde(default)]
     pub(crate) email: RawEmailConfig,
-    pub(crate) admin_token: Option<String>,
+    // Wrapped in [`Sensitive`] so the raw config never leaks the break-glass admin token or the
+    // master key via `Debug` (this struct derives it), matching the validated [`Config`]. The
+    // sentinel is wrapped too: when an operator mistakenly sets `signing_key_master_key` in TOML,
+    // it deserializes here and would otherwise be the plaintext master key.
+    pub(crate) admin_token: Option<Sensitive<String>>,
     pub(crate) plc_directory_url: Option<String>,
     #[serde(skip)]
-    pub(crate) signing_key_master_key: Option<[u8; 32]>,
+    pub(crate) signing_key_master_key: Option<Sensitive<[u8; 32]>>,
     /// Sentinel field — only present to detect misconfiguration.
     /// signing_key_master_key must be set via env var EZPDS_SIGNING_KEY_MASTER_KEY, not TOML.
     #[serde(rename = "signing_key_master_key")]
-    pub(crate) signing_key_master_key_toml_sentinel: Option<String>,
+    pub(crate) signing_key_master_key_toml_sentinel: Option<Sensitive<String>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1112,7 +1128,7 @@ pub(crate) fn apply_env_overrides(
         raw.email.smtp_username = Some(v.clone());
     }
     if let Some(v) = env.get("EZPDS_EMAIL_SMTP_PASSWORD") {
-        raw.email.smtp_password = Some(v.clone());
+        raw.email.smtp_password = Some(Sensitive(v.clone()));
     }
     if let Some(v) = env.get("EZPDS_EMAIL_SMTP_TLS") {
         raw.email.smtp_tls = Some(parse_smtp_tls(v)?);
@@ -1125,13 +1141,14 @@ pub(crate) fn apply_env_overrides(
         })?);
     }
     if let Some(v) = env.get("EZPDS_ADMIN_TOKEN") {
-        raw.admin_token = Some(v.clone());
+        raw.admin_token = Some(Sensitive(v.clone()));
     }
     if let Some(v) = env.get("EZPDS_PLC_DIRECTORY_URL") {
         raw.plc_directory_url = Some(v.clone());
     }
     if let Some(v) = env.get("EZPDS_SIGNING_KEY_MASTER_KEY") {
-        raw.signing_key_master_key = Some(parse_hex_32("EZPDS_SIGNING_KEY_MASTER_KEY", v)?);
+        raw.signing_key_master_key =
+            Some(Sensitive(parse_hex_32("EZPDS_SIGNING_KEY_MASTER_KEY", v)?));
     }
     Ok(raw)
 }
@@ -1175,7 +1192,7 @@ fn build_email_config(raw: RawEmailConfig) -> Result<EmailConfig, ConfigError> {
     // authenticate with a blank username/password. Filtering here also feeds the plaintext-TLS
     // check below.
     let smtp_username = raw.smtp_username.filter(|s| !s.is_empty());
-    let smtp_password = raw.smtp_password.filter(|s| !s.is_empty());
+    let smtp_password = raw.smtp_password.map(|s| s.0).filter(|s| !s.is_empty());
     let smtp_timeout_secs = raw
         .smtp_timeout_secs
         .unwrap_or_else(default_smtp_timeout_secs);
@@ -1454,10 +1471,10 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         rate_limit: raw.rate_limit,
         telemetry,
         email,
-        admin_token: raw.admin_token.map(Sensitive),
+        admin_token: raw.admin_token,
         signing_key_master_key: raw
             .signing_key_master_key
-            .map(|k| Sensitive(Zeroizing::new(k))),
+            .map(|k| Sensitive(Zeroizing::new(k.0))),
         plc_directory_url,
     })
 }
@@ -3013,6 +3030,46 @@ mod tests {
         assert!(
             !debug.contains("super-secret-admin"),
             "admin token must not leak in Debug"
+        );
+        assert!(debug.contains("***"), "Sensitive should render as ***");
+    }
+
+    #[test]
+    fn raw_config_redacts_secrets_in_debug() {
+        // Defence-in-depth: the pre-validation RawConfig also derives Debug, so its secret fields
+        // (admin token, master key, and the TOML sentinel that carries the plaintext master key when
+        // an operator misconfigures it) must be Sensitive-wrapped and never appear in Debug output.
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+            admin_token = "super-secret-admin"
+            signing_key_master_key = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+
+            [email]
+            smtp_password = "topsecret"
+        "#;
+        let mut raw: RawConfig = toml::from_str(toml).unwrap();
+        // The master key never arrives via TOML (it lands in the sentinel); populate the real field
+        // exactly as the env-var path does so its Debug is covered too.
+        raw.signing_key_master_key = Some(Sensitive([0x42u8; 32]));
+        let debug = format!("{raw:?}");
+        assert!(
+            !debug.contains("super-secret-admin"),
+            "admin token must not leak in raw Debug: {debug}"
+        );
+        assert!(
+            !debug.contains("topsecret"),
+            "smtp password must not leak in raw Debug: {debug}"
+        );
+        // The sentinel holds the plaintext master-key hex when set in TOML.
+        assert!(
+            !debug.contains("0102030405060708"),
+            "TOML master-key sentinel must not leak in raw Debug: {debug}"
+        );
+        assert!(
+            !debug.contains("66, 66, 66"),
+            "master-key bytes must not leak in raw Debug: {debug}"
         );
         assert!(debug.contains("***"), "Sensitive should render as ***");
     }
