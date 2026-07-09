@@ -53,6 +53,7 @@ variables only:
 | `CUSTOS_MCP_EMAIL` | first run | Your account email on that PDS (`login_hint` for registration) |
 | `CUSTOS_MCP_AGENT_NAME` | no | Display name for the registration (default "Custos MCP") |
 | `CUSTOS_MCP_ALLOW_DESTRUCTIVE` | no | `1` lists `put_record`/`delete_record` |
+| `CUSTOS_MCP_IMAGE_DIR` | no | The one directory `create_post` may read image attachments from; unset = attachments disabled |
 | `CUSTOS_MCP_STATE_DIR` | no | Credential-cache dir (default: OS state dir, e.g. `~/.local/state/custos-mcp`) |
 | `CUSTOS_MCP_PACE_MS` | no | Min gap between HTTP requests (default 150) |
 
@@ -106,7 +107,7 @@ ceremony is required.
 | Tool | What it does |
 |---|---|
 | `whoami` | Onboarding status, DID/handle, granted scopes; pending claim code if any |
-| `create_post` | `app.bsky.feed.post` via `createRecord` — text, reply refs, optional image via `uploadBlob` |
+| `create_post` | `app.bsky.feed.post` via `createRecord` — text, reply refs, optional image via `uploadBlob` (only from `CUSTOS_MCP_IMAGE_DIR`) |
 | `get_record` / `list_records` | Read a repo by collection (defaults to the onboarded account) |
 | `search_timeline` | Timeline, or post search with `query` — proxied through the PDS to its AppView |
 | `account_status` | `checkAccountStatus`: activation, repo head, record/blob counts |

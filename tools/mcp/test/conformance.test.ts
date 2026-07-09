@@ -211,7 +211,9 @@ test('AC3.2: revocation fails closed and never auto-re-registers', async (t) => 
   // (that lands with the wallet /v1/agents API), so flip the row the way the
   // server's own tests do.
   const { DatabaseSync } = await import('node:sqlite');
-  const db = new DatabaseSync(path.join(pds.dataDir, 'pds.db'));
+  // The PDS holds its own connections to this file; a busy timeout keeps the
+  // UPDATE from failing instantly on a transient lock.
+  const db = new DatabaseSync(path.join(pds.dataDir, 'pds.db'), { timeout: 5_000 });
   db.exec(`UPDATE agent_identities SET status = 'revoked'`);
   db.close();
 
@@ -256,7 +258,13 @@ test('AC1.3: a PDS with agent auth disabled fails the launch legibly', async () 
       });
       let stderr = '';
       proc.stderr!.on('data', (chunk) => (stderr += String(chunk)));
-      proc.on('exit', (code) => resolve({ code, stderr }));
+      // The launch is expected to fail fast; a hang is itself a regression,
+      // so kill rather than stall the suite.
+      const killer = setTimeout(() => proc.kill(), 15_000);
+      proc.on('exit', (code) => {
+        clearTimeout(killer);
+        resolve({ code, stderr });
+      });
     });
     assert.notEqual(result.code, 0, 'exits nonzero');
     assert.match(result.stderr, /service_auth_not_enabled/, 'names the server error');

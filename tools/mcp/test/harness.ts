@@ -12,6 +12,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as https from 'node:https';
+import * as net from 'node:net';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -45,6 +46,17 @@ function tlsMaterial(): { key: Buffer; cert: Buffer } {
     key: fs.readFileSync(path.join(dir, 'key.pem')),
     cert: fs.readFileSync(path.join(dir, 'cert.pem')),
   };
+}
+
+/** An OS-assigned free port (bind on 0, read, release) — no collision guessing. */
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.listen(0, '127.0.0.1', () => {
+      const port = (server.address() as { port: number }).port;
+      server.close((err) => (err ? reject(err) : resolve(port)));
+    });
+  });
 }
 
 /** A stub plc.directory that accepts every genesis op. Never touch the real one from tests. */
@@ -119,7 +131,7 @@ export async function spawnPds(options: {
   agentAuthEnabled: boolean;
 }): Promise<SpawnedPds> {
   const proxy = await startTlsProxy();
-  const httpPort = 20000 + Math.floor(Math.random() * 20000);
+  const httpPort = await freePort();
   proxy.setUpstreamPort(httpPort);
   const baseUrl = `https://127.0.0.1:${proxy.port}`;
   const dataDir = path.join(options.dir, 'data');
@@ -155,7 +167,9 @@ export async function spawnPds(options: {
       throw new Error(`pds exited with ${proc.exitCode} during startup:\n${logs.join('')}`);
     }
     try {
-      const res = await fetch(`http://127.0.0.1:${httpPort}/xrpc/_health`);
+      const res = await fetch(`http://127.0.0.1:${httpPort}/xrpc/_health`, {
+        signal: AbortSignal.timeout(2_000),
+      });
       if (res.ok) break;
     } catch {
       // not up yet

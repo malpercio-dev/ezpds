@@ -42,11 +42,24 @@ export const ALLOW_DESTRUCTIVE = ['1', 'true'].includes(
 );
 
 // Pacing: minimum gap between HTTP requests so tool-call bursts stay far below
-// the PDS per-IP limits. Same discipline as tools/interop.
-export const MIN_REQUEST_INTERVAL_MS = Number(process.env.CUSTOS_MCP_PACE_MS ?? 150);
+// the PDS per-IP limits. Same discipline as tools/interop. A malformed or empty
+// override falls back to the default rather than silently disabling pacing.
+const rawPaceMs = process.env.CUSTOS_MCP_PACE_MS;
+const parsedPaceMs = rawPaceMs ? Number(rawPaceMs) : NaN;
+export const MIN_REQUEST_INTERVAL_MS =
+  Number.isFinite(parsedPaceMs) && parsedPaceMs >= 0 ? parsedPaceMs : 150;
 
 // How many times to retry a 429 (honoring Retry-After) before giving up.
 export const MAX_RATE_LIMIT_RETRIES = 4;
+
+/**
+ * The only directory create_post may read image attachments from. With it
+ * unset, image attachments are disabled entirely — an unrestricted path would
+ * let a prompt-injected agent turn publish any file the process can read.
+ */
+export function imageDir(): string | null {
+  return process.env.CUSTOS_MCP_IMAGE_DIR ?? null;
+}
 
 /**
  * Where cached credentials live: an OS-appropriate per-user state directory,

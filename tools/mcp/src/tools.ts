@@ -13,7 +13,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { xrpc, HttpError } from './http.ts';
 import { AgentSession, RevokedError, SessionExpiredError } from './auth.ts';
-import { ALLOW_DESTRUCTIVE } from './config.ts';
+import { ALLOW_DESTRUCTIVE, imageDir } from './config.ts';
 
 const ATTRIBUTION =
   'Runs as this MCP server’s agent registration: the action is attributed to the agent ' +
@@ -61,6 +61,32 @@ function relayError(err: unknown, session: AgentSession): ToolResult {
   return fail(err instanceof Error ? err.message : String(err));
 }
 
+/**
+ * Confine image reads to the operator-configured directory. Without this, a
+ * tool call influenced by untrusted content could publish any file the
+ * process can read. Realpaths on both sides so symlinks cannot escape.
+ */
+function resolveImagePath(userPath: string): string {
+  const configured = imageDir();
+  if (!configured) {
+    throw new Error(
+      'image attachments are disabled: set CUSTOS_MCP_IMAGE_DIR to the one directory ' +
+        'images may be read from',
+    );
+  }
+  const base = fs.realpathSync(path.resolve(configured));
+  let resolved: string;
+  try {
+    resolved = fs.realpathSync(path.resolve(base, userPath));
+  } catch {
+    throw new Error(`image_path does not exist under ${base}`);
+  }
+  if (resolved !== base && !resolved.startsWith(base + path.sep)) {
+    throw new Error(`image_path must be inside ${base}`);
+  }
+  return resolved;
+}
+
 /** MIME type for uploaded post images, by file extension. */
 function imageMime(filePath: string): string {
   const mime: Record<string, string> = {
@@ -96,6 +122,7 @@ export function registerTools(server: McpServer, session: AgentSession): void {
         '(onboarding / ready / revoked / expired), DID, handle, granted scopes, and — while ' +
         'a claim ceremony is pending — the user_code and verification URI the account owner ' +
         'must confirm. Use this first if any other tool reports an auth problem.',
+      annotations: { readOnlyHint: true },
     },
     async () => {
       const status = session.status();
@@ -125,6 +152,7 @@ export function registerTools(server: McpServer, session: AgentSession): void {
       description:
         `Publish an app.bsky.feed.post to the user’s repository — text, optional reply ` +
         `references, optional attached image (uploaded as a blob). ${ATTRIBUTION}`,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
       inputSchema: {
         text: z.string().max(3000).describe('Post text'),
         reply: z
@@ -134,7 +162,10 @@ export function registerTools(server: McpServer, session: AgentSession): void {
         image_path: z
           .string()
           .optional()
-          .describe('Path to a local image file to attach (png/jpg/gif/webp)'),
+          .describe(
+            'Image file to attach (png/jpg/gif/webp), as a path inside the directory ' +
+              'configured by CUSTOS_MCP_IMAGE_DIR (attachments are disabled without it)',
+          ),
         image_alt: z.string().optional().describe('Alt text for the attached image'),
         langs: z.array(z.string()).optional().describe('BCP-47 language tags'),
       },
@@ -145,8 +176,9 @@ export function registerTools(server: McpServer, session: AgentSession): void {
 
         let embed: Record<string, unknown> | undefined;
         if (args.image_path) {
-          const mimeType = imageMime(args.image_path);
-          const bytes = fs.readFileSync(args.image_path);
+          const imagePath = resolveImagePath(args.image_path);
+          const mimeType = imageMime(imagePath);
+          const bytes = fs.readFileSync(imagePath);
           const uploaded = await xrpc(session.pdsUrl, 'com.atproto.repo.uploadBlob', {
             method: 'POST',
             token,
@@ -186,6 +218,7 @@ export function registerTools(server: McpServer, session: AgentSession): void {
       description:
         'Read a single record from the user’s repository (or another repo by DID/handle) ' +
         'by collection and record key.',
+      annotations: { readOnlyHint: true },
       inputSchema: {
         collection: z.string().describe('Collection NSID, e.g. app.bsky.feed.post'),
         rkey: z.string().describe('Record key'),
@@ -215,6 +248,7 @@ export function registerTools(server: McpServer, session: AgentSession): void {
       description:
         'List records in a collection of the user’s repository (or another repo by ' +
         'DID/handle), paginated by cursor.',
+      annotations: { readOnlyHint: true },
       inputSchema: {
         collection: z.string().describe('Collection NSID, e.g. app.bsky.feed.post'),
         limit: z.number().int().min(1).max(100).optional().describe('Page size (default 50)'),
@@ -250,6 +284,7 @@ export function registerTools(server: McpServer, session: AgentSession): void {
       description:
         'Read the user’s timeline, or search posts when a query is given. Reads are ' +
         'proxied through the PDS to its configured AppView and attributed to the agent.',
+      annotations: { readOnlyHint: true },
       inputSchema: {
         query: z
           .string()
@@ -284,6 +319,7 @@ export function registerTools(server: McpServer, session: AgentSession): void {
       description:
         'Report the onboarded account’s hosting status on the PDS: activation, repo ' +
         'head/rev, and record/blob counts (com.atproto.server.checkAccountStatus).',
+      annotations: { readOnlyHint: true },
     },
     async () => {
       try {
@@ -306,6 +342,7 @@ export function registerTools(server: McpServer, session: AgentSession): void {
       description:
         `Create or overwrite a record at a specific collection + rkey in the user’s ` +
         `repository. Destructive (enabled by CUSTOS_MCP_ALLOW_DESTRUCTIVE). ${ATTRIBUTION}`,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
       inputSchema: {
         collection: z.string().describe('Collection NSID'),
         rkey: z.string().describe('Record key to write'),
@@ -334,6 +371,7 @@ export function registerTools(server: McpServer, session: AgentSession): void {
         `Delete a record from the user’s repository. Destructive (enabled by ` +
         `CUSTOS_MCP_ALLOW_DESTRUCTIVE); note the default agent scope profile does not include ` +
         `delete, so the PDS may refuse with 403 unless the operator granted it. ${ATTRIBUTION}`,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
       inputSchema: {
         collection: z.string().describe('Collection NSID'),
         rkey: z.string().describe('Record key to delete'),

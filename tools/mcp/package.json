@@ -11,7 +11,7 @@
     "custos-mcp": "./bin/custos-mcp"
   },
   "scripts": {
-    "start": "node src/server.ts",
+    "start": "node --disable-warning=ExperimentalWarning src/server.ts",
     "check": "tsc --noEmit",
     "test": "node test/run.ts"
   },

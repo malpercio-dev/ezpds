@@ -357,8 +357,11 @@ export class AgentSession {
       })
       .catch((err: Error) => {
         this.onboarding = null;
-        if (err instanceof RevokedError && this.creds) {
-          this.creds.revoked = true;
+        if (err instanceof RevokedError) {
+          // A revocation mid-ceremony (the owner declined) is remembered even
+          // with no prior credential cache, so a restart cannot quietly start
+          // a fresh registration.
+          this.creds = { ...(this.creds ?? { pdsUrl: this.pdsUrl }), revoked: true };
           saveCredentials(this.creds);
         }
         this.onboardingError = err.message;
