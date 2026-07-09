@@ -264,16 +264,39 @@ Content-Type: application/json
 this agent may act for them. Confirmation binds the registration to their account and
 mints the agent's `identity_assertion`.
 
-> **Polling is not live yet.** The auth.md spec defines a machine-pollable claim
-> grant (`urn:workos:agent-auth:grant-type:claim`) so an agent can learn the moment
-> the user confirms and collect its credential. **That grant is not yet implemented
-> on this deployment.** In the meantime an `identity_assertion` agent can collect its
-> credential out of band — re-issue the same `POST /agent/identity` request and, once
-> the binding is confirmed, the server returns the minted `identity_assertion` (the
-> 200 shape in §3.1) instead of `interaction_required`. A `service_auth` or
-> `anonymous` agent has no out-of-band collection path yet and must wait for the
-> polling grant. Back off (honour the `interval`) and give up at the claim's
-> `expires_at`.
+**Poll for the confirmation** at the token endpoint with the claim grant
+(`urn:workos:agent-auth:grant-type:claim`), waiting `interval` seconds between
+attempts:
+
+```http
+POST {{public_url}}/oauth/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=urn:workos:agent-auth:grant-type:claim
+&claim_token=clm_…
+```
+
+While the user has not confirmed yet the endpoint answers `authorization_pending`;
+polling faster than the `interval` answers `slow_down` (back off before retrying).
+`expired_token` means the claim window lapsed unconfirmed (start over at §3), and
+`access_denied` means the registration was revoked — stop. Once the user confirms:
+
+**200:**
+
+```json
+{
+  "access_token": "<Bearer token>",
+  "token_type": "Bearer",
+  "expires_in": 300,
+  "scope": "atproto blob:*/* repo:*?action=create&action=update",
+  "identity_assertion": "<service-signed identity_assertion>",
+  "assertion_expires": "2026-01-01T01:00:00.000Z"
+}
+```
+
+The response carries both a live access token (usable immediately — §5) and the
+minted `identity_assertion`: store the assertion and re-exchange it per §4 when
+the access token expires.
 
 ## 4. Exchange the assertion for an access token
 

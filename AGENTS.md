@@ -25,6 +25,7 @@ Last verified: 2026-07-06
 - `just deny` / `cargo deny check licenses bans sources` - Dependency license + supply-chain gate (policy in `deny.toml`; advisories stay with `cargo audit` to avoid double-reporting)
 - `just ci` - Full local gate (fmt-check, lock-check, bruno-check, font-check, cap-check, ios-paths-check, swift-rs-check, ios-template-check, clippy, test, audit, deny) — the same checks CI runs
 - `just interop-setup` / `just interop <args>` - Install deps for and run the interop CLI (`tools/interop/`) against a live deployment
+- `just mcp-setup` / `just mcp <args>` / `just mcp-test` - Install deps for, run, and test the Custos MCP server (`tools/mcp/`); `mcp-test` runs the auth.md agent-auth conformance suite against a hermetic locally spawned PDS (not part of `just ci` — needs node/pnpm like the interop CLI)
 
 ## CI/CD
 
@@ -61,6 +62,7 @@ Release flow: `just set-version X.Y.Z` (PR) → merge → `just release` (cuts/p
 - `nix/` - Nix deployment (module.nix: NixOS module for OCI container)
 - `sites/marketing/` - Static marketing site for Obsign + Custos (zero-build HTML/CSS; design derivation documented in its README)
 - `tools/interop/` - Node/pnpm interop CLI exercising a live deployment (staging by default) end-to-end against the real ATProto network (see its README)
+- `tools/mcp/` - Custos MCP: first-party MCP stdio server (Node/TypeScript, pnpm) that self-onboards to a Custos PDS via the auth.md agent flow and exposes it as tools; its `pnpm test` conformance suite spawns a hermetic local PDS (see its README)
 - `docs/` - Specs, design plans, implementation plans, and `docs/architecture/` (living architecture docs + the ADR log in `docs/architecture/decisions/`). Plans for landed/superseded work live in `docs/archive/` — when a plan's work ships, move its design/test/implementation triad there together (see `docs/archive/README.md`)
 
 ## Mobile

@@ -97,6 +97,24 @@ interop-setup:
 interop *args:
     tools/interop/bin/interop {{args}}
 
+# Install dependencies for the Custos MCP server (tools/mcp) — one-time setup.
+mcp-setup:
+    cd tools/mcp && pnpm install
+
+# Run the Custos MCP server (or `just mcp reset` to clear cached credentials).
+# Configure via CUSTOS_PDS_URL / CUSTOS_MCP_EMAIL — see tools/mcp/README.md;
+# MCP clients should launch tools/mcp/bin/custos-mcp directly.
+mcp *args:
+    tools/mcp/bin/custos-mcp {{args}}
+
+# Run the auth.md agent-auth conformance suite (client half of the Wave 8 story):
+# spawns a hermetic local PDS (built here first; plc.directory is mocked, nothing
+# touches the live network) and drives discovery → register → claim → exchange →
+# tool calls through the real MCP server. See tools/mcp/README.md.
+mcp-test:
+    cargo build -p pds
+    cd tools/mcp && pnpm test
+
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
 ci: fmt-check lock-check bruno-check font-check cap-check ios-paths-check swift-rs-check ios-template-check clippy test audit deny
 
