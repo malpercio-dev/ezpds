@@ -32,9 +32,10 @@ pub enum PurgeOutcome {
 }
 
 /// Child tables that hold a row per account keyed by a `did` column, listed in an order that
-/// respects the inter-child foreign keys (there is **no** `ON DELETE CASCADE` anywhere in the
-/// schema, so every child must be deleted explicitly and in dependency order before the
-/// `accounts` row):
+/// respects the inter-child foreign keys (**no account-keyed FK cascades**: the schema's only
+/// `ON DELETE CASCADE`s hang content-addressed ownership rows off their physical tables
+/// (`block_owners.cid` → `blocks`, `blob_owners.cid` → `blobs`), never off `accounts`, so every
+/// child must be deleted explicitly and in dependency order before the `accounts` row):
 ///
 /// * `refresh_tokens` before `sessions` (`refresh_tokens.session_id → sessions.id`)
 /// * `transfer_audit_events` before `transfers` before `transfer_devices`

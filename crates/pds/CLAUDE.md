@@ -25,7 +25,7 @@ src/
   rate_limit.rs    — request rate-limiting middleware + shared limiter state (global IP, per-endpoint IP, per-account write points)
   iroh_tunnel.rs   — Iroh QUIC endpoint: NAT-traversing device↔pds tunnel (opt-in)
   record_write.rs  — shared repo write flow + firehose commit emission
-  account_delete.rs— shared permanent account-deletion transaction (all child tables in FK order — there is no ON DELETE CASCADE — plus on-disk blob reclamation and an `#account` deleted frame), used by deleteAccount and the reaper
+  account_delete.rs— shared permanent account-deletion transaction (all child tables in FK order — no account-keyed FK cascades exist — plus on-disk reclamation of blob files no other account owns and an `#account` deleted frame), used by deleteAccount and the reaper
   account_reaper.rs— periodic sweep that permanently deletes deactivated accounts past their `deleteAfter` (template: firehose_gc.rs)
   genesis.rs       — shared did:plc genesis-op machinery (verify/validate, DID-doc + CAR builders, plc.directory POST), used by both create_did.rs and create_account_xrpc.rs
   plc_ops.rs       — shared did:plc rotation/update-op machinery for the interop PLC-signing surface: fetch a DID's current PLC state (audit-log GET), render a DID doc from op fields, parse request verificationMethods/services; used by the identity.*PlcOperation routes
