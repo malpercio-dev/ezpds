@@ -9,7 +9,7 @@
 //! The `create_only` flag distinguishes `createRecord` (must reject pre-existing rkeys)
 //! from `putRecord` (upsert semantics) and `deleteRecord` (always removes).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use axum::http::HeaderMap;
@@ -370,12 +370,8 @@ pub async fn write_record(
         claims.registration_id.as_deref(),
     )
     .await?;
-
-    // Best-effort GC: reclaim blocks superseded by this commit. A GC failure must not
-    // fail the write — the commit is durable; orphaned blocks are harmless until swept.
-    if let Err(e) = gc_repo_blocks(&state.db, did, repo.root()).await {
-        tracing::warn!(error = %e, did = %did, "post-commit block GC failed (non-fatal)");
-    }
+    // `commit_repo_write` reclaims this commit's superseded blocks incrementally (see its
+    // post-commit GC); no separate full-repo reachability sweep runs on the write path.
 
     Ok((WriteRecordResult { new_root }, record_cid))
 }
@@ -471,34 +467,38 @@ pub async fn commit_repo_write(
 
     let mut store = SqliteBlockStore::new(state.db.clone(), did.to_string());
 
-    // The exact CID set this commit introduced drives two things, computed once here while both
-    // block sets are still present (pre-GC): the firehose diff CAR, and the per-block rev tag for
-    // getRepo?since. Tagging this precise set (not "all untagged blocks") is what keeps the rev
-    // correct under concurrent same-repo writes — see `db::blocks::tag_blocks_rev`. `cid_strs` is
-    // kept independently of `blocks` (rather than as one `Option` pair) because the rev tag is
-    // still applied even if the CAR later fails to build — only the event is dropped in that case.
-    let diff_cids = match repo_engine::collect_commit_diff_cids(
-        &mut store,
-        Some(prev_root),
-        new_root,
-    )
-    .await
-    {
-        Ok(cids) => Some(cids),
+    // This commit's block diff, computed once here while both block sets are still present
+    // (pre-GC), from a single walk of the new root (plus one of the previous root). `added` drives
+    // the firehose diff CAR and the per-block rev tag for getRepo?since — tagging this precise set
+    // (not "all untagged blocks") is what keeps the rev correct under concurrent same-repo writes
+    // (see `db::blocks::tag_blocks_rev`). `new_reachable` is reused as the post-commit GC keep-set
+    // below, so the GC no longer recomputes full-repo reachability a second time on every write.
+    // `cid_strs`/`gc_keep` are kept independently of `blocks` (rather than as one `Option` bundle)
+    // because the rev tag and GC still run even if the CAR later fails to build — only the firehose
+    // event is dropped in that case.
+    let diff = match repo_engine::collect_commit_diff(&mut store, Some(prev_root), new_root).await {
+        Ok(diff) => Some(diff),
         Err(e) => {
             tracing::warn!(
                 error = %e,
                 did = %did,
-                "failed to compute commit block diff; dropping firehose event + rev tag (non-fatal)"
+                "failed to compute commit block diff; dropping firehose event + rev tag + \
+                 post-commit GC (non-fatal; the next successful write's GC reclaims the leftovers)"
             );
             None
         }
     };
-    let cid_strs: Option<Vec<String>> = diff_cids
+    let cid_strs: Option<Vec<String>> = diff
         .as_ref()
-        .map(|cids| cids.iter().map(|c| c.to_string()).collect());
-    let blocks = match diff_cids {
-        Some(cids) => match repo_engine::build_car_from_cids(&mut store, new_root, cids).await {
+        .map(|d| d.added.iter().map(|c| c.to_string()).collect());
+    // The GC keep-set: reachable(new), reused from the diff walk so the post-commit GC need not
+    // re-walk the repo. `None` (the diff failed) means "skip GC this write"; the next successful
+    // write's exhaustive GC reclaims whatever this one left behind.
+    let gc_keep: Option<HashSet<String>> = diff
+        .as_ref()
+        .map(|d| d.new_reachable.iter().map(|c| c.to_string()).collect());
+    let blocks = match diff {
+        Some(d) => match repo_engine::build_car_from_cids(&mut store, new_root, d.added).await {
             Ok(blocks) => Some(blocks),
             Err(e) => {
                 tracing::warn!(
@@ -620,6 +620,22 @@ pub async fn commit_repo_write(
         state.crawlers.notify();
     }
 
+    // Post-commit GC: reclaim every block this account owns that the new head no longer references
+    // — superseded MST nodes, intermediate blocks from a multi-write batch, and orphans from a
+    // conflicted attempt. The keep-set is `reachable(new)`, reused from the diff walk above, so the
+    // GC does not recompute full-repo reachability a second time per write. Safe here because the
+    // CAS committed (`new_root` is now the persisted head) and the caller holds the per-DID
+    // [`RepoWriteLocks`] guard across this whole function, so no concurrent write can advance the
+    // head between the commit and this sweep — the window in which an unguarded GC would delete a
+    // sibling write's freshly written, not-yet-root-reachable blocks. Best-effort and last: a
+    // failure — or a diff failure that left `gc_keep` `None` — leaves the blocks for the next
+    // successful write's exhaustive GC to reclaim; the (durable) write never fails on GC.
+    if let Some(keep) = gc_keep {
+        if let Err(e) = gc_repo_blocks(&state.db, did, new_root, &keep).await {
+            tracing::warn!(error = %e, did = %did, "post-commit block GC failed (non-fatal)");
+        }
+    }
+
     Ok(())
 }
 
@@ -635,24 +651,27 @@ pub(crate) fn split_record_path(mst_key: &str) -> (String, String) {
     }
 }
 
-/// Garbage-collect blocks that are no longer reachable from the given repo root.
+/// Garbage-collect the blocks an account owns that are no longer reachable from its repo head.
 ///
-/// Computes the transitive closure of reachable CIDs from the commit, MST nodes,
-/// and record blocks, then deletes any blocks for this account that are not in
-/// that set. Returns the number of blocks removed.
+/// `reachable` is the head's live block set (`reachable(head)`) — every commit/MST/record CID the
+/// current root transitively references. The caller supplies it rather than having this function
+/// recompute it: a repo write already walks `reachable(new)` to build the firehose diff, so passing
+/// that set here keeps the whole commit to a single reachability walk instead of recomputing it for
+/// GC on every write. Any block the account owns that is *not* in `reachable` (superseded MST nodes,
+/// intermediate blocks from a multi-write batch, orphans from a conflicted attempt) is reclaimed.
+/// Returns the number of ownership rows removed.
 ///
-/// Callers must hold the account's [`RepoWriteLocks`] lock: the reachability walk and the delete
-/// span many statements, and a concurrent write's fresh blocks are exactly the "unreachable" rows
-/// this sweep would destroy. As a second line of defense, the sweep is skipped entirely when
-/// `root` is no longer the persisted head — a reachable set computed from a superseded root does
-/// not contain the current head's blocks, so deleting against it corrupts the repo.
+/// Callers must hold the account's [`RepoWriteLocks`] lock and must have already committed `root` as
+/// the head: the delete spans many statements, and a concurrent write's fresh blocks are exactly the
+/// "unreachable" rows this sweep would destroy. As a second line of defense, the sweep is skipped
+/// entirely when `root` is no longer the persisted head — a keep-set computed from a superseded root
+/// does not contain the current head's blocks, so deleting against it would corrupt the repo.
 pub async fn gc_repo_blocks(
     pool: &SqlitePool,
     did: &str,
     root: repo_engine::Cid,
+    reachable: &std::collections::HashSet<String>,
 ) -> Result<u64, ApiError> {
-    use std::collections::HashSet;
-
     let current_root = crate::db::accounts::current_repo_root(pool, did)
         .await
         .map_err(|e| {
@@ -668,18 +687,7 @@ pub async fn gc_repo_blocks(
         return Ok(0);
     }
 
-    let mut store = SqliteBlockStore::new(pool.clone(), did.to_string());
-    let reachable: HashSet<String> = repo_engine::collect_reachable_cids(&mut store, root)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, did = %did, "failed to compute reachable blocks for GC");
-            ApiError::new(ErrorCode::InternalError, "block GC failed")
-        })?
-        .into_iter()
-        .map(|c| c.to_string())
-        .collect();
-
-    crate::db::blocks::delete_unreachable_blocks(pool, did, &reachable)
+    crate::db::blocks::delete_unreachable_blocks(pool, did, reachable)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, "failed to delete unreachable blocks");
@@ -747,9 +755,13 @@ mod tests {
         let current_root = repo_root(&state.db, did).await;
         assert_ne!(current_root, stale_root);
 
-        // A straggling GC keyed on the superseded root must leave the current head intact.
+        // A straggling GC keyed on the superseded root must leave the current head intact. The
+        // keep-set is deliberately empty: if the stale-root guard regressed and did *not* skip, an
+        // empty keep-set would delete every owned block and the current head would fail to open —
+        // so this asserts the guard fires, not merely that a correct keep-set was passed.
         let stale_cid = repo_engine::Cid::try_from(stale_root.as_str()).unwrap();
-        let _ = super::gc_repo_blocks(&state.db, did, stale_cid).await;
+        let _ = super::gc_repo_blocks(&state.db, did, stale_cid, &std::collections::HashSet::new())
+            .await;
 
         let store = SqliteBlockStore::new(state.db.clone(), did.to_string());
         let current_cid = repo_engine::Cid::try_from(current_root.as_str()).unwrap();
@@ -906,5 +918,67 @@ mod tests {
                     .expect("record lookup must not error");
             assert!(record.is_some(), "acknowledged record {rkey} lost");
         }
+    }
+
+    /// A record rewritten many times must not accumulate blocks: each commit's post-commit GC
+    /// reclaims the superseded record, MST node(s), and commit block, so a single-record repo holds
+    /// the same number of owned blocks after ten updates as after the first. (Without the GC the
+    /// count would grow roughly linearly with the number of writes.) The repo stays openable at head
+    /// and reads back the latest value.
+    #[tokio::test]
+    async fn repeated_updates_reclaim_superseded_blocks() {
+        async fn owned_block_count(db: &sqlx::SqlitePool, did: &str) -> i64 {
+            sqlx::query_scalar("SELECT COUNT(*) FROM block_owners WHERE account_did = ?")
+                .bind(did)
+                .fetch_one(db)
+                .await
+                .unwrap()
+        }
+
+        let state = state_with_master_key().await;
+        let did = "did:plc:gcincremental";
+        seed_account_with_repo(&state.db, did).await;
+        let token = access_jwt(&state.jwt_secret, did);
+        let app = crate::app::app(state.clone());
+
+        let mut count_after_first = 0i64;
+        for i in 0..10 {
+            let response = app
+                .clone()
+                .oneshot(put_record_request(
+                    did,
+                    "app.bsky.feed.post",
+                    "single",
+                    serde_json::json!({"record": {"text": format!("revision {i}")}}),
+                    Some(&token),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            if i == 0 {
+                count_after_first = owned_block_count(&state.db, did).await;
+            }
+        }
+
+        let count_after_tenth = owned_block_count(&state.db, did).await;
+        assert_eq!(
+            count_after_tenth, count_after_first,
+            "repeated updates to one record must not accumulate owned blocks — the post-commit GC \
+             reclaims each superseded version (got {count_after_first} after the first write, \
+             {count_after_tenth} after ten)"
+        );
+
+        // The repo still opens at the persisted head and reads back the final revision.
+        let root = repo_root(&state.db, did).await;
+        let root_cid = repo_engine::Cid::try_from(root.as_str()).unwrap();
+        let store = SqliteBlockStore::new(state.db.clone(), did.to_string());
+        let mut repo = repo_engine::Repository::open(store, root_cid)
+            .await
+            .expect("repo must open at head after repeated updates");
+        let value = repo_engine::get_record_json(&mut repo, "app.bsky.feed.post/single")
+            .await
+            .expect("record lookup must not error")
+            .expect("record must be present at head");
+        assert_eq!(value["text"], "revision 9");
     }
 }

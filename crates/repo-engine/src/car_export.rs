@@ -88,30 +88,50 @@ where
     build_car(store, new_root, diff).await
 }
 
-/// Compute the CIDs introduced by a single commit: `reachable(new_root) − reachable(prev_root)`.
+/// A single commit's block-diff results, both derived from one walk of the new root (plus one of
+/// the previous root for the `added` direction).
 ///
-/// This is the exact block set a commit added — its commit block, any MST nodes the write rewrote,
-/// and any newly created record blocks. It is the source of truth for both the firehose `#commit`
+/// A repo write both needs the blocks it *introduced* (to ship the firehose diff) and wants to
+/// reclaim the blocks it left behind (post-commit GC). Both fall out of `reachable(new)`, so
+/// computing that set once and returning it here lets the GC reuse it as its keep-set instead of
+/// re-walking the whole repo — which is the whole point: the reachability walk is the expensive,
+/// O(repo-size) part of a commit, and it should happen at most once per commit.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct CommitDiff {
+    /// `reachable(new) − reachable(prev)`: the blocks this commit introduced — its commit block,
+    /// any MST nodes the write rewrote, and any newly created record blocks. Drives the firehose
+    /// `#commit` diff CAR and the per-block revision tag for `com.atproto.sync.getRepo?since`.
+    pub added: Vec<Cid>,
+    /// `reachable(new)`: the complete live block set of the new root. A post-commit GC reuses this
+    /// as its keep-set — every block the account owns that is *not* in this set (superseded MST
+    /// nodes, intermediate blocks from a multi-write batch, orphans from conflicted writes) is
+    /// garbage — so it need not re-walk the repo to identify what to reclaim.
+    pub new_reachable: Vec<Cid>,
+}
+
+/// Compute a commit's [`CommitDiff`] — its introduced blocks (`added`) and the new root's full
+/// reachable set (`new_reachable`) — from a single walk of `new_root` (and one of `prev_root`).
+///
+/// `added` (`reachable(new) − reachable(prev)`) is the source of truth for the firehose `#commit`
 /// diff CAR ([`export_commit_blocks_car`]) and the per-block revision tag that drives
-/// `com.atproto.sync.getRepo?since`. Tagging exactly these CIDs (rather than every untagged block
-/// for the account) is what makes the rev stamp correct under concurrent writes to the same repo:
-/// two commits' diff sets are disjoint, so neither can steal the other's blocks.
+/// `com.atproto.sync.getRepo?since`; tagging exactly these CIDs (rather than every untagged block
+/// for the account) keeps the rev stamp correct under concurrent writes to the same repo, since two
+/// commits' diff sets are disjoint. `new_reachable` (`reachable(new)`) is the keep-set a post-commit
+/// GC reclaims against without a second reachability walk.
 ///
 /// `prev_root` is `None` only for a repo's first commit (genesis), where every reachable block is
 /// new. Both roots' block sets must still be present in `store` — call this before any post-commit
 /// GC reclaims the superseded blocks.
-pub async fn collect_commit_diff_cids<S>(
+pub async fn collect_commit_diff<S>(
     store: &mut S,
     prev_root: Option<Cid>,
     new_root: Cid,
-) -> Result<Vec<Cid>, CarExportError>
+) -> Result<CommitDiff, CarExportError>
 where
     S: AsyncBlockStoreRead,
 {
-    let new_set: HashSet<Cid> = collect_reachable_cids(&mut *store, new_root)
-        .await?
-        .into_iter()
-        .collect();
+    let new_reachable = collect_reachable_cids(&mut *store, new_root).await?;
+    let new_set: HashSet<Cid> = new_reachable.iter().copied().collect();
 
     let prev_set: HashSet<Cid> = match prev_root {
         Some(prev) => collect_reachable_cids(&mut *store, prev)
@@ -121,7 +141,25 @@ where
         None => HashSet::new(),
     };
 
-    Ok(new_set.difference(&prev_set).copied().collect())
+    Ok(CommitDiff {
+        added: new_set.difference(&prev_set).copied().collect(),
+        new_reachable,
+    })
+}
+
+/// Compute the CIDs introduced by a single commit: `reachable(new_root) − reachable(prev_root)`.
+///
+/// Thin wrapper over [`collect_commit_diff`] for callers that only need the `added` direction (the
+/// firehose diff CAR). See [`CommitDiff::added`] for the exact set and its guarantees.
+pub async fn collect_commit_diff_cids<S>(
+    store: &mut S,
+    prev_root: Option<Cid>,
+    new_root: Cid,
+) -> Result<Vec<Cid>, CarExportError>
+where
+    S: AsyncBlockStoreRead,
+{
+    Ok(collect_commit_diff(store, prev_root, new_root).await?.added)
 }
 
 /// Build a CARv1 file declaring `root` as its root and containing exactly the blocks in `cids`.
@@ -423,6 +461,95 @@ mod tests {
             car_store.read_block_into(r1, &mut buf).await.is_err(),
             "unchanged record from the prior commit must be excluded from the diff"
         );
+    }
+
+    #[tokio::test]
+    async fn commit_diff_reports_added_and_full_reachable_set() {
+        // genesis → commit A (record r1) → commit B (update r1 to a new value). `added` carries B's
+        // commit block and r1's new value but not r1's old value; `new_reachable` is exactly
+        // reachable(B) and excludes A's superseded commit + old value, so a GC keeping only
+        // `new_reachable` reclaims the superseded blocks and nothing live.
+        let mut store = MemoryBlockStore::new();
+        let signer = test_signer();
+        let genesis = create_genesis_repo(&mut store, "did:plc:ciddiff", &signer)
+            .await
+            .unwrap();
+
+        let mut repo = Repository::open(&mut store, genesis).await.unwrap();
+        let r1_old = crate::records::put_record(
+            &mut repo,
+            &signer,
+            "app.bsky.feed.post/r1",
+            &serde_json::json!({ "text": "one" }),
+        )
+        .await
+        .unwrap();
+        let root_a = repo.root();
+
+        let mut repo = Repository::open(&mut store, root_a).await.unwrap();
+        let r1_new = crate::records::put_record(
+            &mut repo,
+            &signer,
+            "app.bsky.feed.post/r1",
+            &serde_json::json!({ "text": "one, revised" }),
+        )
+        .await
+        .unwrap();
+        let root_b = repo.root();
+        assert_ne!(r1_old, r1_new, "updated record must have a new CID");
+
+        let diff = collect_commit_diff(&mut store, Some(root_a), root_b)
+            .await
+            .unwrap();
+        let added: HashSet<Cid> = diff.added.iter().copied().collect();
+        let new_reachable: HashSet<Cid> = diff.new_reachable.iter().copied().collect();
+
+        // `added` is the commit's introduced blocks.
+        assert!(added.contains(&root_b), "new commit block is added");
+        assert!(added.contains(&r1_new), "new record value is added");
+        assert!(
+            !added.contains(&r1_old),
+            "carried-over old value is not 'added'"
+        );
+
+        // `new_reachable` equals reachable(new) exactly — the GC keep-set.
+        let expected_reachable: HashSet<Cid> = collect_reachable_cids(&mut store, root_b)
+            .await
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert_eq!(
+            new_reachable, expected_reachable,
+            "new_reachable must equal reachable(new)"
+        );
+        // The superseded blocks fall outside the keep-set, so an exhaustive GC reclaims them.
+        assert!(
+            !new_reachable.contains(&root_a),
+            "old commit block is not in the keep-set"
+        );
+        assert!(
+            !new_reachable.contains(&r1_old),
+            "old record value is not in the keep-set"
+        );
+        // Everything `added` is, of course, still live.
+        assert!(
+            added.is_subset(&new_reachable),
+            "introduced blocks are part of the new reachable set"
+        );
+    }
+
+    #[tokio::test]
+    async fn commit_diff_genesis_added_equals_reachable() {
+        // With prev_root = None (genesis emission), every reachable block is "new": `added` and
+        // `new_reachable` coincide.
+        let (mut store, root, record_cid) = repo_with_record().await;
+        let diff = collect_commit_diff(&mut store, None, root).await.unwrap();
+
+        let added: HashSet<Cid> = diff.added.iter().copied().collect();
+        let new_reachable: HashSet<Cid> = diff.new_reachable.iter().copied().collect();
+        assert_eq!(added, new_reachable, "genesis adds every reachable block");
+        assert!(added.contains(&root), "genesis adds the commit block");
+        assert!(added.contains(&record_cid), "genesis adds the record block");
     }
 
     #[tokio::test]

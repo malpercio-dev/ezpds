@@ -340,11 +340,8 @@ pub async fn apply_writes(
             claims.registration_id.as_deref(),
         )
         .await?;
-
-        // Best-effort GC: reclaim the intermediate per-write commits and any superseded blocks.
-        if let Err(e) = crate::record_write::gc_repo_blocks(&state.db, did, repo.root()).await {
-            tracing::warn!(error = %e, did = %did, "post-commit block GC failed (non-fatal)");
-        }
+        // `commit_repo_write` reclaims this commit's superseded and intermediate-batch blocks
+        // incrementally; no separate full-repo reachability sweep runs on the write path.
     }
 
     let rev = repo.commit().rev().as_str().to_string();
