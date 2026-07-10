@@ -1433,10 +1433,7 @@ mod tests {
         );
 
         let value = serde_json::to_value(&status).expect("serialize");
-        assert_eq!(
-            value["subject"]["$type"],
-            "com.atproto.admin.defs#repoRef"
-        );
+        assert_eq!(value["subject"]["$type"], "com.atproto.admin.defs#repoRef");
         assert_eq!(value["subject"]["did"], "did:plc:abc123");
         assert_eq!(value["takedown"]["applied"], true);
     }
