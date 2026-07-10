@@ -247,6 +247,66 @@ export function getAccountStorage(pairingId: string, did: string): Promise<Accou
 }
 
 /**
+ * The relay's server-health readout — the response shape of `GET /v1/admin/health`.
+ * Literal facts only: the relay derives no ok/warn verdicts, so any staleness or
+ * threshold judgment belongs to the screen (or the operator).
+ */
+export interface ServerHealth {
+  version: string;
+  uptimeSeconds: number;
+  /** Derived-lifecycle buckets; the four non-total buckets partition `total` exactly. */
+  accounts: {
+    total: number;
+    active: number;
+    deactivated: number;
+    suspended: number;
+    takendown: number;
+  };
+  /** Physical rows: blobs are shared across owners and counted (and summed) once. */
+  storage: {
+    blobCount: number;
+    blobBytes: number;
+    blockCount: number;
+  };
+  firehose: {
+    /** Highest sequenced event; 0 before the first event ever. */
+    currentSeq: number;
+    /** Currently connected subscribeRepos WebSocket subscribers. */
+    subscribers: number;
+    /** Retained event-log rows — the replayable backlog. */
+    retainedEvents: number;
+    /** Age in seconds of the oldest retained event; null when the log is empty. */
+    backfillWindowSeconds: number | null;
+  };
+  /**
+   * Last completed pass per background sweep; null until that sweep's first completed
+   * pass after boot (each first runs one full interval after startup). A failed pass
+   * records nothing, so a stale `completedAt` — not an error field — is the signal
+   * that passes are not completing.
+   */
+  sweeps: {
+    blobGc: SweepRun | null;
+    firehoseGc: SweepRun | null;
+    accountReaper: SweepRun | null;
+    agentClaimSweep: SweepRun | null;
+  };
+}
+
+/** One completed sweep pass: unix seconds + items acted on. */
+export interface SweepRun {
+  completedAt: number;
+  swept: number;
+}
+
+/**
+ * Fetch the relay's server-health readout from the given pairing's relay via a signed
+ * request — the Status screen's data source. Throws a {@link RelayClientError}.
+ */
+export function getServerHealth(pairingId: string): Promise<ServerHealth> {
+  return invoke<ServerHealth>('get_server_health', { pairingId });
+}
+
+/**
  * One account row of the relay's operator account list — the response shape of
  * `GET /v1/admin/accounts`. `status` is the derived lifecycle, always stated
  * explicitly; `quotaUsedPct` is `totalBytes` against the page-level `quotaBytes`.

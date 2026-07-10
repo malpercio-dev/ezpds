@@ -94,6 +94,9 @@ pub async fn run_account_reaper(state: &AppState) -> ReaperStats {
         .metrics
         .account_reaper_last_run_timestamp
         .record(crate::metrics::unix_now(), &[]);
+    state
+        .sweeps
+        .record_account_reaper(crate::sweep_status::SweepRun::now(stats.deleted));
 
     stats
 }

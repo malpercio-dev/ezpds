@@ -150,6 +150,16 @@ async fn get_account_storage(
     relay_client::get_account_storage(&pairing_id, &did).await
 }
 
+/// Fetch the relay's server-health readout (row counts, firehose state, sweep
+/// last-runs) — the Status screen's data source. Literal facts only; any staleness
+/// judgment is the screen's. Id-addressed like `list_admin_devices`.
+#[tauri::command]
+async fn get_server_health(
+    pairing_id: String,
+) -> Result<relay_client::ServerHealth, relay_client::RelayClientError> {
+    relay_client::get_server_health(&pairing_id).await
+}
+
 /// Fetch a page of the relay's account list (DID order, cursor pagination, optional
 /// derived-status filter and handle/DID substring search) — the Accounts screen's data
 /// source. Id-addressed like `list_admin_devices`.
@@ -253,6 +263,7 @@ pub fn run() {
             update_subject_status,
             get_account_usage,
             get_account_storage,
+            get_server_health,
             list_accounts,
             list_claim_codes,
             revoke_claim_code,

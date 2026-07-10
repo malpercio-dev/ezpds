@@ -108,6 +108,9 @@ pub async fn run_agent_claim_sweep(state: &AppState) -> SweepStats {
         .metrics
         .agent_claim_sweep_last_run_timestamp
         .record(crate::metrics::unix_now(), &[]);
+    state
+        .sweeps
+        .record_agent_claim_sweep(crate::sweep_status::SweepRun::now(stats.expired));
 
     stats
 }

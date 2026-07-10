@@ -32,6 +32,7 @@ mod rate_limit;
 mod read_after_write;
 mod record_write;
 mod routes;
+mod sweep_status;
 mod telemetry;
 mod token;
 mod transfer;
@@ -324,6 +325,8 @@ async fn run() -> anyhow::Result<()> {
         allow_loopback_proxy_targets: false,
         metrics,
         repo_write_locks: Arc::new(record_write::RepoWriteLocks::new()),
+        sweeps: Arc::new(sweep_status::SweepStatus::default()),
+        started_at: std::time::Instant::now(),
     };
 
     let listener = tokio::net::TcpListener::bind(&addr)

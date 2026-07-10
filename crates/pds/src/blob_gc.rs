@@ -159,6 +159,9 @@ pub async fn run_blob_gc(state: &AppState) -> GcStats {
         .metrics
         .blob_gc_last_run_timestamp
         .record(crate::metrics::unix_now(), &[]);
+    state
+        .sweeps
+        .record_blob_gc(crate::sweep_status::SweepRun::now(stats.deleted));
 
     stats
 }

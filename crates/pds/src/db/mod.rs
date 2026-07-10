@@ -20,6 +20,7 @@ pub mod preferences;
 pub mod refresh_tokens;
 pub mod relay_signing_keys;
 pub mod repo_keys;
+pub mod server_stats;
 pub mod sessions;
 pub mod transfers;
 

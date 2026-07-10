@@ -1,7 +1,7 @@
 # Admin Companion (operator console) Mobile App
 
 Last verified: 2026-07-10
-Last updated: 2026-07-10 (credential revocation + Account detail screen; usage/storage moved off moderation)
+Last updated: 2026-07-10 (server health readout: get_server_health IPC chain + Status screen)
 
 ## Purpose
 
@@ -50,6 +50,11 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   the BARE path is signed and the paging/filter query params are appended after signing, so
   every page reuses the same envelope shape — `AccountList`/`AccountListEntry` are by-value
   copies of the wire shape pinned by a deserialization test),
+  `get_server_health` (a signed `GET /v1/admin/health` for an id-addressed pairing — the
+  Status screen's data source: version/uptime, account counts by lifecycle, blob/block
+  totals, firehose state, and background-sweep last-runs as `ServerHealth`, a by-value
+  copy of the wire shape pinned by a deserialization test; the relay reports literal
+  facts only, so all staleness judgment is client-side),
   `list_claim_codes`/`revoke_claim_code` (the claim-code inventory: a signed
   `GET /v1/accounts/claim-codes` — bare path signed, pagination `cursor` appended to the URL
   only, like the moderation GET — and a signed `POST /v1/accounts/claim-codes/revoke` whose
@@ -85,6 +90,8 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   `get_account_usage(pairing_id, did)` / `get_account_storage(pairing_id, did)` (signed
   per-account usage/storage metrics reads; same error surface as the status lookup),
   `list_accounts(pairing_id, limit?, cursor?, status?, q?)` (signed account-list page read),
+  `get_server_health(pairing_id)` (signed server-health readout; same error surface as the
+  other signed reads),
   `list_claim_codes(pairing_id, cursor?)` (signed inventory page: every minted code with its
   derived status, newest first) / `revoke_claim_code(pairing_id, code)` (signed revoke of a
   live code; already-revoked is idempotent 200, redeemed → `RELAY_REJECTED` 409, unknown → 404),
@@ -137,7 +144,17 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   **History** panel (terminal codes, facts only). Pinned to a single pairing at entry like
   Devices (`?server=<pairingId>`, else active); pages older codes via the relay cursor with a
   "Load older codes" button; a revoke reloads the inventory so rows report the relay's
-  post-revoke truth, never an optimistic edit. Reached from Home's Codes button). The
+  post-revoke truth, never an optimistic edit. Reached from Home's Codes button),
+  **Status** (`src/routes/status/` — ONE relay's server-health readout off
+  `GET /v1/admin/health`: version/uptime, account counts by lifecycle, blob/block totals,
+  firehose state, and background-sweep last-runs as literal fact sheets. Pinned to a single
+  pairing at entry like Devices (`?server=<pairingId>`, else active); reads only, no
+  biometric gate; Refresh uses the accounts screen's generation-counter guard. The relay
+  reports raw facts with no verdicts, so all presentation judgment lives in
+  `src/lib/health.ts` (Functional Core, unit-tested): `formatDuration` (uptime/ages),
+  `formatBackfillWindow` (`null` → "empty log"), and `sweepLine` (`not yet run` vs
+  `<age> ago · swept <n>`, with a ` !` staleness glyph at ≥24h — glyph, never color alone).
+  Reached from Home's Status button). The
   error-state matrix (not-paired / clock-skew / revoked / unreachable / not-found) is rendered by the shared
   `ui/ErrorState.svelte` off `errors.ts`'s `classifyRelayError`. Server identity display (`src/lib/server-identity.ts`)
   pairs the operator nickname with the relay host in monospace everywhere, so staging and production

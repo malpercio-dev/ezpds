@@ -124,6 +124,9 @@ pub async fn run_firehose_gc(state: &AppState) -> GcStats {
         .metrics
         .firehose_gc_last_run_timestamp
         .record(crate::metrics::unix_now(), &[]);
+    state
+        .sweeps
+        .record_firehose_gc(crate::sweep_status::SweepRun::now(stats.pruned));
     // The backfill window is how far back a reconnecting subscriber's cursor still replays
     // exactly. Refreshed here (post-prune) rather than on every emit: the sweep is the only
     // thing that shrinks the window, and emits only ever extend it by seconds.

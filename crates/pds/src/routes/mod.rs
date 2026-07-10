@@ -2,6 +2,7 @@ pub mod account_storage;
 pub mod account_usage;
 pub mod activate_account;
 pub mod admin_devices;
+pub mod admin_health;
 pub mod admin_list_accounts;
 pub mod admin_revoke_credentials;
 mod admin_subject_defs;
