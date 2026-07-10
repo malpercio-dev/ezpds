@@ -48,7 +48,7 @@ debug-kit sandbox instead, so the deployed image stays minimal.
 `/data/relay.db` is a single-writer WAL SQLite owned by the `pds` process; the
 safe pattern is to restore a **point-in-time copy from the S3 replica** into
 `/tmp` and open *that* with `sqlite3`. The replica read never touches the live
-DB, so there is zero risk to the running server.
+DB, so the live database's integrity is never at stake.
 
 This runs against **production**, where Litestream is active and the replica
 credentials (`LITESTREAM_S3_BUCKET`, `LITESTREAM_S3_ENDPOINT`,
@@ -71,6 +71,13 @@ rm -f /tmp/copy.db             # clean up when done
 
 `-o /tmp/copy.db` **must** differ from `/data/relay.db`; never restore over the
 path the server is writing.
+
+> **Check free space first.** The copy is a *full* database materialized in the
+> container's ephemeral storage — a large DB can fill `/tmp` and disrupt the
+> running PDS. Confirm headroom before restoring: compare `df -h /tmp` against the
+> live size (`ls -lh /data/relay.db`). If the DB is large relative to free space,
+> restore into a `--private-network` sandbox (Runbook 2) rather than the service
+> container, and `rm` the copy as soon as you're done.
 
 ### Point-in-time restore
 
@@ -134,15 +141,26 @@ of shell steps (`-c` once per step; each must exit 0 within 10 min). Identical
 instructions are a cache hit for ~7 days, so rebuilds are instant.
 
 ```sh
+# Pin the checkout to the tag you're diagnosing so the interop tooling matches
+# what's deployed (use a branch like `main` for latest instead).
+REF=v0.0.0    # ← set to the deployed production tag
+
 railway sandbox template build \
   --name ezpds-debug-kit \
-  -c "apt-get update && apt-get install -y --no-install-recommends sqlite3 jq websocat curl git ca-certificates" \
+  -c "apt-get update && apt-get install -y --no-install-recommends sqlite3 jq curl git ca-certificates" \
   -c "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs" \
-  -c "corepack enable && corepack prepare pnpm@latest --activate" \
-  -c "git clone --depth 1 https://github.com/malpercio-dev/ezpds /opt/ezpds" \
+  -c "npm install -g pnpm@10" \
+  -c "curl -fsSL https://github.com/vi/websocat/releases/latest/download/websocat.x86_64-unknown-linux-musl -o /usr/local/bin/websocat && chmod +x /usr/local/bin/websocat && websocat --version" \
+  -c "git clone --depth 1 --branch \"$REF\" https://github.com/malpercio-dev/ezpds /opt/ezpds" \
   -c "cd /opt/ezpds/tools/interop && pnpm install --frozen-lockfile" \
   --wait
 ```
+
+`websocat` isn't in Debian's apt repos, so it's fetched as a static musl binary
+from its GitHub releases (pin a version tag instead of `latest/download` if you
+need a byte-reproducible template). Node tracks the `>=22.21` engine and `pnpm`
+is pinned to a major rather than floating on `@latest`, so the frozen-lockfile
+install stays stable — bump both to whatever your target release builds with.
 
 Boot a box from it on the private network and open a shell:
 
@@ -161,9 +179,10 @@ returns (reusing a name replaces it).
 ```sh
 railway sandbox create --private-network
 railway sandbox ssh
-#   ...inside: apt-get install sqlite3 jq websocat curl git, install node+pnpm,
-#      git clone the repo, cd tools/interop && pnpm install...
-railway sandbox checkpoint create --name ezpds-debug-kit    # acts on the active sandbox
+#   ...inside: apt-get install sqlite3 jq curl git; install websocat (GitHub
+#      release binary) + node + pnpm@10; git clone the repo at the deployed tag;
+#      cd tools/interop && pnpm install --frozen-lockfile...
+railway sandbox checkpoint create ezpds-debug-kit    # name is positional; acts on the active sandbox
 
 # Later, boot a fresh box from the checkpoint:
 railway sandbox create --checkpoint ezpds-debug-kit --private-network
@@ -183,11 +202,13 @@ curl -s http://<service>.railway.internal:<port>/xrpc/_health
 # Tap live firehose frames (com.atproto.sync.subscribeRepos is a WebSocket):
 websocat "ws://<service>.railway.internal:<port>/xrpc/com.atproto.sync.subscribeRepos"
 
-# Run the interop suite against the private-network service:
+# Run the interop suite against the private-network service. Provide the admin
+# token interactively so it never lands in shell history or a transcript (or
+# inject it as a masked Railway sandbox variable); unset it when done.
 cd /opt/ezpds/tools/interop
-EZPDS_BASE_URL=http://<service>.railway.internal:<port> \
-EZPDS_ADMIN_TOKEN=<admin-token> \
-  ./bin/interop describe
+read -rs EZPDS_ADMIN_TOKEN && export EZPDS_ADMIN_TOKEN
+EZPDS_BASE_URL=http://<service>.railway.internal:<port> ./bin/interop describe
+unset EZPDS_ADMIN_TOKEN
 ```
 
 > **The interop suite touches the live ATProto network** (real plc.directory,

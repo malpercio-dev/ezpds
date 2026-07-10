@@ -29,7 +29,7 @@ RUN apt-get update \
 # volume mount on /data does not prevent login shell resolution.
 RUN useradd --uid 10001 --user-group --create-home --home-dir /home/relay --shell /usr/sbin/nologin relay
 # Litestream: continuous SQLite replication + restore-on-boot. Active only when
-# LITESTREAM_REPLICA_URL is set (production); see docker-entrypoint.sh.
+# LITESTREAM_S3_BUCKET is set (production); see docker-entrypoint.sh.
 ARG LITESTREAM_VERSION=0.3.13
 RUN curl -fsSL "https://github.com/benbjohnson/litestream/releases/download/v${LITESTREAM_VERSION}/litestream-v${LITESTREAM_VERSION}-linux-amd64.tar.gz" \
     | tar -xz -C /usr/local/bin litestream
