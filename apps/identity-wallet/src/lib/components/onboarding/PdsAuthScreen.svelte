@@ -33,7 +33,7 @@
         const err = raw as ClaimError;
         switch (err.code) {
           case 'UNAUTHORIZED':
-            error = 'Authentication was denied. Please try again.';
+            error = 'Sign-in was cancelled or denied. Try again when ready.';
             break;
           case 'NETWORK_ERROR':
             error = 'Network error. Check your connection and try again.';

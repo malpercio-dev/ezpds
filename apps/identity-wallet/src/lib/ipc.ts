@@ -486,6 +486,20 @@ export const resolveIdentity = (handleOrDid: string): Promise<IdentityInfo> =>
   invoke('resolve_identity', { handleOrDid });
 
 /**
+ * Map a `plugin:auth-session|start` rejection to the flow's typed error. The plugin
+ * rejects with plain strings, and both platform implementations use the exact sentinel
+ * "user_cancelled" for a dismissed sheet — only that may read as the flow's cancellation
+ * error. Anything else ("Auth session error: …", "No browser available…") surfaces as
+ * NETWORK_ERROR carrying the plugin's message, so a network drop or platform failure
+ * is never presented as a cancellation the user didn't make.
+ */
+const classifyAuthSessionRejection = (
+  raw: unknown,
+  cancellation: ClaimError | MigrationError,
+): ClaimError | MigrationError =>
+  raw === 'user_cancelled' ? cancellation : { code: 'NETWORK_ERROR', message: String(raw) };
+
+/**
  * Authenticate with the identity's existing PDS via OAuth 2.0 PKCE + DPoP, using the native
  * in-app auth session (ASWebAuthenticationSession) — same three-step shape as `startOAuthFlow`:
  * `prepare_pds_auth` (Rust) discovers the auth server + PAR and returns the authorize URL; the
@@ -505,10 +519,9 @@ export const startPdsAuth = async (pdsUrl: string): Promise<void> => {
       authUrl: prepared.authUrl,
       callbackUrlScheme: prepared.callbackScheme,
     });
-  } catch {
-    // The auth-session plugin rejects with a plain string (e.g. "user_cancelled"); map to the
-    // ClaimError shape the UI expects (a dismissed sheet reads as unauthorized).
-    throw { code: 'UNAUTHORIZED' } as ClaimError;
+  } catch (raw: unknown) {
+    // A dismissed sheet reads as unauthorized; anything else surfaces as retryable.
+    throw classifyAuthSessionRejection(raw, { code: 'UNAUTHORIZED' });
   }
   await invoke('complete_pds_auth', { callbackUrl });
 };
@@ -776,8 +789,12 @@ export const startSourceAuth = async (did: string): Promise<void> => {
       authUrl: prepared.authUrl,
       callbackUrlScheme: prepared.callbackScheme,
     });
-  } catch {
-    throw { code: 'SOURCE_AUTH_FAILED', message: 'auth session cancelled' } as MigrationError;
+  } catch (raw: unknown) {
+    // A dismissed sheet reads as a cancellation; anything else surfaces as retryable.
+    throw classifyAuthSessionRejection(raw, {
+      code: 'SOURCE_AUTH_FAILED',
+      message: 'auth session cancelled',
+    });
   }
   await invoke('complete_source_auth', { did, callbackUrl });
 };
