@@ -19,7 +19,8 @@ docs {
 
   Operator usage metrics for an account, for the provisioning dashboard. `:id`
   is the account DID. Reports on the account regardless of activation state (a
-  deactivated account still has usage figures). Requires the admin bearer token.
+  deactivated account still has usage figures). Admin-authed: the master token
+  (shown here) **or** an active operator companion-app device's signed request.
 
   Response (camelCase, matching the rest of the /v1 API):
   - `recordsCount` — total records across every collection in the repo (0 when

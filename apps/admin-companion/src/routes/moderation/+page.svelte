@@ -5,11 +5,16 @@
     listPairings,
     getSubjectStatus,
     updateSubjectStatus,
+    getAccountUsage,
+    getAccountStorage,
     type Pairing,
     type PairingsState,
     type SubjectStatus,
+    type AccountUsage,
+    type AccountStorage,
   } from '$lib/ipc';
   import { serverIdentity } from '$lib/server-identity';
+  import { formatBytes, formatPct } from '$lib/format';
   import { classifyRelayError, type ErrorView } from '$lib/errors';
   import { requireUserPresence, presenceAllows } from '$lib/biometric';
   import ScreenShell from '$lib/components/ui/ScreenShell.svelte';
@@ -34,9 +39,18 @@
     | { kind: 'error'; view: ErrorView }
     | { kind: 'ready'; status: SubjectStatus };
 
+  // Usage/storage readouts for the looked-up account. Loaded after (never blocking)
+  // the status lookup; both metrics land together or the panel reports one error.
+  type MetricsView =
+    | { kind: 'idle' }
+    | { kind: 'loading' }
+    | { kind: 'error'; view: ErrorView }
+    | { kind: 'ready'; usage: AccountUsage; storage: AccountStorage };
+
   let pairingsView = $state<PairingsState | 'loading' | 'error'>('loading');
   let did = $state('');
   let statusView = $state<StatusView>({ kind: 'idle' });
+  let metricsView = $state<MetricsView>({ kind: 'idle' });
   let armed = $state(false);
   let writing = $state(false);
   let writeError = $state<ErrorView | undefined>(undefined);
@@ -87,10 +101,36 @@
     writeError = undefined;
     gateHint = undefined;
     statusView = { kind: 'loading' };
+    metricsView = { kind: 'idle' };
     try {
       statusView = { kind: 'ready', status: await getSubjectStatus(pairing.id, trimmedDid) };
     } catch (e) {
       statusView = { kind: 'error', view: classifyRelayError(e) };
+      return;
+    }
+    // Metrics load after — never blocking — the status panel, for the relay-confirmed
+    // DID from the lookup, not the raw input.
+    void loadMetrics(statusView.status.subject.did);
+  }
+
+  /** Fetch usage + storage for the looked-up account. Reads only — no biometric gate. */
+  async function loadMetrics(target: string) {
+    if (!pairing) return;
+    metricsView = { kind: 'loading' };
+    try {
+      const [usage, storage] = await Promise.all([
+        getAccountUsage(pairing.id, target),
+        getAccountStorage(pairing.id, target),
+      ]);
+      // A slow response for an earlier lookup must not land under a newer one: only
+      // commit metrics that still describe the DID the status panel reports.
+      if (statusView.kind === 'ready' && statusView.status.subject.did === target) {
+        metricsView = { kind: 'ready', usage, storage };
+      }
+    } catch (e) {
+      if (statusView.kind === 'ready' && statusView.status.subject.did === target) {
+        metricsView = { kind: 'error', view: classifyRelayError(e) };
+      }
     }
   }
 
@@ -265,6 +305,51 @@
             <StatusChip status="info" label="confirm" />
             <span>{gateHint}</span>
           </p>
+        {/if}
+      </section>
+
+      <!-- Per-account usage/storage readouts for the looked-up DID. Reads only — the
+           panel never signs anything, so it carries no arm/gate machinery. -->
+      <section class="panel" aria-labelledby="metrics-label">
+        <span id="metrics-label" class="label">Usage &amp; storage</span>
+        {#if metricsView.kind === 'loading' || metricsView.kind === 'idle'}
+          <p class="resolving">reading metrics…</p>
+        {:else if metricsView.kind === 'error'}
+          <ErrorState
+            view={metricsView.view}
+            server={identity}
+            onretry={() =>
+              statusView.kind === 'ready' && loadMetrics(statusView.status.subject.did)}
+          />
+        {:else}
+          <dl class="facts">
+            <dt>records</dt>
+            <dd>{metricsView.usage.recordsCount}</dd>
+            <dt>commits</dt>
+            <dd>≥{metricsView.usage.commitsCount} (GC prunes history)</dd>
+            <dt>blobs</dt>
+            <dd>{metricsView.usage.blobsCount}</dd>
+            <dt>stored</dt>
+            <dd>{formatBytes(metricsView.usage.storageBytes)}</dd>
+            <dt>last active</dt>
+            <dd>{metricsView.usage.lastActive}</dd>
+            <dt>blob quota</dt>
+            <dd>
+              {formatBytes(metricsView.storage.totalBytes)} of {formatBytes(
+                metricsView.storage.quotaBytes,
+              )} ({formatPct(metricsView.storage.quotaUsedPct)})
+            </dd>
+            <dt>largest blob</dt>
+            <dd>
+              {#if metricsView.storage.largestBlob}
+                {metricsView.storage.largestBlob.cid} · {formatBytes(
+                  metricsView.storage.largestBlob.size,
+                )}
+              {:else}
+                none
+              {/if}
+            </dd>
+          </dl>
         {/if}
       </section>
     {/if}

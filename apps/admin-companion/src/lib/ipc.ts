@@ -204,6 +204,48 @@ export function updateSubjectStatus(
   return invoke<SubjectStatus>('update_subject_status', { pairingId, did, applied });
 }
 
+/**
+ * An account's usage metrics as the relay reports them — the response shape of
+ * `GET /v1/accounts/{did}/usage`. `commitsCount` is a lower bound (GC reclaims
+ * superseded blocks); `lastActive` falls back to the account's creation time.
+ */
+export interface AccountUsage {
+  recordsCount: number;
+  commitsCount: number;
+  blobsCount: number;
+  storageBytes: number;
+  lastActive: string;
+}
+
+/**
+ * An account's blob-storage metrics as the relay reports them — the response shape of
+ * `GET /v1/accounts/{did}/storage`. `largestBlob` is null for a blobless account.
+ */
+export interface AccountStorage {
+  blobCount: number;
+  totalBytes: number;
+  quotaBytes: number;
+  quotaUsedPct: number;
+  largestBlob: { cid: string; size: number } | null;
+}
+
+/**
+ * Fetch an account's usage metrics from the given pairing's relay via a signed
+ * request. An unknown DID is `RELAY_REJECTED` with status 404. Throws a
+ * {@link RelayClientError}.
+ */
+export function getAccountUsage(pairingId: string, did: string): Promise<AccountUsage> {
+  return invoke<AccountUsage>('get_account_usage', { pairingId, did });
+}
+
+/**
+ * Fetch an account's blob-storage metrics from the given pairing's relay via a signed
+ * request. Same error surface as {@link getAccountUsage}.
+ */
+export function getAccountStorage(pairingId: string, did: string): Promise<AccountStorage> {
+  return invoke<AccountStorage>('get_account_storage', { pairingId, did });
+}
+
 /** Whether the biometric (user-presence) gate on signing actions is enabled (default on). */
 export function biometricEnabled(): Promise<boolean> {
   return invoke<boolean>('biometric_enabled');

@@ -19,7 +19,8 @@ docs {
 
   Operator blob-storage metrics for an account, for the provisioning dashboard.
   `:id` is the account DID. Reports on the account regardless of activation
-  state. Requires the admin bearer token.
+  state. Admin-authed: the master token (shown here) **or** an active operator
+  companion-app device's signed request.
 
   Response (camelCase, matching the rest of the /v1 API):
   - `blobCount` — number of blobs stored for the account.
