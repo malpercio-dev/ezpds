@@ -59,13 +59,17 @@ service environment. The config lives at `/etc/litestream.yml` and defines the
 ```sh
 railway ssh                    # shell into the running production PDS container
 
-# Preflight FIRST: the copy is a *full* database materialized in ephemeral /tmp,
-# so a large copy can fill /tmp and disrupt the running PDS. Confirm headroom
-# before restoring.
-df -h /tmp
-ls -lh /data/relay.db          # the copy needs at least this much free space
-# If the DB is large relative to free /tmp, stop here and restore in a
-# --private-network sandbox (Runbook 2) instead of the service container.
+# Preflight (fail-closed): a full copy lands in ephemeral /tmp, so bail out
+# BEFORE restoring if there isn't room — a large copy can fill /tmp and disrupt
+# the running PDS. Requires ~20% headroom over the live DB size; otherwise it
+# aborts and steers you to the sandbox. (`exit` ends the railway ssh session.)
+need=$(stat -c %s /data/relay.db)
+avail=$(df -P -B1 /tmp | awk 'NR==2 {print $4}')
+if [ "$avail" -lt $(( need + need / 5 )) ]; then
+  echo "Not enough /tmp space: need ~$(( need / 1048576 )) MiB + 20% headroom, have ~$(( avail / 1048576 )) MiB." >&2
+  echo "Restore in a --private-network sandbox (Runbook 2) instead of the service container." >&2
+  exit 1
+fi
 
 # Restore the latest replica state into a throwaway copy (NOT over /data/relay.db).
 litestream restore -config /etc/litestream.yml -o /tmp/copy.db /data/relay.db
@@ -78,8 +82,8 @@ rm -f /tmp/copy.db             # clean up when done
 ```
 
 `-o /tmp/copy.db` **must** differ from `/data/relay.db`; never restore over the
-path the server is writing. Run the `df`/`ls` preflight *before* the restore —
-on a large DB, prefer the sandbox path over the service container.
+path the server is writing. The preflight above is fail-closed — it aborts before
+the restore when `/tmp` lacks headroom, steering large DBs to the sandbox path.
 
 ### Point-in-time restore
 
@@ -87,6 +91,11 @@ To inspect state as of a specific instant (e.g. just before a bad deploy),
 list what the replica holds, then restore to a timestamp:
 
 ```sh
+# Same fail-closed /tmp preflight — a point-in-time copy is just as large.
+need=$(stat -c %s /data/relay.db)
+avail=$(df -P -B1 /tmp | awk 'NR==2 {print $4}')
+[ "$avail" -ge $(( need + need / 5 )) ] || { echo "Insufficient /tmp space — use a sandbox (Runbook 2)." >&2; exit 1; }
+
 litestream generations -config /etc/litestream.yml /data/relay.db
 litestream snapshots   -config /etc/litestream.yml /data/relay.db
 

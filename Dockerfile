@@ -22,6 +22,11 @@ FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf8
 # DB *copy* (`litestream restore -o /tmp/copy.db`; the live single-writer DB
 # stays hands-off). ~1 MB, independent of the SQLite compiled into the pds
 # binary. See docs/operations/debug-kit.md.
+# Package versions are intentionally unpinned (Hadolint DL3008): the base image
+# is digest-pinned, but exact apt version pins rot fast — Debian drops the old
+# version from the mirror on each point release, breaking the build. A
+# snapshot.debian.org repo would be the reproducible alternative if ever needed.
+# hadolint ignore=DL3008
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates tzdata gosu curl sqlite3 \
  && rm -rf /var/lib/apt/lists/*
