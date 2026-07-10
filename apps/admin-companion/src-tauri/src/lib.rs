@@ -194,6 +194,19 @@ async fn revoke_claim_code(
     relay_client::revoke_claim_code(&pairing_id, &code).await
 }
 
+/// Revoke every credential of an account on the given pairing's relay — the operator
+/// kill-switch for a compromised account (sessions, app passwords, OAuth grants,
+/// promoted transfer-device tokens; the main password is untouched). Returns the
+/// relay's literal per-family counts. This signs — the UI runs the biometric gate
+/// before invoking this.
+#[tauri::command]
+async fn revoke_account_credentials(
+    pairing_id: String,
+    did: String,
+) -> Result<relay_client::RevokedCredentials, relay_client::RelayClientError> {
+    relay_client::revoke_account_credentials(&pairing_id, &did).await
+}
+
 /// Whether the biometric (user-presence) gate on signing actions is enabled. Defaults to
 /// `true` on a fresh install — signing is gated until the operator opts out in Settings.
 /// Errors serialize through `RelayClientError::Keychain` (the app's one Serialize error).
@@ -243,6 +256,7 @@ pub fn run() {
             list_accounts,
             list_claim_codes,
             revoke_claim_code,
+            revoke_account_credentials,
             biometric_enabled,
             set_biometric_enabled
         ])

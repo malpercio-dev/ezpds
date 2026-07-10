@@ -625,6 +625,39 @@ pub async fn revoke_claim_code(
     parse_success::<RevokedClaimCode>(response).await
 }
 
+// ── Account credential revocation ────────────────────────────────────────────
+
+/// Build the signed account credential sweep
+/// (`POST /v1/admin/accounts/{did}/revoke-credentials`). Like the metrics lookups, the
+/// DID rides in the *path*, so it is covered by the signed envelope — a sweep signature
+/// is bound to its account and can never be replayed against another.
+pub fn build_revoke_credentials_request(
+    pairing: &Pairing,
+    did: &str,
+    timestamp: i64,
+    nonce: &str,
+) -> Result<SignedRequest, RelayClientError> {
+    let path = format!("/v1/admin/accounts/{did}/revoke-credentials");
+    build_signed_request(pairing, "POST", &path, b"", timestamp, nonce)
+}
+
+/// Revoke every credential of an account on the given pairing's relay via a signed
+/// `POST` — the operator kill-switch for a compromised account: sessions (and their
+/// refresh tokens), app passwords, OAuth grants and pending codes, and promoted
+/// transfer-device tokens. The account's main password is untouched (the owner's
+/// recovery path). The relay reports literal per-family counts; a repeat sweep is an
+/// idempotent 200 of zeros. Id-addressed like [`list_devices`], so a concurrent
+/// active-pairing switch can never redirect which relay is signed for.
+pub async fn revoke_account_credentials(
+    pairing_id: &str,
+    did: &str,
+) -> Result<RevokedCredentials, RelayClientError> {
+    let pairing = resolve_pairing(pairing_id)?;
+    let signed = build_revoke_credentials_request(&pairing, did, unix_now(), &fresh_nonce())?;
+    let response = send(signed).await?;
+    parse_success::<RevokedCredentials>(response).await
+}
+
 /// Send an already-built [`SignedRequest`] and return the raw response.
 async fn send(req: SignedRequest) -> Result<reqwest::Response, RelayClientError> {
     let method = reqwest::Method::from_bytes(req.method.as_bytes()).map_err(|_| {
@@ -806,6 +839,21 @@ pub struct AccountStorage {
 pub struct LargestBlob {
     pub cid: String,
     pub size: i64,
+}
+
+/// The relay's post-sweep report — the response shape of
+/// `POST /v1/admin/accounts/{did}/revoke-credentials` (`RevokeCredentialsResponse` in
+/// crates/pds/src/routes/admin_revoke_credentials.rs; shared by value like
+/// [`AccountUsage`], pinned by a deserialization test). Re-serialized camelCase over
+/// IPC so the screen renders the counts verbatim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokedCredentials {
+    pub sessions_revoked: i64,
+    pub app_passwords_revoked: i64,
+    pub oauth_tokens_revoked: i64,
+    pub oauth_codes_revoked: i64,
+    pub transfer_device_tokens_revoked: i64,
 }
 
 /// A page of the relay's account list — the response shape of `GET /v1/admin/accounts`
@@ -1976,6 +2024,84 @@ mod tests {
             storage.url,
             "https://relay.example/v1/accounts/did:plc:abc123/storage"
         );
+    }
+
+    #[test]
+    fn signed_revoke_credentials_request_binds_did_in_path() {
+        keychain::clear_for_test();
+        let key = device_key::get_or_create().expect("device key");
+        let pairing = test_pairing("device-xyz", "https://relay.example");
+
+        let req = build_revoke_credentials_request(
+            &pairing,
+            "did:plc:abc123",
+            1_700_000_000,
+            "nonce-sweep",
+        )
+        .expect("build signed credential sweep");
+
+        assert_eq!(
+            req.url,
+            "https://relay.example/v1/admin/accounts/did:plc:abc123/revoke-credentials"
+        );
+        assert_eq!(req.method, "POST");
+        assert_eq!(req.body, b"");
+        assert_eq!(header(&req, signing::ADMIN_DEVICE_HEADER), "device-xyz");
+
+        let path = "/v1/admin/accounts/did:plc:abc123/revoke-credentials";
+        let sign_string =
+            signing::request_sign_string("POST", path, 1_700_000_000, "nonce-sweep", b"");
+        verify_p256_signature(
+            &DidKeyUri(key.key_id.clone()),
+            sign_string.as_bytes(),
+            &decode_sig(header(&req, signing::ADMIN_SIGNATURE_HEADER)),
+        )
+        .expect("the relay's verifier must accept this credential sweep");
+
+        // DID-binding: the same signature must NOT verify for another account's path.
+        let other_path = "/v1/admin/accounts/did:plc:other/revoke-credentials";
+        let other_sign_string =
+            signing::request_sign_string("POST", other_path, 1_700_000_000, "nonce-sweep", b"");
+        assert!(
+            verify_p256_signature(
+                &DidKeyUri(key.key_id),
+                other_sign_string.as_bytes(),
+                &decode_sig(header(&req, signing::ADMIN_SIGNATURE_HEADER)),
+            )
+            .is_err(),
+            "a credential-sweep signature must be bound to its account's path"
+        );
+    }
+
+    // Pins the relay's post-sweep wire shape by value (`RevokeCredentialsResponse` in
+    // admin_revoke_credentials.rs — binary-only crate, so shared by value, not import)
+    // and its IPC re-serialization.
+    #[test]
+    fn revoked_credentials_deserializes_the_relay_shape() {
+        let report: RevokedCredentials = serde_json::from_str(
+            r#"{
+                "sessionsRevoked": 3,
+                "appPasswordsRevoked": 1,
+                "oauthTokensRevoked": 2,
+                "oauthCodesRevoked": 0,
+                "transferDeviceTokensRevoked": 1
+            }"#,
+        )
+        .expect("sweep report deserializes");
+        assert_eq!(
+            report,
+            RevokedCredentials {
+                sessions_revoked: 3,
+                app_passwords_revoked: 1,
+                oauth_tokens_revoked: 2,
+                oauth_codes_revoked: 0,
+                transfer_device_tokens_revoked: 1,
+            }
+        );
+        // Re-serializes camelCase for IPC — the frontend sees the relay's names.
+        let value = serde_json::to_value(&report).expect("serialize");
+        assert_eq!(value.get("sessionsRevoked").unwrap(), 3);
+        assert_eq!(value.get("transferDeviceTokensRevoked").unwrap(), 1);
     }
 
     // Pins the relay's usage/storage wire shapes by value (`UsageResponse` in

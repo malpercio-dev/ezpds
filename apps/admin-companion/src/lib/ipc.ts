@@ -349,6 +349,39 @@ export function revokeClaimCode(pairingId: string, code: string): Promise<Revoke
   return invoke<RevokedClaimCode>('revoke_claim_code', { pairingId, code });
 }
 
+/**
+ * The relay's post-sweep report — literal per-family counts of what
+ * {@link revokeAccountCredentials} revoked, rendered verbatim by the screen.
+ */
+export interface RevokedCredentials {
+  /** Session rows deleted (each session's refresh tokens go with it). */
+  sessionsRevoked: number;
+  /** App-password credentials deleted; new logins with them fail immediately. */
+  appPasswordsRevoked: number;
+  /** OAuth refresh-token grants deleted. */
+  oauthTokensRevoked: number;
+  /** Pending (unexchanged) OAuth authorization codes deleted. */
+  oauthCodesRevoked: number;
+  /** Promoted transfer-device tokens tombstoned. */
+  transferDeviceTokensRevoked: number;
+}
+
+/**
+ * Revoke every credential of an account on the given pairing's relay — the operator
+ * kill-switch for a compromised account: sessions (and their refresh tokens), app
+ * passwords, OAuth grants and pending codes, and promoted transfer-device tokens. The
+ * account's main password is untouched (the owner's recovery path), and already-minted
+ * access tokens expire on their own within minutes. Idempotent: a repeat sweep reports
+ * zero counts. An unknown DID is `RELAY_REJECTED` with status 404. This signs —
+ * callers must run the biometric gate first.
+ */
+export function revokeAccountCredentials(
+  pairingId: string,
+  did: string,
+): Promise<RevokedCredentials> {
+  return invoke<RevokedCredentials>('revoke_account_credentials', { pairingId, did });
+}
+
 /** Whether the biometric (user-presence) gate on signing actions is enabled (default on). */
 export function biometricEnabled(): Promise<boolean> {
   return invoke<boolean>('biometric_enabled');
