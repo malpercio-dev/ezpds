@@ -143,6 +143,17 @@
     loadedState !== null && loadedState.pairings.length > 0 && loadedState.active === null,
   );
   const identity = $derived(activePairing ? serverIdentity(activePairing) : null);
+
+  /**
+   * Navigate to a per-server screen pinned to the pairing this Home render shows.
+   * Passing `?server=` captures the active id at tap time, so the destination screen
+   * reads exactly the relay whose identity block the operator was looking at — never a
+   * concurrently-switched successor.
+   */
+  function openPinned(path: string) {
+    if (!activePairing) return;
+    void goto(`${path}?server=${encodeURIComponent(activePairing.id)}`);
+  }
 </script>
 
 <ScreenShell
@@ -259,11 +270,11 @@
       <Button variant="primary" loading={claiming} onclick={mintClaimCode}>
         {claimCode ? 'Generate another code' : 'Generate claim code'}
       </Button>
-      <Button variant="secondary" onclick={() => goto('/accounts')}>Accounts</Button>
-      <Button variant="secondary" onclick={() => goto('/codes')}>Codes</Button>
-      <Button variant="secondary" onclick={() => goto('/devices')}>Devices</Button>
-      <Button variant="secondary" onclick={() => goto('/moderation')}>Moderation</Button>
-      <Button variant="secondary" onclick={() => goto('/status')}>Status</Button>
+      <Button variant="secondary" onclick={() => openPinned('/accounts')}>Accounts</Button>
+      <Button variant="secondary" onclick={() => openPinned('/codes')}>Codes</Button>
+      <Button variant="secondary" onclick={() => openPinned('/devices')}>Devices</Button>
+      <Button variant="secondary" onclick={() => openPinned('/moderation')}>Moderation</Button>
+      <Button variant="secondary" onclick={() => openPinned('/status')}>Status</Button>
       <Button variant="secondary" onclick={() => goto('/settings')}>Settings</Button>
     {:else if pairings.length === 0}
       <Button variant="primary" onclick={() => goto('/pair')}>Pair this device</Button>

@@ -133,7 +133,10 @@ pub async fn admin_health(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to read oldest firehose event");
-            ApiError::new(ErrorCode::InternalError, "failed to gather server stats")
+            ApiError::new(
+                ErrorCode::InternalError,
+                "failed to read oldest firehose event",
+            )
         })? {
         Some(oldest) => match chrono::DateTime::parse_from_rfc3339(&oldest) {
             Ok(ts) => Some(

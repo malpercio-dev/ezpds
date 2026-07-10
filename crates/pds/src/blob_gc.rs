@@ -132,7 +132,13 @@ pub async fn run_blob_gc(state: &AppState) -> GcStats {
                 }
             }
         }
-        Err(e) => tracing::error!(error = %e, "blob GC: failed to list expired blob references"),
+        Err(e) => {
+            // The whole expiry sweep was skipped, so this pass did not complete — return
+            // without recording, leaving the last-run timestamp stale (the operator's
+            // signal), matching firehose_gc's failed-pass posture.
+            tracing::error!(error = %e, "blob GC: failed to list expired blob references");
+            return stats;
+        }
     }
 
     if stats.deleted > 0 || stats.expired > 0 || stats.released > 0 || stats.errors > 0 {
@@ -151,7 +157,7 @@ pub async fn run_blob_gc(state: &AppState) -> GcStats {
         );
     }
 
-    // A failed-to-start pass (the early return above) deliberately does not touch the
+    // A failed pass (the early returns above) deliberately does not touch the
     // timestamp: a stale `blob_gc_last_run_timestamp` is the operator's signal that
     // sweeps are not completing.
     state.metrics.blob_gc_swept.add(stats.deleted, &[]);

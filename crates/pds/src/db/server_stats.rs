@@ -1,4 +1,4 @@
-// pattern: Functional Core (SQL queries only; no business logic)
+// pattern: Imperative Shell
 
 //! Server-wide row-count readouts for the operator health endpoint
 //! (`GET /v1/admin/health`).

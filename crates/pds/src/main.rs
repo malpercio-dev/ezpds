@@ -76,6 +76,9 @@ async fn main() {
 }
 
 async fn run() -> anyhow::Result<()> {
+    // Captured before any startup work (config load, migrations, key setup) so the health
+    // endpoint's uptime reflects process start, not listen start.
+    let started_at = std::time::Instant::now();
     let cli = Cli::parse();
 
     // Load config: if an explicit path is given via --config or EZPDS_CONFIG, error if missing.
@@ -326,7 +329,7 @@ async fn run() -> anyhow::Result<()> {
         metrics,
         repo_write_locks: Arc::new(record_write::RepoWriteLocks::new()),
         sweeps: Arc::new(sweep_status::SweepStatus::default()),
-        started_at: std::time::Instant::now(),
+        started_at,
     };
 
     let listener = tokio::net::TcpListener::bind(&addr)

@@ -153,7 +153,7 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   reports raw facts with no verdicts, so all presentation judgment lives in
   `src/lib/health.ts` (Functional Core, unit-tested): `formatDuration` (uptime/ages),
   `formatBackfillWindow` (`null` → "empty log"), and `sweepLine` (`not yet run` vs
-  `<age> ago · swept <n>`, with a ` !` staleness glyph at ≥24h — glyph, never color alone).
+  `<age> ago · swept <n>`, with a trailing `!` staleness glyph at ≥24h — glyph, never color alone).
   Reached from Home's Status button). The
   error-state matrix (not-paired / clock-skew / revoked / unreachable / not-found) is rendered by the shared
   `ui/ErrorState.svelte` off `errors.ts`'s `classifyRelayError`. Server identity display (`src/lib/server-identity.ts`)
