@@ -79,6 +79,7 @@ const DPOP_KEY_PRIV_ACCOUNT: &str = "oauth-dpop-key-priv";
 const OAUTH_ACCESS_TOKEN_ACCOUNT: &str = "oauth-access-token";
 const OAUTH_REFRESH_TOKEN_ACCOUNT: &str = "oauth-refresh-token";
 const PDS_URL_ACCOUNT: &str = "relay-base-url";
+const APPEARANCE_ACCOUNT: &str = "appearance-preference";
 
 /// Store the DPoP private key scalar (32 bytes) in the Keychain.
 pub fn store_dpop_key(private_bytes: &[u8]) -> Result<(), KeychainError> {
@@ -180,6 +181,40 @@ pub fn load_pds_url() -> Option<String> {
 #[cfg(test)]
 pub fn delete_pds_url_test_only() {
     let _ = delete_item(PDS_URL_ACCOUNT);
+}
+
+/// Persist the in-app appearance preference (`"system"`, `"light"`, or `"dark"`).
+///
+/// The Keychain is the durable source of truth; the frontend keeps a
+/// localStorage mirror purely so the preference can apply before first paint
+/// (an async IPC read would land after the WebView has already painted).
+pub fn store_appearance_preference(preference: &str) -> Result<(), KeychainError> {
+    store_item(APPEARANCE_ACCOUNT, preference.as_bytes())
+}
+
+/// Retrieve the stored appearance preference.
+///
+/// Returns `None` if no preference has been saved yet (follow the system).
+pub fn load_appearance_preference() -> Option<String> {
+    match get_item(APPEARANCE_ACCOUNT) {
+        Ok(bytes) => String::from_utf8(bytes)
+            .map_err(|e| {
+                tracing::error!(error = ?e, "appearance preference in Keychain is not valid UTF-8; treating as absent");
+            })
+            .ok(),
+        Err(e) if is_not_found(&e) => None,
+        Err(e) => {
+            tracing::error!(error = ?e, "Keychain error loading appearance preference");
+            None
+        }
+    }
+}
+
+/// Remove the appearance preference from the Keychain. Test-only; used to
+/// reset state between tests that share the Keychain mock store.
+#[cfg(test)]
+pub fn delete_appearance_preference_test_only() {
+    let _ = delete_item(APPEARANCE_ACCOUNT);
 }
 
 /// Reset the in-memory Keychain to a clean state.

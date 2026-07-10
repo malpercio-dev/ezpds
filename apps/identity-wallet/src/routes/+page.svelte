@@ -30,6 +30,7 @@
   import RecoveryOverrideScreen from '$lib/components/home/RecoveryOverrideScreen.svelte';
   import MyAgentsScreen from '$lib/components/home/MyAgentsScreen.svelte';
   import AgentClaimApprovalScreen from '$lib/components/home/AgentClaimApprovalScreen.svelte';
+  import SettingsScreen from '$lib/components/home/SettingsScreen.svelte';
   import { createAccount, registerCreatedIdentity, listIdentities, checkIdentityStatus, type CreateAccountError, type OAuthError, type HomeData, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type UnauthorizedChange } from '$lib/ipc';
   import { normalizePlcDocToW3c } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
@@ -70,6 +71,7 @@
     | 'recovery_override'
     | 'my_agents'
     | 'agent_approval'
+    | 'settings'
     | 'auth_failed'
     | 'identity_input'
     | 'pds_auth'
@@ -401,7 +403,11 @@
         goTo('alert_detail');
       }}
       onagents={() => goTo('my_agents')}
+      onsettings={() => goTo('settings')}
     />
+
+  {:else if step === 'settings'}
+    <SettingsScreen onback={() => goTo('home')} />
 
   {:else if step === 'my_agents'}
     <MyAgentsScreen onback={() => goTo('home')} onapprove={() => goTo('agent_approval')} />

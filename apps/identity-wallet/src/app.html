@@ -3,6 +3,20 @@
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<script>
+			// Pre-paint appearance restore. The Keychain-backed preference is
+			// mirrored in localStorage (key + reconcile logic in $lib/appearance)
+			// so a forced Light/Dark applies before the first frame — an async
+			// IPC read would land after the WebView has already painted.
+			try {
+				var appearance = localStorage.getItem('appearance-preference');
+				if (appearance === 'light' || appearance === 'dark') {
+					document.documentElement.style.colorScheme = appearance;
+				}
+			} catch (e) {
+				/* storage unavailable — follow the system */
+			}
+		</script>
 		%sveltekit.head%
 	</head>
 	<body>

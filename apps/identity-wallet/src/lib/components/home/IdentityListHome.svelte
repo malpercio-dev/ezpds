@@ -10,12 +10,15 @@
     onselect,
     onalert,
     onagents,
+    onsettings,
   }: {
     onadd: () => void;
     onselect: (did: string, didDoc: Record<string, unknown>, deviceKeyIsRoot: boolean | null) => void;
     onalert?: (did: string, changes: UnauthorizedChange[]) => void;
     /** Open the "My agents" management screen (agent consent + audit). */
     onagents?: () => void;
+    /** Open the Settings screen. */
+    onsettings?: () => void;
   } = $props();
 
   interface IdentityCard {
@@ -160,9 +163,16 @@
   <div class="screen">
     <div class="header">
       <h1 class="title">Identities</h1>
-      <button class="icon-btn" onclick={loadData} aria-label="Refresh">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>
-      </button>
+      <span class="header-actions">
+        <button class="icon-btn" onclick={loadData} aria-label="Refresh">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>
+        </button>
+        {#if onsettings}
+          <button class="icon-btn icon-btn--settings" onclick={onsettings} aria-label="Settings">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
+        {/if}
+      </span>
     </div>
 
     {#if loadError}
@@ -314,6 +324,18 @@
   }
   .icon-btn:active {
     background: var(--color-surface-sunk);
+  }
+
+  .header-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-sm);
+  }
+
+  /* The gear is the "reveal the machinery" affordance — aubergine, like links
+     and advanced-detail disclosures, not a status or a primary action. */
+  .icon-btn--settings {
+    color: var(--color-accent);
   }
 
   /* Monitoring banner — derived from real alert state, never decorative. */

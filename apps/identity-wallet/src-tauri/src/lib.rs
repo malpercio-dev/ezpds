@@ -668,6 +668,48 @@ fn get_pds_url() -> Option<String> {
     keychain::load_pds_url()
 }
 
+/// The three values the in-app appearance setting can take. `"system"` means
+/// no override (the WebView follows the iOS appearance via `color-scheme`).
+const APPEARANCE_PREFERENCES: [&str; 3] = ["system", "light", "dark"];
+
+/// Error returned by `set_appearance_preference`.
+///
+/// Serializes as `{ "code": "INVALID_PREFERENCE" | "KEYCHAIN_ERROR" }` for the frontend.
+#[derive(Debug, Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum AppearanceError {
+    #[error("appearance preference must be \"system\", \"light\", or \"dark\"")]
+    InvalidPreference,
+    #[error("failed to save appearance preference to device storage")]
+    KeychainError,
+}
+
+/// Return the saved appearance preference (`"system"`, `"light"`, or `"dark"`),
+/// or `None` if never set — both mean "follow the system".
+///
+/// A corrupt or unrecognized stored value is treated as absent rather than an
+/// error: the worst outcome of losing this preference is following the system
+/// appearance, which is the default anyway.
+#[tauri::command]
+fn get_appearance_preference() -> Option<String> {
+    keychain::load_appearance_preference().filter(|p| APPEARANCE_PREFERENCES.contains(&p.as_str()))
+}
+
+/// Validate and persist the appearance preference to the Keychain.
+///
+/// The frontend applies the appearance instantly before calling this; the
+/// Keychain write is what makes the choice survive app restarts.
+#[tauri::command]
+fn set_appearance_preference(preference: String) -> Result<(), AppearanceError> {
+    if !APPEARANCE_PREFERENCES.contains(&preference.as_str()) {
+        return Err(AppearanceError::InvalidPreference);
+    }
+    keychain::store_appearance_preference(&preference).map_err(|e| {
+        tracing::error!(error = %e, "failed to save appearance preference to Keychain");
+        AppearanceError::KeychainError
+    })
+}
+
 /// Validate `url`, confirm the PDS is reachable, save to Keychain, and
 /// initialize the runtime PDS client.
 ///
@@ -934,6 +976,8 @@ pub fn run() {
             get_device_key_id,
             get_pds_url,
             save_pds_url,
+            get_appearance_preference,
+            set_appearance_preference,
             home::load_home_data,
             home::log_out,
             oauth::prepare_oauth_flow,
@@ -1400,5 +1444,49 @@ mod tests {
         assert_eq!(loaded, url);
         // Clean up so this test doesn't affect others sharing the mock store.
         keychain::delete_pds_url_test_only();
+    }
+
+    // -- appearance preference --
+
+    #[test]
+    fn get_appearance_preference_returns_none_before_save() {
+        keychain::clear_for_test();
+        assert!(get_appearance_preference().is_none());
+    }
+
+    #[test]
+    fn appearance_preference_round_trips_through_keychain() {
+        keychain::clear_for_test();
+        set_appearance_preference("dark".to_string()).unwrap();
+        assert_eq!(get_appearance_preference().as_deref(), Some("dark"));
+        set_appearance_preference("system".to_string()).unwrap();
+        assert_eq!(get_appearance_preference().as_deref(), Some("system"));
+        keychain::delete_appearance_preference_test_only();
+    }
+
+    #[test]
+    fn set_appearance_preference_rejects_unknown_values() {
+        keychain::clear_for_test();
+        let err = set_appearance_preference("sepia".to_string()).unwrap_err();
+        assert!(matches!(err, AppearanceError::InvalidPreference));
+        assert!(get_appearance_preference().is_none());
+    }
+
+    #[test]
+    fn get_appearance_preference_treats_corrupt_value_as_absent() {
+        keychain::clear_for_test();
+        // A value written outside set_appearance_preference's validation
+        // (or corrupted) must read back as "follow the system", not an error.
+        keychain::store_appearance_preference("neon").unwrap();
+        assert!(get_appearance_preference().is_none());
+        keychain::delete_appearance_preference_test_only();
+    }
+
+    #[test]
+    fn appearance_error_serializes_as_code() {
+        let json = serde_json::to_value(AppearanceError::InvalidPreference).unwrap();
+        assert_eq!(json["code"], "INVALID_PREFERENCE");
+        let json = serde_json::to_value(AppearanceError::KeychainError).unwrap();
+        assert_eq!(json["code"], "KEYCHAIN_ERROR");
     }
 }
