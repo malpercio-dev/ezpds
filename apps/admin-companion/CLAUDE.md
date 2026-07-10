@@ -1,7 +1,7 @@
 # Admin Companion (operator console) Mobile App
 
-Last verified: 2026-07-09
-Last updated: 2026-07-09 (account takedown/restore — the Moderation screen)
+Last verified: 2026-07-10
+Last updated: 2026-07-10 (per-account usage/storage readouts on the Moderation screen)
 
 ## Purpose
 
@@ -42,7 +42,10 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   an id-addressed pairing; the GET signs the **bare path** and appends `?did=` to the URL only —
   the relay verifies `uri.path()`, query excluded — and the POST body is exactly
   `{subject: {$type, did}, takedown: {applied}}`, pinned because the relay's subject parse is
-  deny-unknown-fields), plus
+  deny-unknown-fields), `get_account_usage`/`get_account_storage` (signed GETs against
+  `/v1/accounts/{did}/usage`/`…/storage` for an id-addressed pairing; the DID rides in the
+  *path*, so it is inside the signed envelope — a metrics signature is bound to its account),
+  plus
   pairing-document mutations (`list_pairings`, `set_active_pairing`, `rename_pairing`). Request
   construction is factored into pure `build_*` fns so a test verifies a built request with
   `crypto::verify_p256_signature` — the relay's own verifier — proving acceptance (and path-binding
@@ -65,6 +68,8 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   `get_subject_status(pairing_id, did)` (signed takedown-status lookup; unknown DID →
   `RELAY_REJECTED` 404), `update_subject_status(pairing_id, did, applied)` (signed
   account takedown/restore; idempotent server-side, returns the resulting state),
+  `get_account_usage(pairing_id, did)` / `get_account_storage(pairing_id, did)` (signed
+  per-account usage/storage metrics reads; same error surface as the status lookup),
   `biometric_enabled`, `set_biometric_enabled` (plus Phase 6's `get_or_create_device_key`,
   `sign_with_device_key`). `pairing_state` is gone — superseded by `list_pairings`.
 - **Screens**: **Pair** (`src/routes/pair/` — QR/manual + required nickname, reachable while
@@ -82,7 +87,12 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   button for a Confirm/Cancel pair restating the relay-confirmed target) → biometric gate →
   signed write. Pinned to a single pairing at entry like Devices; the write always targets the
   DID from the last successful *lookup*, never the raw input field, and the action area goes
-  stale — auto-disarming — the moment the input drifts from what was looked up). The
+  stale — auto-disarming — the moment the input drifts from what was looked up. A successful
+  lookup also loads a **Usage & storage** readout panel — records/commits/blobs/stored bytes/
+  last-active plus blob quota (used-of-total + %) and largest blob, fetched concurrently and
+  never blocking the status panel; a late response for a superseded lookup is discarded. Byte
+  figures render via `src/lib/format.ts` (`formatBytes`: binary units with the exact byte
+  count alongside; `formatPct`)). The
   error-state matrix (not-paired / clock-skew / revoked / unreachable / not-found) is rendered by the shared
   `ui/ErrorState.svelte` off `errors.ts`'s `classifyRelayError`. Server identity display (`src/lib/server-identity.ts`)
   pairs the operator nickname with the relay host in monospace everywhere, so staging and production

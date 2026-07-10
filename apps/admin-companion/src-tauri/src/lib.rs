@@ -129,6 +129,27 @@ async fn update_subject_status(
     relay_client::update_subject_status(&pairing_id, &did, applied).await
 }
 
+/// Fetch an account's usage metrics (records/commits/blobs, total bytes, last-active)
+/// from the given pairing's relay — the moderation screen's per-account readout.
+/// Id-addressed like `get_subject_status`.
+#[tauri::command]
+async fn get_account_usage(
+    pairing_id: String,
+    did: String,
+) -> Result<relay_client::AccountUsage, relay_client::RelayClientError> {
+    relay_client::get_account_usage(&pairing_id, &did).await
+}
+
+/// Fetch an account's blob-storage metrics (blob count, bytes, quota + used %, largest
+/// blob) from the given pairing's relay.
+#[tauri::command]
+async fn get_account_storage(
+    pairing_id: String,
+    did: String,
+) -> Result<relay_client::AccountStorage, relay_client::RelayClientError> {
+    relay_client::get_account_storage(&pairing_id, &did).await
+}
+
 /// Whether the biometric (user-presence) gate on signing actions is enabled. Defaults to
 /// `true` on a fresh install — signing is gated until the operator opts out in Settings.
 /// Errors serialize through `RelayClientError::Keychain` (the app's one Serialize error).
@@ -173,6 +194,8 @@ pub fn run() {
             revoke_admin_device,
             get_subject_status,
             update_subject_status,
+            get_account_usage,
+            get_account_storage,
             biometric_enabled,
             set_biometric_enabled
         ])

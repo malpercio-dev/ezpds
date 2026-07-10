@@ -1,13 +1,14 @@
 // pattern: Imperative Shell
 //
-// Gathers: admin Bearer token (Authorization header), account DID (path), DB pool
-// Processes: auth check → account lookup (404 if absent) → aggregate repo/blob usage
+// Gathers: admin credentials (master token or signed device request), account DID (path), DB pool
+// Processes: admin auth → account lookup (404 if absent) → aggregate repo/blob usage
 // Returns: JSON usage metrics on success; ApiError on all failure paths
 
 //! GET /v1/accounts/:id/usage - Operator usage metrics for an account.
 
+use axum::body::Bytes;
 use axum::extract::{Path, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, Method, Uri};
 use axum::Json;
 use serde::Serialize;
 
@@ -15,7 +16,7 @@ use common::{ApiError, ErrorCode};
 use repo_engine::Repository;
 
 use crate::app::AppState;
-use crate::auth::guards::require_admin_token;
+use crate::auth::guards::require_admin;
 use crate::db::blocks::SqliteBlockStore;
 
 #[derive(Serialize)]
@@ -40,14 +41,18 @@ pub struct UsageResponse {
 ///
 /// Operator-only account usage metrics for the provisioning dashboard. `:id` is the account
 /// DID. Reports on the account regardless of activation state (a deactivated account still
-/// has usage figures). Requires the admin Bearer token.
+/// has usage figures). Admin-authed: the master token **or** an active companion-app
+/// device's signed request ([`require_admin`]).
 pub async fn account_usage(
     State(state): State<AppState>,
     Path(did): Path<String>,
+    method: Method,
+    uri: Uri,
     headers: HeaderMap,
+    body: Bytes,
 ) -> Result<Json<UsageResponse>, ApiError> {
     // Auth first so an unauthenticated caller cannot probe which DIDs exist.
-    require_admin_token(&headers, &state)?;
+    require_admin(method.as_str(), uri.path(), &headers, &body, &state).await?;
 
     let overview = crate::db::accounts::get_account_overview(&state.db, &did)
         .await
@@ -236,6 +241,67 @@ mod tests {
         let (status, body) = get_usage(&app, did, Some(ADMIN)).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["recordsCount"], 3);
+    }
+
+    #[tokio::test]
+    async fn signed_device_request_reads_usage() {
+        use crate::auth::guards::{
+            admin_request_sign_string, ADMIN_DEVICE_HEADER, ADMIN_NONCE_HEADER,
+            ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
+        };
+        use crate::db::admin_devices::{insert_device, NewAdminDevice};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        // A state with NO master token: proves the device path is independent of it.
+        let state = crate::app::test_state().await;
+        let keypair = crypto::generate_p256_keypair().unwrap();
+        let device_id = uuid::Uuid::new_v4().to_string();
+        insert_device(
+            &state.db,
+            &NewAdminDevice {
+                id: &device_id,
+                label: "Operator iPhone",
+                public_key: &keypair.key_id.0,
+                platform: "ios",
+            },
+        )
+        .await
+        .unwrap();
+
+        let did = "did:plc:usagedevice";
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
+        )
+        .bind(did)
+        .bind(format!("{did}@example.com"))
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let path = format!("/v1/accounts/{did}/usage");
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let nonce = "usage-nonce-1";
+        let sign_string = admin_request_sign_string("GET", &path, ts, nonce, b"");
+        let signature = crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes());
+
+        let request = Request::builder()
+            .method(http::Method::GET)
+            .uri(&path)
+            .header(ADMIN_DEVICE_HEADER, &device_id)
+            .header(ADMIN_TIMESTAMP_HEADER, ts.to_string())
+            .header(ADMIN_NONCE_HEADER, nonce)
+            .header(ADMIN_SIGNATURE_HEADER, signature)
+            .body(Body::empty())
+            .unwrap();
+
+        let response = crate::app::app(state).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["recordsCount"], 0);
     }
 
     #[tokio::test]

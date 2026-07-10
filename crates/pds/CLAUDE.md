@@ -313,8 +313,8 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `create_handle.rs` | `POST /v1/handles` |
 | `delete_handle.rs` | `DELETE /v1/handles/:handle` |
 | `create_mobile_account.rs` | `POST /v1/accounts/mobile` |
-| `account_usage.rs` | `GET /v1/accounts/:id/usage` — operator usage metrics (records/commits/blobs counts, total storage bytes, last-active); admin token; reports on deactivated accounts too |
-| `account_storage.rs` | `GET /v1/accounts/:id/storage` — operator blob-storage metrics (blob count, total bytes, configured quota + used %, largest blob); admin token |
+| `account_usage.rs` | `GET /v1/accounts/:id/usage` — operator usage metrics (records/commits/blobs counts, total storage bytes, last-active); admin-authed via `require_admin` (master token OR device signature); reports on deactivated accounts too |
+| `account_storage.rs` | `GET /v1/accounts/:id/storage` — operator blob-storage metrics (blob count, total bytes, configured quota + used %, largest blob); admin-authed via `require_admin` |
 | `admin_devices.rs` | `POST /v1/admin/pairing-codes` (master token; mint single-use pairing code), `POST /v1/admin/devices` (pairing code + self-signature; register a companion-app device public key), `GET /v1/admin/devices` (list devices with derived status), and `POST /v1/admin/devices/:id/revoke` (revoke a device; idempotent, 404 on unknown). List/revoke are admin-authed via `require_admin` (master token OR active device signature). Registration verifies the self-signature before consuming the code; rejection paths return a generic 401 |
 | `create_signing_key.rs` | `POST /v1/pds/keys` (deprecated alias: `POST /v1/relay/keys`) |
 | `register_device.rs` | `POST /v1/devices` |

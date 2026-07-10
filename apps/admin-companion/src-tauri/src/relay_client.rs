@@ -450,6 +450,50 @@ pub async fn update_subject_status(
     parse_success::<SubjectStatus>(response).await
 }
 
+// ── Account metrics (usage / storage) ────────────────────────────────────────
+
+/// Build the signed per-account metrics lookup (`GET /v1/accounts/{did}/usage` or
+/// `…/storage`). Unlike the moderation lookup, the DID rides in the *path*, so it is
+/// covered by the signed envelope — a signature minted for one account's metrics can
+/// never be replayed against another account's.
+pub fn build_account_metrics_request(
+    pairing: &Pairing,
+    did: &str,
+    metric: &str,
+    timestamp: i64,
+    nonce: &str,
+) -> Result<SignedRequest, RelayClientError> {
+    let path = format!("/v1/accounts/{did}/{metric}");
+    build_signed_request(pairing, "GET", &path, b"", timestamp, nonce)
+}
+
+/// Fetch an account's usage metrics (records/commits/blobs counts, total bytes,
+/// last-active) from the given pairing's relay via a signed `GET`. Id-addressed like
+/// [`get_subject_status`], so a concurrent active-pairing switch can never redirect
+/// which relay is asked (or signed for).
+pub async fn get_account_usage(
+    pairing_id: &str,
+    did: &str,
+) -> Result<AccountUsage, RelayClientError> {
+    let pairing = resolve_pairing(pairing_id)?;
+    let signed = build_account_metrics_request(&pairing, did, "usage", unix_now(), &fresh_nonce())?;
+    let response = send(signed).await?;
+    parse_success::<AccountUsage>(response).await
+}
+
+/// Fetch an account's blob-storage metrics (blob count, bytes, configured quota +
+/// used %, largest blob) from the given pairing's relay via a signed `GET`.
+pub async fn get_account_storage(
+    pairing_id: &str,
+    did: &str,
+) -> Result<AccountStorage, RelayClientError> {
+    let pairing = resolve_pairing(pairing_id)?;
+    let signed =
+        build_account_metrics_request(&pairing, did, "storage", unix_now(), &fresh_nonce())?;
+    let response = send(signed).await?;
+    parse_success::<AccountStorage>(response).await
+}
+
 /// Send an already-built [`SignedRequest`] and return the raw response.
 async fn send(req: SignedRequest) -> Result<reqwest::Response, RelayClientError> {
     let method = reqwest::Method::from_bytes(req.method.as_bytes()).map_err(|_| {
@@ -556,6 +600,41 @@ pub struct SubjectRepoRef {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct SubjectTakedown {
     pub applied: bool,
+}
+
+/// An account's usage metrics as the relay reports them — the response shape of
+/// `GET /v1/accounts/{did}/usage` (`UsageResponse` in crates/pds/src/routes/
+/// account_usage.rs; the `pds` crate is binary-only, so this contract is shared by
+/// value, not import — a deserialization test pins it). Re-serialized camelCase over IPC.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountUsage {
+    pub records_count: i64,
+    pub commits_count: i64,
+    pub blobs_count: i64,
+    pub storage_bytes: i64,
+    pub last_active: String,
+}
+
+/// An account's blob-storage metrics as the relay reports them — the response shape
+/// of `GET /v1/accounts/{did}/storage` (`StorageResponse` in crates/pds/src/routes/
+/// account_storage.rs; shared by value like [`AccountUsage`], pinned by a
+/// deserialization test). Re-serialized camelCase over IPC.
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountStorage {
+    pub blob_count: i64,
+    pub total_bytes: i64,
+    pub quota_bytes: i64,
+    pub quota_used_pct: f64,
+    pub largest_blob: Option<LargestBlob>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LargestBlob {
+    pub cid: String,
+    pub size: i64,
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -1475,6 +1554,137 @@ mod tests {
         assert_eq!(value.get("publicKey").unwrap(), "did:key:zDnaexample");
         assert_eq!(value.get("lastSeenAt").unwrap(), &serde_json::Value::Null);
         assert_eq!(value.get("revokedAt").unwrap(), "2026-07-02 08:30:00");
+    }
+
+    // The account-metrics lookup: the DID rides in the PATH (unlike getSubjectStatus's
+    // query), so it is inside the signed envelope — proven by verifying with the relay's
+    // own verifier, then showing the same signature fails for another account's path.
+    #[test]
+    fn signed_account_metrics_request_binds_did_in_path() {
+        keychain::clear_for_test();
+        let key = device_key::get_or_create().expect("device key");
+        let pairing = test_pairing("device-xyz", "https://relay.example");
+
+        let req = build_account_metrics_request(
+            &pairing,
+            "did:plc:abc123",
+            "usage",
+            1_700_000_000,
+            "nonce-usage",
+        )
+        .expect("build signed usage lookup");
+
+        assert_eq!(
+            req.url,
+            "https://relay.example/v1/accounts/did:plc:abc123/usage"
+        );
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.body, b"");
+        assert_eq!(header(&req, signing::ADMIN_DEVICE_HEADER), "device-xyz");
+
+        let path = "/v1/accounts/did:plc:abc123/usage";
+        let sign_string =
+            signing::request_sign_string("GET", path, 1_700_000_000, "nonce-usage", b"");
+        verify_p256_signature(
+            &DidKeyUri(key.key_id.clone()),
+            sign_string.as_bytes(),
+            &decode_sig(header(&req, signing::ADMIN_SIGNATURE_HEADER)),
+        )
+        .expect("the relay's verifier must accept this usage lookup");
+
+        // DID-binding: the same signature must NOT verify for another account's path.
+        let other_path = "/v1/accounts/did:plc:other/usage";
+        let other_sign_string =
+            signing::request_sign_string("GET", other_path, 1_700_000_000, "nonce-usage", b"");
+        assert!(
+            verify_p256_signature(
+                &DidKeyUri(key.key_id),
+                other_sign_string.as_bytes(),
+                &decode_sig(header(&req, signing::ADMIN_SIGNATURE_HEADER)),
+            )
+            .is_err(),
+            "an account-metrics signature must be bound to its account's path"
+        );
+
+        // The storage variant only changes the trailing path segment.
+        let storage = build_account_metrics_request(
+            &pairing,
+            "did:plc:abc123",
+            "storage",
+            1_700_000_000,
+            "nonce-storage",
+        )
+        .expect("build signed storage lookup");
+        assert_eq!(
+            storage.url,
+            "https://relay.example/v1/accounts/did:plc:abc123/storage"
+        );
+    }
+
+    // Pins the relay's usage/storage wire shapes by value (`UsageResponse` in
+    // account_usage.rs, `StorageResponse` in account_storage.rs — binary-only crate,
+    // so shared by value, not import) and their IPC re-serialization.
+    #[test]
+    fn account_metrics_deserialize_the_relay_shapes() {
+        let usage: AccountUsage = serde_json::from_str(
+            r#"{
+                "recordsCount": 3,
+                "commitsCount": 4,
+                "blobsCount": 1,
+                "storageBytes": 2048,
+                "lastActive": "2026-07-01 12:00:00"
+            }"#,
+        )
+        .expect("usage deserializes");
+        assert_eq!(
+            usage,
+            AccountUsage {
+                records_count: 3,
+                commits_count: 4,
+                blobs_count: 1,
+                storage_bytes: 2048,
+                last_active: "2026-07-01 12:00:00".to_string(),
+            }
+        );
+        // Re-serializes camelCase for IPC — the frontend sees the relay's names.
+        let value = serde_json::to_value(&usage).expect("serialize");
+        assert_eq!(value.get("storageBytes").unwrap(), 2048);
+        assert_eq!(value.get("lastActive").unwrap(), "2026-07-01 12:00:00");
+
+        let storage: AccountStorage = serde_json::from_str(
+            r#"{
+                "blobCount": 2,
+                "totalBytes": 1000,
+                "quotaBytes": 1073741824,
+                "quotaUsedPct": 0.0000931,
+                "largestBlob": { "cid": "bafblobbig", "size": 900 }
+            }"#,
+        )
+        .expect("storage deserializes");
+        assert_eq!(storage.blob_count, 2);
+        assert_eq!(storage.quota_bytes, 1_073_741_824);
+        assert_eq!(
+            storage.largest_blob,
+            Some(LargestBlob {
+                cid: "bafblobbig".to_string(),
+                size: 900,
+            })
+        );
+
+        // `largestBlob` is null for a blobless account — must stay Option, not default.
+        let empty: AccountStorage = serde_json::from_str(
+            r#"{
+                "blobCount": 0,
+                "totalBytes": 0,
+                "quotaBytes": 1073741824,
+                "quotaUsedPct": 0.0,
+                "largestBlob": null
+            }"#,
+        )
+        .expect("blobless storage deserializes");
+        assert_eq!(empty.largest_blob, None);
+        let value = serde_json::to_value(&empty).expect("serialize");
+        assert_eq!(value.get("largestBlob").unwrap(), &serde_json::Value::Null);
     }
 
     // Pins the wrapper envelopes around `AdminDevice` — `{"devices":[…]}` for the list
