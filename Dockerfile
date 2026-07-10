@@ -18,14 +18,23 @@ RUN cargo build --release --locked -p pds
 FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf87857c4b8188404716 AS runtime
 # gosu: privilege-drop helper used by the entrypoint to hand off to the relay user
 # after fixing /data ownership (Railway Volumes mount as root:root).
+# sqlite3: operator debug kit — lets a `railway ssh` session inspect a restored
+# DB *copy* (`litestream restore -o /tmp/copy.db`; the live single-writer DB
+# stays hands-off). ~1 MB, independent of the SQLite compiled into the pds
+# binary. See docs/operations/debug-kit.md.
+# Package versions are intentionally unpinned (Hadolint DL3008): the base image
+# is digest-pinned, but exact apt version pins rot fast — Debian drops the old
+# version from the mirror on each point release, breaking the build. A
+# snapshot.debian.org repo would be the reproducible alternative if ever needed.
+# hadolint ignore=DL3008
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates tzdata gosu curl \
+ && apt-get install -y --no-install-recommends ca-certificates tzdata gosu curl sqlite3 \
  && rm -rf /var/lib/apt/lists/*
 # Non-root runtime user. Home is /home/relay (not /data) so that a root-owned
 # volume mount on /data does not prevent login shell resolution.
 RUN useradd --uid 10001 --user-group --create-home --home-dir /home/relay --shell /usr/sbin/nologin relay
 # Litestream: continuous SQLite replication + restore-on-boot. Active only when
-# LITESTREAM_REPLICA_URL is set (production); see docker-entrypoint.sh.
+# LITESTREAM_S3_BUCKET is set (production); see docker-entrypoint.sh.
 ARG LITESTREAM_VERSION=0.3.13
 RUN curl -fsSL "https://github.com/benbjohnson/litestream/releases/download/v${LITESTREAM_VERSION}/litestream-v${LITESTREAM_VERSION}-linux-amd64.tar.gz" \
     | tar -xz -C /usr/local/bin litestream
