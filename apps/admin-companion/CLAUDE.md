@@ -1,7 +1,7 @@
 # Admin Companion (operator console) Mobile App
 
 Last verified: 2026-07-10
-Last updated: 2026-07-10 (per-account credential revocation on the moderation screen)
+Last updated: 2026-07-10 (credential revocation + Account detail screen; usage/storage moved off moderation)
 
 ## Purpose
 
@@ -108,9 +108,16 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   (`format.ts` `quotaBar`: `[▓▓░░░] 42.00%`, fill floors — a cell lights only when fully
   earned — with a ` !` glyph at ≥90%, never color alone) rendered by the `ui/AccountRow.svelte`
   primitive (DeviceRow's register + the quota line; lifecycle chip per row). Pinned to a single
-  pairing at entry like Devices/Moderation; tapping a row hands the DID to Moderation via
-  `?server=…&did=…`, which pre-fills the lookup field and runs the lookup immediately —
-  replacing DID-pasting as the entry point for per-account work), **Moderation** (`src/routes/moderation/` — account takedown/restore:
+  pairing at entry like Devices/Moderation; tapping a row hands the DID to **Account detail** via
+  `?server=…&did=…` — replacing DID-pasting as the entry point for per-account work),
+  **Account detail** (`src/routes/account/` — the read-only inspection home for one account:
+  identity facts plus the **Usage & storage** readout panel — records/commits/blobs/stored
+  bytes/last-active plus blob quota (used-of-total + %) and largest blob, byte figures via
+  `format.ts` `formatBytes`/`formatPct` — moved here from the moderation screen so a read-only
+  inspection task no longer lives on a destructively-framed screen. Pinned to a single pairing
+  at entry (`?server=…&did=…`); nothing here signs — a "Take down or restore" entry point hands
+  the same pin + DID to Moderation, which pre-fills the lookup field and runs the lookup
+  immediately), **Moderation** (`src/routes/moderation/` — account takedown/restore:
   DID lookup → status panel → armed two-tap confirmation (the first tap swaps the destructive
   button for a Confirm/Cancel pair restating the relay-confirmed target) → biometric gate →
   signed write. Pinned to a single pairing at entry like Devices; the write always targets the
@@ -120,12 +127,9 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   a second, independently-armed two-tap + biometric-gated destructive action that sweeps every
   credential of the looked-up account (sessions, app passwords, OAuth grants, transfer-device
   tokens — never the main password) and renders the relay's literal per-family counts as a
-  fact sheet, no optimistic edit. A successful
-  lookup also loads a **Usage & storage** readout panel — records/commits/blobs/stored bytes/
-  last-active plus blob quota (used-of-total + %) and largest blob, fetched concurrently and
-  never blocking the status panel; a late response for a superseded lookup is discarded. Byte
-  figures render via `src/lib/format.ts` (`formatBytes`: binary units with the exact byte
-  count alongside; `formatPct`)), **Codes** (`src/routes/codes/` — the claim-code inventory:
+  fact sheet, no optimistic edit. The usage/storage readout that used to load here lives on
+  **Account detail** now, restoring this screen to its destructive framing only),
+  **Codes** (`src/routes/codes/` — the claim-code inventory:
   every code minted on ONE relay with its derived lifecycle status (`pending`/`redeemed`/
   `expired`/`revoked` — terminal events win over the clock), split by `src/lib/claim-codes.ts`
   (Functional Core: `partitionCodes`/`chipFor`/`timelineLine`, unit-tested) into an
