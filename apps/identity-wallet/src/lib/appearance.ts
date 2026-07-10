@@ -14,6 +14,16 @@
  *   because an async IPC read would land after the WebView has painted and
  *   flash the wrong appearance. `initAppearance()` reconciles the mirror
  *   against the Keychain at launch — the Keychain always wins.
+ *
+ * Ordering guarantees:
+ * - A user choice made while the launch reconciliation is still in flight is
+ *   never clobbered by the (older) stored value (`revision` guard).
+ * - Overlapping Keychain writes are serialized (`persistChain`), so the last
+ *   selection is also the last write.
+ * - A failed Keychain write rolls the mirror back to the last value known to
+ *   be persisted, so the next launch paints the durable state instead of an
+ *   unsaved choice; the on-screen appearance keeps the user's selection for
+ *   the current session (the Settings error copy describes exactly this).
  */
 import { getAppearancePreference, setAppearancePreference } from '$lib/ipc';
 import type { AppearancePreference } from '$lib/ipc';
@@ -22,6 +32,13 @@ export type { AppearancePreference };
 
 /** localStorage key for the pre-paint mirror. Must match the inline script in app.html. */
 export const APPEARANCE_STORAGE_KEY = 'appearance-preference';
+
+/** Bumped on every user choice; lets in-flight async work detect it went stale. */
+let revision = 0;
+/** The newest value confirmed written to the Keychain (null until known). */
+let lastPersisted: AppearancePreference | null = null;
+/** Keychain writes run strictly in selection order. */
+let persistChain: Promise<void> = Promise.resolve();
 
 /** Coerce any stored/received value to a valid preference ('system' when unrecognized). */
 export function normalizePreference(value: unknown): AppearancePreference {
@@ -66,8 +83,17 @@ function writeLocalMirror(preference: AppearancePreference): void {
 export async function initAppearance(): Promise<AppearancePreference> {
   const mirrored = readLocalMirror();
   applyToDocument(mirrored);
+  const seenRevision = revision;
   try {
     const stored = normalizePreference(await getAppearancePreference());
+    if (lastPersisted === null) {
+      lastPersisted = stored;
+    }
+    if (revision !== seenRevision) {
+      // The user picked an appearance while this read was in flight; the
+      // stored value is older than their choice — leave it alone.
+      return readLocalMirror();
+    }
     if (stored !== mirrored) {
       applyToDocument(stored);
       writeLocalMirror(stored);
@@ -84,12 +110,34 @@ export async function initAppearance(): Promise<AppearancePreference> {
 /**
  * Apply a preference instantly and persist it (mirror + Keychain).
  *
- * The appearance and the mirror are already committed by the time the
- * Keychain write runs, so a thrown AppearanceError means only that the
- * durable copy failed — callers should surface that without reverting.
+ * The appearance and the mirror commit before the Keychain write runs. On a
+ * failed write the returned promise rejects with the AppearanceError and the
+ * mirror rolls back to the last persisted value — the current session keeps
+ * the user's choice, but the next launch paints the durable state.
  */
-export async function setAppearance(preference: AppearancePreference): Promise<void> {
+export function setAppearance(preference: AppearancePreference): Promise<void> {
+  revision += 1;
+  const myRevision = revision;
   applyToDocument(preference);
   writeLocalMirror(preference);
-  await setAppearancePreference(preference);
+
+  persistChain = persistChain
+    // An earlier write's failure already surfaced to its own caller.
+    .catch(() => {})
+    .then(async () => {
+      if (revision !== myRevision) {
+        // Superseded before this write started; the newest call persists.
+        return;
+      }
+      try {
+        await setAppearancePreference(preference);
+        lastPersisted = preference;
+      } catch (e) {
+        if (revision === myRevision && lastPersisted !== null) {
+          writeLocalMirror(lastPersisted);
+        }
+        throw e;
+      }
+    });
+  return persistChain;
 }

@@ -19,7 +19,10 @@
     { value: 'dark', label: 'Dark' },
   ];
 
-  let segmentEls: (HTMLButtonElement | undefined)[] = [undefined, undefined, undefined];
+  let segmentEls: (HTMLButtonElement | undefined)[] = Array.from(
+    { length: OPTIONS.length },
+    () => undefined
+  );
 
   async function choose(preference: AppearancePreference) {
     selected = preference;
