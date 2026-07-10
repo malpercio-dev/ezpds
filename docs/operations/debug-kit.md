@@ -59,6 +59,14 @@ service environment. The config lives at `/etc/litestream.yml` and defines the
 ```sh
 railway ssh                    # shell into the running production PDS container
 
+# Preflight FIRST: the copy is a *full* database materialized in ephemeral /tmp,
+# so a large copy can fill /tmp and disrupt the running PDS. Confirm headroom
+# before restoring.
+df -h /tmp
+ls -lh /data/relay.db          # the copy needs at least this much free space
+# If the DB is large relative to free /tmp, stop here and restore in a
+# --private-network sandbox (Runbook 2) instead of the service container.
+
 # Restore the latest replica state into a throwaway copy (NOT over /data/relay.db).
 litestream restore -config /etc/litestream.yml -o /tmp/copy.db /data/relay.db
 
@@ -70,14 +78,8 @@ rm -f /tmp/copy.db             # clean up when done
 ```
 
 `-o /tmp/copy.db` **must** differ from `/data/relay.db`; never restore over the
-path the server is writing.
-
-> **Check free space first.** The copy is a *full* database materialized in the
-> container's ephemeral storage — a large DB can fill `/tmp` and disrupt the
-> running PDS. Confirm headroom before restoring: compare `df -h /tmp` against the
-> live size (`ls -lh /data/relay.db`). If the DB is large relative to free space,
-> restore into a `--private-network` sandbox (Runbook 2) rather than the service
-> container, and `rm` the copy as soon as you're done.
+path the server is writing. Run the `df`/`ls` preflight *before* the restore —
+on a large DB, prefer the sandbox path over the service container.
 
 ### Point-in-time restore
 
@@ -117,11 +119,11 @@ caveat.
 
 ### From a sandbox instead of the container
 
-The same restore works from a `--private-network` sandbox given the replica
-credentials — export the four `LITESTREAM_*` values and either copy
-`litestream.yml` in or pass the replica URL directly. Inside the container is
-simpler (config + creds already present), so reach for the sandbox only when you
-also want the richer tooling below.
+The same restore works from a `--private-network` sandbox — the debug-kit
+template (Runbook 2) bakes `litestream`, so export the four `LITESTREAM_*`
+credentials and either copy `litestream.yml` in or pass the replica URL directly.
+Inside the container is simpler (config + creds already present), so reach for the
+sandbox mainly when the DB is large or you also want the richer tooling below.
 
 ---
 
@@ -131,8 +133,9 @@ also want the richer tooling below.
 probe the PDS and run the ATProto interop suite against it with **no public
 routing**. Bake the toolset once, then boot fresh boxes from it.
 
-The kit bakes: `sqlite3`, `jq`, `websocat` (live firehose frame tap), `curl`,
-`git`, and `node`/`pnpm` with a `tools/interop` checkout ready to run.
+The kit bakes: `sqlite3`, `litestream` (for the Runbook 1 restore), `jq`,
+`websocat` (live firehose frame tap), `curl`, `git`, and `node`/`pnpm` with a
+`tools/interop` checkout ready to run.
 
 ### Option A — build a reusable template (preferred)
 
@@ -145,22 +148,30 @@ instructions are a cache hit for ~7 days, so rebuilds are instant.
 # what's deployed (use a branch like `main` for latest instead).
 REF=v0.0.0    # ← set to the deployed production tag
 
+# websocat isn't in Debian's apt repos, so it's pinned to a GitHub release and
+# checksum-verified. GitHub publishes a SHA-256 for every release asset — confirm
+# this value against the v1.14.1 asset digest on the release page, and re-pin both
+# if you bump the version.
+WEBSOCAT_SHA256=66f8dd3a0394761556339117f8bb5123bddefd44e087af2a72ec22b0bd08d514
+
 railway sandbox template build \
   --name ezpds-debug-kit \
   -c "apt-get update && apt-get install -y --no-install-recommends sqlite3 jq curl git ca-certificates" \
+  -c "curl -fsSL https://github.com/benbjohnson/litestream/releases/download/v0.3.13/litestream-v0.3.13-linux-amd64.tar.gz | tar -xz -C /usr/local/bin litestream && litestream version" \
   -c "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs" \
   -c "npm install -g pnpm@10" \
-  -c "curl -fsSL https://github.com/vi/websocat/releases/latest/download/websocat.x86_64-unknown-linux-musl -o /usr/local/bin/websocat && chmod +x /usr/local/bin/websocat && websocat --version" \
+  -c "curl -fsSL https://github.com/vi/websocat/releases/download/v1.14.1/websocat.x86_64-unknown-linux-musl -o /usr/local/bin/websocat && echo \"$WEBSOCAT_SHA256  /usr/local/bin/websocat\" | sha256sum -c - && chmod +x /usr/local/bin/websocat && websocat --version" \
   -c "git clone --depth 1 --branch \"$REF\" https://github.com/malpercio-dev/ezpds /opt/ezpds" \
   -c "cd /opt/ezpds/tools/interop && pnpm install --frozen-lockfile" \
   --wait
 ```
 
-`websocat` isn't in Debian's apt repos, so it's fetched as a static musl binary
-from its GitHub releases (pin a version tag instead of `latest/download` if you
-need a byte-reproducible template). Node tracks the `>=22.21` engine and `pnpm`
-is pinned to a major rather than floating on `@latest`, so the frozen-lockfile
-install stays stable — bump both to whatever your target release builds with.
+`litestream` is pinned to the same version as the runtime image (v0.3.13) so the
+sandbox can run the Runbook 1 restore too; `websocat` is a pinned, checksum-verified
+GitHub release binary (it isn't in Debian's apt repos). Node tracks the `>=22.21`
+engine and `pnpm` is pinned to a major rather than floating on `@latest`, so the
+frozen-lockfile install stays stable — bump these to whatever your target release
+builds with.
 
 Boot a box from it on the private network and open a shell:
 
@@ -179,9 +190,9 @@ returns (reusing a name replaces it).
 ```sh
 railway sandbox create --private-network
 railway sandbox ssh
-#   ...inside: apt-get install sqlite3 jq curl git; install websocat (GitHub
-#      release binary) + node + pnpm@10; git clone the repo at the deployed tag;
-#      cd tools/interop && pnpm install --frozen-lockfile...
+#   ...inside: apt-get install sqlite3 jq curl git; install litestream (pinned
+#      tarball) + websocat (pinned GitHub binary) + node + pnpm@10; git clone the
+#      repo at the deployed tag; cd tools/interop && pnpm install --frozen-lockfile...
 railway sandbox checkpoint create ezpds-debug-kit    # name is positional; acts on the active sandbox
 
 # Later, boot a fresh box from the checkpoint:
