@@ -191,10 +191,12 @@ async fn run() -> anyhow::Result<()> {
     ));
 
     // Dynamic-trust JWKS cache for the auth.md `identity_assertion` flow: reuses the shared HTTP
-    // client and the operator-configured cache TTL. The static-PEM trust path never touches it.
+    // client and the operator-configured cache TTL + refetch cooldown (the anti-amplification
+    // bound for the public agent-auth endpoints). The static-PEM trust path never touches it.
     let jwks_cache = Arc::new(jwks::JwksCache::new(
         Arc::new(jwks::HttpJwksFetcher::new(http_client.clone())),
         std::time::Duration::from_secs(config.agent_auth.jwks_cache_ttl_secs),
+        std::time::Duration::from_secs(config.agent_auth.jwks_refetch_cooldown_secs),
     ));
 
     let jwt_secret = auth::load_or_create_jwt_secret(

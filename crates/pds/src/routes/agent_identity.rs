@@ -837,6 +837,8 @@ mod tests {
         let jwks_cache = Arc::new(crate::jwks::JwksCache::new(
             fetcher,
             std::time::Duration::from_secs(3600),
+            // Cooldown disabled: these tests pin fetch counts, not the cooldown (jwks.rs does).
+            std::time::Duration::ZERO,
         ));
         (AppState { jwks_cache, ..base }, calls)
     }
@@ -852,6 +854,7 @@ mod tests {
         let jwks_cache = Arc::new(crate::jwks::JwksCache::new(
             fetcher,
             std::time::Duration::from_secs(3600),
+            std::time::Duration::ZERO,
         ));
         AppState { jwks_cache, ..base }
     }

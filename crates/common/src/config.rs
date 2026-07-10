@@ -365,6 +365,8 @@ pub struct OAuthConfig {}
 ///   (dynamic trust, so a rotating issuer key set is picked up without a config edit). Exactly one
 ///   of the two per entry.
 /// - `jwks_cache_ttl_secs` bounds how long a fetched issuer JWKS is reused before it is re-fetched.
+/// - `jwks_refetch_cooldown_secs` bounds how often an unknown `kid` (or a failing issuer) can force
+///   a JWKS re-fetch — the anti-amplification guard for the public agent-auth endpoints.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentAuthConfig {
     /// Enable the `service_auth` registration flow. Default `false`.
@@ -416,10 +418,19 @@ pub struct AgentAuthConfig {
     #[serde(default = "default_agent_claim_sweep_interval_secs")]
     pub claim_sweep_interval_secs: u64,
     /// TTL, in seconds, of a fetched issuer JWKS before it is re-fetched (dynamic `jwks_url`
-    /// trust). A rotated key whose `kid` isn't in the cached set triggers an immediate re-fetch, so
-    /// this only bounds how long a *removed* key stays trusted. Default 3600 (1 hour).
+    /// trust). A rotated key whose `kid` isn't in the cached set triggers a re-fetch as soon as
+    /// `jwks_refetch_cooldown_secs` allows, so this only bounds how long a *removed* key stays
+    /// trusted. Default 3600 (1 hour).
     #[serde(default = "default_agent_jwks_cache_ttl_secs")]
     pub jwks_cache_ttl_secs: u64,
+    /// Minimum interval, in seconds, between JWKS fetch attempts for a given `jwks_url`. The
+    /// requesting `kid` comes from an *unverified* JWT header on public endpoints, so without this
+    /// cooldown a stream of bogus-`kid` tokens would force one outbound fetch per request. Within
+    /// the cooldown an unknown `kid` resolves against the last fetched set and a failed fetch keeps
+    /// failing fast; a genuine key rotation is picked up after at most one cooldown. Should stay
+    /// well below `jwks_cache_ttl_secs`. `0` disables the cooldown. Default 30.
+    #[serde(default = "default_agent_jwks_refetch_cooldown_secs")]
+    pub jwks_refetch_cooldown_secs: u64,
 }
 
 impl Default for AgentAuthConfig {
@@ -437,6 +448,7 @@ impl Default for AgentAuthConfig {
             verification_uri: None,
             claim_sweep_interval_secs: default_agent_claim_sweep_interval_secs(),
             jwks_cache_ttl_secs: default_agent_jwks_cache_ttl_secs(),
+            jwks_refetch_cooldown_secs: default_agent_jwks_refetch_cooldown_secs(),
         }
     }
 }
@@ -494,6 +506,10 @@ fn default_agent_auth_time_max_age_secs() -> u64 {
 
 fn default_agent_jwks_cache_ttl_secs() -> u64 {
     60 * 60 // 1 hour
+}
+
+fn default_agent_jwks_refetch_cooldown_secs() -> u64 {
+    30
 }
 
 /// The conservative default scope profile for agent-derived credentials.
@@ -1160,6 +1176,10 @@ pub(crate) fn apply_env_overrides(
     }
     if let Some(v) = env.get("EZPDS_AGENT_AUTH_JWKS_CACHE_TTL_SECS") {
         raw.agent_auth.jwks_cache_ttl_secs = parse_u64("EZPDS_AGENT_AUTH_JWKS_CACHE_TTL_SECS", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_AGENT_AUTH_JWKS_REFETCH_COOLDOWN_SECS") {
+        raw.agent_auth.jwks_refetch_cooldown_secs =
+            parse_u64("EZPDS_AGENT_AUTH_JWKS_REFETCH_COOLDOWN_SECS", v)?;
     }
     // Email overrides. `provider` and `smtp_tls` parse from the same lowercase tokens the TOML
     // form accepts; an unrecognised value is a hard config error rather than a silent fallback.
@@ -1873,8 +1893,9 @@ mod tests {
             Some("https://issuer.example.com/.well-known/jwks.json")
         );
         assert!(issuer.public_key_pem.is_none());
-        // The JWKS cache TTL falls back to its default (3600) when unset.
+        // The JWKS cache TTL and refetch cooldown fall back to their defaults when unset.
         assert_eq!(config.agent_auth.jwks_cache_ttl_secs, 3600);
+        assert_eq!(config.agent_auth.jwks_refetch_cooldown_secs, 30);
         assert_eq!(issuer.algorithm, "ES256"); // ES256 default
     }
 
@@ -1938,6 +1959,17 @@ mod tests {
         let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
         let config = validate_and_build(raw).unwrap();
         assert_eq!(config.agent_auth.jwks_cache_ttl_secs, 120);
+    }
+
+    #[test]
+    fn agent_auth_jwks_refetch_cooldown_env_override() {
+        let env = HashMap::from([(
+            "EZPDS_AGENT_AUTH_JWKS_REFETCH_COOLDOWN_SECS".to_string(),
+            "5".to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.agent_auth.jwks_refetch_cooldown_secs, 5);
     }
 
     #[test]

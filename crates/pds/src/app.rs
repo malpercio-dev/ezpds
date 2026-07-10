@@ -869,6 +869,8 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
         jwks_cache: Arc::new(crate::jwks::JwksCache::new(
             Arc::new(crate::jwks::HttpJwksFetcher::new(http_client.clone())),
             Duration::from_secs(3600),
+            // Cooldown disabled so a test's every lookup reaches its injected mock fetcher.
+            Duration::ZERO,
         )),
         // Fixed key for tests — predictable JWTs in unit tests.
         jwt_secret: [0x42u8; 32],
