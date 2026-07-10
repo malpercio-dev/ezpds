@@ -25,8 +25,9 @@
   // accounts. Pinned to a single pairing at entry (`?server=<pairingId>` else the
   // active pairing) like Devices/Moderation, so a concurrent active-pointer switch on
   // Home can never redirect what this screen reads or signs. Tapping a row hands the
-  // relay-confirmed DID to the moderation screen — replacing DID-pasting as the entry
-  // point for takedown/restore and the usage readouts.
+  // relay-confirmed DID to the account-detail screen (identity facts + usage/storage,
+  // with moderation one hop deeper) — replacing DID-pasting as the entry point for
+  // per-account work.
 
   type StatusFilter = 'all' | AccountListEntry['status'];
   const FILTERS: { value: StatusFilter; label: string }[] = [
@@ -139,7 +140,7 @@
 
   function openAccount(entry: AccountListEntry) {
     if (!pairing) return;
-    void goto(`/moderation?server=${pairing.id}&did=${encodeURIComponent(entry.did)}`);
+    void goto(`/account?server=${pairing.id}&did=${encodeURIComponent(entry.did)}`);
   }
 </script>
 
@@ -167,8 +168,8 @@
     </section>
   {:else}
     <p class="lede">
-      Every account on this server, in DID order. Tap an account to look it up on the
-      moderation screen; the meter is each account's blob-storage quota.
+      Every account on this server, in DID order. Tap an account for its detail —
+      usage, storage, and moderation; the meter is each account's blob-storage quota.
     </p>
 
     <section class="panel" aria-labelledby="accounts-filter-label">
