@@ -71,20 +71,24 @@ if [ "$avail" -lt $(( need + need / 5 )) ]; then
   exit 1
 fi
 
-# Clean up the copy even on Ctrl-C or when you leave the ssh session.
-trap 'rm -f /tmp/copy.db' EXIT
+# Session-unique scratch dir (avoids collisions between concurrent ssh sessions);
+# rm -rf on exit takes the copy and any SQLite sidecars with it, even on Ctrl-C.
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+copy="$work/copy.db"
 
-# Restore the latest replica state into a throwaway copy (NOT over /data/relay.db).
-litestream restore -config /etc/litestream.yml -o /tmp/copy.db /data/relay.db
+# Restore the latest replica state into the throwaway copy (NOT over /data/relay.db).
+litestream restore -config /etc/litestream.yml -o "$copy" /data/relay.db
 
 # Inspect the copy freely — it's disconnected from the live DB.
-sqlite3 /tmp/copy.db '.tables'
-sqlite3 /tmp/copy.db 'SELECT count(*) FROM accounts;'
+sqlite3 "$copy" '.tables'
+sqlite3 "$copy" 'SELECT count(*) FROM accounts;'
 ```
 
-`-o /tmp/copy.db` **must** differ from `/data/relay.db`; never restore over the
-path the server is writing. The preflight above is fail-closed — it aborts before
-the restore when `/tmp` lacks headroom, steering large DBs to the sandbox path.
+The restore target (`$copy`, inside a `mktemp -d` scratch dir) **must** differ from
+`/data/relay.db`; never restore over the path the server is writing. The preflight
+above is fail-closed — it aborts before the restore when `/tmp` lacks headroom,
+steering large DBs to the sandbox path.
 
 ### Point-in-time restore
 
@@ -97,16 +101,20 @@ list what the replica holds, then restore to a timestamp:
 need=$(stat -c %s /data/relay.db)
 avail=$(df -P -B1 /tmp | awk 'NR==2 {print $4}')
 [ "$avail" -ge $(( need + need / 5 )) ] || { echo "Insufficient /tmp space — use a sandbox (Runbook 2)." >&2; exit 1; }
-trap 'rm -f /tmp/point-in-time.db' EXIT   # clean up on Ctrl-C / session exit
+
+# Session-unique scratch dir; rm -rf on exit clears the copy + sidecars.
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+pit="$work/point-in-time.db"
 
 litestream generations -config /etc/litestream.yml /data/relay.db
 litestream snapshots   -config /etc/litestream.yml /data/relay.db
 
 litestream restore -config /etc/litestream.yml \
   -timestamp 2026-07-09T18:00:00Z \
-  -o /tmp/point-in-time.db /data/relay.db
+  -o "$pit" /data/relay.db
 
-sqlite3 /tmp/point-in-time.db '.schema accounts'
+sqlite3 "$pit" '.schema accounts'
 ```
 
 This is the same primitive used for **disaster recovery** — see
