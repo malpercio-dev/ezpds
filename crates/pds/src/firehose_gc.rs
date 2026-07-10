@@ -371,6 +371,8 @@ mod tests {
             rendered.contains("firehose_gc_last_run_timestamp"),
             "benign no-op must timestamp the pass in:\n{rendered}"
         );
+        // The readable snapshot records the same benign no-op pass.
+        assert_eq!(state.sweeps.snapshot().firehose_gc.unwrap().swept, 0);
     }
 
     #[tokio::test]
@@ -395,6 +397,10 @@ mod tests {
         // A failed pass records nothing: the absent timestamp (stale, in production) is the
         // operator's signal that sweeps are not completing.
         let rendered = state.metrics.render().unwrap().unwrap();
+        assert!(
+            state.sweeps.snapshot().firehose_gc.is_none(),
+            "failed pass must not record a readable sweep run"
+        );
         assert!(
             !rendered.contains("firehose_gc_last_run_timestamp"),
             "failed pass must not timestamp itself in:\n{rendered}"

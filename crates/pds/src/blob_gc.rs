@@ -532,6 +532,8 @@ mod tests {
             rendered.contains("blob_gc_last_run_timestamp"),
             "missing blob_gc_last_run_timestamp in:\n{rendered}"
         );
+        // The readable snapshot records the same completed pass with its literal count.
+        assert_eq!(state.sweeps.snapshot().blob_gc.unwrap().swept, 1);
 
         // Referenced blob: pinned permanent, file intact.
         assert!(blobs::get_blob_by_cid(&state.db, &referenced)

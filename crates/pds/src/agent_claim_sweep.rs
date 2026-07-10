@@ -216,6 +216,9 @@ mod tests {
             rendered.contains("agent_claim_sweep_last_run_timestamp"),
             "missing agent_claim_sweep_last_run_timestamp in:\n{rendered}"
         );
+        // The readable snapshot records the same completed pass (swept nothing ≠ never ran).
+        let run = state.sweeps.snapshot().agent_claim_sweep.unwrap();
+        assert_eq!(run.swept, 0);
     }
 
     #[tokio::test]
