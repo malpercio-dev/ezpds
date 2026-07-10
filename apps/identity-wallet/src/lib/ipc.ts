@@ -486,6 +486,15 @@ export const resolveIdentity = (handleOrDid: string): Promise<IdentityInfo> =>
   invoke('resolve_identity', { handleOrDid });
 
 /**
+ * True when a `plugin:auth-session|start` rejection is a genuine user dismissal.
+ * The plugin rejects with plain strings; both platform implementations reject with the
+ * exact sentinel "user_cancelled" when the user closes the sheet, and with descriptive
+ * text ("Auth session error: …", "No browser available…") for real failures.
+ */
+const isAuthSessionCancellation = (raw: unknown): raw is 'user_cancelled' =>
+  raw === 'user_cancelled';
+
+/**
  * Authenticate with the identity's existing PDS via OAuth 2.0 PKCE + DPoP, using the native
  * in-app auth session (ASWebAuthenticationSession) — same three-step shape as `startOAuthFlow`:
  * `prepare_pds_auth` (Rust) discovers the auth server + PAR and returns the authorize URL; the
@@ -505,10 +514,14 @@ export const startPdsAuth = async (pdsUrl: string): Promise<void> => {
       authUrl: prepared.authUrl,
       callbackUrlScheme: prepared.callbackScheme,
     });
-  } catch {
-    // The auth-session plugin rejects with a plain string (e.g. "user_cancelled"); map to the
-    // ClaimError shape the UI expects (a dismissed sheet reads as unauthorized).
-    throw { code: 'UNAUTHORIZED' } as ClaimError;
+  } catch (raw: unknown) {
+    // Only a genuine dismissal may read as unauthorized — a network drop or platform
+    // auth-session failure must surface as retryable, not as a cancellation the user
+    // never made.
+    if (isAuthSessionCancellation(raw)) {
+      throw { code: 'UNAUTHORIZED' } as ClaimError;
+    }
+    throw { code: 'NETWORK_ERROR', message: String(raw) } as ClaimError;
   }
   await invoke('complete_pds_auth', { callbackUrl });
 };
@@ -776,8 +789,13 @@ export const startSourceAuth = async (did: string): Promise<void> => {
       authUrl: prepared.authUrl,
       callbackUrlScheme: prepared.callbackScheme,
     });
-  } catch {
-    throw { code: 'SOURCE_AUTH_FAILED', message: 'auth session cancelled' } as MigrationError;
+  } catch (raw: unknown) {
+    // Same mapping as startPdsAuth: only a genuine dismissal reads as a cancellation;
+    // anything else must surface as retryable instead of blaming the user.
+    if (isAuthSessionCancellation(raw)) {
+      throw { code: 'SOURCE_AUTH_FAILED', message: 'auth session cancelled' } as MigrationError;
+    }
+    throw { code: 'NETWORK_ERROR', message: String(raw) } as MigrationError;
   }
   await invoke('complete_source_auth', { did, callbackUrl });
 };
