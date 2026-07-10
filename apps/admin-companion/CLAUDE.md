@@ -10,7 +10,7 @@ backend, communicating through Tauri IPC. The operator-facing console for an ezp
 relay: generate/share account claim codes, pair admin devices via QR, and revoke
 devices. A **separate product** from identity-wallet (Obsign) with its own
 terminal-native design register — see [PRODUCT.md](PRODUCT.md) / [DESIGN.md](DESIGN.md)
-and the design plan [docs/design-plans/2026-06-26-admin-companion-app.md](../../docs/design-plans/2026-06-26-admin-companion-app.md).
+and the design plan [docs/archive/design-plans/2026-06-26-admin-companion-app.md](../../docs/archive/design-plans/2026-06-26-admin-companion-app.md).
 
 The relay side (pairing/auth/device endpoints, Phases 1–5) is already shipped. This
 app is built across Phases 6–8.

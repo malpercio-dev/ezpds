@@ -7,8 +7,8 @@ the real bsky.social, and permanent `did:plc` state.
 
 - Ticket: [MM-241](https://linear.app/malpercio/issue/MM-241) (the canonical MM-207 e2e; the
   one unvalidated leg of the migration epic)
-- Design: [ADR-0002](../architecture/decisions/0002-account-migration.md),
-  design plan [v0.1 operational proof](../design-plans/2026-07-07-v01-operational-proof.md)
+- Design: [ADR-0002](../architecture/decisions/0002-wallet-authorized-account-migration.md),
+  design plan [v0.1 operational proof](../archive/design-plans/2026-07-07-v01-operational-proof.md)
   (op-proof.AC4)
 - Tooling: [`tools/interop`](../../tools/interop/README.md) (`migrate perform` / `migrate
   verify`), the Obsign wallet (inbound leg), `curl` + `jq` for the plc.directory audit checks

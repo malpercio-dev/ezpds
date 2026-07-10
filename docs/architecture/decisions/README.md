@@ -52,3 +52,6 @@ understand why the architecture is the way it is.
 | [0015](0015-ci-on-github-actions.md) | Accepted | Host CI on GitHub Actions (leaving the tangled spindle) |
 | [0016](0016-dynamic-lexicon-permission-set-resolution.md) | Accepted | Dynamic Lexicon-based permission-set resolution, not a static scope table |
 | [0017](0017-multi-relay-admin-pairings.md) | Accepted | One global admin device key across N relays; pairings in a single versioned keychain document with a Rust-owned active pointer |
+| [0018](0018-admin-signed-request-envelope.md) | Accepted | Admin auth via per-device P-256 signed-request envelopes; master token stays as break-glass |
+| [0019](0019-authmd-agent-authentication.md) | Accepted | Adopt the auth.md convention (self-registration, human claim ceremony, jwt-bearer exchange) as the agent-auth surface |
+| [0020](0020-set-revocation-trusted-issuers.md) | Accepted | Provider-driven agent revocation via Security Event Tokens, gated on the existing `trusted_issuers` list |

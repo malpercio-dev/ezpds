@@ -6,7 +6,7 @@
 > identity-wallet (Obsign, `apps/identity-wallet/PRODUCT.md`) and deliberately speaks a different
 > design language, because its audience and its job are different.
 >
-> See the design plan: `docs/design-plans/2026-06-26-admin-companion-app.md`.
+> See the design plan: `docs/archive/design-plans/2026-06-26-admin-companion-app.md`.
 
 ## Register
 

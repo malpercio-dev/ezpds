@@ -20,12 +20,12 @@ What remains is not feature work. It falls into three buckets, each with its own
    `crates/pds`, and the canonical live bsky.social migration validation run (MM-241).
    *The code is done; the proof is not.*
 
-2. **[Agent Scope Enforcement](../archive/design-plans/2026-07-07-agent-scope-enforcement.md)** — safety-critical,
+2. **[Agent Scope Enforcement](2026-07-07-agent-scope-enforcement.md)** — safety-critical,
    do **before** any agent exists in the wild. Today an agent credential functionally grants full
    `com.atproto.access`; per-identity `granted_scopes` are stored but not meaningfully enforced
    through the granular scope grammar.
 
-3. **[Wallet Agent Consent and Audit](../archive/design-plans/2026-07-07-wallet-agent-consent-and-audit.md)** — the
+3. **[Wallet Agent Consent and Audit](2026-07-07-wallet-agent-consent-and-audit.md)** — the
    product-thesis play. Claim-ceremony approval in Obsign, a "My agents" screen with revocation,
    and an immutable agent-action audit log.
 
