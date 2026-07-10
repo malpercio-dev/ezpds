@@ -95,7 +95,7 @@ Each environment has its own secrets (distinct master key, admin token, user-dom
 
 When `LITESTREAM_S3_BUCKET` is set on the production environment — together with `LITESTREAM_S3_ENDPOINT` and `LITESTREAM_ACCESS_KEY_ID` / `LITESTREAM_SECRET_ACCESS_KEY` — the container runs the PDS under Litestream, which streams the SQLite WAL to object storage continuously and restores on boot, so a current restore point always exists before a promote. The replica is defined in `litestream.yml` with `force-path-style: false` (virtual-hosted-style, as Railway/Tigris-style buckets require). Staging/local leave these unset and run the PDS directly.
 
-Rollback: because migrations are **forward-only** (no down-path), redeploying a previous `v*` tag is safe only when the schema change was backward-compatible (expand-contract). Otherwise, roll back by restoring the database from the Litestream replica (`litestream restore`) to a pre-promote point.
+Rollback: because migrations are **forward-only** (no down-path), redeploying a previous `v*` tag is safe only when the schema change was backward-compatible (expand-contract). Otherwise, roll back by restoring the database from the Litestream replica (`litestream restore`) to a pre-promote point. To inspect the replica **non-destructively** — restore a point-in-time copy to `/tmp` and query it with `sqlite3`, no rollback — see the [operator debug kit](operations/debug-kit.md#runbook-1--litestream-restore-and-inspect).
 
 ### Observability: metrics and logs
 
@@ -119,7 +119,9 @@ enums only).
 logs` output can be filtered by field instead of by regex. Default stays human-readable text.
 
 Persistent scraping/dashboards (a collector service inside the project) are deliberately
-out of scope for v0.1 — see MM-250 for the operator debug kit follow-up.
+out of scope for v0.1. For private-network troubleshooting — inspecting a restored DB copy
+over `railway ssh`, and a ready diagnostic sandbox that can run the interop suite against the
+private-network service — see the [operator debug kit](operations/debug-kit.md).
 
 ## Marketing Site (static)
 

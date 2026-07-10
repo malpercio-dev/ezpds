@@ -18,8 +18,12 @@ RUN cargo build --release --locked -p pds
 FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf87857c4b8188404716 AS runtime
 # gosu: privilege-drop helper used by the entrypoint to hand off to the relay user
 # after fixing /data ownership (Railway Volumes mount as root:root).
+# sqlite3: operator debug kit — lets a `railway ssh` session inspect a restored
+# DB *copy* (`litestream restore -o /tmp/copy.db`; the live single-writer DB
+# stays hands-off). ~1 MB, independent of the SQLite compiled into the pds
+# binary. See docs/operations/debug-kit.md.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates tzdata gosu curl \
+ && apt-get install -y --no-install-recommends ca-certificates tzdata gosu curl sqlite3 \
  && rm -rf /var/lib/apt/lists/*
 # Non-root runtime user. Home is /home/relay (not /data) so that a root-owned
 # volume mount on /data does not prevent login shell resolution.
