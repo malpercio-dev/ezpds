@@ -66,3 +66,6 @@ apps/admin-companion/src-tauri/icons-build/
 
 # Claude Code agent worktrees (session-local, never committed)
 .claude/worktrees/
+
+# Local Linear ticket archive (private — never publish to this public repo)
+linear-export/
