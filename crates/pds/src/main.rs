@@ -32,6 +32,7 @@ mod rate_limit;
 mod read_after_write;
 mod record_write;
 mod routes;
+mod sweep_status;
 mod telemetry;
 mod token;
 mod transfer;
@@ -75,6 +76,9 @@ async fn main() {
 }
 
 async fn run() -> anyhow::Result<()> {
+    // Captured before any startup work (config load, migrations, key setup) so the health
+    // endpoint's uptime reflects process start, not listen start.
+    let started_at = std::time::Instant::now();
     let cli = Cli::parse();
 
     // Load config: if an explicit path is given via --config or EZPDS_CONFIG, error if missing.
@@ -324,6 +328,8 @@ async fn run() -> anyhow::Result<()> {
         allow_loopback_proxy_targets: false,
         metrics,
         repo_write_locks: Arc::new(record_write::RepoWriteLocks::new()),
+        sweeps: Arc::new(sweep_status::SweepStatus::default()),
+        started_at,
     };
 
     let listener = tokio::net::TcpListener::bind(&addr)

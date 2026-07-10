@@ -94,6 +94,9 @@ pub async fn run_account_reaper(state: &AppState) -> ReaperStats {
         .metrics
         .account_reaper_last_run_timestamp
         .record(crate::metrics::unix_now(), &[]);
+    state
+        .sweeps
+        .record_account_reaper(crate::sweep_status::SweepRun::now(stats.deleted));
 
     stats
 }
@@ -144,6 +147,8 @@ mod tests {
             rendered.contains("account_reaper_last_run_timestamp"),
             "missing account_reaper_last_run_timestamp in:\n{rendered}"
         );
+        // The readable snapshot records the same completed pass with its literal count.
+        assert_eq!(state.sweeps.snapshot().account_reaper.unwrap().swept, 1);
         assert_eq!(stats.errors, 0);
         assert!(!account_exists(&state.db, "did:plc:reapdue").await);
     }

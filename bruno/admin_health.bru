@@ -1,0 +1,40 @@
+meta {
+  name: Admin Server Health (operator readout)
+  type: http
+  seq: 113
+}
+
+get {
+  url: {{baseUrl}}/v1/admin/health
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+docs {
+  # GET /v1/admin/health
+
+  Operator server-health readout — the JSON counterpart of `GET /metrics` for
+  the companion app's per-relay Status screen. Literal facts only; the endpoint
+  derives no ok/warn verdicts. Admin-authed: the master token (shown here)
+  **or** an active operator companion-app device's signed request.
+
+  Response:
+  - `version`, `uptimeSeconds` — process facts.
+  - `accounts` — `{total, active, deactivated, suspended, takendown}`; derived
+    lifecycle buckets (takendown > suspended > deactivated precedence, matching
+    the account-listing `status` filter) that partition `total` exactly.
+  - `storage` — `{blobCount, blobBytes, blockCount}`; physical rows (blobs are
+    shared across owners and counted once).
+  - `firehose` — `{currentSeq, subscribers, retainedEvents,
+    backfillWindowSeconds}`; `backfillWindowSeconds` is the age of the oldest
+    retained event (`null` when the log is empty).
+  - `sweeps` — `{blobGc, firehoseGc, accountReaper, agentClaimSweep}`, each
+    `{completedAt, swept}` (unix seconds + items acted on) or `null` until that
+    sweep's first completed pass after boot. A failed pass records nothing, so
+    a stale `completedAt` is the operator's signal that passes are not
+    completing.
+}

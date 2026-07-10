@@ -25,6 +25,7 @@ use crate::routes::activate_account::activate_account_handler;
 use crate::routes::admin_devices::{
     list_admin_devices, mint_pairing_code, register_admin_device, revoke_admin_device,
 };
+use crate::routes::admin_health::admin_health;
 use crate::routes::admin_list_accounts::list_accounts;
 use crate::routes::admin_revoke_credentials::revoke_account_credentials;
 use crate::routes::admin_transfers::{cancel_admin_transfer, list_admin_transfers};
@@ -258,6 +259,11 @@ pub struct AppState {
     /// post-commit GC) so one request's GC can never delete a concurrent same-repo write's
     /// freshly written blocks. Shared via Arc; see [`crate::record_write::RepoWriteLocks`].
     pub repo_write_locks: Arc<crate::record_write::RepoWriteLocks>,
+    /// Readable last-run state per periodic sweep, recorded beside the write-only OTel
+    /// gauges so the operator health endpoint can report it as JSON. Shared via Arc.
+    pub sweeps: Arc<crate::sweep_status::SweepStatus>,
+    /// Process start, for the health endpoint's uptime readout.
+    pub started_at: std::time::Instant,
 }
 
 /// Apply the middleware every route group shares, in the order axum layers them (outermost →
@@ -539,6 +545,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/agents/{registration_id}/revoke", post(revoke_agent))
         .route("/v1/agents/{registration_id}/audit", get(agent_audit_log))
         .route("/v1/admin/accounts", get(list_accounts))
+        .route("/v1/admin/health", get(admin_health))
         .route(
             "/v1/admin/accounts/{id}/revoke-credentials",
             post(revoke_account_credentials),
@@ -919,6 +926,8 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
         allow_loopback_proxy_targets: true,
         metrics,
         repo_write_locks: Arc::new(crate::record_write::RepoWriteLocks::new()),
+        sweeps: Arc::new(crate::sweep_status::SweepStatus::default()),
+        started_at: std::time::Instant::now(),
     }
 }
 

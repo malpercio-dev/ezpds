@@ -724,6 +724,29 @@ pub async fn revoke_account_credentials(
     parse_success::<RevokedCredentials>(response).await
 }
 
+// ── Server health (operator readout) ─────────────────────────────────────────
+
+/// Build the signed server-health readout (`GET /v1/admin/health`). No params, no
+/// body — the whole request is the fixed path, so the envelope is the plain signed GET.
+pub fn build_server_health_request(
+    pairing: &Pairing,
+    timestamp: i64,
+    nonce: &str,
+) -> Result<SignedRequest, RelayClientError> {
+    build_signed_request(pairing, "GET", "/v1/admin/health", b"", timestamp, nonce)
+}
+
+/// Fetch the relay's server-health readout (row counts, firehose state, sweep
+/// last-runs) via a signed `GET` — the Status screen's data source. Literal facts only;
+/// the relay derives no verdicts. Id-addressed like [`list_devices`], so a concurrent
+/// active-pairing switch can never redirect which relay is asked (or signed for).
+pub async fn get_server_health(pairing_id: &str) -> Result<ServerHealth, RelayClientError> {
+    let pairing = resolve_pairing(pairing_id)?;
+    let signed = build_server_health_request(&pairing, unix_now(), &fresh_nonce())?;
+    let response = send(signed).await?;
+    parse_success::<ServerHealth>(response).await
+}
+
 /// Send an already-built [`SignedRequest`] and return the raw response.
 async fn send(req: SignedRequest) -> Result<reqwest::Response, RelayClientError> {
     let method = reqwest::Method::from_bytes(req.method.as_bytes()).map_err(|_| {
@@ -988,6 +1011,70 @@ pub struct AccountListEntry {
     pub total_bytes: i64,
     /// `total_bytes` as a percentage of `quota_bytes`.
     pub quota_used_pct: f64,
+}
+
+/// The relay's server-health readout — the response shape of `GET /v1/admin/health`
+/// (`HealthResponse` in crates/pds/src/routes/admin_health.rs; shared by value like
+/// [`AccountUsage`], pinned by a deserialization test). Literal facts only — the relay
+/// derives no ok/warn verdicts; any staleness judgment is the screen's. Re-serialized
+/// camelCase over IPC.
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerHealth {
+    pub version: String,
+    pub uptime_seconds: u64,
+    pub accounts: HealthAccounts,
+    pub storage: HealthStorage,
+    pub firehose: HealthFirehose,
+    pub sweeps: HealthSweeps,
+}
+
+/// Derived-lifecycle buckets; the four non-total buckets partition `total` exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthAccounts {
+    pub total: i64,
+    pub active: i64,
+    pub deactivated: i64,
+    pub suspended: i64,
+    pub takendown: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthStorage {
+    pub blob_count: i64,
+    pub blob_bytes: i64,
+    pub block_count: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthFirehose {
+    pub current_seq: u64,
+    pub subscribers: u64,
+    pub retained_events: i64,
+    /// Age in seconds of the oldest retained event; `None` when the log is empty.
+    pub backfill_window_seconds: Option<i64>,
+}
+
+/// Each field is `None` until that sweep's first completed pass after boot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthSweeps {
+    pub blob_gc: Option<HealthSweepRun>,
+    pub firehose_gc: Option<HealthSweepRun>,
+    pub account_reaper: Option<HealthSweepRun>,
+    pub agent_claim_sweep: Option<HealthSweepRun>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthSweepRun {
+    /// Unix seconds when the pass completed.
+    pub completed_at: i64,
+    /// Items acted on by that pass.
+    pub swept: u64,
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -2598,5 +2685,85 @@ mod tests {
         assert_eq!(value["accounts"][0]["createdAt"], "2026-07-01 12:00:00");
         assert_eq!(value["accounts"][0]["quotaUsedPct"], 4.2);
         assert_eq!(value["quotaBytes"], 1_000_000);
+    }
+
+    // Pins the relay's `HealthResponse` wire shape by value (the `pds` crate is
+    // binary-only, so the contract can't be shared by import). If the relay renames or
+    // retypes a field, this literal — and the Status screen — must change together.
+    #[test]
+    fn server_health_deserializes_the_relay_shape() {
+        let json = r#"{
+            "version": "0.4.1",
+            "uptimeSeconds": 86400,
+            "accounts": {"total": 5, "active": 3, "deactivated": 1, "suspended": 1, "takendown": 0},
+            "storage": {"blobCount": 12, "blobBytes": 345678, "blockCount": 900},
+            "firehose": {"currentSeq": 42, "subscribers": 2, "retainedEvents": 40, "backfillWindowSeconds": 3600},
+            "sweeps": {
+                "blobGc": {"completedAt": 1750000000, "swept": 7},
+                "firehoseGc": null,
+                "accountReaper": null,
+                "agentClaimSweep": {"completedAt": 1750000100, "swept": 0}
+            }
+        }"#;
+        let health: ServerHealth = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(health.version, "0.4.1");
+        assert_eq!(health.uptime_seconds, 86_400);
+        assert_eq!(health.accounts.total, 5);
+        assert_eq!(health.accounts.takendown, 0);
+        assert_eq!(health.storage.blob_bytes, 345_678);
+        assert_eq!(health.firehose.current_seq, 42);
+        assert_eq!(health.firehose.backfill_window_seconds, Some(3_600));
+        assert_eq!(
+            health.sweeps.blob_gc,
+            Some(HealthSweepRun {
+                completed_at: 1_750_000_000,
+                swept: 7,
+            })
+        );
+        assert_eq!(health.sweeps.firehose_gc, None);
+        assert_eq!(health.sweeps.agent_claim_sweep.unwrap().swept, 0);
+
+        // An empty firehose log reports `null` — that must read as None.
+        let empty_window: HealthFirehose = serde_json::from_str(
+            r#"{"currentSeq": 0, "subscribers": 0, "retainedEvents": 0, "backfillWindowSeconds": null}"#,
+        )
+        .expect("deserialize empty window");
+        assert_eq!(empty_window.backfill_window_seconds, None);
+
+        // And it re-serializes camelCase for IPC — the frontend sees the relay's names.
+        let value = serde_json::to_value(&health).expect("serialize");
+        assert_eq!(value["uptimeSeconds"], 86_400);
+        assert_eq!(value["firehose"]["backfillWindowSeconds"], 3_600);
+        assert_eq!(value["sweeps"]["blobGc"]["completedAt"], 1_750_000_000i64);
+        assert_eq!(value["sweeps"]["firehoseGc"], serde_json::Value::Null);
+    }
+
+    // The health readout signs the bare fixed path — prove the relay's own verifier
+    // accepts a built request, without a live relay.
+    #[test]
+    fn server_health_request_is_verifiable() {
+        keychain::clear_for_test();
+        let key = device_key::get_or_create().expect("device key");
+        let pairing = test_pairing("device-health", "https://relay.example");
+
+        let req = build_server_health_request(&pairing, 1_700_000_000, "health-nonce")
+            .expect("build request");
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.url, "https://relay.example/v1/admin/health");
+        assert_eq!(header(&req, signing::ADMIN_DEVICE_HEADER), "device-health");
+
+        let sign_string = signing::request_sign_string(
+            "GET",
+            "/v1/admin/health",
+            1_700_000_000,
+            "health-nonce",
+            b"",
+        );
+        verify_p256_signature(
+            &DidKeyUri(key.key_id),
+            sign_string.as_bytes(),
+            &decode_sig(header(&req, signing::ADMIN_SIGNATURE_HEADER)),
+        )
+        .expect("the relay's verifier must accept the health readout");
     }
 }
