@@ -150,6 +150,29 @@ async fn get_account_storage(
     relay_client::get_account_storage(&pairing_id, &did).await
 }
 
+/// Fetch a page of the relay's account list (DID order, cursor pagination, optional
+/// derived-status filter and handle/DID substring search) — the Accounts screen's data
+/// source. Id-addressed like `list_admin_devices`.
+#[tauri::command]
+async fn list_accounts(
+    pairing_id: String,
+    limit: Option<u32>,
+    cursor: Option<String>,
+    status: Option<String>,
+    q: Option<String>,
+) -> Result<relay_client::AccountList, relay_client::RelayClientError> {
+    relay_client::list_accounts(
+        &pairing_id,
+        relay_client::ListAccountsQuery {
+            limit,
+            cursor,
+            status,
+            q,
+        },
+    )
+    .await
+}
+
 /// Page the claim-code inventory from the given pairing's relay — every minted code
 /// with its derived lifecycle status, newest first. Id-addressed like `list_admin_devices`.
 #[tauri::command]
@@ -217,6 +240,7 @@ pub fn run() {
             update_subject_status,
             get_account_usage,
             get_account_storage,
+            list_accounts,
             list_claim_codes,
             revoke_claim_code,
             biometric_enabled,

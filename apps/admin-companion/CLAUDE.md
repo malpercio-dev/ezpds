@@ -1,7 +1,7 @@
 # Admin Companion (operator console) Mobile App
 
 Last verified: 2026-07-10
-Last updated: 2026-07-10 (claim-code inventory screen: list + revoke minted codes)
+Last updated: 2026-07-10 (Accounts listing/search screen + claim-code inventory screen)
 
 ## Purpose
 
@@ -45,6 +45,11 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   deny-unknown-fields), `get_account_usage`/`get_account_storage` (signed GETs against
   `/v1/accounts/{did}/usage`/`…/storage` for an id-addressed pairing; the DID rides in the
   *path*, so it is inside the signed envelope — a metrics signature is bound to its account),
+  `list_accounts` (signed `GET /v1/admin/accounts` for an id-addressed pairing: DID-cursor
+  pagination + derived-status filter + handle/DID substring search; like the status lookup,
+  the BARE path is signed and the paging/filter query params are appended after signing, so
+  every page reuses the same envelope shape — `AccountList`/`AccountListEntry` are by-value
+  copies of the wire shape pinned by a deserialization test),
   `list_claim_codes`/`revoke_claim_code` (the claim-code inventory: a signed
   `GET /v1/accounts/claim-codes` — bare path signed, pagination `cursor` appended to the URL
   only, like the moderation GET — and a signed `POST /v1/accounts/claim-codes/revoke` whose
@@ -73,6 +78,7 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   account takedown/restore; idempotent server-side, returns the resulting state),
   `get_account_usage(pairing_id, did)` / `get_account_storage(pairing_id, did)` (signed
   per-account usage/storage metrics reads; same error surface as the status lookup),
+  `list_accounts(pairing_id, limit?, cursor?, status?, q?)` (signed account-list page read),
   `list_claim_codes(pairing_id, cursor?)` (signed inventory page: every minted code with its
   derived status, newest first) / `revoke_claim_code(pairing_id, code)` (signed revoke of a
   live code; already-revoked is idempotent 200, redeemed → `RELAY_REJECTED` 409, unknown → 404),
@@ -88,7 +94,15 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   lost device. Pinned to a single pairing at entry — `?server=<pairingId>` from Settings, else the
   active pairing — so a concurrent active switch on Home can't redirect what it shows or signs.
   The row whose relay id equals the pairing's `deviceId` is marked "this device" and its revoke
-  defers to Settings), **Moderation** (`src/routes/moderation/` — account takedown/restore:
+  defers to Settings), **Accounts** (`src/routes/accounts/` — the per-account hub:
+  every account on ONE relay in DID order with search (handle/DID substring), derived-lifecycle
+  filter chips, cursor-paged "Load more", and a per-row monospace blob-quota readout
+  (`format.ts` `quotaBar`: `[▓▓░░░] 42.00%`, fill floors — a cell lights only when fully
+  earned — with a ` !` glyph at ≥90%, never color alone) rendered by the `ui/AccountRow.svelte`
+  primitive (DeviceRow's register + the quota line; lifecycle chip per row). Pinned to a single
+  pairing at entry like Devices/Moderation; tapping a row hands the DID to Moderation via
+  `?server=…&did=…`, which pre-fills the lookup field and runs the lookup immediately —
+  replacing DID-pasting as the entry point for per-account work), **Moderation** (`src/routes/moderation/` — account takedown/restore:
   DID lookup → status panel → armed two-tap confirmation (the first tap swaps the destructive
   button for a Confirm/Cancel pair restating the relay-confirmed target) → biometric gate →
   signed write. Pinned to a single pairing at entry like Devices; the write always targets the

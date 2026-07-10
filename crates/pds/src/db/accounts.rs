@@ -729,6 +729,40 @@ impl AccountLifecycle {
             Self::TakenDown => Some("takendown"),
         }
     }
+
+    /// Parse an operator-supplied status filter string: the wire strings from
+    /// [`Self::as_status_str`] plus `"active"` (which that method expresses as omission).
+    /// Returns `None` for an unrecognized value — the caller decides how to reject it.
+    pub(crate) fn from_status_filter(s: &str) -> Option<Self> {
+        match s {
+            "active" => Some(Self::Active),
+            "deactivated" => Some(Self::Deactivated),
+            "suspended" => Some(Self::Suspended),
+            "takendown" => Some(Self::TakenDown),
+            _ => None,
+        }
+    }
+
+    /// SQL predicate selecting exactly the accounts whose *derived* lifecycle is this state.
+    ///
+    /// Must mirror [`Self::from_timestamps`]'s precedence (takendown > suspended > deactivated):
+    /// e.g. an account that is both suspended and taken down derives `TakenDown`, so the
+    /// `Suspended` predicate has to exclude it or the same account would match two filters.
+    /// Column references are prefixed with the `a.` alias used by [`list_accounts_admin`], the
+    /// sole consumer.
+    fn as_sql_predicate(self) -> &'static str {
+        match self {
+            Self::Active => {
+                "a.deactivated_at IS NULL AND a.suspended_at IS NULL AND a.taken_down_at IS NULL"
+            }
+            Self::Deactivated => {
+                "a.deactivated_at IS NOT NULL AND a.suspended_at IS NULL \
+                 AND a.taken_down_at IS NULL"
+            }
+            Self::Suspended => "a.suspended_at IS NOT NULL AND a.taken_down_at IS NULL",
+            Self::TakenDown => "a.taken_down_at IS NOT NULL",
+        }
+    }
 }
 
 /// A single repo entry for `com.atproto.sync.listRepos`.
@@ -790,6 +824,106 @@ pub(crate) async fn list_repos(
                     taken_down_at.as_deref(),
                 )
                 .is_active(),
+            },
+        )
+        .collect())
+}
+
+/// One row of the operator account listing (`GET /v1/admin/accounts`).
+pub(crate) struct AdminAccountRow {
+    pub(crate) did: String,
+    /// The account's first-created handle, or `None` when it has none. Accounts can hold
+    /// several handles; the listing surfaces one deterministic choice.
+    pub(crate) handle: Option<String>,
+    pub(crate) created_at: String,
+    /// Derived lifecycle state (takendown > suspended > deactivated > active).
+    pub(crate) lifecycle: AccountLifecycle,
+    /// Total bytes of the account's owned blobs (0 when it has none).
+    pub(crate) blob_bytes: i64,
+}
+
+/// Escape SQL `LIKE` metacharacters (`%`, `_`, and the `\` escape itself) in a user-supplied
+/// search term so it matches literally inside a `LIKE ... ESCAPE '\'` pattern.
+fn escape_like(term: &str) -> String {
+    term.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+/// List accounts for the operator console in DID order, starting strictly after `cursor`.
+///
+/// Pass `cursor = ""` for the first page; the caller derives the next cursor from the last
+/// returned DID. `status` narrows to accounts whose *derived* lifecycle matches; `q` is a
+/// literal substring match against the DID or any of the account's handles. Unlike
+/// [`list_repos`] this includes accounts without a repo — the operator view must not hide
+/// half-provisioned rows.
+///
+/// Handle and blob-byte lookups are correlated scalar subqueries rather than JOINs: a JOIN on
+/// `handles` would duplicate a multi-handle account across rows (corrupting the DID cursor),
+/// and both subqueries run only for the ≤`limit` emitted rows as indexed lookups — one query
+/// per page instead of N+1 on the single-connection pool.
+pub(crate) async fn list_accounts_admin(
+    db: &sqlx::SqlitePool,
+    cursor: &str,
+    limit: i64,
+    status: Option<AccountLifecycle>,
+    q: Option<&str>,
+) -> Result<Vec<AdminAccountRow>, sqlx::Error> {
+    // (did, handle, created_at, deactivated_at, suspended_at, taken_down_at, blob_bytes)
+    type Row = (
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        i64,
+    );
+
+    // Assembled from fixed clause constants only — user input is always bound, never spliced.
+    let mut sql = String::from(
+        "SELECT a.did, \
+                (SELECT h.handle FROM handles h WHERE h.did = a.did \
+                 ORDER BY h.created_at ASC, h.handle ASC LIMIT 1), \
+                a.created_at, a.deactivated_at, a.suspended_at, a.taken_down_at, \
+                (SELECT COALESCE(SUM(b.size_bytes), 0) FROM blob_owners o \
+                 JOIN blobs b ON b.cid = o.cid WHERE o.account_did = a.did) \
+         FROM accounts a WHERE a.did > ?",
+    );
+    if let Some(status) = status {
+        sql.push_str(" AND ");
+        sql.push_str(status.as_sql_predicate());
+    }
+    if q.is_some() {
+        sql.push_str(
+            " AND (a.did LIKE ? ESCAPE '\\' OR EXISTS \
+              (SELECT 1 FROM handles hq WHERE hq.did = a.did AND hq.handle LIKE ? ESCAPE '\\'))",
+        );
+    }
+    sql.push_str(" ORDER BY a.did ASC LIMIT ?");
+
+    let mut query = sqlx::query_as::<_, Row>(&sql).bind(cursor);
+    if let Some(term) = q {
+        let pattern = format!("%{}%", escape_like(term));
+        query = query.bind(pattern.clone()).bind(pattern);
+    }
+    let rows = query.bind(limit).fetch_all(db).await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(did, handle, created_at, deactivated_at, suspended_at, taken_down_at, blob_bytes)| {
+                AdminAccountRow {
+                    did,
+                    handle,
+                    created_at,
+                    lifecycle: AccountLifecycle::from_timestamps(
+                        deactivated_at.as_deref(),
+                        suspended_at.as_deref(),
+                        taken_down_at.as_deref(),
+                    ),
+                    blob_bytes,
+                }
             },
         )
         .collect())
@@ -1754,5 +1888,112 @@ mod tests {
 
         let result = set_takedown(&db, "did:plc:td_ghost", true).await;
         assert!(matches!(result, TakedownStateChange::NotFound));
+    }
+
+    async fn list_admin(
+        db: &sqlx::SqlitePool,
+        status: Option<AccountLifecycle>,
+        q: Option<&str>,
+    ) -> Vec<AdminAccountRow> {
+        list_accounts_admin(db, "", 100, status, q).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn list_accounts_admin_status_filters_respect_precedence() {
+        // An account that is both suspended and taken down derives TakenDown, so it must match
+        // only the takendown filter — the suspended filter has to exclude it.
+        let db = test_pool().await;
+        insert_account(&db, "did:plc:laa_active").await;
+        insert_account(&db, "did:plc:laa_suspended").await;
+        set_lifecycle_column(&db, "did:plc:laa_suspended", "suspended_at").await;
+        insert_account(&db, "did:plc:laa_both").await;
+        set_lifecycle_column(&db, "did:plc:laa_both", "suspended_at").await;
+        set_lifecycle_column(&db, "did:plc:laa_both", "taken_down_at").await;
+
+        let dids = |rows: Vec<AdminAccountRow>| rows.into_iter().map(|r| r.did).collect::<Vec<_>>();
+
+        assert_eq!(
+            dids(list_admin(&db, Some(AccountLifecycle::Active), None).await),
+            vec!["did:plc:laa_active"]
+        );
+        assert_eq!(
+            dids(list_admin(&db, Some(AccountLifecycle::Suspended), None).await),
+            vec!["did:plc:laa_suspended"]
+        );
+        assert_eq!(
+            dids(list_admin(&db, Some(AccountLifecycle::TakenDown), None).await),
+            vec!["did:plc:laa_both"]
+        );
+        assert!(list_admin(&db, Some(AccountLifecycle::Deactivated), None)
+            .await
+            .is_empty());
+        // Unfiltered, all three appear (DID order: active < both < suspended) with their
+        // derived lifecycles.
+        let all = list_admin(&db, None, None).await;
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[1].did, "did:plc:laa_both");
+        assert_eq!(all[1].lifecycle, AccountLifecycle::TakenDown);
+    }
+
+    #[tokio::test]
+    async fn list_accounts_admin_search_matches_did_and_handle_literally() {
+        let db = test_pool().await;
+        insert_account(&db, "did:plc:laa_q_alpha").await;
+        insert_account(&db, "did:plc:laa_q_beta").await;
+        sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
+            .bind("beta.example.com")
+            .bind("did:plc:laa_q_beta")
+            .execute(&db)
+            .await
+            .unwrap();
+
+        // Matches by DID substring.
+        let rows = list_admin(&db, None, Some("q_alpha")).await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].did, "did:plc:laa_q_alpha");
+        assert_eq!(rows[0].handle, None);
+
+        // Matches by handle substring, and the handle is surfaced on the row.
+        let rows = list_admin(&db, None, Some("beta.example")).await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].did, "did:plc:laa_q_beta");
+        assert_eq!(rows[0].handle.as_deref(), Some("beta.example.com"));
+
+        // LIKE metacharacters in the term match literally, not as wildcards: "%alpha" would
+        // match everything ending in "alpha" if unescaped, but no DID/handle contains a '%'.
+        assert!(list_admin(&db, None, Some("%alpha")).await.is_empty());
+        assert!(list_admin(&db, None, Some("q_al_ha")).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_accounts_admin_paginates_and_reports_blob_bytes() {
+        let db = test_pool().await;
+        for did in ["did:plc:laa_pg_a", "did:plc:laa_pg_b", "did:plc:laa_pg_c"] {
+            insert_account(&db, did).await;
+        }
+        crate::db::blobs::insert_blob(
+            &db,
+            "baflaapgblob",
+            "did:plc:laa_pg_b",
+            "image/jpeg",
+            640,
+            "blobs/xx/baflaapgblob",
+            "2030-01-01 00:00:00",
+        )
+        .await
+        .unwrap();
+
+        let page1 = list_accounts_admin(&db, "", 2, None, None).await.unwrap();
+        assert_eq!(page1.len(), 2);
+        assert_eq!(page1[0].did, "did:plc:laa_pg_a");
+        assert_eq!(page1[0].blob_bytes, 0);
+        assert_eq!(page1[1].did, "did:plc:laa_pg_b");
+        assert_eq!(page1[1].blob_bytes, 640);
+
+        let page2 = list_accounts_admin(&db, &page1[1].did, 2, None, None)
+            .await
+            .unwrap();
+        assert_eq!(page2.len(), 1);
+        assert_eq!(page2[0].did, "did:plc:laa_pg_c");
     }
 }

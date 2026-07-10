@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatBytes, formatPct } from './format';
+import { formatBytes, formatPct, quotaBar } from './format';
 
 describe('formatBytes', () => {
   it('renders sub-KiB counts as raw bytes with no parenthetical', () => {
@@ -31,5 +31,53 @@ describe('formatPct', () => {
 
   it('never rounds a nonzero usage down to 0.00%', () => {
     expect(formatPct(0.0001)).toBe('<0.01%');
+  });
+});
+
+// Invariant tests: they pin the readout's *contract* (shape, literal % text, the ≥90%
+// glyph, monotonic fill, clamping) while leaving the fill-rounding choice — floor vs
+// round — to the implementation.
+describe('quotaBar', () => {
+  const cells = (bar: string): string => {
+    const match = /^\[([▓░]{5})\] /.exec(bar);
+    expect(match, `"${bar}" must start with a 5-cell [▓░] meter`).not.toBeNull();
+    return match![1];
+  };
+  const filled = (bar: string): number => cells(bar).split('▓').length - 1;
+
+  it('is always a 5-cell meter followed by the literal formatPct text', () => {
+    for (const pct of [0, 0.004, 12.5, 42, 89.99, 90, 100]) {
+      const bar = quotaBar(pct);
+      cells(bar);
+      expect(bar).toContain(formatPct(pct));
+    }
+  });
+
+  it('fills no cells at 0% and every cell at 100%', () => {
+    expect(filled(quotaBar(0))).toBe(0);
+    expect(filled(quotaBar(100))).toBe(5);
+  });
+
+  it('fill is monotonic in the percentage', () => {
+    let prev = 0;
+    for (let pct = 0; pct <= 100; pct += 5) {
+      const now = filled(quotaBar(pct));
+      expect(now).toBeGreaterThanOrEqual(prev);
+      prev = now;
+    }
+  });
+
+  it('appends the " !" marker exactly at ≥90%', () => {
+    expect(quotaBar(89.99).endsWith(' !')).toBe(false);
+    expect(quotaBar(90).endsWith(' !')).toBe(true);
+    expect(quotaBar(100).endsWith(' !')).toBe(true);
+  });
+
+  it('clamps the meter for out-of-range input while the text stays literal', () => {
+    expect(filled(quotaBar(-5))).toBe(0);
+    const over = quotaBar(120);
+    expect(filled(over)).toBe(5);
+    expect(over).toContain('120.00%');
+    expect(over.endsWith(' !')).toBe(true);
   });
 });
