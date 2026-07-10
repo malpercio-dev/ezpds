@@ -73,7 +73,7 @@ urls = []
 # TOML-only, since each entry carries a PEM key).
 # [agent_auth]
 # service_auth_enabled = false      # enable the login-hint → claim-ceremony flow
-# anonymous_enabled = false         # reserved; the anonymous flow is not yet implemented
+# anonymous_enabled = false         # enable the ownerless pre-claim registration flow
 # assertion_ttl_secs = 3600         # lifetime of a minted service identity_assertion
 # claim_token_ttl_secs = 600        # lifetime of a claim token
 # user_code_ttl_secs = 600          # lifetime of a claim-ceremony user code
