@@ -69,8 +69,15 @@
     statusView.kind === 'ready' && trimmedDid !== statusView.status.subject.did,
   );
 
+  // Staleness invalidates every signed-action affordance at once: the armed confirm,
+  // a failed write's retry panel, and any gate hint. Anything less leaves a live
+  // "retry" button pointing at the previous lookup after the input has moved on.
   $effect(() => {
-    if (stale) armed = false;
+    if (stale) {
+      armed = false;
+      writeError = undefined;
+      gateHint = undefined;
+    }
   });
 
   async function lookup() {
@@ -96,11 +103,15 @@
 
   function disarm() {
     armed = false;
+    writeError = undefined;
+    gateHint = undefined;
   }
 
   /** Tap 2: gate on user presence, then sign the takedown (`applied: true`) or restore. */
   async function confirmWrite(applied: boolean) {
-    if (!pairing || statusView.kind !== 'ready') return;
+    // `stale` is re-checked here (not just in the render path) so no caller — including
+    // the error panel's retry — can sign against a lookup the input has drifted from.
+    if (!pairing || statusView.kind !== 'ready' || stale) return;
     // Claim the busy flag synchronously, before the biometric prompt's await, so rapid
     // taps can't open multiple gates and fire concurrent writes.
     if (writing) return;
