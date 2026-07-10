@@ -114,12 +114,17 @@ enough ephemeral space for the restored copy; if it runs out, the restore
 fails harmlessly in the throwaway box.)
 
 Picking the target timestamp is safe from either place — listing generations
-and snapshots reads replica metadata only and writes nothing locally:
+and snapshots reads replica metadata only and writes nothing locally. From the
+service container:
 
 ```sh
 litestream generations -config /etc/litestream.yml /data/relay.db
 litestream snapshots   -config /etc/litestream.yml /data/relay.db
 ```
+
+From the sandbox, the same commands work with `-config /opt/ezpds/litestream.yml`
+(the `/data/relay.db` argument is the config key naming the replica, not a local
+path, so it's identical in both).
 
 Then boot a debug-kit box (Runbook 2) and restore there. The template bakes
 `litestream` plus an `ezpds` checkout, so the committed replica config is
@@ -141,8 +146,11 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 pit="$work/point-in-time.db"
 
+# Set to the incident instant you picked from the snapshots listing above.
+target_ts=2026-07-09T18:00:00Z    # ← replace before running
+
 litestream restore -config /opt/ezpds/litestream.yml \
-  -timestamp 2026-07-09T18:00:00Z \
+  -timestamp "$target_ts" \
   -o "$pit" /data/relay.db
 
 sqlite3 "$pit" '.schema accounts'
