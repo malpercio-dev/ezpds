@@ -28,8 +28,9 @@ config toggle**:
 - The provider you trust to *vouch* for agents is exactly the party you trust to *revoke* them.
   Requiring a second opt-in would silently drop a trusted provider's revocation SETs — a security
   footgun.
-- A default deployment has no trusted issuers, so every SET is refused with `invalid_issuer`;
-  nothing is exposed until an operator deliberately trusts a provider.
+- A default deployment has no trusted issuers, so a SET with a readable but untrusted `iss` is
+  refused with `invalid_issuer` (a missing or unreadable `iss` is `invalid_request`); nothing is
+  exposed until an operator deliberately trusts a provider.
 - The SET is authenticated end-to-end by its signature against the trust list, so an
   unauthenticated caller can at most trigger a signature check (bounded, and covered by the existing
   global per-IP rate limiter) before rejection.
@@ -54,7 +55,10 @@ registrations remain owner-revoked only.
    `subject` in the revoked-event payload — a bare string or an object with a `sub` — for CAEP /
    [RFC 9493](https://www.rfc-editor.org/rfc/rfc9493)-style placements). Combined with the verified
    `iss`, `db::agent_auth::get_agent_identity_by_issuer_subject(iss, sub)` locates the registration.
-   The `events` claim must carry `REVOKED_EVENT_TYPE`.
+   The SET is also validated structurally after signature verification: RFC 8417 requires `iat` and
+   `jti`, and every `events` member value must be a JSON object (a non-object payload can't drive a
+   revocation off the top-level `sub`); the `events` claim must carry `REVOKED_EVENT_TYPE`. These
+   structural failures are `invalid_request`, not `authentication_failed`.
 
 4. **Revocation is atomic and idempotent.** A found, not-yet-revoked identity is flipped to
    `revoked` and one `Revoked` audit event (`detail.source = "provider_set"`) is written in one
@@ -63,10 +67,11 @@ registrations remain owner-revoked only.
    oracle; replay-safe, so no `jti` dedup store is needed).
 
 5. **Errors follow RFC 8935 §2.4.** Failures return `400` (or `500` for a transient server fault)
-   with a JSON `{ "err", "description" }` body — distinct from the XRPC `ApiError` envelope and the
-   auth.md `{error, error_description}` envelope. Codes: `invalid_request` (malformed body / wrong
-   content type / missing-or-unsupported event / no subject), `invalid_issuer` (absent or untrusted
-   `iss`), `authentication_failed` (bad signature / claims).
+   with a JSON `{ "err", "description" }` body and a `Content-Language` header — distinct from the
+   XRPC `ApiError` envelope and the auth.md `{error, error_description}` envelope. Codes:
+   `invalid_request` (malformed body / wrong content type / missing-or-unreadable `iss` / missing
+   `iat`/`jti` / non-object or missing-or-unsupported event / no subject), `invalid_issuer` (readable
+   but untrusted `iss`), `authentication_failed` (bad signature / claims).
 
 6. **Revocation reaches the token endpoint.** After a SET revokes an identity, re-exchanging its
    `identity_assertion` at `/oauth/token` returns `access_denied` — the same terminal-refusal path

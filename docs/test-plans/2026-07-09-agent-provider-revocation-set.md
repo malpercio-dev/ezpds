@@ -54,7 +54,8 @@ by a key not in the issuer's inline PEM / published JWKS (check `kid` / key rota
 | 2 | POST a SET signed by the wrong key (tamper the signature). | `400` `{ "err": "authentication_failed", ... }`. |
 | 3 | POST a garbage body (`not-a-jwt`) with the SET content type. | `400` `{ "err": "invalid_request", ... }`. |
 | 4 | POST the SET with `Content-Type: application/json`. | `400` `{ "err": "invalid_request", ... }`. |
-| 5 | Confirm no registration changed status across steps 1–4. | All target identities unchanged. |
+| 5 | POST a correctly-signed SET that omits `iat`/`jti`, or whose event payload is a non-object (e.g. `{ "<revoked-event>": "bad" }`). | `400` `{ "err": "invalid_request", ... }`; a `Content-Language` header is present. |
+| 6 | Confirm no registration changed status across steps 1–5. | All target identities unchanged. |
 
 ## Notes
 

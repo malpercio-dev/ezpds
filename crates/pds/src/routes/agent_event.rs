@@ -44,11 +44,16 @@ use crate::db::agent_auth::{get_agent_identity_by_issuer_subject, revoke_agent_i
 /// The media type a SET is delivered as (RFC 8935 §2.1).
 const SECEVENT_CONTENT_TYPE: &str = "application/secevent+jwt";
 
-/// Claims read out of a verified SET. `iss`/`aud`/`exp` are enforced by `verify_trusted_jwt` and
-/// need not appear here; `sub` names the target registration's subject and `events` must carry the
-/// revocation event type.
+/// Claims read out of a verified SET. `iss`/`aud`/`exp` are enforced by `verify_trusted_jwt`; `iat`
+/// and `jti` are RFC 8417-required and checked structurally after verification (their absence is a
+/// malformed SET, not an auth failure). `sub` names the target registration's subject and `events`
+/// must carry the revocation event type as a JSON object.
 #[derive(Debug, Deserialize)]
 struct SetClaims {
+    #[serde(default)]
+    iat: Option<i64>,
+    #[serde(default)]
+    jti: Option<String>,
     #[serde(default)]
     sub: Option<String>,
     #[serde(default)]
@@ -111,6 +116,21 @@ async fn process_set(state: &AppState, headers: &HeaderMap, body: &Bytes) -> Res
     )
     .await
     .map_err(map_set_verify_err)?;
+
+    // A token that verified but is not a structurally conformant SET is `invalid_request` (malformed,
+    // RFC 8935 §2.4) — distinct from an authentication failure. RFC 8417 requires `iat` and `jti`,
+    // and requires every `events` member value to be a JSON object (so a non-object payload can never
+    // drive a revocation off the top-level `sub`).
+    if claims.iat.is_none() || claims.jti.as_deref().is_none_or(str::is_empty) {
+        return Err(SetError::invalid_request(
+            "SET is missing the required iat or jti claim",
+        ));
+    }
+    if !claims.events.values().all(Value::is_object) {
+        return Err(SetError::invalid_request(
+            "each SET event payload must be a JSON object",
+        ));
+    }
 
     // The SET must carry the one event type this endpoint understands.
     if !claims.events.contains_key(REVOKED_EVENT_TYPE) {
@@ -236,8 +256,10 @@ impl SetError {
 
 impl IntoResponse for SetError {
     fn into_response(self) -> Response {
+        // RFC 8935 §2.4: a SET error response SHOULD carry Content-Language for the `description`.
         (
             self.status,
+            [(header::CONTENT_LANGUAGE, "en")],
             Json(json!({ "err": self.err, "description": self.description })),
         )
             .into_response()
@@ -315,6 +337,28 @@ mod tests {
     /// The standard single-event revocation body.
     fn revoked_events() -> Value {
         json!({ REVOKED_EVENT_TYPE: {} })
+    }
+
+    /// Sign an arbitrary claims object as a SET, so tests can omit RFC-required claims or forge a
+    /// malformed event payload that the strict-shape helpers can't express.
+    fn sign_claims(priv_pem: &str, claims: Value) -> String {
+        let key = EncodingKey::from_ec_pem(priv_pem.as_bytes()).unwrap();
+        jsonwebtoken::encode(&Header::new(Algorithm::ES256), &claims, &key).unwrap()
+    }
+
+    /// A full, conformant claims map for `(ISSUER, sub)`; tests mutate it (drop `jti`, swap the
+    /// event payload) before signing.
+    fn set_claims(sub: &str) -> Map<String, Value> {
+        let mut events = Map::new();
+        events.insert(REVOKED_EVENT_TYPE.to_string(), json!({}));
+        let mut claims = Map::new();
+        claims.insert("iss".to_string(), json!(ISSUER));
+        claims.insert("aud".to_string(), json!(PUBLIC_URL));
+        claims.insert("iat".to_string(), json!(Utc::now().timestamp()));
+        claims.insert("jti".to_string(), json!("jti-1"));
+        claims.insert("sub".to_string(), json!(sub));
+        claims.insert("events".to_string(), Value::Object(events));
+        claims
     }
 
     fn trusted(pub_pem: String) -> TrustedIssuer {
@@ -602,5 +646,79 @@ mod tests {
             .unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["err"], "invalid_request");
+    }
+
+    #[tokio::test]
+    async fn missing_jti_is_invalid_request() {
+        // A well-signed token that omits the RFC 8417-required `jti` is a malformed SET.
+        let (priv_pem, pub_pem) = es256_keys();
+        let state = state_with(AgentAuthConfig {
+            trusted_issuers: vec![trusted(pub_pem)],
+            ..AgentAuthConfig::default()
+        })
+        .await;
+        let mut claims = set_claims("sub-1");
+        claims.remove("jti");
+        let set = sign_claims(&priv_pem, Value::Object(claims));
+        let (status, body) = post_set(state, &set).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["err"], "invalid_request");
+    }
+
+    #[tokio::test]
+    async fn non_object_event_payload_is_invalid_request_and_does_not_revoke() {
+        // `{ revoked_event_type: "bad" }` is structurally invalid (event payloads must be objects);
+        // it must be rejected before any lookup, so the top-level `sub` is NOT revoked.
+        let (priv_pem, pub_pem) = es256_keys();
+        let state = state_with(AgentAuthConfig {
+            trusted_issuers: vec![trusted(pub_pem)],
+            ..AgentAuthConfig::default()
+        })
+        .await;
+        let did = "did:plc:setmalformed11111";
+        insert_account(&state.db, did, "agent@example.com").await;
+        seed_claimed_identity(&state.db, "reg_malformed", did, "sub-malformed").await;
+
+        let mut claims = set_claims("sub-malformed");
+        let mut events = Map::new();
+        events.insert(REVOKED_EVENT_TYPE.to_string(), json!("bad"));
+        claims.insert("events".to_string(), Value::Object(events));
+        let set = sign_claims(&priv_pem, Value::Object(claims));
+
+        let (status, body) = post_set(state.clone(), &set).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["err"], "invalid_request");
+        assert_eq!(
+            identity_status(&state.db, "reg_malformed").await,
+            "claimed",
+            "a malformed SET must not revoke anything"
+        );
+    }
+
+    #[tokio::test]
+    async fn error_responses_carry_content_language() {
+        // RFC 8935 §2.4: SET error responses carry a Content-Language for the `description`.
+        let (_priv, pub_pem) = es256_keys();
+        let state = state_with(AgentAuthConfig {
+            trusted_issuers: vec![trusted(pub_pem)],
+            ..AgentAuthConfig::default()
+        })
+        .await;
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/agent/event/notify")
+                    .header("content-type", "application/secevent+jwt")
+                    .body(Body::from("not-a-jwt"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response.headers().get(header::CONTENT_LANGUAGE).unwrap(),
+            "en"
+        );
     }
 }

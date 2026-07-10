@@ -39,12 +39,15 @@ docs {
   `(iss, sub)` registration and records a provider-driven `revoked` audit event.
 
   Implicit gating: honored only when the SET's issuer is on the trust list, so a deployment with no
-  trusted issuers rejects every SET with `invalid_issuer`.
+  trusted issuers rejects a SET with a readable but untrusted `iss` as `invalid_issuer` (a malformed
+  or missing `iss` is `invalid_request`).
 
   ## Response
 
   - `202 Accepted` (empty body) — the SET was accepted. Also returned for an unknown or
     already-revoked subject, so a replayed revocation is idempotent (no `jti` dedup store).
-  - `400 Bad Request` with `{ "err", "description" }` — a malformed body (`invalid_request`), an
-    untrusted/absent issuer (`invalid_issuer`), or a bad signature (`authentication_failed`).
+  - `400 Bad Request` with `{ "err", "description" }` and a `Content-Language` header — a malformed
+    body / missing-or-unreadable `iss` / missing `iat`/`jti` / non-object or unsupported event
+    payload (`invalid_request`), a readable but untrusted issuer (`invalid_issuer`), or a bad
+    signature (`authentication_failed`).
 }
