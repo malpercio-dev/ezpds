@@ -182,8 +182,10 @@
     // the error panel's retry — can sign against a lookup the input has drifted from.
     if (!pairing || statusView.kind !== 'ready' || stale) return;
     // Claim the busy flag synchronously, before the biometric prompt's await, so rapid
-    // taps can't open multiple gates and fire concurrent writes.
-    if (writing) return;
+    // taps can't open multiple gates and fire concurrent writes. The credential sweep's
+    // flag is checked too: the two destructive flows are mutually exclusive, so two
+    // biometric prompts can never stack for the same account.
+    if (writing || credsWriting) return;
     writing = true;
     gateHint = undefined;
     writeError = undefined;
@@ -230,9 +232,10 @@
   async function confirmRevokeCredentials() {
     // Same discipline as `confirmWrite`: re-check staleness so no caller can sign
     // against a lookup the input has drifted from, and claim the busy flag before the
-    // biometric await so rapid taps can't fire concurrent sweeps.
+    // biometric await so rapid taps can't fire concurrent sweeps. Mutually exclusive
+    // with the takedown flow's flag, so the two destructive prompts can never stack.
     if (!pairing || statusView.kind !== 'ready' || stale) return;
-    if (credsWriting) return;
+    if (credsWriting || writing) return;
     credsWriting = true;
     credsGateHint = undefined;
     credsError = undefined;
@@ -247,10 +250,17 @@
         return;
       }
       // The relay reports literal per-family counts — render that truth verbatim.
-      credsReport = await revokeAccountCredentials(pairing.id, target);
-      credsArmed = false;
+      const report = await revokeAccountCredentials(pairing.id, target);
+      // A slower sweep must not land under a newer lookup (mirroring `loadMetrics`):
+      // only commit the result while the panel still shows the DID this sweep targeted.
+      if (statusView.kind === 'ready' && statusView.status.subject.did === target) {
+        credsReport = report;
+        credsArmed = false;
+      }
     } catch (e) {
-      credsError = classifyRelayError(e);
+      if (statusView.kind === 'ready' && statusView.status.subject.did === target) {
+        credsError = classifyRelayError(e);
+      }
     } finally {
       credsWriting = false;
     }
@@ -328,11 +338,11 @@
           <p class="note">The DID field changed since this lookup. Look up again before acting.</p>
         {:else if !armed}
           {#if takenDown}
-            <Button variant="primary" loading={writing} onclick={arm}>
+            <Button variant="primary" loading={writing} disabled={credsWriting} onclick={arm}>
               Restore this account
             </Button>
           {:else}
-            <Button variant="destructive" loading={writing} onclick={arm}>
+            <Button variant="destructive" loading={writing} disabled={credsWriting} onclick={arm}>
               Take down this account
             </Button>
           {/if}
@@ -356,6 +366,7 @@
             <Button
               variant={takenDown ? 'primary' : 'destructive'}
               loading={writing}
+              disabled={credsWriting}
               onclick={() => confirmWrite(!takenDown)}
             >
               {takenDown ? 'Confirm restore' : 'Confirm takedown'}
@@ -409,7 +420,12 @@
         {#if stale}
           <p class="note">The DID field changed since this lookup. Look up again before acting.</p>
         {:else if !credsArmed}
-          <Button variant="destructive" loading={credsWriting} onclick={armCreds}>
+          <Button
+            variant="destructive"
+            loading={credsWriting}
+            disabled={writing}
+            onclick={armCreds}
+          >
             {credsReport ? 'Revoke credentials again' : 'Revoke all credentials'}
           </Button>
         {:else}
@@ -423,6 +439,7 @@
             <Button
               variant="destructive"
               loading={credsWriting}
+              disabled={writing}
               onclick={confirmRevokeCredentials}
             >
               Confirm revocation
