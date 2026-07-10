@@ -175,9 +175,9 @@ Each state is a **tonal pair**: a pale surface ground plus a deep same-hue ink/i
 
 **The Pure-Surface Rule.** In the light appearance the page is pure white (`oklch(1 0 0)`). Warmth comes from the seal and the type. Tinting the background "to feel warm" is forbidden — it's the AI-cream cliché and it muddies AAA contrast.
 
-### Dark appearance (system-follow)
+### Dark appearance (system-follow, user-overridable)
 
-The app follows the iOS system appearance — `color-scheme: light dark`, with every color token a `light-dark()` pair in `apps/identity-wallet/src/lib/styles/tokens.css`. Dark exists for the *user*, not the brand: the alarm path — a person woken at 2 a.m. by a PLC alert, phone set to dark — must not open with a pure-white flash. The dark appearance is **the archive at night**, the same room with the lights low, not a different product:
+The app follows the iOS system appearance by default — `color-scheme: light dark`, with every color token a `light-dark()` pair in `apps/identity-wallet/src/lib/styles/tokens.css` — and Settings offers a System / Light / Dark appearance control (an inline `color-scheme` override on `<html>`, persisted to the Keychain, applied before first paint via a localStorage mirror). Dark exists for the *user*, not the brand: the alarm path — a person woken at 2 a.m. by a PLC alert, phone set to dark — must not open with a pure-white flash. The dark appearance is **the archive at night**, the same room with the lights low, not a different product:
 
 - **The Same-Seal Rule.** The wax seal is a physical object; it keeps its color at night. `primary`, `primary-deep`, `critical-solid`, `on-color`, the DID-avatar fill, and the emboss material effects are appearance-invariant.
 - **The Warm-Ground Rule.** The dark ground is the ink itself — near-black at the brand's warm hue (`oklch(0.18 0.012 60)`), never a cold blue-black. Cold-dark *is* the Ledger anti-reference; warm-dark is ours.
@@ -186,7 +186,7 @@ The app follows the iOS system appearance — `color-scheme: light dark`, with e
 - **Aubergine lifts to lavender-aubergine** (`oklch(0.76 0.07 330)`) so links and the 2px focus ring hold AAA on the dark ground; gold-as-text roles (`gold-ink`, `gold-soft`, `seal-glyph`) lift the same way while gold-as-fill stays put.
 - **AAA holds in both appearances.** Every text pairing is verified ≥7:1 (body and status text), ≥4.5:1 (labels), ≥3:1 (large glyphs and non-text) in dark exactly as in light. Never eyeball a dark value — verify it.
 
-Read the anti-reference precisely: "Ledger-style dark-technical heaviness" means dark **as brand register** — dark-by-default asset-vault gloom. Honoring the user's system setting with a humane warm dark is not that; shipping dark as the default would be.
+Read the anti-reference precisely: "Ledger-style dark-technical heaviness" means dark **as brand register** — dark-by-default asset-vault gloom. Honoring the user's system setting (or their own explicit Settings choice) with a humane warm dark is not that; shipping dark as the default would be.
 
 ## 3. Typography
 
