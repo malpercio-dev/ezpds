@@ -40,6 +40,20 @@ describe('chipFor', () => {
   });
 });
 
+describe('version-skew fallbacks', () => {
+  it('renders an unknown wire status visibly instead of a blank chip', () => {
+    // The wire carries status as a plain string; a newer relay may emit values this
+    // build has never heard of. The cast simulates that skew past the TS union.
+    const skewed = 'suspended' as ClaimCodeEntry['status'];
+    expect(chipFor(skewed)).toEqual({ chip: 'info', label: 'unknown (suspended)' });
+    expect(timelineLine(entry({ code: 'E', status: skewed }))).toBe(
+      'minted 2026-07-10 12:00:00',
+    );
+    // And an unknown status is never treated as a live credential.
+    expect(partitionCodes([entry({ code: 'E', status: skewed })]).outstanding).toEqual([]);
+  });
+});
+
 describe('timelineLine', () => {
   it('reports the fact that ended the code, or the deadline while pending', () => {
     expect(timelineLine(entry({ code: 'A', status: 'pending' }))).toBe(

@@ -45,6 +45,13 @@ export function chipFor(status: ClaimCodeEntry['status']): {
       return { chip: 'info', label: 'expired' };
     case 'revoked':
       return { chip: 'revoked', label: 'revoked' };
+    default: {
+      // The wire carries status as a plain string, and this app pairs with relays of
+      // potentially different versions — an unfamiliar status must render as a visible
+      // unknown, never a blank chip. `never` keeps the compile-time exhaustiveness check.
+      const unknown: never = status;
+      return { chip: 'info', label: `unknown (${String(unknown)})` };
+    }
   }
 }
 
@@ -63,5 +70,11 @@ export function timelineLine(entry: ClaimCodeEntry): string {
       return `expired ${entry.expiresAt}`;
     case 'pending':
       return `expires ${entry.expiresAt}`;
+    default: {
+      // Version-skew guard (see chipFor): an unknown status still gets a factual line.
+      const unknown: never = entry.status;
+      void unknown;
+      return `minted ${entry.createdAt}`;
+    }
   }
 }
