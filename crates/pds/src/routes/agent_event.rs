@@ -50,8 +50,11 @@ const SECEVENT_CONTENT_TYPE: &str = "application/secevent+jwt";
 /// must carry the revocation event type as a JSON object.
 #[derive(Debug, Deserialize)]
 struct SetClaims {
+    /// A JWT `iat` is a NumericDate (RFC 7519 §2), which MAY carry fractional seconds — captured as a
+    /// `serde_json::Number` so a fractional value still deserializes (we only check presence, not the
+    /// instant), rather than being rejected at deserialization as an auth failure.
     #[serde(default)]
-    iat: Option<i64>,
+    iat: Option<serde_json::Number>,
     #[serde(default)]
     jti: Option<String>,
     #[serde(default)]
@@ -720,5 +723,31 @@ mod tests {
             response.headers().get(header::CONTENT_LANGUAGE).unwrap(),
             "en"
         );
+    }
+
+    #[tokio::test]
+    async fn fractional_iat_is_accepted() {
+        // A JWT `iat` may carry fractional seconds (RFC 7519 NumericDate); such a SET must still be
+        // processed, not rejected at claim deserialization.
+        let (priv_pem, pub_pem) = es256_keys();
+        let state = state_with(AgentAuthConfig {
+            trusted_issuers: vec![trusted(pub_pem)],
+            ..AgentAuthConfig::default()
+        })
+        .await;
+        let did = "did:plc:setfraciat11111";
+        insert_account(&state.db, did, "agent@example.com").await;
+        seed_claimed_identity(&state.db, "reg_frac", did, "sub-frac").await;
+
+        let mut claims = set_claims("sub-frac");
+        claims.insert(
+            "iat".to_string(),
+            json!(Utc::now().timestamp() as f64 + 0.5),
+        );
+        let set = sign_claims(&priv_pem, Value::Object(claims));
+
+        let (status, _body) = post_set(state.clone(), &set).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(identity_status(&state.db, "reg_frac").await, "revoked");
     }
 }
