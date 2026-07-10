@@ -3,6 +3,7 @@ pub mod account_usage;
 pub mod activate_account;
 pub mod admin_devices;
 pub mod admin_list_accounts;
+pub mod admin_revoke_credentials;
 mod admin_subject_defs;
 pub mod agent_claim;
 pub mod agent_event;

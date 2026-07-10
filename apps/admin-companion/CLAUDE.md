@@ -1,7 +1,7 @@
 # Admin Companion (operator console) Mobile App
 
 Last verified: 2026-07-10
-Last updated: 2026-07-10 (Accounts listing/search screen + claim-code inventory screen)
+Last updated: 2026-07-10 (per-account credential revocation on the moderation screen)
 
 ## Purpose
 
@@ -53,7 +53,13 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   `list_claim_codes`/`revoke_claim_code` (the claim-code inventory: a signed
   `GET /v1/accounts/claim-codes` — bare path signed, pagination `cursor` appended to the URL
   only, like the moderation GET — and a signed `POST /v1/accounts/claim-codes/revoke` whose
-  JSON body carries the code, so a revoke signature is bound to its code), plus
+  JSON body carries the code, so a revoke signature is bound to its code),
+  `revoke_account_credentials` (the operator kill-switch for a compromised account: a signed
+  `POST /v1/admin/accounts/{did}/revoke-credentials` — the DID rides in the *path*, so a sweep
+  signature is bound to its account; the relay atomically revokes the account's sessions,
+  app passwords, OAuth grants/pending codes, and promoted transfer-device tokens — never the
+  main password — and reports literal per-family counts as `RevokedCredentials`, a by-value
+  copy of the wire shape pinned by a deserialization test), plus
   pairing-document mutations (`list_pairings`, `set_active_pairing`, `rename_pairing`). Request
   construction is factored into pure `build_*` fns so a test verifies a built request with
   `crypto::verify_p256_signature` — the relay's own verifier — proving acceptance (and path-binding
@@ -82,6 +88,8 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   `list_claim_codes(pairing_id, cursor?)` (signed inventory page: every minted code with its
   derived status, newest first) / `revoke_claim_code(pairing_id, code)` (signed revoke of a
   live code; already-revoked is idempotent 200, redeemed → `RELAY_REJECTED` 409, unknown → 404),
+  `revoke_account_credentials(pairing_id, did)` (signed account-wide credential sweep; repeat
+  sweeps are idempotent 200s of zero counts, unknown DID → `RELAY_REJECTED` 404),
   `biometric_enabled`, `set_biometric_enabled` (plus Phase 6's `get_or_create_device_key`,
   `sign_with_device_key`). `pairing_state` is gone — superseded by `list_pairings`.
 - **Screens**: **Pair** (`src/routes/pair/` — QR/manual + required nickname, reachable while
@@ -107,7 +115,12 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   button for a Confirm/Cancel pair restating the relay-confirmed target) → biometric gate →
   signed write. Pinned to a single pairing at entry like Devices; the write always targets the
   DID from the last successful *lookup*, never the raw input field, and the action area goes
-  stale — auto-disarming — the moment the input drifts from what was looked up. A successful
+  stale — auto-disarming — the moment the input drifts from what was looked up. Below the
+  status panel sits **Credential revocation**, the incident-response follow-up to a takedown:
+  a second, independently-armed two-tap + biometric-gated destructive action that sweeps every
+  credential of the looked-up account (sessions, app passwords, OAuth grants, transfer-device
+  tokens — never the main password) and renders the relay's literal per-family counts as a
+  fact sheet, no optimistic edit. A successful
   lookup also loads a **Usage & storage** readout panel — records/commits/blobs/stored bytes/
   last-active plus blob quota (used-of-total + %) and largest blob, fetched concurrently and
   never blocking the status panel; a late response for a superseded lookup is discarded. Byte

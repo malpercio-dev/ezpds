@@ -7,11 +7,13 @@
     updateSubjectStatus,
     getAccountUsage,
     getAccountStorage,
+    revokeAccountCredentials,
     type Pairing,
     type PairingsState,
     type SubjectStatus,
     type AccountUsage,
     type AccountStorage,
+    type RevokedCredentials,
   } from '$lib/ipc';
   import { serverIdentity } from '$lib/server-identity';
   import { formatBytes, formatPct } from '$lib/format';
@@ -55,6 +57,14 @@
   let writing = $state(false);
   let writeError = $state<ErrorView | undefined>(undefined);
   let gateHint = $state<string | undefined>(undefined);
+
+  // The credential sweep carries its own arm/gate/result machinery — arming a takedown
+  // must never leave a credential revocation half-armed, and vice versa.
+  let credsArmed = $state(false);
+  let credsWriting = $state(false);
+  let credsError = $state<ErrorView | undefined>(undefined);
+  let credsGateHint = $state<string | undefined>(undefined);
+  let credsReport = $state<RevokedCredentials | null>(null);
 
   // Pinned once at entry: the pairing this screen reads from and signs for.
   let pairing = $state<Pairing | null>(null);
@@ -102,6 +112,10 @@
       armed = false;
       writeError = undefined;
       gateHint = undefined;
+      credsArmed = false;
+      credsError = undefined;
+      credsGateHint = undefined;
+      credsReport = null;
     }
   });
 
@@ -111,6 +125,10 @@
     armed = false;
     writeError = undefined;
     gateHint = undefined;
+    credsArmed = false;
+    credsError = undefined;
+    credsGateHint = undefined;
+    credsReport = null;
     statusView = { kind: 'loading' };
     metricsView = { kind: 'idle' };
     try {
@@ -192,6 +210,49 @@
       writeError = classifyRelayError(e);
     } finally {
       writing = false;
+    }
+  }
+
+  /** Tap 1 of the credential-sweep confirm. */
+  function armCreds() {
+    credsError = undefined;
+    credsGateHint = undefined;
+    credsArmed = true;
+  }
+
+  function disarmCreds() {
+    credsArmed = false;
+    credsError = undefined;
+    credsGateHint = undefined;
+  }
+
+  /** Tap 2 of the credential sweep: gate on user presence, then sign the revocation. */
+  async function confirmRevokeCredentials() {
+    // Same discipline as `confirmWrite`: re-check staleness so no caller can sign
+    // against a lookup the input has drifted from, and claim the busy flag before the
+    // biometric await so rapid taps can't fire concurrent sweeps.
+    if (!pairing || statusView.kind !== 'ready' || stale) return;
+    if (credsWriting) return;
+    credsWriting = true;
+    credsGateHint = undefined;
+    credsError = undefined;
+    // The relay-confirmed target from the lookup — never the raw input field.
+    const target = statusView.status.subject.did;
+    try {
+      const presence = await requireUserPresence(
+        'Revoke all credentials of an account on this server',
+      );
+      if (!presenceAllows(presence)) {
+        credsGateHint = "Confirm with Face ID to revoke this account's credentials.";
+        return;
+      }
+      // The relay reports literal per-family counts — render that truth verbatim.
+      credsReport = await revokeAccountCredentials(pairing.id, target);
+      credsArmed = false;
+    } catch (e) {
+      credsError = classifyRelayError(e);
+    } finally {
+      credsWriting = false;
     }
   }
 </script>
@@ -315,6 +376,75 @@
           <p class="hint" role="status">
             <StatusChip status="info" label="confirm" />
             <span>{gateHint}</span>
+          </p>
+        {/if}
+      </section>
+
+      <!-- The credential sweep for the looked-up DID: the incident-response follow-up
+           to a takedown. Signs, so it carries the same arm → confirm → gate friction. -->
+      <section class="panel" aria-labelledby="creds-label">
+        <span id="creds-label" class="label">Credential revocation</span>
+        <p class="note">
+          Lock out everyone holding this account's credentials: sessions, app passwords,
+          OAuth grants, and transfer-device tokens all die. The account's password is
+          untouched, and already-minted access tokens lapse on their own within minutes.
+        </p>
+
+        {#if credsReport}
+          <StatusChip status="revoked" label="swept" />
+          <dl class="facts">
+            <dt>sessions</dt>
+            <dd>{credsReport.sessionsRevoked}</dd>
+            <dt>app passwords</dt>
+            <dd>{credsReport.appPasswordsRevoked}</dd>
+            <dt>oauth tokens</dt>
+            <dd>{credsReport.oauthTokensRevoked}</dd>
+            <dt>oauth codes</dt>
+            <dd>{credsReport.oauthCodesRevoked}</dd>
+            <dt>transfer devices</dt>
+            <dd>{credsReport.transferDeviceTokensRevoked}</dd>
+          </dl>
+        {/if}
+
+        {#if stale}
+          <p class="note">The DID field changed since this lookup. Look up again before acting.</p>
+        {:else if !credsArmed}
+          <Button variant="destructive" loading={credsWriting} onclick={armCreds}>
+            {credsReport ? 'Revoke credentials again' : 'Revoke all credentials'}
+          </Button>
+        {:else}
+          <div class="confirm" role="group" aria-label="Confirm credential revocation">
+            <p class="confirm-text">
+              Revoke every credential of
+              <span class="confirm-did">{statusView.status.subject.did}</span>
+              on {identity?.host}? Every holder — including the account owner — is
+              signed out and must log in again with the account password.
+            </p>
+            <Button
+              variant="destructive"
+              loading={credsWriting}
+              onclick={confirmRevokeCredentials}
+            >
+              Confirm revocation
+            </Button>
+            <Button variant="secondary" disabled={credsWriting} onclick={disarmCreds}>
+              Cancel
+            </Button>
+          </div>
+        {/if}
+
+        {#if credsError}
+          <ErrorState
+            view={credsError}
+            server={identity}
+            retrying={credsWriting}
+            onretry={confirmRevokeCredentials}
+          />
+        {/if}
+        {#if credsGateHint}
+          <p class="hint" role="status">
+            <StatusChip status="info" label="confirm" />
+            <span>{credsGateHint}</span>
           </p>
         {/if}
       </section>
