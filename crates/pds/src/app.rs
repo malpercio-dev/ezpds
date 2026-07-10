@@ -26,6 +26,7 @@ use crate::routes::admin_devices::{
     list_admin_devices, mint_pairing_code, register_admin_device, revoke_admin_device,
 };
 use crate::routes::agent_claim::{post_agent_claim, post_agent_claim_confirm};
+use crate::routes::agent_event::post_agent_event;
 use crate::routes::agent_identity::post_agent_identity;
 use crate::routes::agents::{agent_audit_log, claim_preview, list_agents, revoke_agent};
 use crate::routes::apply_writes::apply_writes;
@@ -316,6 +317,7 @@ pub fn app(state: AppState) -> Router {
             "/agent/identity/claim/confirm",
             post(post_agent_claim_confirm),
         )
+        .route("/agent/event/notify", post(post_agent_event))
         .route("/xrpc/_health", get(health))
         .route(
             "/xrpc/com.atproto.server.describeServer",

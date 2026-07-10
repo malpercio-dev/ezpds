@@ -88,6 +88,9 @@ urls = []
 # issuer_not_enabled. Repeat the block per issuer. Each entry supplies the issuer's verification
 # key EXACTLY ONE of two ways: an inline `public_key_pem` (static trust) OR an https `jwks_url`
 # the relay fetches and caches, selecting the key by the ID-JAG's `kid` header (dynamic trust).
+# A trusted issuer may also push provider-driven revocation Security Event Tokens (SETs) to
+# POST /agent/event/notify (auth.md §7) — the same trust anchor mints and retracts registrations,
+# so no separate toggle enables it; with no trusted issuers configured, every SET is rejected.
 #
 # Static-trust issuer (inline PEM):
 # [[agent_auth.trusted_issuers]]

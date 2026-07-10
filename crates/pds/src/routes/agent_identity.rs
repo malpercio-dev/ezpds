@@ -35,10 +35,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{Duration, Utc};
-use common::TrustedIssuer;
-use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -47,6 +44,9 @@ use crate::app::AppState;
 use crate::auth::agent_assertion::{
     claim_block, mint_identity_assertion, new_claim_attempt_id, record_agent_audit, scopes_to_json,
     to_sqlite_datetime, verification_uri, AgentAuthError,
+};
+use crate::auth::issuer_trust::{
+    select_issuer, unverified_claim, verify_trusted_jwt, TrustedJwtError,
 };
 use crate::code_gen::generate_code;
 use crate::db::accounts::resolve_by_email;
@@ -381,22 +381,25 @@ async fn handle_identity_assertion(
             "assertion is malformed or missing an iss claim",
         )
     })?;
-    let issuer_cfg = state
-        .config
-        .agent_auth
-        .trusted_issuers
-        .iter()
-        .find(|t| t.issuer == iss)
-        .ok_or_else(|| {
-            AgentAuthError::new(
-                StatusCode::FORBIDDEN,
-                "issuer_not_enabled",
-                "the assertion issuer is not on this server's trust list",
-            )
-        })?;
+    let issuer_cfg = select_issuer(&state.config.agent_auth, &iss).ok_or_else(|| {
+        AgentAuthError::new(
+            StatusCode::FORBIDDEN,
+            "issuer_not_enabled",
+            "the assertion issuer is not on this server's trust list",
+        )
+    })?;
 
-    let (key, alg) = resolve_decoding_key(state, issuer_cfg, assertion).await?;
-    let claims = verify_id_jag(assertion, &key, alg, issuer_cfg, &state.config.public_url)?;
+    // Verify the ID-JAG's signature and standard claims (`iss`/`aud`/`exp`) against the issuer's
+    // key. `exp` is required for an ID-JAG (a SET, verified by the same helper, does not require it).
+    let claims: IdJagClaims = verify_trusted_jwt(
+        &state.jwks_cache,
+        issuer_cfg,
+        &state.config.public_url,
+        assertion,
+        &["exp", "aud", "iss"],
+    )
+    .await
+    .map_err(map_id_jag_verify_err)?;
 
     // Reject a stale authentication (`login_required`) so a long-lived ID-JAG can't be replayed
     // indefinitely against a session the user has since ended.
@@ -612,124 +615,27 @@ async fn new_identity_assertion(
     Err(AgentAuthError::interaction_required(claim, claim_token))
 }
 
-// ── ID-JAG verification ──────────────────────────────────────────────────────────
+// ── ID-JAG verification error mapping ──────────────────────────────────────────────
 
-/// Resolve the decoding key + expected algorithm for a trusted issuer's ID-JAG.
-///
-/// A static-trust issuer carries its key inline (`public_key_pem`); a dynamic-trust issuer names a
-/// `jwks_url`, whose key set is fetched (cached) and indexed by the ID-JAG's `kid` header. The
-/// expected algorithm is the issuer's configured `algorithm` in both cases (already validated at
-/// config load), so verification is otherwise identical.
-///
-/// Error mapping matches the PEM path's existing posture: an unusable configured key or unsupported
-/// algorithm is `server_error` (operator misconfiguration), a fetch/transport failure is
-/// `server_error` (transient), and a `kid` absent from the issuer's JWKS is `invalid_grant` (the
-/// client presented an assertion signed by a key the issuer doesn't publish).
-async fn resolve_decoding_key(
-    state: &AppState,
-    issuer: &TrustedIssuer,
-    assertion: &str,
-) -> Result<(DecodingKey, Algorithm), AgentAuthError> {
-    if let Some(jwks_url) = issuer.jwks_url.as_deref().filter(|u| !u.is_empty()) {
-        let alg = algorithm_from_str(&issuer.algorithm).ok_or_else(|| {
-            tracing::error!(issuer = %issuer.issuer, algorithm = %issuer.algorithm, "trusted issuer has an unsupported algorithm");
-            AgentAuthError::server_error()
-        })?;
-        let kid = decode_header(assertion).ok().and_then(|h| h.kid);
-        let key = state
-            .jwks_cache
-            .decoding_key(jwks_url, kid.as_deref())
-            .await
-            .map_err(|e| {
-                tracing::error!(issuer = %issuer.issuer, jwks_url, error = %e, "failed to resolve issuer JWKS");
-                AgentAuthError::server_error()
-            })?
-            .ok_or_else(|| {
-                AgentAuthError::new(
-                    StatusCode::UNAUTHORIZED,
-                    "invalid_grant",
-                    "the assertion's signing key (kid) is not present in the issuer's JWKS",
-                )
-            })?;
-        Ok((key, alg))
-    } else {
-        pem_decoding_key(issuer).ok_or_else(|| {
-            tracing::error!(issuer = %issuer.issuer, "trusted issuer has an unusable public_key_pem/algorithm");
-            AgentAuthError::server_error()
-        })
+/// Map a shared trusted-JWT verification failure (`auth/issuer_trust.rs`) into the ID-JAG flow's
+/// auth.md error vocabulary. An unusable configured key / transport failure is `server_error`
+/// (operator/transient fault); a signing key absent from the issuer's JWKS or a failed
+/// signature/claim check is `invalid_grant` (the client presented an assertion this issuer can't or
+/// won't vouch for).
+fn map_id_jag_verify_err(err: TrustedJwtError) -> AgentAuthError {
+    match err {
+        TrustedJwtError::ServerError => AgentAuthError::server_error(),
+        TrustedJwtError::UnknownKey => AgentAuthError::new(
+            StatusCode::UNAUTHORIZED,
+            "invalid_grant",
+            "the assertion's signing key (kid) is not present in the issuer's JWKS",
+        ),
+        TrustedJwtError::Invalid(detail) => AgentAuthError::new(
+            StatusCode::UNAUTHORIZED,
+            "invalid_grant",
+            format!("assertion verification failed: {detail}"),
+        ),
     }
-}
-
-/// Verify an ID-JAG's signature and standard claims against a trusted issuer's resolved key.
-///
-/// Enforces the signature (the resolved key + expected algorithm), `iss`, `aud` (the issuer's
-/// configured audience or this server's `public_url`), and `exp`.
-fn verify_id_jag(
-    assertion: &str,
-    key: &DecodingKey,
-    alg: Algorithm,
-    issuer: &TrustedIssuer,
-    public_url: &str,
-) -> Result<IdJagClaims, AgentAuthError> {
-    let expected_aud = issuer
-        .audience
-        .clone()
-        .unwrap_or_else(|| public_url.trim_end_matches('/').to_string());
-
-    let mut validation = Validation::new(alg);
-    validation.set_issuer(&[&issuer.issuer]);
-    validation.set_audience(&[&expected_aud]);
-    validation.set_required_spec_claims(&["exp", "aud", "iss"]);
-
-    decode::<IdJagClaims>(assertion, key, &validation)
-        .map(|data| data.claims)
-        .map_err(|e| {
-            AgentAuthError::new(
-                StatusCode::UNAUTHORIZED,
-                "invalid_grant",
-                format!("assertion verification failed: {e}"),
-            )
-        })
-}
-
-/// Build a `jsonwebtoken` decoding key + algorithm from a trusted issuer's inline PEM. `None` on an
-/// absent/unusable PEM or an algorithm outside the supported set (both also rejected at config
-/// load).
-fn pem_decoding_key(issuer: &TrustedIssuer) -> Option<(DecodingKey, Algorithm)> {
-    let pem = issuer.public_key_pem.as_deref()?.as_bytes();
-    let alg = algorithm_from_str(&issuer.algorithm)?;
-    let key = match alg {
-        Algorithm::ES256 | Algorithm::ES384 => DecodingKey::from_ec_pem(pem).ok()?,
-        Algorithm::RS256 | Algorithm::RS384 | Algorithm::RS512 => {
-            DecodingKey::from_rsa_pem(pem).ok()?
-        }
-        Algorithm::EdDSA => DecodingKey::from_ed_pem(pem).ok()?,
-        _ => return None,
-    };
-    Some((key, alg))
-}
-
-/// Map an ID-JAG algorithm name to a `jsonwebtoken::Algorithm`. `None` outside the supported set
-/// (`config::SUPPORTED_IDJAG_ALGORITHMS`, the config-load allowlist this mirrors).
-fn algorithm_from_str(alg: &str) -> Option<Algorithm> {
-    match alg {
-        "ES256" => Some(Algorithm::ES256),
-        "ES384" => Some(Algorithm::ES384),
-        "RS256" => Some(Algorithm::RS256),
-        "RS384" => Some(Algorithm::RS384),
-        "RS512" => Some(Algorithm::RS512),
-        "EdDSA" => Some(Algorithm::EdDSA),
-        _ => None,
-    }
-}
-
-/// Read a single top-level string claim out of a JWT *without* verifying its signature. Used only
-/// to pick the trusted issuer before real verification runs.
-fn unverified_claim(jwt: &str, key: &str) -> Option<String> {
-    let payload_b64 = jwt.split('.').nth(1)?;
-    let bytes = URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
-    let value: Value = serde_json::from_slice(&bytes).ok()?;
-    value.get(key)?.as_str().map(str::to_string)
 }
 
 // ── Small helpers ────────────────────────────────────────────────────────────────
@@ -759,9 +665,12 @@ mod tests {
 
     use axum::body::Body;
     use axum::http::Request;
-    use base64::engine::general_purpose::STANDARD;
+    use base64::{
+        engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+        Engine as _,
+    };
     use common::{AgentAuthConfig, TrustedIssuer};
-    use jsonwebtoken::{EncodingKey, Header};
+    use jsonwebtoken::{Algorithm, EncodingKey, Header};
     use p256::pkcs8::spki::EncodePublicKey;
     use p256::pkcs8::EncodePrivateKey;
     use rand_core::OsRng;
