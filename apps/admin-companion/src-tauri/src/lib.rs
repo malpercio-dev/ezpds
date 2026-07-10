@@ -150,6 +150,29 @@ async fn get_account_storage(
     relay_client::get_account_storage(&pairing_id, &did).await
 }
 
+/// Fetch a page of the relay's account list (DID order, cursor pagination, optional
+/// derived-status filter and handle/DID substring search) — the Accounts screen's data
+/// source. Id-addressed like `list_admin_devices`.
+#[tauri::command]
+async fn list_accounts(
+    pairing_id: String,
+    limit: Option<u32>,
+    cursor: Option<String>,
+    status: Option<String>,
+    q: Option<String>,
+) -> Result<relay_client::AccountList, relay_client::RelayClientError> {
+    relay_client::list_accounts(
+        &pairing_id,
+        relay_client::ListAccountsQuery {
+            limit,
+            cursor,
+            status,
+            q,
+        },
+    )
+    .await
+}
+
 /// Whether the biometric (user-presence) gate on signing actions is enabled. Defaults to
 /// `true` on a fresh install — signing is gated until the operator opts out in Settings.
 /// Errors serialize through `RelayClientError::Keychain` (the app's one Serialize error).
@@ -196,6 +219,7 @@ pub fn run() {
             update_subject_status,
             get_account_usage,
             get_account_storage,
+            list_accounts,
             biometric_enabled,
             set_biometric_enabled
         ])

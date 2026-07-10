@@ -1,0 +1,56 @@
+meta {
+  name: Admin List Accounts
+  type: http
+  seq: 108
+}
+
+get {
+  url: {{baseUrl}}/v1/admin/accounts?limit=50
+  body: none
+  auth: bearer
+}
+
+params:query {
+  limit: 50
+  ~cursor:
+  ~status: active
+  ~q:
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+docs {
+  # GET /v1/admin/accounts
+
+  Operator account listing/search in DID order with cursor pagination — the companion
+  app's entry point for all per-account work (usage, storage, takedown) without pasting
+  DIDs. Includes accounts in every lifecycle state, and accounts without a repo.
+  Admin-authed: the master token (shown here) **or** an active device's signed request
+  (the `X-Admin-*` envelope; the signature covers the bare path, so paging/filter query
+  params vary without re-signing).
+
+  Query params (all optional):
+  - `limit` — page size, default 50, clamped to 1..=100.
+  - `cursor` — the `cursor` value from the previous page (the last DID returned).
+  - `status` — derived-lifecycle filter: `active`, `deactivated`, `suspended`, or
+    `takendown` (precedence takendown > suspended > deactivated, matching the sync
+    endpoints). Anything else is a 400.
+  - `q` — literal substring match against the DID or any of the account's handles
+    (`%`/`_` are matched literally, not as wildcards).
+
+  Response:
+  - `accounts` — array of accounts in DID order, each:
+    - `did` — the account DID.
+    - `handle` — the account's first-created handle, or null if it has none.
+    - `createdAt` — account creation time (UTC).
+    - `status` — derived lifecycle: `active`, `deactivated`, `suspended`, `takendown`
+      (always stated explicitly, unlike the lexicon sync endpoints).
+    - `totalBytes` — total bytes of the account's owned blobs.
+    - `quotaUsedPct` — `totalBytes` as a percentage of `quotaBytes`, carried per row so
+      the console renders a capacity readout per account in one request per page.
+  - `quotaBytes` — the configured per-account storage quota (`[blobs]
+    max_storage_per_account`); one value applies to every account in v0.1.
+  - `cursor` — pass back as `?cursor=` for the next page; omitted on the last page.
+}

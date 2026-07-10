@@ -246,6 +246,57 @@ export function getAccountStorage(pairingId: string, did: string): Promise<Accou
   return invoke<AccountStorage>('get_account_storage', { pairingId, did });
 }
 
+/**
+ * One account row of the relay's operator account list — the response shape of
+ * `GET /v1/admin/accounts`. `status` is the derived lifecycle, always stated
+ * explicitly; `quotaUsedPct` is `totalBytes` against the page-level `quotaBytes`.
+ */
+export interface AccountListEntry {
+  did: string;
+  /** The account's first-created handle, or null when it has none. */
+  handle: string | null;
+  createdAt: string;
+  status: 'active' | 'deactivated' | 'suspended' | 'takendown';
+  totalBytes: number;
+  quotaUsedPct: number;
+}
+
+/** A page of the account list. `cursor` is null on the last page. */
+export interface AccountList {
+  accounts: AccountListEntry[];
+  /** The configured per-account storage quota in bytes — one value for every row. */
+  quotaBytes: number;
+  cursor: string | null;
+}
+
+/** Optional filters for {@link listAccounts}. */
+export interface ListAccountsFilters {
+  limit?: number;
+  /** The `cursor` from the previous page (the last DID returned). */
+  cursor?: string;
+  /** Derived-lifecycle filter. */
+  status?: AccountListEntry['status'];
+  /** Literal substring match against the DID or any of the account's handles. */
+  q?: string;
+}
+
+/**
+ * Fetch a page of the relay's account list (DID order, cursor pagination) from the
+ * given pairing's relay via a signed request. Throws a {@link RelayClientError}.
+ */
+export function listAccounts(
+  pairingId: string,
+  filters: ListAccountsFilters = {},
+): Promise<AccountList> {
+  return invoke<AccountList>('list_accounts', {
+    pairingId,
+    limit: filters.limit ?? null,
+    cursor: filters.cursor ?? null,
+    status: filters.status ?? null,
+    q: filters.q ?? null,
+  });
+}
+
 /** Whether the biometric (user-presence) gate on signing actions is enabled (default on). */
 export function biometricEnabled(): Promise<boolean> {
   return invoke<boolean>('biometric_enabled');

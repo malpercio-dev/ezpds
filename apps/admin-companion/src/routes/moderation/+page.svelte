@@ -69,6 +69,17 @@
     const requested = page.url.searchParams.get('server');
     const targetId = requested ?? pairingsView.active;
     pairing = pairingsView.pairings.find((p) => p.id === targetId) ?? null;
+
+    // Arriving from the accounts list (`?did=…`): pre-fill the lookup field and run
+    // the lookup immediately — the DID came from this same relay's account list, so
+    // making the operator retype (or re-tap) it would be pure friction. The lookup
+    // still runs the normal path: the relay's answer, not the query param, is what
+    // any later takedown targets.
+    const requestedDid = page.url.searchParams.get('did');
+    if (pairing && requestedDid) {
+      did = requestedDid;
+      if (didLooksValid) void lookup();
+    }
   });
 
   const identity = $derived(pairing ? serverIdentity(pairing) : null);

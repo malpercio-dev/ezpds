@@ -25,6 +25,7 @@ use crate::routes::activate_account::activate_account_handler;
 use crate::routes::admin_devices::{
     list_admin_devices, mint_pairing_code, register_admin_device, revoke_admin_device,
 };
+use crate::routes::admin_list_accounts::list_accounts;
 use crate::routes::agent_claim::{post_agent_claim, post_agent_claim_confirm};
 use crate::routes::agent_event::post_agent_event;
 use crate::routes::agent_identity::post_agent_identity;
@@ -528,6 +529,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/agents/claim-preview", post(claim_preview))
         .route("/v1/agents/{registration_id}/revoke", post(revoke_agent))
         .route("/v1/agents/{registration_id}/audit", get(agent_audit_log))
+        .route("/v1/admin/accounts", get(list_accounts))
         .route("/v1/admin/pairing-codes", post(mint_pairing_code))
         .route(
             "/v1/admin/devices",
