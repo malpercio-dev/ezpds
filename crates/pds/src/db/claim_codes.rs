@@ -30,9 +30,11 @@ pub async fn claim_code_valid(db: &SqlitePool, code: &str) -> Result<bool, ApiEr
 /// and expiry is a comparison against the clock — `is_expired` carries that comparison out of
 /// SQL so callers never re-derive "now" inconsistently.
 pub struct ClaimCodeRow {
-    /// Insertion-order sequence (the table's rowid) — the pagination cursor. Rows are never
-    /// deleted (revocation is a tombstone), so rowid order is exactly mint order.
-    pub row_seq: i64,
+    /// Insertion-order sequence (`id INTEGER PRIMARY KEY`, V041) — the pagination cursor.
+    /// An explicit rowid alias, so it is stable across VACUUM (an implicit rowid under the
+    /// old TEXT primary key was not). Rows are never deleted (revocation is a tombstone),
+    /// so id order is exactly mint order.
+    pub id: i64,
     pub code: String,
     pub created_at: String,
     pub expires_at: String,
@@ -42,7 +44,7 @@ pub struct ClaimCodeRow {
     pub is_expired: bool,
 }
 
-/// Page the claim-code inventory newest-first. `cursor` is the `row_seq` of the last row of
+/// Page the claim-code inventory newest-first. `cursor` is the `id` of the last row of
 /// the previous page (exclusive); `None` starts from the newest mint.
 pub async fn list_claim_codes(
     db: &SqlitePool,
@@ -61,11 +63,11 @@ pub async fn list_claim_codes(
             bool,
         ),
     >(
-        "SELECT rowid, code, created_at, expires_at, redeemed_at, revoked_at, \
+        "SELECT id, code, created_at, expires_at, redeemed_at, revoked_at, \
                 (expires_at <= datetime('now')) \
          FROM claim_codes \
-         WHERE (? IS NULL OR rowid < ?) \
-         ORDER BY rowid DESC LIMIT ?",
+         WHERE (? IS NULL OR id < ?) \
+         ORDER BY id DESC LIMIT ?",
     )
     .bind(cursor)
     .bind(cursor)
@@ -76,9 +78,9 @@ pub async fn list_claim_codes(
     Ok(rows
         .into_iter()
         .map(
-            |(row_seq, code, created_at, expires_at, redeemed_at, revoked_at, is_expired)| {
+            |(id, code, created_at, expires_at, redeemed_at, revoked_at, is_expired)| {
                 ClaimCodeRow {
-                    row_seq,
+                    id,
                     code,
                     created_at,
                     expires_at,
@@ -329,7 +331,7 @@ mod tests {
         assert_eq!(first.len(), 2);
         assert_eq!(first[0].code, "CODE03");
 
-        let second = list_claim_codes(&db, Some(first[1].row_seq), 2)
+        let second = list_claim_codes(&db, Some(first[1].id), 2)
             .await
             .expect("second page");
         assert_eq!(second.len(), 1);

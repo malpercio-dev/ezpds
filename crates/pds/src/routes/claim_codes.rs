@@ -121,7 +121,7 @@ async fn claim_codes_inner(
 pub struct ListClaimCodesParams {
     #[serde(default = "default_list_limit")]
     limit: u32,
-    /// `rowSeq` of the last row of the previous page (exclusive), from the prior response's
+    /// `id` of the last row of the previous page (exclusive), from the prior response's
     /// `cursor`; absent for the first page.
     cursor: Option<i64>,
 }
@@ -174,7 +174,8 @@ fn derive_status(row: &crate::db::claim_codes::ClaimCodeRow) -> &'static str {
 
 /// `GET /v1/accounts/claim-codes` — admin-only claim-code inventory.
 ///
-/// Pages the full mint history newest-first (rowid cursor), each row carrying its derived
+/// Pages the full mint history newest-first (`id` cursor — a stable INTEGER PRIMARY KEY,
+/// V041), each row carrying its derived
 /// lifecycle status. A minted-but-unredeemed code is a live signup credential — this is the
 /// operator's view of what is outstanding. Admin-authed: the master token **or** an active
 /// companion-app device's signed request ([`require_admin`]); a GET signs the empty body.
@@ -204,7 +205,7 @@ pub async fn list_claim_code_inventory(
 
     // A short page means the history is exhausted; a full page may have more.
     let cursor = (rows.len() == params.limit as usize)
-        .then(|| rows.last().map(|r| r.row_seq.to_string()))
+        .then(|| rows.last().map(|r| r.id.to_string()))
         .flatten();
     let codes = rows
         .iter()
