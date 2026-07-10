@@ -167,6 +167,43 @@ export function revokeAdminDevice(pairingId: string, deviceId: string): Promise<
   return invoke<AdminDevice>('revoke_admin_device', { pairingId, deviceId });
 }
 
+/**
+ * An account's takedown status as the relay reports it — the response shape of both
+ * getSubjectStatus and updateSubjectStatus. `$type` is always the account-level
+ * `com.atproto.admin.defs#repoRef`; ezpds models no record- or blob-level takedown.
+ */
+export interface SubjectStatus {
+  subject: {
+    $type: string;
+    did: string;
+  };
+  takedown: {
+    applied: boolean;
+  };
+}
+
+/**
+ * Report an account's takedown status from the given pairing's relay via a signed
+ * request. An unknown DID is `RELAY_REJECTED` with status 404; a malformed DID is
+ * status 400. Throws a {@link RelayClientError}.
+ */
+export function getSubjectStatus(pairingId: string, did: string): Promise<SubjectStatus> {
+  return invoke<SubjectStatus>('get_subject_status', { pairingId, did });
+}
+
+/**
+ * Apply (`applied = true`) or clear (`false`) an account-level takedown on the given
+ * pairing's relay via a signed request. Idempotent server-side; returns the resulting
+ * takedown state. This signs — callers must run the biometric gate first.
+ */
+export function updateSubjectStatus(
+  pairingId: string,
+  did: string,
+  applied: boolean,
+): Promise<SubjectStatus> {
+  return invoke<SubjectStatus>('update_subject_status', { pairingId, did, applied });
+}
+
 /** Whether the biometric (user-presence) gate on signing actions is enabled (default on). */
 export function biometricEnabled(): Promise<boolean> {
   return invoke<boolean>('biometric_enabled');

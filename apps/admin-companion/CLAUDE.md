@@ -1,7 +1,7 @@
 # Admin Companion (operator console) Mobile App
 
-Last verified: 2026-07-08
-Last updated: 2026-07-08 (device list + remote revoke)
+Last verified: 2026-07-09
+Last updated: 2026-07-09 (account takedown/restore — the Moderation screen)
 
 ## Purpose
 
@@ -37,7 +37,12 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   of that wire shape pinned by a deserialization test), `revoke_device` (signed remote
   revoke of ANOTHER device on that pairing's relay; a self-target is refused with
   `SELF_REVOKE_NOT_ALLOWED` before signing — self-revoke is `revoke_self`, which also
-  removes the local pairing), plus
+  removes the local pairing), `get_subject_status`/`update_subject_status` (signed account
+  takedown lookup/write against `com.atproto.admin.getSubjectStatus`/`updateSubjectStatus` for
+  an id-addressed pairing; the GET signs the **bare path** and appends `?did=` to the URL only —
+  the relay verifies `uri.path()`, query excluded — and the POST body is exactly
+  `{subject: {$type, did}, takedown: {applied}}`, pinned because the relay's subject parse is
+  deny-unknown-fields), plus
   pairing-document mutations (`list_pairings`, `set_active_pairing`, `rename_pairing`). Request
   construction is factored into pure `build_*` fns so a test verifies a built request with
   `crypto::verify_p256_signature` — the relay's own verifier — proving acceptance (and path-binding
@@ -57,6 +62,9 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   `list_admin_devices(pairing_id)` (signed device list from that pairing's relay),
   `revoke_admin_device(pairing_id, device_id)` (signed remote revoke of another device;
   self-target → `SELF_REVOKE_NOT_ALLOWED`),
+  `get_subject_status(pairing_id, did)` (signed takedown-status lookup; unknown DID →
+  `RELAY_REJECTED` 404), `update_subject_status(pairing_id, did, applied)` (signed
+  account takedown/restore; idempotent server-side, returns the resulting state),
   `biometric_enabled`, `set_biometric_enabled` (plus Phase 6's `get_or_create_device_key`,
   `sign_with_device_key`). `pairing_state` is gone — superseded by `list_pairings`.
 - **Screens**: **Pair** (`src/routes/pair/` — QR/manual + required nickname, reachable while
@@ -69,8 +77,13 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   lost device. Pinned to a single pairing at entry — `?server=<pairingId>` from Settings, else the
   active pairing — so a concurrent active switch on Home can't redirect what it shows or signs.
   The row whose relay id equals the pairing's `deviceId` is marked "this device" and its revoke
-  defers to Settings). The
-  error-state matrix (not-paired / clock-skew / revoked / unreachable) is rendered by the shared
+  defers to Settings), **Moderation** (`src/routes/moderation/` — account takedown/restore:
+  DID lookup → status panel → armed two-tap confirmation (the first tap swaps the destructive
+  button for a Confirm/Cancel pair restating the relay-confirmed target) → biometric gate →
+  signed write. Pinned to a single pairing at entry like Devices; the write always targets the
+  DID from the last successful *lookup*, never the raw input field, and the action area goes
+  stale — auto-disarming — the moment the input drifts from what was looked up). The
+  error-state matrix (not-paired / clock-skew / revoked / unreachable / not-found) is rendered by the shared
   `ui/ErrorState.svelte` off `errors.ts`'s `classifyRelayError`. Server identity display (`src/lib/server-identity.ts`)
   pairs the operator nickname with the relay host in monospace everywhere, so staging and production
   are always disambiguated. The `ScreenShell` UI primitive reserves a server slot for the active
