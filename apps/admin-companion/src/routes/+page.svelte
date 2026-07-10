@@ -272,6 +272,7 @@
       </Button>
       <Button variant="secondary" onclick={() => openPinned('/accounts')}>Accounts</Button>
       <Button variant="secondary" onclick={() => openPinned('/codes')}>Codes</Button>
+      <Button variant="secondary" onclick={() => openPinned('/transfers')}>Transfers</Button>
       <Button variant="secondary" onclick={() => openPinned('/devices')}>Devices</Button>
       <Button variant="secondary" onclick={() => openPinned('/moderation')}>Moderation</Button>
       <Button variant="secondary" onclick={() => openPinned('/status')}>Status</Button>

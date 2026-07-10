@@ -410,6 +410,66 @@ export function revokeClaimCode(pairingId: string, code: string): Promise<Revoke
 }
 
 /**
+ * One in-flight device transfer as the relay reports it — a planned device swap that
+ * can still advance. `status` is the stored state-machine state; an `accepted` or
+ * `completing` transfer means the target device already holds a working credential.
+ * Deliberately code-free: the transfer code is a live account-takeover credential and
+ * never leaves the relay. Timestamps are the relay's SQLite UTC datetime strings.
+ */
+export interface TransferEntry {
+  id: string;
+  did: string;
+  handle?: string;
+  status: 'pending' | 'accepted' | 'completing';
+  createdAt: string;
+  expiresAt: string;
+  acceptedAt?: string;
+  acceptedDevicePlatform?: string;
+}
+
+/** One in-flight transfer page: newest-first entries plus the cursor for the next page. */
+export interface TransferList {
+  transfers: TransferEntry[];
+  /** Present when another page may exist; pass back to {@link listTransfers}. */
+  cursor?: string;
+}
+
+/** The relay's post-cancel report. */
+export interface CancelledTransfer {
+  id: string;
+  status: string;
+  /** Whether an accepted target device credential was tombstoned by this cancel. */
+  revokedDeviceCredential: boolean;
+}
+
+/**
+ * Page the in-flight device transfers on the given pairing's relay via a signed
+ * request — every planned device swap that can still advance (a security-relevant
+ * pending state the operator may need to interrupt), newest first. Throws a
+ * {@link RelayClientError}.
+ */
+export function listTransfers(pairingId: string, cursor?: string): Promise<TransferList> {
+  return invoke<TransferList>('list_transfers', { pairingId, cursor: cursor ?? null });
+}
+
+/**
+ * Cancel an in-flight device transfer on the given pairing's relay via a signed
+ * request. The relay flips the transfer to the terminal `cancelled` state and
+ * tombstones the accepted target device credential if the swap got that far; the
+ * account's existing sessions are untouched (compose with
+ * {@link revokeAccountCredentials} when the account itself is compromised). A repeat
+ * cancel is an idempotent 200; a completed or expired transfer is `RELAY_REJECTED`
+ * with status 409, an unknown id with 404. This signs — callers must run the
+ * biometric gate first.
+ */
+export function cancelTransfer(
+  pairingId: string,
+  transferId: string,
+): Promise<CancelledTransfer> {
+  return invoke<CancelledTransfer>('cancel_transfer', { pairingId, transferId });
+}
+
+/**
  * The relay's post-sweep report — literal per-family counts of what
  * {@link revokeAccountCredentials} revoked, rendered verbatim by the screen.
  */

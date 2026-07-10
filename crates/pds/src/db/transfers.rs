@@ -343,6 +343,132 @@ pub async fn revoke_other_transfer_devices(
     Ok(updated.rows_affected())
 }
 
+/// One in-flight transfer as the operator sees it.
+///
+/// Deliberately excludes the 6-char `code`: unlike a claim code (a signup credential
+/// meant to be shared), a transfer code is a live account-takeover credential — whoever
+/// presents it at `/v1/transfer/accept` receives device credentials for the DID. The
+/// operator needs visibility into the pending state, never the secret itself.
+#[derive(Debug, PartialEq, Eq)]
+pub struct InflightTransferRow {
+    pub id: String,
+    pub did: String,
+    /// One associated handle (if any), for operator readability.
+    pub handle: Option<String>,
+    pub status: String,
+    pub created_at: String,
+    pub expires_at: String,
+    pub accepted_at: Option<String>,
+    /// Platform of the device that accepted the transfer, when one has.
+    pub accepted_device_platform: Option<String>,
+}
+
+/// List the transfers an operator can still interrupt, newest first.
+///
+/// "In flight" is deliberately asymmetric about the clock: a lapsed `pending` transfer is
+/// excluded (acceptance requires `expires_at > now`, so nothing can happen to it — it is
+/// inert until a later initiate sweeps it to `expired`), but a lapsed `accepted`/
+/// `completing` transfer stays visible because completion (`mark_transfer_complete`) has
+/// no expiry predicate — the target device's credential is live and the swap can still
+/// finish. That still-completable state is exactly what the operator needs to see.
+///
+/// Pages on the immutable `(created_at, id)` keyset (cursor exclusive, same shape as the
+/// claim-code inventory).
+pub async fn list_inflight_transfers(
+    db: &SqlitePool,
+    cursor: Option<(&str, &str)>,
+    limit: u32,
+) -> Result<Vec<InflightTransferRow>, sqlx::Error> {
+    let (cursor_created_at, cursor_id) = match cursor {
+        Some((created_at, id)) => (Some(created_at), Some(id)),
+        None => (None, None),
+    };
+    type Row = (
+        String,
+        String,
+        Option<String>,
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+    );
+    let rows = sqlx::query_as::<_, Row>(
+        "SELECT t.id, t.did, \
+                (SELECT h.handle FROM handles h WHERE h.did = t.did \
+                 ORDER BY h.created_at ASC, h.handle ASC LIMIT 1), \
+                t.status, t.created_at, t.expires_at, t.accepted_at, \
+                (SELECT d.platform FROM transfer_devices d WHERE d.id = t.accepted_device_id) \
+         FROM transfers t \
+         WHERE (t.status IN ('accepted', 'completing') \
+                OR (t.status = 'pending' AND t.expires_at > datetime('now'))) \
+           AND (? IS NULL OR (t.created_at, t.id) < (?, ?)) \
+         ORDER BY t.created_at DESC, t.id DESC LIMIT ?",
+    )
+    .bind(cursor_created_at)
+    .bind(cursor_created_at)
+    .bind(cursor_id)
+    .bind(limit)
+    .fetch_all(db)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(id, did, handle, status, created_at, expires_at, accepted_at, platform)| {
+                InflightTransferRow {
+                    id,
+                    did,
+                    handle,
+                    status,
+                    created_at,
+                    expires_at,
+                    accepted_at,
+                    accepted_device_platform: platform,
+                }
+            },
+        )
+        .collect())
+}
+
+/// Mark an active transfer operator-cancelled.
+///
+/// Guarded on the active states so a terminal row (`complete`/`expired`/`cancelled`)
+/// is never rewritten — the caller classifies a 0-row update by re-reading the status.
+/// `cancelled` is terminal by construction: both partial unique indexes enumerate the
+/// active statuses, so a cancelled row frees the per-DID and per-code slots exactly
+/// like `complete`/`expired`, and every accept/complete lookup filters it out.
+pub async fn mark_transfer_cancelled(
+    tx: &mut SqliteTransaction<'_>,
+    transfer_id: &str,
+) -> Result<u64, sqlx::Error> {
+    let updated = sqlx::query(
+        "UPDATE transfers SET status = 'cancelled' \
+         WHERE id = ? AND status IN ('pending', 'accepted', 'completing')",
+    )
+    .bind(transfer_id)
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(updated.rows_affected())
+}
+
+/// Tombstone a single transfer-device credential (V030 doctrine: the row survives as
+/// the audit record; `transfer_device_token_exists` stops honoring it immediately).
+pub async fn revoke_transfer_device(
+    tx: &mut SqliteTransaction<'_>,
+    device_id: &str,
+) -> Result<u64, sqlx::Error> {
+    let updated = sqlx::query(
+        "UPDATE transfer_devices SET revoked_at = datetime('now') \
+         WHERE id = ? AND revoked_at IS NULL",
+    )
+    .bind(device_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(updated.rows_affected())
+}
+
 /// Append a transfer audit event.
 pub async fn insert_transfer_audit_event(
     tx: &mut SqliteTransaction<'_>,
@@ -444,6 +570,195 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(active, 1);
+    }
+
+    /// Insert a transfer row directly, with `expires_at` offset from now by
+    /// `expires_offset_minutes` (negative = already lapsed) and `created_at` fixed to a
+    /// caller-supplied literal so keyset ordering is deterministic.
+    async fn seed_transfer(
+        db: &SqlitePool,
+        id: &str,
+        did: &str,
+        code: &str,
+        status: &str,
+        expires_offset_minutes: i64,
+        created_at: &str,
+    ) {
+        sqlx::query(
+            "INSERT INTO transfers (id, did, code, status, expires_at, created_at) \
+             VALUES (?, ?, ?, ?, datetime('now', ?), ?)",
+        )
+        .bind(id)
+        .bind(did)
+        .bind(code)
+        .bind(status)
+        .bind(format!("{expires_offset_minutes:+} minutes"))
+        .bind(created_at)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn inflight_list_follows_capability_not_the_clock() {
+        let state = test_state().await;
+        for n in 1..=7 {
+            seed_account(&state.db, &format!("did:plc:inflight{n}")).await;
+        }
+
+        // In flight: unexpired pending, accepted (fresh AND lapsed — completion has no
+        // expiry check, so a lapsed accepted transfer can still finish), completing.
+        seed_transfer(
+            &state.db,
+            "t-pend",
+            "did:plc:inflight1",
+            "AAA111",
+            "pending",
+            10,
+            "2026-01-01 00:00:01",
+        )
+        .await;
+        seed_transfer(
+            &state.db,
+            "t-acc",
+            "did:plc:inflight2",
+            "BBB222",
+            "accepted",
+            10,
+            "2026-01-01 00:00:02",
+        )
+        .await;
+        seed_transfer(
+            &state.db,
+            "t-acc-lapsed",
+            "did:plc:inflight3",
+            "CCC333",
+            "accepted",
+            -10,
+            "2026-01-01 00:00:03",
+        )
+        .await;
+        seed_transfer(
+            &state.db,
+            "t-completing",
+            "did:plc:inflight4",
+            "DDD444",
+            "completing",
+            10,
+            "2026-01-01 00:00:04",
+        )
+        .await;
+        // Not in flight: a lapsed pending row (nothing can accept it), and terminal rows.
+        seed_transfer(
+            &state.db,
+            "t-pend-lapsed",
+            "did:plc:inflight5",
+            "EEE555",
+            "pending",
+            -10,
+            "2026-01-01 00:00:05",
+        )
+        .await;
+        seed_transfer(
+            &state.db,
+            "t-complete",
+            "did:plc:inflight6",
+            "FFF666",
+            "complete",
+            10,
+            "2026-01-01 00:00:06",
+        )
+        .await;
+        seed_transfer(
+            &state.db,
+            "t-cancelled",
+            "did:plc:inflight7",
+            "GGG777",
+            "cancelled",
+            10,
+            "2026-01-01 00:00:07",
+        )
+        .await;
+
+        let rows = list_inflight_transfers(&state.db, None, 50).await.unwrap();
+        let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["t-completing", "t-acc-lapsed", "t-acc", "t-pend"],
+            "newest first; lapsed accepted stays (still completable), lapsed pending and terminal rows drop"
+        );
+    }
+
+    #[tokio::test]
+    async fn inflight_list_pages_on_created_at_id_keyset() {
+        let state = test_state().await;
+        for n in 1..=3 {
+            seed_account(&state.db, &format!("did:plc:page{n}")).await;
+            seed_transfer(
+                &state.db,
+                &format!("t-page{n}"),
+                &format!("did:plc:page{n}"),
+                &format!("PAG10{n}"),
+                "pending",
+                10,
+                &format!("2026-01-01 00:00:0{n}"),
+            )
+            .await;
+        }
+
+        let first = list_inflight_transfers(&state.db, None, 2).await.unwrap();
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0].id, "t-page3");
+
+        let last = first.last().unwrap();
+        let second = list_inflight_transfers(&state.db, Some((&last.created_at, &last.id)), 2)
+            .await
+            .unwrap();
+        let ids: Vec<&str> = second.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, ["t-page1"], "cursor is exclusive and reaches the tail");
+    }
+
+    #[tokio::test]
+    async fn inflight_list_carries_handle_and_accepted_device_platform() {
+        let state = test_state().await;
+        seed_account(&state.db, "did:plc:detail1").await;
+        sqlx::query(
+            "INSERT INTO handles (handle, did, created_at) \
+             VALUES ('detail.example.com', 'did:plc:detail1', datetime('now'))",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let mut tx = state.db.begin().await.unwrap();
+        insert_transfer_device(&mut tx, "dev-1", "did:plc:detail1", "ios", "pk", "hash-1")
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        seed_transfer(
+            &state.db,
+            "t-detail",
+            "did:plc:detail1",
+            "HHH888",
+            "accepted",
+            10,
+            "2026-01-01 00:00:01",
+        )
+        .await;
+        sqlx::query(
+            "UPDATE transfers SET accepted_device_id = 'dev-1', accepted_at = datetime('now') \
+             WHERE id = 't-detail'",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let rows = list_inflight_transfers(&state.db, None, 50).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].handle.as_deref(), Some("detail.example.com"));
+        assert_eq!(rows[0].accepted_device_platform.as_deref(), Some("ios"));
+        assert!(rows[0].accepted_at.is_some());
     }
 
     #[tokio::test]

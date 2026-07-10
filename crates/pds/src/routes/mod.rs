@@ -6,6 +6,7 @@ pub mod admin_health;
 pub mod admin_list_accounts;
 pub mod admin_revoke_credentials;
 mod admin_subject_defs;
+pub mod admin_transfers;
 pub mod agent_claim;
 pub mod agent_event;
 pub mod agent_identity;

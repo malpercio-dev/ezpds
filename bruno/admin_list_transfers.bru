@@ -1,0 +1,48 @@
+meta {
+  name: Admin List Transfers
+  type: http
+  seq: 111
+}
+
+get {
+  url: {{baseUrl}}/v1/admin/transfers?limit=50
+  body: none
+  auth: bearer
+}
+
+params:query {
+  limit: 50
+  ~cursor: 2026-01-01 00:00:00|transfer-id
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+docs {
+  # GET /v1/admin/transfers
+
+  Operator visibility into in-flight planned device transfers — the
+  security-relevant pending states between `/v1/transfer/initiate` and
+  `/v1/transfer/complete`. Lists every transfer that can still advance:
+  `accepted`/`completing` rows regardless of expiry (completion has no expiry
+  check, so the target device's credential is live) plus unexpired `pending`
+  ones. Newest first. Admin-authed: the master token (shown here) **or** an
+  active operator companion-app device's signed request (a GET signs the bare
+  path, so paging params vary without re-signing).
+
+  Query params:
+  - `limit` — page size, default 50, max 200.
+  - `cursor` — opaque, from the prior response; absent for the first page.
+
+  Response (camelCase):
+  - `transfers[]` — `{ id, did, handle?, status, createdAt, expiresAt,
+    acceptedAt?, acceptedDevicePlatform? }`. `status` is the stored
+    state-machine state: `pending` | `accepted` | `completing`.
+  - `cursor` — present when another page may exist.
+
+  The 6-char transfer code is deliberately **never** returned: it is a live
+  account-takeover credential (whoever presents it at `/v1/transfer/accept`
+  receives device credentials for the DID). The operator sees the state, not
+  the secret.
+}
