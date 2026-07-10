@@ -1,0 +1,40 @@
+meta {
+  name: Admin Cancel Transfer
+  type: http
+  seq: 112
+}
+
+post {
+  url: {{baseUrl}}/v1/admin/transfers/{{transferId}}/cancel
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+docs {
+  # POST /v1/admin/transfers/:id/cancel
+
+  Operator interruption of an in-flight planned device transfer. One
+  transaction: the transfer flips to the terminal `cancelled` status (its code
+  stops being acceptable immediately and the per-account active slot is freed),
+  the accepted target device credential — if the transfer got that far — is
+  tombstoned (`revoked_at`), and a `transfer.cancelled` audit event is
+  appended. Admin-authed: the master token (shown here) **or** an active
+  operator companion-app device's signed request; the id rides in the signed
+  path, binding a signature to its target.
+
+  Deliberately conservative: the account's existing sessions are untouched (in
+  the benign case they belong to the legitimate user's source device). An
+  operator who believes the account itself is compromised composes this with
+  `POST /v1/admin/accounts/{did}/revoke-credentials`.
+
+  Response (camelCase): `{ id, status: "cancelled", revokedDeviceCredential }`.
+
+  - Repeat cancel — idempotent 200 (`revokedDeviceCredential` false).
+  - `complete` or `expired` transfer — 409 naming the terminal state (a lapsed
+    pending row is swept to `expired` first, so the conflict reports the truth).
+  - Unknown id — 404 (checked after auth).
+}

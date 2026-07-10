@@ -261,6 +261,7 @@
       </Button>
       <Button variant="secondary" onclick={() => goto('/accounts')}>Accounts</Button>
       <Button variant="secondary" onclick={() => goto('/codes')}>Codes</Button>
+      <Button variant="secondary" onclick={() => goto('/transfers')}>Transfers</Button>
       <Button variant="secondary" onclick={() => goto('/devices')}>Devices</Button>
       <Button variant="secondary" onclick={() => goto('/moderation')}>Moderation</Button>
       <Button variant="secondary" onclick={() => goto('/settings')}>Settings</Button>

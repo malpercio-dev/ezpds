@@ -1,7 +1,7 @@
 # Admin Companion (operator console) Mobile App
 
 Last verified: 2026-07-10
-Last updated: 2026-07-10 (credential revocation + Account detail screen; usage/storage moved off moderation)
+Last updated: 2026-07-10 (in-flight device-transfer visibility/cancel: Transfers screen + list/cancel client)
 
 ## Purpose
 
@@ -54,6 +54,12 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   `GET /v1/accounts/claim-codes` — bare path signed, pagination `cursor` appended to the URL
   only, like the moderation GET — and a signed `POST /v1/accounts/claim-codes/revoke` whose
   JSON body carries the code, so a revoke signature is bound to its code),
+  `list_transfers`/`cancel_transfer` (in-flight device-transfer visibility/interrupt: a signed
+  `GET /v1/admin/transfers` — bare path signed, pagination `cursor` appended to the URL only —
+  and a signed `POST /v1/admin/transfers/{id}/cancel` whose transfer id rides in the *path*, so
+  a cancel signature is bound to its transfer; the relay never reports the transfer code, and
+  `TransferList`/`TransferEntry`/`CancelledTransfer` are by-value copies of the wire shape
+  pinned by a deserialization test),
   `revoke_account_credentials` (the operator kill-switch for a compromised account: a signed
   `POST /v1/admin/accounts/{did}/revoke-credentials` — the DID rides in the *path*, so a sweep
   signature is bound to its account; the relay atomically revokes the account's sessions,
@@ -88,6 +94,10 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   `list_claim_codes(pairing_id, cursor?)` (signed inventory page: every minted code with its
   derived status, newest first) / `revoke_claim_code(pairing_id, code)` (signed revoke of a
   live code; already-revoked is idempotent 200, redeemed → `RELAY_REJECTED` 409, unknown → 404),
+  `list_transfers(pairing_id, cursor?)` (signed in-flight device-transfer page: every planned
+  swap that can still advance, newest first, never the code) / `cancel_transfer(pairing_id,
+  transfer_id)` (signed operator interrupt; repeat is idempotent 200, completed/expired →
+  `RELAY_REJECTED` 409, unknown → 404),
   `revoke_account_credentials(pairing_id, did)` (signed account-wide credential sweep; repeat
   sweeps are idempotent 200s of zero counts, unknown DID → `RELAY_REJECTED` 404),
   `biometric_enabled`, `set_biometric_enabled` (plus Phase 6's `get_or_create_device_key`,
@@ -137,7 +147,18 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   **History** panel (terminal codes, facts only). Pinned to a single pairing at entry like
   Devices (`?server=<pairingId>`, else active); pages older codes via the relay cursor with a
   "Load older codes" button; a revoke reloads the inventory so rows report the relay's
-  post-revoke truth, never an optimistic edit. Reached from Home's Codes button). The
+  post-revoke truth, never an optimistic edit. Reached from Home's Codes button),
+  **Transfers** (`src/routes/transfers/` — in-flight planned device swaps on ONE relay: every
+  transfer that can still advance, newest first, with `src/lib/transfers.ts` (Functional Core:
+  `chipFor`/`timelineLine`/`accountLabel`, unit-tested) mapping each state-machine status to
+  its chip — `accepted`/`completing` get the alarm tone, since the target device already holds
+  a working credential. Expandable rows carry a fact sheet and a biometric-gated **Cancel this
+  transfer** (the operator interrupt: the relay flips the transfer terminal and tombstones the
+  accepted device credential; the account's sessions are untouched — the credential sweep on
+  Moderation composes for a compromised account). Pinned to a single pairing at entry like
+  Devices (`?server=<pairingId>`, else active); pages via the relay cursor; a cancel reloads
+  the list so it reports the relay's post-cancel truth. The transfer code never appears —
+  the relay does not return it. Reached from Home's Transfers button). The
   error-state matrix (not-paired / clock-skew / revoked / unreachable / not-found) is rendered by the shared
   `ui/ErrorState.svelte` off `errors.ts`'s `classifyRelayError`. Server identity display (`src/lib/server-identity.ts`)
   pairs the operator nickname with the relay host in monospace everywhere, so staging and production

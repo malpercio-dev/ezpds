@@ -27,6 +27,7 @@ use crate::routes::admin_devices::{
 };
 use crate::routes::admin_list_accounts::list_accounts;
 use crate::routes::admin_revoke_credentials::revoke_account_credentials;
+use crate::routes::admin_transfers::{cancel_admin_transfer, list_admin_transfers};
 use crate::routes::agent_claim::{post_agent_claim, post_agent_claim_confirm};
 use crate::routes::agent_event::post_agent_event;
 use crate::routes::agent_identity::post_agent_identity;
@@ -541,6 +542,11 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/v1/admin/accounts/{id}/revoke-credentials",
             post(revoke_account_credentials),
+        )
+        .route("/v1/admin/transfers", get(list_admin_transfers))
+        .route(
+            "/v1/admin/transfers/{id}/cancel",
+            post(cancel_admin_transfer),
         )
         .route("/v1/admin/pairing-codes", post(mint_pairing_code))
         .route(
