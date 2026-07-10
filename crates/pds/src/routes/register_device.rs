@@ -70,9 +70,10 @@ pub async fn register_device(
 
 /// Atomically redeem a claim code and register the device in a single transaction.
 ///
-/// The UPDATE runs with a WHERE guard (`redeemed_at IS NULL AND expires_at > now`) so a
-/// zero `rows_affected` unambiguously means the code is invalid, expired, or already
-/// redeemed — no race window, and no second SELECT is needed for the guard.
+/// The UPDATE runs with a WHERE guard (`redeemed_at IS NULL AND revoked_at IS NULL AND
+/// expires_at > now`) so a zero `rows_affected` unambiguously means the code is invalid,
+/// expired, revoked, or already redeemed — no race window, and no second SELECT is needed
+/// for the guard.
 ///
 /// Returns the `account_id` (pending_accounts.id) on success.
 /// On any failure after the transaction has begun, the transaction is dropped and
@@ -95,11 +96,12 @@ async fn redeem_and_register(
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to register device"))?;
 
     // Attempt to mark the claim code redeemed. The WHERE guard rejects invalid, expired,
-    // or previously-redeemed codes atomically — no separate SELECT needed.
+    // revoked, or previously-redeemed codes atomically — no separate SELECT needed.
     let result = sqlx::query(
         "UPDATE claim_codes \
          SET redeemed_at = datetime('now') \
-         WHERE code = ? AND redeemed_at IS NULL AND expires_at > datetime('now')",
+         WHERE code = ? AND redeemed_at IS NULL AND revoked_at IS NULL \
+           AND expires_at > datetime('now')",
     )
     .bind(claim_code)
     .execute(&mut *tx)

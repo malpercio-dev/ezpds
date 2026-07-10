@@ -1,12 +1,12 @@
 // pattern: Imperative Shell
 //
-// Gathers: admin Bearer token (Authorization header), JSON request body, DB pool
-// Processes: auth check → input validation → code generation → DB batch insert (transaction)
-// Returns: JSON { codes: [...] } on success; ApiError on all failure paths
+// Gathers: admin credentials (master token or signed device request), JSON body / query, DB pool
+// Processes: auth check → input validation → claim-code mint / inventory list / revoke
+// Returns: JSON on success; ApiError on all failure paths
 
 use axum::{
     body::Bytes,
-    extract::State,
+    extract::{Query, State},
     http::{HeaderMap, Method, Uri},
     response::{IntoResponse, Json, Response},
 };
@@ -15,11 +15,17 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::guards::require_admin_json;
+use crate::auth::guards::{require_admin, require_admin_json};
 use crate::code_gen::generate_code;
+use crate::db::claim_codes::{list_claim_codes, revoke_claim_code, RevokeClaimCodeOutcome};
 use crate::db::is_unique_violation;
 
 const MAX_COUNT: u32 = 10;
+const MAX_LIST_LIMIT: u32 = 200;
+
+fn default_list_limit() -> u32 {
+    50
+}
 
 fn default_expires_in_hours() -> u32 {
     24
@@ -106,6 +112,190 @@ async fn claim_codes_inner(
         ErrorCode::InternalError,
         "failed to generate unique claim codes after retries",
     ))
+}
+
+// ── Inventory: list + revoke ──────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListClaimCodesParams {
+    #[serde(default = "default_list_limit")]
+    limit: u32,
+    /// Opaque cursor from the prior response (the last row's `created_at|code` keyset,
+    /// exclusive); absent for the first page.
+    cursor: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimCodeView {
+    code: String,
+    /// Derived lifecycle: `pending` | `redeemed` | `expired` | `revoked`.
+    status: &'static str,
+    created_at: String,
+    expires_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    redeemed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    revoked_at: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListClaimCodesResponse {
+    codes: Vec<ClaimCodeView>,
+    /// Present when another page may exist; pass back as the `cursor` query param.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cursor: Option<String>,
+}
+
+/// Collapse a row's lifecycle timestamps into the one status word the operator sees.
+///
+/// The states can overlap on a real row (a code redeemed before its expiry passed is now
+/// both "redeemed" and past `expires_at`; a revoked code keeps aging toward expiry), so
+/// this function owns the precedence order.
+/// Precedence: the terminal events win over the clock. A redeemed or revoked code reports
+/// that event forever — never "expired", even once `expires_at` passes — because the event
+/// is the fact the operator acts on (a signup happened / a kill was ordered). `expired`
+/// and `pending` apply only to codes nothing ever happened to. (`redeemed_at` and
+/// `revoked_at` are never both set: the revoke UPDATE refuses a redeemed code and every
+/// redemption UPDATE refuses a revoked one.)
+fn derive_status(row: &crate::db::claim_codes::ClaimCodeRow) -> &'static str {
+    if row.redeemed_at.is_some() {
+        "redeemed"
+    } else if row.revoked_at.is_some() {
+        "revoked"
+    } else if row.is_expired {
+        "expired"
+    } else {
+        "pending"
+    }
+}
+
+/// `GET /v1/accounts/claim-codes` — admin-only claim-code inventory.
+///
+/// Pages the full mint history newest-first on the immutable `(created_at, code)` keyset
+/// (stable across VACUUM, unlike this TEXT-keyed table's implicit rowid — and a table
+/// rebuild for an INTEGER key is off the table: `pending_accounts.claim_code` FK-references
+/// `claim_codes (code)`), each row carrying its derived
+/// lifecycle status. A minted-but-unredeemed code is a live signup credential — this is the
+/// operator's view of what is outstanding. Admin-authed: the master token **or** an active
+/// companion-app device's signed request ([`require_admin`]); a GET signs the empty body.
+pub async fn list_claim_code_inventory(
+    State(state): State<AppState>,
+    Query(params): Query<ListClaimCodesParams>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<ListClaimCodesResponse>, ApiError> {
+    require_admin(method.as_str(), uri.path(), &headers, &body, &state).await?;
+
+    if params.limit == 0 || params.limit > MAX_LIST_LIMIT {
+        return Err(ApiError::new(
+            ErrorCode::InvalidRequest,
+            format!("limit must be between 1 and {MAX_LIST_LIMIT}"),
+        ));
+    }
+    // The opaque cursor is the previous page's last `created_at|code`; created_at never
+    // contains '|' and codes are uppercase alphanumeric, so the first '|' is the seam.
+    let cursor = params
+        .cursor
+        .as_deref()
+        .map(|raw| {
+            raw.split_once('|')
+                .ok_or_else(|| ApiError::new(ErrorCode::InvalidRequest, "malformed cursor"))
+        })
+        .transpose()?;
+
+    let rows = list_claim_codes(&state.db, cursor, params.limit)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to list claim codes");
+            ApiError::new(ErrorCode::InternalError, "failed to list claim codes")
+        })?;
+
+    // A short page means the history is exhausted; a full page may have more.
+    let cursor = (rows.len() == params.limit as usize)
+        .then(|| rows.last().map(|r| format!("{}|{}", r.created_at, r.code)))
+        .flatten();
+    let codes = rows
+        .iter()
+        .map(|row| ClaimCodeView {
+            code: row.code.clone(),
+            status: derive_status(row),
+            created_at: row.created_at.clone(),
+            expires_at: row.expires_at.clone(),
+            redeemed_at: row.redeemed_at.clone(),
+            revoked_at: row.revoked_at.clone(),
+        })
+        .collect();
+
+    Ok(Json(ListClaimCodesResponse { codes, cursor }))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeClaimCodeRequest {
+    code: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeClaimCodeResponse {
+    code: String,
+    status: &'static str,
+}
+
+/// `POST /v1/accounts/claim-codes/revoke` — admin-only claim-code revocation.
+///
+/// The code travels in the JSON body, not the path: it is a live credential, and request
+/// paths leak into places bodies don't (access logs, tracing spans). Idempotent for an
+/// already-revoked code (200, like the device revoke route); a **redeemed** code is 409 —
+/// there is nothing live to kill, and pretending otherwise would hide a signup that already
+/// happened. Unknown codes are 404.
+pub async fn revoke_claim_code_route(
+    State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<RevokeClaimCodeResponse>, Response> {
+    require_admin_json(method.as_str(), uri.path(), &headers, &body, &state).await?;
+    let Json(payload) =
+        Json::<RevokeClaimCodeRequest>::from_bytes(&body).map_err(IntoResponse::into_response)?;
+
+    revoke_inner(&state, payload)
+        .await
+        .map_err(IntoResponse::into_response)
+}
+
+async fn revoke_inner(
+    state: &AppState,
+    payload: RevokeClaimCodeRequest,
+) -> Result<Json<RevokeClaimCodeResponse>, ApiError> {
+    let outcome = revoke_claim_code(&state.db, &payload.code)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to revoke claim code");
+            ApiError::new(ErrorCode::InternalError, "failed to revoke claim code")
+        })?;
+
+    match outcome {
+        RevokeClaimCodeOutcome::Revoked | RevokeClaimCodeOutcome::AlreadyRevoked => {
+            Ok(Json(RevokeClaimCodeResponse {
+                code: payload.code,
+                status: "revoked",
+            }))
+        }
+        RevokeClaimCodeOutcome::Redeemed => Err(ApiError::new(
+            ErrorCode::Conflict,
+            "code has already been redeemed",
+        )),
+        RevokeClaimCodeOutcome::NotFound => {
+            Err(ApiError::new(ErrorCode::NotFound, "unknown claim code"))
+        }
+    }
 }
 
 /// Generate `count` unique codes, ensuring no duplicates within the batch.
@@ -598,6 +788,368 @@ mod tests {
 
         let response = app(state).oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ── Inventory: list ───────────────────────────────────────────────────────
+
+    /// Insert one code directly with explicit lifecycle timestamps. `created_offset`
+    /// matters: the inventory orders on the `(created_at, code)` keyset.
+    async fn seed_code(
+        db: &sqlx::SqlitePool,
+        code: &str,
+        created_offset: &str,
+        expires_offset: &str,
+        redeemed: bool,
+        revoked: bool,
+    ) {
+        sqlx::query(
+            "INSERT INTO claim_codes (code, expires_at, created_at, redeemed_at, revoked_at) \
+             VALUES (?, datetime('now', ?), datetime('now', ?), \
+                     CASE WHEN ? THEN datetime('now') END, \
+                     CASE WHEN ? THEN datetime('now') END)",
+        )
+        .bind(code)
+        .bind(expires_offset)
+        .bind(created_offset)
+        .bind(redeemed)
+        .bind(revoked)
+        .execute(db)
+        .await
+        .expect("seed claim code");
+    }
+
+    fn get_inventory(query: &str, bearer: Option<&str>) -> Request<Body> {
+        let mut builder = Request::builder()
+            .method("GET")
+            .uri(format!("/v1/accounts/claim-codes{query}"));
+        if let Some(token) = bearer {
+            builder = builder.header("Authorization", format!("Bearer {token}"));
+        }
+        builder.body(Body::empty()).unwrap()
+    }
+
+    async fn body_json(response: axum::response::Response) -> serde_json::Value {
+        let body = axum::body::to_bytes(response.into_body(), 65536)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn list_reports_derived_status_newest_first() {
+        let state = test_state_with_admin_token().await;
+        let db = state.db.clone();
+        seed_code(&db, "WAITIN", "-4 minutes", "+24 hours", false, false).await;
+        seed_code(&db, "LAPSED", "-3 minutes", "-1 hours", false, false).await;
+        // Terminal events beat the clock: both of these are past expiry, but they must
+        // report the event, never "expired".
+        seed_code(&db, "SPENT1", "-2 minutes", "-1 hours", true, false).await;
+        seed_code(&db, "KILLED", "-1 minutes", "-1 hours", false, true).await;
+
+        let response = app(state)
+            .oneshot(get_inventory("", Some("test-admin-token")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+
+        let codes = json["codes"].as_array().unwrap();
+        let by_code: std::collections::HashMap<&str, &str> = codes
+            .iter()
+            .map(|c| (c["code"].as_str().unwrap(), c["status"].as_str().unwrap()))
+            .collect();
+        assert_eq!(by_code["WAITIN"], "pending");
+        assert_eq!(by_code["LAPSED"], "expired");
+        assert_eq!(by_code["SPENT1"], "redeemed");
+        assert_eq!(by_code["KILLED"], "revoked");
+
+        // Newest-first: last seeded comes back first.
+        assert_eq!(codes[0]["code"], "KILLED");
+        assert_eq!(codes[3]["code"], "WAITIN");
+        // A short page carries no cursor.
+        assert!(json.get("cursor").is_none());
+    }
+
+    #[tokio::test]
+    async fn list_pages_with_cursor() {
+        let state = test_state_with_admin_token().await;
+        let db = state.db.clone();
+        // Same-second mints (a batch): the keyset's code tiebreak orders them, and the
+        // page boundary inside the batch must not skip or repeat a row.
+        for code in ["CODE01", "CODE02", "CODE03"] {
+            seed_code(&db, code, "-1 minutes", "+24 hours", false, false).await;
+        }
+
+        let first = app(state.clone())
+            .oneshot(get_inventory("?limit=2", Some("test-admin-token")))
+            .await
+            .unwrap();
+        let first_json = body_json(first).await;
+        assert_eq!(first_json["codes"].as_array().unwrap().len(), 2);
+        assert_eq!(first_json["codes"][0]["code"], "CODE03");
+        // The opaque cursor is `created_at|code` — percent-encode it for the query
+        // string exactly like a URL-building client would.
+        let cursor = first_json["cursor"]
+            .as_str()
+            .unwrap()
+            .replace(' ', "%20")
+            .replace('|', "%7C");
+
+        let second = app(state)
+            .oneshot(get_inventory(
+                &format!("?limit=2&cursor={cursor}"),
+                Some("test-admin-token"),
+            ))
+            .await
+            .unwrap();
+        let second_json = body_json(second).await;
+        assert_eq!(second_json["codes"].as_array().unwrap().len(), 1);
+        assert_eq!(second_json["codes"][0]["code"], "CODE01");
+        assert!(second_json.get("cursor").is_none());
+    }
+
+    #[tokio::test]
+    async fn list_rejects_malformed_cursor() {
+        let response = app(test_state_with_admin_token().await)
+            .oneshot(get_inventory(
+                "?cursor=no-seam-here",
+                Some("test-admin-token"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn list_rejects_invalid_limit() {
+        let state = test_state_with_admin_token().await;
+        for query in ["?limit=0", "?limit=201"] {
+            let response = app(state.clone())
+                .oneshot(get_inventory(query, Some("test-admin-token")))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "query {query}");
+        }
+    }
+
+    #[tokio::test]
+    async fn list_requires_admin() {
+        let state = test_state_with_admin_token().await;
+        let missing = app(state.clone())
+            .oneshot(get_inventory("", None))
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+
+        let wrong = app(state)
+            .oneshot(get_inventory("", Some("wrong-token")))
+            .await
+            .unwrap();
+        assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn list_accepts_signed_device_request() {
+        use crate::auth::guards::{
+            admin_request_sign_string, ADMIN_DEVICE_HEADER, ADMIN_NONCE_HEADER,
+            ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
+        };
+        use crate::db::admin_devices::{insert_device, NewAdminDevice};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let state = test_state().await;
+        seed_code(&state.db, "WAITIN", "-1 minutes", "+24 hours", false, false).await;
+        let keypair = crypto::generate_p256_keypair().unwrap();
+        let device_id = uuid::Uuid::new_v4().to_string();
+        insert_device(
+            &state.db,
+            &NewAdminDevice {
+                id: &device_id,
+                label: "Operator iPhone",
+                public_key: &keypair.key_id.0,
+                platform: "ios",
+            },
+        )
+        .await
+        .unwrap();
+
+        // A GET signs the empty body; the query string is not part of the signed path.
+        let path = "/v1/accounts/claim-codes";
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let nonce = "inventory-nonce-1";
+        let sign_string = admin_request_sign_string("GET", path, ts, nonce, b"");
+        let signature = crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes());
+
+        let request = Request::builder()
+            .method("GET")
+            .uri(path)
+            .header(ADMIN_DEVICE_HEADER, &device_id)
+            .header(ADMIN_TIMESTAMP_HEADER, ts.to_string())
+            .header(ADMIN_NONCE_HEADER, nonce)
+            .header(ADMIN_SIGNATURE_HEADER, signature)
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app(state).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json["codes"][0]["code"], "WAITIN");
+    }
+
+    // ── Inventory: revoke ─────────────────────────────────────────────────────
+
+    fn post_revoke(body: &str, bearer: Option<&str>) -> Request<Body> {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/v1/accounts/claim-codes/revoke")
+            .header("Content-Type", "application/json");
+        if let Some(token) = bearer {
+            builder = builder.header("Authorization", format!("Bearer {token}"));
+        }
+        builder.body(Body::from(body.to_string())).unwrap()
+    }
+
+    #[tokio::test]
+    async fn revoke_pending_code_returns_revoked_and_closes_redemption() {
+        let state = test_state_with_admin_token().await;
+        let db = state.db.clone();
+        seed_code(&db, "LIVE01", "-1 minutes", "+24 hours", false, false).await;
+
+        let response = app(state)
+            .oneshot(post_revoke(
+                r#"{"code": "LIVE01"}"#,
+                Some("test-admin-token"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json["code"], "LIVE01");
+        assert_eq!(json["status"], "revoked");
+
+        assert!(
+            !crate::db::claim_codes::claim_code_valid(&db, "LIVE01")
+                .await
+                .unwrap(),
+            "a revoked code must no longer pass the redemption preflight"
+        );
+    }
+
+    #[tokio::test]
+    async fn revoke_is_idempotent() {
+        let state = test_state_with_admin_token().await;
+        seed_code(&state.db, "LIVE01", "-1 minutes", "+24 hours", false, false).await;
+
+        for _ in 0..2 {
+            let response = app(state.clone())
+                .oneshot(post_revoke(
+                    r#"{"code": "LIVE01"}"#,
+                    Some("test-admin-token"),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+    }
+
+    #[tokio::test]
+    async fn revoke_redeemed_code_returns_409() {
+        let state = test_state_with_admin_token().await;
+        seed_code(&state.db, "SPENT1", "-1 minutes", "+24 hours", true, false).await;
+
+        let response = app(state)
+            .oneshot(post_revoke(
+                r#"{"code": "SPENT1"}"#,
+                Some("test-admin-token"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn revoke_unknown_code_returns_404() {
+        let response = app(test_state_with_admin_token().await)
+            .oneshot(post_revoke(
+                r#"{"code": "GHOST1"}"#,
+                Some("test-admin-token"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn revoke_requires_admin() {
+        let state = test_state_with_admin_token().await;
+        seed_code(&state.db, "LIVE01", "-1 minutes", "+24 hours", false, false).await;
+
+        let missing = app(state.clone())
+            .oneshot(post_revoke(r#"{"code": "LIVE01"}"#, None))
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+
+        let wrong = app(state)
+            .oneshot(post_revoke(r#"{"code": "LIVE01"}"#, Some("wrong-token")))
+            .await
+            .unwrap();
+        assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn revoke_accepts_signed_device_request() {
+        use crate::auth::guards::{
+            admin_request_sign_string, ADMIN_DEVICE_HEADER, ADMIN_NONCE_HEADER,
+            ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
+        };
+        use crate::db::admin_devices::{insert_device, NewAdminDevice};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let state = test_state().await;
+        seed_code(&state.db, "LIVE01", "-1 minutes", "+24 hours", false, false).await;
+        let keypair = crypto::generate_p256_keypair().unwrap();
+        let device_id = uuid::Uuid::new_v4().to_string();
+        insert_device(
+            &state.db,
+            &NewAdminDevice {
+                id: &device_id,
+                label: "Operator iPhone",
+                public_key: &keypair.key_id.0,
+                platform: "ios",
+            },
+        )
+        .await
+        .unwrap();
+
+        let body = r#"{"code":"LIVE01"}"#;
+        let path = "/v1/accounts/claim-codes/revoke";
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let nonce = "revoke-nonce-1";
+        let sign_string = admin_request_sign_string("POST", path, ts, nonce, body.as_bytes());
+        let signature = crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes());
+
+        let request = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("Content-Type", "application/json")
+            .header(ADMIN_DEVICE_HEADER, &device_id)
+            .header(ADMIN_TIMESTAMP_HEADER, ts.to_string())
+            .header(ADMIN_NONCE_HEADER, nonce)
+            .header(ADMIN_SIGNATURE_HEADER, signature)
+            .body(Body::from(body))
+            .unwrap();
+
+        let response = app(state).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json["status"], "revoked");
     }
 
     #[tokio::test]

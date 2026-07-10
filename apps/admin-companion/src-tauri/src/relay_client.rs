@@ -544,6 +544,33 @@ pub fn build_list_accounts_request(
     Ok(req)
 }
 
+// ── Claim-code inventory (list / revoke) ─────────────────────────────────────
+
+/// Build the signed inventory page lookup (`GET /v1/accounts/claim-codes?cursor=…`).
+///
+/// Like the moderation lookup, the relay's guard verifies the signature over
+/// `uri.path()` only, so the bare path is signed and the pagination query is appended
+/// to the URL *after* signing.
+pub fn build_list_claim_codes_request(
+    pairing: &Pairing,
+    cursor: Option<&str>,
+    timestamp: i64,
+    nonce: &str,
+) -> Result<SignedRequest, RelayClientError> {
+    let mut req = build_signed_request(
+        pairing,
+        "GET",
+        "/v1/accounts/claim-codes",
+        b"",
+        timestamp,
+        nonce,
+    )?;
+    if let Some(cursor) = cursor {
+        req.url = append_query(&req.url, &[("cursor", cursor)])?;
+    }
+    Ok(req)
+}
+
 /// Fetch a page of the relay's account list (DID order, cursor pagination, optional
 /// status/search filters) via a signed `GET`. Id-addressed like [`list_devices`], so a
 /// concurrent active-pairing switch can never redirect which relay is asked (or signed
@@ -556,6 +583,46 @@ pub async fn list_accounts(
     let signed = build_list_accounts_request(&pairing, &query, unix_now(), &fresh_nonce())?;
     let response = send(signed).await?;
     parse_success::<AccountList>(response).await
+}
+
+/// Page the claim-code inventory from the given pairing's relay via a signed `GET` —
+/// every minted code with its derived lifecycle status, newest first. Id-addressed like
+/// [`list_devices`], so a concurrent active-pairing switch can never redirect which
+/// relay is asked (or signed for). `cursor` is the previous page's `cursor` value.
+pub async fn list_claim_codes(
+    pairing_id: &str,
+    cursor: Option<String>,
+) -> Result<ClaimCodeInventory, RelayClientError> {
+    let pairing = resolve_pairing(pairing_id)?;
+    let signed =
+        build_list_claim_codes_request(&pairing, cursor.as_deref(), unix_now(), &fresh_nonce())?;
+    let response = send(signed).await?;
+    parse_success::<ClaimCodeInventory>(response).await
+}
+
+/// Revoke a claim code on the given pairing's relay via a signed `POST` — kill a
+/// minted-but-unredeemed signup credential. The code travels in the signed body, so a
+/// revoke signature is bound to its code. Idempotent for an already-revoked code; a
+/// redeemed code is refused by the relay with 409 (surfaced as `RELAY_REJECTED`).
+pub async fn revoke_claim_code(
+    pairing_id: &str,
+    code: &str,
+) -> Result<RevokedClaimCode, RelayClientError> {
+    let pairing = resolve_pairing(pairing_id)?;
+    let body = serde_json::to_vec(&RevokeClaimCodeRequestBody {
+        code: code.to_string(),
+    })
+    .expect("RevokeClaimCodeRequestBody serializes");
+    let signed = build_signed_request(
+        &pairing,
+        "POST",
+        "/v1/accounts/claim-codes/revoke",
+        &body,
+        unix_now(),
+        &fresh_nonce(),
+    )?;
+    let response = send(signed).await?;
+    parse_success::<RevokedClaimCode>(response).await
 }
 
 /// Send an already-built [`SignedRequest`] and return the raw response.
@@ -616,6 +683,46 @@ pub struct AdminDevice {
 #[derive(serde::Deserialize)]
 struct ListDevicesResponseBody {
     devices: Vec<AdminDevice>,
+}
+
+/// One claim code as the relay's inventory reports it — the shape of `ClaimCodeView`
+/// in `crates/pds/src/routes/claim_codes.rs` (camelCase on the wire; re-serialized
+/// camelCase over IPC). The `pds` crate is binary-only, so this contract is shared by
+/// value, not import — a deserialization test pins it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimCodeEntry {
+    pub code: String,
+    /// Derived server-side: `"pending"` | `"redeemed"` | `"expired"` | `"revoked"`.
+    /// The terminal events win over the clock — a redeemed/revoked code never reports
+    /// `expired`.
+    pub status: String,
+    pub created_at: String,
+    pub expires_at: String,
+    pub redeemed_at: Option<String>,
+    pub revoked_at: Option<String>,
+}
+
+/// One inventory page: newest-first entries plus the cursor for the next page (absent
+/// when the history is exhausted).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimCodeInventory {
+    pub codes: Vec<ClaimCodeEntry>,
+    pub cursor: Option<String>,
+}
+
+#[derive(Serialize)]
+struct RevokeClaimCodeRequestBody {
+    code: String,
+}
+
+/// The relay's post-revoke report: the code and its resulting status (`"revoked"`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokedClaimCode {
+    pub code: String,
+    pub status: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -1582,6 +1689,162 @@ mod tests {
             header(&restore, signing::ADMIN_SIGNATURE_HEADER),
             "a takedown signature must not be valid for a restore"
         );
+    }
+
+    // The inventory lookup: like the moderation GET, the signature covers the bare path
+    // and the pagination query is appended to the URL only.
+    #[test]
+    fn signed_list_claim_codes_request_signs_path_without_query() {
+        keychain::clear_for_test();
+        let key = device_key::get_or_create().expect("device key");
+        let pairing = test_pairing("device-xyz", "https://relay.example");
+
+        let req = build_list_claim_codes_request(&pairing, Some("42"), 1_700_000_000, "nonce-inv")
+            .expect("build signed inventory lookup");
+
+        assert_eq!(
+            req.url,
+            "https://relay.example/v1/accounts/claim-codes?cursor=42"
+        );
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.body, b"");
+
+        // The relay reconstructs the envelope from uri.path() — no query — and verifies.
+        let path = "/v1/accounts/claim-codes";
+        let sign_string =
+            signing::request_sign_string("GET", path, 1_700_000_000, "nonce-inv", b"");
+        verify_p256_signature(
+            &DidKeyUri(key.key_id.clone()),
+            sign_string.as_bytes(),
+            &decode_sig(header(&req, signing::ADMIN_SIGNATURE_HEADER)),
+        )
+        .expect("the relay's verifier must accept this inventory lookup");
+
+        // A first page omits the cursor from the URL entirely.
+        let first_page = build_list_claim_codes_request(&pairing, None, 1_700_000_000, "nonce-inv")
+            .expect("build first-page lookup");
+        assert_eq!(
+            first_page.url,
+            "https://relay.example/v1/accounts/claim-codes"
+        );
+    }
+
+    // The revoke write: the exact serialized body is pinned, its hash is what the
+    // signature commits to, and the relay's own verifier accepts the envelope. The body
+    // binds the target code — a signature minted to revoke one code is not valid for
+    // another.
+    #[test]
+    fn signed_revoke_claim_code_request_pins_body_and_verifies() {
+        keychain::clear_for_test();
+        let key = device_key::get_or_create().expect("device key");
+        let pairing = test_pairing("device-xyz", "https://relay.example");
+
+        let body = serde_json::to_vec(&RevokeClaimCodeRequestBody {
+            code: "ABC123".to_string(),
+        })
+        .unwrap();
+        let req = build_signed_request(
+            &pairing,
+            "POST",
+            "/v1/accounts/claim-codes/revoke",
+            &body,
+            1_700_000_000,
+            "nonce-rvk",
+        )
+        .expect("build signed revoke");
+
+        assert_eq!(
+            req.url,
+            "https://relay.example/v1/accounts/claim-codes/revoke"
+        );
+        // `require_admin_json` refuses the request with 415 without this header.
+        assert_eq!(header(&req, "Content-Type"), "application/json");
+        assert_eq!(
+            std::str::from_utf8(&req.body).unwrap(),
+            r#"{"code":"ABC123"}"#
+        );
+
+        let sign_string = signing::request_sign_string(
+            "POST",
+            "/v1/accounts/claim-codes/revoke",
+            1_700_000_000,
+            "nonce-rvk",
+            &req.body,
+        );
+        verify_p256_signature(
+            &DidKeyUri(key.key_id.clone()),
+            sign_string.as_bytes(),
+            &decode_sig(header(&req, signing::ADMIN_SIGNATURE_HEADER)),
+        )
+        .expect("the relay's verifier must accept this revoke request");
+
+        // A different code changes the body hash, so the signature must differ.
+        let other_body = serde_json::to_vec(&RevokeClaimCodeRequestBody {
+            code: "XYZ789".to_string(),
+        })
+        .unwrap();
+        let other = build_signed_request(
+            &pairing,
+            "POST",
+            "/v1/accounts/claim-codes/revoke",
+            &other_body,
+            1_700_000_000,
+            "nonce-rvk",
+        )
+        .expect("build signed revoke for another code");
+        assert_ne!(
+            header(&req, signing::ADMIN_SIGNATURE_HEADER),
+            header(&other, signing::ADMIN_SIGNATURE_HEADER),
+            "a revoke signature must be bound to its code"
+        );
+    }
+
+    // Pins the relay's inventory wire shapes by value (`ClaimCodeView` /
+    // `ListClaimCodesResponse` / `RevokeClaimCodeResponse` in
+    // crates/pds/src/routes/claim_codes.rs; the `pds` crate is binary-only, so the
+    // contract is shared by value, not import). Absent optional fields (`redeemedAt`,
+    // `revokedAt`, `cursor`) are omitted from the relay's JSON, not null.
+    #[test]
+    fn claim_code_inventory_deserializes_the_relay_shape() {
+        let json = r#"{
+            "codes": [
+                {
+                    "code": "KILLED",
+                    "status": "revoked",
+                    "createdAt": "2026-07-10 12:00:00",
+                    "expiresAt": "2026-07-11 12:00:00",
+                    "revokedAt": "2026-07-10 13:00:00"
+                },
+                {
+                    "code": "WAITIN",
+                    "status": "pending",
+                    "createdAt": "2026-07-10 11:00:00",
+                    "expiresAt": "2026-07-11 11:00:00"
+                }
+            ],
+            "cursor": "17"
+        }"#;
+        let page: ClaimCodeInventory = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(page.cursor.as_deref(), Some("17"));
+        assert_eq!(page.codes.len(), 2);
+        assert_eq!(page.codes[0].code, "KILLED");
+        assert_eq!(page.codes[0].status, "revoked");
+        assert_eq!(
+            page.codes[0].revoked_at.as_deref(),
+            Some("2026-07-10 13:00:00")
+        );
+        assert_eq!(page.codes[0].redeemed_at, None);
+        assert_eq!(page.codes[1].status, "pending");
+
+        // A final page omits the cursor.
+        let last: ClaimCodeInventory =
+            serde_json::from_str(r#"{"codes": []}"#).expect("deserialize final page");
+        assert_eq!(last.cursor, None);
+
+        let revoked: RevokedClaimCode =
+            serde_json::from_str(r#"{"code":"ABC123","status":"revoked"}"#).expect("deserialize");
+        assert_eq!(revoked.code, "ABC123");
+        assert_eq!(revoked.status, "revoked");
     }
 
     // Pins the relay's subject-status wire shape by value (`RepoRefView`/`StatusAttrView`

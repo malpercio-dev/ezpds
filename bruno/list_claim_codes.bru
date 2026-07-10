@@ -1,0 +1,45 @@
+meta {
+  name: List Claim Codes
+  type: http
+  seq: 108
+}
+
+get {
+  url: {{baseUrl}}/v1/accounts/claim-codes?limit=50
+  body: none
+  auth: bearer
+}
+
+params:query {
+  limit: 50
+  ~cursor:
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+docs {
+  # GET /v1/accounts/claim-codes
+
+  Admin-only claim-code inventory: pages the full mint history newest-first, each row
+  carrying its derived lifecycle status. A minted-but-unredeemed code is a live signup
+  credential — this is the operator's view of what is outstanding.
+
+  Admin-authed via `require_admin`: the master token (shown here) **or** a companion-app
+  device's signed request (a GET signs the empty body; the query string is not part of
+  the signed path).
+
+  Query:
+  - `limit` — page size, 1..=200 (default 50).
+  - `cursor` — the previous response's `cursor` value; absent for the first page.
+
+  Response:
+  - `codes` — newest-first entries: `code`, `status`, `createdAt`, `expiresAt`, and
+    `redeemedAt`/`revokedAt` when set.
+  - `cursor` — present when another page may exist.
+
+  Status is derived, never stored: `pending` | `redeemed` | `expired` | `revoked`.
+  The terminal events win over the clock — a redeemed or revoked code reports that
+  event forever, never `expired`, even once `expiresAt` passes.
+}

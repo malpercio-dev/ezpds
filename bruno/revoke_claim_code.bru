@@ -1,0 +1,46 @@
+meta {
+  name: Revoke Claim Code
+  type: http
+  seq: 109
+}
+
+post {
+  url: {{baseUrl}}/v1/accounts/claim-codes/revoke
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+body:json {
+  {
+    "code": "ABC123"
+  }
+}
+
+docs {
+  # POST /v1/accounts/claim-codes/revoke
+
+  Revoke a claim code: tombstone it with `revoked_at` so every redemption path refuses it
+  from this moment on, exactly like expiry. The row survives as the audit record of the
+  kill (the inventory shows it as `revoked`).
+
+  The code travels in the JSON body, not the path — it is a live credential, and request
+  paths leak into places bodies don't (access logs, tracing spans).
+
+  Admin-authed via `require_admin`: the master token (shown here) **or** a companion-app
+  device's signed request.
+
+  Body:
+  - `code` — the claim code to revoke.
+
+  Response:
+  - `code`, `status: "revoked"`.
+
+  Idempotent: revoking an already-revoked code is a 200 no-op. A **redeemed** code is a
+  409 — there is nothing live to kill, and pretending otherwise would hide a signup that
+  already happened. An unknown code is a 404. An expired-but-pending code still revokes
+  (harmless, and the tombstone records the operator's intent).
+}

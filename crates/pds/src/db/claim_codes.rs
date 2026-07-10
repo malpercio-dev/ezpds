@@ -11,7 +11,8 @@ use crate::code_gen::generate_code;
 pub async fn claim_code_valid(db: &SqlitePool, code: &str) -> Result<bool, ApiError> {
     let valid: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM claim_codes \
-         WHERE code = ? AND redeemed_at IS NULL AND expires_at > datetime('now'))",
+         WHERE code = ? AND redeemed_at IS NULL AND revoked_at IS NULL \
+           AND expires_at > datetime('now'))",
     )
     .bind(code)
     .fetch_one(db)
@@ -22,6 +23,111 @@ pub async fn claim_code_valid(db: &SqlitePool, code: &str) -> Result<bool, ApiEr
     })?;
 
     Ok(valid)
+}
+
+/// One claim code's stored lifecycle. Status is derived, not stored (V004/V041):
+/// `redeemed_at`/`revoked_at` are NULL until that transition happens, and expiry is a
+/// comparison against the clock — `is_expired` carries that comparison out of SQL so
+/// callers never re-derive "now" inconsistently.
+pub struct ClaimCodeRow {
+    pub code: String,
+    pub created_at: String,
+    pub expires_at: String,
+    pub redeemed_at: Option<String>,
+    pub revoked_at: Option<String>,
+    /// Whether `expires_at` has passed, evaluated by SQLite at query time.
+    pub is_expired: bool,
+}
+
+/// Page the claim-code inventory newest-first on the `(created_at, code)` keyset — both
+/// immutable, together unique (codes are globally unique), and unlike this TEXT-keyed
+/// table's implicit rowid, stable across VACUUM. `cursor` is the last row of the previous
+/// page (exclusive); `None` starts from the newest mint.
+pub async fn list_claim_codes(
+    db: &SqlitePool,
+    cursor: Option<(&str, &str)>,
+    limit: u32,
+) -> Result<Vec<ClaimCodeRow>, sqlx::Error> {
+    let (cursor_created_at, cursor_code) = match cursor {
+        Some((created_at, code)) => (Some(created_at), Some(code)),
+        None => (None, None),
+    };
+    let rows = sqlx::query_as::<_, (String, String, String, Option<String>, Option<String>, bool)>(
+        "SELECT code, created_at, expires_at, redeemed_at, revoked_at, \
+                (expires_at <= datetime('now')) \
+         FROM claim_codes \
+         WHERE (? IS NULL OR (created_at, code) < (?, ?)) \
+         ORDER BY created_at DESC, code DESC LIMIT ?",
+    )
+    .bind(cursor_created_at)
+    .bind(cursor_created_at)
+    .bind(cursor_code)
+    .bind(limit)
+    .fetch_all(db)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(code, created_at, expires_at, redeemed_at, revoked_at, is_expired)| ClaimCodeRow {
+                code,
+                created_at,
+                expires_at,
+                redeemed_at,
+                revoked_at,
+                is_expired,
+            },
+        )
+        .collect())
+}
+
+/// What a revocation attempt found. Only a never-redeemed, never-revoked code transitions;
+/// the other cases let the route report honestly instead of pretending a spent code was killed.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RevokeClaimCodeOutcome {
+    /// This call set `revoked_at`. An expired-but-pending code still revokes (harmless, and
+    /// the tombstone records the operator's intent).
+    Revoked,
+    /// The code was already revoked — idempotent success for the caller.
+    AlreadyRevoked,
+    /// The code was already redeemed: there is nothing live to kill.
+    Redeemed,
+    NotFound,
+}
+
+/// Revoke a claim code: atomically set `revoked_at` iff the code is unredeemed and not
+/// already revoked. The guarded UPDATE is the authoritative transition (mirroring the
+/// single-use redemption UPDATEs); the follow-up SELECT only classifies a failed attempt,
+/// which is race-free because all three non-transition states are terminal.
+pub async fn revoke_claim_code(
+    db: &SqlitePool,
+    code: &str,
+) -> Result<RevokeClaimCodeOutcome, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE claim_codes SET revoked_at = datetime('now') \
+         WHERE code = ? AND redeemed_at IS NULL AND revoked_at IS NULL",
+    )
+    .bind(code)
+    .execute(db)
+    .await?;
+    if result.rows_affected() == 1 {
+        return Ok(RevokeClaimCodeOutcome::Revoked);
+    }
+
+    let row = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+        "SELECT redeemed_at, revoked_at FROM claim_codes WHERE code = ?",
+    )
+    .bind(code)
+    .fetch_optional(db)
+    .await?;
+    Ok(match row {
+        Some((Some(_), _)) => RevokeClaimCodeOutcome::Redeemed,
+        Some((None, Some(_))) => RevokeClaimCodeOutcome::AlreadyRevoked,
+        // The UPDATE matched nothing yet the row is unredeemed and unrevoked: impossible
+        // (those states never un-set), so treat it as the closest honest answer.
+        Some((None, None)) => RevokeClaimCodeOutcome::NotFound,
+        None => RevokeClaimCodeOutcome::NotFound,
+    })
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -154,5 +260,145 @@ mod tests {
             .expect_err("closed pool returns storage error");
 
         assert!(matches!(err, MintClaimCodesError::Store(_)));
+    }
+
+    // ── Inventory: list ───────────────────────────────────────────────────────
+
+    /// Insert one code directly with explicit lifecycle timestamps. `created_offset`
+    /// matters: the inventory orders on the `(created_at, code)` keyset, so tests seed
+    /// distinct mint times unless they are exercising the same-second tiebreak.
+    async fn seed_code(
+        db: &SqlitePool,
+        code: &str,
+        created_offset: &str,
+        expires_offset: &str,
+        redeemed: bool,
+        revoked: bool,
+    ) {
+        sqlx::query(
+            "INSERT INTO claim_codes (code, expires_at, created_at, redeemed_at, revoked_at) \
+             VALUES (?, datetime('now', ?), datetime('now', ?), \
+                     CASE WHEN ? THEN datetime('now') END, \
+                     CASE WHEN ? THEN datetime('now') END)",
+        )
+        .bind(code)
+        .bind(expires_offset)
+        .bind(created_offset)
+        .bind(redeemed)
+        .bind(revoked)
+        .execute(db)
+        .await
+        .expect("seed claim code");
+    }
+
+    #[tokio::test]
+    async fn list_returns_newest_first_with_lifecycle_fields() {
+        let db = test_db().await;
+        seed_code(&db, "OLDEST", "-4 minutes", "+24 hours", false, false).await;
+        seed_code(&db, "SPENT1", "-3 minutes", "+24 hours", true, false).await;
+        seed_code(&db, "KILLED", "-2 minutes", "+24 hours", false, true).await;
+        seed_code(&db, "LAPSED", "-1 minutes", "-1 hours", false, false).await;
+
+        let rows = list_claim_codes(&db, None, 10).await.expect("list");
+
+        let codes: Vec<&str> = rows.iter().map(|r| r.code.as_str()).collect();
+        assert_eq!(codes, vec!["LAPSED", "KILLED", "SPENT1", "OLDEST"]);
+        assert!(rows[0].is_expired, "LAPSED is past its expiry");
+        assert!(rows[1].revoked_at.is_some(), "KILLED carries its tombstone");
+        assert!(rows[2].redeemed_at.is_some(), "SPENT1 carries redeemed_at");
+        assert!(
+            !rows[3].is_expired && rows[3].redeemed_at.is_none() && rows[3].revoked_at.is_none(),
+            "OLDEST is still pending"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_pages_by_keyset_cursor() {
+        let db = test_db().await;
+        seed_code(&db, "CODE01", "-3 minutes", "+24 hours", false, false).await;
+        seed_code(&db, "CODE02", "-2 minutes", "+24 hours", false, false).await;
+        seed_code(&db, "CODE03", "-1 minutes", "+24 hours", false, false).await;
+
+        let first = list_claim_codes(&db, None, 2).await.expect("first page");
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0].code, "CODE03");
+
+        let second = list_claim_codes(&db, Some((&first[1].created_at, &first[1].code)), 2)
+            .await
+            .expect("second page");
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].code, "CODE01");
+    }
+
+    #[tokio::test]
+    async fn list_pages_same_second_mints_without_skip_or_duplicate() {
+        // A batch mint stamps every code with the same created_at; the code column is
+        // the keyset tiebreak, so a page boundary inside the batch must not skip or
+        // repeat a row.
+        let db = test_db().await;
+        for code in ["BATCHA", "BATCHB", "BATCHC"] {
+            seed_code(&db, code, "-1 minutes", "+24 hours", false, false).await;
+        }
+
+        let first = list_claim_codes(&db, None, 2).await.expect("first page");
+        let second = list_claim_codes(&db, Some((&first[1].created_at, &first[1].code)), 2)
+            .await
+            .expect("second page");
+
+        let mut all: Vec<&str> = first
+            .iter()
+            .chain(&second)
+            .map(|r| r.code.as_str())
+            .collect();
+        all.sort_unstable();
+        assert_eq!(all, vec!["BATCHA", "BATCHB", "BATCHC"]);
+    }
+
+    // ── Inventory: revoke ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn revoke_pending_code_sets_tombstone_and_closes_redemption() {
+        let db = test_db().await;
+        seed_code(&db, "LIVE01", "-1 minutes", "+24 hours", false, false).await;
+
+        let outcome = revoke_claim_code(&db, "LIVE01").await.expect("revoke");
+        assert_eq!(outcome, RevokeClaimCodeOutcome::Revoked);
+
+        assert!(
+            !claim_code_valid(&db, "LIVE01").await.expect("preflight"),
+            "a revoked code must no longer pass the redemption preflight"
+        );
+    }
+
+    #[tokio::test]
+    async fn revoke_is_idempotent_and_reports_terminal_states() {
+        let db = test_db().await;
+        seed_code(&db, "LIVE01", "-1 minutes", "+24 hours", false, false).await;
+        seed_code(&db, "SPENT1", "-1 minutes", "+24 hours", true, false).await;
+
+        revoke_claim_code(&db, "LIVE01").await.expect("first");
+        assert_eq!(
+            revoke_claim_code(&db, "LIVE01").await.expect("repeat"),
+            RevokeClaimCodeOutcome::AlreadyRevoked
+        );
+        assert_eq!(
+            revoke_claim_code(&db, "SPENT1").await.expect("redeemed"),
+            RevokeClaimCodeOutcome::Redeemed
+        );
+        assert_eq!(
+            revoke_claim_code(&db, "GHOST1").await.expect("unknown"),
+            RevokeClaimCodeOutcome::NotFound
+        );
+    }
+
+    #[tokio::test]
+    async fn revoke_works_on_expired_pending_code() {
+        let db = test_db().await;
+        seed_code(&db, "LAPSED", "-1 minutes", "-1 hours", false, false).await;
+
+        assert_eq!(
+            revoke_claim_code(&db, "LAPSED").await.expect("revoke"),
+            RevokeClaimCodeOutcome::Revoked
+        );
     }
 }

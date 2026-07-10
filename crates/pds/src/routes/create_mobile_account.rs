@@ -182,12 +182,13 @@ async fn provision_mobile_account(
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to create account"))?;
 
     // Attempt to mark the claim code redeemed. The WHERE guard rejects invalid, expired,
-    // and previously-redeemed codes in one atomic step — no separate SELECT needed for
-    // the guard itself. A 0 rows_affected result is classified below.
+    // revoked, and previously-redeemed codes in one atomic step — no separate SELECT needed
+    // for the guard itself. A 0 rows_affected result is classified below.
     let result = sqlx::query(
         "UPDATE claim_codes \
          SET redeemed_at = datetime('now') \
-         WHERE code = ? AND redeemed_at IS NULL AND expires_at > datetime('now')",
+         WHERE code = ? AND redeemed_at IS NULL AND revoked_at IS NULL \
+           AND expires_at > datetime('now')",
     )
     .bind(claim_code)
     .execute(&mut *tx)
