@@ -486,13 +486,18 @@ export const resolveIdentity = (handleOrDid: string): Promise<IdentityInfo> =>
   invoke('resolve_identity', { handleOrDid });
 
 /**
- * True when a `plugin:auth-session|start` rejection is a genuine user dismissal.
- * The plugin rejects with plain strings; both platform implementations reject with the
- * exact sentinel "user_cancelled" when the user closes the sheet, and with descriptive
- * text ("Auth session error: …", "No browser available…") for real failures.
+ * Map a `plugin:auth-session|start` rejection to the flow's typed error. The plugin
+ * rejects with plain strings, and both platform implementations use the exact sentinel
+ * "user_cancelled" for a dismissed sheet — only that may read as the flow's cancellation
+ * error. Anything else ("Auth session error: …", "No browser available…") surfaces as
+ * NETWORK_ERROR carrying the plugin's message, so a network drop or platform failure
+ * is never presented as a cancellation the user didn't make.
  */
-const isAuthSessionCancellation = (raw: unknown): raw is 'user_cancelled' =>
-  raw === 'user_cancelled';
+const classifyAuthSessionRejection = (
+  raw: unknown,
+  cancellation: ClaimError | MigrationError,
+): ClaimError | MigrationError =>
+  raw === 'user_cancelled' ? cancellation : { code: 'NETWORK_ERROR', message: String(raw) };
 
 /**
  * Authenticate with the identity's existing PDS via OAuth 2.0 PKCE + DPoP, using the native
@@ -515,13 +520,8 @@ export const startPdsAuth = async (pdsUrl: string): Promise<void> => {
       callbackUrlScheme: prepared.callbackScheme,
     });
   } catch (raw: unknown) {
-    // Only a genuine dismissal may read as unauthorized — a network drop or platform
-    // auth-session failure must surface as retryable, not as a cancellation the user
-    // never made.
-    if (isAuthSessionCancellation(raw)) {
-      throw { code: 'UNAUTHORIZED' } as ClaimError;
-    }
-    throw { code: 'NETWORK_ERROR', message: String(raw) } as ClaimError;
+    // A dismissed sheet reads as unauthorized; anything else surfaces as retryable.
+    throw classifyAuthSessionRejection(raw, { code: 'UNAUTHORIZED' });
   }
   await invoke('complete_pds_auth', { callbackUrl });
 };
@@ -790,12 +790,11 @@ export const startSourceAuth = async (did: string): Promise<void> => {
       callbackUrlScheme: prepared.callbackScheme,
     });
   } catch (raw: unknown) {
-    // Same mapping as startPdsAuth: only a genuine dismissal reads as a cancellation;
-    // anything else must surface as retryable instead of blaming the user.
-    if (isAuthSessionCancellation(raw)) {
-      throw { code: 'SOURCE_AUTH_FAILED', message: 'auth session cancelled' } as MigrationError;
-    }
-    throw { code: 'NETWORK_ERROR', message: String(raw) } as MigrationError;
+    // A dismissed sheet reads as a cancellation; anything else surfaces as retryable.
+    throw classifyAuthSessionRejection(raw, {
+      code: 'SOURCE_AUTH_FAILED',
+      message: 'auth session cancelled',
+    });
   }
   await invoke('complete_source_auth', { did, callbackUrl });
 };

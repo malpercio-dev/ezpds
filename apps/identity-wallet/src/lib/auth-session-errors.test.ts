@@ -117,4 +117,16 @@ describe('startSourceAuth', () => {
       message: 'No browser available to handle authentication',
     });
   });
+
+  it('passes prepare failures through unchanged (already typed by Rust)', async () => {
+    scriptInvoke({
+      prepare_source_auth: () => Promise.reject({ code: 'SOURCE_AUTH_FAILED', message: 'PAR failed' }),
+    });
+
+    await expect(startSourceAuth('did:plc:abc')).rejects.toEqual({
+      code: 'SOURCE_AUTH_FAILED',
+      message: 'PAR failed',
+    });
+    expect(invoke).not.toHaveBeenCalledWith('plugin:auth-session|start', expect.anything());
+  });
 });
