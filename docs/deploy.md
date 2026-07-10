@@ -81,7 +81,7 @@ CI/CD lives on **GitHub**. Deploys use **Railway's native GitHub integration** â
 | Environment | Railway watches | Deploys when |
 |-------------|-----------------|--------------|
 | **staging** (`ezpds-staging.up.railway.app`, serverless sleep) | `main` branch | a PR merges to `main` (after CI passes) |
-| **production** (`ezpds-production.up.railway.app`, kept warm) | `production` branch | the `production` branch is advanced to a `v*` tag (after CI passes) |
+| **production** (`obsign.org` custom domain, kept warm) | `production` branch | the `production` branch is advanced to a `v*` tag (after CI passes) |
 
 Each environment has its own secrets (distinct master key, admin token, user-domain list) and its own `/data` volume, set in the Railway dashboard. Merging to `main` deploys **staging only** â€” production never moves on a `main` merge.
 
