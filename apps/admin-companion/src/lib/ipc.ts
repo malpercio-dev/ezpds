@@ -246,6 +246,58 @@ export function getAccountStorage(pairingId: string, did: string): Promise<Accou
   return invoke<AccountStorage>('get_account_storage', { pairingId, did });
 }
 
+/**
+ * One claim code in the relay's inventory, as the relay reports it. Status is derived
+ * server-side; the terminal events win over the clock — a redeemed or revoked code
+ * never reports 'expired', even once `expiresAt` passes. Timestamps are the relay's
+ * SQLite UTC datetime strings; `redeemedAt`/`revokedAt` are absent until that
+ * transition happens.
+ */
+export interface ClaimCodeEntry {
+  code: string;
+  status: 'pending' | 'redeemed' | 'expired' | 'revoked';
+  createdAt: string;
+  expiresAt: string;
+  redeemedAt?: string;
+  revokedAt?: string;
+}
+
+/** One inventory page: newest-first entries plus the cursor for the next page. */
+export interface ClaimCodeInventory {
+  codes: ClaimCodeEntry[];
+  /** Present when another page may exist; pass back to {@link listClaimCodes}. */
+  cursor?: string;
+}
+
+/** The relay's post-revoke report. */
+export interface RevokedClaimCode {
+  code: string;
+  status: string;
+}
+
+/**
+ * Page the claim-code inventory from the given pairing's relay via a signed request —
+ * every minted code with its derived lifecycle status, newest first. A
+ * minted-but-unredeemed code is a live signup credential; this is the operator's view
+ * of what is outstanding. Throws a {@link RelayClientError}.
+ */
+export function listClaimCodes(
+  pairingId: string,
+  cursor?: string,
+): Promise<ClaimCodeInventory> {
+  return invoke<ClaimCodeInventory>('list_claim_codes', { pairingId, cursor: cursor ?? null });
+}
+
+/**
+ * Revoke a claim code on the given pairing's relay via a signed request — kill a
+ * minted-but-unredeemed signup credential. Idempotent for an already-revoked code; a
+ * redeemed code is `RELAY_REJECTED` with status 409 (nothing live to kill), an unknown
+ * code with 404. This signs — callers must run the biometric gate first.
+ */
+export function revokeClaimCode(pairingId: string, code: string): Promise<RevokedClaimCode> {
+  return invoke<RevokedClaimCode>('revoke_claim_code', { pairingId, code });
+}
+
 /** Whether the biometric (user-presence) gate on signing actions is enabled (default on). */
 export function biometricEnabled(): Promise<boolean> {
   return invoke<boolean>('biometric_enabled');

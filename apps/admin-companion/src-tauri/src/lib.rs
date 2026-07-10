@@ -150,6 +150,27 @@ async fn get_account_storage(
     relay_client::get_account_storage(&pairing_id, &did).await
 }
 
+/// Page the claim-code inventory from the given pairing's relay — every minted code
+/// with its derived lifecycle status, newest first. Id-addressed like `list_admin_devices`.
+#[tauri::command]
+async fn list_claim_codes(
+    pairing_id: String,
+    cursor: Option<String>,
+) -> Result<relay_client::ClaimCodeInventory, relay_client::RelayClientError> {
+    relay_client::list_claim_codes(&pairing_id, cursor).await
+}
+
+/// Revoke a claim code on the given pairing's relay — kill a minted-but-unredeemed
+/// signup credential. A destructive signing action: the UI runs the biometric gate
+/// before invoking this.
+#[tauri::command]
+async fn revoke_claim_code(
+    pairing_id: String,
+    code: String,
+) -> Result<relay_client::RevokedClaimCode, relay_client::RelayClientError> {
+    relay_client::revoke_claim_code(&pairing_id, &code).await
+}
+
 /// Whether the biometric (user-presence) gate on signing actions is enabled. Defaults to
 /// `true` on a fresh install — signing is gated until the operator opts out in Settings.
 /// Errors serialize through `RelayClientError::Keychain` (the app's one Serialize error).
@@ -196,6 +217,8 @@ pub fn run() {
             update_subject_status,
             get_account_usage,
             get_account_storage,
+            list_claim_codes,
+            revoke_claim_code,
             biometric_enabled,
             set_biometric_enabled
         ])

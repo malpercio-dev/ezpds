@@ -688,7 +688,8 @@ async fn precheck_invite_code(state: &AppState, code: Option<&str>) -> Result<()
 }
 
 /// Redeem the invite code inside the account-creation transaction — the atomic single-use gate.
-/// The WHERE guard rejects invalid/expired/already-redeemed codes in one step; 0 rows → reject.
+/// The WHERE guard rejects invalid/expired/revoked/already-redeemed codes in one step;
+/// 0 rows → reject.
 async fn redeem_invite_code(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     state: &AppState,
@@ -703,7 +704,8 @@ async fn redeem_invite_code(
         .ok_or_else(|| ApiError::new(ErrorCode::InvalidRequest, "an invite code is required"))?;
     let result = sqlx::query(
         "UPDATE claim_codes SET redeemed_at = datetime('now') \
-         WHERE code = ? AND redeemed_at IS NULL AND expires_at > datetime('now')",
+         WHERE code = ? AND redeemed_at IS NULL AND revoked_at IS NULL \
+           AND expires_at > datetime('now')",
     )
     .bind(code)
     .execute(&mut **tx)

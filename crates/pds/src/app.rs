@@ -33,7 +33,7 @@ use crate::routes::apply_writes::apply_writes;
 use crate::routes::atproto_did::atproto_did_handler;
 use crate::routes::auth_md::serve_auth_md;
 use crate::routes::check_account_status::check_account_status;
-use crate::routes::claim_codes::claim_codes;
+use crate::routes::claim_codes::{claim_codes, list_claim_code_inventory, revoke_claim_code_route};
 use crate::routes::confirm_email::confirm_email;
 use crate::routes::create_account::create_account;
 use crate::routes::create_account_xrpc::create_account as create_account_xrpc;
@@ -519,7 +519,14 @@ pub fn app(state: AppState) -> Router {
     // still share the same trace/metrics/rate-limit stack as the public group.
     let internal = Router::new()
         .route("/v1/accounts", post(create_account))
-        .route("/v1/accounts/claim-codes", post(claim_codes))
+        .route(
+            "/v1/accounts/claim-codes",
+            post(claim_codes).get(list_claim_code_inventory),
+        )
+        .route(
+            "/v1/accounts/claim-codes/revoke",
+            post(revoke_claim_code_route),
+        )
         .route("/v1/accounts/mobile", post(create_mobile_account))
         .route("/v1/accounts/sessions", post(create_provisioning_session))
         .route("/v1/accounts/{id}/usage", get(account_usage))

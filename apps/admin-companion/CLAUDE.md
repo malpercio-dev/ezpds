@@ -1,7 +1,7 @@
 # Admin Companion (operator console) Mobile App
 
 Last verified: 2026-07-10
-Last updated: 2026-07-10 (per-account usage/storage readouts on the Moderation screen)
+Last updated: 2026-07-10 (claim-code inventory screen: list + revoke minted codes)
 
 ## Purpose
 
@@ -45,7 +45,10 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   deny-unknown-fields), `get_account_usage`/`get_account_storage` (signed GETs against
   `/v1/accounts/{did}/usage`/`…/storage` for an id-addressed pairing; the DID rides in the
   *path*, so it is inside the signed envelope — a metrics signature is bound to its account),
-  plus
+  `list_claim_codes`/`revoke_claim_code` (the claim-code inventory: a signed
+  `GET /v1/accounts/claim-codes` — bare path signed, pagination `cursor` appended to the URL
+  only, like the moderation GET — and a signed `POST /v1/accounts/claim-codes/revoke` whose
+  JSON body carries the code, so a revoke signature is bound to its code), plus
   pairing-document mutations (`list_pairings`, `set_active_pairing`, `rename_pairing`). Request
   construction is factored into pure `build_*` fns so a test verifies a built request with
   `crypto::verify_p256_signature` — the relay's own verifier — proving acceptance (and path-binding
@@ -70,6 +73,9 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   account takedown/restore; idempotent server-side, returns the resulting state),
   `get_account_usage(pairing_id, did)` / `get_account_storage(pairing_id, did)` (signed
   per-account usage/storage metrics reads; same error surface as the status lookup),
+  `list_claim_codes(pairing_id, cursor?)` (signed inventory page: every minted code with its
+  derived status, newest first) / `revoke_claim_code(pairing_id, code)` (signed revoke of a
+  live code; already-revoked is idempotent 200, redeemed → `RELAY_REJECTED` 409, unknown → 404),
   `biometric_enabled`, `set_biometric_enabled` (plus Phase 6's `get_or_create_device_key`,
   `sign_with_device_key`). `pairing_state` is gone — superseded by `list_pairings`.
 - **Screens**: **Pair** (`src/routes/pair/` — QR/manual + required nickname, reachable while
@@ -92,7 +98,15 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   last-active plus blob quota (used-of-total + %) and largest blob, fetched concurrently and
   never blocking the status panel; a late response for a superseded lookup is discarded. Byte
   figures render via `src/lib/format.ts` (`formatBytes`: binary units with the exact byte
-  count alongside; `formatPct`)). The
+  count alongside; `formatPct`)), **Codes** (`src/routes/codes/` — the claim-code inventory:
+  every code minted on ONE relay with its derived lifecycle status (`pending`/`redeemed`/
+  `expired`/`revoked` — terminal events win over the clock), split by `src/lib/claim-codes.ts`
+  (Functional Core: `partitionCodes`/`chipFor`/`timelineLine`, unit-tested) into an
+  **Outstanding** panel (live credentials, expandable rows with a biometric-gated revoke) and a
+  **History** panel (terminal codes, facts only). Pinned to a single pairing at entry like
+  Devices (`?server=<pairingId>`, else active); pages older codes via the relay cursor with a
+  "Load older codes" button; a revoke reloads the inventory so rows report the relay's
+  post-revoke truth, never an optimistic edit. Reached from Home's Codes button). The
   error-state matrix (not-paired / clock-skew / revoked / unreachable / not-found) is rendered by the shared
   `ui/ErrorState.svelte` off `errors.ts`'s `classifyRelayError`. Server identity display (`src/lib/server-identity.ts`)
   pairs the operator nickname with the relay host in monospace everywhere, so staging and production
