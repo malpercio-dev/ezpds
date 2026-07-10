@@ -107,9 +107,11 @@ current one (e.g. after a large delete), and its restored size isn't knowable
 in advance — `litestream snapshots` reports stored (LZ4-compressed) object
 sizes, and the restore then replays WAL segments on top of the snapshot. Any
 guard sized from inside the container can pass and the restore can still fill
-`/tmp` and disrupt the running PDS. The sandbox has ample scratch space and
-shares no filesystem with the live PDS, so the failure mode doesn't exist
-there.
+`/tmp` and disrupt the running PDS. The sandbox shares no filesystem with the
+live PDS, so an oversized or failed restore there can only fill the sandbox's
+own scratch disk — the running PDS is never at risk. (The sandbox still needs
+enough ephemeral space for the restored copy; if it runs out, the restore
+fails harmlessly in the throwaway box.)
 
 Picking the target timestamp is safe from either place — listing generations
 and snapshots reads replica metadata only and writes nothing locally:
