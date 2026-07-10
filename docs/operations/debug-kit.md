@@ -71,14 +71,15 @@ if [ "$avail" -lt $(( need + need / 5 )) ]; then
   exit 1
 fi
 
+# Clean up the copy even on Ctrl-C or when you leave the ssh session.
+trap 'rm -f /tmp/copy.db' EXIT
+
 # Restore the latest replica state into a throwaway copy (NOT over /data/relay.db).
 litestream restore -config /etc/litestream.yml -o /tmp/copy.db /data/relay.db
 
 # Inspect the copy freely — it's disconnected from the live DB.
 sqlite3 /tmp/copy.db '.tables'
 sqlite3 /tmp/copy.db 'SELECT count(*) FROM accounts;'
-
-rm -f /tmp/copy.db             # clean up when done
 ```
 
 `-o /tmp/copy.db` **must** differ from `/data/relay.db`; never restore over the
@@ -91,10 +92,12 @@ To inspect state as of a specific instant (e.g. just before a bad deploy),
 list what the replica holds, then restore to a timestamp:
 
 ```sh
-# Same fail-closed /tmp preflight — a point-in-time copy is just as large.
+# Same fail-closed /tmp preflight. Note it sizes against the *current* DB; a
+# historical snapshot can be larger, so prefer the sandbox (Runbook 2) if unsure.
 need=$(stat -c %s /data/relay.db)
 avail=$(df -P -B1 /tmp | awk 'NR==2 {print $4}')
 [ "$avail" -ge $(( need + need / 5 )) ] || { echo "Insufficient /tmp space — use a sandbox (Runbook 2)." >&2; exit 1; }
+trap 'rm -f /tmp/point-in-time.db' EXIT   # clean up on Ctrl-C / session exit
 
 litestream generations -config /etc/litestream.yml /data/relay.db
 litestream snapshots   -config /etc/litestream.yml /data/relay.db
