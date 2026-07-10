@@ -31,6 +31,90 @@ pub enum CompleteOutcome {
     Unauthorized,
 }
 
+/// Outcome of an operator cancelling an in-flight transfer.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CancelOutcome {
+    /// This call cancelled the transfer. Reports whether an accepted target device
+    /// credential existed and was tombstoned along the way.
+    Cancelled { revoked_device_credential: bool },
+    /// The transfer was already cancelled — idempotent success for the caller.
+    AlreadyCancelled,
+    /// The transfer is terminal in a state cancel must not rewrite (`complete`, or
+    /// `expired` — including a lapsed pending row swept during this call). Carries the
+    /// status so the caller can name it in the conflict response.
+    Terminal { status: String },
+    /// No transfer with this id exists.
+    NotFound,
+}
+
+/// Cancel an in-flight transfer on the operator's authority.
+///
+/// One transaction: a lapsed pending row is first swept to `expired` (so the outcome
+/// reports the truth rather than "cancelling" a transfer that already died of clock),
+/// then an active row is flipped to `cancelled`, the accepted target device credential —
+/// if the transfer got that far — is tombstoned (`revoked_at`; without this, "cancelling"
+/// an accepted transfer would leave the new device authenticated via
+/// `transfer_device_token_exists`), and a `transfer.cancelled` audit event is appended.
+///
+/// Deliberately conservative about scope: the account's existing sessions are untouched.
+/// In the benign case those are the legitimate user's source device; an operator who
+/// believes the account itself is compromised composes this with the credential-sweep
+/// route (`/v1/admin/accounts/{id}/revoke-credentials`).
+pub async fn cancel_transfer(
+    db: &SqlitePool,
+    transfer_id: &str,
+) -> Result<CancelOutcome, sqlx::Error> {
+    let mut tx = db.begin().await?;
+
+    crate::db::transfers::expire_pending_transfer_if_elapsed(&mut tx, transfer_id).await?;
+
+    let Some(row) = crate::db::transfers::transfer_by_id(&mut tx, transfer_id).await? else {
+        tx.commit().await?;
+        return Ok(CancelOutcome::NotFound);
+    };
+
+    match row.status.as_str() {
+        "pending" | "accepted" | "completing" => {}
+        "cancelled" => {
+            tx.commit().await?;
+            return Ok(CancelOutcome::AlreadyCancelled);
+        }
+        _ => {
+            tx.commit().await?;
+            return Ok(CancelOutcome::Terminal { status: row.status });
+        }
+    }
+
+    let updated = crate::db::transfers::mark_transfer_cancelled(&mut tx, &row.id).await?;
+    if updated != 1 {
+        // The guarded UPDATE observed the same row this transaction just read as active;
+        // on the single-connection pool nothing can have raced in between, so a miss here
+        // is a bug, not a state to report politely.
+        return Err(sqlx::Error::RowNotFound);
+    }
+
+    let mut revoked_device_credential = false;
+    if let Some(device_id) = &row.accepted_device_id {
+        revoked_device_credential =
+            crate::db::transfers::revoke_transfer_device(&mut tx, device_id).await? > 0;
+    }
+
+    crate::db::transfers::insert_transfer_audit_event(
+        &mut tx,
+        &Uuid::new_v4().to_string(),
+        &row.id,
+        &row.did,
+        "transfer.cancelled",
+        None,
+    )
+    .await?;
+
+    tx.commit().await?;
+    Ok(CancelOutcome::Cancelled {
+        revoked_device_credential,
+    })
+}
+
 /// Accept a pending transfer code and atomically register the new device credentials.
 ///
 /// The code is a bearer credential, so acceptance is a single transaction: stale pending

@@ -625,6 +625,72 @@ pub async fn revoke_claim_code(
     parse_success::<RevokedClaimCode>(response).await
 }
 
+// ── In-flight device transfers (list / cancel) ───────────────────────────────
+
+/// Build the signed in-flight transfer listing (`GET /v1/admin/transfers?cursor=…`).
+///
+/// Like the inventory lookup, the relay's guard verifies the signature over
+/// `uri.path()` only, so the bare path is signed and the pagination query is appended
+/// to the URL *after* signing.
+pub fn build_list_transfers_request(
+    pairing: &Pairing,
+    cursor: Option<&str>,
+    timestamp: i64,
+    nonce: &str,
+) -> Result<SignedRequest, RelayClientError> {
+    let mut req =
+        build_signed_request(pairing, "GET", "/v1/admin/transfers", b"", timestamp, nonce)?;
+    if let Some(cursor) = cursor {
+        req.url = append_query(&req.url, &[("cursor", cursor)])?;
+    }
+    Ok(req)
+}
+
+/// Page the in-flight device transfers on the given pairing's relay via a signed `GET`
+/// — every planned device swap that can still advance (a security-relevant pending
+/// state), newest first. The relay never reports the transfer code (it is a live
+/// account-takeover credential). Id-addressed like [`list_devices`], so a concurrent
+/// active-pairing switch can never redirect which relay is asked (or signed for).
+pub async fn list_transfers(
+    pairing_id: &str,
+    cursor: Option<String>,
+) -> Result<TransferList, RelayClientError> {
+    let pairing = resolve_pairing(pairing_id)?;
+    let signed =
+        build_list_transfers_request(&pairing, cursor.as_deref(), unix_now(), &fresh_nonce())?;
+    let response = send(signed).await?;
+    parse_success::<TransferList>(response).await
+}
+
+/// Build the signed transfer cancel (`POST /v1/admin/transfers/{id}/cancel`). The
+/// transfer id rides in the *path*, so it is covered by the signed envelope — a cancel
+/// signature is bound to its transfer and can never be replayed against another.
+pub fn build_cancel_transfer_request(
+    pairing: &Pairing,
+    transfer_id: &str,
+    timestamp: i64,
+    nonce: &str,
+) -> Result<SignedRequest, RelayClientError> {
+    let path = format!("/v1/admin/transfers/{transfer_id}/cancel");
+    build_signed_request(pairing, "POST", &path, b"", timestamp, nonce)
+}
+
+/// Cancel an in-flight device transfer on the given pairing's relay via a signed
+/// `POST` — interrupt a pending device swap. The relay tombstones the accepted target
+/// device credential if the transfer got that far; the account's existing sessions are
+/// untouched (compose with [`revoke_account_credentials`] for a full sweep). A repeat
+/// cancel is an idempotent 200; a completed or expired transfer is refused with 409
+/// (surfaced as `RELAY_REJECTED`). Id-addressed like [`list_devices`].
+pub async fn cancel_transfer(
+    pairing_id: &str,
+    transfer_id: &str,
+) -> Result<CancelledTransfer, RelayClientError> {
+    let pairing = resolve_pairing(pairing_id)?;
+    let signed = build_cancel_transfer_request(&pairing, transfer_id, unix_now(), &fresh_nonce())?;
+    let response = send(signed).await?;
+    parse_success::<CancelledTransfer>(response).await
+}
+
 // ── Account credential revocation ────────────────────────────────────────────
 
 /// Build the signed account credential sweep
@@ -748,6 +814,44 @@ pub struct ClaimCodeInventory {
 #[derive(Serialize)]
 struct RevokeClaimCodeRequestBody {
     code: String,
+}
+
+/// One in-flight device transfer as the relay reports it — the shape of `TransferView`
+/// in `crates/pds/src/routes/admin_transfers.rs` (camelCase on the wire; re-serialized
+/// camelCase over IPC). The `pds` crate is binary-only, so this contract is shared by
+/// value, not import — a deserialization test pins it. Deliberately code-free: the
+/// transfer code never leaves the relay.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferEntry {
+    pub id: String,
+    pub did: String,
+    pub handle: Option<String>,
+    /// Stored state-machine status: `"pending"` | `"accepted"` | `"completing"`.
+    pub status: String,
+    pub created_at: String,
+    pub expires_at: String,
+    pub accepted_at: Option<String>,
+    pub accepted_device_platform: Option<String>,
+}
+
+/// One in-flight transfer page: newest-first entries plus the cursor for the next page
+/// (absent when the in-flight set is exhausted).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferList {
+    pub transfers: Vec<TransferEntry>,
+    pub cursor: Option<String>,
+}
+
+/// The relay's post-cancel report: the transfer, its resulting status (`"cancelled"`),
+/// and whether an accepted target device credential was tombstoned along the way.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelledTransfer {
+    pub id: String,
+    pub status: String,
+    pub revoked_device_credential: bool,
 }
 
 /// The relay's post-revoke report: the code and its resulting status (`"revoked"`).
@@ -1893,6 +1997,149 @@ mod tests {
             serde_json::from_str(r#"{"code":"ABC123","status":"revoked"}"#).expect("deserialize");
         assert_eq!(revoked.code, "ABC123");
         assert_eq!(revoked.status, "revoked");
+    }
+
+    // The in-flight transfer listing: like the inventory GET, the signature covers the
+    // bare path and the pagination query is appended to the URL only.
+    #[test]
+    fn signed_list_transfers_request_signs_path_without_query() {
+        keychain::clear_for_test();
+        let key = device_key::get_or_create().expect("device key");
+        let pairing = test_pairing("device-xyz", "https://relay.example");
+
+        let req = build_list_transfers_request(&pairing, Some("42"), 1_700_000_000, "nonce-tfl")
+            .expect("build signed transfer listing");
+
+        assert_eq!(
+            req.url,
+            "https://relay.example/v1/admin/transfers?cursor=42"
+        );
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.body, b"");
+
+        // The relay reconstructs the envelope from uri.path() — no query — and verifies.
+        let sign_string = signing::request_sign_string(
+            "GET",
+            "/v1/admin/transfers",
+            1_700_000_000,
+            "nonce-tfl",
+            b"",
+        );
+        verify_p256_signature(
+            &DidKeyUri(key.key_id.clone()),
+            sign_string.as_bytes(),
+            &decode_sig(header(&req, signing::ADMIN_SIGNATURE_HEADER)),
+        )
+        .expect("the relay's verifier must accept this transfer listing");
+
+        // A first page omits the cursor from the URL entirely.
+        let first_page = build_list_transfers_request(&pairing, None, 1_700_000_000, "nonce-tfl")
+            .expect("build first-page listing");
+        assert_eq!(first_page.url, "https://relay.example/v1/admin/transfers");
+    }
+
+    // The cancel write: the transfer id rides in the signed path, so the relay's own
+    // verifier accepts the envelope and a signature minted to cancel one transfer is
+    // not valid for another.
+    #[test]
+    fn signed_cancel_transfer_request_binds_the_transfer_id() {
+        keychain::clear_for_test();
+        let key = device_key::get_or_create().expect("device key");
+        let pairing = test_pairing("device-xyz", "https://relay.example");
+
+        let req = build_cancel_transfer_request(&pairing, "transfer-1", 1_700_000_000, "nonce-tfc")
+            .expect("build signed cancel");
+
+        assert_eq!(
+            req.url,
+            "https://relay.example/v1/admin/transfers/transfer-1/cancel"
+        );
+        assert_eq!(req.method, "POST");
+        assert_eq!(req.body, b"");
+
+        let sign_string = signing::request_sign_string(
+            "POST",
+            "/v1/admin/transfers/transfer-1/cancel",
+            1_700_000_000,
+            "nonce-tfc",
+            b"",
+        );
+        verify_p256_signature(
+            &DidKeyUri(key.key_id.clone()),
+            sign_string.as_bytes(),
+            &decode_sig(header(&req, signing::ADMIN_SIGNATURE_HEADER)),
+        )
+        .expect("the relay's verifier must accept this cancel request");
+
+        // A different target changes the signed path, so the signature must differ.
+        let other =
+            build_cancel_transfer_request(&pairing, "transfer-2", 1_700_000_000, "nonce-tfc")
+                .expect("build signed cancel for another transfer");
+        assert_ne!(
+            header(&req, signing::ADMIN_SIGNATURE_HEADER),
+            header(&other, signing::ADMIN_SIGNATURE_HEADER),
+            "a cancel signature must be bound to its transfer id"
+        );
+    }
+
+    // Pins the relay's in-flight transfer wire shapes by value (`TransferView` /
+    // `ListTransfersResponse` / `CancelTransferResponse` in
+    // crates/pds/src/routes/admin_transfers.rs; the `pds` crate is binary-only, so the
+    // contract is shared by value, not import). Absent optional fields (`handle`,
+    // `acceptedAt`, `acceptedDevicePlatform`, `cursor`) are omitted from the relay's
+    // JSON, not null — and the transfer `code` never appears at all.
+    #[test]
+    fn transfer_list_deserializes_the_relay_shape() {
+        let json = r#"{
+            "transfers": [
+                {
+                    "id": "t-1",
+                    "did": "did:plc:abc123",
+                    "handle": "swap.example.com",
+                    "status": "accepted",
+                    "createdAt": "2026-07-10 12:00:00",
+                    "expiresAt": "2026-07-10 12:15:00",
+                    "acceptedAt": "2026-07-10 12:05:00",
+                    "acceptedDevicePlatform": "ios"
+                },
+                {
+                    "id": "t-2",
+                    "did": "did:plc:def456",
+                    "status": "pending",
+                    "createdAt": "2026-07-10 11:00:00",
+                    "expiresAt": "2026-07-10 11:15:00"
+                }
+            ],
+            "cursor": "2026-07-10 11:00:00|t-2"
+        }"#;
+        let page: TransferList = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(page.cursor.as_deref(), Some("2026-07-10 11:00:00|t-2"));
+        assert_eq!(page.transfers.len(), 2);
+        assert_eq!(page.transfers[0].id, "t-1");
+        assert_eq!(page.transfers[0].status, "accepted");
+        assert_eq!(
+            page.transfers[0].handle.as_deref(),
+            Some("swap.example.com")
+        );
+        assert_eq!(
+            page.transfers[0].accepted_device_platform.as_deref(),
+            Some("ios")
+        );
+        assert_eq!(page.transfers[1].handle, None);
+        assert_eq!(page.transfers[1].accepted_at, None);
+
+        // A final page omits the cursor.
+        let last: TransferList =
+            serde_json::from_str(r#"{"transfers": []}"#).expect("deserialize final page");
+        assert_eq!(last.cursor, None);
+
+        let cancelled: CancelledTransfer = serde_json::from_str(
+            r#"{"id":"t-1","status":"cancelled","revokedDeviceCredential":true}"#,
+        )
+        .expect("deserialize");
+        assert_eq!(cancelled.id, "t-1");
+        assert_eq!(cancelled.status, "cancelled");
+        assert!(cancelled.revoked_device_credential);
     }
 
     // Pins the relay's subject-status wire shape by value (`RepoRefView`/`StatusAttrView`

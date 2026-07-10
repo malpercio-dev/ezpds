@@ -194,6 +194,29 @@ async fn revoke_claim_code(
     relay_client::revoke_claim_code(&pairing_id, &code).await
 }
 
+/// Page the in-flight device transfers on the given pairing's relay — every planned
+/// device swap that can still advance, newest first, never carrying the transfer code.
+/// Id-addressed like `list_admin_devices`.
+#[tauri::command]
+async fn list_transfers(
+    pairing_id: String,
+    cursor: Option<String>,
+) -> Result<relay_client::TransferList, relay_client::RelayClientError> {
+    relay_client::list_transfers(&pairing_id, cursor).await
+}
+
+/// Cancel an in-flight device transfer on the given pairing's relay — interrupt a
+/// pending device swap (the relay also tombstones an accepted target device credential;
+/// existing account sessions are untouched). A destructive signing action: the UI runs
+/// the biometric gate before invoking this.
+#[tauri::command]
+async fn cancel_transfer(
+    pairing_id: String,
+    transfer_id: String,
+) -> Result<relay_client::CancelledTransfer, relay_client::RelayClientError> {
+    relay_client::cancel_transfer(&pairing_id, &transfer_id).await
+}
+
 /// Revoke every credential of an account on the given pairing's relay — the operator
 /// kill-switch for a compromised account (sessions, app passwords, OAuth grants,
 /// promoted transfer-device tokens; the main password is untouched). Returns the
@@ -256,6 +279,8 @@ pub fn run() {
             list_accounts,
             list_claim_codes,
             revoke_claim_code,
+            list_transfers,
+            cancel_transfer,
             revoke_account_credentials,
             biometric_enabled,
             set_biometric_enabled
