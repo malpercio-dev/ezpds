@@ -494,6 +494,70 @@ pub async fn get_account_storage(
     parse_success::<AccountStorage>(response).await
 }
 
+// ── Account listing/search ───────────────────────────────────────────────────
+
+/// Optional filters for the account listing. All `None` means the first page of every
+/// account at the relay's default page size.
+#[derive(Debug, Default, Clone)]
+pub struct ListAccountsQuery {
+    pub limit: Option<u32>,
+    /// The `cursor` from the previous page (the last DID returned).
+    pub cursor: Option<String>,
+    /// Derived-lifecycle filter: `active`, `deactivated`, `suspended`, or `takendown`.
+    pub status: Option<String>,
+    /// Literal substring match against the DID or any of the account's handles.
+    pub q: Option<String>,
+}
+
+/// Build the signed account listing (`GET /v1/admin/accounts?…`).
+///
+/// Like [`build_get_subject_status_request`], the relay verifies the signature over
+/// `uri.path()` only, so the bare path is signed and the paging/filter params are
+/// appended to the URL *after* signing — every page reuses the same envelope shape
+/// without folding the query into it.
+pub fn build_list_accounts_request(
+    pairing: &Pairing,
+    query: &ListAccountsQuery,
+    timestamp: i64,
+    nonce: &str,
+) -> Result<SignedRequest, RelayClientError> {
+    let mut req =
+        build_signed_request(pairing, "GET", "/v1/admin/accounts", b"", timestamp, nonce)?;
+    let limit_str;
+    let mut params: Vec<(&str, &str)> = Vec::new();
+    if let Some(limit) = query.limit {
+        limit_str = limit.to_string();
+        params.push(("limit", &limit_str));
+    }
+    if let Some(cursor) = query.cursor.as_deref() {
+        params.push(("cursor", cursor));
+    }
+    if let Some(status) = query.status.as_deref() {
+        params.push(("status", status));
+    }
+    if let Some(q) = query.q.as_deref() {
+        params.push(("q", q));
+    }
+    if !params.is_empty() {
+        req.url = append_query(&req.url, &params)?;
+    }
+    Ok(req)
+}
+
+/// Fetch a page of the relay's account list (DID order, cursor pagination, optional
+/// status/search filters) via a signed `GET`. Id-addressed like [`list_devices`], so a
+/// concurrent active-pairing switch can never redirect which relay is asked (or signed
+/// for).
+pub async fn list_accounts(
+    pairing_id: &str,
+    query: ListAccountsQuery,
+) -> Result<AccountList, RelayClientError> {
+    let pairing = resolve_pairing(pairing_id)?;
+    let signed = build_list_accounts_request(&pairing, &query, unix_now(), &fresh_nonce())?;
+    let response = send(signed).await?;
+    parse_success::<AccountList>(response).await
+}
+
 /// Send an already-built [`SignedRequest`] and return the raw response.
 async fn send(req: SignedRequest) -> Result<reqwest::Response, RelayClientError> {
     let method = reqwest::Method::from_bytes(req.method.as_bytes()).map_err(|_| {
@@ -635,6 +699,36 @@ pub struct AccountStorage {
 pub struct LargestBlob {
     pub cid: String,
     pub size: i64,
+}
+
+/// A page of the relay's account list — the response shape of `GET /v1/admin/accounts`
+/// (`ListAccountsResponse` in crates/pds/src/routes/admin_list_accounts.rs; shared by
+/// value like [`AccountUsage`], pinned by a deserialization test). Re-serialized
+/// camelCase over IPC. `cursor` is omitted by the relay on the last page (serde reads
+/// a missing `Option` as `None`; it re-serializes as `null` over IPC).
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountList {
+    pub accounts: Vec<AccountListEntry>,
+    /// The configured per-account storage quota in bytes — one value for every row.
+    pub quota_bytes: i64,
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountListEntry {
+    pub did: String,
+    /// The account's first-created handle, or `None` when it has none.
+    pub handle: Option<String>,
+    pub created_at: String,
+    /// Derived lifecycle: `active`, `deactivated`, `suspended`, or `takendown` —
+    /// always stated explicitly by this endpoint.
+    pub status: String,
+    /// Total bytes of the account's owned blobs.
+    pub total_bytes: i64,
+    /// `total_bytes` as a percentage of `quota_bytes`.
+    pub quota_used_pct: f64,
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -1764,5 +1858,109 @@ mod tests {
         );
         // Falls back to the raw body when it is not the expected envelope.
         assert_eq!(extract_error_message("plain text"), "plain text");
+    }
+
+    // The account listing signs the BARE path — the relay's guard verifies `uri.path()`
+    // only — so paging/filter params ride in the URL after signing, and every page of
+    // every filter reuses a signature the relay's own verifier accepts.
+    #[test]
+    fn list_accounts_request_signs_bare_path_and_appends_query_after() {
+        keychain::clear_for_test();
+        let key = device_key::get_or_create().expect("device key");
+        let pairing = test_pairing("device-xyz", "https://relay.example");
+
+        let query = ListAccountsQuery {
+            limit: Some(25),
+            cursor: Some("did:plc:lastpage".to_string()),
+            status: Some("takendown".to_string()),
+            q: Some("alice".to_string()),
+        };
+        let req = build_list_accounts_request(&pairing, &query, 1_700_000_000, "nonce-accounts")
+            .expect("build list-accounts request");
+
+        assert_eq!(
+            req.url,
+            "https://relay.example/v1/admin/accounts?limit=25&cursor=did%3Aplc%3Alastpage&status=takendown&q=alice"
+        );
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.body, b"");
+
+        let sign_string = signing::request_sign_string(
+            "GET",
+            "/v1/admin/accounts",
+            1_700_000_000,
+            "nonce-accounts",
+            b"",
+        );
+        verify_p256_signature(
+            &DidKeyUri(key.key_id),
+            sign_string.as_bytes(),
+            &decode_sig(header(&req, signing::ADMIN_SIGNATURE_HEADER)),
+        )
+        .expect("the relay's verifier must accept the bare-path signature");
+
+        // No params → no query string at all.
+        let bare = build_list_accounts_request(
+            &pairing,
+            &ListAccountsQuery::default(),
+            1_700_000_000,
+            "n",
+        )
+        .expect("build bare request");
+        assert_eq!(bare.url, "https://relay.example/v1/admin/accounts");
+    }
+
+    // Pins the relay's `ListAccountsResponse` wire shape by value (the `pds` crate is
+    // binary-only, so the contract can't be shared by import). If the relay renames or
+    // retypes a field, this literal — and the Accounts screen — must change together.
+    #[test]
+    fn account_list_deserializes_the_relay_shape() {
+        let json = r#"{
+            "accounts": [{
+                "did": "did:plc:abc123",
+                "handle": "alice.example.com",
+                "createdAt": "2026-07-01 12:00:00",
+                "status": "active",
+                "totalBytes": 42000,
+                "quotaUsedPct": 4.2
+            }, {
+                "did": "did:plc:def456",
+                "handle": null,
+                "createdAt": "2026-07-02 08:30:00",
+                "status": "takendown",
+                "totalBytes": 0,
+                "quotaUsedPct": 0.0
+            }],
+            "quotaBytes": 1000000,
+            "cursor": "did:plc:def456"
+        }"#;
+        let list: AccountList = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(list.quota_bytes, 1_000_000);
+        assert_eq!(list.cursor.as_deref(), Some("did:plc:def456"));
+        assert_eq!(
+            list.accounts[0],
+            AccountListEntry {
+                did: "did:plc:abc123".to_string(),
+                handle: Some("alice.example.com".to_string()),
+                created_at: "2026-07-01 12:00:00".to_string(),
+                status: "active".to_string(),
+                total_bytes: 42_000,
+                quota_used_pct: 4.2,
+            }
+        );
+        assert_eq!(list.accounts[1].handle, None);
+        assert_eq!(list.accounts[1].status, "takendown");
+
+        // The relay omits `cursor` entirely on the last page — that must read as None.
+        let last_page: AccountList =
+            serde_json::from_str(r#"{"accounts":[],"quotaBytes":1000000}"#)
+                .expect("deserialize last page");
+        assert_eq!(last_page.cursor, None);
+
+        // And it re-serializes camelCase for IPC — the frontend sees the relay's names.
+        let value = serde_json::to_value(&list).expect("serialize");
+        assert_eq!(value["accounts"][0]["createdAt"], "2026-07-01 12:00:00");
+        assert_eq!(value["accounts"][0]["quotaUsedPct"], 4.2);
+        assert_eq!(value["quotaBytes"], 1_000_000);
     }
 }
