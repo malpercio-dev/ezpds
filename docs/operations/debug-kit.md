@@ -46,9 +46,15 @@ debug-kit sandbox instead, so the deployed image stays minimal.
 
 **Goal:** query the production database without touching the live one. The live
 `/data/relay.db` is a single-writer WAL SQLite owned by the `pds` process; the
-safe pattern is to restore a **point-in-time copy from the S3 replica** into
-`/tmp` and open *that* with `sqlite3`. The replica read never touches the live
-DB, so the live database's integrity is never at stake.
+safe pattern is to restore a **throwaway copy from the S3 replica** and open
+*that* with `sqlite3`. The replica read never touches the live DB, so the live
+database's integrity is never at stake.
+
+Where the copy lands depends on what you're restoring: the **latest state**
+restores into the service container's `/tmp` (below, with a fail-closed space
+preflight), while **point-in-time** restores run in the debug-kit **sandbox**
+(next section) — their size can't be known in advance, so no container-side
+preflight can be fail-closed.
 
 This runs against **production**, where Litestream is active and the replica
 credentials (`LITESTREAM_S3_BUCKET`, `LITESTREAM_S3_ENDPOINT`,
@@ -61,7 +67,8 @@ railway ssh                    # shell into the running production PDS container
 
 # Preflight (fail-closed): a full copy lands in ephemeral /tmp, so bail out
 # BEFORE restoring if there isn't room — a large copy can fill /tmp and disrupt
-# the running PDS. Requires ~20% headroom over the live DB size; otherwise it
+# the running PDS. Requires ~20% headroom over the live DB size, a sound bound
+# here because the replica's LATEST state tracks the live DB; otherwise it
 # aborts and steers you to the sandbox. (`exit` ends the railway ssh session.)
 need=$(stat -c %s /data/relay.db)
 avail=$(df -P -B1 /tmp | awk 'NR==2 {print $4}')
@@ -90,37 +97,63 @@ The restore target (`$copy`, inside a `mktemp -d` scratch dir) **must** differ f
 above is fail-closed — it aborts before the restore when `/tmp` lacks headroom,
 steering large DBs to the sandbox path.
 
-### Point-in-time restore
+### Point-in-time restore (run it in the sandbox)
 
 To inspect state as of a specific instant (e.g. just before a bad deploy),
-list what the replica holds, then restore to a timestamp:
+restore to a timestamp — **from the debug-kit sandbox (Runbook 2), not the
+service container**. The `/tmp` preflight above cannot be made fail-closed for
+a `-timestamp` restore: the historical DB can be arbitrarily larger than the
+current one (e.g. after a large delete), and its restored size isn't knowable
+in advance — `litestream snapshots` reports stored (LZ4-compressed) object
+sizes, and the restore then replays WAL segments on top of the snapshot. Any
+guard sized from inside the container can pass and the restore can still fill
+`/tmp` and disrupt the running PDS. The sandbox has ample scratch space and
+shares no filesystem with the live PDS, so the failure mode doesn't exist
+there.
+
+Picking the target timestamp is safe from either place — listing generations
+and snapshots reads replica metadata only and writes nothing locally:
 
 ```sh
-# Same fail-closed /tmp preflight. Note it sizes against the *current* DB; a
-# historical snapshot can be larger, so prefer the sandbox (Runbook 2) if unsure.
-need=$(stat -c %s /data/relay.db)
-avail=$(df -P -B1 /tmp | awk 'NR==2 {print $4}')
-[ "$avail" -ge $(( need + need / 5 )) ] || { echo "Insufficient /tmp space — use a sandbox (Runbook 2)." >&2; exit 1; }
+litestream generations -config /etc/litestream.yml /data/relay.db
+litestream snapshots   -config /etc/litestream.yml /data/relay.db
+```
 
-# Session-unique scratch dir; rm -rf on exit clears the copy + sidecars.
+Then boot a debug-kit box (Runbook 2) and restore there. The template bakes
+`litestream` plus an `ezpds` checkout, so the committed replica config is
+already at `/opt/ezpds/litestream.yml` (it expands the same `LITESTREAM_*`
+variables the service uses):
+
+```sh
+railway sandbox create --template ezpds-debug-kit --private-network
+railway sandbox ssh
+
+# Provide the replica credentials from the production service environment.
+# Read the secrets interactively so they never land in shell history (or
+# inject them as masked Railway sandbox variables); unset them when done.
+export LITESTREAM_S3_BUCKET=<bucket> LITESTREAM_S3_ENDPOINT=<endpoint>
+read -rs LITESTREAM_ACCESS_KEY_ID && export LITESTREAM_ACCESS_KEY_ID
+read -rs LITESTREAM_SECRET_ACCESS_KEY && export LITESTREAM_SECRET_ACCESS_KEY
+
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 pit="$work/point-in-time.db"
 
-litestream generations -config /etc/litestream.yml /data/relay.db
-litestream snapshots   -config /etc/litestream.yml /data/relay.db
-
-litestream restore -config /etc/litestream.yml \
+litestream restore -config /opt/ezpds/litestream.yml \
   -timestamp 2026-07-09T18:00:00Z \
   -o "$pit" /data/relay.db
 
 sqlite3 "$pit" '.schema accounts'
+unset LITESTREAM_ACCESS_KEY_ID LITESTREAM_SECRET_ACCESS_KEY
 ```
+
+`/data/relay.db` in the restore command is only the config key naming the
+replica — the sandbox has no `/data`; the copy lands at `-o`.
 
 This is the same primitive used for **disaster recovery** — see
 [deploy.md → Backup & rollback](../deploy.md#backup--rollback). There, the
-restore lands at `/data/relay.db` on a fresh boot; here it lands in `/tmp` for
-inspection only.
+restore lands at `/data/relay.db` on a fresh boot; here it lands in sandbox
+scratch space for inspection only.
 
 ### Quick read-only peek at the live DB (escape hatch)
 
@@ -139,11 +172,12 @@ caveat.
 
 ### From a sandbox instead of the container
 
-The same restore works from a `--private-network` sandbox — the debug-kit
-template (Runbook 2) bakes `litestream`, so export the four `LITESTREAM_*`
-credentials and either copy `litestream.yml` in or pass the replica URL directly.
-Inside the container is simpler (config + creds already present), so reach for the
-sandbox mainly when the DB is large or you also want the richer tooling below.
+The latest-state restore also works from a `--private-network` sandbox, with
+the same credential/config setup as the point-in-time flow above (drop the
+`-timestamp` flag). Inside the container is simpler for latest-state (config +
+creds already present), so reach for the sandbox when the `/tmp` preflight
+says the DB is too large, for **any point-in-time restore**, or when you also
+want the richer tooling below.
 
 ---
 
