@@ -364,6 +364,92 @@ pub async fn revoke_device(
         .device)
 }
 
+// ── Moderation (account takedown / restore) ──────────────────────────────────
+
+/// The subject discriminant for account-level moderation — the only subject kind the
+/// relay's `getSubjectStatus`/`updateSubjectStatus` implement.
+const REPO_REF_TYPE: &str = "com.atproto.admin.defs#repoRef";
+
+/// Build the signed status lookup (`GET /xrpc/com.atproto.admin.getSubjectStatus?did=…`).
+///
+/// The relay's guard verifies the signature over `uri.path()` only — the query string is
+/// excluded from the canonical envelope — so the bare path is signed here and `did` is
+/// appended to the URL *after* signing. Folding the query into the signed path would
+/// fail verification.
+pub fn build_get_subject_status_request(
+    pairing: &Pairing,
+    did: &str,
+    timestamp: i64,
+    nonce: &str,
+) -> Result<SignedRequest, RelayClientError> {
+    let mut req = build_signed_request(
+        pairing,
+        "GET",
+        "/xrpc/com.atproto.admin.getSubjectStatus",
+        b"",
+        timestamp,
+        nonce,
+    )?;
+    req.url = append_query(&req.url, &[("did", did)])?;
+    Ok(req)
+}
+
+/// Build the signed takedown/restore write (`POST /xrpc/com.atproto.admin.updateSubjectStatus`).
+/// `applied = true` takes the account down; `false` restores it. The body is serialized
+/// once here so the exact bytes signed are the exact bytes sent.
+pub fn build_update_subject_status_request(
+    pairing: &Pairing,
+    did: &str,
+    applied: bool,
+    timestamp: i64,
+    nonce: &str,
+) -> Result<SignedRequest, RelayClientError> {
+    let body = serde_json::to_vec(&UpdateSubjectStatusRequestBody {
+        subject: RepoRefBody {
+            type_: REPO_REF_TYPE,
+            did: did.to_string(),
+        },
+        takedown: StatusAttrBody { applied },
+    })
+    .expect("UpdateSubjectStatusRequestBody serializes");
+    build_signed_request(
+        pairing,
+        "POST",
+        "/xrpc/com.atproto.admin.updateSubjectStatus",
+        &body,
+        timestamp,
+        nonce,
+    )
+}
+
+/// Report an account's current takedown status from the given pairing's relay via a
+/// signed `GET`. Id-addressed like [`list_devices`], so a concurrent active-pairing
+/// switch can never redirect which relay is asked (or signed for).
+pub async fn get_subject_status(
+    pairing_id: &str,
+    did: &str,
+) -> Result<SubjectStatus, RelayClientError> {
+    let pairing = resolve_pairing(pairing_id)?;
+    let signed = build_get_subject_status_request(&pairing, did, unix_now(), &fresh_nonce())?;
+    let response = send(signed).await?;
+    parse_success::<SubjectStatus>(response).await
+}
+
+/// Apply (`applied = true`) or clear (`false`) an account-level takedown on the given
+/// pairing's relay via a signed `POST`. Idempotent server-side; the response reports
+/// the resulting takedown state, which the screen re-renders as the relay's truth.
+pub async fn update_subject_status(
+    pairing_id: &str,
+    did: &str,
+    applied: bool,
+) -> Result<SubjectStatus, RelayClientError> {
+    let pairing = resolve_pairing(pairing_id)?;
+    let signed =
+        build_update_subject_status_request(&pairing, did, applied, unix_now(), &fresh_nonce())?;
+    let response = send(signed).await?;
+    parse_success::<SubjectStatus>(response).await
+}
+
 /// Send an already-built [`SignedRequest`] and return the raw response.
 async fn send(req: SignedRequest) -> Result<reqwest::Response, RelayClientError> {
     let method = reqwest::Method::from_bytes(req.method.as_bytes()).map_err(|_| {
@@ -429,6 +515,49 @@ struct RevokeDeviceResponseBody {
     device: AdminDevice,
 }
 
+#[derive(Serialize)]
+struct UpdateSubjectStatusRequestBody {
+    subject: RepoRefBody,
+    takedown: StatusAttrBody,
+}
+
+/// `com.atproto.admin.defs#repoRef` as the relay's `RepoRefSubject` expects it — that
+/// struct is `deny_unknown_fields`, so exactly `$type` + `did` and nothing else.
+#[derive(Serialize)]
+struct RepoRefBody {
+    #[serde(rename = "$type")]
+    type_: &'static str,
+    did: String,
+}
+
+#[derive(Serialize)]
+struct StatusAttrBody {
+    applied: bool,
+}
+
+/// An account's takedown status as the relay reports it — the response shape of both
+/// `getSubjectStatus` and `updateSubjectStatus` (`RepoRefView`/`StatusAttrView` in
+/// crates/pds/src/routes/admin_subject_defs.rs; the `pds` crate is binary-only, so this
+/// contract is shared by value, not import — a deserialization test pins it). The same
+/// shape is re-serialized over IPC, `$type` key included.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct SubjectStatus {
+    pub subject: SubjectRepoRef,
+    pub takedown: SubjectTakedown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct SubjectRepoRef {
+    #[serde(rename = "$type")]
+    pub type_: String,
+    pub did: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct SubjectTakedown {
+    pub applied: bool,
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Shared reqwest client with explicit timeouts. The async client has **no** default
@@ -467,6 +596,15 @@ fn join_url(relay_url: &str, path: &str) -> Result<String, RelayClientError> {
     reqwest::Url::parse(&candidate)
         .map(|_| candidate)
         .map_err(|_| RelayClientError::InvalidRelayUrl)
+}
+
+/// Append URL-encoded query parameters to an already-validated URL. Kept separate from
+/// [`join_url`] because the canonical signing envelope covers the *path only* — callers
+/// append the query after the request is built (and signed), never before.
+fn append_query(url: &str, params: &[(&str, &str)]) -> Result<String, RelayClientError> {
+    let mut parsed = reqwest::Url::parse(url).map_err(|_| RelayClientError::InvalidRelayUrl)?;
+    parsed.query_pairs_mut().extend_pairs(params);
+    Ok(parsed.to_string())
 }
 
 fn unreachable(e: reqwest::Error) -> RelayClientError {
@@ -1151,6 +1289,156 @@ mod tests {
             build_revoke_device_request(&pairing, "device-self", 1_700_000_000, "nonce-rev"),
             Err(RelayClientError::SelfRevokeNotAllowed)
         ));
+    }
+
+    // The moderation lookup, proven without a live relay: the signature covers the BARE
+    // path (the relay's guard verifies `uri.path()`, which never includes the query),
+    // while the URL carries `?did=`. A signature minted over path+query must fail.
+    #[test]
+    fn signed_get_subject_status_request_signs_path_without_query() {
+        keychain::clear_for_test();
+        let key = device_key::get_or_create().expect("device key");
+        let pairing = test_pairing("device-xyz", "https://relay.example");
+
+        let req = build_get_subject_status_request(
+            &pairing,
+            "did:plc:abc123",
+            1_700_000_000,
+            "nonce-mod",
+        )
+        .expect("build signed status lookup");
+
+        assert_eq!(
+            req.url,
+            "https://relay.example/xrpc/com.atproto.admin.getSubjectStatus?did=did%3Aplc%3Aabc123"
+        );
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.body, b"");
+        assert_eq!(header(&req, signing::ADMIN_DEVICE_HEADER), "device-xyz");
+
+        // The relay reconstructs the envelope from uri.path() — no query — and verifies.
+        let path = "/xrpc/com.atproto.admin.getSubjectStatus";
+        let sign_string =
+            signing::request_sign_string("GET", path, 1_700_000_000, "nonce-mod", b"");
+        verify_p256_signature(
+            &DidKeyUri(key.key_id.clone()),
+            sign_string.as_bytes(),
+            &decode_sig(header(&req, signing::ADMIN_SIGNATURE_HEADER)),
+        )
+        .expect("the relay's verifier must accept this status lookup");
+
+        // Path+query is NOT what the relay verifies — the signature must not cover it.
+        let with_query = signing::request_sign_string(
+            "GET",
+            "/xrpc/com.atproto.admin.getSubjectStatus?did=did%3Aplc%3Aabc123",
+            1_700_000_000,
+            "nonce-mod",
+            b"",
+        );
+        assert!(
+            verify_p256_signature(
+                &DidKeyUri(key.key_id),
+                with_query.as_bytes(),
+                &decode_sig(header(&req, signing::ADMIN_SIGNATURE_HEADER)),
+            )
+            .is_err(),
+            "the signature must cover the bare path, not path+query"
+        );
+    }
+
+    // The takedown write: the exact serialized body is pinned (the relay's
+    // `RepoRefSubject` is deny_unknown_fields, so any extra or renamed field is a 400),
+    // its hash is what the signature commits to, and the relay's own verifier accepts
+    // the envelope. A restore differs only in `applied`, which changes the body hash —
+    // a takedown signature can never be replayed as a restore or vice versa.
+    #[test]
+    fn signed_update_subject_status_request_pins_body_and_verifies() {
+        keychain::clear_for_test();
+        let key = device_key::get_or_create().expect("device key");
+        let pairing = test_pairing("device-xyz", "https://relay.example");
+
+        let req = build_update_subject_status_request(
+            &pairing,
+            "did:plc:abc123",
+            true,
+            1_700_000_000,
+            "nonce-td",
+        )
+        .expect("build signed takedown");
+
+        assert_eq!(
+            req.url,
+            "https://relay.example/xrpc/com.atproto.admin.updateSubjectStatus"
+        );
+        // `require_admin_json` refuses the request with 415 without this header.
+        assert_eq!(header(&req, "Content-Type"), "application/json");
+        assert_eq!(
+            std::str::from_utf8(&req.body).unwrap(),
+            r#"{"subject":{"$type":"com.atproto.admin.defs#repoRef","did":"did:plc:abc123"},"takedown":{"applied":true}}"#
+        );
+
+        let sign_string = signing::request_sign_string(
+            "POST",
+            "/xrpc/com.atproto.admin.updateSubjectStatus",
+            1_700_000_000,
+            "nonce-td",
+            &req.body,
+        );
+        verify_p256_signature(
+            &DidKeyUri(key.key_id),
+            sign_string.as_bytes(),
+            &decode_sig(header(&req, signing::ADMIN_SIGNATURE_HEADER)),
+        )
+        .expect("the relay's verifier must accept this takedown request");
+
+        // The restore body flips only `applied` — pinned so the two writes are distinct.
+        let restore = build_update_subject_status_request(
+            &pairing,
+            "did:plc:abc123",
+            false,
+            1_700_000_000,
+            "nonce-td",
+        )
+        .expect("build signed restore");
+        assert_eq!(
+            std::str::from_utf8(&restore.body).unwrap(),
+            r#"{"subject":{"$type":"com.atproto.admin.defs#repoRef","did":"did:plc:abc123"},"takedown":{"applied":false}}"#
+        );
+        assert_ne!(
+            header(&req, signing::ADMIN_SIGNATURE_HEADER),
+            header(&restore, signing::ADMIN_SIGNATURE_HEADER),
+            "a takedown signature must not be valid for a restore"
+        );
+    }
+
+    // Pins the relay's subject-status wire shape by value (`RepoRefView`/`StatusAttrView`
+    // in crates/pds/src/routes/admin_subject_defs.rs) and its IPC re-serialization —
+    // the `$type` key survives the round trip.
+    #[test]
+    fn subject_status_deserializes_the_relay_shape() {
+        let json = r#"{
+            "subject": { "$type": "com.atproto.admin.defs#repoRef", "did": "did:plc:abc123" },
+            "takedown": { "applied": true }
+        }"#;
+        let status: SubjectStatus = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(
+            status,
+            SubjectStatus {
+                subject: SubjectRepoRef {
+                    type_: "com.atproto.admin.defs#repoRef".to_string(),
+                    did: "did:plc:abc123".to_string(),
+                },
+                takedown: SubjectTakedown { applied: true },
+            }
+        );
+
+        let value = serde_json::to_value(&status).expect("serialize");
+        assert_eq!(
+            value["subject"]["$type"],
+            "com.atproto.admin.defs#repoRef"
+        );
+        assert_eq!(value["subject"]["did"], "did:plc:abc123");
+        assert_eq!(value["takedown"]["applied"], true);
     }
 
     // Pins the relay's `AdminDeviceView` wire shape by value (the `pds` crate is

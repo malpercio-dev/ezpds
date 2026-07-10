@@ -49,6 +49,11 @@ export function classifyRelayError(error: unknown): ErrorView {
       if (e.status === 401) {
         return { status: 'error', chipLabel: 'check device time', message, recovery: 'retry' };
       }
+      // A 404 is a definitive answer — the identifier matched nothing on this server
+      // (e.g. a moderation lookup for a DID with no account). Retrying won't change it.
+      if (e.status === 404) {
+        return { status: 'info', chipLabel: 'not found', message, recovery: 'none' };
+      }
       return { status: 'error', chipLabel: 'rejected', message, recovery: 'retry' };
     case 'NO_SUCH_PAIRING':
       // The pairing has been removed (likely on another screen). It may have been
@@ -84,6 +89,11 @@ export function describeRelayError(error: unknown): string {
       // request — a clock outside the relay's ±60s window. Surface the time hint too.
       if (e.status === 401) {
         return 'The relay rejected the request. The pairing code may be expired or used, or this device clock may be off — check the device time.';
+      }
+      // 404: the lookup was well-formed and authenticated; the server just has no
+      // matching record. Literal truth, no alarm.
+      if (e.status === 404) {
+        return 'Nothing on this server matches that identifier.';
       }
       return `The relay rejected the request (HTTP ${e.status}).`;
     case 'NO_SUCH_PAIRING':

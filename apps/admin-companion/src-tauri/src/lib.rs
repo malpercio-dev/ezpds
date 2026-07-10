@@ -106,6 +106,29 @@ async fn revoke_admin_device(
     relay_client::revoke_device(&pairing_id, &device_id).await
 }
 
+/// Report an account's takedown status from the given pairing's relay — the moderation
+/// screen's lookup. Id-addressed so a concurrent active-pairing switch can't redirect
+/// which relay is asked.
+#[tauri::command]
+async fn get_subject_status(
+    pairing_id: String,
+    did: String,
+) -> Result<relay_client::SubjectStatus, relay_client::RelayClientError> {
+    relay_client::get_subject_status(&pairing_id, &did).await
+}
+
+/// Apply or clear an account-level takedown on the given pairing's relay. The one
+/// operator action with deliberate friction: the UI arms an explicit confirmation and
+/// runs the biometric gate before invoking this.
+#[tauri::command]
+async fn update_subject_status(
+    pairing_id: String,
+    did: String,
+    applied: bool,
+) -> Result<relay_client::SubjectStatus, relay_client::RelayClientError> {
+    relay_client::update_subject_status(&pairing_id, &did, applied).await
+}
+
 /// Whether the biometric (user-presence) gate on signing actions is enabled. Defaults to
 /// `true` on a fresh install — signing is gated until the operator opts out in Settings.
 /// Errors serialize through `RelayClientError::Keychain` (the app's one Serialize error).
@@ -148,6 +171,8 @@ pub fn run() {
             unpair,
             list_admin_devices,
             revoke_admin_device,
+            get_subject_status,
+            update_subject_status,
             biometric_enabled,
             set_biometric_enabled
         ])
