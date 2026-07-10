@@ -1,4 +1,4 @@
--- V041: Operator revocation for claim codes + a stable inventory cursor
+-- V041: Operator revocation for claim codes
 --
 -- A minted-but-unredeemed claim code is a live signup credential; the operator needs to be
 -- able to kill one (a code shared to the wrong channel, a batch minted by mistake) without
@@ -9,30 +9,15 @@
 -- `revoked_at IS NULL`, so revocation closes redemption exactly like expiry does — and the
 -- row survives as the audit record of the kill.
 --
--- The table is rebuilt (rather than ALTERed) to also gain an explicit
--- `id INTEGER PRIMARY KEY`: the inventory endpoint pages newest-first by insertion order,
--- and with a TEXT primary key the implicit rowid is NOT stable — VACUUM may renumber it,
--- which could skip or duplicate pagination pages. An INTEGER PRIMARY KEY is a true rowid
--- alias and survives VACUUM (same doctrine as `repo_seq`, V028). `code` keeps its
--- uniqueness via a UNIQUE constraint. Existing rows keep their current rowid as `id`, so
--- insertion order is preserved across the rebuild. Rows are never deleted (revocation is a
--- tombstone), so plain INTEGER PRIMARY KEY monotonicity is sufficient — AUTOINCREMENT's
--- no-reuse guarantee would only matter after a delete of the max row.
+-- Deliberately an in-place ALTER, not a table rebuild: `pending_accounts.claim_code` (V005)
+-- carries a `REFERENCES claim_codes (code)` FK, and with foreign-key enforcement always on,
+-- a DROP/rename rebuild fails on any database holding outstanding pending-account rows
+-- (V038 documents why neither `PRAGMA foreign_keys` nor `defer_foreign_keys` can bridge a
+-- parent drop inside the migration transaction). The inventory endpoint therefore pages on
+-- the immutable `(created_at, code)` keyset — NOT the implicit rowid, which VACUUM may
+-- renumber under this TEXT-keyed table — served by the composite index below.
 
-CREATE TABLE claim_codes_v2 (
-    id          INTEGER PRIMARY KEY,
-    code        TEXT NOT NULL UNIQUE,
-    expires_at  TEXT NOT NULL,
-    created_at  TEXT NOT NULL,
-    redeemed_at TEXT,
-    revoked_at  TEXT
-);
+ALTER TABLE claim_codes ADD COLUMN revoked_at TEXT;
 
-INSERT INTO claim_codes_v2 (id, code, expires_at, created_at, redeemed_at)
-SELECT rowid, code, expires_at, created_at, redeemed_at FROM claim_codes ORDER BY rowid;
-
-DROP TABLE claim_codes;
-ALTER TABLE claim_codes_v2 RENAME TO claim_codes;
-
--- Supports expiry sweeps and redemption validity checks (recreated: DROP TABLE removed it).
-CREATE INDEX idx_claim_codes_expires_at ON claim_codes (expires_at);
+-- Serves the inventory's newest-first keyset pagination (ORDER BY created_at DESC, code DESC).
+CREATE INDEX idx_claim_codes_created_at_code ON claim_codes (created_at, code);

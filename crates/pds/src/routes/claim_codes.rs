@@ -121,9 +121,9 @@ async fn claim_codes_inner(
 pub struct ListClaimCodesParams {
     #[serde(default = "default_list_limit")]
     limit: u32,
-    /// `id` of the last row of the previous page (exclusive), from the prior response's
-    /// `cursor`; absent for the first page.
-    cursor: Option<i64>,
+    /// Opaque cursor from the prior response (the last row's `created_at|code` keyset,
+    /// exclusive); absent for the first page.
+    cursor: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -174,8 +174,10 @@ fn derive_status(row: &crate::db::claim_codes::ClaimCodeRow) -> &'static str {
 
 /// `GET /v1/accounts/claim-codes` — admin-only claim-code inventory.
 ///
-/// Pages the full mint history newest-first (`id` cursor — a stable INTEGER PRIMARY KEY,
-/// V041), each row carrying its derived
+/// Pages the full mint history newest-first on the immutable `(created_at, code)` keyset
+/// (stable across VACUUM, unlike this TEXT-keyed table's implicit rowid — and a table
+/// rebuild for an INTEGER key is off the table: `pending_accounts.claim_code` FK-references
+/// `claim_codes (code)`), each row carrying its derived
 /// lifecycle status. A minted-but-unredeemed code is a live signup credential — this is the
 /// operator's view of what is outstanding. Admin-authed: the master token **or** an active
 /// companion-app device's signed request ([`require_admin`]); a GET signs the empty body.
@@ -195,8 +197,18 @@ pub async fn list_claim_code_inventory(
             format!("limit must be between 1 and {MAX_LIST_LIMIT}"),
         ));
     }
+    // The opaque cursor is the previous page's last `created_at|code`; created_at never
+    // contains '|' and codes are uppercase alphanumeric, so the first '|' is the seam.
+    let cursor = params
+        .cursor
+        .as_deref()
+        .map(|raw| {
+            raw.split_once('|')
+                .ok_or_else(|| ApiError::new(ErrorCode::InvalidRequest, "malformed cursor"))
+        })
+        .transpose()?;
 
-    let rows = list_claim_codes(&state.db, params.cursor, params.limit)
+    let rows = list_claim_codes(&state.db, cursor, params.limit)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to list claim codes");
@@ -205,7 +217,7 @@ pub async fn list_claim_code_inventory(
 
     // A short page means the history is exhausted; a full page may have more.
     let cursor = (rows.len() == params.limit as usize)
-        .then(|| rows.last().map(|r| r.id.to_string()))
+        .then(|| rows.last().map(|r| format!("{}|{}", r.created_at, r.code)))
         .flatten();
     let codes = rows
         .iter()
@@ -780,22 +792,25 @@ mod tests {
 
     // ── Inventory: list ───────────────────────────────────────────────────────
 
-    /// Insert one code directly with explicit lifecycle timestamps.
+    /// Insert one code directly with explicit lifecycle timestamps. `created_offset`
+    /// matters: the inventory orders on the `(created_at, code)` keyset.
     async fn seed_code(
         db: &sqlx::SqlitePool,
         code: &str,
+        created_offset: &str,
         expires_offset: &str,
         redeemed: bool,
         revoked: bool,
     ) {
         sqlx::query(
             "INSERT INTO claim_codes (code, expires_at, created_at, redeemed_at, revoked_at) \
-             VALUES (?, datetime('now', ?), datetime('now'), \
+             VALUES (?, datetime('now', ?), datetime('now', ?), \
                      CASE WHEN ? THEN datetime('now') END, \
                      CASE WHEN ? THEN datetime('now') END)",
         )
         .bind(code)
         .bind(expires_offset)
+        .bind(created_offset)
         .bind(redeemed)
         .bind(revoked)
         .execute(db)
@@ -824,12 +839,12 @@ mod tests {
     async fn list_reports_derived_status_newest_first() {
         let state = test_state_with_admin_token().await;
         let db = state.db.clone();
-        seed_code(&db, "WAITIN", "+24 hours", false, false).await;
-        seed_code(&db, "LAPSED", "-1 hours", false, false).await;
+        seed_code(&db, "WAITIN", "-4 minutes", "+24 hours", false, false).await;
+        seed_code(&db, "LAPSED", "-3 minutes", "-1 hours", false, false).await;
         // Terminal events beat the clock: both of these are past expiry, but they must
         // report the event, never "expired".
-        seed_code(&db, "SPENT1", "-1 hours", true, false).await;
-        seed_code(&db, "KILLED", "-1 hours", false, true).await;
+        seed_code(&db, "SPENT1", "-2 minutes", "-1 hours", true, false).await;
+        seed_code(&db, "KILLED", "-1 minutes", "-1 hours", false, true).await;
 
         let response = app(state)
             .oneshot(get_inventory("", Some("test-admin-token")))
@@ -859,8 +874,10 @@ mod tests {
     async fn list_pages_with_cursor() {
         let state = test_state_with_admin_token().await;
         let db = state.db.clone();
+        // Same-second mints (a batch): the keyset's code tiebreak orders them, and the
+        // page boundary inside the batch must not skip or repeat a row.
         for code in ["CODE01", "CODE02", "CODE03"] {
-            seed_code(&db, code, "+24 hours", false, false).await;
+            seed_code(&db, code, "-1 minutes", "+24 hours", false, false).await;
         }
 
         let first = app(state.clone())
@@ -870,7 +887,13 @@ mod tests {
         let first_json = body_json(first).await;
         assert_eq!(first_json["codes"].as_array().unwrap().len(), 2);
         assert_eq!(first_json["codes"][0]["code"], "CODE03");
-        let cursor = first_json["cursor"].as_str().unwrap().to_string();
+        // The opaque cursor is `created_at|code` — percent-encode it for the query
+        // string exactly like a URL-building client would.
+        let cursor = first_json["cursor"]
+            .as_str()
+            .unwrap()
+            .replace(' ', "%20")
+            .replace('|', "%7C");
 
         let second = app(state)
             .oneshot(get_inventory(
@@ -883,6 +906,18 @@ mod tests {
         assert_eq!(second_json["codes"].as_array().unwrap().len(), 1);
         assert_eq!(second_json["codes"][0]["code"], "CODE01");
         assert!(second_json.get("cursor").is_none());
+    }
+
+    #[tokio::test]
+    async fn list_rejects_malformed_cursor() {
+        let response = app(test_state_with_admin_token().await)
+            .oneshot(get_inventory(
+                "?cursor=no-seam-here",
+                Some("test-admin-token"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -923,7 +958,7 @@ mod tests {
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let state = test_state().await;
-        seed_code(&state.db, "WAITIN", "+24 hours", false, false).await;
+        seed_code(&state.db, "WAITIN", "-1 minutes", "+24 hours", false, false).await;
         let keypair = crypto::generate_p256_keypair().unwrap();
         let device_id = uuid::Uuid::new_v4().to_string();
         insert_device(
@@ -981,7 +1016,7 @@ mod tests {
     async fn revoke_pending_code_returns_revoked_and_closes_redemption() {
         let state = test_state_with_admin_token().await;
         let db = state.db.clone();
-        seed_code(&db, "LIVE01", "+24 hours", false, false).await;
+        seed_code(&db, "LIVE01", "-1 minutes", "+24 hours", false, false).await;
 
         let response = app(state)
             .oneshot(post_revoke(
@@ -1006,7 +1041,7 @@ mod tests {
     #[tokio::test]
     async fn revoke_is_idempotent() {
         let state = test_state_with_admin_token().await;
-        seed_code(&state.db, "LIVE01", "+24 hours", false, false).await;
+        seed_code(&state.db, "LIVE01", "-1 minutes", "+24 hours", false, false).await;
 
         for _ in 0..2 {
             let response = app(state.clone())
@@ -1023,7 +1058,7 @@ mod tests {
     #[tokio::test]
     async fn revoke_redeemed_code_returns_409() {
         let state = test_state_with_admin_token().await;
-        seed_code(&state.db, "SPENT1", "+24 hours", true, false).await;
+        seed_code(&state.db, "SPENT1", "-1 minutes", "+24 hours", true, false).await;
 
         let response = app(state)
             .oneshot(post_revoke(
@@ -1050,7 +1085,7 @@ mod tests {
     #[tokio::test]
     async fn revoke_requires_admin() {
         let state = test_state_with_admin_token().await;
-        seed_code(&state.db, "LIVE01", "+24 hours", false, false).await;
+        seed_code(&state.db, "LIVE01", "-1 minutes", "+24 hours", false, false).await;
 
         let missing = app(state.clone())
             .oneshot(post_revoke(r#"{"code": "LIVE01"}"#, None))
@@ -1075,7 +1110,7 @@ mod tests {
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let state = test_state().await;
-        seed_code(&state.db, "LIVE01", "+24 hours", false, false).await;
+        seed_code(&state.db, "LIVE01", "-1 minutes", "+24 hours", false, false).await;
         let keypair = crypto::generate_p256_keypair().unwrap();
         let device_id = uuid::Uuid::new_v4().to_string();
         insert_device(

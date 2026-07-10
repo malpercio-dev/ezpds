@@ -25,16 +25,11 @@ pub async fn claim_code_valid(db: &SqlitePool, code: &str) -> Result<bool, ApiEr
     Ok(valid)
 }
 
-/// One claim code's stored lifecycle, plus the rowid pagination cursor. Status is derived,
-/// not stored (V004/V041): `redeemed_at`/`revoked_at` are NULL until that transition happens,
-/// and expiry is a comparison against the clock — `is_expired` carries that comparison out of
-/// SQL so callers never re-derive "now" inconsistently.
+/// One claim code's stored lifecycle. Status is derived, not stored (V004/V041):
+/// `redeemed_at`/`revoked_at` are NULL until that transition happens, and expiry is a
+/// comparison against the clock — `is_expired` carries that comparison out of SQL so
+/// callers never re-derive "now" inconsistently.
 pub struct ClaimCodeRow {
-    /// Insertion-order sequence (`id INTEGER PRIMARY KEY`, V041) — the pagination cursor.
-    /// An explicit rowid alias, so it is stable across VACUUM (an implicit rowid under the
-    /// old TEXT primary key was not). Rows are never deleted (revocation is a tombstone),
-    /// so id order is exactly mint order.
-    pub id: i64,
     pub code: String,
     pub created_at: String,
     pub expires_at: String,
@@ -44,33 +39,29 @@ pub struct ClaimCodeRow {
     pub is_expired: bool,
 }
 
-/// Page the claim-code inventory newest-first. `cursor` is the `id` of the last row of
-/// the previous page (exclusive); `None` starts from the newest mint.
+/// Page the claim-code inventory newest-first on the `(created_at, code)` keyset — both
+/// immutable, together unique (codes are globally unique), and unlike this TEXT-keyed
+/// table's implicit rowid, stable across VACUUM. `cursor` is the last row of the previous
+/// page (exclusive); `None` starts from the newest mint.
 pub async fn list_claim_codes(
     db: &SqlitePool,
-    cursor: Option<i64>,
+    cursor: Option<(&str, &str)>,
     limit: u32,
 ) -> Result<Vec<ClaimCodeRow>, sqlx::Error> {
-    let rows = sqlx::query_as::<
-        _,
-        (
-            i64,
-            String,
-            String,
-            String,
-            Option<String>,
-            Option<String>,
-            bool,
-        ),
-    >(
-        "SELECT id, code, created_at, expires_at, redeemed_at, revoked_at, \
+    let (cursor_created_at, cursor_code) = match cursor {
+        Some((created_at, code)) => (Some(created_at), Some(code)),
+        None => (None, None),
+    };
+    let rows = sqlx::query_as::<_, (String, String, String, Option<String>, Option<String>, bool)>(
+        "SELECT code, created_at, expires_at, redeemed_at, revoked_at, \
                 (expires_at <= datetime('now')) \
          FROM claim_codes \
-         WHERE (? IS NULL OR id < ?) \
-         ORDER BY id DESC LIMIT ?",
+         WHERE (? IS NULL OR (created_at, code) < (?, ?)) \
+         ORDER BY created_at DESC, code DESC LIMIT ?",
     )
-    .bind(cursor)
-    .bind(cursor)
+    .bind(cursor_created_at)
+    .bind(cursor_created_at)
+    .bind(cursor_code)
     .bind(limit)
     .fetch_all(db)
     .await?;
@@ -78,16 +69,13 @@ pub async fn list_claim_codes(
     Ok(rows
         .into_iter()
         .map(
-            |(id, code, created_at, expires_at, redeemed_at, revoked_at, is_expired)| {
-                ClaimCodeRow {
-                    id,
-                    code,
-                    created_at,
-                    expires_at,
-                    redeemed_at,
-                    revoked_at,
-                    is_expired,
-                }
+            |(code, created_at, expires_at, redeemed_at, revoked_at, is_expired)| ClaimCodeRow {
+                code,
+                created_at,
+                expires_at,
+                redeemed_at,
+                revoked_at,
+                is_expired,
             },
         )
         .collect())
@@ -276,22 +264,26 @@ mod tests {
 
     // ── Inventory: list ───────────────────────────────────────────────────────
 
-    /// Insert one code directly with explicit lifecycle timestamps.
+    /// Insert one code directly with explicit lifecycle timestamps. `created_offset`
+    /// matters: the inventory orders on the `(created_at, code)` keyset, so tests seed
+    /// distinct mint times unless they are exercising the same-second tiebreak.
     async fn seed_code(
         db: &SqlitePool,
         code: &str,
+        created_offset: &str,
         expires_offset: &str,
         redeemed: bool,
         revoked: bool,
     ) {
         sqlx::query(
             "INSERT INTO claim_codes (code, expires_at, created_at, redeemed_at, revoked_at) \
-             VALUES (?, datetime('now', ?), datetime('now'), \
+             VALUES (?, datetime('now', ?), datetime('now', ?), \
                      CASE WHEN ? THEN datetime('now') END, \
                      CASE WHEN ? THEN datetime('now') END)",
         )
         .bind(code)
         .bind(expires_offset)
+        .bind(created_offset)
         .bind(redeemed)
         .bind(revoked)
         .execute(db)
@@ -302,10 +294,10 @@ mod tests {
     #[tokio::test]
     async fn list_returns_newest_first_with_lifecycle_fields() {
         let db = test_db().await;
-        seed_code(&db, "OLDEST", "+24 hours", false, false).await;
-        seed_code(&db, "SPENT1", "+24 hours", true, false).await;
-        seed_code(&db, "KILLED", "+24 hours", false, true).await;
-        seed_code(&db, "LAPSED", "-1 hours", false, false).await;
+        seed_code(&db, "OLDEST", "-4 minutes", "+24 hours", false, false).await;
+        seed_code(&db, "SPENT1", "-3 minutes", "+24 hours", true, false).await;
+        seed_code(&db, "KILLED", "-2 minutes", "+24 hours", false, true).await;
+        seed_code(&db, "LAPSED", "-1 minutes", "-1 hours", false, false).await;
 
         let rows = list_claim_codes(&db, None, 10).await.expect("list");
 
@@ -321,21 +313,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_pages_by_rowid_cursor() {
+    async fn list_pages_by_keyset_cursor() {
         let db = test_db().await;
-        for code in ["CODE01", "CODE02", "CODE03"] {
-            seed_code(&db, code, "+24 hours", false, false).await;
-        }
+        seed_code(&db, "CODE01", "-3 minutes", "+24 hours", false, false).await;
+        seed_code(&db, "CODE02", "-2 minutes", "+24 hours", false, false).await;
+        seed_code(&db, "CODE03", "-1 minutes", "+24 hours", false, false).await;
 
         let first = list_claim_codes(&db, None, 2).await.expect("first page");
         assert_eq!(first.len(), 2);
         assert_eq!(first[0].code, "CODE03");
 
-        let second = list_claim_codes(&db, Some(first[1].id), 2)
+        let second = list_claim_codes(&db, Some((&first[1].created_at, &first[1].code)), 2)
             .await
             .expect("second page");
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].code, "CODE01");
+    }
+
+    #[tokio::test]
+    async fn list_pages_same_second_mints_without_skip_or_duplicate() {
+        // A batch mint stamps every code with the same created_at; the code column is
+        // the keyset tiebreak, so a page boundary inside the batch must not skip or
+        // repeat a row.
+        let db = test_db().await;
+        for code in ["BATCHA", "BATCHB", "BATCHC"] {
+            seed_code(&db, code, "-1 minutes", "+24 hours", false, false).await;
+        }
+
+        let first = list_claim_codes(&db, None, 2).await.expect("first page");
+        let second = list_claim_codes(&db, Some((&first[1].created_at, &first[1].code)), 2)
+            .await
+            .expect("second page");
+
+        let mut all: Vec<&str> = first
+            .iter()
+            .chain(&second)
+            .map(|r| r.code.as_str())
+            .collect();
+        all.sort_unstable();
+        assert_eq!(all, vec!["BATCHA", "BATCHB", "BATCHC"]);
     }
 
     // ── Inventory: revoke ─────────────────────────────────────────────────────
@@ -343,7 +359,7 @@ mod tests {
     #[tokio::test]
     async fn revoke_pending_code_sets_tombstone_and_closes_redemption() {
         let db = test_db().await;
-        seed_code(&db, "LIVE01", "+24 hours", false, false).await;
+        seed_code(&db, "LIVE01", "-1 minutes", "+24 hours", false, false).await;
 
         let outcome = revoke_claim_code(&db, "LIVE01").await.expect("revoke");
         assert_eq!(outcome, RevokeClaimCodeOutcome::Revoked);
@@ -357,8 +373,8 @@ mod tests {
     #[tokio::test]
     async fn revoke_is_idempotent_and_reports_terminal_states() {
         let db = test_db().await;
-        seed_code(&db, "LIVE01", "+24 hours", false, false).await;
-        seed_code(&db, "SPENT1", "+24 hours", true, false).await;
+        seed_code(&db, "LIVE01", "-1 minutes", "+24 hours", false, false).await;
+        seed_code(&db, "SPENT1", "-1 minutes", "+24 hours", true, false).await;
 
         revoke_claim_code(&db, "LIVE01").await.expect("first");
         assert_eq!(
@@ -378,7 +394,7 @@ mod tests {
     #[tokio::test]
     async fn revoke_works_on_expired_pending_code() {
         let db = test_db().await;
-        seed_code(&db, "LAPSED", "-1 hours", false, false).await;
+        seed_code(&db, "LAPSED", "-1 minutes", "-1 hours", false, false).await;
 
         assert_eq!(
             revoke_claim_code(&db, "LAPSED").await.expect("revoke"),
