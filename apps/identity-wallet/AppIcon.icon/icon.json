@@ -9,12 +9,12 @@
     {
       "layers" : [
         {
-          "image-name" : "seal.svg",
-          "name" : "seal"
-        },
-        {
           "image-name" : "shield.svg",
           "name" : "shield"
+        },
+        {
+          "image-name" : "seal.svg",
+          "name" : "seal"
         }
       ],
       "shadow" : {
