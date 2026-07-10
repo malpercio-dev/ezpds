@@ -9,10 +9,11 @@
 // post-claim assertion that won't exchange) surfaces here even when every handler still passes its
 // own unit tests.
 //
-// Two auth.md checklist items are intentionally NOT covered here because they don't map to shipped
-// code: there is no Security Event Token (SET) endpoint yet (the AS metadata advertises
-// `events_endpoint`/`events_supported` ahead of that work), and the claim ceremony is JSON-only
-// (there is no HTML "claim page" route). Both are noted where relevant below.
+// One auth.md checklist item is intentionally NOT covered here because it doesn't map to shipped
+// code: the claim ceremony is JSON-only (there is no HTML "claim page" route), noted where relevant
+// below. The Security Event Token (SET) `events_endpoint` IS implemented — its end-to-end journey
+// (register `identity_assertion` → confirm → exchange → provider SET → re-exchange refused) is
+// exercised in `identity_assertion_provider_set_revokes_and_blocks_reexchange` below.
 
 use std::sync::Arc;
 
@@ -130,6 +131,36 @@ fn trusted(issuer: &str, public_key_pem: String) -> TrustedIssuer {
     }
 }
 
+/// Sign a provider Security Event Token carrying the revocation event for `sub`. `aud` is this
+/// server; `iss` is the trusted provider. The `jti` is fixed (the SET path keeps no replay store, so
+/// its value is irrelevant).
+fn make_set(priv_pem: &str, iss: &str, sub: &str) -> String {
+    #[derive(serde::Serialize)]
+    struct SetClaims<'a> {
+        iss: &'a str,
+        aud: &'a str,
+        iat: i64,
+        jti: &'a str,
+        sub: &'a str,
+        events: Value,
+    }
+    let mut events = serde_json::Map::new();
+    events.insert(
+        crate::auth::issuer_trust::REVOKED_EVENT_TYPE.to_string(),
+        json!({}),
+    );
+    let claims = SetClaims {
+        iss,
+        aud: PUBLIC_URL,
+        iat: Utc::now().timestamp(),
+        jti: "set-jti-1",
+        sub,
+        events: Value::Object(events),
+    };
+    let key = EncodingKey::from_ec_pem(priv_pem.as_bytes()).unwrap();
+    jsonwebtoken::encode(&Header::new(Algorithm::ES256), &claims, &key).unwrap()
+}
+
 // ── request helpers ────────────────────────────────────────────────────────────
 
 /// Drive a built request through the real router and decode the JSON response. Shared by the
@@ -176,6 +207,17 @@ async fn post_form(state: AppState, uri: &str, body: &str) -> (StatusCode, Value
         .uri(uri)
         .header("content-type", "application/x-www-form-urlencoded")
         .body(Body::from(body.to_string()))
+        .unwrap();
+    send(state, request).await
+}
+
+/// POST a Security Event Token to the SET receiver (`application/secevent+jwt`).
+async fn post_secevent(state: AppState, set: &str) -> (StatusCode, Value) {
+    let request = Request::builder()
+        .method("POST")
+        .uri("/agent/event/notify")
+        .header("content-type", "application/secevent+jwt")
+        .body(Body::from(set.to_string()))
         .unwrap();
     send(state, request).await
 }
@@ -286,11 +328,27 @@ async fn discovery_advertises_endpoints_that_actually_route() {
         assert_eq!(body["error"], "invalid_request", "{field} handler ran");
     }
 
-    // `events_endpoint` (the SET receiver) is advertised ahead of its implementation, so it is
-    // deliberately NOT round-tripped here — no handler serves it yet.
+    // `events_endpoint` (the SET receiver) routes to a handler too. Posting a non-SET body reaches
+    // it and returns the RFC 8935 error shape (`err`, not the auth.md `error`), proving the route
+    // resolves rather than 404ing.
     assert_eq!(
         meta["agent_auth"]["events_endpoint"],
         format!("{PUBLIC_URL}/agent/event/notify")
+    );
+    let events_path = meta["agent_auth"]["events_endpoint"]
+        .as_str()
+        .unwrap()
+        .strip_prefix(PUBLIC_URL)
+        .unwrap();
+    let (estatus, ebody) = post_json(test_state().await, events_path, json!({}), None).await;
+    assert_eq!(
+        estatus,
+        StatusCode::BAD_REQUEST,
+        "events_endpoint ({events_path}) must route to its handler"
+    );
+    assert!(
+        ebody.get("err").is_some(),
+        "SET endpoint answers with the RFC 8935 {{err, description}} shape"
     );
 }
 
@@ -516,6 +574,105 @@ async fn identity_assertion_journey_interaction_confirm_reregister_exchange() {
     assert_eq!(s4, StatusCode::OK);
     assert_eq!(b4["token_type"], "Bearer");
     assert_eq!(b4["access_token"].as_str().unwrap().split('.').count(), 3);
+}
+
+// ── provider-driven revocation (SET) journey ──────────────────────────────────
+
+/// The `events_endpoint` end to end: a confirmed `identity_assertion` agent's assertion exchanges
+/// for a token, then the trusted issuer pushes a Security Event Token to `/agent/event/notify`
+/// naming the agent's `(iss, sub)`. The endpoint acknowledges with `202`, flips the identity to
+/// `revoked` (recording a provider-driven audit event), and the same assertion can no longer be
+/// re-exchanged — the provider's retraction reaches the token endpoint's terminal refusal, exactly
+/// like the account-owner revoke path.
+#[tokio::test]
+async fn identity_assertion_provider_set_revokes_and_blocks_reexchange() {
+    let (priv_pem, pub_pem) = es256_keys();
+    let state = state_with(AgentAuthConfig {
+        trusted_issuers: vec![trusted("https://trusted.example", pub_pem)],
+        ..AgentAuthConfig::default()
+    })
+    .await;
+    let owner = "did:plc:setjourney111111";
+    insert_account(&state.db, owner, "agent@example.com").await;
+
+    // Register (interaction_required) → confirm → re-register to mint an exchangeable assertion.
+    let now = Utc::now().timestamp();
+    let jag = make_jag(
+        &priv_pem,
+        "https://trusted.example",
+        "sub-set",
+        "agent@example.com",
+        now,
+        now + 600,
+    );
+    let (_s1, b1) = post_json(
+        state.clone(),
+        "/agent/identity",
+        json!({ "type": "identity_assertion", "assertion": jag }),
+        None,
+    )
+    .await;
+    let user_code = b1["claim"]["user_code"].as_str().unwrap().to_string();
+    let (s2, _b2) = post_json(
+        state.clone(),
+        "/agent/identity/claim/confirm",
+        json!({ "user_code": user_code }),
+        Some(&owner_token(&state, owner)),
+    )
+    .await;
+    assert_eq!(s2, StatusCode::OK);
+    let (_s3, b3) = post_json(
+        state.clone(),
+        "/agent/identity",
+        json!({ "type": "identity_assertion", "assertion": jag }),
+        None,
+    )
+    .await;
+    let minted = b3["identity_assertion"].as_str().unwrap().to_string();
+
+    // The assertion exchanges before revocation.
+    let (x1, _x1b) = exchange_assertion(state.clone(), &minted).await;
+    assert_eq!(
+        x1,
+        StatusCode::OK,
+        "assertion must exchange before revocation"
+    );
+
+    // The provider pushes a SET naming (iss, sub); it is acknowledged with 202.
+    let set = make_set(&priv_pem, "https://trusted.example", "sub-set");
+    let (sstatus, _sbody) = post_secevent(state.clone(), &set).await;
+    assert_eq!(
+        sstatus,
+        StatusCode::ACCEPTED,
+        "a well-formed SET must be acknowledged"
+    );
+
+    // The identity is now revoked, with a provider-driven audit event.
+    let status: String = sqlx::query_scalar(
+        "SELECT status FROM agent_identities \
+         WHERE issuer = 'https://trusted.example' AND subject = 'sub-set'",
+    )
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(status, "revoked");
+    let revoked_detail: Option<String> = sqlx::query_scalar(
+        "SELECT e.detail FROM agent_audit_events e \
+         JOIN agent_identities i ON i.id = e.registration_id \
+         WHERE i.subject = 'sub-set' AND e.event_type = 'revoked'",
+    )
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert!(
+        revoked_detail.unwrap().contains("provider_set"),
+        "the audit event must mark the provider-driven source"
+    );
+
+    // The same assertion can no longer be re-exchanged.
+    let (x2, x2body) = exchange_assertion(state.clone(), &minted).await;
+    assert_eq!(x2, StatusCode::BAD_REQUEST);
+    assert_eq!(x2body["error"], "access_denied");
 }
 
 // ── discrete gaps ──────────────────────────────────────────────────────────────

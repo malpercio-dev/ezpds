@@ -2,6 +2,7 @@ pub mod agent_assertion;
 pub mod dpop;
 pub mod extractors;
 pub mod guards;
+pub mod issuer_trust;
 pub mod jwt;
 pub mod oauth_scopes;
 pub mod password;

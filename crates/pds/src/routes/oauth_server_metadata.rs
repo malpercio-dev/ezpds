@@ -104,10 +104,7 @@ pub async fn oauth_server_metadata(State(state): State<AppState>) -> impl IntoRe
                     "urn:ietf:params:oauth:token-type:id-jag".to_string()
                 ],
             },
-            events_supported: vec![
-                "https://schemas.workos.com/events/agent/auth/identity/assertion/revoked"
-                    .to_string(),
-            ],
+            events_supported: vec![crate::auth::issuer_trust::REVOKED_EVENT_TYPE.to_string()],
         },
     })
 }

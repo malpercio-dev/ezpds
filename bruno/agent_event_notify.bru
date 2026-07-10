@@ -1,0 +1,50 @@
+meta {
+  name: Agent Event Notify (auth.md SET receiver, POST /agent/event/notify)
+  type: http
+  seq: 107
+}
+
+post {
+  url: {{baseUrl}}/agent/event/notify
+  body: text
+  auth: none
+}
+
+headers {
+  Content-Type: application/secevent+jwt
+}
+
+body:text {
+  <a Security Event Token: a JWT signed by a trusted issuer, delivered as application/secevent+jwt>
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # POST /agent/event/notify
+
+  The auth.md `events_endpoint` — provider-driven revocation. Receives a **Security Event Token**
+  (SET, [RFC 8417](https://www.rfc-editor.org/rfc/rfc8417)) pushed by a trusted identity provider
+  ([RFC 8935](https://www.rfc-editor.org/rfc/rfc8935) push delivery) and revokes the matching
+  `identity_assertion` registration at the registration layer — the provider-initiated counterpart
+  to `POST /v1/agents/{registration_id}/revoke`.
+
+  The request body is the SET, a signed compact JWT, delivered as `application/secevent+jwt`. It is
+  authenticated by its signature against the **same** `[agent_auth] trusted_issuers` trust list that
+  verifies ID-JAGs (§3.1) — no separate credential. The SET's `iss` selects the issuer; its `sub`
+  names the ID-JAG subject to revoke; its `events` claim must contain
+  `https://schemas.workos.com/events/agent/auth/identity/assertion/revoked`. The server revokes the
+  `(iss, sub)` registration and records a provider-driven `revoked` audit event.
+
+  Implicit gating: honored only when the SET's issuer is on the trust list, so a deployment with no
+  trusted issuers rejects every SET with `invalid_issuer`.
+
+  ## Response
+
+  - `202 Accepted` (empty body) — the SET was accepted. Also returned for an unknown or
+    already-revoked subject, so a replayed revocation is idempotent (no `jti` dedup store).
+  - `400 Bad Request` with `{ "err", "description" }` — a malformed body (`invalid_request`), an
+    untrusted/absent issuer (`invalid_issuer`), or a bad signature (`authentication_failed`).
+}

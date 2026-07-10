@@ -38,11 +38,10 @@ convention: read it top to bottom and you will know how to register, obtain an
 access token, and call the API.
 
 > **Scope of this document.** It describes the surface **this deployment actually
-> exposes today**. Where the [auth.md](https://github.com/workos/auth.md) spec
-> defines a mechanism that is advertised but not yet enabled here (the
-> machine-pollable claim grant, provider-driven revocation), the relevant section
-> says so explicitly and gives the working alternative. Trust the live discovery
-> documents below over any cached assumption.
+> exposes today** — the full auth.md surface is live here. Each registration flow
+> is opt-in per operator (§2); a disabled flow answers with its `*_not_enabled`
+> error rather than acting. Trust the live discovery documents below over any
+> cached assumption.
 
 ## 1. Discover
 
@@ -88,15 +87,13 @@ at the agent-registration surface:
 }
 ```
 
-> **Not everything advertised is live yet.** This metadata declares the full
-> auth.md surface for forward compatibility, but on this deployment the
-> machine-pollable `urn:workos:agent-auth:grant-type:claim` grant (§3.4) and the
-> `events_endpoint` revocation channel (§7) are **not yet implemented**. The
-> `claim_endpoint` — the claim ceremony itself — *is* live. The sections
-> cross-referenced here give the working alternative for each not-yet-live
-> mechanism. The live path is: register (§3) → complete the claim ceremony if one
-> is required (§3.4) → exchange the assertion with the JWT-bearer grant (§4) →
-> call the API (§5).
+> **The full auth.md surface is live here.** This metadata declares the whole
+> auth.md surface, and on this deployment every part of it is implemented: the
+> machine-pollable `urn:workos:agent-auth:grant-type:claim` grant (§3.4), the
+> `claim_endpoint` claim ceremony, and the `events_endpoint` provider-driven
+> revocation channel (§7). The live path is: register (§3) → complete the claim
+> ceremony if one is required (§3.4) → exchange the assertion with the JWT-bearer
+> grant (§4) → call the API (§5).
 
 ## 2. Pick a method
 
@@ -374,6 +371,25 @@ Failures use the OAuth-style `{ "error", "error_description" }` body.
   possession key, that answers `200` whether or not the token existed. An agent's
   refresh-token-less Bearer has nothing to revoke there and simply expires.
 - **Registration layer.** A revoked agent identity can no longer exchange
-  assertions (§4 returns `access_denied`). Provider-driven revocation via a Security
-  Event Token at the advertised `events_endpoint` is **not yet enabled on this
-  deployment**; today an operator revokes a registration server-side.
+  assertions (§4 returns `access_denied`). A registration is revoked either
+  server-side (by the account owner) or — for an `identity_assertion` registration
+  (§3.1) — by its trusted identity provider, which pushes a **Security Event Token**
+  ([RFC 8417](https://www.rfc-editor.org/rfc/rfc8417)) to the advertised
+  `events_endpoint`:
+
+  ```http
+  POST {{public_url}}/agent/event/notify
+  Content-Type: application/secevent+jwt
+
+  <SET JWT>
+  ```
+
+  The SET is a JWT signed by the same provider whose ID-JAG vouched for the agent —
+  its `iss` must be on this server's trust list, verified exactly as an ID-JAG is in
+  §3.1. It names the agent in its `sub` claim and carries the
+  `https://schemas.workos.com/events/agent/auth/identity/assertion/revoked` event
+  type in its `events` claim; the server revokes the matching `(iss, sub)`
+  registration. Delivery follows [RFC 8935](https://www.rfc-editor.org/rfc/rfc8935):
+  a well-formed SET is acknowledged with `202 Accepted` — including for an unknown or
+  already-revoked subject, so a replayed revocation is idempotent — while a malformed
+  or untrusted SET returns `400` with an `{ "err", "description" }` body.

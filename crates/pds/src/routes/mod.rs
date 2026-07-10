@@ -4,6 +4,7 @@ pub mod activate_account;
 pub mod admin_devices;
 mod admin_subject_defs;
 pub mod agent_claim;
+pub mod agent_event;
 pub mod agent_identity;
 pub mod agents;
 pub mod apply_writes;
