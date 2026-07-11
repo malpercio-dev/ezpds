@@ -22,7 +22,7 @@ the real bsky.social, and permanent `did:plc` state.
 | (c) Return | ezpds production → ezpds staging | `just interop migrate perform` | Round-trip closure; nothing about the identity degraded |
 
 Deployments: staging `https://ezpds-staging.up.railway.app`, production
-`https://ezpds-production.up.railway.app`.
+`https://obsign.org`.
 
 ## Required pass conditions — checked after EVERY leg
 
@@ -47,7 +47,7 @@ Expected per leg:
 
 ```sh
 HANDLE="<the account handle>"
-NEW_PDS="https://ezpds-production.up.railway.app"   # the leg's destination
+NEW_PDS="https://obsign.org"   # the leg's destination
 
 # Handle → DID (on the new host)
 curl -s "$NEW_PDS/xrpc/com.atproto.identity.resolveHandle?handle=$HANDLE" | jq .
@@ -131,8 +131,8 @@ export EZPDS_ADMIN_TOKEN="<staging admin token>"               # only if the acc
 # for the MM-241 run the identity from leg (a) is adopted per the wallet flow; otherwise:
 just interop create-account --name primary
 
-just interop migrate perform --name primary --target-pds https://ezpds-production.up.railway.app
-just interop migrate verify  --name primary --target-pds https://ezpds-production.up.railway.app
+just interop migrate perform --name primary --target-pds https://obsign.org
+just interop migrate verify  --name primary --target-pds https://obsign.org
 ```
 
 Notes:
@@ -149,7 +149,7 @@ Notes:
 ## Leg (c) — return: production → staging
 
 ```sh
-export EZPDS_BASE_URL="https://ezpds-production.up.railway.app"   # source is now production
+export EZPDS_BASE_URL="https://obsign.org"   # source is now production
 just interop migrate perform --name primary --target-pds https://ezpds-staging.up.railway.app
 just interop migrate verify  --name primary --target-pds https://ezpds-staging.up.railway.app
 ```
