@@ -504,6 +504,12 @@ export type ClaimError =
   | { code: 'ACCOUNT_MISMATCH' }
   | { code: 'INSECURE_SOURCE_URL' }
   | { code: 'INSUFFICIENT_SCOPE'; message: string }
+  // The source PDS rate-limited a claim-flow request (HTTP 429). `retryAfter` is the server's
+  // `Retry-After` value (seconds or an HTTP date) when present, else null (MM-290).
+  | { code: 'RATE_LIMITED'; retryAfter: string | null }
+  // A non-2xx the wallet doesn't model specially; `message` is the server's own error text, shown
+  // verbatim rather than as connectivity boilerplate (MM-290).
+  | { code: 'SERVER_ERROR'; message: string }
   | { code: 'NETWORK_ERROR'; message: string };
 
 // ── Claim flow IPC wrappers ────────────────────────────────────────────────

@@ -106,9 +106,46 @@ pub enum PdsClientError {
         reason: String,
     },
 
-    /// Transport-level failure (DNS timeout, connection refused, etc.).
+    /// Transport-level failure (DNS timeout, connection refused, TLS error, body read error) —
+    /// the request never got a well-formed HTTP response back. A non-2xx *response* is NOT a
+    /// `NetworkError`: it is classified into one of the status-specific variants below. Keeping
+    /// this variant transport-only is what lets screens tell "check your connection" apart from
+    /// "the server said no".
     #[error("network error: {message}")]
     NetworkError { message: String },
+
+    /// The server answered `429 Too Many Requests`. `retry_after` is the raw `Retry-After` header
+    /// (seconds or an HTTP date) when the server sent one, so the UI can say how long to wait
+    /// instead of blaming the connection. `message` is the server's own error text.
+    #[error("rate limited: {message}")]
+    RateLimited {
+        retry_after: Option<String>,
+        message: String,
+    },
+
+    /// The server answered `401 Unauthorized` — the session/token was rejected (expired, wrong
+    /// audience, a scope refusal presented as 401). Distinct from a transport failure so the UI
+    /// can prompt a re-login rather than a retry. `error` is the atproto error code from the
+    /// envelope when present (e.g. `ExpiredToken`, `InvalidToken`) — preserved so a token failure
+    /// reported under 401 is still recognizable by code rather than only by message text; `message`
+    /// is the server's own error text.
+    #[error("unauthorized: {message}")]
+    Unauthorized {
+        error: Option<String>,
+        message: String,
+    },
+
+    /// Any other non-2xx XRPC response, carrying the atproto error envelope so the real reason
+    /// reaches the UI instead of connectivity boilerplate. `error` is the envelope's `error` code
+    /// (e.g. `InvalidRequest`, `InsufficientScope`) when the body was a recognizable envelope;
+    /// `message` is the envelope's human-readable `message` (falling back to the error code, then
+    /// the raw body). `status` is the HTTP status code.
+    #[error("server error {status}: {message}")]
+    XrpcError {
+        status: u16,
+        error: Option<String>,
+        message: String,
+    },
 
     /// Response body couldn't be parsed or was missing expected fields.
     #[error("invalid response: {message}")]
@@ -163,6 +200,118 @@ fn error_code_is(body: &str, code: &str) -> bool {
         .ok()
         .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(|s| s == code))
         .unwrap_or(false)
+}
+
+/// Parse an atproto XRPC error envelope (`{"error":"Code","message":"human text"}`) out of a
+/// response body. Returns `(error_code, human_message)`:
+/// - `error_code` is the envelope's `error` field when the body was a recognizable JSON envelope,
+///   else `None` (e.g. an HTML gateway page or an empty body);
+/// - `human_message` is the envelope's `message`, falling back to the `error` code, then to the
+///   raw (trimmed) body when it wasn't an envelope at all.
+///
+/// The atproto error envelope is designed to be shown to users, so preserving both fields is what
+/// turns an opaque non-2xx into a diagnosable one.
+fn parse_xrpc_error_envelope(body: &str) -> (Option<String>, String) {
+    let envelope = serde_json::from_str::<serde_json::Value>(body).ok();
+    let error = envelope
+        .as_ref()
+        .and_then(|v| v.get("error"))
+        .and_then(|e| e.as_str())
+        .map(str::to_string);
+    let message = envelope
+        .as_ref()
+        .and_then(|v| v.get("message"))
+        .and_then(|m| m.as_str())
+        .map(str::to_string)
+        .or_else(|| error.clone())
+        .unwrap_or_else(|| body.trim().to_string());
+    (error, message)
+}
+
+/// Classify a non-2xx XRPC response into the typed `PdsClientError` variant that preserves the
+/// server's own words. A pure function of the HTTP status, the raw `Retry-After` header, and the
+/// parsed error envelope, so it is unit-testable without a live response.
+///
+/// Contract:
+/// - `429` → [`PdsClientError::RateLimited`], carrying `retry_after` when the server sent it.
+/// - `401` → [`PdsClientError::Unauthorized`], carrying the atproto `error` code when present so a
+///   token failure reported under 401 stays recognizable by code.
+/// - anything else → [`PdsClientError::XrpcError`] with the atproto `error` code and human message.
+///
+/// It must NEVER return [`PdsClientError::NetworkError`]: by the time we are here the server *did*
+/// answer, so this is never a transport failure.
+fn classify_xrpc_error(status: u16, retry_after: Option<String>, body: &str) -> PdsClientError {
+    let (error, message) = parse_xrpc_error_envelope(body);
+    match status {
+        429 => PdsClientError::RateLimited {
+            retry_after,
+            message,
+        },
+        401 => PdsClientError::Unauthorized { error, message },
+        // Everything else — including 403 — keeps its atproto error code and human message. Domain
+        // callers (e.g. `claim::classify_plc_op_error`) recognize codes like `InsufficientScope`
+        // here; this layer only speaks HTTP-status semantics. `retry_after` is meaningful only for
+        // 429, so it is intentionally dropped for these statuses.
+        _ => PdsClientError::XrpcError {
+            status,
+            error,
+            message,
+        },
+    }
+}
+
+/// Upper bound on how much of an error response body we buffer, keep, and log. An atproto error
+/// envelope is a short JSON object; anything larger is a broken or hostile server, and reading it
+/// in full would let an untrusted endpoint spike memory or flood the logs.
+const MAX_XRPC_ERROR_BODY: usize = 8 * 1024;
+
+/// Read at most `cap` bytes of a response body, streaming so an oversized (untrusted) payload is
+/// never fully buffered. Returns the decoded (lossy-UTF-8) prefix. A transport error mid-read
+/// propagates as `Err` so the caller can treat it as a `NetworkError` rather than a server verdict.
+async fn read_body_capped(
+    mut resp: reqwest::Response,
+    cap: usize,
+) -> Result<String, reqwest::Error> {
+    let mut buf: Vec<u8> = Vec::new();
+    while buf.len() < cap {
+        match resp.chunk().await? {
+            Some(chunk) => {
+                let take = (cap - buf.len()).min(chunk.len());
+                buf.extend_from_slice(&chunk[..take]);
+            }
+            None => break,
+        }
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Read the status, `Retry-After` header, and body off a non-success XRPC response and classify it.
+///
+/// The imperative wrapper around [`classify_xrpc_error`]. The `Retry-After` header is captured
+/// before the body (reading the body consumes the response). The body is bounded to
+/// [`MAX_XRPC_ERROR_BODY`] so an oversized untrusted payload can't spike memory or flood logs, and
+/// a mid-read transport failure surfaces as `NetworkError` rather than a fabricated server verdict.
+/// `context` names the call site (e.g. `"requestPlcOperationSignature"`) for the log line only —
+/// the returned error carries the server's own message, not the context, so screens show it
+/// verbatim.
+async fn classify_xrpc_response(context: &str, resp: reqwest::Response) -> PdsClientError {
+    let status = resp.status();
+    let retry_after = resp
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let body = match read_body_capped(resp, MAX_XRPC_ERROR_BODY).await {
+        Ok(body) => body,
+        Err(e) => {
+            tracing::warn!(context, status = %status, error = %e, "failed to read XRPC error body");
+            return PdsClientError::NetworkError {
+                message: format!("failed to read {status} response body: {e}"),
+            };
+        }
+    };
+    tracing::warn!(context, status = %status, body = %body, "XRPC call returned non-success");
+    classify_xrpc_error(status.as_u16(), retry_after, &body)
 }
 
 /// PLC operation data for a DID.
@@ -781,13 +930,9 @@ impl PdsClient {
             return Err(PdsClientError::InvalidCredentials { message: body });
         }
         if !status.is_success() {
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "(response body unreadable)".to_string());
-            return Err(PdsClientError::NetworkError {
-                message: format!("createSession returned {}: {}", status, body),
-            });
+            // 401 is already handled above (wrong password / 2FA). Anything else — a 429 rate
+            // limit, a 400 validation error — is classified so its real reason survives.
+            return Err(classify_xrpc_response("createSession", response).await);
         }
 
         response.json::<CreateSessionResponse>().await.map_err(|e| {
@@ -1045,15 +1190,8 @@ impl PdsClient {
                 message: format!("failed to fetch repo CAR: {}", e),
             })?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp
-                .text()
-                .await
-                .unwrap_or_else(|_| "(response body unreadable)".to_string());
-            return Err(PdsClientError::NetworkError {
-                message: format!("fetch_repo_car returned {}: {}", status, body),
-            });
+        if !resp.status().is_success() {
+            return Err(classify_xrpc_response("getRepo", resp).await);
         }
 
         resp.bytes()
@@ -1092,15 +1230,8 @@ impl PdsClient {
                 message: format!("failed to fetch blob: {}", e),
             })?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp
-                .text()
-                .await
-                .unwrap_or_else(|_| "(response body unreadable)".to_string());
-            return Err(PdsClientError::NetworkError {
-                message: format!("fetch_blob returned {}: {}", status, body),
-            });
+        if !resp.status().is_success() {
+            return Err(classify_xrpc_response("getBlob", resp).await);
         }
 
         resp.bytes()
@@ -1136,15 +1267,8 @@ impl PdsClient {
                 message: format!("failed to reserve signing key: {}", e),
             })?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let body_text = resp
-                .text()
-                .await
-                .unwrap_or_else(|_| "(response body unreadable)".to_string());
-            return Err(PdsClientError::NetworkError {
-                message: format!("reserve_signing_key returned {}: {}", status, body_text),
-            });
+        if !resp.status().is_success() {
+            return Err(classify_xrpc_response("reserveSigningKey", resp).await);
         }
 
         #[derive(Deserialize)]
@@ -1317,20 +1441,10 @@ pub async fn request_plc_operation_signature(
             message: format!("request_plc_operation_signature failed: {}", e),
         })?;
 
-    let status = resp.status();
-    if status.is_success() {
+    if resp.status().is_success() {
         Ok(())
     } else {
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "(response body unreadable)".to_string());
-        Err(PdsClientError::NetworkError {
-            message: format!(
-                "request_plc_operation_signature returned {}: {}",
-                status, body
-            ),
-        })
+        Err(classify_xrpc_response("requestPlcOperationSignature", resp).await)
     }
 }
 
@@ -1346,15 +1460,8 @@ pub async fn sign_plc_operation(
             message: format!("sign_plc_operation failed: {}", e),
         })?;
 
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "(response body unreadable)".to_string());
-        return Err(PdsClientError::NetworkError {
-            message: format!("sign_plc_operation returned {}: {}", status, body),
-        });
+    if !resp.status().is_success() {
+        return Err(classify_xrpc_response("signPlcOperation", resp).await);
     }
 
     resp.json::<SignPlcOperationResponse>()
@@ -1375,18 +1482,8 @@ pub async fn get_recommended_did_credentials(
             message: format!("get_recommended_did_credentials failed: {}", e),
         })?;
 
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "(response body unreadable)".to_string());
-        return Err(PdsClientError::NetworkError {
-            message: format!(
-                "get_recommended_did_credentials returned {}: {}",
-                status, body
-            ),
-        });
+    if !resp.status().is_success() {
+        return Err(classify_xrpc_response("getRecommendedDidCredentials", resp).await);
     }
 
     resp.json::<RecommendedCredentials>()
@@ -1426,15 +1523,8 @@ pub async fn get_service_auth(
             message: format!("get_service_auth failed: {}", e),
         })?;
 
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "(response body unreadable)".to_string());
-        return Err(PdsClientError::NetworkError {
-            message: format!("get_service_auth returned {}: {}", status, body),
-        });
+    if !resp.status().is_success() {
+        return Err(classify_xrpc_response("getServiceAuth", resp).await);
     }
 
     resp.json::<ServiceAuthToken>()
@@ -1466,13 +1556,7 @@ pub async fn create_account_migration(
     }
 
     if !status.is_success() {
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "(response body unreadable)".to_string());
-        return Err(PdsClientError::NetworkError {
-            message: format!("create_account_migration returned {}: {}", status, body),
-        });
+        return Err(classify_xrpc_response("createAccount", resp).await);
     }
 
     resp.json::<CreateAccountResponse>()
@@ -1501,17 +1585,10 @@ pub async fn import_repo(
             message: format!("import_repo failed: {}", e),
         })?;
 
-    let status = resp.status();
-    if status.is_success() {
+    if resp.status().is_success() {
         Ok(())
     } else {
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "(response body unreadable)".to_string());
-        Err(PdsClientError::NetworkError {
-            message: format!("import_repo returned {}: {}", status, body),
-        })
+        Err(classify_xrpc_response("importRepo", resp).await)
     }
 }
 
@@ -1531,15 +1608,8 @@ pub async fn upload_blob(
             message: format!("upload_blob failed: {}", e),
         })?;
 
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "(response body unreadable)".to_string());
-        return Err(PdsClientError::NetworkError {
-            message: format!("upload_blob returned {}: {}", status, body),
-        });
+    if !resp.status().is_success() {
+        return Err(classify_xrpc_response("uploadBlob", resp).await);
     }
 
     resp.json::<UploadBlobResponse>()
@@ -1572,15 +1642,8 @@ pub async fn list_missing_blobs(
             message: format!("list_missing_blobs failed: {}", e),
         })?;
 
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "(response body unreadable)".to_string());
-        return Err(PdsClientError::NetworkError {
-            message: format!("list_missing_blobs returned {}: {}", status, body),
-        });
+    if !resp.status().is_success() {
+        return Err(classify_xrpc_response("listMissingBlobs", resp).await);
     }
 
     resp.json::<MissingBlobs>()
@@ -1604,15 +1667,8 @@ pub async fn get_preferences(
             message: format!("get_preferences failed: {}", e),
         })?;
 
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "(response body unreadable)".to_string());
-        return Err(PdsClientError::NetworkError {
-            message: format!("get_preferences returned {}: {}", status, body),
-        });
+    if !resp.status().is_success() {
+        return Err(classify_xrpc_response("getPreferences", resp).await);
     }
 
     resp.json::<serde_json::Value>()
@@ -1637,17 +1693,10 @@ pub async fn put_preferences(
             message: format!("put_preferences failed: {}", e),
         })?;
 
-    let status = resp.status();
-    if status.is_success() {
+    if resp.status().is_success() {
         Ok(())
     } else {
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "(response body unreadable)".to_string());
-        Err(PdsClientError::NetworkError {
-            message: format!("put_preferences returned {}: {}", status, body),
-        })
+        Err(classify_xrpc_response("putPreferences", resp).await)
     }
 }
 
@@ -1664,15 +1713,8 @@ pub async fn check_account_status(
             message: format!("check_account_status failed: {}", e),
         })?;
 
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "(response body unreadable)".to_string());
-        return Err(PdsClientError::NetworkError {
-            message: format!("check_account_status returned {}: {}", status, body),
-        });
+    if !resp.status().is_success() {
+        return Err(classify_xrpc_response("checkAccountStatus", resp).await);
     }
 
     resp.json::<AccountStatus>()
@@ -1700,17 +1742,10 @@ pub async fn activate_account(
             message: format!("activate_account failed: {}", e),
         })?;
 
-    let status = resp.status();
-    if status.is_success() {
+    if resp.status().is_success() {
         Ok(())
     } else {
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "(response body unreadable)".to_string());
-        Err(PdsClientError::NetworkError {
-            message: format!("activate_account returned {}: {}", status, body),
-        })
+        Err(classify_xrpc_response("activateAccount", resp).await)
     }
 }
 
@@ -1733,17 +1768,10 @@ pub async fn deactivate_account(
             message: format!("deactivate_account failed: {}", e),
         })?;
 
-    let status = resp.status();
-    if status.is_success() {
+    if resp.status().is_success() {
         Ok(())
     } else {
-        let body_text = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "(response body unreadable)".to_string());
-        Err(PdsClientError::NetworkError {
-            message: format!("deactivate_account returned {}: {}", status, body_text),
-        })
+        Err(classify_xrpc_response("deactivateAccount", resp).await)
     }
 }
 
@@ -1817,6 +1845,109 @@ mod tests {
             par_rejection_message(status, "<html>gateway error</html>"),
             "PAR returned 400 Bad Request: <html>gateway error</html>"
         );
+    }
+
+    // ── XRPC error classification ───────────────────────────────────────────
+
+    /// The envelope parser pulls both the atproto `error` code and the human `message`, and falls
+    /// back sensibly when the body isn't an envelope.
+    #[test]
+    fn parse_xrpc_error_envelope_extracts_code_and_message() {
+        assert_eq!(
+            parse_xrpc_error_envelope(r#"{"error":"InvalidRequest","message":"Missing handle"}"#),
+            (
+                Some("InvalidRequest".to_string()),
+                "Missing handle".to_string()
+            )
+        );
+        // error code but no message → message falls back to the code.
+        assert_eq!(
+            parse_xrpc_error_envelope(r#"{"error":"ExpiredToken"}"#),
+            (Some("ExpiredToken".to_string()), "ExpiredToken".to_string())
+        );
+        // Non-envelope body → no code, message is the trimmed raw body.
+        assert_eq!(
+            parse_xrpc_error_envelope("  <html>502 Bad Gateway</html>  "),
+            (None, "<html>502 Bad Gateway</html>".to_string())
+        );
+    }
+
+    /// 429 classifies as RateLimited and carries the Retry-After value through verbatim.
+    #[test]
+    fn classify_xrpc_error_429_is_rate_limited_with_retry_after() {
+        let err = classify_xrpc_error(
+            429,
+            Some("120".to_string()),
+            r#"{"error":"RateLimitExceeded","message":"slow down"}"#,
+        );
+        match err {
+            PdsClientError::RateLimited {
+                retry_after,
+                message,
+            } => {
+                assert_eq!(retry_after.as_deref(), Some("120"));
+                assert_eq!(message, "slow down");
+            }
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
+    }
+
+    /// 401 classifies as Unauthorized, preserving both the atproto error code and the message.
+    #[test]
+    fn classify_xrpc_error_401_is_unauthorized() {
+        let err = classify_xrpc_error(
+            401,
+            None,
+            r#"{"error":"ExpiredToken","message":"Token has expired"}"#,
+        );
+        match err {
+            PdsClientError::Unauthorized { error, message } => {
+                assert_eq!(error.as_deref(), Some("ExpiredToken"));
+                assert_eq!(message, "Token has expired");
+            }
+            other => panic!("expected Unauthorized, got {other:?}"),
+        }
+    }
+
+    /// A 400 keeps the atproto error code and human message so the UI can show them.
+    #[test]
+    fn classify_xrpc_error_400_keeps_error_code_and_message() {
+        let err = classify_xrpc_error(
+            400,
+            None,
+            r#"{"error":"InsufficientScope","message":"token scope does not permit identity operations"}"#,
+        );
+        match err {
+            PdsClientError::XrpcError {
+                status,
+                error,
+                message,
+            } => {
+                assert_eq!(status, 400);
+                assert_eq!(error.as_deref(), Some("InsufficientScope"));
+                assert_eq!(message, "token scope does not permit identity operations");
+            }
+            other => panic!("expected XrpcError, got {other:?}"),
+        }
+    }
+
+    /// A 5xx with a non-envelope body still surfaces the raw body as the message (never a
+    /// NetworkError — the server did answer).
+    #[test]
+    fn classify_xrpc_error_5xx_non_envelope_falls_back_to_body() {
+        let err = classify_xrpc_error(503, None, "service unavailable");
+        match err {
+            PdsClientError::XrpcError {
+                status,
+                error,
+                message,
+            } => {
+                assert_eq!(status, 503);
+                assert_eq!(error, None);
+                assert_eq!(message, "service unavailable");
+            }
+            other => panic!("expected XrpcError, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2676,11 +2807,12 @@ mod tests {
 
         let result = request_plc_operation_signature(&oauth_client).await;
         assert!(result.is_err());
+        // A 401 is now classified as Unauthorized, not folded into a generic NetworkError.
         match result.unwrap_err() {
-            PdsClientError::NetworkError { .. } => {
+            PdsClientError::Unauthorized { .. } => {
                 // Expected
             }
-            e => panic!("Expected NetworkError, got: {:?}", e),
+            e => panic!("Expected Unauthorized, got: {:?}", e),
         }
     }
 
@@ -2917,11 +3049,12 @@ mod tests {
 
         let result = get_recommended_did_credentials(&oauth_client).await;
         assert!(result.is_err());
+        // A 403 is a classified server rejection: XrpcError carrying status + error code.
         match result.unwrap_err() {
-            PdsClientError::NetworkError { .. } => {
+            PdsClientError::XrpcError { status: 403, .. } => {
                 // Expected
             }
-            e => panic!("Expected NetworkError, got: {:?}", e),
+            e => panic!("Expected XrpcError(403), got: {:?}", e),
         }
     }
 
@@ -3177,11 +3310,16 @@ mod tests {
             .await;
 
         assert!(result.is_err());
+        // A 404 is now a classified server response, carrying the status and body message.
         match result.unwrap_err() {
-            PdsClientError::NetworkError { message } => {
-                assert!(message.contains("404"));
+            PdsClientError::XrpcError {
+                status: 404,
+                message,
+                ..
+            } => {
+                assert!(message.contains("not found"));
             }
-            e => panic!("Expected NetworkError, got: {:?}", e),
+            e => panic!("Expected XrpcError(404), got: {:?}", e),
         }
     }
 
@@ -3235,11 +3373,16 @@ mod tests {
             .await;
 
         assert!(result.is_err());
+        // A 404 is now a classified server response, carrying the status and body message.
         match result.unwrap_err() {
-            PdsClientError::NetworkError { message } => {
-                assert!(message.contains("404"));
+            PdsClientError::XrpcError {
+                status: 404,
+                message,
+                ..
+            } => {
+                assert!(message.contains("blob not found"));
             }
-            e => panic!("Expected NetworkError, got: {:?}", e),
+            e => panic!("Expected XrpcError(404), got: {:?}", e),
         }
     }
 
@@ -3284,11 +3427,12 @@ mod tests {
             .await;
 
         assert!(result.is_err());
+        // A 400 is a classified server rejection: XrpcError carrying the status.
         match result.unwrap_err() {
-            PdsClientError::NetworkError { .. } => {
+            PdsClientError::XrpcError { status: 400, .. } => {
                 // Expected
             }
-            e => panic!("Expected NetworkError, got: {:?}", e),
+            e => panic!("Expected XrpcError(400), got: {:?}", e),
         }
     }
 
@@ -3366,11 +3510,12 @@ mod tests {
         .await;
 
         assert!(result.is_err());
+        // A 401 is now classified as Unauthorized, not a generic NetworkError.
         match result.unwrap_err() {
-            PdsClientError::NetworkError { .. } => {
+            PdsClientError::Unauthorized { .. } => {
                 // Expected
             }
-            e => panic!("Expected NetworkError, got: {:?}", e),
+            e => panic!("Expected Unauthorized, got: {:?}", e),
         }
     }
 

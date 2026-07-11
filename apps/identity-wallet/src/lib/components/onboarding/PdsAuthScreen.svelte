@@ -1,6 +1,7 @@
 <script lang="ts">
   import { authenticateSourcePds, type ClaimError } from '$lib/ipc';
   import { isCodedError } from '$lib/did-doc-utils';
+  import { formatRateLimitMessage, formatServerErrorMessage } from '$lib/claim-errors';
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
   import TextField from '$lib/components/ui/TextField.svelte';
   import Button from '$lib/components/ui/Button.svelte';
@@ -82,6 +83,12 @@
             break;
           case 'UNAUTHORIZED':
             error = 'This claim is no longer active. Go back and start again.';
+            break;
+          case 'RATE_LIMITED':
+            error = formatRateLimitMessage(err.retryAfter);
+            break;
+          case 'SERVER_ERROR':
+            error = formatServerErrorMessage(err.message);
             break;
           case 'NETWORK_ERROR':
             error = 'Network error. Check your connection and try again.';
