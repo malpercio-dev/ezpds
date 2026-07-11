@@ -24,6 +24,37 @@ const MAX_HANDLE_LEN: usize = 253;
 /// Maximum length of a single DNS label (RFC 1035).
 const MAX_LABEL_LEN: usize = 63;
 
+/// Whether `name` (a handle's first DNS label) is one of the operator's reserved
+/// infrastructure names. `reserved` is `Config::reserved_handles` (normalized to
+/// lowercase at config load; the reference default reserves `identitywallet` — the
+/// wallet's OAuth client_id host — and `about`). Compared case-insensitively.
+///
+/// Callers that bypass [`validate_handle`] for served domains (updateHandle's
+/// served-domain branch skips external resolution) must apply this check themselves.
+pub(crate) fn is_reserved_name(name: &str, reserved: &[String]) -> bool {
+    reserved.iter().any(|r| name.eq_ignore_ascii_case(r))
+}
+
+/// Whether `handle` (assumed structurally valid) uses a reserved first label on one of
+/// this server's served domains — the reserved-name half of [`validate_handle`], factored
+/// out for callers that validate the served-domain policy separately or skip it: the
+/// migration create path (foreign handles, no served-domain gate) and updateHandle.
+///
+/// A reserved name on a *foreign* domain (e.g. `about.someco.com`) is deliberately allowed —
+/// the reservation defends only this server's own wildcard space, so migration can't be used
+/// to claim `identitywallet.obsign.org` while a genuinely foreign handle is unaffected.
+pub(crate) fn reserved_on_served_domain(
+    handle: &str,
+    available_domains: &[String],
+    reserved: &[String],
+) -> bool {
+    let Some(dot) = handle.find('.') else {
+        return false;
+    };
+    available_domains.iter().any(|d| d == &handle[dot + 1..])
+        && is_reserved_name(&handle[..dot], reserved)
+}
+
 /// Validate that `handle` is structurally a valid AT Protocol handle: a domain name of at
 /// least two DNS labels, each 1..=63 chars of ASCII alphanumerics and internal hyphens, with
 /// total length at most 253. Returns the first label (the "name") on success.
@@ -74,13 +105,15 @@ fn validate_label(label: &str) -> Result<(), &'static str> {
 
 /// Validate `handle` structurally (see [`validate_handle_structure`]) and additionally require
 /// that its domain (everything after the first label) is one of the server's
-/// `available_domains`. Returns the first label (the "name") on success.
+/// `available_domains` and that the name is not one of the operator's `reserved_handles`.
+/// Returns the first label (the "name") on success.
 ///
 /// # Errors
 /// Returns a static message suitable for a 400 response body.
 pub(crate) fn validate_handle<'a>(
     handle: &'a str,
     available_domains: &[String],
+    reserved_handles: &[String],
 ) -> Result<&'a str, &'static str> {
     let name = validate_handle_structure(handle)?;
     // Structural validation guarantees at least one dot.
@@ -88,6 +121,9 @@ pub(crate) fn validate_handle<'a>(
     let domain = &handle[dot + 1..];
     if !available_domains.iter().any(|d| d == domain) {
         return Err("handle domain is not served by this server");
+    }
+    if is_reserved_name(name, reserved_handles) {
+        return Err("this handle name is reserved");
     }
     Ok(name)
 }
@@ -184,17 +220,24 @@ mod tests {
 
     // ── validate_handle: structure + domain policy ─────────────────────────────
 
+    fn reserved() -> Vec<String> {
+        vec!["identitywallet".to_string(), "about".to_string()]
+    }
+
     #[test]
     fn domain_policy_accepts_served_domain() {
         let domains = vec!["example.com".to_string()];
-        assert_eq!(validate_handle("alice.example.com", &domains), Ok("alice"));
+        assert_eq!(
+            validate_handle("alice.example.com", &domains, &reserved()),
+            Ok("alice")
+        );
     }
 
     #[test]
     fn domain_policy_accepts_multi_label_served_domain() {
         let domains = vec!["test.example.com".to_string()];
         assert_eq!(
-            validate_handle("alice.test.example.com", &domains),
+            validate_handle("alice.test.example.com", &domains, &reserved()),
             Ok("alice")
         );
     }
@@ -202,12 +245,84 @@ mod tests {
     #[test]
     fn domain_policy_rejects_unserved_domain() {
         let domains = vec!["example.com".to_string()];
-        assert!(validate_handle("alice.other.com", &domains).is_err());
+        assert!(validate_handle("alice.other.com", &domains, &reserved()).is_err());
     }
 
     #[test]
     fn domain_policy_rejects_bare_label_before_checking_domain() {
         let domains = vec!["example.com".to_string()];
-        assert!(validate_handle("alice", &domains).is_err());
+        assert!(validate_handle("alice", &domains, &reserved()).is_err());
+    }
+
+    // ── Reserved names ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn reserved_name_rejected_on_served_domain() {
+        let domains = vec!["obsign.org".to_string()];
+        assert!(validate_handle("identitywallet.obsign.org", &domains, &reserved()).is_err());
+        // The operator-configured `about` is reserved too.
+        assert!(validate_handle("about.obsign.org", &domains, &reserved()).is_err());
+    }
+
+    #[test]
+    fn reserved_name_check_is_case_insensitive() {
+        let domains = vec!["obsign.org".to_string()];
+        assert!(validate_handle("IdentityWallet.obsign.org", &domains, &reserved()).is_err());
+        assert!(is_reserved_name("IDENTITYWALLET", &reserved()));
+    }
+
+    #[test]
+    fn reserved_name_only_applies_to_first_label() {
+        // "identitywallet" appearing as a *domain* label is not a reservation hit.
+        let domains = vec!["identitywallet.example.com".to_string()];
+        assert_eq!(
+            validate_handle("alice.identitywallet.example.com", &domains, &reserved()),
+            Ok("alice")
+        );
+    }
+
+    #[test]
+    fn non_reserved_names_still_accepted() {
+        let domains = vec!["obsign.org".to_string()];
+        assert_eq!(
+            validate_handle("alice.obsign.org", &domains, &reserved()),
+            Ok("alice")
+        );
+    }
+
+    #[test]
+    fn empty_reserved_list_reserves_nothing() {
+        let domains = vec!["obsign.org".to_string()];
+        assert_eq!(
+            validate_handle("identitywallet.obsign.org", &domains, &[]),
+            Ok("identitywallet")
+        );
+        assert!(!is_reserved_name("identitywallet", &[]));
+    }
+
+    // ── reserved_on_served_domain (migration path) ─────────────────────────────
+
+    #[test]
+    fn reserved_on_served_domain_matches_only_served_domain() {
+        let domains = vec!["obsign.org".to_string()];
+        let res = reserved();
+        // Reserved name on a served domain → true.
+        assert!(reserved_on_served_domain(
+            "identitywallet.obsign.org",
+            &domains,
+            &res
+        ));
+        // Reserved name on a FOREIGN domain → false (only our wildcard space is defended).
+        assert!(!reserved_on_served_domain(
+            "identitywallet.migrated.example",
+            &domains,
+            &res
+        ));
+        // Non-reserved name on a served domain → false.
+        assert!(!reserved_on_served_domain(
+            "alice.obsign.org",
+            &domains,
+            &res
+        ));
     }
 }

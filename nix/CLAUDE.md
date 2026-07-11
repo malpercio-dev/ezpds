@@ -17,6 +17,7 @@ and referenced by digest in the module.
   - `dataDir` (default `/var/lib/ezpds`) - Host directory bind-mounted to container's `/data`
   - `publicUrl` (required) - Public https URL of the PDS
   - `availableUserDomains` (required) - Allowed handle domains (list of strings)
+  - `reservedHandles` (optional, default `null`) - Handle names never claimable under a served domain; `null` keeps the server's built-in defaults (`identitywallet`, `about`), an explicit list replaces them, `[]` reserves nothing. Emits `EZPDS_RESERVED_HANDLES` only when non-null
   - `environmentFile` (optional) - Path to env file from agenix/sops-nix holding secrets (e.g., EZPDS_SIGNING_KEY_MASTER_KEY, EZPDS_ADMIN_TOKEN)
 
 - **Guarantees**:

@@ -35,6 +35,9 @@
           case 'SOURCE_AUTH_FAILED':
             error = 'Sign-in was cancelled. Try again when ready.';
             break;
+          case 'OAUTH_REJECTED':
+            error = `Your PDS's authorization server rejected the request: ${err.message}`;
+            break;
           case 'NETWORK_ERROR':
             error = 'Network error. Check your connection and try again.';
             break;

@@ -44,6 +44,13 @@ pub struct Config {
     pub service_name: String,
     pub server_did: Option<String>,
     pub available_user_domains: Vec<String>,
+    /// Handle names (the first DNS label) that may never be claimed under a served
+    /// domain — infrastructure hostnames living inside the user-handle wildcard space
+    /// (e.g. `identitywallet`, the wallet's OAuth client_id host; `about`, a marketing
+    /// subdomain). Compared case-insensitively against the first label. Defaults to
+    /// [`default_reserved_handles`]; override via `reserved_handles` in TOML or the
+    /// comma-separated `EZPDS_RESERVED_HANDLES` env var.
+    pub reserved_handles: Vec<String>,
     pub invite_code_required: bool,
     pub links: ServerLinksConfig,
     pub contact: ContactConfig,
@@ -211,6 +218,16 @@ impl Default for AccountsConfig {
 
 fn default_deletion_reaper_interval_secs() -> u64 {
     60 * 60 // 1 hour
+}
+
+/// Handle names reserved for infrastructure by default (see [`Config::reserved_handles`]).
+///
+/// `identitywallet` is the wallet's canonical OAuth client_id host
+/// (`identitywallet.obsign.org`); `about` is the marketing subdomain (`about.obsign.org`).
+/// An operator can replace the whole list via config; these are the safe defaults for the
+/// reference deployment.
+pub fn default_reserved_handles() -> Vec<String> {
+    vec!["identitywallet".to_string(), "about".to_string()]
 }
 
 fn default_max_blob_size() -> u64 {
@@ -856,6 +873,7 @@ pub(crate) struct RawConfig {
     pub(crate) service_name: Option<String>,
     pub(crate) server_did: Option<String>,
     pub(crate) available_user_domains: Option<Vec<String>>,
+    pub(crate) reserved_handles: Option<Vec<String>>,
     pub(crate) invite_code_required: Option<bool>,
     #[serde(default)]
     pub(crate) links: ServerLinksConfig,
@@ -994,6 +1012,17 @@ pub(crate) fn apply_env_overrides(
     }
     if let Some(v) = env.get("EZPDS_AVAILABLE_USER_DOMAINS") {
         raw.available_user_domains = Some(
+            v.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect(),
+        );
+    }
+    if let Some(v) = env.get("EZPDS_RESERVED_HANDLES") {
+        // An empty/whitespace-only value is a deliberate "reserve nothing" (distinct from
+        // the var being unset, which keeps the defaults).
+        raw.reserved_handles = Some(
             v.split(',')
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
@@ -1326,6 +1355,7 @@ fn build_email_config(raw: RawEmailConfig) -> Result<EmailConfig, ConfigError> {
 ///
 /// Required fields: `data_dir`, `public_url`, `available_user_domains` (non-empty).
 /// Defaults: `bind_address = "0.0.0.0"`, `port = 8080`, `invite_code_required = true`,
+/// `reserved_handles = default_reserved_handles()` (`["identitywallet", "about"]`),
 /// `database_url = "{data_dir}/relay.db"` (derived; fails if `data_dir` is non-UTF-8),
 /// `telemetry.enabled = false`, `telemetry.otlp_endpoint = "http://localhost:4317"`,
 /// `telemetry.service_name = "ezpds-pds"`.
@@ -1376,6 +1406,21 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
             "available_user_domains must contain at least one domain".to_string(),
         ));
     }
+    // Reserved handles default to the reference set; an operator can replace the list
+    // (including with an empty one to reserve nothing). Normalize to lowercase +
+    // dedupe so config casing/duplication never affects the case-insensitive match.
+    let reserved_handles = {
+        let mut names: Vec<String> = raw
+            .reserved_handles
+            .unwrap_or_else(default_reserved_handles)
+            .iter()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    };
     let service_name = raw
         .service_name
         .map(|s| s.trim().to_string())
@@ -1570,6 +1615,7 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         service_name,
         server_did: raw.server_did,
         available_user_domains,
+        reserved_handles,
         invite_code_required,
         links: raw.links,
         contact: raw.contact,
@@ -2042,6 +2088,43 @@ mod tests {
         assert_eq!(config.data_dir, PathBuf::from("/tmp/pds"));
         assert_eq!(config.database_url, "sqlite:///tmp/relay.db");
         assert_eq!(config.public_url, "https://pds.test");
+    }
+
+    #[test]
+    fn reserved_handles_default_when_unset() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert_eq!(config.reserved_handles, vec!["about", "identitywallet"]);
+    }
+
+    #[test]
+    fn reserved_handles_from_toml_replace_defaults_and_normalize() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+            reserved_handles = ["Admin", "  support  ", "admin", ""]
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        // Lowercased, trimmed, empties dropped, deduped, sorted.
+        assert_eq!(config.reserved_handles, vec!["admin", "support"]);
+    }
+
+    #[test]
+    fn reserved_handles_env_overrides_and_empty_reserves_nothing() {
+        let env = HashMap::from([(
+            "EZPDS_RESERVED_HANDLES".to_string(),
+            "root, About ,root".to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.reserved_handles, vec!["about", "root"]);
+
+        // An explicit empty value reserves nothing (distinct from unset → defaults).
+        let env = HashMap::from([("EZPDS_RESERVED_HANDLES".to_string(), "".to_string())]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert!(config.reserved_handles.is_empty());
     }
 
     #[test]

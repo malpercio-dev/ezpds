@@ -69,9 +69,12 @@ pub async fn create_handle_handler(
     }
 
     // Step 3: Validate handle format (structure + domain policy).
-    let name =
-        crate::handle::validate_handle(&payload.handle, &state.config.available_user_domains)
-            .map_err(|msg| ApiError::new(ErrorCode::InvalidHandle, msg))?;
+    let name = crate::handle::validate_handle(
+        &payload.handle,
+        &state.config.available_user_domains,
+        &state.config.reserved_handles,
+    )
+    .map_err(|msg| ApiError::new(ErrorCode::InvalidHandle, msg))?;
 
     // Step 4: Insert the handle. A UNIQUE violation means the handle is already taken.
     match crate::db::handles::insert_handle(&state.db, &payload.handle, &session.did).await? {

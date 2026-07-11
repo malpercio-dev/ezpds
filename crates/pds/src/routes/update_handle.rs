@@ -97,7 +97,19 @@ pub async fn update_handle_handler(
 
     if is_served_domain {
         // PDS-served handle: the PDS is authoritative. The handle will resolve
-        // once we insert it — skip external resolution.
+        // once we insert it — skip external resolution. Because this branch skips
+        // the resolution proof, the infrastructure-name reservation must gate here
+        // (registration paths get it via validate_handle).
+        let dot = payload
+            .handle
+            .find('.')
+            .expect("structure guarantees a dot");
+        if crate::handle::is_reserved_name(&payload.handle[..dot], &state.config.reserved_handles) {
+            return Err(ApiError::new(
+                ErrorCode::InvalidHandle,
+                "this handle name is reserved",
+            ));
+        }
     } else {
         // User-controlled domain: verify the handle already resolves to the
         // caller's DID via the resolveHandle chain (local DB → DNS TXT → HTTP
@@ -363,6 +375,36 @@ mod tests {
             .header("Content-Type", "application/json")
             .body(Body::from(body.to_string()))
             .unwrap()
+    }
+
+    /// A reserved infrastructure name on a served domain is rejected: the served-domain
+    /// branch skips external resolution, so the reservation must gate here.
+    #[tokio::test]
+    async fn served_domain_reserved_name_is_rejected() {
+        let state = test_state().await;
+        let db = state.db.clone();
+        let old_handle = format!("alice.{}", state.config.available_user_domains[0]);
+        let reserved = format!("identitywallet.{}", state.config.available_user_domains[0]);
+        let ts = insert_account_and_session(&db, &old_handle).await;
+
+        let app = app(state);
+        let response = app
+            .oneshot(update_handle_request(&ts.access_jwt, &reserved))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let reserved_row: Option<(String,)> =
+            sqlx::query_as("SELECT did FROM handles WHERE handle = ?")
+                .bind(&reserved)
+                .fetch_optional(&db)
+                .await
+                .unwrap();
+        assert!(
+            reserved_row.is_none(),
+            "the reserved handle must not be inserted"
+        );
     }
 
     // ── Happy path ─────────────────────────────────────────────────────────────

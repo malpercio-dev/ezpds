@@ -15,9 +15,9 @@ import { startPdsAuth, startSourceAuth } from './ipc';
 
 const PREPARED = {
   authUrl: 'https://pds.example/oauth/authorize?request_uri=abc',
-  callbackScheme: 'dev.malpercio.identitywallet',
+  callbackScheme: 'org.obsign.identitywallet',
 };
-const CALLBACK_URL = 'dev.malpercio.identitywallet:/oauth/callback?code=c&state=s';
+const CALLBACK_URL = 'org.obsign.identitywallet:/oauth/callback?code=c&state=s';
 
 function scriptInvoke(outcomes: Record<string, () => Promise<unknown>>) {
   invoke.mockImplementation((cmd: string) => {

@@ -190,6 +190,11 @@ pub enum ClaimError {
     /// User is not authorized for this operation
     #[error("unauthorized")]
     Unauthorized,
+    /// The authorization server rejected the OAuth request (e.g. a PAR refusal).
+    /// Carries the server's own `error: error_description` text so a policy
+    /// rejection is diagnosable in the UI instead of reading as a network failure.
+    #[error("oauth rejected: {message}")]
+    OauthRejected { message: String },
     /// Network error during claim flow (timeout, connection refused, etc.)
     #[error("network error: {message}")]
     NetworkError { message: String },
@@ -446,7 +451,7 @@ pub async fn prepare_pds_auth(
 
     Ok(crate::oauth::OAuthPrepared {
         auth_url,
-        callback_scheme: "dev.malpercio.identitywallet".to_string(),
+        callback_scheme: crate::pds_client::CALLBACK_SCHEME.to_string(),
     })
 }
 
@@ -601,6 +606,13 @@ async fn pds_par_with_retry(
         {
             tracing::debug!("PAR requires DPoP nonce, retrying");
         }
+        // The AS rejected the request outright — surface its own error text, not a
+        // generic network failure (this is how bsky.social's invalid_redirect_uri
+        // stays diagnosable in the UI).
+        Err(crate::pds_client::PdsClientError::OauthFailed { message }) => {
+            tracing::error!(error = %message, "PAR rejected by authorization server");
+            return Err(ClaimError::OauthRejected { message });
+        }
         Err(e) => {
             tracing::error!(error = %e, "PAR request failed");
             return Err(ClaimError::NetworkError {
@@ -630,10 +642,7 @@ async fn pds_par_with_retry(
         ("code_challenge", params.pkce_challenge),
         ("state", params.csrf_state),
         ("client_id", params.client_id),
-        (
-            "redirect_uri",
-            "dev.malpercio.identitywallet:/oauth/callback",
-        ),
+        ("redirect_uri", crate::pds_client::REDIRECT_URI),
         ("scope", "atproto transition:generic"),
         ("dpop_jkt", params.dpop_jkt),
         ("login_hint", params.did),
@@ -691,8 +700,13 @@ async fn pds_par_with_retry(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "PAR retry with nonce failed");
-            ClaimError::NetworkError {
-                message: format!("PAR retry failed: {}", e),
+            match e {
+                crate::pds_client::PdsClientError::OauthFailed { message } => {
+                    ClaimError::OauthRejected { message }
+                }
+                other => ClaimError::NetworkError {
+                    message: format!("PAR retry failed: {}", other),
+                },
             }
         })
 }

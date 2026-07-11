@@ -142,13 +142,11 @@ impl CustosClient {
     ) -> Result<ParResponse, OAuthError> {
         let url = format!("{}/oauth/par", self.base_url);
 
+        let client_id = crate::pds_client::client_id_for_pds(&self.base_url);
         let hint_owned;
         let mut fields = vec![
-            ("client_id", "dev.malpercio.identitywallet"),
-            (
-                "redirect_uri",
-                "dev.malpercio.identitywallet:/oauth/callback",
-            ),
+            ("client_id", client_id.as_str()),
+            ("redirect_uri", crate::pds_client::REDIRECT_URI),
             ("code_challenge", code_challenge),
             ("code_challenge_method", "S256"),
             ("state", state_param),
@@ -200,6 +198,7 @@ impl CustosClient {
         dpop_proof: &str,
     ) -> Result<reqwest::Response, OAuthError> {
         let url = format!("{}/oauth/token", self.base_url);
+        let client_id = crate::pds_client::client_id_for_pds(&self.base_url);
         let resp = self
             .client
             .post(&url)
@@ -207,11 +206,8 @@ impl CustosClient {
             .form(&[
                 ("grant_type", "authorization_code"),
                 ("code", code),
-                (
-                    "redirect_uri",
-                    "dev.malpercio.identitywallet:/oauth/callback",
-                ),
-                ("client_id", "dev.malpercio.identitywallet"),
+                ("redirect_uri", crate::pds_client::REDIRECT_URI),
+                ("client_id", client_id.as_str()),
                 ("code_verifier", pkce_verifier),
             ])
             .send()

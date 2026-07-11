@@ -35,6 +35,9 @@
           case 'UNAUTHORIZED':
             error = 'Sign-in was cancelled or denied. Try again when ready.';
             break;
+          case 'OAUTH_REJECTED':
+            error = `The PDS's authorization server rejected the request: ${err.message}`;
+            break;
           case 'NETWORK_ERROR':
             error = 'Network error. Check your connection and try again.';
             break;
