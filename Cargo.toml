@@ -96,6 +96,9 @@ atrium-repo = "0.1.8"
 # Crypto (crypto)
 # rsky-crypto = "0.2"
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+# secp256k1 verification only (PLC ops signed by the reference ecosystem — bsky.social's
+# rotation keys are zQ3…/secp256k1); signing stays P-256. Same RustCrypto family as p256.
+k256 = { version = "0.13", features = ["ecdsa"] }
 aes-gcm = "0.10"
 multibase = "0.9"
 rand_core = { version = "0.6", features = ["getrandom"] }

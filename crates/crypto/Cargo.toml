@@ -10,6 +10,7 @@ license.workspace = true
 
 [dependencies]
 p256 = { workspace = true }
+k256 = { workspace = true }
 aes-gcm = { workspace = true }
 multibase = { workspace = true }
 rand_core = { workspace = true }

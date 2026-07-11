@@ -24,6 +24,7 @@ use std::collections::BTreeMap;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ciborium::ser::into_writer;
+use k256::ecdsa::{Signature as K256Signature, VerifyingKey as K256VerifyingKey};
 use multibase;
 use p256::{
     ecdsa::{signature::Signer, signature::Verifier, Signature, SigningKey, VerifyingKey},
@@ -32,7 +33,10 @@ use p256::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{keys::P256_MULTICODEC_PREFIX, CryptoError, DidKeyUri};
+use crate::{
+    keys::{P256_MULTICODEC_PREFIX, SECP256K1_MULTICODEC_PREFIX},
+    CryptoError, DidKeyUri,
+};
 
 /// The result of building a did:plc genesis operation.
 ///
@@ -531,12 +535,11 @@ pub fn verify_plc_operation(
         )));
     }
 
-    // Base64url-decode the signature.
+    // Base64url-decode the signature. Curve-specific parsing happens per key inside
+    // verify_signature_with_key — the sig field alone does not say which curve signed it.
     let sig_bytes = URL_SAFE_NO_PAD
         .decode(&signed_op.sig)
         .map_err(|e| CryptoError::PlcOperation(format!("invalid sig base64url: {e}")))?;
-    let signature = Signature::try_from(sig_bytes.as_slice())
-        .map_err(|e| CryptoError::PlcOperation(format!("invalid ECDSA signature bytes: {e}")))?;
 
     // Reconstruct the unsigned operation.
     let unsigned_op = UnsignedPlcOp {
@@ -556,7 +559,7 @@ pub fn verify_plc_operation(
     // Accumulate all per-key errors so the caller can diagnose multi-key failures.
     let mut key_errors: Vec<String> = Vec::new();
     for (i, key) in authorized_rotation_keys.iter().enumerate() {
-        match verify_signature_with_key(key, &unsigned_cbor, &signature) {
+        match verify_signature_with_key(key, &unsigned_cbor, &sig_bytes) {
             Ok(()) => {
                 // Signature verified — compute DID and CID.
                 let mut signed_cbor = Vec::new();
@@ -621,36 +624,75 @@ fn ensure_low_s_callback_signature(sig_bytes: &[u8]) -> Result<(), CryptoError> 
     Ok(())
 }
 
-/// Parse a did:key URI into a P-256 VerifyingKey and verify a signature.
-/// Returns Ok(()) on success, Err(message) on failure.
-///
-/// Rejects non-canonical high-S signatures: `p256`'s verify accepts a
-/// mathematically valid but malleable high-S form, which atproto verifiers
-/// (plc.directory, `@atproto/crypto`) reject. Because PLC DIDs and CIDs are
-/// derived from the *signed* CBOR, accepting a malleated sig would let the
-/// same signature yield a second valid op with a different DID/CID.
-fn verify_signature_with_key(
-    key: &DidKeyUri,
-    message: &[u8],
-    signature: &Signature,
-) -> Result<(), String> {
-    if signature.normalize_s().is_some() {
-        return Err("signature is not low-S canonical (atproto requires low-S)".to_string());
-    }
+/// Decode a did:key URI into its raw multikey bytes (multicodec prefix + compressed point).
+fn decode_did_key_multikey(key: &DidKeyUri) -> Result<Vec<u8>, String> {
     let key_str = key
         .0
         .strip_prefix("did:key:")
         .ok_or_else(|| "public key missing did:key: prefix".to_string())?;
     let (_, multikey_bytes) =
         multibase::decode(key_str).map_err(|e| format!("decode public key multibase: {e}"))?;
-    if multikey_bytes.get(..2) != Some(P256_MULTICODEC_PREFIX) {
-        return Err("public key is not a P-256 key (wrong multicodec prefix)".to_string());
+    Ok(multikey_bytes)
+}
+
+/// Verify an ECDSA-SHA256 signature against a compressed P-256 SEC1 public key.
+fn verify_p256_sec1(sec1: &[u8], message: &[u8], sig_bytes: &[u8]) -> Result<(), String> {
+    let signature = Signature::try_from(sig_bytes)
+        .map_err(|e| format!("invalid ECDSA signature bytes: {e}"))?;
+    if signature.normalize_s().is_some() {
+        return Err("signature is not low-S canonical (atproto requires low-S)".to_string());
     }
-    let verifying_key = VerifyingKey::from_sec1_bytes(&multikey_bytes[2..])
+    let verifying_key = VerifyingKey::from_sec1_bytes(sec1)
         .map_err(|e| format!("invalid P-256 public key: {e}"))?;
     verifying_key
-        .verify(message, signature)
+        .verify(message, &signature)
         .map_err(|e| format!("signature verification failed: {e}"))
+}
+
+/// Verify an ECDSA-SHA256 signature against a compressed secp256k1 SEC1 public key.
+fn verify_k256_sec1(sec1: &[u8], message: &[u8], sig_bytes: &[u8]) -> Result<(), String> {
+    let signature = K256Signature::try_from(sig_bytes)
+        .map_err(|e| format!("invalid ECDSA signature bytes: {e}"))?;
+    if signature.normalize_s().is_some() {
+        return Err("signature is not low-S canonical (atproto requires low-S)".to_string());
+    }
+    let verifying_key = K256VerifyingKey::from_sec1_bytes(sec1)
+        .map_err(|e| format!("invalid secp256k1 public key: {e}"))?;
+    verifying_key
+        .verify(message, &signature)
+        .map_err(|e| format!("signature verification failed: {e}"))
+}
+
+/// Parse a did:key URI and verify a raw 64-byte r‖s ECDSA-SHA256 signature with it.
+/// Returns Ok(()) on success, Err(message) on failure.
+///
+/// Dispatches on the key's multicodec prefix: **P-256 (`zDn…`) and secp256k1
+/// (`zQ3…`) are both accepted** — PLC allows either curve for rotation keys, and
+/// the reference ecosystem (bsky.social) signs its operations with secp256k1.
+///
+/// Rejects non-canonical high-S signatures on both curves: the underlying
+/// verifiers accept a mathematically valid but malleable high-S form, which
+/// atproto verifiers (plc.directory, `@atproto/crypto`) reject. Because PLC DIDs
+/// and CIDs are derived from the *signed* CBOR, accepting a malleated sig would
+/// let the same signature yield a second valid op with a different DID/CID.
+fn verify_signature_with_key(
+    key: &DidKeyUri,
+    message: &[u8],
+    sig_bytes: &[u8],
+) -> Result<(), String> {
+    let multikey_bytes = decode_did_key_multikey(key)?;
+    match multikey_bytes.get(..2) {
+        Some(prefix) if prefix == P256_MULTICODEC_PREFIX => {
+            verify_p256_sec1(&multikey_bytes[2..], message, sig_bytes)
+        }
+        Some(prefix) if prefix == SECP256K1_MULTICODEC_PREFIX => {
+            verify_k256_sec1(&multikey_bytes[2..], message, sig_bytes)
+        }
+        _ => Err(
+            "unsupported did:key type (multicodec prefix is neither P-256 nor secp256k1)"
+                .to_string(),
+        ),
+    }
 }
 
 /// Verify a raw P-256 ECDSA signature over an arbitrary message.
@@ -679,10 +721,18 @@ pub fn verify_p256_signature(
     message: &[u8],
     signature: &[u8; 64],
 ) -> Result<(), CryptoError> {
-    let signature = Signature::try_from(signature.as_slice()).map_err(|e| {
-        CryptoError::SignatureVerification(format!("invalid ECDSA signature bytes: {e}"))
-    })?;
-    verify_signature_with_key(public_key, message, &signature)
+    // Deliberately P-256-only even though PLC operation verification accepts both
+    // curves: this is the admin-envelope primitive, and the admin-device model is
+    // P-256 (Secure Enclave) by design — a secp256k1 key must be rejected here,
+    // not quietly verified.
+    let multikey_bytes =
+        decode_did_key_multikey(public_key).map_err(CryptoError::SignatureVerification)?;
+    if multikey_bytes.get(..2) != Some(P256_MULTICODEC_PREFIX) {
+        return Err(CryptoError::SignatureVerification(
+            "public key is not a P-256 key (wrong multicodec prefix)".to_string(),
+        ));
+    }
+    verify_p256_sec1(&multikey_bytes[2..], message, signature)
         .map_err(CryptoError::SignatureVerification)
 }
 
@@ -752,7 +802,7 @@ pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<Aud
 /// - `signed_op_json`: JSON-encoded signed genesis operation from a client.
 /// - `rotation_key`: The key that must have signed the unsigned operation — the
 ///   caller determines which of the op's rotation keys to verify against.
-///   Must be a valid `did:key:` URI with P-256 multicodec prefix.
+///   Must be a valid `did:key:` URI with a P-256 or secp256k1 multicodec prefix.
 ///
 /// # Errors
 /// Returns `CryptoError::PlcOperation` for any parse, format, cryptographic
@@ -779,14 +829,12 @@ pub fn verify_genesis_op(
         )));
     }
 
-    // Step 3: Base64url-decode the signature field.
+    // Step 3: Base64url-decode the signature field. Curve-specific parsing of the
+    // 64-byte r‖s form happens inside verify_signature_with_key, keyed by the
+    // rotation key's multicodec prefix.
     let sig_bytes = URL_SAFE_NO_PAD
         .decode(&signed_op.sig)
         .map_err(|e| CryptoError::PlcOperation(format!("invalid sig base64url: {e}")))?;
-
-    // Step 4: Parse the 64-byte r‖s fixed-size ECDSA signature.
-    let signature = Signature::try_from(sig_bytes.as_slice())
-        .map_err(|e| CryptoError::PlcOperation(format!("invalid ECDSA signature bytes: {e}")))?;
 
     // Step 5: Reconstruct the unsigned operation from signed op fields.
     // Field order must match UnsignedPlcOp's DAG-CBOR canonical ordering.
@@ -805,8 +853,9 @@ pub fn verify_genesis_op(
         .map_err(|e| CryptoError::PlcOperation(format!("cbor encode unsigned op: {e}")))?;
 
     // Steps 7–8: Parse the rotation key and verify the ECDSA-SHA256 signature
-    // (SHA-256 applied internally by p256; low-S canonical form enforced).
-    verify_signature_with_key(rotation_key, &unsigned_cbor, &signature)
+    // (SHA-256 applied internally; low-S canonical form enforced; P-256 or secp256k1
+    // selected by the key's multicodec prefix).
+    verify_signature_with_key(rotation_key, &unsigned_cbor, &sig_bytes)
         .map_err(CryptoError::PlcOperation)?;
 
     // Step 9: CBOR-encode the signed op and derive the DID.
@@ -1248,6 +1297,158 @@ mod tests {
                 Err(CryptoError::SignatureVerification(ref msg)) if msg.contains("low-S")
             ),
             "high-S signature must be rejected"
+        );
+    }
+
+    // ── secp256k1 (zQ3…) verification — the curve bsky.social signs with ───────
+
+    /// Encode a k256 verifying key as a `did:key:zQ3…` URI (secp256k1 multicodec).
+    fn k256_did_key(vk: &K256VerifyingKey) -> DidKeyUri {
+        let point = vk.to_encoded_point(true);
+        let mut multikey =
+            Vec::with_capacity(SECP256K1_MULTICODEC_PREFIX.len() + point.as_bytes().len());
+        multikey.extend_from_slice(SECP256K1_MULTICODEC_PREFIX);
+        multikey.extend_from_slice(point.as_bytes());
+        DidKeyUri(format!(
+            "did:key:{}",
+            multibase::encode(multibase::Base::Base58Btc, multikey)
+        ))
+    }
+
+    /// Build a rotation-op JSON signed with a k256 key, bypassing the builder
+    /// (whose low-S callback guard is p256-typed) by signing the same canonical
+    /// CBOR the verifier reconstructs.
+    fn k256_signed_rotation_json(sk: &k256::ecdsa::SigningKey, key: &DidKeyUri) -> String {
+        let template = serde_json::json!({
+            "prev": "bafyreib2rxk3rh6kzwq6yqvrfitknlqxrcbzbcvxg2ombukw2wfmno6xru",
+            "type": "plc_operation",
+            "services": {"atproto_pds": {"type": "AtprotoPersonalDataServer", "endpoint": "https://pds.example.com"}},
+            "alsoKnownAs": ["at://alice.example.com"],
+            "rotationKeys": [key.0],
+            "verificationMethods": {"atproto": key.0},
+            "sig": ""
+        });
+        let mut signed_op: SignedPlcOp = serde_json::from_value(template).expect("template parses");
+        let unsigned = UnsignedPlcOp {
+            prev: signed_op.prev.clone(),
+            op_type: signed_op.op_type.clone(),
+            services: signed_op.services.clone(),
+            also_known_as: signed_op.also_known_as.clone(),
+            rotation_keys: signed_op.rotation_keys.clone(),
+            verification_methods: signed_op.verification_methods.clone(),
+        };
+        let mut cbor = Vec::new();
+        into_writer(&unsigned, &mut cbor).expect("cbor encode");
+        let sig: K256Signature = Signer::sign(sk, cbor.as_slice());
+        let sig = sig.normalize_s().unwrap_or(sig);
+        signed_op.sig = URL_SAFE_NO_PAD.encode(sig.to_bytes());
+        serde_json::to_string(&signed_op).expect("json encode")
+    }
+
+    /// A rotation op signed by a secp256k1 rotation key verifies — including when
+    /// the k256 key is not first in the authorized list (mixed-curve key sets).
+    #[test]
+    fn verify_plc_operation_accepts_k256_signed_op() {
+        let sk = k256::ecdsa::SigningKey::random(&mut rand_core::OsRng);
+        let key = k256_did_key(sk.verifying_key());
+        let signed_json = k256_signed_rotation_json(&sk, &key);
+
+        let verified = verify_plc_operation(&signed_json, std::slice::from_ref(&key))
+            .expect("k256-signed rotation op must verify");
+        assert!(verified.did.is_none(), "rotation op DID must be None");
+
+        let wrong_p256 = generate_p256_keypair().expect("p256 keypair");
+        verify_plc_operation(&signed_json, &[wrong_p256.key_id, key])
+            .expect("k256 key must verify even when listed after a P-256 key");
+    }
+
+    /// A high-S k256 signature is rejected (atproto strict verification).
+    #[test]
+    fn verify_plc_operation_rejects_high_s_k256_signature() {
+        let sk = k256::ecdsa::SigningKey::random(&mut rand_core::OsRng);
+        let key = k256_did_key(sk.verifying_key());
+        let signed_json = k256_signed_rotation_json(&sk, &key);
+
+        let mut signed_op: SignedPlcOp =
+            serde_json::from_str(&signed_json).expect("signed op parses");
+        let low = K256Signature::try_from(
+            URL_SAFE_NO_PAD
+                .decode(&signed_op.sig)
+                .expect("sig base64")
+                .as_slice(),
+        )
+        .expect("parseable signature");
+        let high = K256Signature::from_scalars(low.r().to_bytes(), (-*low.s()).to_bytes())
+            .expect("high-S twin is a well-formed signature");
+        signed_op.sig = URL_SAFE_NO_PAD.encode(high.to_bytes());
+        let tampered_json = serde_json::to_string(&signed_op).expect("json encode");
+
+        let result = verify_plc_operation(&tampered_json, std::slice::from_ref(&key));
+        assert!(
+            matches!(result, Err(CryptoError::PlcOperation(ref msg)) if msg.contains("low-S")),
+            "high-S k256 signature must be rejected, got {result:?}"
+        );
+    }
+
+    /// The admin-envelope primitive stays strictly P-256: a secp256k1 key is
+    /// rejected even with a valid k256 signature over the message.
+    #[test]
+    fn verify_p256_signature_rejects_secp256k1_key() {
+        let sk = k256::ecdsa::SigningKey::random(&mut rand_core::OsRng);
+        let key = k256_did_key(sk.verifying_key());
+        let message = b"admin request canonical string";
+        let sig: K256Signature = Signer::sign(&sk, message.as_slice());
+        let sig = sig.normalize_s().unwrap_or(sig);
+        let sig_bytes: [u8; 64] = sig.to_bytes().into();
+
+        assert!(
+            matches!(
+                verify_p256_signature(&key, message, &sig_bytes),
+                Err(CryptoError::SignatureVerification(ref msg))
+                    if msg.contains("not a P-256 key")
+            ),
+            "secp256k1 key must be rejected by the P-256-only primitive"
+        );
+    }
+
+    /// A did:key with an unsupported multicodec prefix (e.g. ed25519) gets a
+    /// clear error naming the supported curves.
+    #[test]
+    fn verify_signature_with_key_rejects_unsupported_key_type() {
+        // ed25519 multicodec varint = [0xed, 0x01] + 32 key bytes.
+        let mut multikey = vec![0xed, 0x01];
+        multikey.extend_from_slice(&[0x42; 32]);
+        let key = DidKeyUri(format!(
+            "did:key:{}",
+            multibase::encode(multibase::Base::Base58Btc, multikey)
+        ));
+
+        let result = verify_signature_with_key(&key, b"message", &[0u8; 64]);
+        assert!(
+            matches!(result, Err(ref msg) if msg.contains("unsupported did:key type")),
+            "unsupported curve must be named, got {result:?}"
+        );
+    }
+
+    /// Golden interop test: a REAL operation signed by bsky.social (fibercap's
+    /// secp256k1 rotation key, via `signPlcOperation`), captured live during the
+    /// MM-241 migration run on 2026-07-11. Verifying it here proves byte-level
+    /// canonical-CBOR + k256 compatibility with the reference ecosystem, offline.
+    /// (The op was never submitted to plc.directory — it is inert test data.)
+    #[test]
+    fn verify_plc_operation_real_bsky_signed_op() {
+        let signed_json = r#"{"prev":"bafyreifh2p5yz5kvv652zpv2kqly3p2xdlvzkenyzt2n3s5brfvaq74vsu","type":"plc_operation","services":{"atproto_pds":{"type":"AtprotoPersonalDataServer","endpoint":"https://fibercap.us-west.host.bsky.network"}},"alsoKnownAs":["at://malpercio-obsign.bsky.social"],"rotationKeys":["did:key:zQ3shhCGUqDKjStzuDxPkTxN6ujddP4RkEKJJouJGRRkaLGbg","did:key:zQ3shpKnbdPx3g3CmPf5cRVTPe1HtSwVn5ish3wSnDPQCbLJK"],"verificationMethods":{"atproto":"did:key:zQ3she26NGC1MHHKpQFbtuZ529gPTLQ8JqLZVd3dmq2RUJLxK"},"sig":"v0eNyK9cOgi909EwMxo246TOi1SyS7nOkRk8a3z69Vw5z0IOCojAxCUAHFqZh5bGbvqAw_i7VXAxQ8E_DMBByw"}"#;
+        let keys = [
+            DidKeyUri("did:key:zQ3shhCGUqDKjStzuDxPkTxN6ujddP4RkEKJJouJGRRkaLGbg".to_string()),
+            DidKeyUri("did:key:zQ3shpKnbdPx3g3CmPf5cRVTPe1HtSwVn5ish3wSnDPQCbLJK".to_string()),
+        ];
+
+        let verified = verify_plc_operation(signed_json, &keys)
+            .expect("real bsky.social-signed op must verify");
+        assert!(verified.did.is_none(), "rotation op DID must be None");
+        assert_eq!(
+            verified.prev.as_deref(),
+            Some("bafyreifh2p5yz5kvv652zpv2kqly3p2xdlvzkenyzt2n3s5brfvaq74vsu"),
         );
     }
 
