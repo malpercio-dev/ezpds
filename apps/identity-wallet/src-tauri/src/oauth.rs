@@ -23,10 +23,6 @@ pub struct AppState {
     /// `complete_oauth_flow` while the ASWebAuthenticationSession runs. The PKCE verifier and
     /// CSRF state never leave the Rust backend.
     pub pending_login: Mutex<Option<PendingLogin>>,
-    /// The pending claim-flow PDS login parked between `claim::prepare_pds_auth` and
-    /// `claim::complete_pds_auth`. Mirrors `pending_login` for the import flow; carries the
-    /// discovered auth-server metadata + client_id alongside the verifier/CSRF state.
-    pub pending_pds_login: Mutex<Option<crate::claim::PendingPdsLogin>>,
     /// The active authenticated session after a successful token exchange.
     /// Set by `complete_oauth_flow` on success; read by `OAuthClient` for every request.
     pub oauth_session: Mutex<Option<OAuthSession>>,
@@ -37,7 +33,7 @@ pub struct AppState {
     /// Stateless and cheap to construct; available to Phase 4 Tauri commands.
     pds_client: crate::pds_client::PdsClient,
     /// Claim flow state persisted across multi-step claim commands.
-    /// Set by `resolve_identity`; used by subsequent `start_pds_auth`,
+    /// Set by `resolve_identity`; used by subsequent `authenticate_source_pds`,
     /// `request_claim_verification`, `sign_and_verify_claim`, `submit_claim`.
     /// Uses tokio::sync::Mutex because claim commands hold the lock across .await points.
     pub claim_state: tokio::sync::Mutex<Option<crate::claim::ClaimState>>,
@@ -56,9 +52,11 @@ pub struct AppState {
     /// Uses tokio::sync::Mutex because migration orchestrator commands hold the lock across .await points.
     pub orchestration_state:
         tokio::sync::Mutex<Option<crate::migration_orchestrator::OutboundMigrationState>>,
-    /// Pending source-PDS OAuth login, parked between `prepare_source_auth` and
-    /// `complete_source_auth` while the ASWebAuthenticationSession runs (twin of `pending_pds_login`).
+    /// Pending source-PDS OAuth login for the OUTBOUND migration orchestrator, parked between
+    /// `prepare_source_auth` and `complete_source_auth` while the ASWebAuthenticationSession runs.
     /// Holds the discovered auth-server metadata plus the secrets the token exchange needs.
+    /// (The claim flow's source login is password-based — see `claim::authenticate_source_pds` —
+    /// so it parks nothing here.)
     pub pending_source_login: Mutex<Option<crate::migration_orchestrator::PendingSourceLogin>>,
 }
 
@@ -66,7 +64,6 @@ impl AppState {
     pub fn new() -> Self {
         Self {
             pending_login: Mutex::new(None),
-            pending_pds_login: Mutex::new(None),
             oauth_session: Mutex::new(None),
             custos_client: OnceLock::new(),
             pds_client: crate::pds_client::PdsClient::new(),
@@ -485,7 +482,7 @@ pub async fn complete_oauth_flow(
 /// Extract `code` and `state` from an OAuth callback URL
 /// (`org.obsign.identitywallet:/oauth/callback?code=...&state=...`). Returns
 /// `CallbackAbandoned` if the URL is unparseable or missing either parameter. Shared with the
-/// claim flow's `complete_pds_auth`.
+/// outbound migration orchestrator's `complete_source_auth`.
 pub(crate) fn parse_callback_url(callback_url: &str) -> Result<(String, String), OAuthError> {
     let url = url::Url::parse(callback_url).map_err(|_| OAuthError::CallbackAbandoned)?;
     let mut code_opt: Option<String> = None;

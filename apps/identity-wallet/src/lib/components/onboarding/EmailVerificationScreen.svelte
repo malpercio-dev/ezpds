@@ -38,11 +38,27 @@
       sending = false;
     } catch (e) {
       sending = false;
-      console.error('Failed to send verification email:', e);
-      if (isCodedError(e) && e.code === 'UNAUTHORIZED') {
-        sendError = 'Authorization expired. Please go back and re-authenticate with your PDS.';
+      console.error('Failed to request PLC operation signature:', e);
+      // Report the real reason. In particular, an insufficient-scope refusal (the bug this flow
+      // was filed against) must NOT masquerade as an email-delivery failure.
+      if (isCodedError(e)) {
+        const err = e as ClaimError;
+        switch (err.code) {
+          case 'INSUFFICIENT_SCOPE':
+            sendError =
+              'Your PDS would not authorize the identity change for this session. Go back and sign in with your account password (an app password is not enough).';
+            break;
+          case 'UNAUTHORIZED':
+            sendError = 'Your session expired. Go back and sign in to your PDS again.';
+            break;
+          case 'NETWORK_ERROR':
+            sendError = 'Network error. Check your connection and try again.';
+            break;
+          default:
+            sendError = `Could not start verification (${err.code}). Please try again.`;
+        }
       } else {
-        sendError = 'Failed to send verification email. Please try again.';
+        sendError = 'Could not send the verification email. Please try again.';
       }
     }
   }

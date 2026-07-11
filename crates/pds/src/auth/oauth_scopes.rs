@@ -839,14 +839,21 @@ pub fn allows_email(scope: &str) -> bool {
 }
 
 /// Whether a granular OAuth grant permits an identity-management operation.
+///
+/// Unlike [`allows_email`]/[`allows_account`]/[`allows_repo`], this deliberately does **not**
+/// treat `transition:generic` as sufficient. Per the atproto OAuth spec, `transition:generic`
+/// is app-password-equivalent and grants "no account management actions: change handle, ...,
+/// migrate account" — i.e. it must NOT authorize identity/PLC operations. Only a granular
+/// `identity:*`/`identity:{attr}` grant (or a full `com.atproto.access` session, handled by the
+/// `require_*` gate) may drive them. bsky.social enforces the same rule; this keeps Custos from
+/// being the one lax counterparty that let insufficient-scope tokens slip through (MM-289).
 pub fn allows_identity(scope: &str, attr: &str) -> bool {
-    has_transition_generic(scope)
-        || scope
-            .split_whitespace()
-            .any(|token| match parse_token(token) {
-                (prefix, Some(pos), _) if prefix == "identity" => pos == "*" || pos == attr,
-                _ => false,
-            })
+    scope
+        .split_whitespace()
+        .any(|token| match parse_token(token) {
+            (prefix, Some(pos), _) if prefix == "identity" => pos == "*" || pos == attr,
+            _ => false,
+        })
 }
 
 /// Whether a granular OAuth grant permits an account operation.
@@ -1298,7 +1305,25 @@ mod tests {
         assert!(allows_blob(scope, "application/json"));
         assert!(allows_email(scope));
         assert!(allows_account(scope, "status", "manage"));
-        assert!(allows_identity(scope, "handle"));
+        // ...with ONE exception: identity/PLC operations. `transition:generic` is
+        // app-password-equivalent, which the atproto spec excludes from identity/account-management
+        // actions. Custos used to accept it here; MM-289 tightened it to match bsky.social.
+        assert!(!allows_identity(scope, "handle"));
+        assert!(!allows_identity(scope, "*"));
+    }
+
+    #[test]
+    fn transition_generic_is_refused_for_identity_ops() {
+        // Regression guard for MM-289: no OAuth token bsky.social can mint (its max is
+        // `transition:generic`) may drive PLC operations. `require_identity` still passes a full
+        // `com.atproto.access` password session (short-circuit before `allows_identity`), so the
+        // wallet's password-based claim flow is unaffected — this only closes the OAuth path.
+        let scope = "atproto transition:generic";
+        assert!(require_identity(scope, "*").is_err());
+        assert!(require_identity(scope, "handle").is_err());
+        // A granular identity grant still works, and a full session always works.
+        assert!(require_identity("atproto identity:*", "*").is_ok());
+        assert!(require_identity(SCOPE_ACCESS, "*").is_ok());
     }
 
     #[test]

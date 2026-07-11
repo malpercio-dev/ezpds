@@ -121,6 +121,11 @@ pub enum PdsClientError {
     /// DID already exists (HTTP 409 from createAccount migration).
     #[error("did already exists")]
     DidAlreadyExists,
+
+    /// `createSession` rejected the identifier/password (HTTP 401). Distinct from a transport
+    /// failure so the claim flow can tell the user "wrong password" rather than "network error".
+    #[error("invalid credentials: {message}")]
+    InvalidCredentials { message: String },
 }
 
 /// PLC operation data for a DID.
@@ -322,6 +327,22 @@ pub struct CreateAccountResponse {
     pub did: String,
     #[serde(default)]
     pub did_doc: Option<serde_json::Value>,
+}
+
+/// Response from `com.atproto.server.createSession` (legacy password login).
+///
+/// The `accessJwt`/`refreshJwt` are the full-session credentials the claim flow needs to drive
+/// PLC operations (`requestPlcOperationSignature`/`signPlcOperation`) — operations no OAuth
+/// `transition:generic` token can authorize (MM-289). They feed straight into
+/// `OAuthClient::new_bearer`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateSessionResponse {
+    pub access_jwt: String,
+    pub refresh_jwt: String,
+    pub did: String,
+    #[serde(default)]
+    pub handle: Option<String>,
 }
 
 /// Response from describeServer.
@@ -651,6 +672,68 @@ impl PdsClient {
             .map_err(|e| PdsClientError::PdsUnreachable {
                 reason: format!("failed to parse describeServer response: {}", e),
             })
+    }
+
+    /// Create a full password session against a PDS (`com.atproto.server.createSession`).
+    ///
+    /// This is the source-PDS login for the claim (inbound-migration) flow. Unlike OAuth,
+    /// a password `createSession` yields a **full-access** session (`com.atproto.access`), the
+    /// only credential class that can drive PLC operations on a spec-strict PDS like bsky.social
+    /// (MM-289). The `identifier` is a handle, DID, or email; the `password` must be the account's
+    /// real password (an app password is a lesser scope and is rejected the same way).
+    ///
+    /// The password is used for this single request and never persisted — the caller keeps only
+    /// the returned JWTs (in an in-memory Bearer `OAuthClient`).
+    ///
+    /// A 401 maps to [`PdsClientError::InvalidCredentials`] so the UI can say "wrong password".
+    pub async fn create_session(
+        &self,
+        pds_url: &str,
+        identifier: &str,
+        password: &str,
+    ) -> Result<CreateSessionResponse, PdsClientError> {
+        let url = format!(
+            "{}/xrpc/com.atproto.server.createSession",
+            pds_url.trim_end_matches('/')
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .timeout(Duration::from_secs(30))
+            .json(&serde_json::json!({
+                "identifier": identifier,
+                "password": password,
+            }))
+            .send()
+            .await
+            .map_err(|e| PdsClientError::NetworkError {
+                message: format!("createSession request failed: {}", e),
+            })?;
+
+        let status = response.status();
+        if status.as_u16() == 401 {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "(response body unreadable)".to_string());
+            return Err(PdsClientError::InvalidCredentials { message: body });
+        }
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "(response body unreadable)".to_string());
+            return Err(PdsClientError::NetworkError {
+                message: format!("createSession returned {}: {}", status, body),
+            });
+        }
+
+        response.json::<CreateSessionResponse>().await.map_err(|e| {
+            PdsClientError::InvalidResponse {
+                message: format!("failed to parse createSession response: {}", e),
+            }
+        })
     }
 
     /// Try to discover the authorization server URL from the PDS's protected
