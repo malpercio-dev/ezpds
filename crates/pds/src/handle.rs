@@ -35,6 +35,26 @@ pub(crate) fn is_reserved_name(name: &str, reserved: &[String]) -> bool {
     reserved.iter().any(|r| name.eq_ignore_ascii_case(r))
 }
 
+/// Whether `handle` (assumed structurally valid) uses a reserved first label on one of
+/// this server's served domains — the reserved-name half of [`validate_handle`], factored
+/// out for callers that validate the served-domain policy separately or skip it: the
+/// migration create path (foreign handles, no served-domain gate) and updateHandle.
+///
+/// A reserved name on a *foreign* domain (e.g. `about.someco.com`) is deliberately allowed —
+/// the reservation defends only this server's own wildcard space, so migration can't be used
+/// to claim `identitywallet.obsign.org` while a genuinely foreign handle is unaffected.
+pub(crate) fn reserved_on_served_domain(
+    handle: &str,
+    available_domains: &[String],
+    reserved: &[String],
+) -> bool {
+    let Some(dot) = handle.find('.') else {
+        return false;
+    };
+    available_domains.iter().any(|d| d == &handle[dot + 1..])
+        && is_reserved_name(&handle[..dot], reserved)
+}
+
 /// Validate that `handle` is structurally a valid AT Protocol handle: a domain name of at
 /// least two DNS labels, each 1..=63 chars of ASCII alphanumerics and internal hyphens, with
 /// total length at most 253. Returns the first label (the "name") on success.
@@ -278,5 +298,31 @@ mod tests {
             Ok("identitywallet")
         );
         assert!(!is_reserved_name("identitywallet", &[]));
+    }
+
+    // ── reserved_on_served_domain (migration path) ─────────────────────────────
+
+    #[test]
+    fn reserved_on_served_domain_matches_only_served_domain() {
+        let domains = vec!["obsign.org".to_string()];
+        let res = reserved();
+        // Reserved name on a served domain → true.
+        assert!(reserved_on_served_domain(
+            "identitywallet.obsign.org",
+            &domains,
+            &res
+        ));
+        // Reserved name on a FOREIGN domain → false (only our wildcard space is defended).
+        assert!(!reserved_on_served_domain(
+            "identitywallet.migrated.example",
+            &domains,
+            &res
+        ));
+        // Non-reserved name on a served domain → false.
+        assert!(!reserved_on_served_domain(
+            "alice.obsign.org",
+            &domains,
+            &res
+        ));
     }
 }

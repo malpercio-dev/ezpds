@@ -1006,6 +1006,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn post_par_freshly_fetched_loopback_client_is_exempt_from_reverse_fqdn() {
+        // The freshly-fetched (unregistered URL client_id) branch resolves metadata live via
+        // resolve_client_metadata. The harness serves it over loopback http, which is the spec's
+        // local-development exception, so its private-use redirect is NOT held to the reverse-FQDN
+        // rule even though the scheme doesn't reverse the (loopback) host. This exercises the new
+        // check on the fetch branch and pins that exemption. The rule itself — for https URL
+        // client_ids — is covered by the registered-client tests above, since redirect validation
+        // runs after and independent of the registered-vs-fetched branch.
+        let state = test_state().await;
+        let client_id = serve_client_metadata(|url| {
+            serde_json::json!({
+                "client_id": url,
+                "redirect_uris": ["dev.anything.at.all:/oauth/callback"],
+            })
+            .to_string()
+        })
+        .await;
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/par")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(par_body(&[
+                        ("client_id", client_id.as_str()),
+                        ("redirect_uri", "dev.anything.at.all:/oauth/callback"),
+                    ])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "a loopback-http fetched client is exempt from the reverse-FQDN rule (local-dev exception)"
+        );
+    }
+
+    #[tokio::test]
     async fn post_par_accepts_optional_login_hint() {
         let state = test_state().await;
         register_client(&state).await;

@@ -433,6 +433,19 @@ async fn create_account_migration(
     if let Err(msg) = crate::handle::validate_handle_structure(&payload.handle) {
         return Err(ApiError::new(ErrorCode::InvalidHandle, msg));
     }
+    // But if the handle *is* on one of our served domains, honor the reserved-name policy:
+    // migration also inserts the handle locally, so without this a migration could claim a
+    // reserved infrastructure name (e.g. identitywallet.obsign.org) that registration refuses.
+    if crate::handle::reserved_on_served_domain(
+        &payload.handle,
+        &state.config.available_user_domains,
+        &state.config.reserved_handles,
+    ) {
+        return Err(ApiError::new(
+            ErrorCode::InvalidHandle,
+            "this handle name is reserved",
+        ));
+    }
     let email = require_email(payload)?;
 
     // A repo signing key must have been reserved for this DID (via reserveSigningKey) so the PDS
@@ -1196,6 +1209,70 @@ mod tests {
             signing_key.is_some(),
             "reserved signing key must be promoted"
         );
+    }
+
+    #[tokio::test]
+    async fn migration_reserved_handle_on_served_domain_returns_400() {
+        // A reserved infrastructure name under one of our served domains must be refused even
+        // on the migration path (which skips served-domain policy) — migration inserts the
+        // handle locally, so it would otherwise be a back door to claim identitywallet.example.com.
+        let state = test_state("http://unused.invalid".to_string(), false).await;
+        let db = state.db.clone();
+        let served = state.config.available_user_domains[0].clone();
+        let reserved_handle = format!("identitywallet.{served}");
+        let did = "did:plc:migrator66666666666666";
+        let kp = seed_migration_did(&db, did, &reserved_handle).await;
+        let aud = state.config.resolve_server_did();
+        let token = service_auth_jwt(&kp, did, &aud, Some("com.atproto.server.createAccount"));
+
+        let response = app(state)
+            .oneshot(post(
+                serde_json::json!({
+                    "handle": reserved_handle,
+                    "email": "migrant@example.com",
+                    "did": did,
+                }),
+                Some(&token),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let handle_row: Option<(String,)> =
+            sqlx::query_as("SELECT did FROM handles WHERE handle = ?")
+                .bind(&reserved_handle)
+                .fetch_optional(&db)
+                .await
+                .unwrap();
+        assert!(
+            handle_row.is_none(),
+            "the reserved handle must not be inserted"
+        );
+    }
+
+    #[tokio::test]
+    async fn migration_reserved_name_on_foreign_domain_is_allowed() {
+        // The reservation defends only our own wildcard space: a reserved first label on a
+        // genuinely foreign domain is a legitimate migration handle and must succeed.
+        let state = test_state("http://unused.invalid".to_string(), false).await;
+        let db = state.db.clone();
+        let did = "did:plc:migrator77777777777777";
+        let kp = seed_migration_did(&db, did, "identitywallet.migrated.example").await;
+        let aud = state.config.resolve_server_did();
+        let token = service_auth_jwt(&kp, did, &aud, Some("com.atproto.server.createAccount"));
+
+        let response = app(state)
+            .oneshot(post(
+                serde_json::json!({
+                    "handle": "identitywallet.migrated.example",
+                    "email": "migrant@example.com",
+                    "did": did,
+                }),
+                Some(&token),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]

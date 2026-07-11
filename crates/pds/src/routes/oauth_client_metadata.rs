@@ -26,6 +26,11 @@ pub const CANONICAL_WALLET_CLIENT_ID: &str =
 /// host reversed, the pairing third-party authorization servers enforce.
 pub const WALLET_REDIRECT_URI: &str = "org.obsign.identitywallet:/oauth/callback";
 
+/// The client-metadata document's path. Shared by the loopback-derived client_id and the
+/// `client_uri` trim so the two can't drift (a stale trim would leave `client_uri`
+/// ending in the metadata path — no longer same-origin with `client_id`).
+const CLIENT_METADATA_PATH: &str = "/oauth/client-metadata.json";
+
 #[derive(Serialize)]
 struct ClientMetadata {
     client_id: String,
@@ -47,7 +52,7 @@ struct ClientMetadata {
 fn wallet_client_id(public_url: &str) -> String {
     let base = public_url.trim_end_matches('/');
     if crate::oauth_client_resolution::url_is_loopback(base) {
-        format!("{base}/oauth/client-metadata.json")
+        format!("{base}{CLIENT_METADATA_PATH}")
     } else {
         CANONICAL_WALLET_CLIENT_ID.to_string()
     }
@@ -56,9 +61,7 @@ fn wallet_client_id(public_url: &str) -> String {
 pub async fn oauth_client_metadata(State(state): State<AppState>) -> impl IntoResponse {
     let client_id = wallet_client_id(&state.config.public_url);
     // client_uri must stay same-origin with client_id.
-    let client_uri = client_id
-        .trim_end_matches("/oauth/client-metadata.json")
-        .to_string();
+    let client_uri = client_id.trim_end_matches(CLIENT_METADATA_PATH).to_string();
 
     Json(ClientMetadata {
         client_id,
@@ -84,6 +87,23 @@ mod tests {
 
     use super::{wallet_client_id, CANONICAL_WALLET_CLIENT_ID, WALLET_REDIRECT_URI};
     use crate::app::{app, test_state};
+
+    /// The V042 SQL seed and this route serve the same client_id/redirect literals but can't
+    /// share a Rust const (a migration is raw SQL). Tie the in-crate pair here so a rename of
+    /// the route consts that forgets the seed fails the build rather than silently shipping a
+    /// server whose served document disagrees with its own seeded row.
+    #[test]
+    fn v042_seed_matches_canonical_consts() {
+        let sql = include_str!("../db/migrations/V042__canonical_wallet_oauth_client.sql");
+        assert!(
+            sql.contains(CANONICAL_WALLET_CLIENT_ID),
+            "V042 seed must reference the canonical client_id {CANONICAL_WALLET_CLIENT_ID}"
+        );
+        assert!(
+            sql.contains(WALLET_REDIRECT_URI),
+            "V042 seed must reference the wallet redirect URI {WALLET_REDIRECT_URI}"
+        );
+    }
 
     #[test]
     fn client_id_is_canonical_for_public_hosts() {
