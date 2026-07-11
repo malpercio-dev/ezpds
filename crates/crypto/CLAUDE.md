@@ -128,6 +128,7 @@ pub fn verify_plc_operation(
 ) -> Result<VerifiedPlcOp, CryptoError>
 ```
 - General-purpose signed-op verifier covering **both** genesis and rotation ops (unlike `verify_genesis_op`, which only accepts genesis ops against a single key)
+- **Accepts both curves for verification**: P-256 (`zDn…`, multicodec `[0x80, 0x24]`) and secp256k1 (`zQ3…`, multicodec `[0xe7, 0x01]`) — dispatched per key by multicodec prefix. The reference ecosystem (bsky.social) signs PLC ops with secp256k1; a golden test pins verification of a real bsky.social-signed operation. Signing in this crate remains P-256-only. Unknown prefixes get an explicit "unsupported did:key type" error.
 - Reconstructs the unsigned op with DAG-CBOR canonical field ordering and tries each key in `authorized_rotation_keys` until one verifies the ECDSA-SHA256 signature
 - Caller obligation: supplies the correct authorized-key set for this op — the op's own `rotationKeys` for a genesis op, or the **previous** op's `rotationKeys` for a rotation op; this function only checks that *some* provided key signed it, not that the set is right for the DID's current state
 - Returns `VerifiedPlcOp { did, cid, prev, rotation_keys, also_known_as, verification_methods, services }` — `did` is `Some` (derived from signed CBOR) only for a genesis op (`prev.is_none()`), `None` for a rotation op; `cid` is this op's own CID (via `compute_cid`)
@@ -143,8 +144,8 @@ pub fn verify_p256_signature(
 ) -> Result<(), CryptoError>
 ```
 
-- General-purpose P-256 ECDSA-SHA256 verification, decoupled from did:plc operation JSON
-- Thin public wrapper over the internal `verify_signature_with_key`; the relay uses it to authenticate signed admin requests
+- General-purpose P-256 ECDSA-SHA256 verification, decoupled from did:plc operation JSON; the relay uses it to authenticate signed admin requests
+- **Deliberately P-256-only** even though PLC operation verification accepts secp256k1 too: the admin-device model is P-256 (Secure Enclave) by design, so a `zQ3…` key is rejected with "not a P-256 key" rather than quietly verified
 - Message is hashed with SHA-256 internally — pass the bytes exactly as signed, do not pre-hash
 - Errors: `CryptoError::SignatureVerification` for a malformed public key, an unparseable signature, or a verification mismatch
 
@@ -214,10 +215,11 @@ pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<Aud
 - **did:key**: P-256 multicodec varint `[0x80, 0x24]` + compressed point, multibase base58btc encoded
 - **Encryption**: `base64(nonce(12) || ciphertext(32) || tag(16))` = 80 base64 chars; fresh nonce per call
 - **did:plc genesis op sig**: base64url (no padding) decoding to exactly 64 bytes (r‖s, big-endian, low-S canonical). `build_did_plc_genesis_op` low-S normalizes its own signature; external-signer callbacks must return low-S themselves.
-- **Low-S enforced on verify**: every verification path (`verify_genesis_op`, `verify_plc_operation`, `verify_p256_signature`) rejects non-canonical high-S signatures, matching `@atproto/crypto`/plc.directory strict verification. Because DIDs/CIDs are derived from the *signed* CBOR, accepting a malleated high-S twin would let one signature yield a second valid op with a different DID/CID.
+- **Low-S enforced on verify (both curves)**: every verification path (`verify_genesis_op`, `verify_plc_operation`, `verify_p256_signature`) rejects non-canonical high-S signatures on P-256 and secp256k1 alike, matching `@atproto/crypto`/plc.directory strict verification. Because DIDs/CIDs are derived from the *signed* CBOR, accepting a malleated high-S twin would let one signature yield a second valid op with a different DID/CID.
+- **secp256k1 is verify-only**: `SECP256K1_MULTICODEC_PREFIX` (`[0xe7, 0x01]`, `zQ3…`) exists for verifying ops signed by the reference ecosystem; nothing in this crate generates or signs with secp256k1 keys.
 
 ## Dependencies
-- **Uses**: p256 (ECDSA/key generation), aes-gcm (AES-256-GCM), multibase (base58btc encoding), rand_core (OS RNG), base64 (storage encoding), zeroize (secret cleanup), ciborium (CBOR serialization for did:plc), data-encoding (base32-lowercase), sha2 (SHA-256), serde/serde_json (struct serialization)
+- **Uses**: p256 (ECDSA/key generation), k256 (secp256k1 ECDSA — verification only, for ops signed by the reference ecosystem), aes-gcm (AES-256-GCM), multibase (base58btc encoding), rand_core (OS RNG), base64 (storage encoding), zeroize (secret cleanup), ciborium (CBOR serialization for did:plc), data-encoding (base32-lowercase), sha2 (SHA-256), serde/serde_json (struct serialization)
 - **Used by**: `crates/pds/` (key generation, did:plc genesis building and verification in POST /v1/dids; `crates/pds/src/plc_ops.rs` shares the interop PLC-signing surface's audit-log fetch + service parsing; `routes/sign_plc_operation.rs`/`routes/submit_plc_operation.rs` build/verify rotation ops via `build_did_plc_rotation_op`/`verify_plc_operation`), `apps/identity-wallet/` (external signer genesis op building in DID ceremony)
 
 ## Invariants
