@@ -3,6 +3,7 @@ name = "crypto"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 # crypto: signing, Shamir secret sharing, DID operations.
 # Depends on rsky-crypto (added when Wave 3 DID/key work begins).
