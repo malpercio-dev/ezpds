@@ -69,3 +69,7 @@ apps/admin-companion/src-tauri/icons-build/
 
 # Local Linear ticket archive (private — never publish to this public repo)
 linear-export/
+
+# Claude Code machine-local session files (worktrees already ignored above)
+.claude/settings.local.json
+.claude/scratch_*.log
