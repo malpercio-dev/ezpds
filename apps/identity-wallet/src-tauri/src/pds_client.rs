@@ -1303,15 +1303,15 @@ async fn try_resolve_http(
 
 /// Request a PLC operation signature from the PDS.
 ///
-/// Triggers email verification on the PDS.
+/// Triggers email verification on the PDS. `requestPlcOperationSignature` is a
+/// no-input procedure: the request must carry NO body — a spec-strict PDS
+/// (bsky.social) rejects `{}` with `InvalidRequest: A request body was provided
+/// when none was expected` (our own route is laxer, which is how the `{}` shipped).
 pub async fn request_plc_operation_signature(
     client: &crate::oauth_client::OAuthClient,
 ) -> Result<(), PdsClientError> {
     let resp = client
-        .post(
-            "/xrpc/com.atproto.identity.requestPlcOperationSignature",
-            &serde_json::json!({}),
-        )
+        .post_no_body("/xrpc/com.atproto.identity.requestPlcOperationSignature")
         .await
         .map_err(|e| PdsClientError::NetworkError {
             message: format!("request_plc_operation_signature failed: {}", e),
@@ -1684,18 +1684,17 @@ pub async fn check_account_status(
 
 /// Activate the account on the destination PDS.
 ///
-/// Calls `POST /xrpc/com.atproto.server.activateAccount` with a GENUINELY empty body.
-/// The handler (`crates/pds/src/routes/activate_account.rs`) rejects any non-whitespace body
-/// with a 400 — so we must send zero bytes, NOT `{}` (which `.post()` would serialize).
+/// Calls `POST /xrpc/com.atproto.server.activateAccount` with NO body and no
+/// `Content-Type` — it is a no-input procedure. Our handler
+/// (`crates/pds/src/routes/activate_account.rs`) rejects any non-whitespace body
+/// with a 400, and a spec-strict PDS rejects any body at all; `post_no_body`
+/// satisfies both (the previous `post_bytes(.., Vec::new())` workaround still sent
+/// a `Content-Type` header with zero bytes).
 pub async fn activate_account(
     client: &crate::oauth_client::OAuthClient,
 ) -> Result<(), PdsClientError> {
     let resp = client
-        .post_bytes(
-            "/xrpc/com.atproto.server.activateAccount",
-            "application/json",
-            Vec::new(),
-        )
+        .post_no_body("/xrpc/com.atproto.server.activateAccount")
         .await
         .map_err(|e| PdsClientError::NetworkError {
             message: format!("activate_account failed: {}", e),
@@ -2608,7 +2607,14 @@ mod tests {
             when.method(httpmock::Method::POST)
                 .path("/xrpc/com.atproto.identity.requestPlcOperationSignature")
                 .header_exists("Authorization")
-                .header_exists("DPoP");
+                .header_exists("DPoP")
+                // No-input procedure: a spec-strict PDS rejects any body or Content-Type.
+                .is_true(|req| req.body_ref().is_empty())
+                .is_true(|req| {
+                    !req.headers_vec()
+                        .iter()
+                        .any(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+                });
             then.status(200).json_body(serde_json::json!({}));
         });
 
@@ -3721,6 +3727,13 @@ mod tests {
             when.method(httpmock::Method::POST)
                 .path("/xrpc/com.atproto.server.activateAccount")
                 .is_true(|req| req.body_ref().is_empty())
+                // No-input procedure: no Content-Type either (the old post_bytes
+                // workaround still sent one with zero bytes).
+                .is_true(|req| {
+                    !req.headers_vec()
+                        .iter()
+                        .any(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+                })
                 .is_true(|req| {
                     req.headers_vec()
                         .iter()

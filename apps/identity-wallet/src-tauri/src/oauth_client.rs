@@ -126,6 +126,17 @@ impl OAuthClient {
             .await
     }
 
+    /// POST `{base_url}/{path}` with NO request body and no `Content-Type` header.
+    ///
+    /// For no-input XRPC procedures (`requestPlcOperationSignature`, `activateAccount`):
+    /// their lexicons define no input, and a spec-strict PDS (bsky.social) rejects any
+    /// body with `InvalidRequest: A request body was provided when none was expected`.
+    pub async fn post_no_body(&self, path: &str) -> Result<Response, OAuthError> {
+        let url = format!("{}/{}", self.base_url, path.trim_start_matches('/'));
+        self.execute_with_retry(reqwest::Method::POST, &url, None::<&()>)
+            .await
+    }
+
     /// POST `{base_url}/{path}` with a raw byte body and caller-chosen Content-Type.
     ///
     /// Used for binary uploads like `importRepo` (CAR format) and `uploadBlob` (arbitrary MIME type).
