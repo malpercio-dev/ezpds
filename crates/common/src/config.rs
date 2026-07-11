@@ -223,15 +223,26 @@ fn default_deletion_reaper_interval_secs() -> u64 {
     60 * 60 // 1 hour
 }
 
+/// Clock-skew tolerance for admin device signed-request timestamps, in seconds: a request's
+/// claimed `timestamp` verifies at any relay clock within `timestamp ±
+/// ADMIN_TIMESTAMP_WINDOW_SECS` (see `pds::auth::guards::verify_signed_request`). Lives here
+/// rather than being duplicated in the pds crate so the nonce-retention validation below
+/// stays tied to the exact window it derives its safety margin from.
+pub const ADMIN_TIMESTAMP_WINDOW_SECS: i64 = 60;
+
 /// Operator companion-app admin-device configuration: retention for the anti-replay
 /// `admin_nonces` table.
 ///
 /// Every device-signed admin request inserts a nonce row; the `(device_id, nonce)` primary
-/// key is what actually blocks a replay, so this sweep is pure storage reclamation, not a
-/// security control. A nonce older than the signed-request timestamp window (`±60s`, see
-/// `auth::guards::ADMIN_TIMESTAMP_WINDOW_SECS` in the pds crate) can never verify again, so
-/// any retention beyond a few minutes is safe — the defaults here (sweep hourly, keep 1
-/// hour) are a generous margin, not a tuned value.
+/// key is what actually blocks a replay **as long as the row survives the request's full
+/// acceptance window**. Because the timestamp check re-verifies against the relay's clock at
+/// *use* time (not just at insert time), the worst case — first successful use at the
+/// earliest edge of the `±ADMIN_TIMESTAMP_WINDOW_SECS` window — leaves the same captured
+/// request replayable for up to `2 * ADMIN_TIMESTAMP_WINDOW_SECS` (120s) after its nonce row
+/// was first inserted. Sweeping a row before that elapses could delete it while it's still
+/// within that window, letting a replay through via a fresh insert — so
+/// `nonce_max_age_secs` is validated to exceed that span; this sweep only reclaims storage
+/// once the primary key's protection is provably still intact.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AdminDevicesConfig {
     /// How often the stale-nonce sweep runs, in seconds. Default: 3600 (1 hour). Must be > 0
@@ -239,7 +250,10 @@ pub struct AdminDevicesConfig {
     #[serde(default = "default_admin_nonce_sweep_interval_secs")]
     pub nonce_sweep_interval_secs: u64,
     /// Delete nonce rows whose `seen_at` is older than this many seconds. Default: 3600
-    /// (1 hour) — well beyond the ±60s verification window.
+    /// (1 hour) — well beyond the validated minimum of `2 * ADMIN_TIMESTAMP_WINDOW_SECS`
+    /// (120s), the worst-case span a captured request stays replayable after its nonce row
+    /// is first inserted. Must also fit in `i64` (the sweep passes it to SQLite as a signed
+    /// duration).
     #[serde(default = "default_admin_nonce_max_age_secs")]
     pub nonce_max_age_secs: u64,
 }
@@ -1577,6 +1591,25 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
                 .to_string(),
         ));
     }
+    // A captured admin request stays replayable for up to `2 * ADMIN_TIMESTAMP_WINDOW_SECS`
+    // after its nonce is first inserted (worst case: first use at the earliest edge of the
+    // ±window). Sweeping sooner could delete the nonce while the request could still verify,
+    // letting a replay through via a fresh insert.
+    let admin_nonce_replay_span_secs = 2 * ADMIN_TIMESTAMP_WINDOW_SECS as u64;
+    if raw.admin_devices.nonce_max_age_secs <= admin_nonce_replay_span_secs {
+        return Err(ConfigError::Invalid(format!(
+            "admin_devices.nonce_max_age_secs must exceed {admin_nonce_replay_span_secs} seconds \
+             (twice the ±{ADMIN_TIMESTAMP_WINDOW_SECS}s admin signed-request timestamp window) — \
+             a shorter retention could delete a nonce while its signed request is still within \
+             its replay-acceptance window"
+        )));
+    }
+    if raw.admin_devices.nonce_max_age_secs > i64::MAX as u64 {
+        return Err(ConfigError::Invalid(
+            "admin_devices.nonce_max_age_secs must fit in i64 (the sweep passes it to SQLite as a signed duration)"
+                .to_string(),
+        ));
+    }
 
     let email = build_email_config(raw.email)?;
 
@@ -1925,6 +1958,70 @@ mod tests {
         let err = validate_and_build(raw).unwrap_err();
         assert!(matches!(err, ConfigError::Invalid(_)));
         assert!(err.to_string().contains("nonce_sweep_interval_secs"));
+    }
+
+    #[test]
+    fn admin_devices_nonce_max_age_secs_at_the_replay_span_is_rejected() {
+        // The boundary itself (exactly 2 * ADMIN_TIMESTAMP_WINDOW_SECS = 120) must be
+        // rejected, not just values below it — a swept row at that exact age could still be
+        // within the worst-case replay-acceptance window.
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [admin_devices]
+            nonce_max_age_secs = 120
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("nonce_max_age_secs"));
+    }
+
+    #[test]
+    fn admin_devices_nonce_max_age_secs_below_the_replay_span_is_rejected() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [admin_devices]
+            nonce_max_age_secs = 30
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("nonce_max_age_secs"));
+    }
+
+    #[test]
+    fn admin_devices_nonce_max_age_secs_just_above_the_replay_span_is_accepted() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [admin_devices]
+            nonce_max_age_secs = 121
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.admin_devices.nonce_max_age_secs, 121);
+    }
+
+    #[test]
+    fn admin_devices_nonce_max_age_secs_overflowing_i64_is_rejected() {
+        // TOML integers are i64-range only, so this overflow is only reachable via the env-var
+        // path (a plain `u64::from_str`), not TOML.
+        let env = HashMap::from([(
+            "EZPDS_ADMIN_DEVICES_NONCE_MAX_AGE_SECS".to_string(),
+            u64::MAX.to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("nonce_max_age_secs"));
     }
 
     #[test]
@@ -2284,12 +2381,12 @@ mod tests {
     fn env_override_admin_nonce_max_age() {
         let env = HashMap::from([(
             "EZPDS_ADMIN_DEVICES_NONCE_MAX_AGE_SECS".to_string(),
-            "120".to_string(),
+            "300".to_string(),
         )]);
         let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
         let config = validate_and_build(raw).unwrap();
 
-        assert_eq!(config.admin_devices.nonce_max_age_secs, 120);
+        assert_eq!(config.admin_devices.nonce_max_age_secs, 300);
     }
 
     #[test]

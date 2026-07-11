@@ -5,9 +5,12 @@
 //! Every device-signed admin request (`auth::guards::require_admin`) inserts a row into
 //! `admin_nonces` for anti-replay. The `(device_id, nonce)` primary key is what actually
 //! blocks a replay — this sweep is pure storage reclamation, not a security control — so a
-//! failed or delayed pass never weakens replay protection. Retention only needs to exceed
-//! the signed-request timestamp window (`auth::guards::ADMIN_TIMESTAMP_WINDOW_SECS`, ±60s):
-//! a nonce older than that window can never verify again.
+//! failed or delayed pass never weakens replay protection, *provided* retention exceeds the
+//! request's full replay-acceptance window: a captured request stays replayable for up to
+//! `2 * ADMIN_TIMESTAMP_WINDOW_SECS` (worst case, first use at the earliest edge of the
+//! ±window) after its nonce is first inserted, so config validation
+//! (`common::ADMIN_TIMESTAMP_WINDOW_SECS`) rejects a `nonce_max_age_secs` at or below that
+//! span.
 //!
 //! Template: `account_reaper.rs` / `firehose_gc.rs` — the first interval tick is skipped, an
 //! error skips the pass (retried next tick), and the task runs for the life of the process.

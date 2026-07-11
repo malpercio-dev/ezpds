@@ -388,11 +388,14 @@ async fn run() -> anyhow::Result<()> {
 
     // Spawn the admin-nonce retention sweep. Each pass deletes `admin_nonces` rows older than
     // the configured max age; anti-replay is enforced by the `(device_id, nonce)` primary key
-    // regardless, so this is pure storage reclamation — like the GC tasks it is best-effort and
-    // runs for the life of the process, so the handle is dropped on shutdown rather than joined.
+    // as long as the row survives the request's full replay-acceptance window, which config
+    // validation guarantees `nonce_max_age_secs` exceeds — so this is pure storage reclamation.
+    // Like the GC tasks it is best-effort and runs for the life of the process, so the handle
+    // is dropped on shutdown rather than joined.
     let nonce_sweep_interval =
         std::time::Duration::from_secs(state.config.admin_devices.nonce_sweep_interval_secs);
-    let nonce_max_age_secs = state.config.admin_devices.nonce_max_age_secs as i64;
+    let nonce_max_age_secs = i64::try_from(state.config.admin_devices.nonce_max_age_secs)
+        .expect("admin_devices.nonce_max_age_secs is validated to fit in i64 at config load");
     let _admin_nonce_sweep = admin_nonce_sweep::spawn_admin_nonce_sweep(
         state.clone(),
         nonce_sweep_interval,
