@@ -80,6 +80,7 @@ struct SweepStates {
     firehose_gc: Option<SweepState>,
     account_reaper: Option<SweepState>,
     agent_claim_sweep: Option<SweepState>,
+    admin_nonce_sweep: Option<SweepState>,
 }
 
 /// One sweep's last completed pass; `null` at the response level until the first pass
@@ -180,6 +181,7 @@ pub async fn admin_health(
             firehose_gc: sweeps.firehose_gc.map(SweepState::from),
             account_reaper: sweeps.account_reaper.map(SweepState::from),
             agent_claim_sweep: sweeps.agent_claim_sweep.map(SweepState::from),
+            admin_nonce_sweep: sweeps.admin_nonce_sweep.map(SweepState::from),
         },
     }))
 }
@@ -256,6 +258,7 @@ mod tests {
         assert_eq!(json["sweeps"]["firehoseGc"], serde_json::Value::Null);
         assert_eq!(json["sweeps"]["accountReaper"], serde_json::Value::Null);
         assert_eq!(json["sweeps"]["agentClaimSweep"], serde_json::Value::Null);
+        assert_eq!(json["sweeps"]["adminNonceSweep"], serde_json::Value::Null);
     }
 
     #[tokio::test]

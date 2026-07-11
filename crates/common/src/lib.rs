@@ -3,9 +3,9 @@ mod config_loader;
 mod error;
 
 pub use config::{
-    default_reserved_handles, AccountsConfig, AgentAuthConfig, AppViewConfig, BlobsConfig,
-    ChatConfig, Config, ConfigError, ContactConfig, CrawlersConfig, EmailConfig, EmailProvider,
-    FirehoseConfig, IrohConfig, LogFormat, OAuthConfig, RateLimitConfig, Sensitive,
+    default_reserved_handles, AccountsConfig, AdminDevicesConfig, AgentAuthConfig, AppViewConfig,
+    BlobsConfig, ChatConfig, Config, ConfigError, ContactConfig, CrawlersConfig, EmailConfig,
+    EmailProvider, FirehoseConfig, IrohConfig, LogFormat, OAuthConfig, RateLimitConfig, Sensitive,
     ServerLinksConfig, SmtpTls, TelemetryConfig, TrustedIssuer,
 };
 pub use config_loader::{

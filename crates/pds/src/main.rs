@@ -7,6 +7,7 @@ use std::{path::PathBuf, sync::Arc};
 
 mod account_delete;
 mod account_reaper;
+mod admin_nonce_sweep;
 mod agent_claim_sweep;
 mod app;
 mod auth;
@@ -383,6 +384,24 @@ async fn run() -> anyhow::Result<()> {
     tracing::info!(
         interval_secs = state.config.agent_auth.claim_sweep_interval_secs,
         "agent claim-attempt expiry sweep started"
+    );
+
+    // Spawn the admin-nonce retention sweep. Each pass deletes `admin_nonces` rows older than
+    // the configured max age; anti-replay is enforced by the `(device_id, nonce)` primary key
+    // regardless, so this is pure storage reclamation — like the GC tasks it is best-effort and
+    // runs for the life of the process, so the handle is dropped on shutdown rather than joined.
+    let nonce_sweep_interval =
+        std::time::Duration::from_secs(state.config.admin_devices.nonce_sweep_interval_secs);
+    let nonce_max_age_secs = state.config.admin_devices.nonce_max_age_secs as i64;
+    let _admin_nonce_sweep = admin_nonce_sweep::spawn_admin_nonce_sweep(
+        state.clone(),
+        nonce_sweep_interval,
+        nonce_max_age_secs,
+    );
+    tracing::info!(
+        interval_secs = state.config.admin_devices.nonce_sweep_interval_secs,
+        max_age_secs = state.config.admin_devices.nonce_max_age_secs,
+        "admin-nonce retention sweep started"
     );
 
     // Spawn the Iroh accept loop when the tunnel is enabled. Like the blob GC it is detached

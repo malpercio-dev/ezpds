@@ -48,9 +48,11 @@ reachable without the phone.
   enroll accomplices.
 - The signature binds the bare path, not the query string. Admin routes must
   never carry authority-relevant data in query parameters.
-- `admin_nonces` grows with every device request. `sweep_stale_nonces` exists
-  but is not yet wired to a background task — open follow-up; anti-replay
-  itself doesn't depend on it (the primary key enforces single use).
+- `admin_nonces` grows with every device request. `sweep_stale_nonces` is
+  wired to a periodic background task (`admin_nonce_sweep.rs`, MM-286) that
+  deletes rows older than a configurable retention (default 1 hour, well
+  beyond the ±60s timestamp window); anti-replay itself doesn't depend on it
+  (the primary key enforces single use).
 - The `scopes` column defaults to `'full'` — a growth hook for narrowing
   device authority later without a schema change. The master token is unscoped.
 

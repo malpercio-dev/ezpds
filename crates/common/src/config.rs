@@ -59,6 +59,9 @@ pub struct Config {
     pub firehose: FirehoseConfig,
     /// Account-lifecycle knobs (currently the scheduled-deletion reaper interval).
     pub accounts: AccountsConfig,
+    /// Operator companion-app admin-device knobs (currently the stale-nonce sweep interval
+    /// and retention).
+    pub admin_devices: AdminDevicesConfig,
     pub oauth: OAuthConfig,
     /// auth.md agent-registration knobs (per-flow enablement, issuer trust list, TTLs).
     pub agent_auth: AgentAuthConfig,
@@ -217,6 +220,44 @@ impl Default for AccountsConfig {
 }
 
 fn default_deletion_reaper_interval_secs() -> u64 {
+    60 * 60 // 1 hour
+}
+
+/// Operator companion-app admin-device configuration: retention for the anti-replay
+/// `admin_nonces` table.
+///
+/// Every device-signed admin request inserts a nonce row; the `(device_id, nonce)` primary
+/// key is what actually blocks a replay, so this sweep is pure storage reclamation, not a
+/// security control. A nonce older than the signed-request timestamp window (`±60s`, see
+/// `auth::guards::ADMIN_TIMESTAMP_WINDOW_SECS` in the pds crate) can never verify again, so
+/// any retention beyond a few minutes is safe — the defaults here (sweep hourly, keep 1
+/// hour) are a generous margin, not a tuned value.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdminDevicesConfig {
+    /// How often the stale-nonce sweep runs, in seconds. Default: 3600 (1 hour). Must be > 0
+    /// (like the other periodic sweeps, a zero period would panic `tokio::time::interval`).
+    #[serde(default = "default_admin_nonce_sweep_interval_secs")]
+    pub nonce_sweep_interval_secs: u64,
+    /// Delete nonce rows whose `seen_at` is older than this many seconds. Default: 3600
+    /// (1 hour) — well beyond the ±60s verification window.
+    #[serde(default = "default_admin_nonce_max_age_secs")]
+    pub nonce_max_age_secs: u64,
+}
+
+impl Default for AdminDevicesConfig {
+    fn default() -> Self {
+        Self {
+            nonce_sweep_interval_secs: default_admin_nonce_sweep_interval_secs(),
+            nonce_max_age_secs: default_admin_nonce_max_age_secs(),
+        }
+    }
+}
+
+fn default_admin_nonce_sweep_interval_secs() -> u64 {
+    60 * 60 // 1 hour
+}
+
+fn default_admin_nonce_max_age_secs() -> u64 {
     60 * 60 // 1 hour
 }
 
@@ -886,6 +927,8 @@ pub(crate) struct RawConfig {
     #[serde(default)]
     pub(crate) accounts: AccountsConfig,
     #[serde(default)]
+    pub(crate) admin_devices: AdminDevicesConfig,
+    #[serde(default)]
     pub(crate) oauth: OAuthConfig,
     #[serde(default)]
     pub(crate) agent_auth: AgentAuthConfig,
@@ -1168,6 +1211,14 @@ pub(crate) fn apply_env_overrides(
     if let Some(v) = env.get("EZPDS_ACCOUNTS_DELETION_REAPER_INTERVAL_SECS") {
         raw.accounts.deletion_reaper_interval_secs =
             parse_u64("EZPDS_ACCOUNTS_DELETION_REAPER_INTERVAL_SECS", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_ADMIN_DEVICES_NONCE_SWEEP_INTERVAL_SECS") {
+        raw.admin_devices.nonce_sweep_interval_secs =
+            parse_u64("EZPDS_ADMIN_DEVICES_NONCE_SWEEP_INTERVAL_SECS", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_ADMIN_DEVICES_NONCE_MAX_AGE_SECS") {
+        raw.admin_devices.nonce_max_age_secs =
+            parse_u64("EZPDS_ADMIN_DEVICES_NONCE_MAX_AGE_SECS", v)?;
     }
     // Agent-auth (auth.md) scalar/bool overrides. The issuer trust list is a list of structs
     // (each carrying a PEM key or a JWKS URL), which does not map to a flat env var — it stays
@@ -1520,6 +1571,12 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
                 .to_string(),
         ));
     }
+    if raw.admin_devices.nonce_sweep_interval_secs == 0 {
+        return Err(ConfigError::Invalid(
+            "admin_devices.nonce_sweep_interval_secs must be > 0 (tokio::time::interval panics on a zero period)"
+                .to_string(),
+        ));
+    }
 
     let email = build_email_config(raw.email)?;
 
@@ -1622,6 +1679,7 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         blobs: raw.blobs,
         firehose: raw.firehose,
         accounts: raw.accounts,
+        admin_devices: raw.admin_devices,
         oauth: raw.oauth,
         agent_auth: raw.agent_auth,
         iroh: raw.iroh,
@@ -1827,6 +1885,46 @@ mod tests {
         let raw: RawConfig = toml::from_str(toml).unwrap();
         let err = validate_and_build(raw).unwrap_err();
         assert!(matches!(err, ConfigError::Invalid(_)));
+    }
+
+    #[test]
+    fn admin_devices_section_defaults_when_absent() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert_eq!(config.admin_devices.nonce_sweep_interval_secs, 60 * 60);
+        assert_eq!(config.admin_devices.nonce_max_age_secs, 60 * 60);
+    }
+
+    #[test]
+    fn admin_devices_section_overrides_from_toml() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [admin_devices]
+            nonce_sweep_interval_secs = 120
+            nonce_max_age_secs = 300
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.admin_devices.nonce_sweep_interval_secs, 120);
+        assert_eq!(config.admin_devices.nonce_max_age_secs, 300);
+    }
+
+    #[test]
+    fn admin_devices_nonce_sweep_interval_secs_zero_is_rejected() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [admin_devices]
+            nonce_sweep_interval_secs = 0
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("nonce_sweep_interval_secs"));
     }
 
     #[test]
@@ -2168,6 +2266,30 @@ mod tests {
         let config = validate_and_build(raw).unwrap();
 
         assert_eq!(config.accounts.deletion_reaper_interval_secs, 1);
+    }
+
+    #[test]
+    fn env_override_admin_nonce_sweep_interval() {
+        let env = HashMap::from([(
+            "EZPDS_ADMIN_DEVICES_NONCE_SWEEP_INTERVAL_SECS".to_string(),
+            "2".to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert_eq!(config.admin_devices.nonce_sweep_interval_secs, 2);
+    }
+
+    #[test]
+    fn env_override_admin_nonce_max_age() {
+        let env = HashMap::from([(
+            "EZPDS_ADMIN_DEVICES_NONCE_MAX_AGE_SECS".to_string(),
+            "120".to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert_eq!(config.admin_devices.nonce_max_age_secs, 120);
     }
 
     #[test]
