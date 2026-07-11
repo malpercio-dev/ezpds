@@ -868,6 +868,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
             blobs: BlobsConfig::default(),
             firehose: FirehoseConfig::default(),
             accounts: common::AccountsConfig::default(),
+            admin_devices: common::AdminDevicesConfig::default(),
             oauth: OAuthConfig::default(),
             agent_auth: common::AgentAuthConfig::default(),
             iroh: IrohConfig::default(),

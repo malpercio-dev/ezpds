@@ -11,7 +11,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use crypto::{verify_p256_signature, DidKeyUri};
 use subtle::ConstantTimeEq;
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ErrorCode, ADMIN_TIMESTAMP_WINDOW_SECS};
 
 use crate::app::AppState;
 
@@ -86,10 +86,6 @@ pub const ADMIN_DEVICE_HEADER: &str = "x-admin-device";
 pub const ADMIN_TIMESTAMP_HEADER: &str = "x-admin-timestamp";
 pub const ADMIN_NONCE_HEADER: &str = "x-admin-nonce";
 pub const ADMIN_SIGNATURE_HEADER: &str = "x-admin-signature";
-
-/// Maximum clock skew tolerated between a device's signed timestamp and the relay,
-/// in seconds. A request stamped outside `now ± window` is rejected as stale.
-const ADMIN_TIMESTAMP_WINDOW_SECS: i64 = 60;
 
 /// The single generic 401 for every device signed-request auth failure — a missing
 /// header, an unknown device, a stale timestamp, a bad signature, or a replayed
