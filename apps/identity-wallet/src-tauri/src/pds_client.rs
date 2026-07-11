@@ -110,7 +110,7 @@ pub enum PdsClientError {
     /// the request never got a well-formed HTTP response back. A non-2xx *response* is NOT a
     /// `NetworkError`: it is classified into one of the status-specific variants below. Keeping
     /// this variant transport-only is what lets screens tell "check your connection" apart from
-    /// "the server said no" (MM-290).
+    /// "the server said no".
     #[error("network error: {message}")]
     NetworkError { message: String },
 
@@ -125,9 +125,15 @@ pub enum PdsClientError {
 
     /// The server answered `401 Unauthorized` — the session/token was rejected (expired, wrong
     /// audience, a scope refusal presented as 401). Distinct from a transport failure so the UI
-    /// can prompt a re-login rather than a retry. `message` is the server's own error text.
+    /// can prompt a re-login rather than a retry. `error` is the atproto error code from the
+    /// envelope when present (e.g. `ExpiredToken`, `InvalidToken`) — preserved so a token failure
+    /// reported under 401 is still recognizable by code rather than only by message text; `message`
+    /// is the server's own error text.
     #[error("unauthorized: {message}")]
-    Unauthorized { message: String },
+    Unauthorized {
+        error: Option<String>,
+        message: String,
+    },
 
     /// Any other non-2xx XRPC response, carrying the atproto error envelope so the real reason
     /// reaches the UI instead of connectivity boilerplate. `error` is the envelope's `error` code
@@ -204,7 +210,7 @@ fn error_code_is(body: &str, code: &str) -> bool {
 ///   raw (trimmed) body when it wasn't an envelope at all.
 ///
 /// The atproto error envelope is designed to be shown to users, so preserving both fields is what
-/// turns an opaque non-2xx into a diagnosable one (MM-290).
+/// turns an opaque non-2xx into a diagnosable one.
 fn parse_xrpc_error_envelope(body: &str) -> (Option<String>, String) {
     let envelope = serde_json::from_str::<serde_json::Value>(body).ok();
     let error = envelope
@@ -223,13 +229,13 @@ fn parse_xrpc_error_envelope(body: &str) -> (Option<String>, String) {
 }
 
 /// Classify a non-2xx XRPC response into the typed `PdsClientError` variant that preserves the
-/// server's own words. This is the core status-classification decision for MM-290 — a pure
-/// function of the HTTP status, the raw `Retry-After` header, and the parsed error envelope, so it
-/// is unit-testable without a live response.
+/// server's own words. A pure function of the HTTP status, the raw `Retry-After` header, and the
+/// parsed error envelope, so it is unit-testable without a live response.
 ///
 /// Contract:
 /// - `429` → [`PdsClientError::RateLimited`], carrying `retry_after` when the server sent it.
-/// - `401` → [`PdsClientError::Unauthorized`].
+/// - `401` → [`PdsClientError::Unauthorized`], carrying the atproto `error` code when present so a
+///   token failure reported under 401 stays recognizable by code.
 /// - anything else → [`PdsClientError::XrpcError`] with the atproto `error` code and human message.
 ///
 /// It must NEVER return [`PdsClientError::NetworkError`]: by the time we are here the server *did*
@@ -241,7 +247,7 @@ fn classify_xrpc_error(status: u16, retry_after: Option<String>, body: &str) -> 
             retry_after,
             message,
         },
-        401 => PdsClientError::Unauthorized { message },
+        401 => PdsClientError::Unauthorized { error, message },
         // Everything else — including 403 — keeps its atproto error code and human message. Domain
         // callers (e.g. `claim::classify_plc_op_error`) recognize codes like `InsufficientScope`
         // here; this layer only speaks HTTP-status semantics. `retry_after` is meaningful only for
@@ -254,12 +260,40 @@ fn classify_xrpc_error(status: u16, retry_after: Option<String>, body: &str) -> 
     }
 }
 
+/// Upper bound on how much of an error response body we buffer, keep, and log. An atproto error
+/// envelope is a short JSON object; anything larger is a broken or hostile server, and reading it
+/// in full would let an untrusted endpoint spike memory or flood the logs.
+const MAX_XRPC_ERROR_BODY: usize = 8 * 1024;
+
+/// Read at most `cap` bytes of a response body, streaming so an oversized (untrusted) payload is
+/// never fully buffered. Returns the decoded (lossy-UTF-8) prefix. A transport error mid-read
+/// propagates as `Err` so the caller can treat it as a `NetworkError` rather than a server verdict.
+async fn read_body_capped(
+    mut resp: reqwest::Response,
+    cap: usize,
+) -> Result<String, reqwest::Error> {
+    let mut buf: Vec<u8> = Vec::new();
+    while buf.len() < cap {
+        match resp.chunk().await? {
+            Some(chunk) => {
+                let take = (cap - buf.len()).min(chunk.len());
+                buf.extend_from_slice(&chunk[..take]);
+            }
+            None => break,
+        }
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
 /// Read the status, `Retry-After` header, and body off a non-success XRPC response and classify it.
 ///
-/// The imperative wrapper around [`classify_xrpc_error`]: `resp.text()` consumes the response, so
-/// the `Retry-After` header is captured first. `context` names the call site (e.g.
-/// `"requestPlcOperationSignature"`) for the log line only — the returned error carries the
-/// server's own message, not the context, so screens can show it verbatim.
+/// The imperative wrapper around [`classify_xrpc_error`]. The `Retry-After` header is captured
+/// before the body (reading the body consumes the response). The body is bounded to
+/// [`MAX_XRPC_ERROR_BODY`] so an oversized untrusted payload can't spike memory or flood logs, and
+/// a mid-read transport failure surfaces as `NetworkError` rather than a fabricated server verdict.
+/// `context` names the call site (e.g. `"requestPlcOperationSignature"`) for the log line only —
+/// the returned error carries the server's own message, not the context, so screens show it
+/// verbatim.
 async fn classify_xrpc_response(context: &str, resp: reqwest::Response) -> PdsClientError {
     let status = resp.status();
     let retry_after = resp
@@ -267,10 +301,15 @@ async fn classify_xrpc_response(context: &str, resp: reqwest::Response) -> PdsCl
         .get(reqwest::header::RETRY_AFTER)
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
-    let body = resp
-        .text()
-        .await
-        .unwrap_or_else(|_| "(response body unreadable)".to_string());
+    let body = match read_body_capped(resp, MAX_XRPC_ERROR_BODY).await {
+        Ok(body) => body,
+        Err(e) => {
+            tracing::warn!(context, status = %status, error = %e, "failed to read XRPC error body");
+            return PdsClientError::NetworkError {
+                message: format!("failed to read {status} response body: {e}"),
+            };
+        }
+    };
     tracing::warn!(context, status = %status, body = %body, "XRPC call returned non-success");
     classify_xrpc_error(status.as_u16(), retry_after, &body)
 }
@@ -1808,7 +1847,7 @@ mod tests {
         );
     }
 
-    // ── XRPC error classification (MM-290) ──────────────────────────────────
+    // ── XRPC error classification ───────────────────────────────────────────
 
     /// The envelope parser pulls both the atproto `error` code and the human `message`, and falls
     /// back sensibly when the body isn't an envelope.
@@ -1853,7 +1892,7 @@ mod tests {
         }
     }
 
-    /// 401 classifies as Unauthorized, preserving the server's message.
+    /// 401 classifies as Unauthorized, preserving both the atproto error code and the message.
     #[test]
     fn classify_xrpc_error_401_is_unauthorized() {
         let err = classify_xrpc_error(
@@ -1862,7 +1901,8 @@ mod tests {
             r#"{"error":"ExpiredToken","message":"Token has expired"}"#,
         );
         match err {
-            PdsClientError::Unauthorized { message } => {
+            PdsClientError::Unauthorized { error, message } => {
+                assert_eq!(error.as_deref(), Some("ExpiredToken"));
                 assert_eq!(message, "Token has expired");
             }
             other => panic!("expected Unauthorized, got {other:?}"),
@@ -2767,7 +2807,7 @@ mod tests {
 
         let result = request_plc_operation_signature(&oauth_client).await;
         assert!(result.is_err());
-        // A 401 is now classified as Unauthorized (MM-290), not folded into a generic NetworkError.
+        // A 401 is now classified as Unauthorized, not folded into a generic NetworkError.
         match result.unwrap_err() {
             PdsClientError::Unauthorized { .. } => {
                 // Expected
@@ -3009,7 +3049,7 @@ mod tests {
 
         let result = get_recommended_did_credentials(&oauth_client).await;
         assert!(result.is_err());
-        // A 403 is a classified server rejection (MM-290): XrpcError carrying status + error code.
+        // A 403 is a classified server rejection: XrpcError carrying status + error code.
         match result.unwrap_err() {
             PdsClientError::XrpcError { status: 403, .. } => {
                 // Expected
@@ -3270,7 +3310,7 @@ mod tests {
             .await;
 
         assert!(result.is_err());
-        // A 404 is now a classified server response (MM-290), carrying the status and body message.
+        // A 404 is now a classified server response, carrying the status and body message.
         match result.unwrap_err() {
             PdsClientError::XrpcError {
                 status: 404,
@@ -3333,7 +3373,7 @@ mod tests {
             .await;
 
         assert!(result.is_err());
-        // A 404 is now a classified server response (MM-290), carrying the status and body message.
+        // A 404 is now a classified server response, carrying the status and body message.
         match result.unwrap_err() {
             PdsClientError::XrpcError {
                 status: 404,
@@ -3387,7 +3427,7 @@ mod tests {
             .await;
 
         assert!(result.is_err());
-        // A 400 is a classified server rejection (MM-290): XrpcError carrying the status.
+        // A 400 is a classified server rejection: XrpcError carrying the status.
         match result.unwrap_err() {
             PdsClientError::XrpcError { status: 400, .. } => {
                 // Expected
@@ -3470,7 +3510,7 @@ mod tests {
         .await;
 
         assert!(result.is_err());
-        // A 401 is now classified as Unauthorized (MM-290), not a generic NetworkError.
+        // A 401 is now classified as Unauthorized, not a generic NetworkError.
         match result.unwrap_err() {
             PdsClientError::Unauthorized { .. } => {
                 // Expected
