@@ -499,6 +499,7 @@ export type ClaimError =
   | { code: 'VERIFICATION_FAILED'; message: string }
   | { code: 'PLC_DIRECTORY_ERROR'; message: string }
   | { code: 'UNAUTHORIZED' }
+  | { code: 'OAUTH_REJECTED'; message: string }
   | { code: 'NETWORK_ERROR'; message: string };
 
 // ── Claim flow IPC wrappers ────────────────────────────────────────────────
@@ -794,6 +795,7 @@ export type MigrationError =
   | { code: 'VERIFICATION_INCOMPLETE'; imported: number; expected: number }
   | { code: 'ACTIVATION_FAILED'; message: string }
   | { code: 'DEACTIVATION_FAILED'; message: string }
+  | { code: 'OAUTH_REJECTED'; message: string }
   | { code: 'NETWORK_ERROR'; message: string };
 
 /**

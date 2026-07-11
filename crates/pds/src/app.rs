@@ -861,6 +861,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
             service_name: "custos".to_string(),
             server_did: None,
             available_user_domains: vec!["example.com".to_string()],
+            reserved_handles: common::default_reserved_handles(),
             invite_code_required: true,
             links: common::ServerLinksConfig::default(),
             contact: common::ContactConfig::default(),

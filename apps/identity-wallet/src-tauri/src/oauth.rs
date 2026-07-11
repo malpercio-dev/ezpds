@@ -390,14 +390,19 @@ pub async fn prepare_oauth_flow(
         )
         .await?;
 
-    // 4. Build the authorize URL.
+    // 4. Build the authorize URL. The client_id must be byte-identical to the one the
+    //    PAR carried (the same `client_id_for_pds` derivation as `CustosClient::par`).
     let auth_url = {
         let base = custos.base_url_str();
+        let client_id_encoded = url::form_urlencoded::byte_serialize(
+            crate::pds_client::client_id_for_pds(base).as_bytes(),
+        )
+        .collect::<String>();
         let request_uri_encoded =
             url::form_urlencoded::byte_serialize(par_resp.request_uri.as_bytes())
                 .collect::<String>();
         let mut u = format!(
-            "{base}/oauth/authorize?client_id=dev.malpercio.identitywallet&request_uri={request_uri_encoded}"
+            "{base}/oauth/authorize?client_id={client_id_encoded}&request_uri={request_uri_encoded}"
         );
         if let Some(hint) = &login_hint {
             let hint_encoded =
@@ -415,7 +420,7 @@ pub async fn prepare_oauth_flow(
 
     Ok(OAuthPrepared {
         auth_url,
-        callback_scheme: "dev.malpercio.identitywallet".to_string(),
+        callback_scheme: crate::pds_client::CALLBACK_SCHEME.to_string(),
     })
 }
 
@@ -478,7 +483,7 @@ pub async fn complete_oauth_flow(
 }
 
 /// Extract `code` and `state` from an OAuth callback URL
-/// (`dev.malpercio.identitywallet:/oauth/callback?code=...&state=...`). Returns
+/// (`org.obsign.identitywallet:/oauth/callback?code=...&state=...`). Returns
 /// `CallbackAbandoned` if the URL is unparseable or missing either parameter. Shared with the
 /// claim flow's `complete_pds_auth`.
 pub(crate) fn parse_callback_url(callback_url: &str) -> Result<(String, String), OAuthError> {
@@ -845,16 +850,14 @@ mod tests {
             .make_proof("POST", &url, None, None)
             .expect("DPoP proof must build");
 
+        let client_id = crate::pds_client::client_id_for_pds(base_url);
         let client = reqwest::Client::new();
         let resp = client
             .post(&url)
             .header("DPoP", dpop_proof)
             .form(&[
-                ("client_id", "dev.malpercio.identitywallet"),
-                (
-                    "redirect_uri",
-                    "dev.malpercio.identitywallet:/oauth/callback",
-                ),
+                ("client_id", client_id.as_str()),
+                ("redirect_uri", crate::pds_client::REDIRECT_URI),
                 ("code_challenge_method", "S256"),
                 ("state", "somestate"),
                 ("response_type", "code"),

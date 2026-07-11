@@ -19,17 +19,32 @@
   <false/>
 
   <!--
-    Register the custom URL scheme so iOS can open the app on the OAuth redirect
-    (dev.malpercio.identitywallet:/oauth/callback?...). tauri-plugin-deep-link 2.4.7 does
-    NOT register pure custom schemes for iOS — its mobile config only emits CFBundleURLTypes
-    for app-link (https + host) entries and otherwise REMOVES the key — so we declare it here.
-    Tauri merges this Info.ios.plist after the plugin's build.rs runs, so it wins.
-    Must match tauri.conf.json `identifier`, the PDS's registered redirect_uri (V013),
-    and the OAuth client_id. Runtime delivery is wired in lib.rs
-    (deep_link().on_open_url -> oauth::handle_deep_link).
+    Register the OAuth callback URL scheme(s). The primary scheme is
+    org.obsign.identitywallet: — the wallet's canonical OAuth client_id host
+    (identitywallet.obsign.org) in reverse order, the pairing the atproto OAuth spec
+    requires for a native client's private-use redirect URI (third-party authorization
+    servers like bsky.social enforce it). It must match the REDIRECT_URI/CALLBACK_SCHEME
+    constants in src-tauri/src/pds_client.rs and the redirect_uris in the Custos-served
+    client metadata (V042-seeded row). The scheme is consumed by
+    ASWebAuthenticationSession's callbackURLScheme (the vendored
+    tauri-plugin-auth-session), not by a deep link. The iOS bundle identifier
+    (tauri.conf.json `identifier`) deliberately did NOT change with the scheme —
+    provisioning/TestFlight are untouched.
+
+    The legacy dev.malpercio.identitywallet entry is kept during the transition so
+    wallet builds shipped before the scheme change (whose Custos rows still list the
+    old redirect_uri, V013) keep completing their callbacks.
   -->
   <key>CFBundleURLTypes</key>
   <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>org.obsign.identitywallet</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>org.obsign.identitywallet</string>
+      </array>
+    </dict>
     <dict>
       <key>CFBundleURLName</key>
       <string>dev.malpercio.identitywallet</string>

@@ -80,6 +80,47 @@ impl IntoResponse for PARError {
     }
 }
 
+// ── Redirect-URI policy ───────────────────────────────────────────────────────
+
+/// atproto OAuth: for a discoverable (URL) client_id, a private-use-scheme redirect
+/// URI's scheme must be the client_id host's FQDN in reverse order (e.g. client_id
+/// host `identitywallet.obsign.org` ⇒ scheme `org.obsign.identitywallet`). This binds
+/// the custom scheme to a domain the client demonstrably controls — without it, any
+/// app could register a metadata document listing another app's callback scheme.
+///
+/// The rule only applies to https client_ids (discoverable metadata): loopback-http
+/// client_ids are the spec's local-development exception with no meaningful domain,
+/// non-URL client_ids are operator-registered rows the rule predates, and http(s)
+/// redirect URIs are not private-use schemes.
+fn validate_private_use_redirect(client_id: &str, redirect_uri: &str) -> Result<(), String> {
+    let Ok(client_url) = url::Url::parse(client_id) else {
+        return Ok(());
+    };
+    if client_url.scheme() != "https" {
+        return Ok(());
+    }
+    let Ok(redirect_url) = url::Url::parse(redirect_uri) else {
+        return Ok(());
+    };
+    let scheme = redirect_url.scheme();
+    if scheme == "http" || scheme == "https" {
+        return Ok(());
+    }
+    let Some(host) = client_url.host_str() else {
+        return Ok(());
+    };
+    let reversed = host.split('.').rev().collect::<Vec<_>>().join(".");
+    if scheme.eq_ignore_ascii_case(&reversed) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Private-Use URI Scheme redirect URI, for discoverable client metadata, \
+             must be the fully qualified domain name (FQDN) of the client_id, \
+             in reverse order ({reversed}:)"
+        ))
+    }
+}
+
 // ── Handler ───────────────────────────────────────────────────────────────────
 
 /// `POST /oauth/par` — accept pushed authorization request parameters.
@@ -194,6 +235,10 @@ pub async fn post_par(State(state): State<AppState>, Form(form): Form<PARForm>) 
             "redirect_uri does not match registered URIs",
         )
         .into_response();
+    }
+
+    if let Err(desc) = validate_private_use_redirect(&client_id, &redirect_uri) {
+        return PARError::new("invalid_redirect_uri", desc).into_response();
     }
 
     if response_type != "code" {
@@ -825,6 +870,138 @@ mod tests {
             json["error_description"].as_str().unwrap().contains("https"),
             "plain-http client_id on a non-loopback host must be rejected before any fetch, got: {}",
             json["error_description"]
+        );
+    }
+
+    // ── Reverse-FQDN rule for private-use-scheme redirect URIs ─────────────────
+
+    #[test]
+    fn private_use_redirect_scheme_must_reverse_client_id_host() {
+        use super::validate_private_use_redirect;
+
+        // Matching reverse-FQDN passes.
+        assert!(validate_private_use_redirect(
+            "https://identitywallet.obsign.org/oauth/client-metadata.json",
+            "org.obsign.identitywallet:/oauth/callback",
+        )
+        .is_ok());
+
+        // Mismatched scheme is rejected, naming the required scheme.
+        let err = validate_private_use_redirect(
+            "https://ezpds-staging.up.railway.app/oauth/client-metadata.json",
+            "dev.malpercio.identitywallet:/oauth/callback",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("app.railway.up.ezpds-staging:"),
+            "the error must name the required reverse-FQDN scheme, got: {err}"
+        );
+
+        // Scheme comparison is case-insensitive.
+        assert!(validate_private_use_redirect(
+            "https://IdentityWallet.Obsign.Org/oauth/client-metadata.json",
+            "org.obsign.identitywallet:/oauth/callback",
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn private_use_redirect_rule_exemptions() {
+        use super::validate_private_use_redirect;
+
+        // https redirect URIs are not private-use schemes.
+        assert!(validate_private_use_redirect(
+            "https://app.example.com/client-metadata.json",
+            "https://app.example.com/callback",
+        )
+        .is_ok());
+
+        // Loopback-http client_ids (local development) are exempt.
+        assert!(validate_private_use_redirect(
+            "http://localhost:8080/oauth/client-metadata.json",
+            "org.obsign.identitywallet:/oauth/callback",
+        )
+        .is_ok());
+
+        // Non-URL client_ids (operator-registered rows) are exempt.
+        assert!(validate_private_use_redirect(
+            "dev.malpercio.identitywallet",
+            "dev.malpercio.identitywallet:/oauth/callback",
+        )
+        .is_ok());
+    }
+
+    #[tokio::test]
+    async fn post_par_rejects_private_use_redirect_not_matching_reverse_fqdn() {
+        let state = test_state().await;
+        // A registered discoverable client whose metadata lists a custom-scheme
+        // redirect that does NOT reverse the client_id host.
+        register_oauth_client(
+            &state.db,
+            CLIENT_ID,
+            r#"{"redirect_uris":["dev.other.app:/oauth/callback"],"client_name":"Test App"}"#,
+        )
+        .await
+        .unwrap();
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/par")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(par_body(&[(
+                        "redirect_uri",
+                        "dev.other.app:/oauth/callback",
+                    )])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = error_json(response).await;
+        assert_eq!(json["error"].as_str(), Some("invalid_redirect_uri"));
+        assert!(
+            json["error_description"]
+                .as_str()
+                .unwrap()
+                .contains("com.example.app:"),
+            "the rejection must name the required reverse-FQDN scheme, got: {}",
+            json["error_description"]
+        );
+    }
+
+    #[tokio::test]
+    async fn post_par_accepts_private_use_redirect_matching_reverse_fqdn() {
+        let state = test_state().await;
+        register_oauth_client(
+            &state.db,
+            CLIENT_ID,
+            r#"{"redirect_uris":["com.example.app:/oauth/callback"],"client_name":"Test App"}"#,
+        )
+        .await
+        .unwrap();
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/par")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(par_body(&[(
+                        "redirect_uri",
+                        "com.example.app:/oauth/callback",
+                    )])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "a reverse-FQDN-matching private-use redirect must be accepted"
         );
     }
 

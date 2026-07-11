@@ -33,6 +33,18 @@ in
       description = "Allowed handle domains.";
     };
 
+    reservedHandles = lib.mkOption {
+      type = lib.types.nullOr (lib.types.listOf lib.types.str);
+      default = null;
+      description = ''
+        Handle names (first DNS label) that may never be claimed under a served
+        domain — infrastructure hostnames in the user-handle wildcard space.
+        `null` (the default) keeps the server's built-in defaults
+        (`identitywallet`, `about`); an explicit list replaces them, and `[]`
+        reserves nothing.
+      '';
+    };
+
     environmentFile = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
       default = null;
@@ -57,6 +69,10 @@ in
         EZPDS_AVAILABLE_USER_DOMAINS = lib.concatStringsSep "," cfg.availableUserDomains;
         EZPDS_DATA_DIR = "/data";
         EZPDS_PORT = "8080";
+      } // lib.optionalAttrs (cfg.reservedHandles != null) {
+        # Only emit when explicitly set: an unset option keeps the server defaults,
+        # while an empty list (→ "") deliberately reserves nothing.
+        EZPDS_RESERVED_HANDLES = lib.concatStringsSep "," cfg.reservedHandles;
       };
       environmentFiles = lib.optional (cfg.environmentFile != null) cfg.environmentFile;
     };

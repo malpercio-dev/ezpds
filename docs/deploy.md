@@ -13,6 +13,7 @@ The PDS container expects the following environment variables and mounts:
 ### Environment Variables
 - **`EZPDS_PUBLIC_URL`** (required) - Public HTTPS URL of the PDS (e.g., `https://PDS.example.com`)
 - **`EZPDS_AVAILABLE_USER_DOMAINS`** (required) - Comma-separated list of allowed handle domains (e.g., `example.com,example.bsky.social`)
+- **`EZPDS_RESERVED_HANDLES`** (optional, default `identitywallet,about`) - Comma-separated handle names (first DNS label) that may never be claimed under a served domain — infrastructure hostnames in the user-handle wildcard space (e.g. `identitywallet.obsign.org`, `about.obsign.org`). Compared case-insensitively. Set to an explicit empty value to reserve nothing.
 - **`EZPDS_SIGNING_KEY_MASTER_KEY`** (required) - 64-character hex string (32 bytes) for DID key derivation
 - **`EZPDS_ADMIN_TOKEN`** (required) - Bearer token for admin-only endpoints (e.g., rotation key claiming)
 - **`EZPDS_DATA_DIR`** (optional, default `/data`) - Directory where `relay.db` is persisted. Set by the Dockerfile ENV; can be overridden if the data volume is mounted elsewhere. Must be writable by the container process.
@@ -192,6 +193,7 @@ services.ezpds.enable = true;
 services.ezpds.image = "ghcr.io/your-org/PDS@sha256:...";  # Digest-pinned image
 services.ezpds.publicUrl = "https://PDS.example.com";
 services.ezpds.availableUserDomains = ["example.com" "example.bsky.social"];
+# services.ezpds.reservedHandles = ["identitywallet" "about"];  # optional; null keeps server defaults
 services.ezpds.environmentFile = "/etc/ezpds-secrets.env";   # agenix/sops-managed secrets
 services.ezpds.dataDir = "/var/lib/ezpds";
 

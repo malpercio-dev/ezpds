@@ -17,5 +17,9 @@ vars:pre-request {
 docs {
   Public OAuth client metadata document (ATProto OAuth): the wallet's client_id,
   redirect URIs, grant/response types, scope, and DPoP requirement. client_id is
-  derived from the configured public URL.
+  the wallet's fixed canonical URL
+  (https://identitywallet.obsign.org/oauth/client-metadata.json — reverse-FQDN of
+  the org.obsign.identitywallet: callback scheme); a loopback public URL (local
+  dev) derives {base}/oauth/client-metadata.json instead so fetch-and-match
+  client resolution still succeeds.
 }

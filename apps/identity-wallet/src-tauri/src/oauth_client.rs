@@ -417,6 +417,9 @@ impl OAuthClient {
         };
 
         let token_htu = format!("{}/oauth/token", self.base_url);
+        // Same client_id derivation as the flows that issued the tokens: the fixed
+        // canonical URL, with the loopback local-development exception.
+        let client_id = crate::pds_client::client_id_for_pds(&self.base_url);
         let proof = self
             .dpop
             .make_proof("POST", &token_htu, nonce_opt.as_deref(), None)?;
@@ -428,7 +431,7 @@ impl OAuthClient {
             .form(&[
                 ("grant_type", "refresh_token"),
                 ("refresh_token", refresh_token.as_str()),
-                ("client_id", "dev.malpercio.identitywallet"),
+                ("client_id", client_id.as_str()),
             ])
             .send()
             .await
@@ -456,7 +459,7 @@ impl OAuthClient {
                     .form(&[
                         ("grant_type", "refresh_token"),
                         ("refresh_token", refresh_token.as_str()),
-                        ("client_id", "dev.malpercio.identitywallet"),
+                        ("client_id", client_id.as_str()),
                     ])
                     .send()
                     .await

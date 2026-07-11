@@ -10,21 +10,76 @@ use std::time::Duration;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-/// OAuth client metadata path, appended to the PDS's public URL to form the `client_id`.
-///
-/// External auth servers (e.g. bsky.social) GET `{pds_url}/oauth/client-metadata.json`
-/// to discover redirect_uris, grant_types, etc.
+/// OAuth client metadata path — the canonical client_id's path, also appended to a
+/// loopback Custos base URL by the local-development exception in [`client_id_for_pds`].
 const CLIENT_METADATA_PATH: &str = "/oauth/client-metadata.json";
 
-/// OAuth redirect URI for external PDS authentication.
-const REDIRECT_URI: &str = "dev.malpercio.identitywallet:/oauth/callback";
+/// The wallet's canonical OAuth client_id: its client-metadata document, served by the
+/// production Custos at a stable wallet-owned host. The atproto OAuth spec requires a
+/// native client's private-use redirect scheme to be the client_id host's FQDN in
+/// reverse order — `identitywallet.obsign.org` ⇄ `org.obsign.identitywallet:` — and
+/// third-party authorization servers (bsky.social) enforce it. Must stay in sync with
+/// [`REDIRECT_URI`]/[`CALLBACK_SCHEME`], the Custos client-metadata route, and the
+/// V042-seeded `oauth_clients` row.
+pub const CANONICAL_CLIENT_ID: &str =
+    "https://identitywallet.obsign.org/oauth/client-metadata.json";
 
-/// Build the OAuth client_id URL from a PDS base URL.
+/// OAuth redirect URI. The private-use scheme is the canonical client_id host reversed;
+/// its scheme must match the `CFBundleURLTypes` entry in `src-tauri/Info.ios.plist`.
+pub const REDIRECT_URI: &str = "org.obsign.identitywallet:/oauth/callback";
+
+/// The redirect URI's scheme — what the auth-session plugin matches the callback on.
+pub const CALLBACK_SCHEME: &str = "org.obsign.identitywallet";
+
+/// The wallet's OAuth client_id.
 ///
-/// The client_id is the PDS's public URL + `/oauth/client-metadata.json`.
-/// This must match what the PDS serves at that path.
-pub fn client_id_for_pds(pds_url: &str) -> String {
-    format!("{}{}", pds_url.trim_end_matches('/'), CLIENT_METADATA_PATH)
+/// This is the fixed [`CANONICAL_CLIENT_ID`]: the OAuth client is the wallet app, so
+/// its identity does not vary with the Custos instance the user configured. The one
+/// exception is a loopback Custos (local development), which serves a self-referencing
+/// localhost document — there the client_id derives from the configured base so the
+/// authorization server's fetch-and-match resolution still succeeds.
+pub fn client_id_for_pds(custos_base_url: &str) -> String {
+    if url_is_loopback(custos_base_url) {
+        format!(
+            "{}{}",
+            custos_base_url.trim_end_matches('/'),
+            CLIENT_METADATA_PATH
+        )
+    } else {
+        CANONICAL_CLIENT_ID.to_string()
+    }
+}
+
+/// Whether a URL string's host is loopback (unparseable → false).
+fn url_is_loopback(base: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(base) else {
+        return false;
+    };
+    match parsed.host() {
+        Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    }
+}
+
+/// Render a failed PAR response as the authorization server's own words.
+///
+/// A PAR rejection body is an RFC 6749 §5.2 `{error, error_description}` JSON object;
+/// extracting it is what makes a policy rejection (e.g. `invalid_redirect_uri`)
+/// diagnosable in the UI instead of an opaque status line. Falls back to the raw
+/// status + body when the body isn't that shape.
+fn par_rejection_message(status: reqwest::StatusCode, body: &str) -> String {
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(body) {
+        let code = json.get("error").and_then(|v| v.as_str());
+        let description = json.get("error_description").and_then(|v| v.as_str());
+        match (code, description) {
+            (Some(c), Some(d)) => return format!("{c}: {d}"),
+            (Some(c), None) => return c.to_string(),
+            _ => {}
+        }
+    }
+    format!("PAR returned {status}: {body}")
 }
 
 /// Error type for PDS client operations.
@@ -673,7 +728,7 @@ impl PdsClient {
             .form(&form_data)
             .send()
             .await
-            .map_err(|e| PdsClientError::OauthFailed {
+            .map_err(|e| PdsClientError::NetworkError {
                 message: format!("PAR request failed: {}", e),
             })?;
 
@@ -683,8 +738,10 @@ impl PdsClient {
                 .text()
                 .await
                 .unwrap_or_else(|_| "(response body unreadable)".to_string());
+            // Surface the AS's own OAuth error — a PAR rejection (e.g. bsky.social's
+            // invalid_redirect_uri) must reach the caller as more than a status code.
             return Err(PdsClientError::OauthFailed {
-                message: format!("PAR returned {}: {}", status, error_body),
+                message: par_rejection_message(status, &error_body),
             });
         }
 
@@ -1556,6 +1613,67 @@ mod tests {
     fn test_pds_client_default() {
         let client = PdsClient::default();
         assert_eq!(client.plc_directory_url, "https://plc.directory");
+    }
+
+    /// The client_id is the fixed canonical URL for every non-loopback Custos — the
+    /// app's OAuth identity must not vary with the configured server.
+    #[test]
+    fn client_id_is_canonical_for_public_custos() {
+        assert_eq!(client_id_for_pds("https://obsign.org"), CANONICAL_CLIENT_ID);
+        assert_eq!(
+            client_id_for_pds("https://ezpds-staging.up.railway.app/"),
+            CANONICAL_CLIENT_ID
+        );
+    }
+
+    /// Loopback dev exception: a local Custos serves a self-referencing localhost
+    /// document, so the client_id derives from the configured base.
+    #[test]
+    fn client_id_derives_from_loopback_custos() {
+        assert_eq!(
+            client_id_for_pds("http://localhost:8080"),
+            "http://localhost:8080/oauth/client-metadata.json"
+        );
+        assert_eq!(
+            client_id_for_pds("http://127.0.0.1:8080/"),
+            "http://127.0.0.1:8080/oauth/client-metadata.json"
+        );
+    }
+
+    /// The redirect scheme is the canonical client_id host in reverse order — the
+    /// pairing third-party authorization servers enforce.
+    #[test]
+    fn redirect_scheme_reverses_canonical_client_id_host() {
+        let host = url::Url::parse(CANONICAL_CLIENT_ID)
+            .unwrap()
+            .host_str()
+            .unwrap()
+            .to_string();
+        let reversed = host.split('.').rev().collect::<Vec<_>>().join(".");
+        assert_eq!(REDIRECT_URI, format!("{reversed}:/oauth/callback"));
+        assert_eq!(CALLBACK_SCHEME, reversed);
+    }
+
+    /// A failed PAR surfaces the AS's own error/error_description; non-OAuth bodies
+    /// fall back to the raw status + body.
+    #[test]
+    fn par_rejection_message_extracts_oauth_error() {
+        let status = reqwest::StatusCode::BAD_REQUEST;
+        assert_eq!(
+            par_rejection_message(
+                status,
+                r#"{"error":"invalid_redirect_uri","error_description":"scheme mismatch"}"#
+            ),
+            "invalid_redirect_uri: scheme mismatch"
+        );
+        assert_eq!(
+            par_rejection_message(status, r#"{"error":"invalid_request"}"#),
+            "invalid_request"
+        );
+        assert_eq!(
+            par_rejection_message(status, "<html>gateway error</html>"),
+            "PAR returned 400 Bad Request: <html>gateway error</html>"
+        );
     }
 
     #[test]

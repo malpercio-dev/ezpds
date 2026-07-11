@@ -129,6 +129,11 @@ pub enum MigrationError {
     /// Account deactivation failed
     #[error("deactivation failed: {message}")]
     DeactivationFailed { message: String },
+    /// The authorization server rejected the OAuth request (e.g. a PAR refusal).
+    /// Carries the server's own `error: error_description` text so a policy
+    /// rejection is diagnosable in the UI instead of reading as a network failure.
+    #[error("oauth rejected: {message}")]
+    OauthRejected { message: String },
     /// Network error during migration
     #[error("network error: {message}")]
     NetworkError { message: String },
@@ -353,7 +358,7 @@ pub async fn prepare_source_auth(
 
     Ok(crate::oauth::OAuthPrepared {
         auth_url,
-        callback_scheme: "dev.malpercio.identitywallet".to_string(),
+        callback_scheme: crate::pds_client::CALLBACK_SCHEME.to_string(),
     })
 }
 
@@ -405,6 +410,13 @@ async fn source_par_with_retry(
         {
             tracing::debug!("PAR requires DPoP nonce, retrying");
         }
+        // The AS rejected the request outright — surface its own error text, not a
+        // generic auth failure (this is how bsky.social's invalid_redirect_uri
+        // stays diagnosable in the UI).
+        Err(crate::pds_client::PdsClientError::OauthFailed { message }) => {
+            tracing::error!(error = %message, "PAR rejected by authorization server");
+            return Err(MigrationError::OauthRejected { message });
+        }
         Err(e) => {
             tracing::error!(error = %e, "PAR request failed");
             return Err(MigrationError::SourceAuthFailed {
@@ -433,10 +445,7 @@ async fn source_par_with_retry(
         ("code_challenge", params.pkce_challenge),
         ("state", params.csrf_state),
         ("client_id", params.client_id),
-        (
-            "redirect_uri",
-            "dev.malpercio.identitywallet:/oauth/callback",
-        ),
+        ("redirect_uri", crate::pds_client::REDIRECT_URI),
         ("scope", "atproto transition:generic"),
         ("dpop_jkt", params.dpop_jkt),
         ("login_hint", params.did),
@@ -494,8 +503,13 @@ async fn source_par_with_retry(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "PAR retry with nonce failed");
-            MigrationError::SourceAuthFailed {
-                message: format!("PAR retry failed: {}", e),
+            match e {
+                crate::pds_client::PdsClientError::OauthFailed { message } => {
+                    MigrationError::OauthRejected { message }
+                }
+                other => MigrationError::SourceAuthFailed {
+                    message: format!("PAR retry failed: {}", other),
+                },
             }
         })
 }

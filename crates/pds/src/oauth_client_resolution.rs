@@ -80,6 +80,15 @@ fn host_is_loopback(url: &Url) -> bool {
     }
 }
 
+/// Whether a URL string's host is loopback (pure; unparseable → false). Shared policy
+/// point: loopback is the one place plain-http client_ids and locally-derived (rather
+/// than canonical) wallet client_ids are acceptable.
+pub(crate) fn url_is_loopback(url: &str) -> bool {
+    Url::parse(url)
+        .map(|u| host_is_loopback(&u))
+        .unwrap_or(false)
+}
+
 /// Validate a fetched metadata document against the client_id it was fetched from (pure).
 ///
 /// Per the ATProto OAuth spec the document MUST declare its own URL as `client_id` —

@@ -218,6 +218,10 @@ static MIGRATIONS: &[Migration] = &[
         version: 41,
         sql: include_str!("migrations/V041__claim_codes_revoked.sql"),
     },
+    Migration {
+        version: 42,
+        sql: include_str!("migrations/V042__canonical_wallet_oauth_client.sql"),
+    },
 ];
 
 /// Open a WAL-mode SQLite connection pool with a maximum of 1 connection.
@@ -1367,6 +1371,48 @@ mod tests {
             Some(true),
             "DPoP must be required for this client"
         );
+    }
+
+    #[tokio::test]
+    async fn v042_seeds_canonical_wallet_oauth_client() {
+        let pool = in_memory_pool().await;
+        run_migrations(&pool)
+            .await
+            .expect("migrations must apply cleanly");
+
+        let row = oauth::get_oauth_client(
+            &pool,
+            "https://identitywallet.obsign.org/oauth/client-metadata.json",
+        )
+        .await
+        .expect("db query must not fail")
+        .expect("V042 migration must insert the canonical wallet client row");
+
+        let metadata: serde_json::Value =
+            serde_json::from_str(&row.client_metadata).expect("client_metadata must be valid JSON");
+
+        assert_eq!(
+            metadata["client_id"].as_str(),
+            Some("https://identitywallet.obsign.org/oauth/client-metadata.json"),
+            "the document must self-reference the canonical URL"
+        );
+        assert_eq!(
+            metadata["redirect_uris"][0].as_str(),
+            Some("org.obsign.identitywallet:/oauth/callback"),
+            "redirect scheme must be the canonical client_id host in reverse order"
+        );
+        assert_eq!(
+            metadata["dpop_bound_access_tokens"].as_bool(),
+            Some(true),
+            "DPoP must be required for this client"
+        );
+
+        // The V013 row survives: wallet builds shipped before the scheme change
+        // still present the old client_id during the transition window.
+        let legacy = oauth::get_oauth_client(&pool, "dev.malpercio.identitywallet")
+            .await
+            .expect("db query must not fail");
+        assert!(legacy.is_some(), "the legacy V013 client row must be kept");
     }
 
     // ── V025 tests ───────────────────────────────────────────────────────────

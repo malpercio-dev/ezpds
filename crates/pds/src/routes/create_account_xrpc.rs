@@ -113,9 +113,11 @@ async fn create_account_new(
         .as_deref()
         .filter(|p| !p.is_empty())
         .ok_or_else(|| ApiError::new(ErrorCode::InvalidClaim, "password must not be empty"))?;
-    if let Err(msg) =
-        crate::handle::validate_handle(&payload.handle, &state.config.available_user_domains)
-    {
+    if let Err(msg) = crate::handle::validate_handle(
+        &payload.handle,
+        &state.config.available_user_domains,
+        &state.config.reserved_handles,
+    ) {
         return Err(ApiError::new(ErrorCode::InvalidHandle, msg));
     }
 

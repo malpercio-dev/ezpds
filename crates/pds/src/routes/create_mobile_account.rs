@@ -60,7 +60,11 @@ pub async fn create_mobile_account(
     }
 
     // --- Validate handle format (structure + served-domain policy) ---
-    if let Err(msg) = validate_handle(&payload.handle, &state.config.available_user_domains) {
+    if let Err(msg) = validate_handle(
+        &payload.handle,
+        &state.config.available_user_domains,
+        &state.config.reserved_handles,
+    ) {
         return Err(ApiError::new(ErrorCode::InvalidHandle, msg));
     }
 
