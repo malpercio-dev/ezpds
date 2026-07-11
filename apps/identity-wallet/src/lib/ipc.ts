@@ -501,6 +501,8 @@ export type ClaimError =
   | { code: 'UNAUTHORIZED' }
   | { code: 'SOURCE_AUTH_FAILED'; message: string }
   | { code: 'TWO_FACTOR_REQUIRED' }
+  | { code: 'ACCOUNT_MISMATCH' }
+  | { code: 'INSECURE_SOURCE_URL' }
   | { code: 'INSUFFICIENT_SCOPE'; message: string }
   | { code: 'NETWORK_ERROR'; message: string };
 

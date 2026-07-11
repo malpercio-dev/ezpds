@@ -71,6 +71,12 @@
               ? "That code wasn't accepted. Check the latest code emailed to you."
               : `${pdsUrl} did not accept that password. Use your account password — an app password can't authorize identity changes.`;
             break;
+          case 'ACCOUNT_MISMATCH':
+            error = `Those credentials signed in to a different account than ${handle}. Sign in as ${handle}.`;
+            break;
+          case 'INSECURE_SOURCE_URL':
+            error = `Can't sign in securely: ${pdsUrl} isn't served over HTTPS. Your password won't be sent over an unencrypted connection.`;
+            break;
           case 'INSUFFICIENT_SCOPE':
             error = `${pdsUrl} refused to authorize the identity change for this session. This shouldn't happen with a full sign-in — please try again.`;
             break;
@@ -116,9 +122,9 @@
     <TextField
       bind:value={twoFactorToken}
       type="text"
-      inputmode="numeric"
+      inputmode="text"
       autocomplete="one-time-code"
-      autocapitalize="characters"
+      autocapitalize="none"
       autocorrect="off"
       spellcheck={false}
       aria-label="Two-factor code"

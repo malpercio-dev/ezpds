@@ -132,6 +132,29 @@ pub enum PdsClientError {
     /// `create_session` with that code as `auth_factor_token`.
     #[error("auth factor token required")]
     AuthFactorTokenRequired,
+
+    /// Refused to send the account password to a non-HTTPS PDS URL (loopback excepted). The
+    /// `pds_url` is derived from the DID document, so a plaintext `http://` endpoint must never
+    /// receive the password.
+    #[error("insecure pds url: {url}")]
+    InsecurePdsUrl { url: String },
+}
+
+/// Whether a PDS URL is safe to send an account password to: HTTPS, or a loopback host over HTTP
+/// (localhost/127.0.0.1/::1) for local development and the test harness. Anything else — including
+/// an unparseable URL — is refused, so the password never crosses a plaintext link.
+fn pds_url_is_password_safe(pds_url: &str) -> bool {
+    match url::Url::parse(pds_url) {
+        Ok(url) => match url.scheme() {
+            "https" => true,
+            "http" => matches!(
+                url.host_str(),
+                Some("localhost") | Some("127.0.0.1") | Some("::1") | Some("[::1]")
+            ),
+            _ => false,
+        },
+        Err(_) => false,
+    }
 }
 
 /// Whether an atproto XRPC error body (`{"error":"...","message":"..."}`) carries `error == code`.
@@ -710,6 +733,15 @@ impl PdsClient {
         password: &str,
         auth_factor_token: Option<&str>,
     ) -> Result<CreateSessionResponse, PdsClientError> {
+        // Never send the account password over a plaintext link. `pds_url` comes from the DID
+        // document, so a misconfigured or hostile `http://` endpoint must be refused here.
+        if !pds_url_is_password_safe(pds_url) {
+            tracing::error!(pds_url = %pds_url, "refusing to send password to a non-HTTPS PDS");
+            return Err(PdsClientError::InsecurePdsUrl {
+                url: pds_url.to_string(),
+            });
+        }
+
         let url = format!(
             "{}/xrpc/com.atproto.server.createSession",
             pds_url.trim_end_matches('/')

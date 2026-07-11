@@ -177,6 +177,14 @@ pub enum ClaimError {
     /// and re-invokes `authenticate_source_pds` with it — distinct from a wrong password.
     #[error("two-factor code required")]
     TwoFactorRequired,
+    /// The source PDS session is for a different account than the one being claimed (the entered
+    /// credentials signed in to the wrong account). Refused before any PLC op is attempted.
+    #[error("account mismatch")]
+    AccountMismatch,
+    /// Refused to send the account password to a non-HTTPS source PDS (loopback excepted). The
+    /// PDS endpoint comes from the DID document, so a plaintext `http://` endpoint is rejected.
+    #[error("insecure source url")]
+    InsecureSourceUrl,
     /// A PLC-operation endpoint refused the token for scope reasons. After MM-289 the source
     /// session is a full password session, so this should not occur — but if a server still
     /// refuses, surface it honestly instead of flattening it to "failed to send verification
@@ -331,6 +339,9 @@ fn map_pds_error_to_resolve(err: PdsClientError) -> ResolveError {
         PdsClientError::AuthFactorTokenRequired => ResolveError::NetworkError {
             message: "auth factor token required".to_string(),
         },
+        PdsClientError::InsecurePdsUrl { url } => ResolveError::NetworkError {
+            message: format!("insecure pds url: {}", url),
+        },
     }
 }
 
@@ -379,6 +390,7 @@ pub async fn authenticate_source_pds(
     let oauth_client = authenticate_source_pds_impl(
         state.pds_client(),
         &pds_url,
+        &did,
         &identifier,
         &password,
         auth_factor_token.as_deref(),
@@ -403,9 +415,13 @@ pub async fn authenticate_source_pds(
 
 /// Testable core: run `createSession` against the source PDS and build a full-session Bearer
 /// `OAuthClient`. Extracted so it can be exercised without Tauri's `State` wrapper.
+///
+/// `expected_did` is the DID being claimed: the session the PDS returns MUST be for that account,
+/// or the caller signed in to the wrong one and we refuse to bind those credentials to this claim.
 pub(crate) async fn authenticate_source_pds_impl(
     pds_client: &crate::pds_client::PdsClient,
     pds_url: &str,
+    expected_did: &str,
     identifier: &str,
     password: &str,
     auth_factor_token: Option<&str>,
@@ -424,10 +440,26 @@ pub(crate) async fn authenticate_source_pds_impl(
                     message: "The PDS did not accept that password.".to_string(),
                 }
             }
+            crate::pds_client::PdsClientError::InsecurePdsUrl { url } => {
+                tracing::error!(pds_url = %url, "refusing password login to a non-HTTPS PDS");
+                ClaimError::InsecureSourceUrl
+            }
             other => ClaimError::NetworkError {
                 message: format!("createSession failed: {}", other),
             },
         })?;
+
+    // The session must be for the account being claimed. A mismatch means the user signed in to a
+    // different account (or a hostile PDS returned someone else's session) — refuse to bind those
+    // credentials to this claim rather than sign a PLC op against the wrong identity.
+    if session.did != expected_did {
+        tracing::warn!(
+            expected = %expected_did,
+            got = %session.did,
+            "source session DID does not match the claim"
+        );
+        return Err(ClaimError::AccountMismatch);
+    }
 
     OAuthClient::new_bearer(session.access_jwt, session.refresh_jwt, pds_url.to_string()).map_err(
         |e| {
@@ -1393,6 +1425,18 @@ mod tests {
     }
 
     #[test]
+    fn test_claim_error_account_mismatch_serializes_correctly() {
+        let json = serde_json::to_value(ClaimError::AccountMismatch).unwrap();
+        assert_eq!(json["code"], "ACCOUNT_MISMATCH");
+    }
+
+    #[test]
+    fn test_claim_error_insecure_source_url_serializes_correctly() {
+        let json = serde_json::to_value(ClaimError::InsecureSourceUrl).unwrap();
+        assert_eq!(json["code"], "INSECURE_SOURCE_URL");
+    }
+
+    #[test]
     fn test_claim_error_insufficient_scope_serializes_correctly() {
         let err = ClaimError::InsufficientScope {
             message: "token scope does not permit identity operations".to_string(),
@@ -1467,6 +1511,7 @@ mod tests {
         let result = authenticate_source_pds_impl(
             &pds_client,
             &server.base_url(),
+            "did:plc:test",
             "alice.example.com",
             "hunter2",
             None,
@@ -1475,6 +1520,66 @@ mod tests {
         assert!(
             result.is_ok(),
             "createSession 200 must build a Bearer client"
+        );
+    }
+
+    /// A 200 whose `did` differs from the claim's DID must be refused (wrong-account guard), never
+    /// bound as a session for the claimed identity.
+    #[tokio::test]
+    async fn test_authenticate_source_pds_impl_did_mismatch() {
+        crate::keychain::clear_for_test();
+        use httpmock::MockServer;
+
+        let server = MockServer::start();
+        let access_jwt = future_exp_jwt();
+        let access_for_body = access_jwt.clone();
+        server.mock(move |when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.createSession");
+            then.status(200).json_body(serde_json::json!({
+                "accessJwt": access_for_body,
+                "refreshJwt": "refresh_jwt",
+                "did": "did:plc:someone-else",
+                "handle": "mallory.example.com",
+            }));
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new();
+        let result = authenticate_source_pds_impl(
+            &pds_client,
+            &server.base_url(),
+            "did:plc:test",
+            "alice.example.com",
+            "hunter2",
+            None,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(ClaimError::AccountMismatch)),
+            "a session for a different DID must be refused, got: {:?}",
+            result.err()
+        );
+    }
+
+    /// The password must never be sent to a non-HTTPS, non-loopback PDS — refused before any
+    /// network call, so no mock server is needed.
+    #[tokio::test]
+    async fn test_authenticate_source_pds_impl_rejects_insecure_url() {
+        crate::keychain::clear_for_test();
+        let pds_client = crate::pds_client::PdsClient::new();
+        let result = authenticate_source_pds_impl(
+            &pds_client,
+            "http://pds.example.com",
+            "did:plc:test",
+            "alice.example.com",
+            "hunter2",
+            None,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(ClaimError::InsecureSourceUrl)),
+            "a non-HTTPS PDS URL must be refused, got: {:?}",
+            result.err()
         );
     }
 
@@ -1498,6 +1603,7 @@ mod tests {
         let result = authenticate_source_pds_impl(
             &pds_client,
             &server.base_url(),
+            "did:plc:test",
             "alice.example.com",
             "wrong",
             None,
@@ -1531,6 +1637,7 @@ mod tests {
         let result = authenticate_source_pds_impl(
             &pds_client,
             &server.base_url(),
+            "did:plc:test",
             "alice.example.com",
             "correct-password",
             None,
