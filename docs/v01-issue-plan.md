@@ -186,3 +186,5 @@ ezpds/
 ## License
 
 TBD — decision deferred to pre-v1.0. Options under consideration: AGPL-3.0, Apache-2.0/MIT dual, or BSL-style.
+
+*(Since resolved: AGPL-3.0 — see the root `LICENSE`. Remaining Cargo-metadata declaration tracked in MM-287.)*
