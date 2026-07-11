@@ -1,6 +1,7 @@
 # MM-241 live migration round trip — runbook + record
 
-**Status: PREPARED — not yet executed.** This document is both the checklist for the live
+**Status: LEG (a) EXECUTED 2026-07-11 (pass, with a recorded deviation — see the execution
+record); legs (b)/(c) pending.** This document is both the checklist for the live
 bsky.social migration round trip and, after execution, the permanent record of the run.
 A human operator executes or supervises every leg: the run touches the real plc.directory,
 the real bsky.social, and permanent `did:plc` state.
@@ -173,10 +174,24 @@ migration note).
 
 | Leg | Date (UTC) | Operator | Driver | Audit-log check | Resolution check | Result | Artifacts |
 |---|---|---|---|---|---|---|---|
-| (a) inbound | — | — | wallet / goat | — | — | ☐ pass ☐ fail | — |
+| (a) inbound (claim-only — see deviations) | 2026-07-11 23:46 | jacob | wallet (Obsign TestFlight build from `c7373fc3`, on device) | ✅ newest op `createdAt` 2026-07-11T23:46:15.234Z, not nullified; `rotationKeys[0]` = wallet key `did:key:zDnaevBrDyAkZPmxv9v7cG7zTXmdqasuf12vuh5zRbMrUeQk3`; both prior bsky `zQ3…` keys preserved in original order; services unchanged | ✅ `resolveHandle` → DID; `describeRepo` on fibercap PDS `handleIsCorrect: true`; AppView `getProfile` intact | ☑ pass | audit-log + resolution curl outputs in session transcript |
 | (b) outbound self-signed | — | — | interop CLI | — | — | ☐ pass ☐ fail | report: — |
 | (c) return | — | — | interop CLI | — | — | ☐ pass ☐ fail | report: — |
 
-DIDs used: —
-Bugs filed: —
-Findings / deviations: —
+DIDs used: `did:plc:u7j7xdhvkwx3xlf6xjkbpdn7` (`malpercio-obsign.bsky.social`, dedicated test account)
+Bugs filed: MM-288 (OAuth client_id/redirect reverse-FQDN), MM-289 (identity scope requires
+full session), MM-290 (error surfacing), MM-291 (empty body on no-input procedures), MM-293
+(claim DID not registered before device-key lookup), MM-294 (PLC verification was
+P-256-only) — all found by this leg's earlier attempts, all fixed and merged before the
+passing run.
+Findings / deviations: **Leg (a) as executed is claim-only.** The shipped "Bring an
+identity" flow implements the phased custody-first design (wallet key inserted as
+`rotationKeys[0]` via bsky.social's email-tokened `signPlcOperation`): it does **not**
+create a staging account, repoint `atproto_pds`, or deactivate on bsky.social as steps 1–3
+above describe — the account remains fully hosted on bsky.social with unchanged services.
+The leg's stated purpose ("PDS-signed insertion path… inserts the wallet's device key as
+`rotationKeys[0]`", called out at step 4 as "the entire point of the leg") is proven.
+Consequence for legs (b)/(c): the migrating identity is still on bsky.social and its
+rotation key lives in the wallet, not in `tools/interop/.state/state.json` — the (b)/(c)
+scripts as written assume an interop-managed identity already on staging and need
+re-scoping before execution.
