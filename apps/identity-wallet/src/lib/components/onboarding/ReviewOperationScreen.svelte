@@ -1,6 +1,7 @@
 <script lang="ts">
   import { submitClaim, type VerifiedClaimOp, type ClaimResult, type ClaimError } from '$lib/ipc';
   import { isCodedError } from '$lib/did-doc-utils';
+  import { formatRateLimitMessage, formatServerErrorMessage } from '$lib/claim-errors';
   import DiffRow from '$lib/components/ui/DiffRow.svelte';
   import Button from '$lib/components/ui/Button.svelte';
 
@@ -41,6 +42,12 @@
         switch (err.code) {
           case 'PLC_DIRECTORY_ERROR':
             error = `PLC directory rejected the operation: ${err.message || 'unknown error'}`;
+            break;
+          case 'RATE_LIMITED':
+            error = formatRateLimitMessage(err.retryAfter);
+            break;
+          case 'SERVER_ERROR':
+            error = formatServerErrorMessage(err.message);
             break;
           case 'NETWORK_ERROR':
             error = 'Network error. Check your connection and try again.';

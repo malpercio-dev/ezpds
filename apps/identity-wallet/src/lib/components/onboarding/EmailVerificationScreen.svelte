@@ -7,6 +7,7 @@
     type ClaimError,
   } from '$lib/ipc';
   import { isCodedError } from '$lib/did-doc-utils';
+  import { formatRateLimitMessage, formatServerErrorMessage } from '$lib/claim-errors';
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
   import TextField from '$lib/components/ui/TextField.svelte';
   import Button from '$lib/components/ui/Button.svelte';
@@ -51,6 +52,12 @@
           case 'UNAUTHORIZED':
             sendError = 'Your session expired. Go back and sign in to your PDS again.';
             break;
+          case 'RATE_LIMITED':
+            sendError = formatRateLimitMessage(err.retryAfter);
+            break;
+          case 'SERVER_ERROR':
+            sendError = formatServerErrorMessage(err.message);
+            break;
           case 'NETWORK_ERROR':
             sendError = 'Network error. Check your connection and try again.';
             break;
@@ -83,6 +90,12 @@
             break;
           case 'VERIFICATION_FAILED':
             verifyError = `Verification failed: ${err.message ?? 'Please try again.'}`;
+            break;
+          case 'RATE_LIMITED':
+            verifyError = formatRateLimitMessage(err.retryAfter);
+            break;
+          case 'SERVER_ERROR':
+            verifyError = formatServerErrorMessage(err.message);
             break;
           case 'NETWORK_ERROR':
             verifyError = 'Network error. Check your connection and try again.';

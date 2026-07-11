@@ -191,6 +191,19 @@ pub enum ClaimError {
     /// email" (the misleading symptom this issue was filed against).
     #[error("insufficient scope: {message}")]
     InsufficientScope { message: String },
+    /// The source PDS rate-limited the PLC-operation request (HTTP 429). `retry_after` carries the
+    /// server's `Retry-After` value when present, so the UI can say how long to wait rather than
+    /// blaming the connection (MM-290).
+    #[error("rate limited")]
+    RateLimited {
+        #[serde(rename = "retryAfter")]
+        retry_after: Option<String>,
+    },
+    /// The source PDS rejected the PLC operation with a non-2xx the wallet doesn't model specially.
+    /// `message` is the server's own error text (the atproto error envelope), shown verbatim so a
+    /// third-party PDS's real reason reaches the user instead of connectivity boilerplate (MM-290).
+    #[error("server error: {message}")]
+    ServerError { message: String },
     /// Network error during claim flow (timeout, connection refused, etc.)
     #[error("network error: {message}")]
     NetworkError { message: String },
@@ -342,6 +355,12 @@ fn map_pds_error_to_resolve(err: PdsClientError) -> ResolveError {
         PdsClientError::InsecurePdsUrl { url } => ResolveError::NetworkError {
             message: format!("insecure pds url: {}", url),
         },
+        // The classified XRPC variants (MM-290) are produced by authenticated PLC/migration
+        // helpers, not by resolve's plc.directory lookups — but the match is exhaustive over the
+        // shared enum, so surface the server's own message rather than dropping it.
+        PdsClientError::RateLimited { message, .. } => ResolveError::NetworkError { message },
+        PdsClientError::Unauthorized { message } => ResolveError::NetworkError { message },
+        PdsClientError::XrpcError { message, .. } => ResolveError::NetworkError { message },
     }
 }
 
@@ -444,6 +463,14 @@ pub(crate) async fn authenticate_source_pds_impl(
                 tracing::error!(pds_url = %url, "refusing password login to a non-HTTPS PDS");
                 ClaimError::InsecureSourceUrl
             }
+            // A rate limit or other server rejection during the password login must keep its real
+            // reason too (MM-290) — a 429 here is not a connectivity problem.
+            crate::pds_client::PdsClientError::RateLimited { retry_after, .. } => {
+                ClaimError::RateLimited { retry_after }
+            }
+            crate::pds_client::PdsClientError::XrpcError { message, .. } => {
+                ClaimError::ServerError { message }
+            }
             other => ClaimError::NetworkError {
                 message: format!("createSession failed: {}", other),
             },
@@ -528,22 +555,70 @@ pub(crate) async fn request_claim_verification_impl(
     Ok(())
 }
 
-/// Map a PLC-operation XRPC failure to a claim error, surfacing an insufficient-scope rejection
-/// distinctly instead of flattening it to a generic "network error".
+/// Map a PLC-operation XRPC failure to a claim error, preserving the server's own words instead of
+/// flattening everything to a generic "network error" (MM-290).
 ///
-/// This is the MM-289 error-surfacing fix: the original symptom was a spec-strict PDS refusing
-/// `requestPlcOperationSignature` for insufficient scope, which the UI reported as the misleading
-/// "failed to send verification email". After MM-289 the source session is a full password
-/// session, so a scope refusal should no longer occur — but if a server still refuses one, the
-/// wallet must name the real reason rather than blame email delivery.
+/// The XRPC helpers now classify the response by status ([`crate::pds_client::classify_xrpc_error`]),
+/// so this maps typed variants rather than scraping a status out of a message string:
+/// - `429` → [`ClaimError::RateLimited`] (with the server's `Retry-After` when present);
+/// - `401` → [`ClaimError::Unauthorized`] (the source session is no longer accepted — re-login);
+/// - a recognizable insufficient-scope refusal → [`ClaimError::InsufficientScope`] (the MM-289 case:
+///   a spec-strict PDS refusing the op must never masquerade as "failed to send verification email");
+/// - any other server rejection → [`ClaimError::ServerError`] carrying the server's message verbatim;
+/// - a genuine transport failure → [`ClaimError::NetworkError`].
 fn classify_plc_op_error(e: crate::pds_client::PdsClientError) -> ClaimError {
-    let message = e.to_string();
-    let lower = message.to_lowercase();
-    if lower.contains("insufficient") || lower.contains("returned 403") {
-        ClaimError::InsufficientScope { message }
-    } else {
-        ClaimError::NetworkError { message }
+    use crate::pds_client::PdsClientError;
+    match e {
+        PdsClientError::RateLimited { retry_after, .. } => ClaimError::RateLimited { retry_after },
+        PdsClientError::Unauthorized { .. } => ClaimError::Unauthorized,
+        PdsClientError::XrpcError { error, message, .. }
+            if error.as_deref() == Some("InsufficientScope")
+                || message.to_lowercase().contains("insufficient") =>
+        {
+            ClaimError::InsufficientScope { message }
+        }
+        PdsClientError::XrpcError { message, .. } => ClaimError::ServerError { message },
+        PdsClientError::NetworkError { message } => ClaimError::NetworkError { message },
+        // No other PdsClientError variant is produced by a PLC-op call, but keep the mapping honest
+        // if one ever reaches here — surface its text rather than dropping it.
+        other => ClaimError::ServerError {
+            message: other.to_string(),
+        },
     }
+}
+
+/// Map a `signPlcOperation` failure, recognizing an invalid/expired email verification token as
+/// [`ClaimError::InvalidToken`] before deferring to [`classify_plc_op_error`].
+///
+/// The email code the user just typed is the most likely cause of a rejection here, and the screen
+/// has a dedicated "check your code" state for it. The PDS may report it as a `400` with an
+/// `InvalidToken`/`ExpiredToken` error code or as a `401`, so this checks both the atproto error
+/// code and the message rather than a single status (MM-290 — previously this was a fragile
+/// substring scrape of a flattened `NetworkError` message, which classification broke).
+fn classify_sign_plc_error(e: crate::pds_client::PdsClientError) -> ClaimError {
+    use crate::pds_client::PdsClientError;
+    let invalid_token = match &e {
+        PdsClientError::XrpcError { error, message, .. } => {
+            mentions_invalid_token(error.as_deref(), message)
+        }
+        PdsClientError::Unauthorized { message } => mentions_invalid_token(None, message),
+        _ => false,
+    };
+    if invalid_token {
+        ClaimError::InvalidToken
+    } else {
+        classify_plc_op_error(e)
+    }
+}
+
+/// Whether an atproto error code or message names an invalid/expired verification token.
+fn mentions_invalid_token(error: Option<&str>, message: &str) -> bool {
+    let haystack = format!("{} {}", error.unwrap_or(""), message).to_lowercase();
+    haystack.contains("invalidtoken")
+        || haystack.contains("invalid token")
+        || haystack.contains("expiredtoken")
+        || haystack.contains("expired token")
+        || haystack.contains("not authenticated")
 }
 
 /// Sign and verify a PLC operation.
@@ -643,9 +718,7 @@ pub(crate) async fn sign_and_verify_claim_impl(
         .await
         .map_err(|e| {
             tracing::error!(did = %did, error = %e, "getRecommendedDidCredentials failed");
-            ClaimError::NetworkError {
-                message: format!("get_recommended_did_credentials failed: {}", e),
-            }
+            classify_plc_op_error(e)
         })?;
     tracing::debug!(did = %did, "recommended credentials received");
 
@@ -669,18 +742,7 @@ pub(crate) async fn sign_and_verify_claim_impl(
         .await
         .map_err(|e| {
             tracing::error!(did = %did, error = %e, "signPlcOperation failed");
-            if let crate::pds_client::PdsClientError::NetworkError { message } = &e {
-                let lower_msg = message.to_lowercase();
-                if lower_msg.contains("invalidtoken")
-                    || lower_msg.contains("expiredtoken")
-                    || lower_msg.contains("not authenticated")
-                {
-                    return ClaimError::InvalidToken;
-                }
-            }
-            ClaimError::NetworkError {
-                message: format!("sign_plc_operation failed: {}", e),
-            }
+            classify_sign_plc_error(e)
         })?;
     tracing::debug!(did = %did, "signPlcOperation succeeded");
 
@@ -1451,25 +1513,125 @@ mod tests {
 
     #[test]
     fn test_classify_plc_op_error_flags_insufficient_scope() {
-        // A 403 insufficient-scope refusal must surface as InsufficientScope, not NetworkError —
-        // this is the MM-289 error-surfacing fix (the misleading "failed to send email" symptom).
-        let scope_err = crate::pds_client::PdsClientError::NetworkError {
-            message: "requestPlcOperationSignature returned 403 Forbidden: {\"error\":\"InsufficientScope\"}"
-                .to_string(),
+        // A 403 insufficient-scope refusal (now a typed XrpcError carrying the atproto error code)
+        // must surface as InsufficientScope, not a generic error — the MM-289 fix, re-expressed on
+        // MM-290's structured variants.
+        let scope_err = crate::pds_client::PdsClientError::XrpcError {
+            status: 403,
+            error: Some("InsufficientScope".to_string()),
+            message: "token scope does not permit identity operations".to_string(),
         };
         assert!(matches!(
             classify_plc_op_error(scope_err),
             ClaimError::InsufficientScope { .. }
         ));
+    }
 
-        // A genuine 500 still classifies as NetworkError.
-        let server_err = crate::pds_client::PdsClientError::NetworkError {
-            message: "requestPlcOperationSignature returned 500: internal".to_string(),
-        };
+    #[test]
+    fn test_classify_plc_op_error_maps_structured_statuses() {
+        use crate::pds_client::PdsClientError;
+
+        // 429 → RateLimited, carrying the Retry-After value through to the UI.
+        let rl = classify_plc_op_error(PdsClientError::RateLimited {
+            retry_after: Some("120".to_string()),
+            message: "slow down".to_string(),
+        });
         assert!(matches!(
-            classify_plc_op_error(server_err),
+            rl,
+            ClaimError::RateLimited { retry_after: Some(ref r) } if r == "120"
+        ));
+
+        // 401 → Unauthorized (source session no longer accepted).
+        assert!(matches!(
+            classify_plc_op_error(PdsClientError::Unauthorized {
+                message: "Token has expired".to_string(),
+            }),
+            ClaimError::Unauthorized
+        ));
+
+        // An unrecognized non-2xx surfaces the server's own message as ServerError, NOT NetworkError.
+        let se = classify_plc_op_error(PdsClientError::XrpcError {
+            status: 400,
+            error: Some("InvalidRequest".to_string()),
+            message: "handle is required".to_string(),
+        });
+        assert!(
+            matches!(se, ClaimError::ServerError { ref message } if message == "handle is required")
+        );
+
+        // A genuine transport failure still classifies as NetworkError.
+        assert!(matches!(
+            classify_plc_op_error(PdsClientError::NetworkError {
+                message: "connection refused".to_string(),
+            }),
             ClaimError::NetworkError { .. }
         ));
+    }
+
+    #[test]
+    fn test_classify_sign_plc_error_detects_invalid_token() {
+        use crate::pds_client::PdsClientError;
+
+        // An expired/invalid email token as a 400 with the atproto error code → InvalidToken,
+        // whichever status the PDS chose to report it under.
+        assert!(matches!(
+            classify_sign_plc_error(PdsClientError::XrpcError {
+                status: 400,
+                error: Some("InvalidToken".to_string()),
+                message: "Token could not be verified".to_string(),
+            }),
+            ClaimError::InvalidToken
+        ));
+        // Same signal reported as a 401.
+        assert!(matches!(
+            classify_sign_plc_error(PdsClientError::Unauthorized {
+                message: "ExpiredToken".to_string(),
+            }),
+            ClaimError::InvalidToken
+        ));
+        // A rate limit is NOT an invalid token — it must still classify as RateLimited.
+        assert!(matches!(
+            classify_sign_plc_error(PdsClientError::RateLimited {
+                retry_after: None,
+                message: "slow down".to_string(),
+            }),
+            ClaimError::RateLimited { .. }
+        ));
+        // An unrelated server rejection surfaces as ServerError, not InvalidToken.
+        assert!(matches!(
+            classify_sign_plc_error(PdsClientError::XrpcError {
+                status: 400,
+                error: Some("InvalidRequest".to_string()),
+                message: "bad shape".to_string(),
+            }),
+            ClaimError::ServerError { .. }
+        ));
+    }
+
+    #[test]
+    fn test_claim_error_rate_limited_serializes_with_retry_after() {
+        let json = serde_json::to_value(ClaimError::RateLimited {
+            retry_after: Some("120".to_string()),
+        })
+        .unwrap();
+        assert_eq!(json["code"], "RATE_LIMITED");
+        assert_eq!(json["retryAfter"], "120");
+
+        // Absent Retry-After serializes as null (the field is always present for a stable contract).
+        let json_none =
+            serde_json::to_value(ClaimError::RateLimited { retry_after: None }).unwrap();
+        assert_eq!(json_none["code"], "RATE_LIMITED");
+        assert!(json_none["retryAfter"].is_null());
+    }
+
+    #[test]
+    fn test_claim_error_server_error_serializes_with_message() {
+        let json = serde_json::to_value(ClaimError::ServerError {
+            message: "handle is required".to_string(),
+        })
+        .unwrap();
+        assert_eq!(json["code"], "SERVER_ERROR");
+        assert_eq!(json["message"], "handle is required");
     }
 
     // ── authenticate_source_pds tests ─────────────────────────────────────────
@@ -1787,9 +1949,11 @@ mod tests {
         };
 
         let result = request_claim_verification_impl(&claim_state).await;
+        // A 500 is a server rejection, not a connectivity failure: it now surfaces as ServerError
+        // carrying the server's own message (MM-290) rather than the misleading "network error".
         assert!(
-            matches!(result, Err(ClaimError::NetworkError { .. })),
-            "should return NetworkError when PDS returns 500"
+            matches!(&result, Err(ClaimError::ServerError { message }) if message.contains("Internal Server Error")),
+            "should return ServerError carrying the server message when PDS returns 500, got {result:?}"
         );
     }
 
@@ -2518,7 +2682,7 @@ mod tests {
         crate::keychain::clear_for_test();
         use httpmock::MockServer;
         use std::collections::HashMap;
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
 
         let mock_server = MockServer::start();
         let device_key = "did:key:zQ3test_device".to_string();
@@ -2545,23 +2709,17 @@ mod tests {
 
         let pds_client = crate::pds_client::PdsClient::new_for_test(mock_server.base_url());
 
-        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
-            access_token: "test_token".to_string(),
-            refresh_token: "refresh".to_string(),
-            expires_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                + 3600,
-            dpop_nonce: None,
-        }));
-
-        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
-        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
-            keypair,
-            session,
+        // The claim flow's source client is a full-session **Bearer** client (MM-289:
+        // `authenticate_source_pds` → `OAuthClient::new_bearer`), so the test must use one too.
+        // A Bearer client delivers the mock's 400 verbatim; a DPoP client would swallow any
+        // non-nonce 400 into `NotAuthenticated` (a separate transport-layer flattening), which is
+        // not the path this flow exercises.
+        let oauth_client = crate::oauth_client::OAuthClient::new_bearer(
+            future_exp_jwt(),
+            "refresh".to_string(),
             mock_server.base_url(),
-        );
+        )
+        .expect("new_bearer must succeed");
 
         let did_doc = PlcDidDocument {
             did: "did:plc:test".to_string(),
