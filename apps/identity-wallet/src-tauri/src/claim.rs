@@ -172,6 +172,11 @@ pub enum ClaimError {
     /// failure so the UI can say "wrong password" instead of blaming the connection.
     #[error("source auth failed: {message}")]
     SourceAuthFailed { message: String },
+    /// The source account has email two-factor enabled: `createSession` returned
+    /// `AuthFactorTokenRequired` and the PDS emailed a one-time code. The UI prompts for the code
+    /// and re-invokes `authenticate_source_pds` with it — distinct from a wrong password.
+    #[error("two-factor code required")]
+    TwoFactorRequired,
     /// A PLC-operation endpoint refused the token for scope reasons. After MM-289 the source
     /// session is a full password session, so this should not occur — but if a server still
     /// refuses, surface it honestly instead of flattening it to "failed to send verification
@@ -323,6 +328,9 @@ fn map_pds_error_to_resolve(err: PdsClientError) -> ResolveError {
         },
         // Only produced by the claim flow's password createSession; not reachable from resolve.
         PdsClientError::InvalidCredentials { message } => ResolveError::NetworkError { message },
+        PdsClientError::AuthFactorTokenRequired => ResolveError::NetworkError {
+            message: "auth factor token required".to_string(),
+        },
     }
 }
 
@@ -339,6 +347,10 @@ fn map_pds_error_to_resolve(err: PdsClientError) -> ResolveError {
 /// keeps only the resulting Bearer session, in memory, in `ClaimState.pds_oauth_client`. An app
 /// password is a lesser scope and is rejected the same way a wrong real password is.
 ///
+/// `auth_factor_token` is the email 2FA one-time code. Pass `None` first; if the account has email
+/// two-factor enabled the call returns `TwoFactorRequired` (and the PDS emails a code), and the UI
+/// re-invokes with that code as `Some`.
+///
 /// **Prerequisite:** `resolve_identity` must have run first to populate `ClaimState`.
 #[tauri::command]
 pub async fn authenticate_source_pds(
@@ -346,6 +358,7 @@ pub async fn authenticate_source_pds(
     did: String,
     identifier: String,
     password: String,
+    auth_factor_token: Option<String>,
 ) -> Result<(), ClaimError> {
     tracing::info!("authenticate_source_pds: password login for {}", did);
 
@@ -363,8 +376,14 @@ pub async fn authenticate_source_pds(
         claim.pds_url.clone()
     }; // claim_state lock released here — createSession is a network call
 
-    let oauth_client =
-        authenticate_source_pds_impl(state.pds_client(), &pds_url, &identifier, &password).await?;
+    let oauth_client = authenticate_source_pds_impl(
+        state.pds_client(),
+        &pds_url,
+        &identifier,
+        &password,
+        auth_factor_token.as_deref(),
+    )
+    .await?;
 
     // Re-acquire the lock and store the Bearer client, rejecting the write if `resolve_identity`
     // switched the active claim while we were on the network (same guard as the old OAuth flow).
@@ -389,11 +408,16 @@ pub(crate) async fn authenticate_source_pds_impl(
     pds_url: &str,
     identifier: &str,
     password: &str,
+    auth_factor_token: Option<&str>,
 ) -> Result<OAuthClient, ClaimError> {
     let session = pds_client
-        .create_session(pds_url, identifier, password)
+        .create_session(pds_url, identifier, password, auth_factor_token)
         .await
         .map_err(|e| match e {
+            crate::pds_client::PdsClientError::AuthFactorTokenRequired => {
+                tracing::info!("source account has email 2FA; a code was sent");
+                ClaimError::TwoFactorRequired
+            }
             crate::pds_client::PdsClientError::InvalidCredentials { message } => {
                 tracing::warn!(detail = %message, "source createSession rejected the password");
                 ClaimError::SourceAuthFailed {
@@ -1363,6 +1387,12 @@ mod tests {
     }
 
     #[test]
+    fn test_claim_error_two_factor_required_serializes_correctly() {
+        let json = serde_json::to_value(ClaimError::TwoFactorRequired).unwrap();
+        assert_eq!(json["code"], "TWO_FACTOR_REQUIRED");
+    }
+
+    #[test]
     fn test_claim_error_insufficient_scope_serializes_correctly() {
         let err = ClaimError::InsufficientScope {
             message: "token scope does not permit identity operations".to_string(),
@@ -1439,6 +1469,7 @@ mod tests {
             &server.base_url(),
             "alice.example.com",
             "hunter2",
+            None,
         )
         .await;
         assert!(
@@ -1469,11 +1500,45 @@ mod tests {
             &server.base_url(),
             "alice.example.com",
             "wrong",
+            None,
         )
         .await;
         assert!(
             matches!(result, Err(ClaimError::SourceAuthFailed { .. })),
             "a 401 must surface as SourceAuthFailed, got: {:?}",
+            result.err()
+        );
+    }
+
+    /// An email-2FA account answers a token-less attempt with `AuthFactorTokenRequired`, which must
+    /// surface as `TwoFactorRequired` (prompt for a code), NOT `SourceAuthFailed` (wrong password).
+    #[tokio::test]
+    async fn test_authenticate_source_pds_impl_two_factor_required() {
+        crate::keychain::clear_for_test();
+        use httpmock::MockServer;
+
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.createSession");
+            then.status(401).json_body(serde_json::json!({
+                "error": "AuthFactorTokenRequired",
+                "message": "A sign in code has been sent to your email address"
+            }));
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new();
+        let result = authenticate_source_pds_impl(
+            &pds_client,
+            &server.base_url(),
+            "alice.example.com",
+            "correct-password",
+            None,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(ClaimError::TwoFactorRequired)),
+            "AuthFactorTokenRequired must surface as TwoFactorRequired, got: {:?}",
             result.err()
         );
     }

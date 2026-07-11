@@ -500,6 +500,7 @@ export type ClaimError =
   | { code: 'PLC_DIRECTORY_ERROR'; message: string }
   | { code: 'UNAUTHORIZED' }
   | { code: 'SOURCE_AUTH_FAILED'; message: string }
+  | { code: 'TWO_FACTOR_REQUIRED' }
   | { code: 'INSUFFICIENT_SCOPE'; message: string }
   | { code: 'NETWORK_ERROR'; message: string };
 
@@ -538,13 +539,20 @@ const classifyAuthSessionRejection = (
  * full-session Bearer client. The password is sent once to the user's own PDS and never stored;
  * an app password is a lesser scope and is rejected (`SOURCE_AUTH_FAILED`).
  *
- * Rejects with a typed `ClaimError` — notably `SOURCE_AUTH_FAILED` for a wrong password.
+ * `authFactorToken` is the email 2FA one-time code. Omit it on the first attempt; if the account
+ * has email two-factor enabled the call rejects with `TWO_FACTOR_REQUIRED` (and the PDS emails a
+ * code), and the caller re-invokes with the code.
+ *
+ * Rejects with a typed `ClaimError` — notably `SOURCE_AUTH_FAILED` for a wrong password and
+ * `TWO_FACTOR_REQUIRED` when a 2FA code is needed.
  */
 export const authenticateSourcePds = (
   did: string,
   identifier: string,
   password: string,
-): Promise<void> => invoke('authenticate_source_pds', { did, identifier, password });
+  authFactorToken?: string,
+): Promise<void> =>
+  invoke('authenticate_source_pds', { did, identifier, password, authFactorToken });
 
 /**
  * Request email verification for the PLC operation.

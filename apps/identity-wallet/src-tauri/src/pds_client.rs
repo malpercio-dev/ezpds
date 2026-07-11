@@ -126,6 +126,20 @@ pub enum PdsClientError {
     /// failure so the claim flow can tell the user "wrong password" rather than "network error".
     #[error("invalid credentials: {message}")]
     InvalidCredentials { message: String },
+
+    /// `createSession` needs an email 2FA one-time code (`AuthFactorTokenRequired`, HTTP 401).
+    /// The account has email two-factor enabled and the server has emailed a code; retry
+    /// `create_session` with that code as `auth_factor_token`.
+    #[error("auth factor token required")]
+    AuthFactorTokenRequired,
+}
+
+/// Whether an atproto XRPC error body (`{"error":"...","message":"..."}`) carries `error == code`.
+fn error_code_is(body: &str, code: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(|s| s == code))
+        .unwrap_or(false)
 }
 
 /// PLC operation data for a DID.
@@ -685,26 +699,35 @@ impl PdsClient {
     /// The password is used for this single request and never persisted — the caller keeps only
     /// the returned JWTs (in an in-memory Bearer `OAuthClient`).
     ///
-    /// A 401 maps to [`PdsClientError::InvalidCredentials`] so the UI can say "wrong password".
+    /// `auth_factor_token` carries the email one-time code for accounts with 2FA enabled. Pass
+    /// `None` on the first attempt; a 2FA account then answers with `AuthFactorTokenRequired`
+    /// ([`PdsClientError::AuthFactorTokenRequired`]) and emails a code — retry with that code as
+    /// `Some`. Any other 401 maps to [`PdsClientError::InvalidCredentials`] ("wrong password").
     pub async fn create_session(
         &self,
         pds_url: &str,
         identifier: &str,
         password: &str,
+        auth_factor_token: Option<&str>,
     ) -> Result<CreateSessionResponse, PdsClientError> {
         let url = format!(
             "{}/xrpc/com.atproto.server.createSession",
             pds_url.trim_end_matches('/')
         );
 
+        let mut request_body = serde_json::json!({
+            "identifier": identifier,
+            "password": password,
+        });
+        if let Some(token) = auth_factor_token {
+            request_body["authFactorToken"] = serde_json::Value::String(token.to_string());
+        }
+
         let response = self
             .client
             .post(&url)
             .timeout(Duration::from_secs(30))
-            .json(&serde_json::json!({
-                "identifier": identifier,
-                "password": password,
-            }))
+            .json(&request_body)
             .send()
             .await
             .map_err(|e| PdsClientError::NetworkError {
@@ -717,6 +740,12 @@ impl PdsClient {
                 .text()
                 .await
                 .unwrap_or_else(|_| "(response body unreadable)".to_string());
+            // An account with email 2FA answers a token-less attempt with `AuthFactorTokenRequired`
+            // (and emails a code) — distinct from a wrong password, so the UI can prompt for the
+            // code instead of blaming the password.
+            if error_code_is(&body, "AuthFactorTokenRequired") {
+                return Err(PdsClientError::AuthFactorTokenRequired);
+            }
             return Err(PdsClientError::InvalidCredentials { message: body });
         }
         if !status.is_success() {

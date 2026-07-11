@@ -26,18 +26,29 @@
   // svelte-ignore state_referenced_locally
   let identifier = $state(handle);
   let password = $state('');
+  // For accounts with email 2FA: once the PDS asks for a code, we keep the password in memory and
+  // re-submit it alongside the code the user enters here.
+  let needsTwoFactor = $state(false);
+  let twoFactorToken = $state('');
   let authenticating = $state(false);
   let error = $state<string | null>(null);
 
   async function authenticate() {
     if (!identifier.trim() || !password) return;
+    if (needsTwoFactor && !twoFactorToken.trim()) return;
     authenticating = true;
     error = null;
 
     try {
-      await authenticateSourcePds(did, identifier.trim(), password);
-      // The password is not retained after this call resolves.
+      await authenticateSourcePds(
+        did,
+        identifier.trim(),
+        password,
+        needsTwoFactor ? twoFactorToken.trim() : undefined,
+      );
+      // Credentials are not retained after this call resolves.
       password = '';
+      twoFactorToken = '';
       onnext();
     } catch (raw: unknown) {
       authenticating = false;
@@ -46,8 +57,19 @@
       if (isCodedError(raw)) {
         const err = raw as ClaimError;
         switch (err.code) {
+          case 'TWO_FACTOR_REQUIRED':
+            if (needsTwoFactor) {
+              // We already submitted a code and it wasn't accepted.
+              error = "That code wasn't accepted. Check the latest code emailed to you.";
+            } else {
+              // First time: the account has 2FA. Advance to the code step — not an error.
+              needsTwoFactor = true;
+            }
+            break;
           case 'SOURCE_AUTH_FAILED':
-            error = `${pdsUrl} did not accept that password. Use your account password — an app password can't authorize identity changes.`;
+            error = needsTwoFactor
+              ? "That code wasn't accepted. Check the latest code emailed to you."
+              : `${pdsUrl} did not accept that password. Use your account password — an app password can't authorize identity changes.`;
             break;
           case 'INSUFFICIENT_SCOPE':
             error = `${pdsUrl} refused to authorize the identity change for this session. This shouldn't happen with a full sign-in — please try again.`;
@@ -66,6 +88,13 @@
       }
     }
   }
+
+  // Return from the 2FA step to the password form (e.g. wrong account, or to restart).
+  function backToPassword() {
+    needsTwoFactor = false;
+    twoFactorToken = '';
+    error = null;
+  }
 </script>
 
 {#if authenticating}
@@ -73,6 +102,33 @@
     <Spinner size={44} label="Signing in" />
     <p class="status">Opening a session with your PDS…</p>
   </div>
+{:else if needsTwoFactor}
+  <OnboardingShell
+    title="Enter your two-factor code"
+    subtitle="Your account has email two-factor authentication turned on."
+  >
+    <span class="pds-chip">{pdsUrl}</span>
+
+    <div class="why" role="note">
+      <p>{pdsUrl} emailed a one-time code to the address on <strong>{identifier}</strong>. Enter it to finish signing in.</p>
+    </div>
+
+    <TextField
+      bind:value={twoFactorToken}
+      type="text"
+      inputmode="numeric"
+      autocomplete="one-time-code"
+      autocapitalize="characters"
+      autocorrect="off"
+      spellcheck={false}
+      aria-label="Two-factor code"
+      placeholder="Two-factor code"
+      error={error ?? undefined}
+    />
+
+    <Button disabled={!twoFactorToken.trim()} onclick={authenticate}>Verify code</Button>
+    <Button variant="secondary" onclick={backToPassword}>Back</Button>
+  </OnboardingShell>
 {:else}
   <OnboardingShell
     title="Sign in to your PDS"
@@ -100,7 +156,6 @@
       spellcheck={false}
       aria-label="Handle, DID, or email"
       placeholder="Handle, DID, or email"
-      disabled={authenticating}
     />
     <TextField
       bind:value={password}
@@ -108,14 +163,13 @@
       autocomplete="current-password"
       aria-label="Account password"
       placeholder="Account password"
-      disabled={authenticating}
       error={error ?? undefined}
     />
 
-    <Button disabled={!identifier.trim() || !password || authenticating} onclick={authenticate}>
+    <Button disabled={!identifier.trim() || !password} onclick={authenticate}>
       {error ? 'Try again' : 'Sign in'}
     </Button>
-    <Button variant="secondary" onclick={onback} disabled={authenticating}>Back</Button>
+    <Button variant="secondary" onclick={onback}>Back</Button>
   </OnboardingShell>
 {/if}
 
