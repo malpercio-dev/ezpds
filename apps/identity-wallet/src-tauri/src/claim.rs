@@ -623,6 +623,35 @@ fn mentions_invalid_token(error: Option<&str>, message: &str) -> bool {
         || haystack.contains("not authenticated")
 }
 
+/// Register the claim DID in the `IdentityStore` (if not already) and return its device key.
+///
+/// The device key must exist BEFORE `submit_claim` registers the identity: this key goes at
+/// `rotationKeys[0]` of the operation the old PDS signs, and `IdentityStore` refuses key
+/// access for unregistered DIDs. Registering here (tolerating a prior partial claim's
+/// registration, the same tolerance `submit_claim` has) is what makes the sign step possible
+/// for a fresh identity. A store failure surfaces as `VerificationFailed` — it is a local
+/// keychain problem, never a network one.
+fn ensure_claim_device_key(did: &str) -> Result<crate::device_key::DevicePublicKey, ClaimError> {
+    use crate::identity_store::{IdentityStore, IdentityStoreError};
+
+    match IdentityStore.add_identity(did) {
+        Ok(()) | Err(IdentityStoreError::IdentityAlreadyExists) => {}
+        Err(e) => {
+            tracing::error!(did = %did, error = %e, "claim device-key registration failed");
+            return Err(ClaimError::VerificationFailed {
+                message: format!("failed to prepare device key: {}", e),
+            });
+        }
+    }
+
+    IdentityStore.get_or_create_device_key(did).map_err(|e| {
+        tracing::error!(did = %did, error = %e, "claim device-key creation failed");
+        ClaimError::VerificationFailed {
+            message: format!("failed to prepare device key: {}", e),
+        }
+    })
+}
+
 /// Sign and verify a PLC operation.
 ///
 /// This command coordinates three systems:
@@ -668,12 +697,8 @@ pub async fn sign_and_verify_claim(
         )
     }; // claim_state lock released here
 
-    // Step 2: Look up the device key ID using IdentityStore
-    let device_key = crate::identity_store::IdentityStore
-        .get_or_create_device_key(&did)
-        .map_err(|e| ClaimError::NetworkError {
-            message: format!("failed to get device key: {}", e),
-        })?;
+    // Step 2: Register the DID (if new) and get its device key.
+    let device_key = ensure_claim_device_key(&did)?;
 
     let (verified_op, signed_op_json) = sign_and_verify_claim_impl(
         pds_client_ref,
@@ -2008,6 +2033,29 @@ mod tests {
         .expect("build rotation op");
 
         (rotation.signed_op_json, device_key_id)
+    }
+
+    /// A FRESH claim DID (not yet registered — registration normally happens in
+    /// `submit_claim`, after the sign step) must still get a device key. The historical
+    /// bug: `get_or_create_device_key` on the unregistered DID returned `IdentityNotFound`,
+    /// mapped to NETWORK_ERROR, killing every first-time claim before any network call.
+    #[test]
+    fn ensure_claim_device_key_registers_fresh_did() {
+        crate::keychain::clear_for_test();
+        let did = "did:plc:freshclaimdevicekey";
+
+        let key = ensure_claim_device_key(did).expect("fresh DID must get a device key");
+
+        // Idempotent: a retry (or a prior partial claim) reuses the registration and key.
+        let again = ensure_claim_device_key(did).expect("existing registration is tolerated");
+        assert_eq!(key.multibase, again.multibase);
+        assert_eq!(key.key_id, again.key_id);
+
+        // The DID is now registered, so submit_claim's own add_identity tolerance applies.
+        let ids = crate::identity_store::IdentityStore
+            .list_identities()
+            .expect("list_identities");
+        assert!(ids.contains(&did.to_string()));
     }
 
     /// Test 1: Success path with device key at rotationKeys[0]
