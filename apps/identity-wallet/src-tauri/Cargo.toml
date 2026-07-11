@@ -3,6 +3,7 @@ name = "identity-wallet"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [lib]
 name = "identity_wallet"

@@ -3,6 +3,7 @@ name = "repo-engine"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 # repo-engine: MST construction, CAR file storage, commit construction.
 # Functional Core — no HTTP, no DB schema ownership, no process-level state.

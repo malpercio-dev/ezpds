@@ -3,6 +3,7 @@ name = "pds"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 # pds is the network-facing binary (the Custos PDS): Axum HTTP server, XRPC
 # handlers, OAuth, provisioning API, blob storage.

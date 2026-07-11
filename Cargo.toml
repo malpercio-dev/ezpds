@@ -24,6 +24,11 @@ resolver = "2"
 version = "0.4.2"
 edition = "2021"
 publish = false
+# Matches the root LICENSE (AGPLv3 text, no "or later" grant filled in). "-only" is the
+# deliberate choice: it keeps the license version fixed rather than auto-upgrading to a future
+# GNU license the FSF might publish, which matters if this project ever wants to offer a
+# commercial dual-license alongside AGPL.
+license = "AGPL-3.0-only"
 
 # Declare shared dependency versions here.
 # Individual crates opt in with `{ workspace = true }`.
