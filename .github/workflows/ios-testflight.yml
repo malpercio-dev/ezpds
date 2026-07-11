@@ -78,6 +78,12 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
+          # Cache the pnpm store (keyed by the lockfile hash) so `pnpm install
+          # --frozen-lockfile` restores from cache instead of re-downloading the whole
+          # dependency tree every run. pnpm is already on PATH from the action-setup step
+          # above — setup-node's `cache: pnpm` requires it to be installed first.
+          cache: pnpm
+          cache-dependency-path: apps/identity-wallet/pnpm-lock.yaml
 
       - name: Install frontend dependencies
         working-directory: apps/identity-wallet
@@ -100,6 +106,21 @@ jobs:
           # install and `cargo tauri` is missing at use time. Cache the registry/git/
           # target (the real speedup), never ~/.cargo/bin.
           cache-bin: false
+          # shared-key ties this main-branch lane to the ios-pr-check `ios-compile` job
+          # for the SAME app. rust-cache keys by `github.job` unless overridden, so the
+          # PR lane (job `ios-compile`) and this lane (job `testflight`) otherwise never
+          # share a cache. Because ios-pr-check runs on pull_request ONLY, its cache is
+          # never seeded on main, so every PR cold-built the whole tauri dependency tree
+          # and then saved a ~1 GB per-PR cache that no other PR could read (GitHub caches
+          # are ref-scoped) — write-only garbage that churned the 10 GB repo quota. This
+          # lane runs on push to main, so it seeds the warm cache the PR lane restores.
+          # Distinct per app (admin-companion uses ios-admin-companion) so the two apps
+          # don't clobber each other's deps under a shared `testflight` job id.
+          shared-key: ios-identity-wallet
+          # Only write from main (this lane's normal trigger). A workflow_dispatch off a
+          # feature branch must not save a branch-scoped copy that consumes quota without
+          # ever being reused.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-binstall
         # Pinned release tag (not @main): a mutable branch ref would let upstream changes

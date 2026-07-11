@@ -84,6 +84,12 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
+          # Cache the pnpm store (keyed by the lockfile hash) so `pnpm install
+          # --frozen-lockfile` restores from cache instead of re-downloading every run.
+          # pnpm is already on PATH from the action-setup step above, which setup-node's
+          # `cache: pnpm` requires.
+          cache: pnpm
+          cache-dependency-path: apps/admin-companion/pnpm-lock.yaml
 
       - name: Install frontend dependencies
         working-directory: apps/admin-companion
@@ -106,6 +112,14 @@ jobs:
           # install and `cargo tauri` is missing at use time. Cache the registry/git/
           # target (the real speedup), never ~/.cargo/bin.
           cache-bin: false
+          # shared-key ties this main-branch lane to the ios-pr-check `ios-compile` job
+          # for the SAME app, so PR runs restore this warm cache instead of cold-building.
+          # See the full rationale in ios-testflight.yml. Distinct per app so the two
+          # apps don't clobber each other's deps under a shared `testflight` job id.
+          shared-key: ios-admin-companion
+          # Only write from main (this lane's normal trigger) — never a branch-scoped
+          # workflow_dispatch copy that just consumes the shared 10 GB quota.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-binstall
         # Pinned release tag (not @main): a mutable branch ref would let upstream changes

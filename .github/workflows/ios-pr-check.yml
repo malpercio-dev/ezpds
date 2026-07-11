@@ -72,6 +72,10 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
+          # Cache the pnpm store (keyed by the lockfile hash). pnpm is already on PATH
+          # from the action-setup step above, which setup-node's `cache: pnpm` requires.
+          cache: pnpm
+          cache-dependency-path: apps/${{ matrix.app }}/pnpm-lock.yaml
 
       - name: Install frontend dependencies
         working-directory: apps/${{ matrix.app }}
@@ -119,6 +123,10 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
+          # Cache the pnpm store (keyed by the lockfile hash). pnpm is already on PATH
+          # from the action-setup step above, which setup-node's `cache: pnpm` requires.
+          cache: pnpm
+          cache-dependency-path: apps/${{ matrix.app }}/pnpm-lock.yaml
 
       - name: Install frontend dependencies
         working-directory: apps/${{ matrix.app }}
@@ -141,6 +149,18 @@ jobs:
           # install and `cargo tauri` is missing at use time. Cache the registry/git/
           # target (the real speedup), never ~/.cargo/bin.
           cache-bin: false
+          # Restore the warm cache the app's TestFlight lane seeds on push to main
+          # (ios-testflight.yml / admin-testflight.yml both use this same shared-key).
+          # rust-cache keys by `github.job` by default, so without this the PR job
+          # `ios-compile` could never see the main-branch `testflight` cache and
+          # cold-built the whole tauri dependency tree every PR. matrix.app is
+          # identity-wallet / admin-companion → ios-identity-wallet / ios-admin-companion.
+          shared-key: ios-${{ matrix.app }}
+          # Restore-only on PRs: this lane runs on pull_request, where github.ref is
+          # refs/pull/N/merge, so save-if is false and it never writes. That stops the
+          # ~1 GB-per-PR write-only caches (ref-scoped, unreadable by any other PR) that
+          # were churning the shared 10 GB quota and evicting the caches that ARE reused.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-binstall
         # Pinned release tag (not @main) — see the same pin in the TestFlight lanes.
