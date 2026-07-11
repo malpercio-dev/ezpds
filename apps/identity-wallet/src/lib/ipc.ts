@@ -499,7 +499,11 @@ export type ClaimError =
   | { code: 'VERIFICATION_FAILED'; message: string }
   | { code: 'PLC_DIRECTORY_ERROR'; message: string }
   | { code: 'UNAUTHORIZED' }
-  | { code: 'OAUTH_REJECTED'; message: string }
+  | { code: 'SOURCE_AUTH_FAILED'; message: string }
+  | { code: 'TWO_FACTOR_REQUIRED' }
+  | { code: 'ACCOUNT_MISMATCH' }
+  | { code: 'INSECURE_SOURCE_URL' }
+  | { code: 'INSUFFICIENT_SCOPE'; message: string }
   | { code: 'NETWORK_ERROR'; message: string };
 
 // ── Claim flow IPC wrappers ────────────────────────────────────────────────
@@ -529,37 +533,34 @@ const classifyAuthSessionRejection = (
   raw === 'user_cancelled' ? cancellation : { code: 'NETWORK_ERROR', message: String(raw) };
 
 /**
- * Authenticate with the identity's existing PDS via OAuth 2.0 PKCE + DPoP, using the native
- * in-app auth session (ASWebAuthenticationSession) — same three-step shape as `startOAuthFlow`:
- * `prepare_pds_auth` (Rust) discovers the auth server + PAR and returns the authorize URL; the
- * auth-session plugin opens the in-app session and returns the callback URL; `complete_pds_auth`
- * (Rust) validates it, exchanges the code, and stores the OAuth client in claim state. Resolves
- * when complete.
+ * Authenticate with the identity's existing PDS using the account **password** (`createSession`).
  *
- * Replaces the old external-Safari + deep-link flow (iOS blocks the custom-scheme redirect).
+ * The claim flow's next steps — requesting and signing a PLC operation — are identity operations
+ * that a spec-strict PDS (bsky.social) gates behind a full session. No OAuth `transition:generic`
+ * token can drive them (MM-289), so the wallet does a one-shot password `createSession` to obtain a
+ * full-session Bearer client. The password is sent once to the user's own PDS and never stored;
+ * an app password is a lesser scope and is rejected (`SOURCE_AUTH_FAILED`).
+ *
+ * `authFactorToken` is the email 2FA one-time code. Omit it on the first attempt; if the account
+ * has email two-factor enabled the call rejects with `TWO_FACTOR_REQUIRED` (and the PDS emails a
+ * code), and the caller re-invokes with the code.
+ *
+ * Rejects with a typed `ClaimError` — notably `SOURCE_AUTH_FAILED` for a wrong password and
+ * `TWO_FACTOR_REQUIRED` when a 2FA code is needed.
  */
-export const startPdsAuth = async (pdsUrl: string): Promise<void> => {
-  const prepared = await invoke<{ authUrl: string; callbackScheme: string }>('prepare_pds_auth', {
-    pdsUrl,
-  });
-  let callbackUrl: string;
-  try {
-    callbackUrl = await invoke<string>('plugin:auth-session|start', {
-      authUrl: prepared.authUrl,
-      callbackUrlScheme: prepared.callbackScheme,
-    });
-  } catch (raw: unknown) {
-    // A dismissed sheet reads as unauthorized; anything else surfaces as retryable.
-    throw classifyAuthSessionRejection(raw, { code: 'UNAUTHORIZED' });
-  }
-  await invoke('complete_pds_auth', { callbackUrl });
-};
+export const authenticateSourcePds = (
+  did: string,
+  identifier: string,
+  password: string,
+  authFactorToken?: string,
+): Promise<void> =>
+  invoke('authenticate_source_pds', { did, identifier, password, authFactorToken });
 
 /**
  * Request email verification for the PLC operation.
  *
  * Calls `requestPlcOperationSignature` on the old PDS to trigger email verification.
- * Must be called after `startPdsAuth` succeeds.
+ * Must be called after `authenticateSourcePds` succeeds.
  */
 export const requestClaimVerification = (did: string): Promise<void> =>
   invoke('request_claim_verification', { did });
@@ -806,8 +807,10 @@ export const prepareMigration = (did: string, destPdsUrl: string): Promise<void>
   invoke('prepare_migration', { did, destPdsUrl });
 
 /**
- * Source-PDS OAuth: prepare -> in-app auth session -> complete (mirrors startPdsAuth).
+ * OUTBOUND-migration source-PDS OAuth: prepare -> in-app auth session -> complete.
  * Drives the ASWebAuthenticationSession via the auth-session plugin between the two Rust commands.
+ * (Distinct from the claim flow's `authenticateSourcePds`, which is password-based — the outbound
+ * migration's source leg only needs repo/blob/status access, which OAuth can grant.)
  */
 export const startSourceAuth = async (did: string): Promise<void> => {
   const prepared = await invoke<{ authUrl: string; callbackScheme: string }>('prepare_source_auth', {

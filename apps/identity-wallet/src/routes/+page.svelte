@@ -283,6 +283,8 @@
     />
   {:else if step === 'pds_auth'}
     <PdsAuthScreen
+      did={identityInfo!.did}
+      handle={identityInfo!.handle}
       pdsUrl={identityInfo!.pdsUrl}
       onnext={() => goTo('email_verification')}
       onback={() => goTo('identity_input')}

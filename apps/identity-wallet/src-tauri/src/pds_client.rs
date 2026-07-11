@@ -121,6 +121,48 @@ pub enum PdsClientError {
     /// DID already exists (HTTP 409 from createAccount migration).
     #[error("did already exists")]
     DidAlreadyExists,
+
+    /// `createSession` rejected the identifier/password (HTTP 401). Distinct from a transport
+    /// failure so the claim flow can tell the user "wrong password" rather than "network error".
+    #[error("invalid credentials: {message}")]
+    InvalidCredentials { message: String },
+
+    /// `createSession` needs an email 2FA one-time code (`AuthFactorTokenRequired`, HTTP 401).
+    /// The account has email two-factor enabled and the server has emailed a code; retry
+    /// `create_session` with that code as `auth_factor_token`.
+    #[error("auth factor token required")]
+    AuthFactorTokenRequired,
+
+    /// Refused to send the account password to a non-HTTPS PDS URL (loopback excepted). The
+    /// `pds_url` is derived from the DID document, so a plaintext `http://` endpoint must never
+    /// receive the password.
+    #[error("insecure pds url: {url}")]
+    InsecurePdsUrl { url: String },
+}
+
+/// Whether a PDS URL is safe to send an account password to: HTTPS, or a loopback host over HTTP
+/// (localhost/127.0.0.1/::1) for local development and the test harness. Anything else — including
+/// an unparseable URL — is refused, so the password never crosses a plaintext link.
+fn pds_url_is_password_safe(pds_url: &str) -> bool {
+    match url::Url::parse(pds_url) {
+        Ok(url) => match url.scheme() {
+            "https" => true,
+            "http" => matches!(
+                url.host_str(),
+                Some("localhost") | Some("127.0.0.1") | Some("::1") | Some("[::1]")
+            ),
+            _ => false,
+        },
+        Err(_) => false,
+    }
+}
+
+/// Whether an atproto XRPC error body (`{"error":"...","message":"..."}`) carries `error == code`.
+fn error_code_is(body: &str, code: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(|s| s == code))
+        .unwrap_or(false)
 }
 
 /// PLC operation data for a DID.
@@ -322,6 +364,22 @@ pub struct CreateAccountResponse {
     pub did: String,
     #[serde(default)]
     pub did_doc: Option<serde_json::Value>,
+}
+
+/// Response from `com.atproto.server.createSession` (legacy password login).
+///
+/// The `accessJwt`/`refreshJwt` are the full-session credentials the claim flow needs to drive
+/// PLC operations (`requestPlcOperationSignature`/`signPlcOperation`) — operations no OAuth
+/// `transition:generic` token can authorize (MM-289). They feed straight into
+/// `OAuthClient::new_bearer`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateSessionResponse {
+    pub access_jwt: String,
+    pub refresh_jwt: String,
+    pub did: String,
+    #[serde(default)]
+    pub handle: Option<String>,
 }
 
 /// Response from describeServer.
@@ -651,6 +709,92 @@ impl PdsClient {
             .map_err(|e| PdsClientError::PdsUnreachable {
                 reason: format!("failed to parse describeServer response: {}", e),
             })
+    }
+
+    /// Create a full password session against a PDS (`com.atproto.server.createSession`).
+    ///
+    /// This is the source-PDS login for the claim (inbound-migration) flow. Unlike OAuth,
+    /// a password `createSession` yields a **full-access** session (`com.atproto.access`), the
+    /// only credential class that can drive PLC operations on a spec-strict PDS like bsky.social
+    /// (MM-289). The `identifier` is a handle, DID, or email; the `password` must be the account's
+    /// real password (an app password is a lesser scope and is rejected the same way).
+    ///
+    /// The password is used for this single request and never persisted — the caller keeps only
+    /// the returned JWTs (in an in-memory Bearer `OAuthClient`).
+    ///
+    /// `auth_factor_token` carries the email one-time code for accounts with 2FA enabled. Pass
+    /// `None` on the first attempt; a 2FA account then answers with `AuthFactorTokenRequired`
+    /// ([`PdsClientError::AuthFactorTokenRequired`]) and emails a code — retry with that code as
+    /// `Some`. Any other 401 maps to [`PdsClientError::InvalidCredentials`] ("wrong password").
+    pub async fn create_session(
+        &self,
+        pds_url: &str,
+        identifier: &str,
+        password: &str,
+        auth_factor_token: Option<&str>,
+    ) -> Result<CreateSessionResponse, PdsClientError> {
+        // Never send the account password over a plaintext link. `pds_url` comes from the DID
+        // document, so a misconfigured or hostile `http://` endpoint must be refused here.
+        if !pds_url_is_password_safe(pds_url) {
+            tracing::error!(pds_url = %pds_url, "refusing to send password to a non-HTTPS PDS");
+            return Err(PdsClientError::InsecurePdsUrl {
+                url: pds_url.to_string(),
+            });
+        }
+
+        let url = format!(
+            "{}/xrpc/com.atproto.server.createSession",
+            pds_url.trim_end_matches('/')
+        );
+
+        let mut request_body = serde_json::json!({
+            "identifier": identifier,
+            "password": password,
+        });
+        if let Some(token) = auth_factor_token {
+            request_body["authFactorToken"] = serde_json::Value::String(token.to_string());
+        }
+
+        let response = self
+            .client
+            .post(&url)
+            .timeout(Duration::from_secs(30))
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| PdsClientError::NetworkError {
+                message: format!("createSession request failed: {}", e),
+            })?;
+
+        let status = response.status();
+        if status.as_u16() == 401 {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "(response body unreadable)".to_string());
+            // An account with email 2FA answers a token-less attempt with `AuthFactorTokenRequired`
+            // (and emails a code) — distinct from a wrong password, so the UI can prompt for the
+            // code instead of blaming the password.
+            if error_code_is(&body, "AuthFactorTokenRequired") {
+                return Err(PdsClientError::AuthFactorTokenRequired);
+            }
+            return Err(PdsClientError::InvalidCredentials { message: body });
+        }
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "(response body unreadable)".to_string());
+            return Err(PdsClientError::NetworkError {
+                message: format!("createSession returned {}: {}", status, body),
+            });
+        }
+
+        response.json::<CreateSessionResponse>().await.map_err(|e| {
+            PdsClientError::InvalidResponse {
+                message: format!("failed to parse createSession response: {}", e),
+            }
+        })
     }
 
     /// Try to discover the authorization server URL from the PDS's protected

@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Drive the two auth-session wrappers without a Tauri runtime: mock the IPC bridge and
-// script each command's outcome by name. The auth-session plugin rejects with plain
-// strings — the exact sentinel "user_cancelled" for a dismissed sheet, descriptive text
-// for real failures — and the wrappers must map only the former to the "cancelled" case.
+// Drive the outbound-migration source-auth wrapper without a Tauri runtime: mock the IPC
+// bridge and script each command's outcome by name. The auth-session plugin rejects with
+// plain strings — the exact sentinel "user_cancelled" for a dismissed sheet, descriptive
+// text for real failures — and the wrapper must map only the former to the "cancelled" case.
+// (The claim flow's source login is password-based — `authenticateSourcePds` — and has no
+// auth-session dance to classify, so it isn't covered here.)
 const invoke = vi.fn();
 vi.mock('@tauri-apps/api/core', () => ({
   get invoke() {
@@ -11,7 +13,7 @@ vi.mock('@tauri-apps/api/core', () => ({
   },
 }));
 
-import { startPdsAuth, startSourceAuth } from './ipc';
+import { startSourceAuth } from './ipc';
 
 const PREPARED = {
   authUrl: 'https://pds.example/oauth/authorize?request_uri=abc',
@@ -29,53 +31,6 @@ function scriptInvoke(outcomes: Record<string, () => Promise<unknown>>) {
 
 beforeEach(() => {
   invoke.mockReset();
-});
-
-describe('startPdsAuth', () => {
-  it('runs prepare → auth session → complete, passing the callback URL through', async () => {
-    scriptInvoke({
-      prepare_pds_auth: () => Promise.resolve(PREPARED),
-      'plugin:auth-session|start': () => Promise.resolve(CALLBACK_URL),
-      complete_pds_auth: () => Promise.resolve(undefined),
-    });
-
-    await expect(startPdsAuth('https://pds.example')).resolves.toBeUndefined();
-    expect(invoke).toHaveBeenCalledWith('complete_pds_auth', { callbackUrl: CALLBACK_URL });
-  });
-
-  it('maps a dismissed auth sheet to UNAUTHORIZED and never calls complete', async () => {
-    scriptInvoke({
-      prepare_pds_auth: () => Promise.resolve(PREPARED),
-      'plugin:auth-session|start': () => Promise.reject('user_cancelled'),
-    });
-
-    await expect(startPdsAuth('https://pds.example')).rejects.toEqual({ code: 'UNAUTHORIZED' });
-    expect(invoke).not.toHaveBeenCalledWith('complete_pds_auth', expect.anything());
-  });
-
-  it('maps a non-cancel auth-session failure to NETWORK_ERROR carrying the plugin message', async () => {
-    scriptInvoke({
-      prepare_pds_auth: () => Promise.resolve(PREPARED),
-      'plugin:auth-session|start': () =>
-        Promise.reject('Auth session error: The operation couldn’t be completed.'),
-    });
-
-    await expect(startPdsAuth('https://pds.example')).rejects.toEqual({
-      code: 'NETWORK_ERROR',
-      message: 'Auth session error: The operation couldn’t be completed.',
-    });
-  });
-
-  it('passes prepare failures through unchanged (already typed by Rust)', async () => {
-    scriptInvoke({
-      prepare_pds_auth: () => Promise.reject({ code: 'NETWORK_ERROR', message: 'PAR failed' }),
-    });
-
-    await expect(startPdsAuth('https://pds.example')).rejects.toEqual({
-      code: 'NETWORK_ERROR',
-      message: 'PAR failed',
-    });
-  });
 });
 
 describe('startSourceAuth', () => {

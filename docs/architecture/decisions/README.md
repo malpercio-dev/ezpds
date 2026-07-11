@@ -55,3 +55,4 @@ understand why the architecture is the way it is.
 | [0018](0018-admin-signed-request-envelope.md) | Accepted | Admin auth via per-device P-256 signed-request envelopes; master token stays as break-glass |
 | [0019](0019-authmd-agent-authentication.md) | Accepted | Adopt the auth.md convention (self-registration, human claim ceremony, jwt-bearer exchange) as the agent-auth surface |
 | [0020](0020-set-revocation-trusted-issuers.md) | Accepted | Provider-driven agent revocation via Security Event Tokens, gated on the existing `trusted_issuers` list |
+| [0021](0021-identity-ops-require-full-session.md) | Accepted | Identity/PLC ops require a full session (or granular `identity:*`), not `transition:generic`; the wallet claim flow uses a password `createSession` |
