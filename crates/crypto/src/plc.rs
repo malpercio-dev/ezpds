@@ -736,6 +736,62 @@ pub fn verify_p256_signature(
         .map_err(CryptoError::SignatureVerification)
 }
 
+/// The elliptic curve of a `did:key:` URI, derived from its multicodec prefix.
+///
+/// Returned by [`did_key_curve`] so callers that must bind an external
+/// algorithm identifier to the key material (e.g. a JWT `alg` header) can
+/// check the pairing before verifying.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DidKeyCurve {
+    /// NIST P-256 (`zDn…`, multicodec `[0x80, 0x24]`) — what this crate signs with.
+    P256,
+    /// secp256k1 (`zQ3…`, multicodec `[0xe7, 0x01]`) — the reference ecosystem's curve.
+    Secp256k1,
+}
+
+/// Report which supported curve a `did:key:` URI carries.
+///
+/// # Errors
+/// Returns `CryptoError::SignatureVerification` if the URI is not a valid
+/// multibase `did:key:` or its multicodec prefix is neither P-256 nor secp256k1.
+pub fn did_key_curve(public_key: &DidKeyUri) -> Result<DidKeyCurve, CryptoError> {
+    let multikey_bytes =
+        decode_did_key_multikey(public_key).map_err(CryptoError::SignatureVerification)?;
+    match multikey_bytes.get(..2) {
+        Some(prefix) if prefix == P256_MULTICODEC_PREFIX => Ok(DidKeyCurve::P256),
+        Some(prefix) if prefix == SECP256K1_MULTICODEC_PREFIX => Ok(DidKeyCurve::Secp256k1),
+        _ => Err(CryptoError::SignatureVerification(
+            "unsupported did:key type (multicodec prefix is neither P-256 nor secp256k1)"
+                .to_string(),
+        )),
+    }
+}
+
+/// Verify a raw ECDSA-SHA256 signature over an arbitrary message against a
+/// P-256 **or** secp256k1 `did:key:` URI.
+///
+/// The dual-curve counterpart to [`verify_p256_signature`], for callers
+/// authenticating material signed by a foreign account's `#atproto` key —
+/// which on the reference ecosystem (bsky.social) is secp256k1. Dispatches on
+/// the key's multicodec prefix exactly like PLC operation verification, and
+/// rejects non-canonical high-S signatures on both curves.
+///
+/// The message is hashed with SHA-256 internally — pass the bytes exactly as
+/// they were signed, do not pre-hash.
+///
+/// # Errors
+/// Returns `CryptoError::SignatureVerification` for a malformed or
+/// unsupported-curve public key, an unparseable or high-S signature, or a
+/// verification mismatch.
+pub fn verify_did_key_signature(
+    public_key: &DidKeyUri,
+    message: &[u8],
+    signature: &[u8; 64],
+) -> Result<(), CryptoError> {
+    verify_signature_with_key(public_key, message, signature)
+        .map_err(CryptoError::SignatureVerification)
+}
+
 // ── Audit log types ─────────────────────────────────────────────────────────
 
 /// A single entry from a plc.directory audit log.

@@ -65,6 +65,10 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 [dev-dependencies]
 tower = { workspace = true }
 tempfile = { workspace = true }
+# Minting ES256K service-auth test tokens (the curve bsky.social signs with);
+# production code only verifies, via the crypto crate's curve dispatch.
+k256 = { workspace = true }
+multibase = { workspace = true }
 wiremock = "0.6"
 # End-to-end WebSocket client for the subscribeRepos handler tests.
 tokio-tungstenite = "0.24"

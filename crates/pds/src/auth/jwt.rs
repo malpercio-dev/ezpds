@@ -348,19 +348,28 @@ struct ServiceAuthClaims {
     lxm: Option<String>,
 }
 
-/// Verify an inbound ES256 service-auth JWT — the counterpart to [`mint_service_auth_jwt`].
+/// Verify an inbound service-auth JWT — the counterpart to [`mint_service_auth_jwt`].
 ///
 /// Used by migration-mode `createAccount` to authenticate a foreign account: the client
 /// presents a token the **old** PDS minted (signed with the account's `#atproto` repo key),
 /// and this server verifies it against that key resolved from the incoming DID's document.
 ///
-/// Validates, independently of the signature: 3-part structure; header `alg == ES256`;
-/// `iss == expected_iss` (the migrating DID); `aud == expected_aud` (this server's DID);
-/// `exp` strictly in the future relative to `now`; and, when the token carries an `lxm`, that
-/// it equals `expected_lxm`. A method-unrestricted token (no `lxm`) is accepted — matching the
-/// reference PDS, whose `getServiceAuth` omits `lxm` when unrequested and caps such tokens'
-/// lifetime tightly. Signature verification is delegated to [`crypto::verify_p256_signature`]
-/// (ES256 = ECDSA-SHA256 over the exact `header.payload` bytes).
+/// The `alg` header is allowlisted to **ES256 or ES256K** — both curves atproto permits for
+/// an account's signing key; the reference ecosystem (bsky.social) signs with secp256k1, so
+/// its tokens arrive as ES256K. The declared `alg` must additionally **match the curve of the
+/// `#atproto` key** the token will be verified against (ES256 ↔ P-256 `zDn…`, ES256K ↔
+/// secp256k1 `zQ3…`): the key material is the trust anchor, so a mismatched header is
+/// algorithm confusion, not a preference to honor.
+///
+/// Validates, independently of the signature: 3-part structure; the alg allowlist + curve
+/// binding above; `iss == expected_iss` (the migrating DID); `aud == expected_aud` (this
+/// server's DID); `exp` strictly in the future relative to `now`; and, when the token carries
+/// an `lxm`, that it equals `expected_lxm`. A method-unrestricted token (no `lxm`) is
+/// accepted — matching the reference PDS, whose `getServiceAuth` omits `lxm` when unrequested
+/// and caps such tokens' lifetime tightly. Signature verification is delegated to
+/// [`crypto::verify_did_key_signature`] (ECDSA-SHA256 over the exact `header.payload` bytes,
+/// curve dispatched by the key's multicodec prefix, non-canonical high-S rejected on both
+/// curves).
 pub fn verify_service_auth_jwt(
     token: &str,
     expected_iss: &str,
@@ -381,31 +390,41 @@ pub fn verify_service_auth_jwt(
         return Err(invalid());
     }
 
-    // Header: require ES256 so a token can't downgrade the algorithm.
+    // Header: allowlist ES256/ES256K so a token can't downgrade the algorithm...
     let header_bytes = URL_SAFE_NO_PAD.decode(header_b64).map_err(|_| invalid())?;
     let header: serde_json::Value = serde_json::from_slice(&header_bytes).map_err(|_| invalid())?;
-    if header.get("alg").and_then(|v| v.as_str()) != Some("ES256") {
+    let alg_curve = match header.get("alg").and_then(|v| v.as_str()) {
+        Some("ES256") => crypto::DidKeyCurve::P256,
+        Some("ES256K") => crypto::DidKeyCurve::Secp256k1,
+        _ => {
+            return Err(ApiError::new(
+                ErrorCode::InvalidToken,
+                "service auth token must be ES256 or ES256K",
+            ))
+        }
+    };
+    // ...and require the declared alg to match the verification key's actual curve.
+    let key_curve = crypto::did_key_curve(atproto_key).map_err(|e| {
+        tracing::debug!(error = %e, "unsupported #atproto verification key");
+        ApiError::new(
+            ErrorCode::InvalidToken,
+            "the DID's #atproto verification key is not a supported curve",
+        )
+    })?;
+    if alg_curve != key_curve {
         return Err(ApiError::new(
             ErrorCode::InvalidToken,
-            "service auth token must be ES256",
+            "service auth token algorithm does not match the signing key's curve",
         ));
     }
 
     // Signature over the exact `header.payload` bytes, against the issuer's #atproto key.
+    // The crypto layer rejects non-canonical high-S signatures on both curves, using each
+    // curve's own order — atproto verifiers require low-S.
     let signing_input = format!("{header_b64}.{payload_b64}");
     let sig_bytes = URL_SAFE_NO_PAD.decode(sig_b64).map_err(|_| invalid())?;
     let sig: [u8; 64] = sig_bytes.as_slice().try_into().map_err(|_| invalid())?;
-    // atproto requires low-S canonical ECDSA signatures. `p256`'s verify accepts a mathematically
-    // valid high-S signature, so reject the malleable high-S form here before verifying — matching
-    // what atproto verifiers (and our own `mint_service_auth_jwt`, which low-S normalizes) require.
-    let parsed = p256::ecdsa::Signature::from_slice(&sig).map_err(|_| invalid())?;
-    if parsed.normalize_s().is_some() {
-        return Err(ApiError::new(
-            ErrorCode::InvalidToken,
-            "service auth signature is not low-S canonical",
-        ));
-    }
-    crypto::verify_p256_signature(atproto_key, signing_input.as_bytes(), &sig).map_err(|e| {
+    crypto::verify_did_key_signature(atproto_key, signing_input.as_bytes(), &sig).map_err(|e| {
         tracing::debug!(error = %e, "service auth signature verification failed");
         ApiError::new(
             ErrorCode::InvalidToken,
@@ -653,6 +672,121 @@ mod tests {
         );
         let err = verify_service_auth_jwt(&high_token, iss, aud, lxm, &kp.key_id, 1_001)
             .expect_err("a high-S signature must be rejected");
+        assert_eq!(err.status_code(), 401);
+    }
+
+    /// A fresh secp256k1 keypair as (signing key, `did:key:zQ3…` URI) — the key shape
+    /// bsky.social's `#atproto` signing keys have.
+    fn k256_test_key() -> (k256::ecdsa::SigningKey, crypto::DidKeyUri) {
+        let signing_key = k256::ecdsa::SigningKey::from_slice(&[0x42u8; 32]).unwrap();
+        let point = signing_key.verifying_key().to_encoded_point(true);
+        // secp256k1 multicodec varint prefix (0xe7 0x01) + compressed SEC1 point.
+        let mut multikey = vec![0xe7, 0x01];
+        multikey.extend_from_slice(point.as_bytes());
+        let uri = format!(
+            "did:key:{}",
+            multibase::encode(multibase::Base::Base58Btc, &multikey)
+        );
+        (signing_key, crypto::DidKeyUri(uri))
+    }
+
+    /// Mint a service-auth token with an arbitrary `alg` header — the test-side counterpart to
+    /// `mint_service_auth_jwt` (which is deliberately ES256-only, since Custos signs P-256).
+    fn mint_with_alg<F>(sign: F, alg: &str, iss: &str, aud: &str, lxm: &str) -> String
+    where
+        F: FnOnce(&[u8]) -> Vec<u8>,
+    {
+        let header = serde_json::json!({ "typ": "JWT", "alg": alg });
+        let payload = serde_json::json!({
+            "iss": iss, "aud": aud, "iat": 1_000, "exp": 4_000, "lxm": lxm,
+        });
+        let header_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).unwrap());
+        let payload_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap());
+        let signing_input = format!("{header_b64}.{payload_b64}");
+        let sig_b64 = URL_SAFE_NO_PAD.encode(sign(signing_input.as_bytes()));
+        format!("{signing_input}.{sig_b64}")
+    }
+
+    /// Low-S-normalized k256 ECDSA-SHA256 signature as raw 64-byte r‖s.
+    fn k256_sign_low_s(key: &k256::ecdsa::SigningKey, message: &[u8]) -> Vec<u8> {
+        use k256::ecdsa::signature::Signer;
+        let sig: k256::ecdsa::Signature = key.sign(message);
+        let sig = sig.normalize_s().unwrap_or(sig);
+        sig.to_bytes().to_vec()
+    }
+
+    /// An ES256K token signed by a secp256k1 `#atproto` key verifies — the shape a reference
+    /// PDS (bsky.social) mints for account migration; rejecting it blocked inbound migration.
+    #[test]
+    fn verify_service_auth_jwt_accepts_es256k_from_secp256k1_key() {
+        let (signing_key, key_uri) = k256_test_key();
+        let iss = "did:plc:issuer";
+        let aud = "did:web:me.example.com";
+        let lxm = "com.atproto.server.createAccount";
+        let token = mint_with_alg(
+            |b| k256_sign_low_s(&signing_key, b),
+            "ES256K",
+            iss,
+            aud,
+            lxm,
+        );
+        assert!(
+            verify_service_auth_jwt(&token, iss, aud, lxm, &key_uri, 1_001).is_ok(),
+            "a canonical ES256K token signed by the DID's secp256k1 key must verify"
+        );
+    }
+
+    /// The high-S counterpart of a valid ES256K signature is rejected — low-S canonicality is
+    /// enforced per curve (against secp256k1's order, not P-256's).
+    #[test]
+    fn verify_service_auth_jwt_rejects_high_s_es256k() {
+        let (signing_key, key_uri) = k256_test_key();
+        let iss = "did:plc:issuer";
+        let aud = "did:web:me.example.com";
+        let lxm = "com.atproto.server.createAccount";
+        let high_s_sign = |b: &[u8]| {
+            use k256::ecdsa::signature::Signer;
+            let sig: k256::ecdsa::Signature = signing_key.sign(b);
+            let low = sig.normalize_s().unwrap_or(sig);
+            let high =
+                k256::ecdsa::Signature::from_scalars(low.r().to_bytes(), (-*low.s()).to_bytes())
+                    .unwrap();
+            high.to_bytes().to_vec()
+        };
+        let token = mint_with_alg(high_s_sign, "ES256K", iss, aud, lxm);
+        let err = verify_service_auth_jwt(&token, iss, aud, lxm, &key_uri, 1_001)
+            .expect_err("a high-S ES256K signature must be rejected");
+        assert_eq!(err.status_code(), 401);
+    }
+
+    /// The declared `alg` must match the verification key's curve in both directions —
+    /// a mismatched header is algorithm confusion, not a preference to honor.
+    #[test]
+    fn verify_service_auth_jwt_rejects_alg_key_curve_mismatch() {
+        let iss = "did:plc:issuer";
+        let aud = "did:web:me.example.com";
+        let lxm = "com.atproto.server.createAccount";
+
+        // ES256 header presented with a secp256k1 key.
+        let (k256_key, k256_uri) = k256_test_key();
+        let token = mint_with_alg(|b| k256_sign_low_s(&k256_key, b), "ES256", iss, aud, lxm);
+        let err = verify_service_auth_jwt(&token, iss, aud, lxm, &k256_uri, 1_001)
+            .expect_err("ES256 header with a secp256k1 key must be rejected");
+        assert_eq!(err.status_code(), 401);
+
+        // ES256K header presented with a P-256 key.
+        let kp = crypto::generate_p256_keypair().unwrap();
+        let key = *kp.private_key_bytes;
+        let signer = repo_engine::CommitSigner::from_bytes(&key).unwrap();
+        let token = mint_with_alg(|b| signer.sign(b), "ES256K", iss, aud, lxm);
+        let err = verify_service_auth_jwt(&token, iss, aud, lxm, &kp.key_id, 1_001)
+            .expect_err("ES256K header with a P-256 key must be rejected");
+        assert_eq!(err.status_code(), 401);
+
+        // And an alg outside the allowlist is rejected outright.
+        let token = mint_with_alg(|b| signer.sign(b), "HS256", iss, aud, lxm);
+        let err = verify_service_auth_jwt(&token, iss, aud, lxm, &kp.key_id, 1_001)
+            .expect_err("a non-ECDSA alg must be rejected");
         assert_eq!(err.status_code(), 401);
     }
 
