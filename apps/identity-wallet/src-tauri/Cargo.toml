@@ -32,6 +32,9 @@ serde_json = { workspace = true }
 # rustls is the only option for TLS without adding system dependencies. form: the OAuth
 # PAR/token-exchange requests are form-encoded (feature-gated since reqwest 0.13).
 reqwest = { workspace = true, features = ["form"] }
+# Rebuild a `reqwest::Response` from parts in `oauth_client.rs` after reading a DPoP 400 body
+# (nonce challenge vs. genuine error) — `reqwest::Response: From<http::Response<T>>`.
+http = { workspace = true }
 security-framework = { version = "3", features = ["OSX_10_12"] }
 thiserror = { workspace = true }
 crypto = { workspace = true }

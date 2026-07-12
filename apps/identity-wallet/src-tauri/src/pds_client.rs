@@ -3124,7 +3124,9 @@ mod tests {
         assert!(json.contains("\"code\":\"OAUTH_FAILED\""));
     }
 
-    /// sign_plc_operation returns NetworkError on HTTP error
+    /// sign_plc_operation surfaces an HTTP error through classify_xrpc_response: a non-nonce 400
+    /// becomes a structured XrpcError carrying the server's status + error code, not a flattened
+    /// NetworkError. (The DPoP OAuthClient no longer swallows non-`use_dpop_nonce` 400s.)
     #[tokio::test]
     async fn test_sign_plc_operation_error() {
         use std::sync::{Arc, Mutex};
@@ -3167,11 +3169,19 @@ mod tests {
 
         let result = sign_plc_operation(&oauth_client, &request).await;
         assert!(result.is_err());
+        // The 400 `invalid_token` reaches classify_xrpc_response intact, so it is classified as an
+        // XrpcError that preserves the server's status and atproto error code — the whole point of
+        // surfacing (rather than swallowing) a non-nonce 400 in the DPoP client.
         match result.unwrap_err() {
-            PdsClientError::NetworkError { .. } => {
-                // Expected
+            PdsClientError::XrpcError { status, error, .. } => {
+                assert_eq!(status, 400, "status must be preserved");
+                assert_eq!(
+                    error.as_deref(),
+                    Some("invalid_token"),
+                    "the atproto error code must be preserved"
+                );
             }
-            e => panic!("Expected NetworkError, got: {:?}", e),
+            e => panic!("Expected XrpcError(400, invalid_token), got: {:?}", e),
         }
     }
 
