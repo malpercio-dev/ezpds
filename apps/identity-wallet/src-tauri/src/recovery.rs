@@ -378,8 +378,11 @@ pub async fn submit_recovery_override(
         })?;
 
     // 3. Re-fetch the DID document (it should now reflect the recovered state).
-    // Use the raw plc.directory endpoint, not the audit log.
-    let did_doc_url = format!("{}/{}", pds_client.plc_directory_url(), did);
+    // Fetch the PLC *data* document (`/{did}/data`), not the W3C DID document
+    // (`/{did}`): the per-identity cache expects the PLC shape (`rotationKeys`,
+    // `services` map) — the W3C form has neither, and caching it degrades the
+    // home card's custody badge to "Unknown".
+    let did_doc_url = format!("{}/{}/data", pds_client.plc_directory_url(), did);
     let resp = pds_client
         .client()
         .get(&did_doc_url)
@@ -1238,17 +1241,19 @@ mod tests {
             }
         ]);
 
-        // DID document reflecting recovered state
+        // DID document reflecting recovered state — the PLC *data* shape (with
+        // rotationKeys), which is what the per-identity cache expects.
         let recovered_did_doc = serde_json::json!({
-            "id": did,
-            "verificationMethod": [],
-            "service": [
-                {
-                    "id": "#atproto_pds",
+            "did": did,
+            "alsoKnownAs": [],
+            "rotationKeys": ["did:key:zRecoveredDeviceKey"],
+            "verificationMethods": {},
+            "services": {
+                "atproto_pds": {
                     "type": "AtprotoPersonalDataServer",
-                    "serviceEndpoint": "https://pds.test"
+                    "endpoint": "https://pds.test"
                 }
-            ]
+            }
         });
 
         // Setup mock expectations:
@@ -1266,9 +1271,10 @@ mod tests {
                 .json_body(updated_audit_log_json.clone());
         });
 
-        // 3. GET /{did} - fetch updated DID document
+        // 3. GET /{did}/data - fetch updated DID document (PLC data shape; the
+        //    cache's readers need rotationKeys)
         mock_server.mock(|when, then| {
-            when.method(GET).path(format!("/{did}"));
+            when.method(GET).path(format!("/{did}/data"));
             then.status(200)
                 .header("content-type", "application/json")
                 .json_body(recovered_did_doc.clone());
