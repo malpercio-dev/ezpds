@@ -2952,10 +2952,18 @@ mod tests {
                 }]));
         });
 
-        // ─ Mock plc.directory GET (DID doc refetch) ─
+        // ─ Mock plc.directory GET (DID doc refetch — the PLC *data* document,
+        //   the cached shape with rotationKeys) ─
         plc.mock(|when, then| {
-            when.method(httpmock::Method::GET).path(format!("/{}", did));
-            then.status(200).json_body(serde_json::json!({ "id": did }));
+            when.method(httpmock::Method::GET)
+                .path(format!("/{}/data", did));
+            then.status(200).json_body(serde_json::json!({
+                "did": did,
+                "alsoKnownAs": ["at://alice.test"],
+                "rotationKeys": [device_key_id.clone(), "did:key:zNEWSIGN"],
+                "verificationMethods": { "atproto": "did:key:zNEWSIGN" },
+                "services": { "atproto_pds": { "type": "AtprotoPersonalDataServer", "endpoint": &dest_url } }
+            }));
         });
 
         // ─ Mock dest.activateAccount ─

@@ -784,6 +784,32 @@ fn get_stored_did_doc(
     }
 }
 
+/// Re-fetch a claimed identity's PLC data document from plc.directory and re-store it
+/// in the per-identity cache, returning the fresh document.
+///
+/// The cache self-heal: earlier builds cached the W3C DID document (or a doc with
+/// empty `rotationKeys`) after claim/migration/recovery, which starves the home
+/// card's custody badge and hides the migrate entry. `IdentityListHome` calls this
+/// (best-effort) whenever a cached doc is missing or has no `rotationKeys`, so stale
+/// caches repair on the next home load without user action.
+#[tauri::command]
+async fn refresh_did_doc(
+    state: tauri::State<'_, oauth::AppState>,
+    did: String,
+) -> Result<serde_json::Value, String> {
+    let did_doc = state
+        .pds_client()
+        .fetch_plc_data_document(&did)
+        .await
+        .map_err(|e| format!("failed to fetch PLC data document: {e}"))?;
+    let json = serde_json::to_string(&did_doc)
+        .map_err(|e| format!("failed to serialize DID document: {e}"))?;
+    identity_store::IdentityStore
+        .store_did_doc(&did, &json)
+        .map_err(|e| format!("failed to store DID document: {e}"))?;
+    Ok(did_doc)
+}
+
 /// Retrieve the device key ID (did:key URI) for a claimed identity.
 ///
 /// Returns the device key's did:key URI, which can be compared against rotation keys
@@ -973,6 +999,7 @@ pub fn run() {
             get_available_user_domains,
             list_identities,
             get_stored_did_doc,
+            refresh_did_doc,
             get_device_key_id,
             get_pds_url,
             save_pds_url,

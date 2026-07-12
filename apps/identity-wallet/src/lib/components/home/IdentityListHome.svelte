@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-  import { listIdentities, getStoredDidDoc, getDeviceKeyId, checkIdentityStatus, type UnauthorizedChange, type IdentityStatus } from '$lib/ipc';
+  import { listIdentities, getStoredDidDoc,
+    refreshDidDoc, getDeviceKeyId, checkIdentityStatus, type UnauthorizedChange, type IdentityStatus } from '$lib/ipc';
   import { extractPdsFromPlcDoc, extractHandle, truncateDid } from '$lib/did-doc-utils';
   import DIDAvatar from './DIDAvatar.svelte';
 
@@ -68,10 +69,23 @@
 
       for (const did of dids) {
         try {
-          const [docResult, keyIdResult] = await Promise.all([
+          let [docResult, keyIdResult] = await Promise.all([
             getStoredDidDoc(did),
             getDeviceKeyId(did),
           ]);
+
+          // Cache self-heal: earlier builds cached DID docs without rotationKeys
+          // (the W3C shape), which starves the custody badge and hides the migrate
+          // entry. Re-fetch the PLC data document once and re-store it; on failure
+          // keep whatever the cache had.
+          const cachedKeys = docResult?.rotationKeys;
+          if (!docResult || !Array.isArray(cachedKeys) || cachedKeys.length === 0) {
+            try {
+              docResult = await refreshDidDoc(did);
+            } catch (e) {
+              console.warn(`DID doc refresh failed for ${did}:`, e);
+            }
+          }
 
           const handle = docResult ? extractHandle(docResult) : null;
           const pdsUrl = docResult ? extractPdsFromPlcDoc(docResult) : null;

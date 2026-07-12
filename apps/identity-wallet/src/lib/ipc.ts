@@ -605,6 +605,15 @@ export const listIdentities = (): Promise<string[]> =>
 export const getStoredDidDoc = (did: string): Promise<Record<string, unknown> | null> =>
   invoke('get_stored_did_doc', { did });
 
+/**
+ * Re-fetch an identity's PLC data document from plc.directory and re-store it in
+ * the per-identity cache. The cache self-heal for docs written by earlier builds
+ * without `rotationKeys` (which starve the custody badge and hide the migrate
+ * entry). Best-effort callers should fall back to the cached doc on failure.
+ */
+export const refreshDidDoc = (did: string): Promise<Record<string, unknown>> =>
+  invoke('refresh_did_doc', { did });
+
 export const getDeviceKeyId = (did: string): Promise<string> =>
   invoke('get_device_key_id', { did });
 

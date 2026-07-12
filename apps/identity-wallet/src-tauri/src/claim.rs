@@ -1030,10 +1030,15 @@ pub(crate) async fn submit_claim_impl(
             }
         })?;
 
-    // 3c: Re-fetch the DID document from plc.directory
+    // 3c: Re-fetch the DID document from plc.directory. This must be the PLC *data*
+    // document (`/{did}/data`): the previous `discover_pds`-based rebuild parsed the
+    // W3C document, whose `PlcDidDocument.rotation_keys` is empty by construction —
+    // so the cache carried `rotationKeys: []`, the home card's custody badge showed
+    // "Unknown", and the migrate entry (gated on rotationKeys[0] == device key)
+    // never appeared for a claimed identity.
     tracing::debug!(did = %claim_state.did, "re-fetching DID document after claim");
-    let (_, updated_did_doc) = pds_client
-        .discover_pds(&claim_state.did)
+    let did_doc_value = pds_client
+        .fetch_plc_data_document(&claim_state.did)
         .await
         .map_err(|e| {
             tracing::error!(did = %claim_state.did, error = %e, "failed to re-fetch DID document");
@@ -1041,23 +1046,6 @@ pub(crate) async fn submit_claim_impl(
                 message: format!("failed to re-fetch DID document: {}", e),
             }
         })?;
-
-    // Store the updated DID document as JSON string
-    let did_doc_value = serde_json::json!({
-        "did": updated_did_doc.did,
-        "alsoKnownAs": updated_did_doc.also_known_as,
-        "rotationKeys": updated_did_doc.rotation_keys,
-        "verificationMethods": updated_did_doc.verification_methods,
-        "services": updated_did_doc.services
-            .iter()
-            .map(|(id, svc)| {
-                (id.clone(), serde_json::json!({
-                    "type": svc.service_type,
-                    "endpoint": svc.endpoint,
-                }))
-            })
-            .collect::<serde_json::Map<String, serde_json::Value>>()
-    });
 
     let did_doc_json =
         serde_json::to_string(&did_doc_value).map_err(|e| ClaimError::NetworkError {
@@ -2815,24 +2803,26 @@ mod tests {
             then.status(200).json_body(serde_json::json!({}));
         });
 
-        // Mock GET to plc.directory (re-fetch DID doc)
-        // Use mock_server.base_url() as PDS endpoint so HEAD reachability check
-        // routes through the mock server instead of hitting the real internet.
+        // Mock GET to plc.directory (re-fetch the PLC *data* document — the cached
+        // shape carries rotationKeys, which the home card's custody badge and the
+        // migrate-entry gate read).
         let pds_endpoint = mock_server.base_url();
         let updated_doc = serde_json::json!({
-            "id": "did:plc:test",
+            "did": "did:plc:test",
             "alsoKnownAs": ["at://alice.example.com"],
-            "verificationMethod": [],
-            "service": [{
-                "id": "#atproto_pds",
-                "type": "AtprotoPersonalDataServer",
-                "serviceEndpoint": pds_endpoint
-            }]
+            "rotationKeys": ["did:key:zQ3test"],
+            "verificationMethods": {},
+            "services": {
+                "atproto_pds": {
+                    "type": "AtprotoPersonalDataServer",
+                    "endpoint": pds_endpoint
+                }
+            }
         });
 
         mock_server.mock(|when, then| {
             when.method(httpmock::Method::GET)
-                .path("/did:plc:test")
+                .path("/did:plc:test/data")
                 .header_exists("host");
             then.status(200)
                 .header("content-type", "application/json")
@@ -2889,6 +2879,14 @@ mod tests {
         );
         let claim_result = result.unwrap();
         assert_eq!(claim_result.updated_did_doc["did"], "did:plc:test");
+        // The cached doc must carry rotationKeys (PLC data shape) — the home card's
+        // custody badge and the migrate-entry gate read rotationKeys[0].
+        let cached = crate::identity_store::IdentityStore
+            .get_did_doc("did:plc:test")
+            .expect("get_did_doc should succeed")
+            .expect("DID doc should be cached after claim");
+        let cached: serde_json::Value = serde_json::from_str(&cached).expect("cached doc parses");
+        assert_eq!(cached["rotationKeys"][0], "did:key:zQ3test");
     }
 
     /// Test Failure: submit_claim returns PlcDirectoryError when POST fails
