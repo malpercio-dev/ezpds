@@ -1,7 +1,9 @@
 # MM-241 live migration round trip — runbook + record
 
-**Status: LEG (a) EXECUTED 2026-07-11 (pass — claim-only custody handoff, see the execution
-record); legs (b)–(d) REWRITTEN 2026-07-11 for the wallet-custody path, pending execution.**
+**Status: LEGS (a) AND (r) EXECUTED (both pass — see the execution record); legs (b)–(d)
+pending.** Leg (r) additionally flushed out and validated fixes for five defects
+(MM-295/297/298/299 server-side, MM-300 wallet-side) before any leg touched the real
+identity.
 This document is both the checklist for the live bsky.social migration round trip and, after
 execution, the permanent record of the run. A human operator executes or supervises every
 leg: the run touches the real plc.directory, the real bsky.social, and permanent `did:plc`
@@ -204,17 +206,24 @@ Record which driver was used per leg.
 | Leg | Date (UTC) | Operator | Driver | Audit-log check | Resolution check | Result | Artifacts |
 |---|---|---|---|---|---|---|---|
 | (a) claim (custody handoff) | 2026-07-11 23:46 | jacob | wallet (Obsign TestFlight build from `c7373fc3`, on device) | ✅ newest op `createdAt` 2026-07-11T23:46:15.234Z, not nullified; `rotationKeys[0]` = wallet key `did:key:zDnaevBrDyAkZPmxv9v7cG7zTXmdqasuf12vuh5zRbMrUeQk3`; both prior bsky `zQ3…` keys preserved in original order; services unchanged | ✅ `resolveHandle` → DID; `describeRepo` on fibercap PDS `handleIsCorrect: true`; AppView `getProfile` intact | ☑ pass | audit-log + resolution curl outputs in session transcript |
-| (r) rehearsal (throwaway, sim) | — | — | wallet (simulator) | — | — | ☐ pass ☐ fail ☐ skipped | throwaway DID: — |
+| (r) rehearsal (throwaway, sim) | 2026-07-12 13:56 | jacob | wallet (simulator; staging v0.4.4-train source → production v0.4.4 dest) | ✅ newest op `createdAt` 2026-07-12T13:56:58.379Z, not nullified; **self-signed**; `rotationKeys[0]` = sim device key `did:key:zDnaechUQpzVqd51Cvv5oJ1CwArPLXq6zYbWMGw1dmKLGkAni`, [1] = production's recommended key; `atproto_pds` → `https://obsign.org` | ✅ repo serves from production (`getLatestCommit` rev `3mqhdcysv6e22`); staging reports `deactivated` at the same rev (clean handoff, no fork); handle resolves on production | ☑ pass | throwaway DID: `did:plc:ufko7jay3hdaxxsryhqwacpi` (`maltest456.ezpds-staging.up.railway.app`); abandoned active on production. Curl outputs in session transcript |
 | (b) outbound self-signed | — | — | wallet (device) | — | — | ☐ pass ☐ fail | — |
 | (c) hop staging → production | — | — | wallet (device) | — | — | ☐ pass ☐ fail | — |
 | (d) return production → staging | — | — | wallet (device) | — | — | ☐ pass ☐ fail | — |
 
 DIDs used: `did:plc:u7j7xdhvkwx3xlf6xjkbpdn7` (`malpercio-obsign.bsky.social`, dedicated test account)
-Bugs filed: MM-288 (OAuth client_id/redirect reverse-FQDN), MM-289 (identity scope requires
-full session), MM-290 (error surfacing), MM-291 (empty body on no-input procedures), MM-293
-(claim DID not registered before device-key lookup), MM-294 (PLC verification was
-P-256-only) — all found by leg (a)'s earlier attempts, all fixed and merged before the
-passing run.
+Bugs filed — leg (a) attempts: MM-288 (OAuth client_id/redirect reverse-FQDN), MM-289
+(identity scope requires full session), MM-290 (error surfacing), MM-291 (empty body on
+no-input procedures), MM-293 (claim DID not registered before device-key lookup), MM-294
+(PLC verification was P-256-only). Leg (r) attempts: MM-295 (Custos rejected the RFC 9449
+DPoP scheme), MM-297 (consent-page checkboxes outside the form — every OAuth grant reduced
+to bare `atproto`), MM-298 (preferences routes rejected deactivated accounts), MM-299
+(migration-mode createAccount not resumable), MM-300 (post-migration DID-doc cache stored
+the W3C doc — "Unknown" custody badge), plus MM-296 (repo-write DPoP binding gap, adjacent
+finding). All fixed and merged before each leg's passing run (server fixes shipped as
+v0.4.4; MM-300 is wallet-side, in the next build). Leg (r) also left one stranded
+deactivated throwaway on production (`did:plc:qguepidxfcb6tw52czs6tdkf`, pre-MM-299) —
+harmless junk.
 Findings / deviations: **Leg (a) as executed was claim-only.** The shipped "Bring an
 identity" flow implements the phased custody-first design (wallet key inserted as
 `rotationKeys[0]` via bsky.social's email-tokened `signPlcOperation`): it did **not**
