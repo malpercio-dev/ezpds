@@ -1,13 +1,13 @@
 # MM-241 live migration round trip — runbook + record
 
-**Status: LEGS (a), (r), (b), AND (c) EXECUTED (all pass — see the execution record);
-leg (d) pending, hard-blocked by MM-310** (staging cached this DID's document as leg (b)'s
-destination, and `resolve_did_document` is cache-first with no refresh — leg (d)'s inbound
-`createAccount` on staging would deterministically reject production's service token
-against the fossil doc; land MM-310 + staging deploy first). Leg (r) flushed out and
-validated fixes for five defects (MM-295/297/298/299 server-side, MM-300 wallet-side)
-before any leg touched the real identity; legs (b)/(c) flushed out three more
-(MM-301/302 wallet-side, MM-304 server-side).
+**Status: COMPLETE — ALL LEGS PASSED (a), (r), (b), (c), (d); round trip closed
+2026-07-12 22:12 UTC.** The identity travelled bsky.social → staging → production →
+staging with the Secure-Enclave device key self-signing every hop (`rotationKeys[0]`
+unchanged through four PLC ops) and the repo at the same rev throughout (no forks, no
+data loss). The run flushed out and validated fixes for ten defects across every leg:
+leg (r): MM-295/297/298/299 (server) + MM-300 (wallet); legs (b)/(c): MM-301/302 (wallet)
++ MM-304 (server); leg (d): MM-310 + MM-316 (server). Each was fixed, deployed, and
+validated by the leg that found it before the run proceeded.
 This document is both the checklist for the live bsky.social migration round trip and, after
 execution, the permanent record of the run. A human operator executes or supervises every
 leg: the run touches the real plc.directory, the real bsky.social, and permanent `did:plc`
@@ -213,7 +213,7 @@ Record which driver was used per leg.
 | (r) rehearsal (throwaway, sim) | 2026-07-12 13:56 | mal | wallet (simulator; staging v0.4.4-train source → production v0.4.4 dest) | ✅ newest op `createdAt` 2026-07-12T13:56:58.379Z, not nullified; **self-signed**; `rotationKeys[0]` = sim device key `did:key:zDnaechUQpzVqd51Cvv5oJ1CwArPLXq6zYbWMGw1dmKLGkAni`, [1] = production's recommended key; `atproto_pds` → `https://obsign.org` | ✅ repo serves from production (`getLatestCommit` rev `3mqhdcysv6e22`); staging reports `deactivated` at the same rev (clean handoff, no fork); handle resolves on production | ☑ pass | throwaway DID: `did:plc:ufko7jay3hdaxxsryhqwacpi` (`maltest456.ezpds-staging.up.railway.app`); abandoned active on production. Curl outputs in session transcript |
 | (b) outbound self-signed | 2026-07-12 19:08 | mal | wallet (TestFlight build from PR #205 merge, on device; source bsky.social, dest staging v0.4.5+MM-304) | ✅ newest op `createdAt` 2026-07-12T19:08:52.762Z, not nullified; **self-signed**; `rotationKeys[0]` = `WALLET_KEY`, [1] = staging's recommended key `did:key:zDnaeUWgDx6kAswki3VyjN42SDNTYBobX4hjR1tf4qn6AeYb3` (bsky's `zQ3…` keys replaced); `atproto_pds` → `https://ezpds-staging.up.railway.app` | ✅ staging `getRepoStatus` `active: true` rev `3mqdcm57v4u22`; bsky auth-gates the repo's sync endpoints post-deactivation (no clean public probe); handle unchanged in `alsoKnownAs` (dangling by design — bsky no longer actively hosts it) | ☑ pass | took three fix rounds to clear, each one step further down the pipeline: MM-301 → MM-302 → MM-304 (see bugs list). Curl outputs in session transcript + MM-241 comment |
 | (c) hop staging → production | 2026-07-12 19:45 | mal | wallet (same TestFlight build as leg (b), on device; both ends v0.4.5-train) | ✅ newest op `createdAt` 2026-07-12T19:45:56.147Z, not nullified; **self-signed**; `rotationKeys[0]` = `WALLET_KEY` (third PLC op it survives), [1] = production's recommended key `did:key:zDnaepBn1v6K4awycKx8J5rnSACoAf6QgsYon6YEFY8jD4p6R`; `atproto_pds` → `https://obsign.org` | ✅ production `getRepoStatus` `active: true` rev `3mqdcm57v4u22`; staging reports `deactivated` at the **same rev** (lossless handoff, no fork) | ☑ pass | zero new walls — first leg needing no code changes. Pre-flight snag (no code fix): source account had no password (MM-306) and a typo'd email (MM-308) — unblocked via `requestPasswordReset` + token from staging Railway logs (log-only email sender); MM-309 filed for operator repair ops. Curl outputs in session transcript + MM-241 comment |
-| (d) return production → staging | — | — | wallet (device) | — | — | ☐ pass ☐ fail | — |
+| (d) return production → staging | 2026-07-12 22:12 | mal | wallet (same TestFlight build as legs (b)/(c), on device; staging dest running MM-310+MM-316 fixes) | ✅ newest op `createdAt` 2026-07-12T22:12:08.748Z, not nullified; **self-signed** (fourth consecutive op by `WALLET_KEY` at `rotationKeys[0]`); [1] = staging's key (same as leg (b) — the MM-299 resume reuses the account's existing signing key); `atproto_pds` → staging | ✅ staging `getRepoStatus` `active: true`, `getLatestCommit` serves rev `3mqdcm57v4u22` — **the same rev the repo left bsky.social with; zero forks or data loss across four residencies**; handle resolves on staging; production reports `deactivated` at the same rev | ☑ pass | attempt 1 failed at transfer-repo: MM-316 (`importRepo` first-write-wins guard vs the MM-299-resumed prior-residency account). Attempt 2 after the fix deployed: transfer phase fast-forwarded (same-root import no-op, empty blob list), clean completion. **ROUND TRIP CLOSED.** Curl outputs in session transcript + MM-241 comments |
 
 DIDs used: `did:plc:u7j7xdhvkwx3xlf6xjkbpdn7` (`malpercio-obsign.bsky.social`, dedicated test account)
 Bugs filed — leg (a) attempts: MM-288 (OAuth client_id/redirect reverse-FQDN), MM-289
@@ -239,7 +239,11 @@ pre-flight: MM-305 (wallet change-handle flow), MM-306 (sovereign passwordless l
 migrated accounts land with no password by design), MM-307 (Custos updateHandle doesn't
 push the alsoKnownAs PLC op), MM-308 (email normalization), MM-309 (operator
 account-repair ops), MM-310 (DID-doc cache never refreshes; `refreshIdentity` is a no-op —
-**the leg (d) blocker**).
+leg (d) blocker #1, fixed + confirmed live pre-retry). Leg (d) attempts: MM-316
+(`importRepo` first-write-wins guard rejects a return into a prior residency — the
+MM-299-resumed account still carried leg (b)'s repo root; leg (d) blocker #2, fixed with
+idempotent same-root import + CAS replace-on-deactivated; the passing run exercised the
+idempotent tier).
 Findings / deviations: **Leg (a) as executed was claim-only.** The shipped "Bring an
 identity" flow implements the phased custody-first design (wallet key inserted as
 `rotationKeys[0]` via bsky.social's email-tokened `signPlcOperation`): it did **not**
