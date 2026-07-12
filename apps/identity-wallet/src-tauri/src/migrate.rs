@@ -706,28 +706,18 @@ pub async fn submit_migration_op(
             message: format!("failed to cache updated PLC log: {e}"),
         })?;
 
-    // Fetch the PLC *data* document (`/{did}/data`), not the W3C DID document
-    // (`/{did}`): the per-identity cache — and everything that reads it (the home
-    // card's rotationKeys[0] custody badge, `extractPdsFromPlcDoc`'s `services`
-    // map) — expects the PLC shape. The W3C form carries no `rotationKeys`, so
-    // caching it degrades the badge to "Unknown".
-    let did_doc_url = format!("{}/{}/data", pds_client.plc_directory_url(), did);
-    let resp = pds_client
-        .client()
-        .get(&did_doc_url)
-        .send()
-        .await
-        .map_err(|e| MigrateError::NetworkError {
-            message: format!("failed to fetch DID document: {e}"),
-        })?;
-    if !resp.status().is_success() {
-        return Err(MigrateError::NetworkError {
-            message: format!("DID document fetch returned {}", resp.status()),
-        });
-    }
-    let did_doc: serde_json::Value = resp.json().await.map_err(|e| MigrateError::NetworkError {
-        message: format!("failed to parse DID document: {e}"),
-    })?;
+    // Fetch the PLC *data* document, not the W3C DID document: the per-identity
+    // cache — and everything that reads it (the home card's rotationKeys[0]
+    // custody badge, `extractPdsFromPlcDoc`'s `services` map) — expects the PLC
+    // shape. The W3C form carries no `rotationKeys`, so caching it degrades the
+    // badge to "Unknown".
+    let did_doc =
+        pds_client
+            .fetch_plc_data_document(did)
+            .await
+            .map_err(|e| MigrateError::NetworkError {
+                message: format!("failed to fetch DID document: {e}"),
+            })?;
     store
         .store_did_doc(did, &serde_json::to_string(&did_doc).unwrap_or_default())
         .map_err(|e| MigrateError::SigningFailed {

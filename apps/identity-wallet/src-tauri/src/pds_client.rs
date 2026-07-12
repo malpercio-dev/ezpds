@@ -1131,6 +1131,42 @@ impl PdsClient {
         })
     }
 
+    /// Fetch the PLC *data* document for a DID.
+    ///
+    /// Calls `GET {plc_directory_url}/{did}/data` — the PLC-native shape
+    /// (`did, alsoKnownAs, rotationKeys, verificationMethods, services`), which is
+    /// what the per-identity DID-doc cache stores and its readers (the home card's
+    /// `rotationKeys[0]` custody badge, `extractPdsFromPlcDoc`) parse. The W3C
+    /// document (`GET /{did}`) carries no `rotationKeys` and must never be cached.
+    pub async fn fetch_plc_data_document(
+        &self,
+        did: &str,
+    ) -> Result<serde_json::Value, PdsClientError> {
+        let url = format!("{}/{}/data", self.plc_directory_url, did);
+        let resp =
+            self.client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| PdsClientError::NetworkError {
+                    message: format!("failed to fetch PLC data document: {}", e),
+                })?;
+
+        match resp.status() {
+            s if s == 404 => return Err(PdsClientError::DidNotFound),
+            s if !s.is_success() => {
+                return Err(PdsClientError::NetworkError {
+                    message: format!("PLC data document fetch returned {}", s),
+                });
+            }
+            _ => {}
+        }
+
+        resp.json().await.map_err(|e| PdsClientError::NetworkError {
+            message: format!("failed to parse PLC data document: {}", e),
+        })
+    }
+
     /// Submit a signed PLC operation to plc.directory.
     ///
     /// Calls `POST {plc_directory_url}/{did}` with the signed operation as JSON body.
