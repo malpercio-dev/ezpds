@@ -14,8 +14,8 @@ use serde_json::Value;
 
 use crate::app::AppState;
 use crate::identity_resolution::{
-    resolve_did_document, resolve_handle_to_did, verified_handle_for_did,
-    verified_handle_for_identifier,
+    resolve_did_document, resolve_did_document_force_refresh, resolve_handle_to_did,
+    verified_handle_for_did, verified_handle_for_identifier,
 };
 
 #[derive(Deserialize)]
@@ -59,16 +59,20 @@ pub async fn resolve_identity_handler(
     State(state): State<AppState>,
     Query(params): Query<ResolveIdentityQuery>,
 ) -> Result<Json<IdentityInfoResponse>, ApiError> {
-    resolve_identity(&state, &params.identifier).await.map(Json)
+    resolve_identity(&state, &params.identifier, false)
+        .await
+        .map(Json)
 }
 
 pub async fn refresh_identity_handler(
     State(state): State<AppState>,
     Json(payload): Json<RefreshIdentityRequest>,
 ) -> Result<Json<IdentityInfoResponse>, ApiError> {
-    // ezpds does not maintain a separate remote-identity cache today. Resolving through the shared
-    // path still re-checks the authoritative handle and DID-document sources available to the PDS.
-    resolve_identity(&state, &payload.identifier)
+    // refreshIdentity's contract is "purge caches, re-resolve, return the fresh view". Force a
+    // fresh fetch from the authoritative DID source (plc.directory / did:web) and rewrite the
+    // cache row, rather than serving the possibly-stale cached document a plain resolveIdentity
+    // would return.
+    resolve_identity(&state, &payload.identifier, true)
         .await
         .map(Json)
 }
@@ -76,9 +80,10 @@ pub async fn refresh_identity_handler(
 async fn resolve_identity(
     state: &AppState,
     identifier: &str,
+    force_refresh: bool,
 ) -> Result<IdentityInfoResponse, ApiError> {
     if identifier.starts_with("did:") {
-        let did_doc = resolve_did_document(state, identifier).await?;
+        let did_doc = resolve_doc(state, identifier, force_refresh).await?;
         let handle = verified_handle_for_did(state, identifier, &did_doc).await?;
         return Ok(IdentityInfoResponse {
             did: identifier.to_string(),
@@ -90,7 +95,7 @@ async fn resolve_identity(
     let did = resolve_handle_to_did(state, identifier)
         .await?
         .ok_or_else(|| ApiError::new(ErrorCode::HandleNotFound, "handle not found"))?;
-    let did_doc = resolve_did_document(state, &did).await?;
+    let did_doc = resolve_doc(state, &did, force_refresh).await?;
     let handle = verified_handle_for_identifier(state, &did, &did_doc, identifier).await?;
 
     Ok(IdentityInfoResponse {
@@ -98,6 +103,16 @@ async fn resolve_identity(
         handle,
         did_doc,
     })
+}
+
+/// Resolve a DID document cache-first, or force-refreshed from the authoritative source when
+/// `force_refresh` is set (the `refreshIdentity` path).
+async fn resolve_doc(state: &AppState, did: &str, force_refresh: bool) -> Result<Value, ApiError> {
+    if force_refresh {
+        resolve_did_document_force_refresh(state, did).await
+    } else {
+        resolve_did_document(state, did).await
+    }
 }
 
 #[cfg(test)]
@@ -372,22 +387,30 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_identity_returns_identity_info() {
-        let state = test_state().await;
+        // The handle-identifier path: resolve handle → DID locally, then force-refresh the DID
+        // document from the authoritative source (a plc mock here, since refreshIdentity no longer
+        // serves the cached document).
+        let mock_server = MockServer::start().await;
         let did = "did:plc:refreshidentity12345678901";
         let handle = "refresh.test.example.com";
+        let doc = json!({
+            "@context": ["https://www.w3.org/ns/did/v1"],
+            "id": did,
+            "alsoKnownAs": [format!("at://{handle}")],
+            "verificationMethod": [],
+            "service": []
+        });
+        Mock::given(method("GET"))
+            .and(path(format!("/{did}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&doc))
+            .mount(&mock_server)
+            .await;
+
+        let state = test_state_with_plc_url(mock_server.uri()).await;
         seed_handle(&state.db, handle, did).await;
-        seed_did_document(
-            &state.db,
-            did,
-            json!({
-                "@context": ["https://www.w3.org/ns/did/v1"],
-                "id": did,
-                "alsoKnownAs": [format!("at://{handle}")],
-                "verificationMethod": [],
-                "service": []
-            }),
-        )
-        .await;
+        // A cached row exists (as it would for a hosted/migrated account); refresh must re-resolve
+        // rather than serve it.
+        seed_did_document(&state.db, did, doc).await;
 
         let response = app(state)
             .oneshot(post_json(
@@ -402,6 +425,115 @@ mod tests {
         assert_eq!(body["did"], did);
         assert_eq!(body["handle"], handle);
         assert_eq!(body["didDoc"]["id"], did);
+    }
+
+    #[tokio::test]
+    async fn refresh_identity_force_refreshes_and_rewrites_cached_document() {
+        // refreshIdentity must re-resolve from the authoritative source and heal the cache: a stale
+        // cached doc is replaced by plc.directory's current document, and a subsequent cache-first
+        // resolveDid then serves the fresh doc without another network fetch.
+        let mock_server = MockServer::start().await;
+        let did = "did:plc:refreshrewrite1234567890";
+        let handle = "refresh.test.example.com";
+
+        let fresh_doc = json!({
+            "@context": ["https://www.w3.org/ns/did/v1"],
+            "id": did,
+            "alsoKnownAs": [format!("at://{handle}")],
+            "verificationMethod": [{
+                "id": format!("{did}#atproto"),
+                "type": "Multikey",
+                "controller": did,
+                "publicKeyMultibase": "zFreshKey",
+            }],
+            "service": [{
+                "id": "#atproto_pds",
+                "type": "AtprotoPersonalDataServer",
+                "serviceEndpoint": "https://new.example.com",
+            }]
+        });
+        // Exactly one plc fetch: refreshIdentity's. The later cache-first resolveDid must not add
+        // a second.
+        Mock::given(method("GET"))
+            .and(path(format!("/{did}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&fresh_doc))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let state = test_state_with_plc_url(mock_server.uri()).await;
+        seed_handle(&state.db, handle, did).await;
+        // Stale cached doc: a fossil key and an outdated PDS endpoint.
+        seed_did_document(
+            &state.db,
+            did,
+            json!({
+                "@context": ["https://www.w3.org/ns/did/v1"],
+                "id": did,
+                "alsoKnownAs": [format!("at://{handle}")],
+                "verificationMethod": [{
+                    "id": format!("{did}#atproto"),
+                    "type": "Multikey",
+                    "controller": did,
+                    "publicKeyMultibase": "zFossilKey",
+                }],
+                "service": [{
+                    "id": "#atproto_pds",
+                    "type": "AtprotoPersonalDataServer",
+                    "serviceEndpoint": "https://old.example.com",
+                }]
+            }),
+        )
+        .await;
+        let db = state.db.clone();
+
+        // refreshIdentity returns the fresh document, not the stale cache.
+        let refresh_resp = app(state.clone())
+            .oneshot(post_json(
+                "/xrpc/com.atproto.identity.refreshIdentity",
+                json!({ "identifier": did }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(refresh_resp.status(), StatusCode::OK);
+        let refresh_body = body_json(refresh_resp).await;
+        assert_eq!(refresh_body["did"], did);
+        assert_eq!(refresh_body["handle"], handle);
+        assert_eq!(
+            refresh_body["didDoc"]["service"][0]["serviceEndpoint"],
+            "https://new.example.com"
+        );
+
+        // The cache row was rewritten with the fresh document.
+        let cached: String = sqlx::query_scalar("SELECT document FROM did_documents WHERE did = ?")
+            .bind(did)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        let cached: serde_json::Value = serde_json::from_str(&cached).unwrap();
+        assert_eq!(
+            cached["service"][0]["serviceEndpoint"], "https://new.example.com",
+            "refreshIdentity must rewrite the cached DID document"
+        );
+        assert_eq!(
+            cached["verificationMethod"][0]["publicKeyMultibase"],
+            "zFreshKey"
+        );
+
+        // A subsequent cache-first resolveDid serves the healed document, with no second plc fetch.
+        let resolve_resp = app(state)
+            .oneshot(get(format!(
+                "/xrpc/com.atproto.identity.resolveDid?did={}",
+                query_encode(did)
+            )))
+            .await
+            .unwrap();
+        assert_eq!(resolve_resp.status(), StatusCode::OK);
+        let resolve_body = body_json(resolve_resp).await;
+        assert_eq!(
+            resolve_body["didDoc"]["service"][0]["serviceEndpoint"], "https://new.example.com",
+            "resolveDid must serve the refreshed document from cache"
+        );
     }
 
     #[tokio::test]

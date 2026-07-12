@@ -348,6 +348,35 @@ struct ServiceAuthClaims {
     lxm: Option<String>,
 }
 
+/// The outcome of a failed [`verify_service_auth_jwt`], separating a signature/key mismatch —
+/// which the caller may retry after force-refreshing a possibly-stale `#atproto` key — from every
+/// other, non-retriable validation failure.
+#[derive(Debug)]
+pub enum ServiceAuthError {
+    /// The signature did not verify against the supplied `#atproto` key. That key may be a fossil
+    /// (the DID's PLC document was rotated after this server cached it); re-resolving the key from
+    /// the authoritative source and verifying once more may succeed.
+    SignatureMismatch,
+    /// A non-retriable failure: a malformed token, an `alg` outside the ES256/ES256K allowlist or
+    /// not matching the key's curve, a wrong `iss`/`aud`, an expired token, or an `lxm` that does
+    /// not authorize the method. Re-resolving the key cannot fix any of these.
+    Invalid(ApiError),
+}
+
+impl From<ServiceAuthError> for ApiError {
+    fn from(err: ServiceAuthError) -> Self {
+        match err {
+            // A signature that never verified is an invalid token from the caller's perspective —
+            // the same 401 the pre-retry verifier returned.
+            ServiceAuthError::SignatureMismatch => ApiError::new(
+                ErrorCode::InvalidToken,
+                "service auth signature verification failed",
+            ),
+            ServiceAuthError::Invalid(err) => err,
+        }
+    }
+}
+
 /// Verify an inbound service-auth JWT — the counterpart to [`mint_service_auth_jwt`].
 ///
 /// Used by migration-mode `createAccount` to authenticate a foreign account: the client
@@ -370,6 +399,10 @@ struct ServiceAuthClaims {
 /// [`crypto::verify_did_key_signature`] (ECDSA-SHA256 over the exact `header.payload` bytes,
 /// curve dispatched by the key's multicodec prefix, non-canonical high-S rejected on both
 /// curves).
+///
+/// The error distinguishes a [`ServiceAuthError::SignatureMismatch`] — which the caller may retry
+/// against a force-refreshed `#atproto` key, in case the one supplied here is a stale cache — from
+/// every other, non-retriable [`ServiceAuthError::Invalid`] failure.
 pub fn verify_service_auth_jwt(
     token: &str,
     expected_iss: &str,
@@ -377,10 +410,15 @@ pub fn verify_service_auth_jwt(
     expected_lxm: &str,
     atproto_key: &crypto::DidKeyUri,
     now: u64,
-) -> Result<(), ApiError> {
+) -> Result<(), ServiceAuthError> {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 
-    let invalid = || ApiError::new(ErrorCode::InvalidToken, "invalid service auth token");
+    let invalid = || {
+        ServiceAuthError::Invalid(ApiError::new(
+            ErrorCode::InvalidToken,
+            "invalid service auth token",
+        ))
+    };
 
     let mut parts = token.split('.');
     let header_b64 = parts.next().ok_or_else(invalid)?;
@@ -397,39 +435,37 @@ pub fn verify_service_auth_jwt(
         Some("ES256") => crypto::DidKeyCurve::P256,
         Some("ES256K") => crypto::DidKeyCurve::Secp256k1,
         _ => {
-            return Err(ApiError::new(
+            return Err(ServiceAuthError::Invalid(ApiError::new(
                 ErrorCode::InvalidToken,
                 "service auth token must be ES256 or ES256K",
-            ))
+            )))
         }
     };
     // ...and require the declared alg to match the verification key's actual curve.
     let key_curve = crypto::did_key_curve(atproto_key).map_err(|e| {
         tracing::debug!(error = %e, "unsupported #atproto verification key");
-        ApiError::new(
+        ServiceAuthError::Invalid(ApiError::new(
             ErrorCode::InvalidToken,
             "the DID's #atproto verification key is not a supported curve",
-        )
+        ))
     })?;
     if alg_curve != key_curve {
-        return Err(ApiError::new(
+        return Err(ServiceAuthError::Invalid(ApiError::new(
             ErrorCode::InvalidToken,
             "service auth token algorithm does not match the signing key's curve",
-        ));
+        )));
     }
 
     // Signature over the exact `header.payload` bytes, against the issuer's #atproto key.
     // The crypto layer rejects non-canonical high-S signatures on both curves, using each
-    // curve's own order — atproto verifiers require low-S.
+    // curve's own order — atproto verifiers require low-S. A failure here is classified as a
+    // retriable `SignatureMismatch`: the caller may be holding a fossil key.
     let signing_input = format!("{header_b64}.{payload_b64}");
     let sig_bytes = URL_SAFE_NO_PAD.decode(sig_b64).map_err(|_| invalid())?;
     let sig: [u8; 64] = sig_bytes.as_slice().try_into().map_err(|_| invalid())?;
     crypto::verify_did_key_signature(atproto_key, signing_input.as_bytes(), &sig).map_err(|e| {
         tracing::debug!(error = %e, "service auth signature verification failed");
-        ApiError::new(
-            ErrorCode::InvalidToken,
-            "service auth signature verification failed",
-        )
+        ServiceAuthError::SignatureMismatch
     })?;
 
     // Claims — validated independently of the signature.
@@ -437,33 +473,33 @@ pub fn verify_service_auth_jwt(
     let claims: ServiceAuthClaims =
         serde_json::from_slice(&payload_bytes).map_err(|_| invalid())?;
     if claims.iss.as_deref() != Some(expected_iss) {
-        return Err(ApiError::new(
+        return Err(ServiceAuthError::Invalid(ApiError::new(
             ErrorCode::InvalidToken,
             "service auth token issuer does not match the account DID",
-        ));
+        )));
     }
     if claims.aud.as_deref() != Some(expected_aud) {
-        return Err(ApiError::new(
+        return Err(ServiceAuthError::Invalid(ApiError::new(
             ErrorCode::InvalidToken,
             "service auth token audience does not match this server",
-        ));
+        )));
     }
     match claims.exp {
         Some(exp) if exp > now => {}
         Some(_) => {
-            return Err(ApiError::new(
+            return Err(ServiceAuthError::Invalid(ApiError::new(
                 ErrorCode::TokenExpired,
                 "service auth token has expired",
-            ))
+            )))
         }
         None => return Err(invalid()),
     }
     if let Some(lxm) = claims.lxm.as_deref() {
         if lxm != expected_lxm {
-            return Err(ApiError::new(
+            return Err(ServiceAuthError::Invalid(ApiError::new(
                 ErrorCode::InvalidToken,
                 "service auth token is not authorized for this method",
-            ));
+            )));
         }
     }
     Ok(())
@@ -672,7 +708,11 @@ mod tests {
         );
         let err = verify_service_auth_jwt(&high_token, iss, aud, lxm, &kp.key_id, 1_001)
             .expect_err("a high-S signature must be rejected");
-        assert_eq!(err.status_code(), 401);
+        assert!(
+            matches!(err, ServiceAuthError::SignatureMismatch),
+            "a bad signature must be classified as a retriable SignatureMismatch"
+        );
+        assert_eq!(ApiError::from(err).status_code(), 401);
     }
 
     /// A fresh secp256k1 keypair as (signing key, `did:key:zQ3…` URI) — the key shape
@@ -756,7 +796,8 @@ mod tests {
         let token = mint_with_alg(high_s_sign, "ES256K", iss, aud, lxm);
         let err = verify_service_auth_jwt(&token, iss, aud, lxm, &key_uri, 1_001)
             .expect_err("a high-S ES256K signature must be rejected");
-        assert_eq!(err.status_code(), 401);
+        assert!(matches!(err, ServiceAuthError::SignatureMismatch));
+        assert_eq!(ApiError::from(err).status_code(), 401);
     }
 
     /// The declared `alg` must match the verification key's curve in both directions —
@@ -772,7 +813,10 @@ mod tests {
         let token = mint_with_alg(|b| k256_sign_low_s(&k256_key, b), "ES256", iss, aud, lxm);
         let err = verify_service_auth_jwt(&token, iss, aud, lxm, &k256_uri, 1_001)
             .expect_err("ES256 header with a secp256k1 key must be rejected");
-        assert_eq!(err.status_code(), 401);
+        // A curve mismatch is a non-retriable Invalid, not a SignatureMismatch — re-resolving the
+        // key can't change the declared alg.
+        assert!(matches!(err, ServiceAuthError::Invalid(_)));
+        assert_eq!(ApiError::from(err).status_code(), 401);
 
         // ES256K header presented with a P-256 key.
         let kp = crypto::generate_p256_keypair().unwrap();
@@ -781,13 +825,50 @@ mod tests {
         let token = mint_with_alg(|b| signer.sign(b), "ES256K", iss, aud, lxm);
         let err = verify_service_auth_jwt(&token, iss, aud, lxm, &kp.key_id, 1_001)
             .expect_err("ES256K header with a P-256 key must be rejected");
-        assert_eq!(err.status_code(), 401);
+        assert!(matches!(err, ServiceAuthError::Invalid(_)));
+        assert_eq!(ApiError::from(err).status_code(), 401);
 
         // And an alg outside the allowlist is rejected outright.
         let token = mint_with_alg(|b| signer.sign(b), "HS256", iss, aud, lxm);
         let err = verify_service_auth_jwt(&token, iss, aud, lxm, &kp.key_id, 1_001)
             .expect_err("a non-ECDSA alg must be rejected");
-        assert_eq!(err.status_code(), 401);
+        assert!(matches!(err, ServiceAuthError::Invalid(_)));
+        assert_eq!(ApiError::from(err).status_code(), 401);
+    }
+
+    /// A correctly-signed token that fails a *claims* check (here, the wrong audience) is a
+    /// non-retriable `Invalid`, never a `SignatureMismatch` — so the migration retry path does
+    /// not waste a force-refresh on a token whose key already verified.
+    #[test]
+    fn verify_service_auth_jwt_classifies_valid_signature_wrong_aud_as_invalid() {
+        let kp = crypto::generate_p256_keypair().unwrap();
+        let key = *kp.private_key_bytes;
+        let signer = repo_engine::CommitSigner::from_bytes(&key).unwrap();
+        let iss = "did:plc:issuer";
+        let lxm = "com.atproto.server.createAccount";
+        // Correctly signed by the DID's key, but minted for a different audience.
+        let token = mint_service_auth_jwt(
+            |b| signer.sign(b),
+            iss,
+            "did:web:other.example.com",
+            Some(lxm),
+            1_000,
+            4_000,
+        );
+        let err = verify_service_auth_jwt(
+            &token,
+            iss,
+            "did:web:me.example.com",
+            lxm,
+            &kp.key_id,
+            1_001,
+        )
+        .expect_err("a wrong-audience token must be rejected");
+        assert!(
+            matches!(err, ServiceAuthError::Invalid(_)),
+            "a valid signature with the wrong aud must be a non-retriable Invalid"
+        );
+        assert_eq!(ApiError::from(err).status_code(), 401);
     }
 
     /// `issue_access_jwt` accepts only access-level scopes; a refresh (or any other) scope is
