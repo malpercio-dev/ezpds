@@ -105,6 +105,11 @@ pub(super) fn render_consent_page(
     html.push_str(&html_escape(client_id));
     html.push_str("</div>\n      </span>\n    </div>\n");
 
+    // The <form> opens BEFORE the permissions section: the `granted_scope` checkboxes
+    // must be form members or the browser silently omits them from the POST, and the
+    // consent reduction filter would strip every non-`atproto` grant the user approved.
+    html.push_str("    <form method=\"POST\" action=\"/oauth/authorize\">\n");
+
     // Permissions: `atproto` is the mandatory base — always granted, never a checkbox.
     // Everything else is grouped by resource type with a checked-by-default checkbox, so the
     // user can deny individual permissions before approving.
@@ -124,7 +129,6 @@ pub(super) fn render_consent_page(
         html.push_str(&html_escape(msg));
         html.push_str("</span></div>\n");
     }
-    html.push_str("    <form method=\"POST\" action=\"/oauth/authorize\">\n");
     for (name, value) in [
         ("client_id", client_id),
         ("redirect_uri", redirect_uri),
@@ -388,3 +392,45 @@ const ICON_SEAL_SM: &str = r#"<svg width="17" height="17" viewBox="0 0 24 24" fi
 const ICON_LOCK: &str = r#"<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>"#;
 const ICON_ALERT: &str = r#"<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>"#;
 const ICON_ALARM: &str = r#"<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every `granted_scope` checkbox must be a member of the consent <form> —
+    /// controls outside the form element are silently omitted from the POST, which
+    /// would strip every non-`atproto` grant the user approved (the consent
+    /// reduction filter only grants tokens echoed back in `granted_scope`).
+    #[test]
+    fn granted_scope_checkboxes_are_inside_the_consent_form() {
+        let html = render_consent_page(
+            "Test App",
+            "https://app.example.com/client-metadata.json",
+            "https://app.example.com/callback",
+            "challenge",
+            "S256",
+            "state",
+            "atproto transition:generic repo:app.bsky.feed.post",
+            "code",
+            "https://pds.example.com",
+            None,
+            None,
+        );
+
+        let form_open = html.find("<form").expect("consent form present");
+        let form_close = html.find("</form>").expect("consent form closed");
+        let mut checkbox_count = 0;
+        for (idx, _) in html.match_indices("name=\"granted_scope\"") {
+            checkbox_count += 1;
+            assert!(
+                idx > form_open && idx < form_close,
+                "granted_scope input at byte {idx} is outside the <form> \
+                 ({form_open}..{form_close}) and would not be submitted"
+            );
+        }
+        assert!(
+            checkbox_count >= 2,
+            "expected a checkbox per non-atproto scope token, found {checkbox_count}"
+        );
+    }
+}

@@ -1706,6 +1706,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn consent_approve_with_transition_generic_checked_stores_it_on_the_code() {
+        // The wallet's outbound-migration source login requests
+        // "atproto transition:generic"; the consent page renders transition:generic as
+        // a checked-by-default checkbox. Approving with it checked must store the full
+        // scope on the code — this is the scope the migration orchestrator's
+        // getServiceAuth call later depends on.
+        let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
+        let db = state.db.clone();
+
+        let resp = post_authorize(
+            state,
+            &include_scope_form("atproto transition:generic", &["transition:generic"]),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        assert!(!location.contains("error="), "unexpected error: {location}");
+
+        let plaintext = location
+            .split("code=")
+            .nth(1)
+            .unwrap()
+            .split('&')
+            .next()
+            .unwrap();
+        let code_hash = hash_bearer_token(plaintext).unwrap();
+        let row: (String,) =
+            sqlx::query_as("SELECT scope FROM oauth_authorization_codes WHERE code = ?")
+                .bind(&code_hash)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(row.0, "atproto transition:generic");
+    }
+
+    #[tokio::test]
     async fn ac4_2_unresolvable_include_scope_redirects_invalid_scope() {
         // No txt_resolver configured at all — the include: reference cannot resolve.
         let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
