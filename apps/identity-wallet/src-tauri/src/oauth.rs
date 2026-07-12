@@ -52,12 +52,6 @@ pub struct AppState {
     /// Uses tokio::sync::Mutex because migration orchestrator commands hold the lock across .await points.
     pub orchestration_state:
         tokio::sync::Mutex<Option<crate::migration_orchestrator::OutboundMigrationState>>,
-    /// Pending source-PDS OAuth login for the OUTBOUND migration orchestrator, parked between
-    /// `prepare_source_auth` and `complete_source_auth` while the ASWebAuthenticationSession runs.
-    /// Holds the discovered auth-server metadata plus the secrets the token exchange needs.
-    /// (The claim flow's source login is password-based — see `claim::authenticate_source_pds` —
-    /// so it parks nothing here.)
-    pub pending_source_login: Mutex<Option<crate::migration_orchestrator::PendingSourceLogin>>,
 }
 
 impl AppState {
@@ -71,7 +65,6 @@ impl AppState {
             recovery_state: tokio::sync::Mutex::new(None),
             migration_state: tokio::sync::Mutex::new(None),
             orchestration_state: tokio::sync::Mutex::new(None),
-            pending_source_login: Mutex::new(None),
         }
     }
 
@@ -481,8 +474,8 @@ pub async fn complete_oauth_flow(
 
 /// Extract `code` and `state` from an OAuth callback URL
 /// (`org.obsign.identitywallet:/oauth/callback?code=...&state=...`). Returns
-/// `CallbackAbandoned` if the URL is unparseable or missing either parameter. Shared with the
-/// outbound migration orchestrator's `complete_source_auth`.
+/// `CallbackAbandoned` if the URL is unparseable or missing either parameter. Used by the
+/// create-flow OAuth login (`complete_oauth_flow`).
 pub(crate) fn parse_callback_url(callback_url: &str) -> Result<(String, String), OAuthError> {
     let url = url::Url::parse(callback_url).map_err(|_| OAuthError::CallbackAbandoned)?;
     let mut code_opt: Option<String> = None;

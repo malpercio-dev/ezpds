@@ -525,20 +525,6 @@ export const resolveIdentity = (handleOrDid: string): Promise<IdentityInfo> =>
   invoke('resolve_identity', { handleOrDid });
 
 /**
- * Map a `plugin:auth-session|start` rejection to the flow's typed error. The plugin
- * rejects with plain strings, and both platform implementations use the exact sentinel
- * "user_cancelled" for a dismissed sheet — only that may read as the flow's cancellation
- * error. Anything else ("Auth session error: …", "No browser available…") surfaces as
- * NETWORK_ERROR carrying the plugin's message, so a network drop or platform failure
- * is never presented as a cancellation the user didn't make.
- */
-const classifyAuthSessionRejection = (
-  raw: unknown,
-  cancellation: ClaimError | MigrationError,
-): ClaimError | MigrationError =>
-  raw === 'user_cancelled' ? cancellation : { code: 'NETWORK_ERROR', message: String(raw) };
-
-/**
  * Authenticate with the identity's existing PDS using the account **password** (`createSession`).
  *
  * The claim flow's next steps — requesting and signing a PLC operation — are identity operations
@@ -802,6 +788,17 @@ export type MigrationError =
   | { code: 'MIGRATION_NOT_READY'; message: string }
   | { code: 'DESTINATION_UNREACHABLE'; message: string }
   | { code: 'SOURCE_AUTH_FAILED'; message: string }
+  // The source account has email 2FA: createSession returned AuthFactorTokenRequired and the PDS
+  // emailed a code. The screen prompts for it and re-invokes with the code — not a wrong password.
+  | { code: 'TWO_FACTOR_REQUIRED' }
+  // The entered credentials signed in to a different account than the one being migrated.
+  | { code: 'ACCOUNT_MISMATCH' }
+  // Refused to send the password to a non-HTTPS source PDS (loopback excepted).
+  | { code: 'INSECURE_SOURCE_URL' }
+  // The source PDS rate-limited the login (HTTP 429); `retryAfter` is the server's Retry-After.
+  | { code: 'RATE_LIMITED'; retryAfter: string | null }
+  // The source PDS rejected the login with a non-2xx the wallet doesn't model; `message` is verbatim.
+  | { code: 'SERVER_ERROR'; message: string }
   | { code: 'SERVICE_AUTH_FAILED'; message: string }
   | { code: 'ACCOUNT_CREATION_FAILED'; message: string }
   | { code: 'DESTINATION_CONFLICT'; message: string }
@@ -811,41 +808,47 @@ export type MigrationError =
   | { code: 'VERIFICATION_INCOMPLETE'; imported: number; expected: number }
   | { code: 'ACTIVATION_FAILED'; message: string }
   | { code: 'DEACTIVATION_FAILED'; message: string }
-  | { code: 'OAUTH_REJECTED'; message: string }
   | { code: 'NETWORK_ERROR'; message: string };
 
 /**
- * Resolve the destination + source PDS and open the migration session (in-memory).
- * Rejects with MigrationError (e.g. DESTINATION_UNREACHABLE).
+ * Resolved source identity returned by `prepareMigration` — mirrors the Rust `PreparedMigration`
+ * (`#[serde(rename_all = "camelCase")]`). Used by MigrationSourceAuthScreen to prefill the login
+ * identifier and show which PDS it is signing into.
  */
-export const prepareMigration = (did: string, destPdsUrl: string): Promise<void> =>
-  invoke('prepare_migration', { did, destPdsUrl });
+export type PreparedMigration = {
+  handle: string;
+  sourcePdsUrl: string;
+};
 
 /**
- * OUTBOUND-migration source-PDS OAuth: prepare -> in-app auth session -> complete.
- * Drives the ASWebAuthenticationSession via the auth-session plugin between the two Rust commands.
- * (Distinct from the claim flow's `authenticateSourcePds`, which is password-based — the outbound
- * migration's source leg only needs repo/blob/status access, which OAuth can grant.)
+ * Resolve the destination + source PDS and open the migration session (in-memory).
+ * Resolves with the source identity (`{ handle, sourcePdsUrl }`) for the source-auth screen.
+ * Rejects with MigrationError (e.g. DESTINATION_UNREACHABLE).
  */
-export const startSourceAuth = async (did: string): Promise<void> => {
-  const prepared = await invoke<{ authUrl: string; callbackScheme: string }>('prepare_source_auth', {
-    did,
-  });
-  let callbackUrl: string;
-  try {
-    callbackUrl = await invoke<string>('plugin:auth-session|start', {
-      authUrl: prepared.authUrl,
-      callbackUrlScheme: prepared.callbackScheme,
-    });
-  } catch (raw: unknown) {
-    // A dismissed sheet reads as a cancellation; anything else surfaces as retryable.
-    throw classifyAuthSessionRejection(raw, {
-      code: 'SOURCE_AUTH_FAILED',
-      message: 'auth session cancelled',
-    });
-  }
-  await invoke('complete_source_auth', { did, callbackUrl });
-};
+export const prepareMigration = (
+  did: string,
+  destPdsUrl: string,
+): Promise<PreparedMigration> => invoke('prepare_migration', { did, destPdsUrl });
+
+/**
+ * Authenticate with the OUTBOUND-migration **source** PDS using the account password
+ * (`createSession`), mirroring the claim flow's `authenticateSourcePds` (ADR-0021).
+ *
+ * A password is required — not the wallet's OAuth token — because creating the destination account
+ * mints a `com.atproto.server.createAccount` service-auth token from the source PDS, and a
+ * spec-strict PDS (bsky.social) gates that mint behind a full session; a `transition:generic` grant
+ * is refused. The password is sent once to the source PDS and never stored.
+ *
+ * `authFactorToken` is the email 2FA code: omit it first; if the account has email 2FA the call
+ * rejects with `TWO_FACTOR_REQUIRED` (and the PDS emails a code), then re-invoke with the code.
+ */
+export const authenticateMigrationSource = (
+  did: string,
+  identifier: string,
+  password: string,
+  authFactorToken?: string,
+): Promise<void> =>
+  invoke('authenticate_migration_source', { did, identifier, password, authFactorToken });
 
 /** Reserve the signing key, mint service-auth, and create the deactivated destination account. */
 export const createDestinationAccount = (

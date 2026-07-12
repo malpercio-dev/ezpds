@@ -20,6 +20,9 @@
       email: string;
       inviteCode: string | undefined;
       decision: MigrationPathDecision;
+      // Resolved source identity from prepareMigration, for the source-auth screen's prefill + copy.
+      sourceHandle: string;
+      sourcePdsUrl: string;
     }) => void;
     onback: () => void;
   } = $props();
@@ -92,9 +95,10 @@
       }
 
       switch (decision.path) {
-        case 'self_signed':
+        case 'self_signed': {
+          let prepared;
           try {
-            await prepareMigration(did, destPdsUrl.trim());
+            prepared = await prepareMigration(did, destPdsUrl.trim());
           } catch (raw: unknown) {
             console.error('Migration preparation failed:', raw);
             error = describePrepareError(raw);
@@ -105,8 +109,11 @@
             email: email.trim(),
             inviteCode: inviteCode.trim() || undefined,
             decision,
+            sourceHandle: prepared.handle,
+            sourcePdsUrl: prepared.sourcePdsUrl,
           });
           break;
+        }
         case 'interop':
           terminalMessage =
             "This identity needs the PDS-signed path, which isn't supported yet.";
