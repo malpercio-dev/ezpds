@@ -77,7 +77,10 @@ pub mod names {
     pub const LABEL_FRAME: &str = "frame";
     /// Operation outcome: `ok` or `error` (crawl also uses `rate_limited`).
     pub const LABEL_OUTCOME: &str = "outcome";
-    /// Proxy upstream family: `appview`, `chat`, `moderation`.
+    /// Proxy upstream family: `appview`, `chat`, `moderation`, or `header_target` (an
+    /// `app.bsky.*`/`chat.bsky.*` request whose caller-supplied `atproto-proxy` header
+    /// overrode the namespace's default — the raw target DID/hostname is never a label
+    /// value, per the cardinality rule).
     pub const LABEL_UPSTREAM: &str = "upstream";
     /// HTTP status class: `1xx` … `5xx`.
     pub const LABEL_STATUS_CLASS: &str = "status_class";

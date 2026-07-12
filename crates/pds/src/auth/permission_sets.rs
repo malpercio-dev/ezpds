@@ -354,7 +354,7 @@ fn is_blob_wildcard(entry: &PermissionEntry) -> bool {
 /// Build a one-off HTTP client hardened for fetching from a caller-influenced Lexicon
 /// authority endpoint — the NSID (and therefore the authority) comes from the client's
 /// requested scope string. Delegates to the shared `identity_resolution::build_pinned_client`,
-/// the same hardening `routes::service_proxy::build_moderation_client` uses for its own
+/// the same hardening `routes::service_proxy::build_header_proxy_client` uses for its own
 /// caller-controlled target.
 fn build_fetch_client(
     pinned: Option<&identity_resolution::PinnedResolution>,
