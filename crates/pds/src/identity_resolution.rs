@@ -74,29 +74,66 @@ pub async fn resolve_handle_to_did(
     Ok(None)
 }
 
-/// Resolve a DID to its current DID document.
+/// Resolve a DID to its current DID document, preferring the local cache.
 ///
 /// Local cached documents are preferred. Unknown `did:plc` values are proxied to the configured PLC
 /// directory; unknown `did:web` values are resolved through the method's `did.json` URL. Returned
 /// documents must assert the requested DID in their `id` field.
 pub async fn resolve_did_document(state: &AppState, did: &str) -> Result<Value, ApiError> {
+    resolve_did_document_inner(state, did, false).await
+}
+
+/// Resolve a DID to its current DID document, **bypassing the local cache** and rewriting any
+/// existing cache row with the freshly-fetched document.
+///
+/// The `did_documents` cache is a persistent store with no TTL: a DID whose PLC document was
+/// rewritten after this server cached it (e.g. an `#atproto` key rotation during an account's
+/// identity-migration leg) is otherwise served against the fossil key forever. This is the
+/// "force refresh" the reference PDS's `refreshIdentity` performs, and the retry the migration
+/// `createAccount` verifier takes on a signature failure. On success the fresh document is written
+/// back over the existing cache row (UPDATE-only — see [`crate::db::dids::rewrite_did_document`]),
+/// so a subsequent cache-first read (including this server's own `resolveDid`/`getSession`)
+/// reflects it.
+pub async fn resolve_did_document_force_refresh(
+    state: &AppState,
+    did: &str,
+) -> Result<Value, ApiError> {
+    resolve_did_document_inner(state, did, true).await
+}
+
+async fn resolve_did_document_inner(
+    state: &AppState,
+    did: &str,
+    force_refresh: bool,
+) -> Result<Value, ApiError> {
     if !did.starts_with("did:") {
         return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
     }
 
-    if let Some(doc) = crate::db::dids::get_did_document(&state.db, did).await? {
-        return validate_did_doc_id(doc, did, ErrorCode::InternalError);
+    if !force_refresh {
+        if let Some(doc) = crate::db::dids::get_did_document(&state.db, did).await? {
+            return validate_did_doc_id(doc, did, ErrorCode::InternalError);
+        }
     }
 
-    if did.starts_with("did:plc:") {
-        return resolve_plc_did_document(state, did).await;
+    let doc = if did.starts_with("did:plc:") {
+        resolve_plc_did_document(state, did).await?
+    } else if did.starts_with("did:web:") {
+        resolve_web_did_document(state, did).await?
+    } else {
+        return Err(ApiError::new(ErrorCode::DidNotFound, "DID not found"));
+    };
+
+    if force_refresh {
+        // Heal the cached row so subsequent cache-first reads reflect the fresh document.
+        // Best-effort: the authoritative source already answered, so a cache-write failure must
+        // not fail the resolution.
+        if let Err(e) = crate::db::dids::rewrite_did_document(&state.db, did, &doc).await {
+            tracing::warn!(did = %did, error = %e, "failed to rewrite cached DID document after force refresh (non-fatal)");
+        }
     }
 
-    if did.starts_with("did:web:") {
-        return resolve_web_did_document(state, did).await;
-    }
-
-    Err(ApiError::new(ErrorCode::DidNotFound, "DID not found"))
+    Ok(doc)
 }
 
 /// Return the verified handle for `did` and `did_doc`, or `handle.invalid` when the document's

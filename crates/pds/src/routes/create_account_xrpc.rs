@@ -31,7 +31,7 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::jwt::{
-    issue_access_jwt, issue_refresh_jwt, verify_service_auth_jwt, SCOPE_ACCESS,
+    issue_access_jwt, issue_refresh_jwt, verify_service_auth_jwt, ServiceAuthError, SCOPE_ACCESS,
 };
 use crate::auth::password::hash_password;
 use crate::db::is_unique_violation;
@@ -39,7 +39,9 @@ use crate::db::repo_keys::{
     get_reserved_repo_key_by_did, get_reserved_repo_key_by_id, insert_did_signing_key,
     RepoSigningKey,
 };
-use crate::identity_resolution::{atproto_verification_key, resolve_did_document};
+use crate::identity_resolution::{
+    atproto_verification_key, resolve_did_document, resolve_did_document_force_refresh,
+};
 use crate::uniqueness::{email_taken, handle_taken};
 
 /// The lexicon method a migration service-auth token must authorize (when it carries an `lxm`).
@@ -412,24 +414,12 @@ async fn create_account_migration(
         )
     })?;
 
-    // Resolve the incoming DID's document and pull out its #atproto signing key to verify against.
-    let did_document = resolve_did_document(state, did).await?;
-    let atproto_key = atproto_verification_key(&did_document).ok_or_else(|| {
-        ApiError::new(
-            ErrorCode::InvalidRequest,
-            "the DID document has no #atproto verification method",
-        )
-    })?;
-
+    // Resolve the incoming DID's document (cache-first) and verify the old-PDS service-auth token
+    // against its #atproto key — force-refreshing the cache and retrying once on a signature
+    // mismatch, in case the cached key is a fossil. See `verify_migration_service_auth`.
     let server_did = state.config.resolve_server_did();
-    verify_service_auth_jwt(
-        service_auth,
-        did,
-        &server_did,
-        CREATE_ACCOUNT_LXM,
-        &atproto_key,
-        unix_now()?,
-    )?;
+    let did_document =
+        verify_migration_service_auth(state, service_auth, did, &server_did, unix_now()?).await?;
 
     // Resume path: a previous migration attempt already created this DID's account but the
     // client lost its session (e.g. an app restart between createAccount and
@@ -576,6 +566,71 @@ async fn create_account_migration(
 }
 
 // ── Shared helpers ───────────────────────────────────────────────────────────
+
+/// Resolve the migrating DID's document and verify the old-PDS service-auth token against its
+/// `#atproto` key, force-refreshing the cached document and retrying the verification **once** on a
+/// signature mismatch.
+///
+/// The `did_documents` cache is a persistent store with no TTL, so a DID whose PLC document was
+/// rewritten after this server cached it — e.g. an account that migrated away (rotating its
+/// `#atproto` key / repointing its PDS) and is now migrating back — presents a provably-valid token
+/// that fails against the fossil key. This mirrors the reference PDS's `verifyServiceJwt`: try the
+/// cached key, and on a *signature* failure only, re-resolve the key from the authoritative source
+/// (plc.directory / did:web) and verify once more. Bounded to a single refetch per verification
+/// (and the route's per-endpoint rate limit covers it), so it can't be turned into a resolution
+/// amplifier. Non-signature failures (bad alg/curve, wrong `iss`/`aud`, expired, wrong `lxm`, or a
+/// missing `#atproto` method) skip the refresh — re-resolving the key can't fix them.
+///
+/// Returns the document that ultimately verified — the fresh one when a refresh was needed — so the
+/// caller stores and echoes the current identity, not the stale cache.
+async fn verify_migration_service_auth(
+    state: &AppState,
+    service_auth: &str,
+    did: &str,
+    server_did: &str,
+    now: u64,
+) -> Result<serde_json::Value, ApiError> {
+    let cached = resolve_did_document(state, did).await?;
+    match verify_service_auth_against_doc(service_auth, did, server_did, &cached, now) {
+        Ok(()) => Ok(cached),
+        Err(ServiceAuthError::SignatureMismatch) => {
+            tracing::info!(
+                did = %did,
+                "migration service-auth signature failed against the cached DID document; \
+                 force-refreshing the #atproto key and retrying once"
+            );
+            let fresh = resolve_did_document_force_refresh(state, did).await?;
+            verify_service_auth_against_doc(service_auth, did, server_did, &fresh, now)?;
+            Ok(fresh)
+        }
+        Err(other) => Err(other.into()),
+    }
+}
+
+/// Pull the `#atproto` verification key out of `did_document` and verify the migration
+/// service-auth token against it. A missing `#atproto` method is a non-retriable `Invalid`.
+fn verify_service_auth_against_doc(
+    service_auth: &str,
+    did: &str,
+    server_did: &str,
+    did_document: &serde_json::Value,
+    now: u64,
+) -> Result<(), ServiceAuthError> {
+    let atproto_key = atproto_verification_key(did_document).ok_or_else(|| {
+        ServiceAuthError::Invalid(ApiError::new(
+            ErrorCode::InvalidRequest,
+            "the DID document has no #atproto verification method",
+        ))
+    })?;
+    verify_service_auth_jwt(
+        service_auth,
+        did,
+        server_did,
+        CREATE_ACCOUNT_LXM,
+        &atproto_key,
+        now,
+    )
+}
 
 struct IssuedSession {
     access_jwt: String,
@@ -829,7 +884,7 @@ mod tests {
     };
     use tower::ServiceExt;
     use wiremock::{
-        matchers::{method, path_regex},
+        matchers::{method, path, path_regex},
         Mock, MockServer, ResponseTemplate,
     };
 
@@ -1174,6 +1229,32 @@ mod tests {
 
     // ── Migration mode ────────────────────────────────────────────────────────
 
+    /// The DID document shape migration tests resolve: an `#atproto` Multikey holding `kp`'s public
+    /// key, plus the handle and a PDS service entry advertising `endpoint`.
+    fn migration_did_doc(
+        did: &str,
+        handle: &str,
+        kp: &crypto::P256Keypair,
+        endpoint: &str,
+    ) -> serde_json::Value {
+        let multibase = kp.key_id.0.strip_prefix("did:key:").unwrap().to_string();
+        serde_json::json!({
+            "id": did,
+            "alsoKnownAs": [format!("at://{handle}")],
+            "verificationMethod": [{
+                "id": format!("{did}#atproto"),
+                "type": "Multikey",
+                "controller": did,
+                "publicKeyMultibase": multibase,
+            }],
+            "service": [{
+                "id": "#atproto_pds",
+                "type": "AtprotoPersonalDataServer",
+                "serviceEndpoint": endpoint,
+            }],
+        })
+    }
+
     /// Seed a resolvable DID document whose #atproto key is `kp`, and reserve a signing key for it.
     async fn seed_migration_did(
         db: &sqlx::SqlitePool,
@@ -1181,29 +1262,24 @@ mod tests {
         handle: &str,
     ) -> crypto::P256Keypair {
         let kp = crypto::generate_p256_keypair().expect("atproto keypair");
-        let multibase = kp.key_id.0.strip_prefix("did:key:").unwrap().to_string();
         seed_did_document(
             db,
             did,
-            serde_json::json!({
-                "id": did,
-                "alsoKnownAs": [format!("at://{handle}")],
-                "verificationMethod": [{
-                    "id": format!("{did}#atproto"),
-                    "type": "Multikey",
-                    "controller": did,
-                    "publicKeyMultibase": multibase,
-                }],
-                "service": [{
-                    "id": "#atproto_pds",
-                    "type": "AtprotoPersonalDataServer",
-                    "serviceEndpoint": "https://old.example.com",
-                }],
-            }),
+            migration_did_doc(did, handle, &kp, "https://old.example.com"),
         )
         .await;
         reserve_key(db, Some(did)).await;
         kp
+    }
+
+    /// Mount a plc.directory `GET /{did}` mock that serves `doc` (the DID-resolution source the
+    /// force-refresh path fetches from).
+    async fn mount_did_resolution(server: &MockServer, did: &str, doc: &serde_json::Value) {
+        Mock::given(method("GET"))
+            .and(path(format!("/{did}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(doc))
+            .mount(server)
+            .await;
     }
 
     /// Mint a service-auth JWT signed by `kp` (the DID's #atproto key), for this server.
@@ -1501,10 +1577,20 @@ mod tests {
 
     #[tokio::test]
     async fn migration_with_forged_service_auth_returns_401() {
-        let state = test_state("http://unused.invalid".to_string(), false).await;
-        let db = state.db.clone();
+        // A forged token fails the signature check against the cached key, triggers the
+        // force-refresh retry, and still fails against the freshly-resolved key: a uniform 401 (not
+        // a masked resolution error), and no unbounded retry loop.
+        let plc = MockServer::start().await;
         let did = "did:plc:migrator44444444444444";
-        seed_migration_did(&db, did, "carol.migrated.example").await;
+        let handle = "carol.migrated.example";
+        let kp = crypto::generate_p256_keypair().expect("atproto keypair");
+        let doc = migration_did_doc(did, handle, &kp, "https://old.example.com");
+        mount_did_resolution(&plc, did, &doc).await;
+
+        let state = test_state(plc.uri(), false).await;
+        let db = state.db.clone();
+        seed_did_document(&db, did, doc).await;
+        reserve_key(&db, Some(did)).await;
         let aud = state.config.resolve_server_did();
         // Signed by a DIFFERENT key than the DID's #atproto key.
         let attacker = crypto::generate_p256_keypair().expect("keypair");
@@ -1518,7 +1604,7 @@ mod tests {
         let response = app(state)
             .oneshot(post(
                 serde_json::json!({
-                    "handle": "carol.migrated.example",
+                    "handle": handle,
                     "email": "carol@example.com",
                     "did": did,
                 }),
@@ -1527,6 +1613,83 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn migration_stale_cached_did_doc_force_refreshes_and_succeeds() {
+        // The exact reproduced failure: the destination has a *fossil* #atproto key cached (from a
+        // prior migration leg whose PLC doc has since been rewritten). A provably-valid token signed
+        // by the DID's *current* key is rejected against the fossil, then accepted after a
+        // force-refresh from plc.directory — and the stale cache row is healed in the process.
+        let plc = MockServer::start().await;
+        let did = "did:plc:staleroundtrip1111111";
+        let handle = "roundtrip.migrated.example";
+
+        // The DID's CURRENT #atproto key: what plc.directory serves and what mints the token.
+        let current = crypto::generate_p256_keypair().expect("current key");
+        let fresh_doc = migration_did_doc(did, handle, &current, "https://new.example.com");
+        let current_multibase = current
+            .key_id
+            .0
+            .strip_prefix("did:key:")
+            .unwrap()
+            .to_string();
+        mount_did_resolution(&plc, did, &fresh_doc).await;
+
+        let state = test_state(plc.uri(), false).await;
+        let db = state.db.clone();
+
+        // Seed a STALE cached doc whose #atproto key is a fossil (a different keypair) and an
+        // outdated PDS endpoint.
+        let fossil = crypto::generate_p256_keypair().expect("fossil key");
+        seed_did_document(
+            &db,
+            did,
+            migration_did_doc(did, handle, &fossil, "https://old.example.com"),
+        )
+        .await;
+        reserve_key(&db, Some(did)).await;
+
+        let aud = state.config.resolve_server_did();
+        let token = service_auth_jwt(
+            &current,
+            did,
+            &aud,
+            Some("com.atproto.server.createAccount"),
+        );
+
+        let response = app(state)
+            .oneshot(post(
+                serde_json::json!({
+                    "handle": handle,
+                    "email": "roundtrip@example.com",
+                    "did": did,
+                }),
+                Some(&token),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "a token signed by the DID's current key must be accepted after a force-refresh"
+        );
+
+        // The stale cache row was healed with the fresh document (current key + new endpoint).
+        let cached: String = sqlx::query_scalar("SELECT document FROM did_documents WHERE did = ?")
+            .bind(did)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        let cached: serde_json::Value = serde_json::from_str(&cached).unwrap();
+        assert_eq!(
+            cached["verificationMethod"][0]["publicKeyMultibase"], current_multibase,
+            "the cached #atproto key must be rewritten to the current key"
+        );
+        assert_eq!(
+            cached["service"][0]["serviceEndpoint"], "https://new.example.com",
+            "the cached service endpoint must reflect the refreshed document"
+        );
     }
 
     #[tokio::test]

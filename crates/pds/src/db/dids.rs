@@ -72,6 +72,38 @@ pub async fn fetch_also_known_as(db: &SqlitePool, did: &str) -> Result<Vec<Strin
         .collect())
 }
 
+/// Rewrite an existing cached DID document row with a freshly-resolved document.
+///
+/// UPDATE-only (never inserts): `did_documents` is a persistent store with no TTL, so writing a
+/// row for a DID this server doesn't host would create an entry nothing ever refreshes again — the
+/// exact serve-forever-stale failure the force-refresh path exists to heal. Only rows that already
+/// exist (this server's own and migrated-in accounts) are rewritten. Returns whether a row was
+/// updated (`false` = the DID wasn't cached, so there was nothing to heal).
+pub async fn rewrite_did_document(
+    db: &SqlitePool,
+    did: &str,
+    document: &serde_json::Value,
+) -> Result<bool, ApiError> {
+    let doc_str = serde_json::to_string(document).map_err(|e| {
+        tracing::error!(did = %did, error = %e, "failed to serialize DID document for cache rewrite");
+        ApiError::new(ErrorCode::InternalError, "failed to serialize DID document")
+    })?;
+
+    let result = sqlx::query(
+        "UPDATE did_documents SET document = ?, updated_at = datetime('now') WHERE did = ?",
+    )
+    .bind(&doc_str)
+    .bind(did)
+    .execute(db)
+    .await
+    .map_err(|e| {
+        tracing::error!(did = %did, error = %e, "DB error rewriting cached DID document");
+        ApiError::new(ErrorCode::InternalError, "failed to update DID document")
+    })?;
+
+    Ok(result.rows_affected() > 0)
+}
+
 /// Update the `alsoKnownAs` array in a DID document.
 ///
 /// Fetches the current document, replaces the `alsoKnownAs` field, and writes it back.
