@@ -26,7 +26,7 @@ struct RefreshSessionResponse {
 /// nonce challenge, we hand a faithful stand-in back to the caller — same status, headers, and
 /// body — so the caller's `pds_client::classify_xrpc_response` can turn it into a `RateLimited` /
 /// `Unauthorized` / `XrpcError` instead of this transport layer flattening it into
-/// `NotAuthenticated` (MM-290: the source-migration DPoP path was the last place this happened).
+/// `NotAuthenticated` — the source-migration DPoP path was the last place this happened.
 ///
 /// `reqwest::Response: From<http::Response<T>>` is the only public `Response` constructor. Building
 /// from an already-valid status + header map + owned body is infallible.
@@ -229,7 +229,7 @@ impl OAuthClient {
                 }
             } else {
                 // A genuine 400, not a nonce challenge — return it intact so the caller's classifier
-                // sees the real status + body rather than an opaque NotAuthenticated (MM-290).
+                // sees the real status + body rather than an opaque NotAuthenticated.
                 tracing::warn!(body = %error_body, "400 without use_dpop_nonce; surfacing response to caller");
                 return Ok(rebuild_response(status, headers, error_body));
             }
@@ -306,7 +306,7 @@ impl OAuthClient {
             } else {
                 // A genuine 400 (InvalidRequest, InsufficientScope, ...), not a nonce challenge.
                 // Rebuild the response and hand it back intact so the caller's classifier surfaces
-                // the server's real status + body instead of an opaque NotAuthenticated (MM-290).
+                // the server's real status + body instead of an opaque NotAuthenticated.
                 tracing::warn!(body = %error_body, "400 without use_dpop_nonce; surfacing response to caller");
                 return Ok(rebuild_response(status, headers, error_body));
             }
@@ -1308,7 +1308,7 @@ mod tests {
         // A genuine 400 (InvalidRequest) — NOT a use_dpop_nonce challenge — must be handed back to
         // the caller intact (status + body preserved), not flattened into Err(NotAuthenticated).
         // This is what lets the migration source path's classifier (pds_client::classify_xrpc_
-        // response) produce an XrpcError instead of an opaque "Not authenticated" (MM-290).
+        // response) produce an XrpcError instead of an opaque "Not authenticated".
         let server = MockServer::start();
         let mock = server.mock(|when, then| {
             when.method(GET)
