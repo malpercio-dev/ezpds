@@ -227,7 +227,7 @@ Pure authentication logic and middleware. Submodules:
 | `password.rs` | Functional Core | `hash_password`, `verify_password` (argon2id) |
 | `rate_limit.rs` | Functional Core | Sliding-window login-failure limiter + generic multi-window points limiter (`MultiWindowLimiter`) used by the top-level `rate_limit.rs` middleware |
 | `signing_key.rs` | Imperative Shell | ES256 signing key load-or-create |
-| `bearer.rs` | Functional Core | Bearer token extraction from headers |
+| `bearer.rs` | Functional Core | Authorization-header token extraction: `extract_access_token` accepts the `Bearer` and `DPoP` schemes (RFC 9449 §7.1 — the `AuthenticatedUser` extractor cross-checks scheme against the token's `cnf.jkt` binding, both directions); `extract_bearer_token` stays Bearer-only for session/refresh/device tokens |
 
 **Rule:** `auth/` has no knowledge of specific routes. Route handlers call into `auth/`; `auth/` never imports from `routes/`.
 
