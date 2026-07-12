@@ -2,9 +2,11 @@
 //
 // Gathers: AuthenticatedUser (JWT extractor), the raw CAR request body, DB pool via AppState
 // Processes: scope check → deactivated-account precondition → parse/validate the CAR
-//            (repo_engine::import_repo_car) → persist the reachable blocks and set the repo
-//            root/rev, atomically, only while the account is still deactivated
-// Returns: 200 OK (empty) on success; ApiError on failure
+//            (repo_engine::import_repo_car) → idempotent same-root no-op, else persist the
+//            reachable blocks and compare-and-swap the repo root/rev against the root observed at
+//            precondition time, atomically, only while the account is still deactivated
+// Returns: 200 OK (empty) on success (import performed, or an already-present no-op); ApiError on
+//          failure
 //
 // Implements: POST /xrpc/com.atproto.repo.importRepo
 
@@ -29,9 +31,16 @@ const MAX_IMPORT_CAR_BYTES: usize = 100 * 1024 * 1024;
 ///
 /// Ingests a full repository CAR (as exported by `com.atproto.sync.getRepo`) into the
 /// authenticated account. The account must be **deactivated** — this is the data-transfer leg of
-/// account migration, run after `createAccount` (which leaves a migration account deactivated and
-/// repo-less) and before `activateAccount`. The imported commit is stored verbatim; its blocks
-/// become serveable via `getRepo` once the account is activated.
+/// account migration, run after `createAccount` (which leaves a migration account deactivated) and
+/// before `activateAccount`. The imported commit is stored verbatim; its blocks become serveable
+/// via `getRepo` once the account is activated.
+///
+/// Import is idempotent and supports return migration into a prior residency: if the account
+/// already carries exactly the CAR's root, the call is a no-op success; if it carries a *different*
+/// root — a completed prior residency, resumed via `createAccount`'s resumable migration mode — that
+/// root is replaced under an optimistic compare-and-swap against the root observed at precondition
+/// time, so a concurrent import with a different base loses loudly instead of silently clobbering
+/// the winner.
 ///
 /// Only full access-scope tokens are accepted. The CAR's commit `did` must match the caller.
 pub async fn import_repo(
@@ -82,8 +91,9 @@ async fn import_repo_inner(
     }
 
     // Precondition: the account exists and is deactivated. Read this before buffering the (large)
-    // body so an active or missing account is rejected cheaply. The set-root guard below re-checks
-    // the deactivated state at commit time, closing the gap against a concurrent activation.
+    // body so an active or missing account is rejected cheaply. The swap CAS below re-checks the
+    // deactivated state — and the observed root — atomically at commit time, closing the gap
+    // against a concurrent activation or a concurrent import.
     let write_state = crate::db::accounts::get_repo_write_state(&state.db, &did)
         .await
         .map_err(|e| {
@@ -97,15 +107,14 @@ async fn import_repo_inner(
             "account must be deactivated to import a repo",
         ));
     }
-    // Import is first-write-wins: reject up front if a repo has already been imported, so a retried
-    // or racing call cannot silently overwrite it. The `set_repo_root_for_deactivated` guard below
-    // re-checks this atomically at commit time, closing the gap against a concurrent import.
-    if write_state.repo_root_cid.is_some() {
-        return Err(ApiError::new(
-            ErrorCode::Conflict,
-            "account already has a repo",
-        ));
-    }
+    // The repo root observed at precondition time. `None` for a fresh migration target; `Some` when
+    // a completed prior residency's repo is still present — a migrate-away-and-return round trip
+    // resumes a still-deactivated account (see `createAccount`'s resumable migration mode) that
+    // still carries its previous root. Import is no longer strictly first-write-wins: an existing
+    // root is either reimported idempotently (same root, below) or replaced under a compare-and-swap
+    // (different root, at commit), so a return migration is not blocked while the CAS preserves the
+    // anti-race guarantee.
+    let observed_root = write_state.repo_root_cid;
 
     // Read the full CAR body, enforcing the size cap.
     let car_bytes = axum::body::to_bytes(request.into_body(), MAX_IMPORT_CAR_BYTES)
@@ -138,9 +147,33 @@ async fn import_repo_inner(
             }
         })?;
 
-    // Persist the reachable blocks and set the repo root/rev in one transaction. Every block is
-    // tagged with the imported head rev (mirroring genesis persistence) so `getRepo?since` deltas
-    // and block stats see a revisioned repo.
+    let root_str = imported.root.to_string();
+
+    // Tier 1 — idempotent same-root import. The account already carries exactly this repo root, so a
+    // prior import (atomic, all-or-nothing) already persisted every block reachable from it. Return
+    // success without rewriting: a retried import — and the common return-migration case where
+    // nothing was written at the other residency, so the incoming CAR is byte-identical (same rev) —
+    // is a no-op. This is what replaces the old first-write-wins 409 that deterministically blocked
+    // a migrate-away-and-return round trip.
+    if observed_root.as_deref() == Some(root_str.as_str()) {
+        tracing::info!(
+            did = %did,
+            root = %root_str,
+            rev = %imported.rev,
+            "importRepo no-op: account already at this repo root"
+        );
+        return Ok(StatusCode::OK);
+    }
+
+    // Tier 2 — persist the reachable blocks and compare-and-swap the repo root/rev in one
+    // transaction. Every block is tagged with the imported head rev (mirroring genesis persistence)
+    // so `getRepo?since` deltas and block stats see a revisioned repo. When this replaces a prior
+    // residency's root, the old root's blocks that the new root no longer references become
+    // unreferenced ownership rows; they are reclaimed by the account's next write-path GC (the diff
+    // walk's keep-set is `reachable(new head)`, which excludes them) — there is no separate block GC
+    // to run here. Blobs are transferred separately, so importRepo never touches `blob_owners`; the
+    // periodic blob GC reconciles per owner and releases (with grace) any blob the new root no longer
+    // references.
     let mut tx = state.db.begin().await.map_err(|e| {
         tracing::error!(error = %e, did = %did, "failed to begin import transaction");
         ApiError::new(ErrorCode::InternalError, "failed to import repo")
@@ -162,12 +195,16 @@ async fn import_repo_inner(
         })?;
     }
 
-    let root_str = imported.root.to_string();
-    let updated = crate::db::accounts::set_repo_root_for_deactivated(
+    // Compare-and-swap against the root observed at precondition time (`None` for a fresh target,
+    // `Some(old_root)` for a replacement). The swap lands only if the persisted root is still that
+    // value and the account is still deactivated — so a concurrent import with a different base, or a
+    // concurrent activation, makes this lose loudly rather than clobber the winner.
+    let updated = crate::db::accounts::swap_repo_root_for_deactivated(
         &mut *tx,
         &did,
         &root_str,
         &imported.rev,
+        observed_root.as_deref(),
     )
     .await
     .map_err(|e| {
@@ -175,11 +212,12 @@ async fn import_repo_inner(
         ApiError::new(ErrorCode::InternalError, "failed to import repo")
     })?;
     if !updated {
-        // The account was activated or already had a repo imported between the precondition check
-        // above and this atomic guard.
+        // Between the precondition read and this atomic CAS, the account was activated (or
+        // suspended/taken down), or a concurrent import moved the root off the observed value.
+        // Nothing is clobbered — the winner's root stands and this import loses loudly.
         return Err(ApiError::new(
             ErrorCode::Conflict,
-            "account is no longer an empty deactivated repo target",
+            "repo root changed since import began; retry against the current state",
         ));
     }
 
@@ -208,9 +246,9 @@ mod tests {
 
     use crate::routes::test_utils::{access_jwt, seed_account_with_repo, state_with_master_key};
 
-    /// Export the seeded account's repo as a CAR, then wipe the account's repo state so it looks
-    /// like a fresh, deactivated migration target (repo-less) ready to import that CAR.
-    async fn export_then_reset(state: &AppState, did: &str) -> Vec<u8> {
+    /// Export the account's repo at its *current* persisted root as a CAR, without touching any
+    /// account state — the source side of an import round-trip.
+    async fn export_current_repo(state: &AppState, did: &str) -> Vec<u8> {
         let root: String = sqlx::query_scalar("SELECT repo_root_cid FROM accounts WHERE did = ?")
             .bind(did)
             .fetch_one(&state.db)
@@ -218,11 +256,14 @@ mod tests {
             .unwrap();
         let root_cid = repo_engine::Cid::try_from(root.as_str()).unwrap();
         let mut store = crate::db::blocks::SqliteBlockStore::new(state.db.clone(), did.to_string());
-        let car = repo_engine::export_repo_car(&mut store, root_cid)
+        repo_engine::export_repo_car(&mut store, root_cid)
             .await
-            .unwrap();
+            .unwrap()
+    }
 
-        // Reset to a deactivated, repo-less account.
+    /// Wipe the account's repo state so it looks like a fresh, deactivated migration target
+    /// (repo-less), dropping its owned blocks.
+    async fn reset_to_deactivated_repoless(state: &AppState, did: &str) {
         sqlx::query(
             "UPDATE accounts SET repo_root_cid = NULL, repo_rev = NULL, \
              deactivated_at = datetime('now') WHERE did = ?",
@@ -234,7 +275,23 @@ mod tests {
         crate::db::blocks::delete_blocks_for_account(&state.db, did)
             .await
             .unwrap();
+    }
+
+    /// Export the seeded account's repo as a CAR, then reset it to a fresh, deactivated migration
+    /// target ready to import that CAR back.
+    async fn export_then_reset(state: &AppState, did: &str) -> Vec<u8> {
+        let car = export_current_repo(state, did).await;
+        reset_to_deactivated_repoless(state, did).await;
         car
+    }
+
+    /// Read an account's stored repo root CID.
+    async fn stored_root(state: &AppState, did: &str) -> String {
+        sqlx::query_scalar("SELECT repo_root_cid FROM accounts WHERE did = ?")
+            .bind(did)
+            .fetch_one(&state.db)
+            .await
+            .unwrap()
     }
 
     fn import_req(car: Vec<u8>, token: Option<&str>) -> Request<Body> {
@@ -384,7 +441,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reimport_over_existing_repo_returns_409() {
+    async fn reimport_same_root_is_idempotent_noop() {
         let state = state_with_master_key().await;
         let did = "did:plc:importtwice";
         seed_account_with_repo(&state.db, did).await;
@@ -400,10 +457,110 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r1.status(), StatusCode::OK);
+        let root_after_first = stored_root(&state, did).await;
 
-        // A second import (still deactivated, but now has a repo) is rejected — import is
-        // first-write-wins, never a silent overwrite.
+        // A second import of the SAME CAR (same root) is now an idempotent no-op success — the
+        // return-migration path where nothing was written at the other residency, so the incoming
+        // repo is byte-identical. This replaces the old first-write-wins 409 that deterministically
+        // blocked a migrate-away-and-return round trip.
         let r2 = app.oneshot(import_req(car, Some(&token))).await.unwrap();
-        assert_eq!(r2.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            r2.status(),
+            StatusCode::OK,
+            "a same-root reimport must be a 200 no-op, not a 409"
+        );
+        assert_eq!(
+            stored_root(&state, did).await,
+            root_after_first,
+            "the repo root must be unchanged by the no-op reimport"
+        );
+    }
+
+    #[tokio::test]
+    async fn reimport_different_root_replaces_while_deactivated() {
+        let state = state_with_master_key().await;
+        let did = "did:plc:importreplace";
+        seed_account_with_repo(&state.db, did).await;
+        let token = access_jwt(&state.jwt_secret, did);
+        let app = crate::app::app(state.clone());
+
+        // Commit a record → repo at root A; capture CAR_A.
+        let put_a = crate::routes::test_utils::put_record_request(
+            did,
+            "app.bsky.feed.post",
+            "first",
+            serde_json::json!({ "record": { "text": "first residency" } }),
+            Some(&token),
+        );
+        assert_eq!(
+            app.clone().oneshot(put_a).await.unwrap().status(),
+            StatusCode::OK
+        );
+        let car_a = export_current_repo(&state, did).await;
+
+        // Commit a second record → repo at a different root B (superset of A); capture CAR_B.
+        let put_b = crate::routes::test_utils::put_record_request(
+            did,
+            "app.bsky.feed.post",
+            "second",
+            serde_json::json!({ "record": { "text": "second residency" } }),
+            Some(&token),
+        );
+        assert_eq!(
+            app.clone().oneshot(put_b).await.unwrap().status(),
+            StatusCode::OK
+        );
+        let car_b = export_current_repo(&state, did).await;
+
+        // Reset to a fresh, deactivated, repo-less migration target, then import root A.
+        reset_to_deactivated_repoless(&state, did).await;
+        let r1 = app
+            .clone()
+            .oneshot(import_req(car_a, Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(r1.status(), StatusCode::OK);
+        let root_after_a = stored_root(&state, did).await;
+
+        // A *different* root (B) replaces A while still deactivated — the return-migration case
+        // where the repo changed at the other residency. This is what the old first-write-wins
+        // guard forbade.
+        let r2 = app
+            .clone()
+            .oneshot(import_req(car_b, Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(
+            r2.status(),
+            StatusCode::OK,
+            "a different root must replace the prior one while deactivated"
+        );
+        let root_after_b = stored_root(&state, did).await;
+        assert_ne!(
+            root_after_b, root_after_a,
+            "the stored root must advance to the replacement repo"
+        );
+
+        // Reactivate; both records (CAR_B is a superset of A) must serve from the replacement repo.
+        sqlx::query("UPDATE accounts SET deactivated_at = NULL WHERE did = ?")
+            .bind(did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        for rkey in ["first", "second"] {
+            let get = Request::builder()
+                .method(http::Method::GET)
+                .uri(format!(
+                    "/xrpc/com.atproto.repo.getRecord?did={did}&collection=app.bsky.feed.post&rkey={rkey}"
+                ))
+                .body(Body::empty())
+                .unwrap();
+            let r = app.clone().oneshot(get).await.unwrap();
+            assert_eq!(
+                r.status(),
+                StatusCode::OK,
+                "record {rkey} must serve from the replacement repo after reactivation"
+            );
+        }
     }
 }
