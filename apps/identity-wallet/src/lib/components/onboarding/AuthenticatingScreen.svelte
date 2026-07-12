@@ -27,7 +27,7 @@
 
 <div class="screen">
   <Spinner size={44} label="Authenticating" />
-  <p class="status">Opening browser for authentication…</p>
+  <p class="status">Opening secure sign-in…</p>
 </div>
 
 <style>

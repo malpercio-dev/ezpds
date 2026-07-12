@@ -57,8 +57,8 @@
   <div class="header">
     <h1 class="title">Back up your recovery key</h1>
     <p class="subtitle">
-      Your recovery key has been split into 3 parts for safety. If you ever lose access to your
-      account, any 2 parts can restore it.
+      Your recovery key has been split into 3 shares for safety. If you ever lose access to your
+      account, any 2 shares can restore it.
     </p>
   </div>
 
@@ -67,13 +67,23 @@
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7" /></svg>
     </span>
     <div>
-      <p class="part-label">Part 1 of 3</p>
+      <p class="part-label">Share 1 of 3</p>
       <p class="part-desc">Saved to iCloud Keychain automatically</p>
     </div>
   </div>
 
+  <div class="part part--saved">
+    <span class="check" aria-hidden="true">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7" /></svg>
+    </span>
+    <div>
+      <p class="part-label">Share 2 of 3</p>
+      <p class="part-desc">Held in your server's escrow</p>
+    </div>
+  </div>
+
   <div class="part-block">
-    <p class="part-label">Part 3 of 3 — save this yourself</p>
+    <p class="part-label">Share 3 of 3 — save this yourself</p>
     <code class="share-code">{formattedShare}</code>
     <button class="copy-btn" onclick={copyShare}>
       {copied ? 'Copied!' : 'Copy'}
@@ -84,7 +94,7 @@
 
     {#if qrSvg}
       <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-      <div class="qr" aria-label="QR code for recovery key part 3">
+      <div class="qr" aria-label="QR code for recovery key share 3">
         {@html qrSvg}
       </div>
     {:else if qrFailed}
@@ -103,7 +113,7 @@
 
   <label class="confirm">
     <input type="checkbox" bind:checked={confirmed} />
-    I've saved Part 3 somewhere safe
+    I've saved Share 3 somewhere safe
   </label>
 
   {#if !confirmed}

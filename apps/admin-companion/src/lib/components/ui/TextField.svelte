@@ -76,8 +76,9 @@
     font-size: var(--text-body);
     transition: border-color var(--duration-fast) var(--ease-standard);
   }
+  /* The input well is a raised surface — ink-soft keeps placeholder text AAA. */
   .input::placeholder {
-    color: var(--color-muted);
+    color: var(--color-ink-soft);
   }
   .input--mono {
     font-family: var(--font-mono);

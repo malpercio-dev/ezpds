@@ -6,10 +6,12 @@
   let {
     value = $bindable(''),
     onnext,
+    onback = undefined,
     error = undefined,
   }: {
     value: string;
     onnext: () => void;
+    onback?: () => void;
     error?: string;
   } = $props();
 
@@ -17,7 +19,7 @@
   let isValid = $derived(emailRegex.test(value));
 </script>
 
-<OnboardingShell title="Enter your email" subtitle="We'll associate this email with your new account.">
+<OnboardingShell {onback} title="Enter your email" subtitle="We'll associate this email with your new account.">
   <TextField
     bind:value
     type="email"

@@ -154,10 +154,14 @@
           <dd>{sweepLine(health.sweeps.agentClaimSweep, healthView.readAt)}</dd>
         </dl>
       </section>
-
-      <Button variant="secondary" onclick={loadHealth}>Refresh</Button>
     {/if}
   {/if}
+
+  {#snippet actions()}
+    {#if pairing && healthView.kind === 'ready'}
+      <Button variant="secondary" onclick={loadHealth}>Refresh</Button>
+    {/if}
+  {/snippet}
 </ScreenShell>
 
 <style>

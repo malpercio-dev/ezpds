@@ -6,8 +6,16 @@
     <title>Obsign — hold the keys to your own identity</title>
     <meta
       name="description"
-      content="Obsign is an identity wallet for the AT Protocol. The keys that control your identity live in your device's Secure Enclave — not on someone else's server. Custos is its personal data server."
+      content="Obsign is an identity wallet for the AT Protocol. The keys that control your identity live in your device's Secure Enclave, not on someone else's server. Custos is its personal data server."
     />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Obsign — hold the keys to your own identity" />
+    <meta
+      property="og:description"
+      content="An identity wallet for the AT Protocol. The keys that control your identity live in your device's Secure Enclave, not on someone else's server."
+    />
+    <meta property="og:url" content="https://about.obsign.org/" />
+    <meta name="twitter:card" content="summary" />
     <link rel="stylesheet" href="assets/css/site.css" />
     <link
       rel="icon"
@@ -49,17 +57,17 @@
           </span>
           <h1>Hold the keys to your own identity.</h1>
           <p class="lede">
-            Obsign is an identity wallet for the AT&nbsp;Protocol — the network behind
+            Obsign is an identity wallet for the AT&nbsp;Protocol, the network behind
             Bluesky. The keys that control your identity live in your device&rsquo;s
             Secure&nbsp;Enclave, not on someone else&rsquo;s server. No platform, host,
             or provider can take your identity, block your exit, or hold it hostage.
           </p>
           <div class="hero-actions">
-            <a class="btn btn-primary" href="https://github.com/malpercio-dev/ezpds">Get Obsign for iOS</a>
+            <a class="btn btn-primary" href="https://github.com/malpercio-dev/ezpds">Get the source</a>
             <a class="btn btn-secondary" href="custos/">Run your own server</a>
           </div>
           <p class="hero-honesty">
-            Open source. In development — iOS builds ship via TestFlight. No tokens, no
+            Open source. In development: iOS builds ship via TestFlight. No tokens, no
             coins, nothing to buy.
           </p>
         </div>
@@ -71,8 +79,8 @@
           <h2>Owned, not rented.</h2>
           <div class="section-intro">
             <p>
-              On the AT&nbsp;Protocol, your identity is a <code>did:plc</code> — and it is
-              controlled by whoever holds its <em>rotation keys</em>. On most hosts today,
+              On the AT&nbsp;Protocol, your identity is a <code>did:plc</code>, controlled
+              by whoever holds its <em>rotation keys</em>. On most hosts today,
               that&rsquo;s the server. Your ability to leave, to recover from an attack, or
               simply to stay yourself is a policy promise: real only for as long as your
               host is honest, solvent, and online.
@@ -86,13 +94,13 @@
           <div class="keyfacts">
             <dl>
               <dt>rotationKeys[0]</dt>
-              <dd>your device — Secure Enclave, non-extractable</dd>
+              <dd>your device: Secure&nbsp;Enclave, non-extractable</dd>
               <dt>rotationKeys[1]</dt>
-              <dd>your server — signs posts, can never outrank you</dd>
+              <dd>your server: signs posts, can never outrank you</dd>
               <dt>recovery window</dt>
               <dd>72 hours, during which your key overrides any other</dd>
               <dt>backup</dt>
-              <dd>your key, split 2-of-3 — no single custodian</dd>
+              <dd>your key, split 2-of-3 (no single custodian)</dd>
             </dl>
           </div>
         </div>
@@ -103,7 +111,7 @@
         <div class="container">
           <h2>How Obsign defends an identity.</h2>
           <p class="section-intro">
-            Set it up once, with care. After that, Obsign watches quietly — and if
+            Set it up once, with care. After that, Obsign watches quietly, and if
             something is wrong, it says so in plain words.
           </p>
           <div class="card-grid">
@@ -116,9 +124,9 @@
               </span>
               <h3>Sealed in your device</h3>
               <p>
-                Your identity key is generated inside the Secure Enclave and never leaves
-                it. It signs identity operations only after you approve them — reviewed on
-                screen, confirmed with your biometrics.
+                Your identity key is generated inside the Secure&nbsp;Enclave and never
+                leaves it. It signs identity operations only after you approve them:
+                reviewed on screen, confirmed with your biometrics.
               </p>
             </div>
             <div class="card">
@@ -131,7 +139,7 @@
               <h3>It keeps watch</h3>
               <p>
                 Obsign monitors the public PLC directory for changes to your identity.
-                Every entry is verified against your own key — any operation you
+                Every entry is verified against your own key: any operation you
                 didn&rsquo;t authorize raises an alarm that tells you exactly what changed.
               </p>
             </div>
@@ -146,7 +154,7 @@
               <p>
                 Inside the directory&rsquo;s recovery window, your device key outranks
                 every other key. One clear, reviewed action signs the override and
-                reclaims the identity — calmly, before the window closes.
+                reclaims the identity, calmly, before the window closes.
               </p>
             </div>
             <div class="card">
@@ -159,7 +167,7 @@
               </span>
               <h3>Backup without a custodian</h3>
               <p>
-                At setup, your key is split into three shares — iCloud Keychain, your
+                At setup, your key is split into three shares: iCloud Keychain, your
                 server&rsquo;s escrow, and a place you choose. Any two recover it; no
                 single share (and no single company) can.
               </p>
@@ -174,9 +182,9 @@
               <span class="badge badge-expired"><span class="glyph" aria-hidden="true">⊘</span> Recovery window closed</span>
             </div>
             <figcaption>
-              The wallet&rsquo;s urgency states. Status is never color alone — every state
+              The wallet&rsquo;s urgency states. Status is never color alone: every state
               carries an icon, a label, and a position, so it can&rsquo;t be misread under
-              stress or with color-blindness.
+              stress or with color blindness.
             </figcaption>
           </figure>
         </div>
@@ -189,9 +197,9 @@
           <div class="prose">
             <p>
               Because you hold the top rotation key, moving your identity to a new host is
-              an operation <em>you</em> sign — it never requires your old server&rsquo;s
+              an operation <em>you</em> sign: it never requires your old server&rsquo;s
               permission, cooperation, or continued existence. Credible exit stops being a
-              promise in a terms-of-service and becomes a property of the keys.
+              promise in someone&rsquo;s terms of service and becomes a property of the keys.
             </p>
             <p>
               And nothing about this leaves the network behind: your server keeps a
@@ -212,7 +220,7 @@
               <p>
                 No. There are no coins, no tokens, and nothing to buy or trade. A
                 <code>did:plc</code> is a public log of signed operations run for the
-                AT&nbsp;Protocol — not a blockchain. Obsign is a key holder, the way a
+                AT&nbsp;Protocol, not a blockchain. Obsign is a key holder, the way a
                 passport wallet holds a passport.
               </p>
             </div>
@@ -221,13 +229,13 @@
               <p>
                 Your key is split 2-of-3 at setup: one share in iCloud Keychain, one held
                 in escrow by your server, one wherever you choose. Losing the phone loses
-                one share — any two remaining shares recover the key.
+                one share; any two remaining shares recover the key.
               </p>
             </div>
             <div>
               <h3>Do I need to understand the cryptography?</h3>
               <p>
-                No — and you&rsquo;re never asked to. Obsign leads with plain human stakes.
+                No, and you&rsquo;re never asked to. Obsign leads with plain human stakes.
                 But every screen keeps the machinery — the DIDs, the keys, the audit log —
                 one deliberate tap away, so you can verify anything yourself whenever you
                 want to.
@@ -238,7 +246,7 @@
               <p>
                 Your identity outlives it. It&rsquo;s a <code>did:plc</code> in the public
                 directory, your keys are on your device, and your server remains a
-                standard rotation key — so ordinary AT&nbsp;Protocol tooling can still
+                standard rotation key, so ordinary AT&nbsp;Protocol tooling can still
                 operate on your identity. All of this is open source.
               </p>
             </div>
@@ -253,7 +261,7 @@
             <p class="prompt">custos <span class="prompt-glyph" aria-hidden="true">▸</span> the server side</p>
             <h2>Run the room your identity lives in.</h2>
             <p class="section-intro">
-              Custos is Obsign&rsquo;s personal data server — a complete AT&nbsp;Protocol
+              Custos is Obsign&rsquo;s personal data server, a complete AT&nbsp;Protocol
               PDS in a single Rust binary. It hosts your repository, signs your posts, and
               federates with the network. What it cannot do, by construction, is take your
               identity: its key is ranked below yours.
@@ -271,7 +279,7 @@
       <div class="container">
         <div class="foot-brands">
           <span>Obsign — the identity wallet</span>
-          <span>Custos — the personal data server</span>
+          <a href="custos/">Custos — the personal data server</a>
         </div>
         <div>
           <a href="https://github.com/malpercio-dev/ezpds">Open source (ezpds)</a>

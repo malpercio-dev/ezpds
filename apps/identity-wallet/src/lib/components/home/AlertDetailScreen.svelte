@@ -93,7 +93,8 @@
     font-size: var(--text-body);
     font-weight: var(--weight-medium);
     cursor: pointer;
-    padding: var(--space-xs) 0;
+    padding: var(--space-xs);
+    min-height: 44px;
   }
 
   .hero-title {

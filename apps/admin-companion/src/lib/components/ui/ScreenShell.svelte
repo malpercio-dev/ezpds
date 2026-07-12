@@ -82,9 +82,12 @@
     gap: var(--space-xs);
   }
   .back {
+    display: inline-flex;
+    align-items: center;
     align-self: flex-start;
+    min-height: var(--control-min-height);
     margin-bottom: var(--space-xs);
-    padding: var(--space-xs) 0;
+    padding: var(--space-xs);
     background: transparent;
     border: none;
     color: var(--color-primary);

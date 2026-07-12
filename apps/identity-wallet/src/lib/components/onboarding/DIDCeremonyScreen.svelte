@@ -40,6 +40,9 @@
     hold.end();
   }
 
+  const holdKeydown = hold.keydown;
+  const holdKeyup = hold.keyup;
+
   async function beginCeremony() {
     phase = 'sealing';
     hold.state.progress = 1;
@@ -125,6 +128,8 @@
         onpointerup={holdEnd}
         onpointerleave={holdEnd}
         onpointercancel={holdEnd}
+        onkeydown={holdKeydown}
+        onkeyup={holdKeyup}
       >
         <span class="wax">
           <span class="goldfill" style="transform: scale({fill})"></span>

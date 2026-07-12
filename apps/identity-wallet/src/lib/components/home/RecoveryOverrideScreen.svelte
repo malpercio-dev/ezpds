@@ -58,6 +58,8 @@
   function holdEnd() {
     hold.end();
   }
+  const holdKeydown = hold.keydown;
+  const holdKeyup = hold.keyup;
   function confirmOverride() {
     hold.state.progress = 1;
     handleSubmit();
@@ -189,10 +191,10 @@
           <p class="no-changes">No key or service changes to apply.</p>
         {:else}
           {#each signedOp.diff.removedKeys as key}
-            <DiffRow variant="remove" title="Remove the unauthorized key" value="{key.slice(0, 24)}…" />
+            <DiffRow variant="remove" title="Remove the unauthorized key" value={key} />
           {/each}
           {#each signedOp.diff.addedKeys as key}
-            <DiffRow variant="restore" title="Restore your key" value="{key.slice(0, 24)}…" />
+            <DiffRow variant="restore" title="Restore your key" value={key} />
           {/each}
           {#each signedOp.diff.changedServices as service}
             {#if service.changeType === 'added'}
@@ -228,9 +230,11 @@
         onpointerup={holdEnd}
         onpointerleave={holdEnd}
         onpointercancel={holdEnd}
+        onkeydown={holdKeydown}
+        onkeyup={holdKeyup}
         aria-label="Press and hold to override"
       >
-        <span class="hold-fill" style="width: {holdFill * 100}%"></span>
+        <span class="hold-fill" style="transform: scaleX({holdFill})"></span>
         <span class="hold-label">
           {#if submitting}Submitting…{:else if isExpired}Recovery window expired{:else}Hold to override{/if}
         </span>
@@ -267,7 +271,8 @@
     font-size: var(--text-body);
     font-weight: var(--weight-medium);
     cursor: pointer;
-    padding: var(--space-xs) 0;
+    padding: var(--space-xs);
+    min-height: 44px;
   }
   .back:disabled {
     opacity: 0.5;
@@ -407,9 +412,10 @@
   .hold-fill {
     position: absolute;
     inset: 0;
-    width: 0;
     background: var(--color-critical-solid-deep);
-    transition: width 0.1s linear;
+    transform: scaleX(0);
+    transform-origin: left;
+    transition: transform 0.1s linear;
   }
   .hold-label {
     position: relative;

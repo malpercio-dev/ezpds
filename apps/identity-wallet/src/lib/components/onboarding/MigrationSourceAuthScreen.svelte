@@ -57,7 +57,7 @@
 {#if authenticating}
   <div class="centered">
     <Spinner size={44} label="Authenticating" />
-    <p class="status">Opening browser for your current PDS…</p>
+    <p class="status">Opening secure sign-in to your current PDS…</p>
   </div>
 {:else}
   <OnboardingShell title="Sign in to your current PDS" subtitle="Authenticate with your current PDS to authorize the migration.">

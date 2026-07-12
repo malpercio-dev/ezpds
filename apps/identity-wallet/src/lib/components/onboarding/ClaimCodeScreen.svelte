@@ -5,10 +5,12 @@
   let {
     value = $bindable(''),
     onnext,
+    onback = undefined,
     error = undefined,
   }: {
     value: string;
     onnext: () => void;
+    onback?: () => void;
     error?: string;
   } = $props();
 
@@ -20,7 +22,7 @@
   }
 </script>
 
-<OnboardingShell title="Enter your claim code" subtitle="You'll receive a 6-character code from your administrator.">
+<OnboardingShell {onback} title="Enter your claim code" subtitle="You'll receive a 6-character code from your administrator.">
   <input
     class="code-input"
     class:error={!!error}

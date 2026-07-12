@@ -80,7 +80,7 @@
           <p class="card-id">{method.id}</p>
           {#if method.publicKeyMultibase}
             <div class="kv-row">
-              <code class="kv">{String(method.publicKeyMultibase).slice(0, 20)}…</code>
+              <code class="kv">{String(method.publicKeyMultibase)}</code>
               <button
                 class="copy"
                 onclick={() => copyKey(String(method.id), String(method.publicKeyMultibase))}
@@ -140,7 +140,8 @@
     font-size: var(--text-body);
     font-weight: var(--weight-medium);
     cursor: pointer;
-    padding: var(--space-xs) 0;
+    padding: var(--space-xs);
+    min-height: 44px;
   }
   .title {
     font-size: var(--text-headline);
@@ -208,9 +209,7 @@
     border-radius: var(--radius-sm);
     flex: 1;
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    word-break: break-all;
   }
   .copy {
     background: var(--color-surface);

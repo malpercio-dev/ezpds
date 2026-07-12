@@ -54,7 +54,7 @@
 {#if authenticating}
   <div class="centered">
     <Spinner size={44} label="Authenticating" />
-    <p class="status">Opening browser for PDS authentication…</p>
+    <p class="status">Opening secure sign-in to your PDS…</p>
   </div>
 {:else}
   <OnboardingShell title="Connect to your PDS" subtitle="Authenticate with your PDS to verify you control this identity.">

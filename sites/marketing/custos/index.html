@@ -6,8 +6,16 @@
     <title>Custos — a personal data server whose users hold their own keys</title>
     <meta
       name="description"
-      content="Custos is a complete AT Protocol personal data server in a single Rust binary. It hosts repositories, signs posts, and federates — and by construction it can never take an identity from its users."
+      content="Custos is a complete AT Protocol personal data server in a single Rust binary. It hosts repositories, signs posts, and federates, and by construction it can never take an identity from its users."
     />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Custos — a personal data server whose users hold their own keys" />
+    <meta
+      property="og:description"
+      content="A complete AT Protocol PDS in a single Rust binary. It hosts repositories, signs posts, and federates, and by construction it can never take an identity from its users."
+    />
+    <meta property="og:url" content="https://about.obsign.org/custos/" />
+    <meta name="twitter:card" content="summary" />
     <link rel="stylesheet" href="../assets/css/site.css" />
     <link
       rel="icon"
@@ -39,7 +47,7 @@
           <p class="lede">
             Custos is a complete AT&nbsp;Protocol PDS in a single Rust binary: it hosts
             repositories, signs commits, serves the firehose, and federates with the
-            network. Its signing key sits at <code>rotationKeys[1]</code> — below the key
+            network. Its signing key sits at <code>rotationKeys[1]</code>, below the key
             your users hold. A Custos instance can act <em>for</em> its users; it cannot
             act <em>against</em> them.
           </p>
@@ -48,7 +56,7 @@
             <a class="btn btn-secondary" href="https://github.com/malpercio-dev/ezpds">Read the source</a>
           </div>
           <p class="hero-honesty">
-            Open source, in active development. Reports the literal truth — including its
+            Open source, in active development. Reports the literal truth, including its
             own limits.
           </p>
         </div>
@@ -69,7 +77,7 @@
             <div>
               <dt>backup</dt>
               <dd>
-                Litestream streams the database off-box continuously — point-in-time
+                Litestream streams the database off-box continuously: point-in-time
                 recovery without a backup cron.
               </dd>
             </div>
@@ -84,14 +92,14 @@
               <dt>federation</dt>
               <dd>
                 Native firehose (<code>com.atproto.sync.subscribeRepos</code>), sync
-                serving, and outbound <code>requestCrawl</code> — accounts on Custos are
+                serving, and outbound <code>requestCrawl</code>: accounts on Custos are
                 first-class citizens of the network.
               </dd>
             </div>
             <div>
               <dt>auth</dt>
               <dd>
-                A full OAuth provider — PAR, DPoP-bound tokens, JWKS — plus app passwords
+                A full OAuth provider (PAR, DPoP-bound tokens, JWKS) plus app passwords
                 for legacy clients.
               </dd>
             </div>
@@ -99,7 +107,7 @@
               <dt>accounts</dt>
               <dd>
                 Claim codes minted by you, the operator. Nobody signs up on your box
-                unless you handed them a code.
+                unless you hand them a code.
               </dd>
             </div>
             <div>
@@ -153,7 +161,7 @@
           <h2>The deal between Custos and its users.</h2>
           <div class="prose">
             <p>
-              A PDS necessarily holds its users&rsquo; data — that is its job. The Custos
+              A PDS necessarily holds its users&rsquo; data. That is its job. The Custos
               bet is that it should hold their data <em>without holding their identity</em>.
               Because each user&rsquo;s wallet key outranks the server&rsquo;s, a Custos
               operator — even a compromised one — cannot rotate an identity away from its

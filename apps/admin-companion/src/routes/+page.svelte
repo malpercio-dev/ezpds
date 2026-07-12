@@ -344,7 +344,8 @@
     cursor: pointer;
     text-align: left;
   }
-  .switcher-row:hover {
+  .switcher-row:hover,
+  .switcher-row:active {
     background: var(--color-surface-raised);
   }
   .switcher-row.active {

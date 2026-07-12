@@ -135,6 +135,7 @@
 /* ── Tokens: Custos, "The Brass Console" (scoped register) ────────────── */
 .register-custos {
   --color-primary: oklch(0.72 0.12 80);
+  --color-primary-hover: oklch(0.78 0.13 82);
   --color-primary-deep: oklch(0.7 0.13 78);
   --color-on-primary: oklch(0.16 0.012 250);
   --color-on-color: oklch(0.96 0.006 250);
@@ -206,7 +207,7 @@ a:hover {
   color: var(--color-primary);
 }
 .register-custos a:hover {
-  color: oklch(0.78 0.13 82);
+  color: var(--color-primary-hover);
 }
 
 code,
@@ -214,7 +215,9 @@ code,
   font-family: var(--font-mono);
   font-size: var(--text-data);
   line-height: var(--leading-data);
-  word-break: break-all; /* the Literal-Truth rule: never truncate a key silently */
+  /* Break at natural boundaries first; force a break only when a literal truly
+     can't fit (never truncate a key silently, never split short identifiers). */
+  overflow-wrap: break-word;
 }
 
 .container {
@@ -272,16 +275,35 @@ section {
   gap: var(--space-lg);
 }
 .site-nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
   color: var(--color-ink-soft);
   text-decoration: none;
   font-size: 0.9375rem;
   font-weight: 500;
-  padding: var(--space-sm) 0;
+  padding: var(--space-sm) var(--space-xs);
+  white-space: nowrap;
 }
 .site-nav a:hover {
   color: var(--color-ink);
   text-decoration: underline;
   text-underline-offset: 4px;
+}
+/* Phone widths: the nav wraps onto its own full-width row under the brand —
+   links stay whole (nowrap above) and none can be pushed off-viewport. */
+@media (max-width: 640px) {
+  .site-header .container {
+    flex-wrap: wrap;
+    padding-top: var(--space-sm);
+    padding-bottom: var(--space-sm);
+  }
+  .site-nav {
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    gap: var(--space-xs) var(--space-md);
+  }
 }
 
 /* ── The seal mark (matches the wallet's SealEmblem) ──────────────────── */
@@ -366,7 +388,7 @@ section {
   color: var(--color-on-primary);
 }
 .register-custos .btn-primary:hover {
-  background: oklch(0.78 0.13 82);
+  background: var(--color-primary-hover);
   color: var(--color-on-primary);
 }
 .btn-secondary {
@@ -626,25 +648,6 @@ figure.badge-figure figcaption {
 }
 .code-output .out-glyph {
   color: var(--color-primary);
-}
-
-/* Status chips (Brass Console) */
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border-radius: var(--radius-sm);
-  padding: 4px 10px;
-  font-family: var(--font-sans);
-  font-size: var(--text-label);
-  font-weight: 500;
-}
-.chip .glyph {
-  font-family: var(--font-mono);
-}
-.chip-safe {
-  background: var(--color-safe-surface);
-  color: var(--color-safe);
 }
 
 /* ── Footer ───────────────────────────────────────────────────────────── */

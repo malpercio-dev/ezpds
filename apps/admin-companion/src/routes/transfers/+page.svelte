@@ -11,6 +11,7 @@
     type PairingsState,
   } from '$lib/ipc';
   import { accountLabel, chipFor, timelineLine } from '$lib/transfers';
+  import { shortenId } from '$lib/format';
   import { serverIdentity } from '$lib/server-identity';
   import { classifyRelayError, type ErrorView } from '$lib/errors';
   import { requireUserPresence, presenceAllows } from '$lib/biometric';
@@ -34,6 +35,9 @@
 
   let pairingsView = $state<PairingsState | 'loading' | 'error'>('loading');
   let inflight = $state<TransfersState>({ kind: 'loading' });
+  // A failed *page* fetch never clobbers the rows already shown — it renders
+  // inline next to the paging button instead (mirrors the Accounts screen).
+  let pagingError = $state<ErrorView | undefined>(undefined);
   let expandedId = $state<string | null>(null);
   let cancelingStates = $state<SvelteMap<string, boolean>>(new SvelteMap());
   let cancelErrors = $state<SvelteMap<string, ErrorView | undefined>>(new SvelteMap());
@@ -57,6 +61,7 @@
 
   async function loadTransfers(pairingId: string) {
     inflight = { kind: 'loading' };
+    pagingError = undefined;
     try {
       const first = await listTransfers(pairingId);
       inflight = {
@@ -74,6 +79,7 @@
   async function loadMore() {
     if (!pairing || inflight.kind !== 'ready' || !inflight.cursor || inflight.paging) return;
     inflight = { ...inflight, paging: true };
+    pagingError = undefined;
     try {
       const next = await listTransfers(pairing.id, inflight.cursor);
       inflight = {
@@ -83,8 +89,9 @@
         paging: false,
       };
     } catch (e) {
-      // A failed page keeps what is already shown; the error is the panel-level one.
-      inflight = { kind: 'error', view: classifyRelayError(e) };
+      // A failed page keeps what is already shown; the error renders by the button.
+      pagingError = classifyRelayError(e);
+      inflight = { ...inflight, paging: false };
     }
   }
 
@@ -133,7 +140,7 @@
       aria-controls={`transfer-panel-${entry.id}`}
       onclick={() => toggleExpanded(entry.id)}
     >
-      <span class="transfer-account">{accountLabel(entry)}</span>
+      <span class="transfer-account">{shortenId(accountLabel(entry))}</span>
       <span class="transfer-timeline">{timelineLine(entry)}</span>
       <StatusChip status={chip.chip} label={chip.label} />
     </button>
@@ -240,8 +247,11 @@
 
     {#if inflight.cursor}
       <Button variant="secondary" loading={inflight.paging} onclick={loadMore}>
-        Load older transfers
+        Load more
       </Button>
+      {#if pagingError}
+        <ErrorState view={pagingError} server={identity} retrying={inflight.paging} onretry={loadMore} />
+      {/if}
     {/if}
 
     {#if gateHint}
@@ -255,7 +265,7 @@
   {#snippet actions()}
     {#if pairing && inflight.kind === 'ready'}
       <Button variant="secondary" onclick={() => pairing && loadTransfers(pairing.id)}>
-        Refresh transfers
+        Refresh
       </Button>
     {/if}
   {/snippet}
@@ -319,6 +329,7 @@
     align-items: center;
     gap: var(--space-sm);
     width: 100%;
+    min-height: var(--control-min-height);
     padding: var(--space-sm);
     background: transparent;
     border: none;
@@ -327,18 +338,17 @@
     cursor: pointer;
     text-align: left;
   }
-  .transfer-row:hover {
+  .transfer-row:hover,
+  .transfer-row:active {
     background: var(--color-surface);
   }
-  /* The account under transfer is the row's identity: mono, like DeviceRow. */
+  /* The account under transfer is the row's identity: mono, like DeviceRow.
+     Shortened with an explicit ellipsis in the markup — never clipped by CSS. */
   .transfer-account {
     font-family: var(--font-mono);
     font-size: var(--text-data);
     font-weight: var(--weight-medium);
     color: var(--color-ink);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
     max-width: 40%;
   }
   .transfer-timeline {
@@ -347,9 +357,7 @@
     font-family: var(--font-mono);
     font-size: var(--text-label);
     color: var(--color-ink-soft);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
   }
   .transfer-panel {
     display: flex;
@@ -366,11 +374,12 @@
     gap: var(--space-2xs) var(--space-md);
     margin: 0;
   }
+  /* Inside a raised well: ink-soft, per the tokens.css contrast rule for muted. */
   .facts dt {
     font-family: var(--font-sans);
     font-size: var(--text-label);
     font-weight: var(--weight-medium);
-    color: var(--color-muted);
+    color: var(--color-ink-soft);
   }
   .facts dd {
     margin: 0;

@@ -10,10 +10,12 @@
   let {
     value = $bindable(''),
     onnext,
+    onback = undefined,
     error = undefined,
   }: {
     value: string;
     onnext: () => void;
+    onback?: () => void;
     error?: string;
   } = $props();
 
@@ -66,6 +68,7 @@
 </script>
 
 <OnboardingShell
+  {onback}
   title="Choose your handle"
   subtitle="This is your unique identity on the network — how others find and verify you."
 >

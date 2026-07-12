@@ -85,7 +85,7 @@
       // A cancelled/superseded scan isn't a real failure — leave the current UI alone.
       if (token !== scanToken) return;
       // No camera (simulator/desktop) or permission denied — manual entry is the path.
-      scanHint = 'Camera scanning is unavailable here. Enter the relay URL and code below.';
+      scanHint = 'Camera scanning is unavailable here. Enter the server URL and code below.';
     } finally {
       // Only the scan that still owns the token may clear the shared scanning flag.
       if (token === scanToken) scanning = false;
@@ -145,7 +145,7 @@
   <ScreenShell prompt="pair device" title="Pair this device" onback={() => goto('/')}>
     <section class="intro">
       <p class="lede">
-        Claim the single-use pairing code from the relay. Scan its QR, or enter the relay
+        Claim the single-use pairing code from the server. Scan its QR, or enter the server
         URL and code by hand.
       </p>
       <div bind:this={triggerEl}>
@@ -216,7 +216,7 @@
         <span class="brand">ezpds</span><span class="caret" aria-hidden="true">▸</span>scan
       </p>
       <p class="scan-instruction" role="status">
-        Point the camera at the relay's pairing QR code.
+        Point the camera at the server's pairing QR code.
       </p>
     </div>
 

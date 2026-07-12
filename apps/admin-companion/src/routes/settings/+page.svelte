@@ -401,7 +401,8 @@
     cursor: pointer;
     text-align: left;
   }
-  .server-row:hover {
+  .server-row:hover,
+  .server-row:active {
     background: var(--color-surface);
   }
   .server-panel {
@@ -422,12 +423,13 @@
     flex-direction: column;
     gap: var(--space-2xs);
   }
+  /* Inside a raised well: ink-soft, per the tokens.css contrast rule for muted. */
   .meta-label {
     margin: 0;
     font-family: var(--font-sans);
     font-size: var(--text-label);
     font-weight: var(--weight-medium);
-    color: var(--color-muted);
+    color: var(--color-ink-soft);
   }
   .device-label-value {
     margin: 0;

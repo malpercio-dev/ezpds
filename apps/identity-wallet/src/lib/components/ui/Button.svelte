@@ -37,6 +37,14 @@
     background: var(--color-primary);
     color: var(--color-on-color);
   }
+  @media (hover: hover) {
+    .primary:hover:not(:disabled) {
+      background: var(--color-primary-deep);
+    }
+    .secondary:hover:not(:disabled) {
+      background: var(--color-surface-sunk);
+    }
+  }
   .primary:active:not(:disabled) {
     background: var(--color-primary-deep);
   }

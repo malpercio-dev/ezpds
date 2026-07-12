@@ -1,5 +1,6 @@
 <script lang="ts">
   import StatusChip, { type Status } from './StatusChip.svelte';
+  import { shortenId } from '$lib/format';
 
   // One account in the operator list — DeviceRow's dense `ls -l` register, plus the
   // blob-quota readout the list exists to make scannable. Handle (or an explicit
@@ -34,11 +35,6 @@
   };
   const chip = $derived(CHIP[status]);
 
-  // did:plc:abc12…z9q — keep the method prefix and a tail so it stays recognizable.
-  function shorten(id: string): string {
-    if (id.length <= 24) return id;
-    return `${id.slice(0, 14)}…${id.slice(-4)}`;
-  }
 </script>
 
 {#snippet content()}
@@ -50,7 +46,7 @@
         <span class="label label--none">no handle</span>
       {/if}
     </div>
-    <span class="id">{shorten(did)}</span>
+    <span class="id">{shortenId(did)}</span>
     <span class="quota">{quota}</span>
   </div>
   <StatusChip status={chip.chip} label={chip.label} />
@@ -83,6 +79,12 @@
   }
   .row--tappable {
     cursor: pointer;
+    border-radius: var(--radius-md);
+    transition: background var(--duration-fast) var(--ease-standard);
+  }
+  .row--tappable:hover,
+  .row--tappable:active {
+    background: var(--color-surface-raised);
   }
   .main {
     display: flex;

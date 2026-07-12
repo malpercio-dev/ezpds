@@ -173,10 +173,10 @@
           <p class="no-changes">No key or service changes to apply.</p>
         {:else}
           {#each signedOp.diff.addedKeys as key}
-            <DiffRow variant="restore" title="Add rotation key" value="{key.slice(0, 24)}…" />
+            <DiffRow variant="restore" title="Add rotation key" value={key} />
           {/each}
           {#each signedOp.diff.removedKeys as key}
-            <DiffRow variant="remove" title="Remove key" value="{key.slice(0, 24)}…" />
+            <DiffRow variant="remove" title="Remove key" value={key} />
           {/each}
           {#each signedOp.diff.changedServices as service}
             {#if service.changeType === 'added'}
@@ -207,7 +207,7 @@
         disabled={submitting || (!!error && errorIsTerminal)}
         onclick={approve}
       >
-        {submitting ? 'Submitting…' : error && !errorIsTerminal ? 'Retry' : 'Approve with Face ID'}
+        {submitting ? 'Submitting…' : error && !errorIsTerminal ? 'Retry' : 'Approve with biometrics'}
       </Button>
     {/if}
     <Button variant="secondary" onclick={oncancel} disabled={submitting}>Cancel</Button>

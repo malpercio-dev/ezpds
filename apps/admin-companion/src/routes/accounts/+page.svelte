@@ -290,6 +290,9 @@
     gap: var(--space-xs);
   }
   .filter {
+    display: inline-flex;
+    align-items: center;
+    min-height: var(--control-min-height);
     font-family: var(--font-mono);
     font-size: var(--text-label);
     color: var(--color-ink-soft);
