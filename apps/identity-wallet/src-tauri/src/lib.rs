@@ -784,6 +784,19 @@ fn get_stored_did_doc(
     }
 }
 
+/// Errors from [`refresh_did_doc`], serialized as `{ code: "SCREAMING_SNAKE_CASE" }`
+/// like every other IPC error enum so the frontend gets a branchable contract.
+#[derive(Debug, serde::Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RefreshDidDocError {
+    /// plc.directory fetch failed (network, 404, or parse).
+    #[error("failed to fetch PLC data document: {message}")]
+    FetchFailed { message: String },
+    /// Serializing or persisting the refreshed document failed.
+    #[error("failed to store DID document: {message}")]
+    StorageFailed { message: String },
+}
+
 /// Re-fetch a claimed identity's PLC data document from plc.directory and re-store it
 /// in the per-identity cache, returning the fresh document.
 ///
@@ -796,17 +809,22 @@ fn get_stored_did_doc(
 async fn refresh_did_doc(
     state: tauri::State<'_, oauth::AppState>,
     did: String,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, RefreshDidDocError> {
     let did_doc = state
         .pds_client()
         .fetch_plc_data_document(&did)
         .await
-        .map_err(|e| format!("failed to fetch PLC data document: {e}"))?;
-    let json = serde_json::to_string(&did_doc)
-        .map_err(|e| format!("failed to serialize DID document: {e}"))?;
+        .map_err(|e| RefreshDidDocError::FetchFailed {
+            message: e.to_string(),
+        })?;
+    let json = serde_json::to_string(&did_doc).map_err(|e| RefreshDidDocError::StorageFailed {
+        message: format!("failed to serialize DID document: {e}"),
+    })?;
     identity_store::IdentityStore
         .store_did_doc(&did, &json)
-        .map_err(|e| format!("failed to store DID document: {e}"))?;
+        .map_err(|e| RefreshDidDocError::StorageFailed {
+            message: e.to_string(),
+        })?;
     Ok(did_doc)
 }
 
