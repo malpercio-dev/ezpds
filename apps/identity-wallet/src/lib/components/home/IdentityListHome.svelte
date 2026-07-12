@@ -235,25 +235,14 @@
       <div class="cards">
         {#each identities as card (card.did)}
           {@const alerts = alertData.get(card.did)}
-          <button class="card" onclick={() => onselect(card.did, didDocs.get(card.did) ?? {}, card.deviceKeyIsRoot)}>
+          <div class="card-group">
+          <button class="card" class:card--alert={alerts?.length} onclick={() => onselect(card.did, didDocs.get(card.did) ?? {}, card.deviceKeyIsRoot)}>
             <DIDAvatar did={card.did} handle={card.handle ?? 'Unknown'} />
             <span class="info">
               <span class="handle">{card.handle ? '@' + card.handle : 'Unknown handle'}</span>
               <span class="did">{truncateDid(card.did)}</span>
               {#if card.pdsUrl}<span class="pds">on {hostOf(card.pdsUrl)}</span>{/if}
               <span class="badges">
-                {#if alerts?.length}
-                  <span
-                    class="badge badge--alert"
-                    role="button"
-                    tabindex="0"
-                    onclick={(e) => { e.stopPropagation(); onalert?.(card.did, alerts ?? []); }}
-                    onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onalert?.(card.did, alerts ?? []); } }}
-                  >
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
-                    {alerts.length} {alerts.length === 1 ? 'alert' : 'alerts'}
-                  </span>
-                {/if}
                 <span
                   class="badge"
                   class:badge--root={card.deviceKeyIsRoot === true}
@@ -273,6 +262,14 @@
             </span>
             <svg class="chev" width="9" height="16" viewBox="0 0 11 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 1 7 8-7 8"/></svg>
           </button>
+          {#if alerts?.length}
+            <button class="alert-strip" onclick={() => onalert?.(card.did, alerts ?? [])}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+              Review {alerts.length} unauthorized {alerts.length === 1 ? 'change' : 'changes'}
+              <svg class="strip-chev" width="8" height="14" viewBox="0 0 11 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 1 7 8-7 8"/></svg>
+            </button>
+          {/if}
+          </div>
         {/each}
       </div>
 
@@ -331,8 +328,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 38px;
-    height: 38px;
+    width: 44px;
+    height: 44px;
     border-radius: var(--radius-full);
     background: var(--color-surface);
     border: 1px solid var(--color-line);
@@ -528,10 +525,41 @@
     background: var(--color-surface-sunk);
     color: var(--color-muted);
   }
-  .badge--alert {
+  .card-group {
+    display: flex;
+    flex-direction: column;
+  }
+  /* An identity under attack fuses its card with the review strip below it. */
+  .card--alert {
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+  .alert-strip {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    width: 100%;
+    min-height: 44px;
+    padding: 10px 15px;
     background: var(--color-critical-surface);
     color: var(--color-critical);
+    border: 1px solid var(--color-line);
+    border-top: none;
+    border-bottom-left-radius: var(--radius-xl);
+    border-bottom-right-radius: var(--radius-xl);
+    font-size: var(--text-label);
+    font-weight: var(--weight-semibold);
+    text-align: left;
     cursor: pointer;
+    transition: border-color var(--duration-base) var(--ease-standard);
+  }
+  .alert-strip:active {
+    border-color: var(--color-critical);
+  }
+  .strip-chev {
+    margin-left: auto;
+    color: var(--color-critical-soft);
+    flex-shrink: 0;
   }
 
   .chev {

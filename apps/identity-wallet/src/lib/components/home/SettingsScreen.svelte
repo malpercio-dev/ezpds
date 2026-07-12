@@ -142,8 +142,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 38px;
-    height: 38px;
+    width: 44px;
+    height: 44px;
     border-radius: var(--radius-full);
     background: var(--color-surface);
     border: 1px solid var(--color-line);
@@ -205,7 +205,7 @@
     gap: 6px;
     min-height: 44px;
     border: none;
-    border-radius: calc(var(--radius-md) - 2px);
+    border-radius: var(--radius-sm);
     background: transparent;
     font-family: var(--font-sans);
     font-size: var(--text-label);

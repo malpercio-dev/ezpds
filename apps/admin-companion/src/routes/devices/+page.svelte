@@ -142,6 +142,9 @@
 
     <section class="panel" aria-labelledby="devices-label">
       <span id="devices-label" class="label">Registered devices</span>
+      {#if devicesView.devices.length === 0}
+        <p class="note">No devices are registered on this server yet.</p>
+      {/if}
       <div class="device-list">
         {#each devicesView.devices as device (device.id)}
           {@const isCurrent = device.id === pairing.deviceId}
@@ -226,7 +229,7 @@
   {#snippet actions()}
     {#if pairing && devicesView.kind === 'ready'}
       <Button variant="secondary" onclick={() => pairing && loadDevices(pairing.id)}>
-        Refresh list
+        Refresh
       </Button>
     {/if}
   {/snippet}
@@ -296,7 +299,8 @@
     cursor: pointer;
     text-align: left;
   }
-  .device-row:hover {
+  .device-row:hover,
+  .device-row:active {
     background: var(--color-surface);
   }
   .device-panel {
@@ -314,11 +318,12 @@
     gap: var(--space-2xs) var(--space-md);
     margin: 0;
   }
+  /* Inside a raised well: ink-soft, per the tokens.css contrast rule for muted. */
   .facts dt {
     font-family: var(--font-sans);
     font-size: var(--text-label);
     font-weight: var(--weight-medium);
-    color: var(--color-muted);
+    color: var(--color-ink-soft);
   }
   .facts dd {
     margin: 0;

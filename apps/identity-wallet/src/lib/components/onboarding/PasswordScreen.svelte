@@ -7,10 +7,12 @@
     value = $bindable(''),
     error,
     onnext,
+    onback = undefined,
   }: {
     value: string;
     error?: string;
     onnext: () => void;
+    onback?: () => void;
   } = $props();
 
   let confirm = $state('');
@@ -22,7 +24,7 @@
   let isValid = $derived(value.length >= 8 && value === confirm);
 </script>
 
-<OnboardingShell title="Create a password" subtitle="You'll use this to sign in to your account.">
+<OnboardingShell {onback} title="Create a password" subtitle="You'll use this to sign in to your account.">
   <TextField
     bind:value
     type="password"

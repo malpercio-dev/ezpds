@@ -3,7 +3,6 @@
   import { onMount, onDestroy } from 'svelte';
   import ModeSelectScreen from '$lib/components/onboarding/ModeSelectScreen.svelte';
   import PdsConfigScreen from '$lib/components/onboarding/PdsConfigScreen.svelte';
-  import WelcomeScreen from '$lib/components/onboarding/WelcomeScreen.svelte';
   import ClaimCodeScreen from '$lib/components/onboarding/ClaimCodeScreen.svelte';
   import EmailScreen from '$lib/components/onboarding/EmailScreen.svelte';
   import HandleScreen from '$lib/components/onboarding/HandleScreen.svelte';
@@ -51,7 +50,6 @@
   type OnboardingStep =
     | 'mode_select'
     | 'pds_config'
-    | 'welcome'
     | 'claim_code'
     | 'email'
     | 'handle'
@@ -317,32 +315,34 @@
       ondone={() => goTo('home')}
     />
   {:else if step === 'pds_config'}
-    <PdsConfigScreen onnext={() => goTo('welcome')} />
-  {:else if step === 'welcome'}
-    <WelcomeScreen onstart={() => goTo('claim_code')} />
+    <PdsConfigScreen onnext={() => goTo('claim_code')} onback={() => goTo('mode_select')} />
   {:else if step === 'claim_code'}
     <ClaimCodeScreen
       bind:value={form.claimCode}
       error={errors.claimCode}
       onnext={() => goTo('email')}
+      onback={() => goTo('pds_config')}
     />
   {:else if step === 'email'}
     <EmailScreen
       bind:value={form.email}
       error={errors.email}
       onnext={() => goTo('handle')}
+      onback={() => goTo('claim_code')}
     />
   {:else if step === 'handle'}
     <HandleScreen
       bind:value={form.handle}
       error={errors.handle}
       onnext={() => goTo('password')}
+      onback={() => goTo('email')}
     />
   {:else if step === 'password'}
     <PasswordScreen
       bind:value={form.password}
       error={errors.password}
       onnext={submitAccount}
+      onback={() => goTo('handle')}
     />
   {:else if step === 'loading'}
     <LoadingScreen statusText="Creating your account…" />
@@ -520,10 +520,10 @@
   {:else if step === 'auth_failed'}
     <OnboardingShell title="Authentication failed" subtitle="We couldn't complete authentication. Please try again.">
       {#if authError}
-        <span class="code">{authError.code}</span>
+        <span class="code">Error code: {authError.code}</span>
       {/if}
       <Button onclick={() => { authError = null; goTo('authenticating'); }}>Try again</Button>
-      <Button variant="secondary" onclick={() => { authError = null; goTo('welcome'); }}>Start over</Button>
+      <Button variant="secondary" onclick={() => { authError = null; goTo('mode_select'); }}>Start over</Button>
     </OnboardingShell>
   {/if}
 </div>

@@ -32,6 +32,9 @@
 
   let pairingsView = $state<PairingsState | 'loading' | 'error'>('loading');
   let inventory = $state<InventoryState>({ kind: 'loading' });
+  // A failed *page* fetch never clobbers the rows already shown — it renders
+  // inline next to the paging button instead (mirrors the Accounts screen).
+  let pagingError = $state<ErrorView | undefined>(undefined);
   let expandedCode = $state<string | null>(null);
   let revokingStates = $state<SvelteMap<string, boolean>>(new SvelteMap());
   let revokeErrors = $state<SvelteMap<string, ErrorView | undefined>>(new SvelteMap());
@@ -55,6 +58,7 @@
 
   async function loadInventory(pairingId: string) {
     inventory = { kind: 'loading' };
+    pagingError = undefined;
     try {
       const first = await listClaimCodes(pairingId);
       inventory = { kind: 'ready', codes: first.codes, cursor: first.cursor, paging: false };
@@ -67,6 +71,7 @@
   async function loadMore() {
     if (!pairing || inventory.kind !== 'ready' || !inventory.cursor || inventory.paging) return;
     inventory = { ...inventory, paging: true };
+    pagingError = undefined;
     try {
       const next = await listClaimCodes(pairing.id, inventory.cursor);
       inventory = {
@@ -76,8 +81,9 @@
         paging: false,
       };
     } catch (e) {
-      // A failed page keeps what is already shown; the error is the panel-level one.
-      inventory = { kind: 'error', view: classifyRelayError(e) };
+      // A failed page keeps what is already shown; the error renders by the button.
+      pagingError = classifyRelayError(e);
+      inventory = { ...inventory, paging: false };
     }
   }
 
@@ -237,8 +243,11 @@
 
     {#if inventory.cursor}
       <Button variant="secondary" loading={inventory.paging} onclick={loadMore}>
-        Load older codes
+        Load more
       </Button>
+      {#if pagingError}
+        <ErrorState view={pagingError} server={identity} retrying={inventory.paging} onretry={loadMore} />
+      {/if}
     {/if}
 
     {#if gateHint}
@@ -252,7 +261,7 @@
   {#snippet actions()}
     {#if pairing && inventory.kind === 'ready'}
       <Button variant="secondary" onclick={() => pairing && loadInventory(pairing.id)}>
-        Refresh inventory
+        Refresh
       </Button>
     {/if}
   {/snippet}
@@ -316,6 +325,7 @@
     align-items: center;
     gap: var(--space-sm);
     width: 100%;
+    min-height: var(--control-min-height);
     padding: var(--space-sm);
     background: transparent;
     border: none;
@@ -324,7 +334,8 @@
     cursor: pointer;
     text-align: left;
   }
-  .code-row:hover {
+  .code-row:hover,
+  .code-row:active {
     background: var(--color-surface);
   }
   /* The code itself is the row's identity: mono, tracked out like CodeOutput. */
@@ -341,9 +352,7 @@
     font-family: var(--font-mono);
     font-size: var(--text-label);
     color: var(--color-ink-soft);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
   }
   .code-panel {
     display: flex;
@@ -360,11 +369,12 @@
     gap: var(--space-2xs) var(--space-md);
     margin: 0;
   }
+  /* Inside a raised well: ink-soft, per the tokens.css contrast rule for muted. */
   .facts dt {
     font-family: var(--font-sans);
     font-size: var(--text-label);
     font-weight: var(--weight-medium);
-    color: var(--color-muted);
+    color: var(--color-ink-soft);
   }
   .facts dd {
     margin: 0;

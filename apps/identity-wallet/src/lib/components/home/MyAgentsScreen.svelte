@@ -282,7 +282,7 @@
           </p>
           {#if revokeError}<p class="danger-error" role="alert">{revokeError}</p>{/if}
           <Button onclick={doRevoke} disabled={revoking}>
-            {#if revoking}<Spinner size={16} /> Revoking…{:else}Revoke with Face ID{/if}
+            {#if revoking}<Spinner size={16} /> Revoking…{:else}Revoke with biometrics{/if}
           </Button>
           <Button variant="secondary" onclick={() => { confirmingRevoke = false; revokeError = null; }} disabled={revoking}>
             Keep access
@@ -397,8 +397,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 38px;
-    height: 38px;
+    width: 44px;
+    height: 44px;
     border-radius: var(--radius-full);
     background: var(--color-surface);
     border: 1px solid var(--color-line);
@@ -723,7 +723,7 @@
   .entry-when {
     font-family: var(--font-mono);
     font-size: var(--text-data);
-    color: var(--color-ink-faint);
+    color: var(--color-muted);
   }
 
   .empty-trail {

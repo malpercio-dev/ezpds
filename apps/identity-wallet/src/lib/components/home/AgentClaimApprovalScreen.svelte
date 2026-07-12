@@ -234,7 +234,7 @@
 
         <div class="actions">
           <Button onclick={approve} disabled={phase === 'approving'}>
-            {#if phase === 'approving'}<Spinner size={18} /> Waiting for Face ID…{:else}Approve with Face ID{/if}
+            {#if phase === 'approving'}<Spinner size={18} /> Waiting for confirmation…{:else}Approve with biometrics{/if}
           </Button>
           <Button variant="secondary" onclick={deny} disabled={phase === 'approving'}>Deny</Button>
         </div>
@@ -270,8 +270,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 38px;
-    height: 38px;
+    width: 44px;
+    height: 44px;
     border-radius: var(--radius-full);
     background: var(--color-surface);
     border: 1px solid var(--color-line);

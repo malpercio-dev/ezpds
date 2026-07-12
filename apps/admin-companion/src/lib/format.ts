@@ -20,6 +20,18 @@ export function formatBytes(bytes: number): string {
   return `${figure} ${unit} (${bytes} B)`;
 }
 
+/**
+ * Shorten a long identifier for a single-line row with an EXPLICIT ellipsis —
+ * `did:key:zDnae…aH2g` — keeping the method prefix and a tail so it stays
+ * recognizable. The visible `…` is the Literal-Truth rule's alternative to
+ * silent CSS clipping; the full value always lives one tap away in the row's
+ * expanded panel or detail screen.
+ */
+export function shortenId(id: string): string {
+  if (id.length <= 24) return id;
+  return `${id.slice(0, 14)}…${id.slice(-4)}`;
+}
+
 /** Quota-used percentage: two decimals, but never round a nonzero usage to "0.00%". */
 export function formatPct(pct: number): string {
   if (pct > 0 && pct < 0.01) return '<0.01%';

@@ -7,6 +7,7 @@
   import StatusChip from '$lib/components/ui/StatusChip.svelte';
   import CodeOutput from '$lib/components/ui/CodeOutput.svelte';
   import DeviceRow from '$lib/components/ui/DeviceRow.svelte';
+  import AccountRow from '$lib/components/ui/AccountRow.svelte';
   import TextField from '$lib/components/ui/TextField.svelte';
   import Toggle from '$lib/components/ui/Toggle.svelte';
   import ErrorState from '$lib/components/ui/ErrorState.svelte';
@@ -152,6 +153,34 @@
         lastSeen="revoked 1d ago"
         status="revoked"
         onclick={() => {}}
+      />
+    </div>
+  </section>
+
+  <section>
+    <h2>Account rows</h2>
+    <div class="panel">
+      <AccountRow
+        did="did:plc:abc123def456ghi789jkl012"
+        handle="alice.ezpds.example"
+        status="active"
+        quota="[▓▓░░░] 42.00%"
+        onclick={() => {}}
+      />
+      <div class="divider"></div>
+      <AccountRow
+        did="did:plc:mno345pqr678stu901vwx234"
+        handle={null}
+        status="deactivated"
+        quota="[░░░░░] 0.00%"
+        onclick={() => {}}
+      />
+      <div class="divider"></div>
+      <AccountRow
+        did="did:plc:yzb567cde890fgh123ijk456"
+        handle="mallory.ezpds.example"
+        status="takendown"
+        quota="[▓▓▓▓▓] 95.10% !"
       />
     </div>
   </section>

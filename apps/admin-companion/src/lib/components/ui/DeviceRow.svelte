@@ -1,5 +1,6 @@
 <script lang="ts">
   import StatusChip, { type Status } from './StatusChip.svelte';
+  import { shortenId } from '$lib/format';
 
   // A dense, aligned list row — the legibility of a good `ls -l`. Label + shortened
   // mono did:key + last-seen on the left, a status chip on the right. The full key
@@ -26,11 +27,6 @@
     onclick?: () => void;
   } = $props();
 
-  // did:key:zDnae…aH2g — keep the method prefix and a tail so it stays recognizable.
-  function shorten(id: string): string {
-    if (id.length <= 24) return id;
-    return `${id.slice(0, 14)}…${id.slice(-4)}`;
-  }
 </script>
 
 {#snippet content()}
@@ -39,7 +35,7 @@
       <span class="label">{label}</span>
       {#if current}<span class="current">{currentLabel}</span>{/if}
     </div>
-    <span class="id">{shorten(deviceId)}</span>
+    <span class="id">{shortenId(deviceId)}</span>
     <span class="meta">{lastSeen}</span>
   </div>
   <StatusChip {status} />
@@ -101,9 +97,11 @@
     color: var(--color-ink-soft);
     overflow-wrap: anywhere;
   }
+  /* Rows ship inside raised wells (Settings/Devices) — ink-soft per the
+     tokens.css contrast rule for muted on surface-raised. */
   .meta {
     font-family: var(--font-mono);
     font-size: var(--text-label);
-    color: var(--color-muted);
+    color: var(--color-ink-soft);
   }
 </style>

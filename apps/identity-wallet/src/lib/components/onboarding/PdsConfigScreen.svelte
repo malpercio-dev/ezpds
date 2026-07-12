@@ -8,7 +8,7 @@
 
   const DEFAULT_PDS_URL = 'https://obsign.org';
 
-  let { onnext }: { onnext: () => void } = $props();
+  let { onnext, onback = undefined }: { onnext: () => void; onback?: () => void } = $props();
 
   let url = $state(DEFAULT_PDS_URL);
   let loading = $state(false);
@@ -59,6 +59,7 @@
 </script>
 
 <OnboardingShell
+  {onback}
   title="Connect to Custos"
   subtitle="Your wallet connects to a server to create your identity. Use the default, or enter the address of your own."
 >
