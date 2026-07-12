@@ -25,8 +25,10 @@ vars:pre-request {
 
 docs {
   Proxies `chat.bsky.convo.getLog` to the configured chat service (default https://api.bsky.chat;
-  override via [chat] in pds.toml or EZPDS_CHAT_URL). The caller's Bearer token is passed through
-  unchanged, the chat service's DID is sent as the `atproto-proxy` header, and the upstream
-  status/body are streamed back. The optional `cursor` paginates the event log; leave it empty to
-  start from the beginning.
+  override via [chat] in pds.toml or EZPDS_CHAT_URL) when no `atproto-proxy` header is sent. A
+  fresh service-auth JWT is minted for the chat service's DID (the caller's own Bearer token is
+  never forwarded), sent as the `atproto-proxy` header, and the upstream status/body are streamed
+  back. The optional `cursor` paginates the event log; leave it empty to start from the
+  beginning. As with chat_list_convos.bru, an explicit `atproto-proxy` header overrides the
+  configured default.
 }

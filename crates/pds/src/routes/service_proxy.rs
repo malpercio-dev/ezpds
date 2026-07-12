@@ -18,7 +18,7 @@ use axum::{
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::identity_resolution::ModerationProxyGuard;
+use crate::identity_resolution::HeaderProxyGuard;
 
 /// Maximum buffered request body when proxying to an upstream service. `app.bsky.*` and
 /// `chat.bsky.*` procedures carry small JSON payloads (preferences, mutes, message sends);
@@ -39,22 +39,23 @@ fn is_length_limit_error(err: &axum::Error) -> bool {
 /// response. Both `proxy_xrpc` (streaming) and `read_after_write::pipethrough_munged` (buffering)
 /// build on this so request construction never diverges.
 ///
-/// `moderation_guard` is `Some` only for the `com.atproto.moderation.*` branch, whose target host
-/// was resolved and SSRF-validated from a caller-controlled DID document
-/// (`identity_resolution::resolve_atproto_proxy_target`). When present, the outbound request is
-/// sent on a one-off hardened client (see `build_moderation_client`) rather than
-/// `state.http_client`: redirects are disabled, since the SSRF check only inspects the first URL
-/// and a malicious labeler could otherwise 3xx its way onto a private address; when the host was
-/// a domain name, DNS resolution is additionally pinned to exactly the addresses already
-/// validated, so the client can't re-resolve at connect time and land on an address that was
-/// never checked.
+/// `header_guard` is `Some` whenever the target host was resolved and SSRF-validated from a
+/// caller-supplied `atproto-proxy` header naming a caller-controlled DID document
+/// (`identity_resolution::resolve_atproto_proxy_target`) — always for `com.atproto.moderation.*`
+/// (which has no configured default), and for `app.bsky.*`/`chat.bsky.*` only when the caller's
+/// header overrides that namespace's default upstream. When present, the outbound request is sent
+/// on a one-off hardened client (see `build_header_proxy_client`) rather than `state.http_client`:
+/// redirects are disabled, since the SSRF check only inspects the first URL and a malicious target
+/// could otherwise 3xx its way onto a private address; when the host was a domain name, DNS
+/// resolution is additionally pinned to exactly the addresses already validated, so the client
+/// can't re-resolve at connect time and land on an address that was never checked.
 pub(crate) async fn proxy_request(
     state: &AppState,
     upstream_url: &str,
     proxy_did: &str,
     nsid: &str,
     did: &str,
-    moderation_guard: Option<&ModerationProxyGuard>,
+    header_guard: Option<&HeaderProxyGuard>,
     req: Request,
 ) -> Result<reqwest::Response, Response> {
     // Preserve the original query string verbatim so upstream query params survive the hop.
@@ -65,8 +66,8 @@ pub(crate) async fn proxy_request(
         .unwrap_or_default();
     let target = format!("{upstream_url}/xrpc/{nsid}{query}");
 
-    let client: Cow<'_, reqwest::Client> = match moderation_guard {
-        Some(guard) => match build_moderation_client(guard) {
+    let client: Cow<'_, reqwest::Client> = match header_guard {
+        Some(guard) => match build_header_proxy_client(guard) {
             Ok(client) => Cow::Owned(client),
             Err(err) => return Err(err.into_response()),
         },
@@ -139,8 +140,8 @@ pub(crate) async fn proxy_request(
     }
 }
 
-/// Forward an XRPC request to an upstream atproto service (the AppView, the chat service, or a
-/// labeler/moderation service).
+/// Forward an XRPC request to an upstream atproto service (the AppView, the chat service, a
+/// labeler/moderation service, or any other service named by an `atproto-proxy` header).
 ///
 /// `upstream_url` is the service base URL (no trailing slash) and `proxy_did` is its service
 /// DID, sent as the `atproto-proxy` header so the upstream knows the request arrives on the
@@ -156,29 +157,20 @@ pub async fn proxy_xrpc(
     proxy_did: &str,
     nsid: &str,
     did: &str,
-    moderation_guard: Option<&ModerationProxyGuard>,
+    header_guard: Option<&HeaderProxyGuard>,
     req: Request,
 ) -> Response {
-    let upstream = match proxy_request(
-        state,
-        upstream_url,
-        proxy_did,
-        nsid,
-        did,
-        moderation_guard,
-        req,
-    )
-    .await
-    {
-        Ok(resp) => resp,
-        Err(resp) => return resp,
-    };
+    let upstream =
+        match proxy_request(state, upstream_url, proxy_did, nsid, did, header_guard, req).await {
+            Ok(resp) => resp,
+            Err(resp) => return resp,
+        };
 
     // Map status and content-type, then stream the body through without buffering it.
     let status =
         StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let content_type = upstream.headers().get(header::CONTENT_TYPE).cloned();
-    // A 3xx is passed through, not followed (see `build_moderation_client`), but is useless to
+    // A 3xx is passed through, not followed (see `build_header_proxy_client`), but is useless to
     // the caller without its Location — forward it so "passed through verbatim" actually holds.
     let location = upstream.headers().get(header::LOCATION).cloned();
 
@@ -201,11 +193,12 @@ pub async fn proxy_xrpc(
     }
 }
 
-/// Build a one-off HTTP client hardened for proxying to a caller-controlled
-/// `com.atproto.moderation.*` target.
+/// Build a one-off HTTP client hardened for proxying to a caller-controlled `atproto-proxy`
+/// target (always the case for `com.atproto.moderation.*`; for `app.bsky.*`/`chat.bsky.*` only
+/// when the caller's header overrides the namespace's configured default).
 ///
 /// Always disables redirects: `resolve_atproto_proxy_target`'s SSRF check only inspects the
-/// *first* URL, so a malicious labeler returning a 3xx to a private/loopback/metadata address
+/// *first* URL, so a malicious target returning a 3xx to a private/loopback/metadata address
 /// would otherwise sail straight past it — `state.http_client` and a naive pinned client both
 /// follow redirects by default. When `guard.pinned` is present (the host was a domain name), DNS
 /// resolution for that domain is additionally overridden to exactly the addresses already
@@ -213,9 +206,9 @@ pub async fn proxy_xrpc(
 /// it independently at connect time, and a second DNS answer (attacker-controlled, or simply a
 /// changed record between validation and connection) could point at an address that was never
 /// checked.
-fn build_moderation_client(guard: &ModerationProxyGuard) -> Result<reqwest::Client, ApiError> {
+fn build_header_proxy_client(guard: &HeaderProxyGuard) -> Result<reqwest::Client, ApiError> {
     crate::identity_resolution::build_pinned_client(guard.pinned.as_ref()).map_err(|e| {
-        tracing::error!(error = %e, "failed to build moderation proxy client");
+        tracing::error!(error = %e, "failed to build header-target proxy client");
         ApiError::new(
             ErrorCode::InternalError,
             "failed to prepare proxied request",
@@ -1185,5 +1178,370 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json, expected_response);
+    }
+
+    // --- atproto-proxy header honored generically for app.bsky.*/chat.bsky.* (MM-319) ---
+    //
+    // Before this, the header was honored only for `com.atproto.moderation.*`; `app.bsky.*` and
+    // `chat.bsky.*` always streamed to the configured default, silently ignoring it. The official
+    // app routes `app.bsky.video.*` calls to the video service this way, so ignoring the header
+    // broke video posting.
+
+    #[tokio::test]
+    async fn appbsky_header_target_routes_to_named_service_not_configured_appview() {
+        let video_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/xrpc/app.bsky.video.getUploadLimits"))
+            .and(header("atproto-proxy", "did:web:video.bsky.app#bsky_video"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "canUpload": true })),
+            )
+            .expect(1)
+            .mount(&video_server)
+            .await;
+
+        let base = test_state().await;
+        let mut config = (*base.config).clone();
+        // A dead port: if the request fell through to the default AppView instead of the header
+        // target, it would fail at the transport layer rather than returning 200.
+        config.appview.url = "http://127.0.0.1:1".to_string();
+        with_master_key(&mut config);
+        seed_repo_key(&base.db).await;
+        let state = AppState {
+            config: Arc::new(config),
+            ..base
+        };
+        crate::routes::test_utils::seed_did_document(
+            &state.db,
+            "did:web:video.bsky.app",
+            serde_json::json!({
+                "id": "did:web:video.bsky.app",
+                "service": [{
+                    "id": "#bsky_video",
+                    "type": "AtprotoVideoService",
+                    "serviceEndpoint": video_server.uri(),
+                }],
+            }),
+        )
+        .await;
+        let auth = bearer(&state);
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/xrpc/app.bsky.video.getUploadLimits")
+                    .header("authorization", auth)
+                    .header("atproto-proxy", "did:web:video.bsky.app#bsky_video")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["canUpload"], true);
+    }
+
+    #[tokio::test]
+    async fn appbsky_header_target_mints_service_auth_for_header_did_and_echoes_header() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+        let video_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/xrpc/app.bsky.video.getUploadLimits"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .expect(1)
+            .mount(&video_server)
+            .await;
+
+        let base = test_state().await;
+        let mut config = (*base.config).clone();
+        config.appview.url = "http://127.0.0.1:1".to_string();
+        with_master_key(&mut config);
+        seed_repo_key(&base.db).await;
+        let state = AppState {
+            config: Arc::new(config),
+            ..base
+        };
+        crate::routes::test_utils::seed_did_document(
+            &state.db,
+            "did:web:video.bsky.app",
+            serde_json::json!({
+                "id": "did:web:video.bsky.app",
+                "service": [{
+                    "id": "#bsky_video",
+                    "type": "AtprotoVideoService",
+                    "serviceEndpoint": video_server.uri(),
+                }],
+            }),
+        )
+        .await;
+        let auth = bearer(&state);
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/xrpc/app.bsky.video.getUploadLimits")
+                    .header("authorization", auth)
+                    .header("atproto-proxy", "did:web:video.bsky.app#bsky_video")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let requests = video_server.received_requests().await.unwrap();
+        let forwarded = requests
+            .iter()
+            .find(|r| r.url.path() == "/xrpc/app.bsky.video.getUploadLimits")
+            .expect("video service received the proxied request");
+
+        assert_eq!(
+            forwarded
+                .headers
+                .get("atproto-proxy")
+                .expect("atproto-proxy header forwarded")
+                .to_str()
+                .unwrap(),
+            "did:web:video.bsky.app#bsky_video",
+            "the caller's header value is echoed back verbatim"
+        );
+
+        let forwarded_auth = forwarded
+            .headers
+            .get("authorization")
+            .expect("proxied request carries an Authorization header")
+            .to_str()
+            .unwrap();
+        let token = forwarded_auth
+            .strip_prefix("Bearer ")
+            .expect("Bearer scheme");
+        let mut parts = token.split('.');
+        let decode = |seg: &str| -> serde_json::Value {
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(seg).unwrap()).unwrap()
+        };
+        let jwt_header = decode(parts.next().unwrap());
+        let claims = decode(parts.next().unwrap());
+        assert!(parts.next().is_some(), "JWT carries a signature segment");
+
+        assert_eq!(jwt_header["alg"], "ES256");
+        assert_eq!(claims["iss"], TEST_DID);
+        assert_eq!(
+            claims["aud"], "did:web:video.bsky.app",
+            "aud strips the #fragment, matching bsky_video's own DID"
+        );
+        assert_eq!(claims["lxm"], "app.bsky.video.getUploadLimits");
+    }
+
+    #[tokio::test]
+    async fn chat_bsky_header_overrides_configured_chat_service() {
+        let header_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/xrpc/chat.bsky.convo.listConvos"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "convos": [] })),
+            )
+            .expect(1)
+            .mount(&header_server)
+            .await;
+
+        let base = test_state().await;
+        let mut config = (*base.config).clone();
+        // Point the *configured* chat service at a dead port: if the header were ignored, the
+        // request would land here and fail at the transport layer instead of succeeding.
+        config.chat.url = "http://127.0.0.1:1".to_string();
+        with_master_key(&mut config);
+        seed_repo_key(&base.db).await;
+        let state = AppState {
+            config: Arc::new(config),
+            ..base
+        };
+        crate::routes::test_utils::seed_did_document(
+            &state.db,
+            "did:plc:otherchat",
+            serde_json::json!({
+                "id": "did:plc:otherchat",
+                "service": [{
+                    "id": "#other_chat",
+                    "type": "AtprotoChat",
+                    "serviceEndpoint": header_server.uri(),
+                }],
+            }),
+        )
+        .await;
+        let auth = bearer(&state);
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/xrpc/chat.bsky.convo.listConvos")
+                    .header("authorization", auth)
+                    .header("atproto-proxy", "did:plc:otherchat#other_chat")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // Same SSRF guard as the moderation branch, exercised on the new app.bsky.* header path: a
+    // private-address target must be rejected end-to-end, not just at the unit level.
+    #[tokio::test]
+    async fn appbsky_header_target_private_address_is_rejected() {
+        let mut state = state_with_master_key_and_repo().await;
+        state.allow_loopback_proxy_targets = false;
+
+        crate::routes::test_utils::seed_did_document(
+            &state.db,
+            "did:web:video.bsky.app",
+            serde_json::json!({
+                "id": "did:web:video.bsky.app",
+                "service": [{
+                    "id": "#bsky_video",
+                    "type": "AtprotoVideoService",
+                    "serviceEndpoint": "http://127.0.0.1:9",
+                }],
+            }),
+        )
+        .await;
+        let auth = bearer(&state);
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/xrpc/app.bsky.video.getUploadLimits")
+                    .header("authorization", auth)
+                    .header("atproto-proxy", "did:web:video.bsky.app#bsky_video")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    // The read-after-write munge path hardcodes `state.config.appview.url`/`.did` internally, so
+    // it can't honor a header naming a different target — an explicit header on one of the six
+    // munged NSIDs must bypass munge entirely and stream to the header target instead.
+    #[tokio::test]
+    async fn read_after_write_nsid_with_header_bypasses_munge_and_reaches_header_target() {
+        let header_server = MockServer::start().await;
+        let expected = serde_json::json!({ "feed": [] });
+        Mock::given(method("GET"))
+            .and(path("/xrpc/app.bsky.feed.getTimeline"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(expected.clone())
+                    .append_header("content-type", "application/json"),
+            )
+            .expect(1)
+            .mount(&header_server)
+            .await;
+
+        let base = test_state().await;
+        let mut config = (*base.config).clone();
+        config.appview.url = "http://127.0.0.1:1".to_string();
+        with_master_key(&mut config);
+        seed_repo_key(&base.db).await;
+        let state = AppState {
+            config: Arc::new(config),
+            ..base
+        };
+        crate::routes::test_utils::seed_did_document(
+            &state.db,
+            "did:web:altfeed.example",
+            serde_json::json!({
+                "id": "did:web:altfeed.example",
+                "service": [{
+                    "id": "#alt_feed",
+                    "type": "AtprotoFeedGenerator",
+                    "serviceEndpoint": header_server.uri(),
+                }],
+            }),
+        )
+        .await;
+        let auth = bearer(&state);
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/xrpc/app.bsky.feed.getTimeline")
+                    .header("authorization", auth)
+                    .header("atproto-proxy", "did:web:altfeed.example#alt_feed")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        // No Atproto-Upstream-Lag header: this response never went through the munge path.
+        assert!(response.headers().get("Atproto-Upstream-Lag").is_none());
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json, expected);
+    }
+
+    // Metrics: an app.bsky.*/chat.bsky.* request that used a header to override its default
+    // upstream must be counted under the bounded `header_target` label, never the raw
+    // hostname/DID (cardinality rule).
+    #[tokio::test]
+    async fn appbsky_header_target_records_bounded_metrics_label() {
+        let video_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/xrpc/app.bsky.video.getUploadLimits"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .expect(1)
+            .mount(&video_server)
+            .await;
+
+        let state = state_with_master_key_and_repo().await;
+        crate::routes::test_utils::seed_did_document(
+            &state.db,
+            "did:web:video.bsky.app",
+            serde_json::json!({
+                "id": "did:web:video.bsky.app",
+                "service": [{
+                    "id": "#bsky_video",
+                    "type": "AtprotoVideoService",
+                    "serviceEndpoint": video_server.uri(),
+                }],
+            }),
+        )
+        .await;
+        let auth = bearer(&state);
+
+        let response = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/xrpc/app.bsky.video.getUploadLimits")
+                    .header("authorization", auth)
+                    .header("atproto-proxy", "did:web:video.bsky.app#bsky_video")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let rendered = state.metrics.render().unwrap().unwrap();
+        assert!(
+            rendered.contains(r#"upstream="header_target""#),
+            "expected a bounded header_target upstream label, got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("video.bsky.app"),
+            "the raw target DID/hostname must never appear in a metrics label:\n{rendered}"
+        );
     }
 }

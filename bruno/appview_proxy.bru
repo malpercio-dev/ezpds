@@ -26,7 +26,13 @@ vars:pre-request {
 docs {
   Catch-all AppView proxy. Any `app.bsky.*` XRPC method without a local handler is forwarded
   to the configured AppView (default https://api.bsky.app; override via [appview] in pds.toml
-  or EZPDS_APPVIEW_URL). The caller's Bearer token is passed through unchanged and the AppView's
-  status/body are streamed back. This example fetches the home timeline; swap the NSID for any
-  app.bsky.* method, e.g. app.bsky.notification.listNotifications.
+  or EZPDS_APPVIEW_URL) when no `atproto-proxy` header is sent. A fresh service-auth JWT is
+  minted for the AppView's DID (the caller's own Bearer token is never forwarded), and the
+  AppView's status/body are streamed back. This example fetches the home timeline; swap the
+  NSID for any app.bsky.* method, e.g. app.bsky.notification.listNotifications.
+
+  If the caller *does* send an `atproto-proxy` header (`<did>#<serviceId>`), it overrides this
+  default — the pds resolves the named DID's document and routes there instead, SSRF-guarded
+  exactly like the moderation proxy (see create_report.bru). This is how the official app routes
+  `app.bsky.video.*` to the video service; see app_bsky_video_proxy.bru for that example.
 }

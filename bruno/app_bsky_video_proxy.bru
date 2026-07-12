@@ -1,0 +1,37 @@
+meta {
+  name: AppView Proxy override — video service (app.bsky.video.*)
+  type: http
+  seq: 114
+}
+
+get {
+  url: {{baseUrl}}/xrpc/app.bsky.video.getUploadLimits
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+headers {
+  atproto-proxy: {{videoServiceDid}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  videoServiceDid: did:web:video.bsky.app#bsky_video
+}
+
+docs {
+  `app.bsky.*` NSIDs normally proxy to the configured AppView, but the official app routes
+  `app.bsky.video.*` calls (upload limits, job status, etc.) to Bluesky's dedicated video
+  service instead, naming it via the `atproto-proxy` header (`<did>#<serviceId>`) rather than
+  relying on the AppView default.
+
+  The pds honors this the same way it does for `com.atproto.moderation.*` (create_report.bru):
+  resolves the named DID's document, looks up the `service` entry matching the header's
+  fragment, SSRF-guards the advertised endpoint, and forwards the request there under a
+  freshly-minted service-auth JWT whose audience is the video service's DID — not the AppView's.
+  Swap the NSID for any other app.bsky.video.* method (e.g. getJobStatus) using the same header.
+}

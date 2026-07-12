@@ -592,9 +592,9 @@ pub fn app(state: AppState) -> Router {
 }
 
 /// The three upstream namespaces the catch-all XRPC handler proxies to. `AppView` and `Chat`
-/// forward to one configured default each; `Moderation` has no single upstream (the client picks
-/// which labeler to report to), so its target is resolved per-request from the `atproto-proxy`
-/// header.
+/// forward to one configured default each, unless the caller's `atproto-proxy` header names a
+/// different target; `Moderation` has no single upstream at all (the client always picks which
+/// labeler to report to), so its target is always resolved per-request from that header.
 enum ProxyUpstream {
     AppView,
     Chat,
@@ -602,7 +602,9 @@ enum ProxyUpstream {
 }
 
 /// NSIDs that undergo read-after-write munging: the AppView response is buffered and merged
-/// with the requester's own unindexed records before returning.
+/// with the requester's own unindexed records before returning. An explicit `atproto-proxy`
+/// header naming a target bypasses this path entirely (see `xrpc_handler`), since the munge
+/// assumes it's talking to the configured AppView.
 const READ_AFTER_WRITE_NSIDS: [&str; 6] = [
     "app.bsky.actor.getProfile",
     "app.bsky.actor.getProfiles",
@@ -620,10 +622,19 @@ const READ_AFTER_WRITE_NSIDS: [&str; 6] = [
 /// whichever labeler the client names via the `atproto-proxy` header — all three via
 /// [`service_proxy`]. Any other unrecognised NSID returns `MethodNotImplemented`.
 ///
+/// An explicit `atproto-proxy` header is honored for **any** proxied NSID, not just
+/// `com.atproto.moderation.*`: when present, the request is routed to the header-named service
+/// (resolved and SSRF-guarded exactly like the moderation branch) instead of the namespace's
+/// configured default. This is what lets the official app's `app.bsky.video.*` calls — sent with
+/// `atproto-proxy: did:web:video.bsky.app#bsky_video` — reach the video service rather than the
+/// AppView. An absent header keeps today's default routing (AppView / chat); moderation still has
+/// no default of its own, so its header remains mandatory.
+///
 /// All three proxied namespaces are forwarded *on behalf of an authenticated user*, so the
 /// caller's session is validated locally (the `AuthenticatedUser` extractor) before anything
 /// leaves the PDS; the proxy then mints a fresh ES256 service-auth JWT signed by that user's repo
-/// key for the upstream to verify (the caller's PDS session token is never forwarded).
+/// key for the upstream to verify (the caller's PDS session token is never forwarded) — the JWT's
+/// `aud` is the header's target DID whenever a header is present, not the namespace's default.
 /// Unauthenticated callers are rejected here rather than at the upstream. The auth check is
 /// scoped to the proxy branches: an unrecognised NSID still returns `501` without an auth
 /// challenge, so probing for supported methods does not require credentials.
@@ -638,7 +649,7 @@ async fn xrpc_handler(
 ) -> Response {
     use crate::auth::jwt::AuthScope;
     use crate::auth::oauth_scopes;
-    use crate::identity_resolution::{resolve_atproto_proxy_target, ModerationProxyGuard};
+    use crate::identity_resolution::{resolve_atproto_proxy_target, HeaderProxyGuard};
     use crate::routes::service_proxy::proxy_xrpc;
 
     let upstream = if method.starts_with("app.bsky.") {
@@ -666,14 +677,30 @@ async fn xrpc_handler(
         Err(rejection) => return rejection.into_response(),
     };
 
-    let proxy_aud = match upstream {
-        ProxyUpstream::AppView => state.config.appview.did.as_str(),
-        ProxyUpstream::Chat => state.config.chat.did.as_str(),
-        ProxyUpstream::Moderation => req
-            .headers()
-            .get("atproto-proxy")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or(""),
+    let header_value = req
+        .headers()
+        .get("atproto-proxy")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    if matches!(upstream, ProxyUpstream::Moderation) && header_value.is_none() {
+        return ApiError::new(
+            ErrorCode::InvalidRequest,
+            "atproto-proxy header is required to proxy com.atproto.moderation.* methods",
+        )
+        .into_response();
+    }
+
+    // The scope check's `aud` is the raw header value when present — resolving it (a DID-doc
+    // fetch + SSRF check) is deferred until after auth/scope pass, so a scope-rejected caller
+    // never costs the PDS an outbound request for a header it wasn't entitled to use anyway.
+    let proxy_aud = match header_value.as_deref() {
+        Some(hv) => hv,
+        None => match upstream {
+            ProxyUpstream::AppView => state.config.appview.did.as_str(),
+            ProxyUpstream::Chat => state.config.chat.did.as_str(),
+            ProxyUpstream::Moderation => unreachable!("missing header returned above"),
+        },
     };
     if !user.scope.is_access() {
         return ApiError::new(ErrorCode::InvalidToken, "access token required").into_response();
@@ -691,7 +718,8 @@ async fn xrpc_handler(
 
     // Direct messages require a privileged credential: full access or a *privileged* app
     // password. A plain `com.atproto.appPass` session must not reach the chat service — this is
-    // what the app-password privileged flag gates.
+    // what the app-password privileged flag gates, regardless of whether a header retargets the
+    // request away from the configured chat service.
     if matches!(upstream, ProxyUpstream::Chat) && user.scope == AuthScope::AppPass {
         return ApiError::new(
             ErrorCode::Forbidden,
@@ -700,11 +728,25 @@ async fn xrpc_handler(
         .into_response();
     }
 
+    // Resolve the header to its validated target now (DID-doc fetch + SSRF guard) — only reached
+    // once auth/scope/chat-privilege have all passed. `None` when no header was sent (moderation
+    // already returned above in that case).
+    let header_target = match header_value.as_deref() {
+        Some(hv) => match resolve_atproto_proxy_target(&state, hv).await {
+            Ok(target) => Some(target),
+            Err(err) => return err.into_response(),
+        },
+        None => None,
+    };
+
     // Branch read-after-write NSIDs to the buffered munged path before resolving the upstream
-    // target details. This branch requires AppView upstream; other upstreams go through the
-    // streaming proxy.
+    // target details. The munge path hardcodes the *configured* AppView (`pipethrough_munged`
+    // always calls `state.config.appview.url`/`.did` directly) — an explicit header naming a
+    // target must bypass it and go through the generic streaming proxy instead, since the munge
+    // assumes the configured AppView's response shape.
     if matches!(upstream, ProxyUpstream::AppView)
         && READ_AFTER_WRITE_NSIDS.contains(&method.as_str())
+        && header_target.is_none()
     {
         let response =
             crate::read_after_write::pipethrough_munged(&state, &method, &user.did, req).await;
@@ -712,43 +754,47 @@ async fn xrpc_handler(
         return response;
     }
 
-    let (url, proxy_did, guard) = match upstream {
-        ProxyUpstream::AppView => (
-            state.config.appview.url.clone(),
-            state.config.appview.did.clone(),
-            None,
-        ),
-        ProxyUpstream::Chat => (
-            state.config.chat.url.clone(),
-            state.config.chat.did.clone(),
-            None,
-        ),
-        ProxyUpstream::Moderation => {
-            let header_value = req
-                .headers()
-                .get("atproto-proxy")
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string);
-            let Some(header_value) = header_value else {
-                return ApiError::new(
-                    ErrorCode::InvalidRequest,
-                    "atproto-proxy header is required to proxy com.atproto.moderation.* methods",
-                )
-                .into_response();
+    let (url, proxy_did, guard, upstream_label): (
+        String,
+        String,
+        Option<HeaderProxyGuard>,
+        &'static str,
+    ) = match header_target {
+        // Always a guard, whether or not the host needed DNS pinning: the caller-controlled
+        // target still requires the redirect-disabled hardened client. `moderation` keeps its own
+        // label (it always resolves this way); an `app.bsky.*`/`chat.bsky.*` request that used a
+        // header to override its namespace's default gets the bounded `header_target` label
+        // instead of the raw destination, per the metrics cardinality rule.
+        Some(target) => {
+            let label = if matches!(upstream, ProxyUpstream::Moderation) {
+                "moderation"
+            } else {
+                "header_target"
             };
-            match resolve_atproto_proxy_target(&state, &header_value).await {
-                // Always a guard, whether or not the host needed DNS pinning: the caller-
-                // controlled target still requires the redirect-disabled hardened client.
-                Ok(target) => (
-                    target.url,
-                    target.header_value,
-                    Some(ModerationProxyGuard {
-                        pinned: target.pinned,
-                    }),
-                ),
-                Err(err) => return err.into_response(),
-            }
+            (
+                target.url,
+                target.header_value,
+                Some(HeaderProxyGuard {
+                    pinned: target.pinned,
+                }),
+                label,
+            )
         }
+        None => match upstream {
+            ProxyUpstream::AppView => (
+                state.config.appview.url.clone(),
+                state.config.appview.did.clone(),
+                None,
+                "appview",
+            ),
+            ProxyUpstream::Chat => (
+                state.config.chat.url.clone(),
+                state.config.chat.did.clone(),
+                None,
+                "chat",
+            ),
+            ProxyUpstream::Moderation => unreachable!("moderation always resolves a header target"),
+        },
     };
 
     let response = proxy_xrpc(
@@ -761,11 +807,6 @@ async fn xrpc_handler(
         req,
     )
     .await;
-    let upstream_label = match upstream {
-        ProxyUpstream::AppView => "appview",
-        ProxyUpstream::Chat => "chat",
-        ProxyUpstream::Moderation => "moderation",
-    };
     count_proxy_request(&state, upstream_label, response.status().as_u16());
     response
 }

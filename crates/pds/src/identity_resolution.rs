@@ -3,8 +3,9 @@
 // Shared ATProto identity-resolution helpers. Routes gather query/body parameters and delegate the
 // actual handle/DID lookup here so resolveHandle, resolveIdentity, refreshIdentity, and resolveDid
 // all use the same local → network fallback rules. Also resolves a caller-supplied `atproto-proxy`
-// header to an upstream service endpoint, for XRPC namespaces with no single configured default
-// (see `resolve_atproto_proxy_target`, used by the `com.atproto.moderation.*` proxy branch).
+// header to an upstream service endpoint (see `resolve_atproto_proxy_target`) — honored for any
+// proxied XRPC namespace (`app.bsky.*`, `chat.bsky.*`, `com.atproto.moderation.*`) that names an
+// explicit target, and mandatory for `com.atproto.moderation.*`, which has no configured default.
 
 use std::net::IpAddr;
 
@@ -188,15 +189,19 @@ pub struct ProxyTarget {
     pub pinned: Option<PinnedResolution>,
 }
 
-/// Marks a `proxy_xrpc` call as targeting a caller-controlled destination
-/// (`com.atproto.moderation.*`), so it must go through a hardened client: redirects disabled (a
-/// malicious labeler can't 3xx its way onto a private/loopback address past the SSRF check that
-/// only inspects the *first* URL) and, when the host was a domain name, DNS resolution pinned to
-/// the addresses `resolve_atproto_proxy_target` already validated. `app.bsky.*`/`chat.bsky.*`
-/// requests pass `None` for this and use the shared `state.http_client` unchanged — their
-/// upstream is admin-configured, not caller-controlled, so neither concern applies.
+/// Marks a `proxy_xrpc` call as targeting a caller-controlled destination — resolved from a
+/// caller-supplied `atproto-proxy` header via `resolve_atproto_proxy_target`, whether the request
+/// is `com.atproto.moderation.*` (which always resolves this way, having no configured default)
+/// or an `app.bsky.*`/`chat.bsky.*` request that named an explicit header target overriding its
+/// namespace's default. Either way the request must go through a hardened client: redirects
+/// disabled (a malicious target can't 3xx its way onto a private/loopback address past the SSRF
+/// check that only inspects the *first* URL) and, when the host was a domain name, DNS resolution
+/// pinned to the addresses `resolve_atproto_proxy_target` already validated. A request with no
+/// `atproto-proxy` header passes `None` for this and uses the shared `state.http_client`
+/// unchanged — its upstream is the admin-configured default, not caller-controlled, so neither
+/// concern applies.
 #[derive(Debug)]
-pub struct ModerationProxyGuard {
+pub struct HeaderProxyGuard {
     pub pinned: Option<PinnedResolution>,
 }
 
@@ -233,14 +238,17 @@ pub(crate) fn build_pinned_client(
 /// Resolve an inbound `atproto-proxy` header (`<did>#<serviceId>`) to the upstream service it
 /// names.
 ///
-/// Unlike `app.bsky.*`/`chat.bsky.*` — which proxy to one configured default (the AppView / chat
-/// service) — a namespace like `com.atproto.moderation.*` has no single upstream: the client picks
-/// which labeler to report to via this header. Resolves the DID document, then looks up a
-/// `service` entry whose `id` matches the header's fragment (either the abbreviated `#serviceId`
-/// form or the fully-qualified `did#serviceId` form — both appear in the wild), and validates the
-/// advertised `serviceEndpoint` before it's ever handed to the HTTP client: since the target DID
-/// is caller-chosen, an attacker can make its DID document advertise anything — this is the only
-/// thing standing between an authenticated report and an SSRF into the PDS's private network.
+/// `app.bsky.*` and `chat.bsky.*` proxy to one configured default (the AppView / chat service)
+/// when no header is present, but honor this header when it is — the official app's
+/// `app.bsky.video.*` calls are the motivating case, routed to the video service this way rather
+/// than the AppView. A namespace like `com.atproto.moderation.*` has no configured default at
+/// all: the client always picks which labeler to report to via this header. Resolves the DID
+/// document, then looks up a `service` entry whose `id` matches the header's fragment (either the
+/// abbreviated `#serviceId` form or the fully-qualified `did#serviceId` form — both appear in the
+/// wild), and validates the advertised `serviceEndpoint` before it's ever handed to the HTTP
+/// client: since the target DID is caller-chosen, an attacker can make its DID document advertise
+/// anything — this is the only thing standing between an authenticated request and an SSRF into
+/// the PDS's private network.
 pub async fn resolve_atproto_proxy_target(
     state: &AppState,
     header_value: &str,
