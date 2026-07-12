@@ -123,6 +123,9 @@
   let migrationEmail = $state('');
   let migrationInviteCode = $state<string | undefined>(undefined);
   let migrationDestPds = $state('');
+  // Resolved source identity (from prepareMigration) for the source-auth screen's prefill + copy.
+  let migrationSourceHandle = $state('');
+  let migrationSourcePds = $state('');
   let migrationResult = $state<ClaimResult | null>(null);
 
   // ── Navigation helpers ───────────────────────────────────────────────────
@@ -432,10 +435,12 @@
   {:else if step === 'migration_start'}
     <MigrationStartScreen
       did={migrationDid}
-      onnext={({ destPdsUrl, email, inviteCode }) => {
+      onnext={({ destPdsUrl, email, inviteCode, sourceHandle, sourcePdsUrl }) => {
         migrationDestPds = destPdsUrl;
         migrationEmail = email;
         migrationInviteCode = inviteCode;
+        migrationSourceHandle = sourceHandle;
+        migrationSourcePds = sourcePdsUrl;
         goTo('migration_source_auth');
       }}
       onback={() => goTo('identity_detail')}
@@ -444,6 +449,8 @@
   {:else if step === 'migration_source_auth'}
     <MigrationSourceAuthScreen
       did={migrationDid}
+      handle={migrationSourceHandle}
+      pdsUrl={migrationSourcePds}
       onnext={() => goTo('migration_progress')}
       onback={() => goTo('migration_start')}
     />

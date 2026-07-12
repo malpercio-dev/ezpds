@@ -1,18 +1,22 @@
 // pattern: Mixed (Functional Core types + Imperative Shell commands)
 //
-// Functional Core: MigrationPhase, OutboundMigrationState, MigrationError, PendingSourceLogin,
+// Functional Core: MigrationPhase, OutboundMigrationState, MigrationError, PreparedMigration,
 //                  ensure_phase_did, import_reconciles, extract_handle_from_also_known_as,
 //                  finalize_migration_impl (pure functions — no network, no side effects)
-// Imperative Shell: prepare_migration, prepare_source_auth, complete_source_auth,
+// Imperative Shell: prepare_migration, authenticate_migration_source,
 //                   create_destination_account (Phase 3); transfer_repo, transfer_blobs,
 //                   transfer_preferences, verify_import (Phase 4); arm_identity_leg,
 //                   finalize_migration (Phase 5) — Tauri commands, plus their
-//                   *_impl / drain_missing_blobs network cores.
+//                   *_impl / authenticate_migration_source_impl / drain_missing_blobs network cores.
+//
+// The source-PDS login is a password `createSession` → full-session Bearer client (ADR-0021),
+// NOT an OAuth `transition:generic` grant: minting the `com.atproto.server.createAccount`
+// service-auth token from the source PDS (see `create_destination_account_impl`) requires a full
+// session on a spec-strict PDS such as bsky.social. Mirrors `claim::authenticate_source_pds`.
 
 use crate::oauth_client::OAuthClient;
 use serde::Serialize;
 use std::sync::Arc;
-use tauri::Emitter;
 
 // ── Phase enum ─────────────────────────────────────────────────────────────
 
@@ -49,7 +53,7 @@ pub struct OutboundMigrationState {
     pub dest_did: String,
     /// Handle (preserved from source; extracted from `plc_doc.also_known_as`)
     pub handle: String,
-    /// OAuth client for source PDS (set after `prepare_source_auth`/`complete_source_auth`)
+    /// Full-session Bearer client for the source PDS (set after `authenticate_migration_source`).
     /// Wrapped in Arc to allow cloning out of the Mutex without holding the lock
     /// across network calls.
     pub source_client: Option<Arc<OAuthClient>>,
@@ -61,27 +65,17 @@ pub struct OutboundMigrationState {
     pub phase: MigrationPhase,
 }
 
-/// State parked in `AppState.pending_source_login` between `prepare_source_auth` and
-/// `complete_source_auth` while the ASWebAuthenticationSession runs. Holds the discovered
-/// auth-server metadata plus the secrets the token exchange needs — none of it is serialized to
-/// the webview (twin of `claim::PendingPdsLogin`).
-pub struct PendingSourceLogin {
-    /// The DID this auth was prepared for — re-checked against `OutboundMigrationState` in
-    /// `complete_source_auth` so a concurrent `prepare_migration` can't attach this client
-    /// to a different migration.
-    pub did: String,
-    /// Source PDS URL this auth was prepared for (re-checked alongside `did`).
+/// Resolved source identity returned by `prepare_migration`, so the source-auth screen can prefill
+/// the login identifier and show which PDS it is signing into (mirrors the claim flow's
+/// `IdentityInfo`). The authoritative `source_pds_url` used for the actual `createSession` lives in
+/// `OutboundMigrationState` — this copy is display/prefill only.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparedMigration {
+    /// Handle of the identity being migrated (from the source DID doc's `alsoKnownAs`).
+    pub handle: String,
+    /// Source PDS base URL (the account's current PDS, resolved via `discover_pds`).
     pub source_pds_url: String,
-    /// PKCE code_verifier for the token exchange.
-    pub pkce_verifier: String,
-    /// CSRF state — validated against the callback URL's `state` param.
-    pub csrf_state: String,
-    /// Auth-server metadata discovered from the source PDS (needed for the token exchange).
-    pub metadata: crate::pds_client::AuthServerMetadata,
-    /// OAuth `client_id` for the source PDS.
-    pub client_id: String,
-    /// Source PDS base URL the resulting `OAuthClient` targets.
-    pub oauth_client_pds_url: String,
 }
 
 // ── Error types ────────────────────────────────────────────────────────────
@@ -99,9 +93,37 @@ pub enum MigrationError {
     /// Destination PDS is unreachable
     #[error("destination unreachable: {message}")]
     DestinationUnreachable { message: String },
-    /// Source PDS OAuth authentication failed
+    /// The source PDS rejected the password login (`createSession` 401). Distinct from a network
+    /// failure so the UI can say "wrong password" instead of blaming the connection. An app
+    /// password is a lesser scope and is refused the same way.
     #[error("source auth failed: {message}")]
     SourceAuthFailed { message: String },
+    /// The source account has email two-factor enabled: `createSession` returned
+    /// `AuthFactorTokenRequired` and the PDS emailed a one-time code. The UI prompts for the code
+    /// and re-invokes `authenticate_migration_source` with it — distinct from a wrong password.
+    #[error("two-factor code required")]
+    TwoFactorRequired,
+    /// The source PDS session is for a different account than the one being migrated (the entered
+    /// credentials signed in to the wrong account). Refused before any migration step proceeds.
+    #[error("account mismatch")]
+    AccountMismatch,
+    /// Refused to send the account password to a non-HTTPS source PDS (loopback excepted). The PDS
+    /// endpoint comes from the DID document, so a plaintext `http://` endpoint is rejected.
+    #[error("insecure source url")]
+    InsecureSourceUrl,
+    /// The source PDS rate-limited the login (HTTP 429). `retry_after` carries the server's
+    /// `Retry-After` value when present, so the UI can say how long to wait rather than blaming the
+    /// connection.
+    #[error("rate limited")]
+    RateLimited {
+        #[serde(rename = "retryAfter")]
+        retry_after: Option<String>,
+    },
+    /// The source PDS rejected the login with a non-2xx the wallet doesn't model specially.
+    /// `message` is the server's own error text, shown verbatim so a third-party PDS's real reason
+    /// reaches the user instead of connectivity boilerplate.
+    #[error("server error: {message}")]
+    ServerError { message: String },
     /// Service authentication (getServiceAuth) failed
     #[error("service auth failed: {message}")]
     ServiceAuthFailed { message: String },
@@ -129,11 +151,6 @@ pub enum MigrationError {
     /// Account deactivation failed
     #[error("deactivation failed: {message}")]
     DeactivationFailed { message: String },
-    /// The authorization server rejected the OAuth request (e.g. a PAR refusal).
-    /// Carries the server's own `error: error_description` text so a policy
-    /// rejection is diagnosable in the UI instead of reading as a network failure.
-    #[error("oauth rejected: {message}")]
-    OauthRejected { message: String },
     /// Network error during migration
     #[error("network error: {message}")]
     NetworkError { message: String },
@@ -179,12 +196,19 @@ pub async fn prepare_migration(
     state: tauri::State<'_, crate::oauth::AppState>,
     did: String,
     dest_pds_url: String,
-) -> Result<(), MigrationError> {
+) -> Result<PreparedMigration, MigrationError> {
     let result = prepare_migration_impl(state.pds_client(), &did, &dest_pds_url).await?;
+
+    // Surface the resolved source identity so the source-auth screen can prefill the login
+    // identifier and show which PDS it is signing into (the authoritative copy stays in state).
+    let prepared = PreparedMigration {
+        handle: result.handle.clone(),
+        source_pds_url: result.source_pds_url.clone(),
+    };
 
     // Store fresh state at phase Resolved (in-memory only; app kill restarts from prepare_migration)
     *state.orchestration_state.lock().await = Some(result);
-    Ok(())
+    Ok(prepared)
 }
 
 /// Pure core: discover source + dest, return fresh OutboundMigrationState at Resolved.
@@ -260,479 +284,146 @@ async fn prepare_migration_impl(
     })
 }
 
-// ── Task 5: Source-PDS OAuth ───────────────────────────────────────────────
+// ── Task 5: Source-PDS password login ──────────────────────────────────────
 
-/// Phase 1 of source-PDS login: discover auth server + PKCE + PAR → authorize URL.
-/// Mirrors claim::prepare_pds_auth (see claim.rs 346–451 for details).
+/// Authenticate with the source PDS using the account **password** (`createSession`), yielding a
+/// full-session Bearer client that the migration then uses for its source-side calls.
 ///
-/// Gate: ensure_phase_did(..., Resolved) → read source_pds_url, drop lock
-/// Then: discover_auth_server, generate PKCE+CSRF, DPoP keypair, PAR, park PendingSourceLogin
+/// Why a password and not the wallet's OAuth token: creating the destination account
+/// (`create_destination_account`) mints a `com.atproto.server.createAccount` service-auth token
+/// **from the source PDS**, and a spec-strict PDS such as bsky.social gates that mint behind a full
+/// session — an OAuth `transition:generic` grant is refused (`insufficient access`). A
+/// password `createSession` mints a full `com.atproto.access` session, the only credential class
+/// that can. This mirrors the claim flow's `authenticate_source_pds` (ADR-0021) — one password
+/// path for every source login.
+///
+/// The password is used for exactly one `createSession` request and is never stored — the wallet
+/// keeps only the resulting Bearer session, in memory, in `OutboundMigrationState.source_client`.
+/// An app password is a lesser scope and is rejected the same way a wrong real password is.
+///
+/// `auth_factor_token` is the email 2FA one-time code. Pass `None` first; if the account has email
+/// two-factor enabled the call returns `TwoFactorRequired` (and the PDS emails a code), and the UI
+/// re-invokes with that code as `Some`.
+///
+/// Gate: `ensure_phase_did(..., Resolved)` — `prepare_migration` must have resolved the source PDS.
 #[tauri::command]
-pub async fn prepare_source_auth(
+pub async fn authenticate_migration_source(
     state: tauri::State<'_, crate::oauth::AppState>,
     did: String,
-) -> Result<crate::oauth::OAuthPrepared, MigrationError> {
-    tracing::info!(did = %did, "prepare_source_auth: authenticating with source PDS");
+    identifier: String,
+    password: String,
+    auth_factor_token: Option<String>,
+) -> Result<(), MigrationError> {
+    tracing::info!(did = %did, "authenticate_migration_source: password login for source PDS");
 
-    // Gate: ensure phase + DID, extract source_pds_url
+    // Snapshot the source PDS URL under the lock; the phase/DID gate is defense-in-depth.
     let source_pds_url = {
         let orchestration = state.orchestration_state.lock().await;
         let mig =
             ensure_phase_did(&orchestration, &did, MigrationPhase::Resolved).map_err(|e| {
-                tracing::warn!("prepare_source_auth: phase gate failed: {}", e);
+                tracing::warn!("authenticate_migration_source: phase gate failed: {}", e);
                 e
             })?;
         mig.source_pds_url.clone()
-    }; // lock released
+    }; // lock released — createSession is a network call
 
-    let pds_client = state.pds_client();
-
-    // Discover auth server metadata from the source PDS
-    tracing::debug!(source_url = %source_pds_url, "discovering source auth server");
-    let metadata = pds_client
-        .discover_auth_server(&source_pds_url)
-        .await
-        .map_err(|e| {
-            tracing::error!(source_url = %source_pds_url, error = %e, "auth server discovery failed");
-            MigrationError::SourceAuthFailed {
-                message: format!("failed to discover auth server: {}", e),
-            }
-        })?;
-    tracing::debug!(issuer = %metadata.issuer, "auth server metadata discovered");
-
-    // PKCE + CSRF state
-    let (pkce_verifier, pkce_challenge) = crate::oauth::pkce::generate();
-    let csrf_state = crate::oauth::generate_state_param();
-
-    // DPoP keypair + thumbprint
-    let dpop = crate::oauth::DPoPKeypair::get_or_create().map_err(|e| {
-        tracing::error!(error = %e, "DPoP keypair creation failed");
-        MigrationError::SourceAuthFailed {
-            message: "failed to create DPoP keypair".to_string(),
-        }
-    })?;
-    let dpop_jkt = dpop.public_jwk_thumbprint();
-
-    // PAR with nonce retry (reuse claim.rs helper pattern)
-    let par_htu = metadata
-        .pushed_authorization_request_endpoint
-        .as_ref()
-        .cloned()
-        .unwrap_or_else(|| format!("{}/oauth/par", metadata.issuer));
-
-    let client_metadata_base_url = state.custos_client().base_url_str().to_string();
-    let client_id = crate::pds_client::client_id_for_pds(&client_metadata_base_url);
-    let oauth_client_pds_url = source_pds_url.clone();
-
-    let par_resp = source_par_with_retry(SourceParWithRetryParams {
-        pds_client,
-        dpop: &dpop,
-        metadata: &metadata,
-        par_htu: &par_htu,
-        pkce_challenge: &pkce_challenge,
-        csrf_state: &csrf_state,
-        dpop_jkt: &dpop_jkt,
-        did: &did,
-        client_id: &client_id,
-    })
-    .await?;
-
-    // Build the authorize URL
-    let auth_url = crate::pds_client::PdsClient::build_pds_authorize_url(
-        &metadata,
-        &par_resp.request_uri,
-        Some(&did),
-        &client_id,
-    );
-
-    // Park the secrets in pending_source_login
-    *state.pending_source_login.lock().unwrap() = Some(PendingSourceLogin {
-        did: did.clone(),
-        source_pds_url: source_pds_url.clone(),
-        pkce_verifier,
-        csrf_state,
-        metadata,
-        client_id,
-        oauth_client_pds_url,
-    });
-
-    Ok(crate::oauth::OAuthPrepared {
-        auth_url,
-        callback_scheme: crate::pds_client::CALLBACK_SCHEME.to_string(),
-    })
-}
-
-/// Helper for PAR with DPoP nonce retry (mirrors claim.rs pattern).
-struct SourceParWithRetryParams<'a> {
-    pds_client: &'a crate::pds_client::PdsClient,
-    dpop: &'a crate::oauth::DPoPKeypair,
-    metadata: &'a crate::pds_client::AuthServerMetadata,
-    par_htu: &'a str,
-    pkce_challenge: &'a str,
-    csrf_state: &'a str,
-    dpop_jkt: &'a str,
-    did: &'a str,
-    client_id: &'a str,
-}
-
-async fn source_par_with_retry(
-    params: SourceParWithRetryParams<'_>,
-) -> Result<crate::pds_client::PdsParResponse, MigrationError> {
-    let par_proof = params
-        .dpop
-        .make_proof("POST", params.par_htu, None, None)
-        .map_err(|e| {
-            tracing::error!(error = %e, "DPoP proof generation failed for PAR");
-            MigrationError::SourceAuthFailed {
-                message: "failed to create DPoP proof for PAR".to_string(),
-            }
-        })?;
-
-    tracing::debug!(par_endpoint = %params.par_htu, "sending PAR request");
-    match params
-        .pds_client
-        .pds_par(
-            params.metadata,
-            crate::pds_client::PdsParRequest {
-                pkce_challenge: params.pkce_challenge,
-                state_param: params.csrf_state,
-                dpop_proof: &par_proof,
-                dpop_jkt: params.dpop_jkt,
-                login_hint: Some(params.did),
-                client_id: params.client_id,
-            },
-        )
-        .await
-    {
-        Ok(resp) => return Ok(resp),
-        Err(crate::pds_client::PdsClientError::OauthFailed { message })
-            if message.contains("use_dpop_nonce") =>
-        {
-            tracing::debug!("PAR requires DPoP nonce, retrying");
-        }
-        // The AS rejected the request outright — surface its own error text, not a
-        // generic auth failure (this is how bsky.social's invalid_redirect_uri
-        // stays diagnosable in the UI).
-        Err(crate::pds_client::PdsClientError::OauthFailed { message }) => {
-            tracing::error!(error = %message, "PAR rejected by authorization server");
-            return Err(MigrationError::OauthRejected { message });
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "PAR request failed");
-            return Err(MigrationError::SourceAuthFailed {
-                message: format!("PAR failed: {}", e),
-            });
-        }
-    }
-
-    // Nonce retry: extract nonce from DPoP-Nonce header
-    let raw_par_url = params
-        .metadata
-        .pushed_authorization_request_endpoint
-        .clone()
-        .unwrap_or_else(|| format!("{}/oauth/par", params.metadata.issuer));
-
-    let nonce_proof = params
-        .dpop
-        .make_proof("POST", params.par_htu, None, None)
-        .map_err(|_| MigrationError::SourceAuthFailed {
-            message: "failed to create DPoP proof for nonce discovery".to_string(),
-        })?;
-
-    let form_data = vec![
-        ("response_type", "code"),
-        ("code_challenge_method", "S256"),
-        ("code_challenge", params.pkce_challenge),
-        ("state", params.csrf_state),
-        ("client_id", params.client_id),
-        ("redirect_uri", crate::pds_client::REDIRECT_URI),
-        ("scope", "atproto transition:generic"),
-        ("dpop_jkt", params.dpop_jkt),
-        ("login_hint", params.did),
-    ];
-
-    let nonce_resp = params
-        .pds_client
-        .client()
-        .post(&raw_par_url)
-        .header("DPoP", &nonce_proof)
-        .form(&form_data)
-        .send()
-        .await
-        .map_err(|e| MigrationError::SourceAuthFailed {
-            message: format!("PAR nonce discovery failed: {}", e),
-        })?;
-
-    let nonce = nonce_resp
-        .headers()
-        .get("DPoP-Nonce")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-
-    let Some(nonce_val) = nonce else {
-        tracing::error!("PAR returned use_dpop_nonce but no DPoP-Nonce header");
-        return Err(MigrationError::SourceAuthFailed {
-            message: "PAR requires nonce but server did not provide one".to_string(),
-        });
-    };
-
-    tracing::debug!(nonce = %nonce_val, "retrying PAR with DPoP nonce");
-    let retry_proof = params
-        .dpop
-        .make_proof("POST", params.par_htu, Some(&nonce_val), None)
-        .map_err(|e| {
-            tracing::error!(error = %e, "DPoP proof with nonce failed");
-            MigrationError::SourceAuthFailed {
-                message: "failed to create DPoP proof with nonce".to_string(),
-            }
-        })?;
-
-    params
-        .pds_client
-        .pds_par(
-            params.metadata,
-            crate::pds_client::PdsParRequest {
-                pkce_challenge: params.pkce_challenge,
-                state_param: params.csrf_state,
-                dpop_proof: &retry_proof,
-                dpop_jkt: params.dpop_jkt,
-                login_hint: Some(params.did),
-                client_id: params.client_id,
-            },
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "PAR retry with nonce failed");
-            match e {
-                crate::pds_client::PdsClientError::OauthFailed { message } => {
-                    MigrationError::OauthRejected { message }
-                }
-                other => MigrationError::SourceAuthFailed {
-                    message: format!("PAR retry failed: {}", other),
-                },
-            }
-        })
-}
-
-/// Phase 2 of source-PDS login: exchange code + store OAuthClient, advance to SourceAuthed.
-/// Mirrors claim::complete_pds_auth (claim.rs 458–549).
-#[tauri::command]
-pub async fn complete_source_auth(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, crate::oauth::AppState>,
-    did: String,
-    callback_url: String,
-) -> Result<(), MigrationError> {
-    tracing::info!(did = %did, "complete_source_auth: exchanging code");
-
-    // Take the parked flow
-    let pending = state.pending_source_login.lock().unwrap().take().ok_or(
-        MigrationError::SourceAuthFailed {
-            message: "no pending source login".into(),
-        },
-    )?;
-
-    // Validate DID matches parked state
-    if pending.did != did {
-        tracing::warn!("complete_source_auth: did mismatch with parked state");
-        return Err(MigrationError::SourceAuthFailed {
-            message: "did mismatch with pending auth".into(),
-        });
-    }
-
-    // Parse + CSRF-validate callback URL
-    let (code, callback_state) = crate::oauth::parse_callback_url(&callback_url).map_err(|_| {
-        MigrationError::SourceAuthFailed {
-            message: "invalid callback URL".into(),
-        }
-    })?;
-    if callback_state != pending.csrf_state {
-        tracing::error!("complete_source_auth: CSRF state mismatch");
-        return Err(MigrationError::SourceAuthFailed {
-            message: "csrf state mismatch".into(),
-        });
-    }
-
-    // DPoP keypair for token exchange
-    let pds_client = state.pds_client();
-    let dpop = crate::oauth::DPoPKeypair::get_or_create().map_err(|e| {
-        tracing::error!(error = %e, "DPoP keypair creation failed");
-        MigrationError::SourceAuthFailed {
-            message: "failed to create DPoP keypair".to_string(),
-        }
-    })?;
-
-    // Token exchange with nonce retry
-    let (token_resp, _initial_nonce) = source_exchange_code_with_retry(
-        pds_client,
-        &dpop,
-        &code,
-        &pending.pkce_verifier,
-        &pending.metadata,
-        &pending.client_id,
+    let oauth_client = authenticate_migration_source_impl(
+        state.pds_client(),
+        &source_pds_url,
+        &did,
+        &identifier,
+        &password,
+        auth_factor_token.as_deref(),
     )
     .await?;
 
-    // Build OAuthClient and store in orchestration_state
-    let session = std::sync::Arc::new(std::sync::Mutex::new(crate::oauth::OAuthSession {
-        access_token: token_resp.access_token,
-        refresh_token: token_resp.refresh_token,
-        expires_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| MigrationError::SourceAuthFailed {
-                message: "system time error".to_string(),
-            })?
-            .as_secs()
-            + token_resp.expires_in,
-        dpop_nonce: _initial_nonce,
-    }));
-
-    let oauth_client =
-        OAuthClient::new(session, pending.oauth_client_pds_url.clone()).map_err(|_| {
-            MigrationError::SourceAuthFailed {
-                message: "failed to create OAuth client".to_string(),
-            }
-        })?;
-
-    // Update orchestration state: store source_client, advance phase
+    // Re-acquire the lock and store the Bearer client, rejecting the write if a concurrent
+    // `prepare_migration` swapped the active migration while we were on the network.
     let mut orchestration = state.orchestration_state.lock().await;
-    if let Some(ref mut mig) = orchestration.as_mut() {
-        // Double-check DID matches (defense-in-depth)
-        if mig.did != did {
+    match orchestration.as_mut() {
+        Some(mig) if mig.did == did && mig.source_pds_url == source_pds_url => {
+            mig.source_client = Some(std::sync::Arc::new(oauth_client));
+            mig.phase = MigrationPhase::SourceAuthed;
+            Ok(())
+        }
+        _ => {
             drop(orchestration);
-            tracing::warn!("complete_source_auth: orchestration state did mismatch");
-            return Err(MigrationError::SourceAuthFailed {
-                message: "did mismatch with orchestration state".into(),
-            });
+            tracing::warn!("authenticate_migration_source: active migration changed during login");
+            Err(MigrationError::MigrationNotReady {
+                message: "migration state changed during source login".into(),
+            })
         }
-        mig.source_client = Some(std::sync::Arc::new(oauth_client));
-        mig.phase = MigrationPhase::SourceAuthed;
-    } else {
-        drop(orchestration);
-        return Err(MigrationError::SourceAuthFailed {
-            message: "no orchestration state to update".into(),
-        });
     }
-    drop(orchestration);
-
-    // Emit event (vestigial but preserved)
-    app.emit("source_auth_ready", ()).map_err(|e| {
-        tracing::error!(error = %e, "failed to emit source_auth_ready event");
-        MigrationError::NetworkError {
-            message: "event emission failed".to_string(),
-        }
-    })?;
-
-    Ok(())
 }
 
-/// Helper for token exchange with nonce retry.
-async fn source_exchange_code_with_retry(
+/// Testable core: run `createSession` against the source PDS and build a full-session Bearer
+/// `OAuthClient`. Extracted so it can be exercised without Tauri's `State` wrapper (twin of
+/// `claim::authenticate_source_pds_impl`).
+///
+/// `expected_did` is the DID being migrated: the session the PDS returns MUST be for that account,
+/// or the caller signed in to the wrong one and we refuse to bind those credentials to this
+/// migration.
+pub(crate) async fn authenticate_migration_source_impl(
     pds_client: &crate::pds_client::PdsClient,
-    dpop: &crate::oauth::DPoPKeypair,
-    code: &str,
-    pkce_verifier: &str,
-    metadata: &crate::pds_client::AuthServerMetadata,
-    client_id: &str,
-) -> Result<(crate::http::TokenResponse, Option<String>), MigrationError> {
-    let token_htu = &metadata.token_endpoint;
-    tracing::debug!(token_endpoint = %token_htu, "starting source token exchange");
-    let proof = dpop
-        .make_proof("POST", token_htu, None, None)
-        .map_err(|e| {
-            tracing::error!(error = %e, "DPoP proof for token exchange failed");
-            MigrationError::SourceAuthFailed {
-                message: "failed to create DPoP proof for token exchange".to_string(),
-            }
-        })?;
-
-    let resp = pds_client
-        .pds_token_exchange(metadata, code, pkce_verifier, &proof, client_id)
+    source_pds_url: &str,
+    expected_did: &str,
+    identifier: &str,
+    password: &str,
+    auth_factor_token: Option<&str>,
+) -> Result<OAuthClient, MigrationError> {
+    let session = pds_client
+        .create_session(source_pds_url, identifier, password, auth_factor_token)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "source token exchange request failed");
-            MigrationError::SourceAuthFailed {
-                message: format!("token exchange failed: {}", e),
+        .map_err(|e| match e {
+            crate::pds_client::PdsClientError::AuthFactorTokenRequired => {
+                tracing::info!("source account has email 2FA; a code was sent");
+                MigrationError::TwoFactorRequired
             }
-        })?;
-
-    tracing::debug!(status = %resp.status(), "source token exchange response received");
-    if resp.status().as_u16() == 200 {
-        let nonce = resp
-            .headers()
-            .get("DPoP-Nonce")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string);
-        let token = resp
-            .json::<crate::http::TokenResponse>()
-            .await
-            .map_err(|e| MigrationError::SourceAuthFailed {
-                message: format!("token response parsing failed: {}", e),
-            })?;
-        return Ok((token, nonce));
-    }
-
-    // Nonce retry logic (mirrors claim.rs)
-    let nonce = resp
-        .headers()
-        .get("DPoP-Nonce")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-
-    let error_body = resp.text().await.unwrap_or_else(|_| "{}".to_string());
-    tracing::debug!(status = "non-200", body = %error_body, "token exchange needs retry or failed");
-
-    if let Ok(error_json) = serde_json::from_str::<serde_json::Value>(&error_body) {
-        if error_json.get("error").and_then(|v| v.as_str()) == Some("use_dpop_nonce") {
-            if let Some(nonce_val) = nonce {
-                tracing::debug!(nonce = %nonce_val, "retrying token exchange with server nonce");
-                let proof_with_nonce = dpop
-                    .make_proof("POST", token_htu, Some(&nonce_val), None)
-                    .map_err(|_| MigrationError::SourceAuthFailed {
-                    message: "failed to create DPoP proof with nonce".to_string(),
-                })?;
-
-                let retry_resp = pds_client
-                    .pds_token_exchange(metadata, code, pkce_verifier, &proof_with_nonce, client_id)
-                    .await
-                    .map_err(|e| MigrationError::SourceAuthFailed {
-                        message: format!("token exchange retry failed: {}", e),
-                    })?;
-
-                if retry_resp.status().as_u16() == 200 {
-                    let retry_nonce = retry_resp
-                        .headers()
-                        .get("DPoP-Nonce")
-                        .and_then(|v| v.to_str().ok())
-                        .map(str::to_string);
-                    let token = retry_resp
-                        .json::<crate::http::TokenResponse>()
-                        .await
-                        .map_err(|e| MigrationError::SourceAuthFailed {
-                            message: format!("retry token response parsing failed: {}", e),
-                        })?;
-                    return Ok((token, retry_nonce));
-                } else {
-                    let status = retry_resp.status();
-                    let body = retry_resp
-                        .text()
-                        .await
-                        .unwrap_or_else(|_| "(unable to read response body)".to_string());
-                    tracing::error!(status = %status, body = %body, "token exchange retry failed");
-                    return Err(MigrationError::SourceAuthFailed {
-                        message: format!("token exchange retry returned {}: {}", status, body),
-                    });
+            crate::pds_client::PdsClientError::InvalidCredentials { message } => {
+                tracing::warn!(detail = %message, "source createSession rejected the password");
+                MigrationError::SourceAuthFailed {
+                    message: "The PDS did not accept that password.".to_string(),
                 }
             }
-        }
+            crate::pds_client::PdsClientError::InsecurePdsUrl { url } => {
+                tracing::error!(pds_url = %url, "refusing password login to a non-HTTPS PDS");
+                MigrationError::InsecureSourceUrl
+            }
+            // A rate limit or other server rejection during the password login must keep its real
+            // reason too — a 429 here is not a connectivity problem.
+            crate::pds_client::PdsClientError::RateLimited { retry_after, .. } => {
+                MigrationError::RateLimited { retry_after }
+            }
+            crate::pds_client::PdsClientError::XrpcError { message, .. } => {
+                MigrationError::ServerError { message }
+            }
+            other => MigrationError::NetworkError {
+                message: format!("createSession failed: {}", other),
+            },
+        })?;
+
+    // The session must be for the account being migrated. A mismatch means the user signed in to a
+    // different account (or a hostile PDS returned someone else's session) — refuse to bind those
+    // credentials to this migration rather than transfer against the wrong identity.
+    if session.did != expected_did {
+        tracing::warn!(
+            expected = %expected_did,
+            got = %session.did,
+            "source session DID does not match the migration"
+        );
+        return Err(MigrationError::AccountMismatch);
     }
 
-    tracing::error!(body = %error_body, "token exchange failed with non-retryable error");
-    Err(MigrationError::SourceAuthFailed {
-        message: format!(
-            "token exchange returned non-success response: {}",
-            error_body
-        ),
+    OAuthClient::new_bearer(
+        session.access_jwt,
+        session.refresh_jwt,
+        source_pds_url.to_string(),
+    )
+    .map_err(|e| {
+        tracing::error!(error = %e, "failed to build Bearer client from source session");
+        MigrationError::NetworkError {
+            message: "failed to build source session client".to_string(),
+        }
     })
 }
 
@@ -1655,11 +1346,11 @@ mod tests {
         assert_eq!(json["message"], "account exists but session was lost");
     }
 
-    // ── Task 5 tests: OAuth gating ─────────────────────────────────────────
+    // ── Task 5 tests: source-PDS password login ────────────────────────────
 
-    // AC1.4: prepare_source_auth with wrong DID returns MIGRATION_NOT_READY (pure gate)
+    // authenticate_migration_source with the wrong DID returns MIGRATION_NOT_READY (pure gate)
     #[test]
-    fn test_prepare_source_auth_did_mismatch_gate() {
+    fn test_authenticate_migration_source_did_mismatch_gate() {
         let state = Some(OutboundMigrationState {
             did: "did:plc:abc123".into(),
             source_pds_url: "https://source.pds".into(),
@@ -1678,16 +1369,233 @@ mod tests {
         ));
     }
 
-    // prepare_source_auth gates at phase >= Resolved. Resolved is the first phase, so a
+    // authenticate_migration_source gates at phase >= Resolved. Resolved is the first phase, so a
     // "phase too low" case is impossible; the only gate failures are no-state and did-mismatch.
     #[test]
-    fn test_prepare_source_auth_no_state_gate() {
+    fn test_authenticate_migration_source_no_state_gate() {
         // No state → gate fails
         let result = ensure_phase_did(&None, "did:plc:abc123", MigrationPhase::Resolved);
         assert!(matches!(
             result,
             Err(MigrationError::MigrationNotReady { .. })
         ));
+    }
+
+    // ── authenticate_migration_source_impl tests (mirror claim::authenticate_source_pds_impl) ──
+
+    /// Build a Bearer-session JWT with a future `exp` so `new_bearer` derives a live expiry.
+    fn future_exp_jwt() -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        make_bearer_jwt(now + 3600)
+    }
+
+    /// Happy path: a 200 `createSession` yields a full-session Bearer client bound to the source PDS.
+    #[tokio::test]
+    async fn test_authenticate_migration_source_impl_success() {
+        crate::keychain::clear_for_test();
+        let server = MockServer::start();
+        let access_for_body = future_exp_jwt();
+        server.mock(move |when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.createSession");
+            then.status(200).json_body(serde_json::json!({
+                "accessJwt": access_for_body,
+                "refreshJwt": "refresh_jwt",
+                "did": "did:plc:test",
+                "handle": "alice.example.com",
+            }));
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new();
+        let result = authenticate_migration_source_impl(
+            &pds_client,
+            &server.base_url(),
+            "did:plc:test",
+            "alice.example.com",
+            "hunter2",
+            None,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "createSession 200 must build a Bearer client"
+        );
+    }
+
+    /// A 200 whose `did` differs from the migrating DID must be refused (wrong-account guard),
+    /// never bound as the source session for the identity being migrated.
+    #[tokio::test]
+    async fn test_authenticate_migration_source_impl_account_mismatch() {
+        crate::keychain::clear_for_test();
+        let server = MockServer::start();
+        let access_for_body = future_exp_jwt();
+        server.mock(move |when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.createSession");
+            then.status(200).json_body(serde_json::json!({
+                "accessJwt": access_for_body,
+                "refreshJwt": "refresh_jwt",
+                "did": "did:plc:someone-else",
+                "handle": "mallory.example.com",
+            }));
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new();
+        let result = authenticate_migration_source_impl(
+            &pds_client,
+            &server.base_url(),
+            "did:plc:test",
+            "alice.example.com",
+            "hunter2",
+            None,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(MigrationError::AccountMismatch)),
+            "a session for a different DID must be refused, got: {:?}",
+            result.err()
+        );
+    }
+
+    /// The password must never be sent to a non-HTTPS, non-loopback PDS — refused before any
+    /// network call, so no mock server is needed.
+    #[tokio::test]
+    async fn test_authenticate_migration_source_impl_rejects_insecure_url() {
+        crate::keychain::clear_for_test();
+        let pds_client = crate::pds_client::PdsClient::new();
+        let result = authenticate_migration_source_impl(
+            &pds_client,
+            "http://pds.example.com",
+            "did:plc:test",
+            "alice.example.com",
+            "hunter2",
+            None,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(MigrationError::InsecureSourceUrl)),
+            "a non-HTTPS PDS URL must be refused, got: {:?}",
+            result.err()
+        );
+    }
+
+    /// A 401 `createSession` (wrong password) surfaces as SourceAuthFailed, never NetworkError.
+    #[tokio::test]
+    async fn test_authenticate_migration_source_impl_wrong_password() {
+        crate::keychain::clear_for_test();
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.createSession");
+            then.status(401).json_body(serde_json::json!({
+                "error": "AuthenticationRequired",
+                "message": "Invalid identifier or password"
+            }));
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new();
+        let result = authenticate_migration_source_impl(
+            &pds_client,
+            &server.base_url(),
+            "did:plc:test",
+            "alice.example.com",
+            "wrong",
+            None,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(MigrationError::SourceAuthFailed { .. })),
+            "a 401 must surface as SourceAuthFailed, got: {:?}",
+            result.err()
+        );
+    }
+
+    /// An email-2FA account answers a token-less attempt with `AuthFactorTokenRequired`, which must
+    /// surface as `TwoFactorRequired` (prompt for a code), NOT `SourceAuthFailed` (wrong password).
+    #[tokio::test]
+    async fn test_authenticate_migration_source_impl_two_factor_required() {
+        crate::keychain::clear_for_test();
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.createSession");
+            then.status(401).json_body(serde_json::json!({
+                "error": "AuthFactorTokenRequired",
+                "message": "A sign in code has been sent to your email address"
+            }));
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new();
+        let result = authenticate_migration_source_impl(
+            &pds_client,
+            &server.base_url(),
+            "did:plc:test",
+            "alice.example.com",
+            "correct-password",
+            None,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(MigrationError::TwoFactorRequired)),
+            "AuthFactorTokenRequired must surface as TwoFactorRequired, got: {:?}",
+            result.err()
+        );
+    }
+
+    // Serialization of the password-login error variants (frontend switches on these codes).
+    #[test]
+    fn test_migration_error_serialization_two_factor_required() {
+        let json = serde_json::to_value(MigrationError::TwoFactorRequired).unwrap();
+        assert_eq!(json["code"], "TWO_FACTOR_REQUIRED");
+    }
+
+    #[test]
+    fn test_migration_error_serialization_account_mismatch() {
+        let json = serde_json::to_value(MigrationError::AccountMismatch).unwrap();
+        assert_eq!(json["code"], "ACCOUNT_MISMATCH");
+    }
+
+    #[test]
+    fn test_migration_error_serialization_insecure_source_url() {
+        let json = serde_json::to_value(MigrationError::InsecureSourceUrl).unwrap();
+        assert_eq!(json["code"], "INSECURE_SOURCE_URL");
+    }
+
+    #[test]
+    fn test_migration_error_serialization_rate_limited() {
+        let json = serde_json::to_value(MigrationError::RateLimited {
+            retry_after: Some("30".into()),
+        })
+        .unwrap();
+        assert_eq!(json["code"], "RATE_LIMITED");
+        // Serialized as camelCase `retryAfter`, matching the frontend MigrationError union.
+        assert_eq!(json["retryAfter"], "30");
+    }
+
+    #[test]
+    fn test_migration_error_serialization_server_error() {
+        let json = serde_json::to_value(MigrationError::ServerError {
+            message: "handle is required".into(),
+        })
+        .unwrap();
+        assert_eq!(json["code"], "SERVER_ERROR");
+        assert_eq!(json["message"], "handle is required");
+    }
+
+    // `prepare_migration` returns this to the source-auth screen; the frontend `PreparedMigration`
+    // type reads `handle` + `sourcePdsUrl`, so the camelCase rename must stay exact.
+    #[test]
+    fn test_prepared_migration_serializes_camel_case() {
+        let json = serde_json::to_value(PreparedMigration {
+            handle: "alice.test".into(),
+            source_pds_url: "https://source.pds".into(),
+        })
+        .unwrap();
+        assert_eq!(json["handle"], "alice.test");
+        assert_eq!(json["sourcePdsUrl"], "https://source.pds");
     }
 
     // ── Task 6 tests: Account creation idempotence + gating ───────────────
