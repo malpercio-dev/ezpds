@@ -45,6 +45,10 @@ http-body-util = "0.1"
 # default-features = false: no OpenSSL; future crates must opt in to rustls explicitly
 # (the TLS feature was named rustls-tls before reqwest 0.13).
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+# reqwest's companion crate. Already in the tree transitively (single major); named directly so
+# the identity-wallet can rebuild a `reqwest::Response` from parts (status/headers/body) after it
+# has consumed a DPoP nonce-challenge body — `reqwest::Response: From<http::Response<T>>`.
+http = "1"
 
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }

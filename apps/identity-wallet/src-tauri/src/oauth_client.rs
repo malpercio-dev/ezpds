@@ -19,6 +19,34 @@ struct RefreshSessionResponse {
     refresh_jwt: String,
 }
 
+/// Rebuild a `reqwest::Response` from parts captured off a real one.
+///
+/// `execute_with_retry` / `post_bytes` must read a 400 body to tell a `use_dpop_nonce` challenge
+/// apart from a genuine error, and `text()` consumes the response. When it turns out NOT to be a
+/// nonce challenge, we hand a faithful stand-in back to the caller — same status, headers, and
+/// body — so the caller's `pds_client::classify_xrpc_response` can turn it into a `RateLimited` /
+/// `Unauthorized` / `XrpcError` instead of this transport layer flattening it into
+/// `NotAuthenticated` (MM-290: the source-migration DPoP path was the last place this happened).
+///
+/// `reqwest::Response: From<http::Response<T>>` is the only public `Response` constructor. Building
+/// from an already-valid status + header map + owned body is infallible.
+fn rebuild_response(
+    status: reqwest::StatusCode,
+    headers: reqwest::header::HeaderMap,
+    body: String,
+) -> Response {
+    let mut builder = http::Response::builder().status(status);
+    // `headers_mut()` is `Some` because the status set above is valid; replace the (empty) default
+    // map so every original header survives on the reconstructed response.
+    if let Some(dst) = builder.headers_mut() {
+        *dst = headers;
+    }
+    let rebuilt = builder
+        .body(body)
+        .expect("rebuilding a response from real parts is infallible");
+    Response::from(rebuilt)
+}
+
 /// Extract the `exp` claim from a JWT's payload.
 ///
 /// Splits the token on `.`, base64url-decodes the payload segment, and parses it as JSON.
@@ -168,8 +196,10 @@ impl OAuthClient {
 
         // DPoP mode: on use_dpop_nonce, extract the server nonce and retry once.
         if resp.status().as_u16() == 400 {
-            let maybe_nonce = resp
-                .headers()
+            // Capture status + headers before text() consumes the response (see execute_with_retry).
+            let status = resp.status();
+            let headers = resp.headers().clone();
+            let maybe_nonce = headers
                 .get("DPoP-Nonce")
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string);
@@ -198,8 +228,10 @@ impl OAuthClient {
                     return Err(OAuthError::NotAuthenticated);
                 }
             } else {
-                tracing::error!(body = %error_body, "400 response without use_dpop_nonce error");
-                return Err(OAuthError::NotAuthenticated);
+                // A genuine 400, not a nonce challenge — return it intact so the caller's classifier
+                // sees the real status + body rather than an opaque NotAuthenticated (MM-290).
+                tracing::warn!(body = %error_body, "400 without use_dpop_nonce; surfacing response to caller");
+                return Ok(rebuild_response(status, headers, error_body));
             }
         }
 
@@ -235,9 +267,11 @@ impl OAuthClient {
         // On use_dpop_nonce, extract the server nonce from the DPoP-Nonce header,
         // update session, and retry once.
         if resp.status().as_u16() == 400 {
-            // Extract nonce header BEFORE consuming the body.
-            let maybe_nonce = resp
-                .headers()
+            // Capture status + headers BEFORE consuming the body — text() takes ownership, and we
+            // need these parts to hand the response back if it turns out not to be a challenge.
+            let status = resp.status();
+            let headers = resp.headers().clone();
+            let maybe_nonce = headers
                 .get("DPoP-Nonce")
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string);
@@ -270,10 +304,11 @@ impl OAuthClient {
                     return Err(OAuthError::NotAuthenticated);
                 }
             } else {
-                // Not use_dpop_nonce — the body has been consumed, so we can't return it.
-                // Treat as auth failure since the request cannot proceed.
-                tracing::error!(body = %error_body, "400 response without use_dpop_nonce error");
-                return Err(OAuthError::NotAuthenticated);
+                // A genuine 400 (InvalidRequest, InsufficientScope, ...), not a nonce challenge.
+                // Rebuild the response and hand it back intact so the caller's classifier surfaces
+                // the server's real status + body instead of an opaque NotAuthenticated (MM-290).
+                tracing::warn!(body = %error_body, "400 without use_dpop_nonce; surfacing response to caller");
+                return Ok(rebuild_response(status, headers, error_body));
             }
         }
 
@@ -1266,5 +1301,88 @@ mod tests {
             .expect("post_bytes must succeed");
 
         assert_eq!(resp.status().as_u16(), 200, "post_bytes must return 200");
+    }
+
+    #[tokio::test]
+    async fn dpop_non_nonce_400_returns_response_not_notauthenticated() {
+        // A genuine 400 (InvalidRequest) — NOT a use_dpop_nonce challenge — must be handed back to
+        // the caller intact (status + body preserved), not flattened into Err(NotAuthenticated).
+        // This is what lets the migration source path's classifier (pds_client::classify_xrpc_
+        // response) produce an XrpcError instead of an opaque "Not authenticated" (MM-290).
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(GET)
+                .path("/xrpc/com.atproto.server.getServiceAuth");
+            then.status(400).json_body(serde_json::json!({
+                "error": "InvalidRequest",
+                "message": "Malformed lxm parameter"
+            }));
+        });
+
+        let keypair = DPoPKeypair::get_or_create().expect("keypair must exist");
+        let session = make_session("my_access_token", "my_refresh_token", 300);
+        let client = OAuthClient::new_for_test(keypair, session, server.base_url());
+
+        let resp = client
+            .get("/xrpc/com.atproto.server.getServiceAuth")
+            .await
+            .expect("a non-nonce 400 must return Ok(response), not Err(NotAuthenticated)");
+
+        // Status survives → classify_xrpc_response sees 400 (not 429/401) → XrpcError.
+        assert_eq!(
+            resp.status().as_u16(),
+            400,
+            "the 400 status must be preserved"
+        );
+        // A genuine 400 must not be retried (only use_dpop_nonce triggers the single retry).
+        assert_eq!(mock.calls(), 1, "a non-nonce 400 must not be retried");
+
+        // The server's atproto error envelope must survive so the classifier can extract its
+        // `error`/`message`. If the body had been swallowed, this would be empty.
+        let body = resp.text().await.expect("rebuilt body must be readable");
+        assert!(
+            body.contains("InvalidRequest") && body.contains("Malformed lxm parameter"),
+            "the server's error body must survive the rebuild, got: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_bytes_dpop_non_nonce_400_returns_response_not_notauthenticated() {
+        // Same guarantee as above for the raw-byte upload path (importRepo / uploadBlob), whose
+        // 400 handling is a parallel copy of execute_with_retry's.
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(POST).path("/xrpc/com.atproto.repo.importRepo");
+            then.status(400).json_body(serde_json::json!({
+                "error": "InvalidRequest",
+                "message": "Repo already exists"
+            }));
+        });
+
+        let keypair = DPoPKeypair::get_or_create().expect("keypair must exist");
+        let session = make_session("my_access_token", "my_refresh_token", 300);
+        let client = OAuthClient::new_for_test(keypair, session, server.base_url());
+
+        let resp = client
+            .post_bytes(
+                "/xrpc/com.atproto.repo.importRepo",
+                "application/vnd.ipld.car",
+                b"fake CAR data".to_vec(),
+            )
+            .await
+            .expect("a non-nonce 400 must return Ok(response), not Err(NotAuthenticated)");
+
+        assert_eq!(
+            resp.status().as_u16(),
+            400,
+            "the 400 status must be preserved"
+        );
+        assert_eq!(mock.calls(), 1, "a non-nonce 400 must not be retried");
+
+        let body = resp.text().await.expect("rebuilt body must be readable");
+        assert!(
+            body.contains("InvalidRequest") && body.contains("Repo already exists"),
+            "the server's error body must survive the rebuild, got: {body}"
+        );
     }
 }
