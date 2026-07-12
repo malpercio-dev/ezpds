@@ -32,11 +32,24 @@ stream, using a small `AsyncRead + AsyncWrite` adapter over iroh's send/recv hal
 third-party bridge required. (The community `iroh-h3` crates do HTTP/3-over-iroh for axum,
 but they're a small-maintainer dependency; a hand-rolled h1 bridge is ~100 lines and keeps
 the supply chain unchanged.) Route parity, auth guards, rate limiting, and Bruno coverage
-all carry over because it is literally the same `Router`.
+all carry over because it is literally the same `Router` — with one seam to design
+deliberately: request-scoped middleware that today reads `ConnectInfo<SocketAddr>` (the
+IP-keyed rate limiters, request logging) has no socket address on an iroh stream. The bridge
+must inject the peer's node id into request extensions as the client identity, and the
+rate-limit keying must accept it (rather than collapsing all tunnel traffic into one
+"unknown" bucket). Parity tests over a loopback endpoint (auth guards, rate limiting,
+routing) belong in the pilot's acceptance criteria before the transports are treated as
+equivalent.
 
 **Client.** Each Tauri Rust backend binds its own iroh `Endpoint` and gains a
 "dial-by-node-id" HTTP path beside reqwest: try iroh (if a node id is known), fall back to
-HTTPS on dial failure/timeout. reqwest can't dial iroh, so this is either a custom hyper
+HTTPS **only when the failure happens before the request is transmitted** (dial, handshake,
+or stream-open failure). A request whose bytes were written but whose response was lost must
+not be blindly replayed on the other transport — for non-idempotent operations that
+duplicates the side effect. (The admin envelope's single-use nonce means a byte-identical
+replay is rejected server-side, but a client that *re-signs* with a fresh nonce re-executes
+the operation; the fallback policy, not the envelope, is the safety boundary.) reqwest can't
+dial iroh, so this is either a custom hyper
 client over the iroh stream, or a loopback forwarder (less clean). Both apps do all HTTP
 from Rust (never the webview), so the change is confined to `http.rs` / `relay_client.rs`.
 
@@ -52,8 +65,11 @@ from Rust (never the webview), so the change is confined to `http.rs` / `relay_c
 `method + path + timestamp + nonce + body-hash` and deliberately **not** scheme/host
 (ADR-0018), so a signed request is valid over either transport. The wallet's DPoP-bound
 access tokens similarly bind method+URI at the proof layer. Bonus: the relay's node id in
-the pairing record is effectively **certificate pinning** — the QUIC channel is
-authenticated by the relay's key, independent of WebPKI/DNS.
+the pairing record gives **node-identity pinning** — iroh authenticates the QUIC channel
+against the relay's persistent Ed25519 raw public key (TLS 1.3 RPK, not an X.509 chain), so
+trust is independent of WebPKI/DNS. (ALPN only selects the application protocol; it plays no
+part in authentication.) A relay key rotation therefore invalidates stored node ids and
+needs its own re-pairing story, separate from certificate renewal.
 
 **Hard limits — why this can never replace HTTPS:**
 - The **OAuth ceremony cannot ride iroh**: identity-wallet auth runs in
@@ -91,7 +107,9 @@ Wi-Fi↔cellular, DNS/CA independence) don't pay for a parallel transport in bot
    "private relay" deployment mode is a real product question.
 
 **Recommendation.** Don't build HTTP-over-iroh now. Keep the echo ALPN + purpose-built
-protocol direction. If appetite emerges, scope the admin-companion break-glass pilot as its
-own issue: `ezpds/http/0` ALPN + hyper bridge on the server, node id in the pairing
-document, iroh-then-HTTPS fallback in `relay_client.rs`, and an explicit "transport" note in
-the security docs (node-id pinning vs WebPKI).
+protocol direction. The admin-companion break-glass pilot is scoped as
+[MM-317](https://linear.app/malpercio/issue/MM-317/admin-companion-break-glass-transport-http-over-the-iroh-tunnel)
+(project `ezpds`, Wave 7: Hardening — Linear is the source of truth for its status):
+`ezpds/http/0` ALPN + hyper bridge on the server, node id in the pairing document,
+iroh-then-HTTPS fallback in `relay_client.rs`, and an explicit "transport" note in the
+security docs (node-identity pinning vs WebPKI).
