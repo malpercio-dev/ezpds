@@ -289,6 +289,14 @@ async fn run() -> anyhow::Result<()> {
             host = config.email.smtp_host.as_deref().unwrap_or(""),
             "outbound email: SMTP delivery enabled"
         ),
+        common::EmailProvider::Mailtrap => tracing::info!(
+            api_url = config
+                .email
+                .http_api_url
+                .as_deref()
+                .unwrap_or(common::MAILTRAP_SEND_API_URL),
+            "outbound email: Mailtrap HTTP-API delivery enabled"
+        ),
         common::EmailProvider::Log => {
             tracing::warn!("outbound email: using the log provider (messages are not sent)")
         }
