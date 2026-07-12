@@ -647,35 +647,44 @@ where
     Ok(updated.rows_affected() == 1)
 }
 
-/// Set the repo root/rev of a **deactivated, repo-less** account after an `importRepo`, atomically
-/// with the caller's block-insert transaction.
+/// Swap the repo root/rev of a **deactivated** account after an `importRepo`, atomically with the
+/// caller's block-insert transaction, via an optimistic compare-and-swap against the root the
+/// caller observed at precondition time.
 ///
 /// Unlike [`advance_repo_root_if_active`], the account must be **deactivated** (importing over a
-/// live repo is not supported) and must not already hold a repo — the `repo_root_cid IS NULL`
-/// guard makes import strictly first-write-wins, so a retried or racing `importRepo` cannot
-/// silently overwrite an already-imported repo (it gets `false` → the caller's 409). A failed
-/// import rolls back its whole transaction, leaving `repo_root_cid` NULL, so this does not block
-/// a legitimate retry after an error. The guard also rejects a suspended or taken-down account.
-/// Returns `true` when exactly one row was updated, `false` otherwise. Single statement, so no
-/// transaction is opened here — generic over the executor so the caller can run it inside the
-/// transaction that persists the imported blocks.
-pub(crate) async fn set_repo_root_for_deactivated<'e, E>(
+/// live repo is not supported) and must not be suspended or taken down. `expected_root` is the
+/// `repo_root_cid` the caller read before parsing the CAR: `None` for a fresh migration target (no
+/// repo yet) or `Some(old_root)` when replacing a completed prior residency's repo — a
+/// migrate-away-and-return round trip resumes a still-deactivated account (see `createAccount`'s
+/// resumable migration mode) that still carries its previous root. The `repo_root_cid IS ?` guard
+/// (`IS`, so it matches both the NULL and non-NULL base uniformly) makes the swap a compare-and-swap:
+/// it lands only if the persisted root is still exactly what the caller observed, so a concurrent
+/// import with a different base loses loudly (`false` → the caller's 409) instead of silently
+/// clobbering the winner — the same anti-race property the previous first-write-wins
+/// (`repo_root_cid IS NULL`) guard provided, generalized to a non-NULL base. A failed import rolls
+/// back its whole transaction, leaving the root untouched, so this never blocks a legitimate retry
+/// after an error. Returns `true` when exactly one row was updated, `false` otherwise. Single
+/// statement, so no transaction is opened here — generic over the executor so the caller can run it
+/// inside the transaction that persists the imported blocks.
+pub(crate) async fn swap_repo_root_for_deactivated<'e, E>(
     executor: E,
     did: &str,
     new_root: &str,
     new_rev: &str,
+    expected_root: Option<&str>,
 ) -> Result<bool, sqlx::Error>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
     let updated = sqlx::query(
         "UPDATE accounts SET repo_root_cid = ?, repo_rev = ? \
-         WHERE did = ? AND repo_root_cid IS NULL AND deactivated_at IS NOT NULL \
+         WHERE did = ? AND repo_root_cid IS ? AND deactivated_at IS NOT NULL \
            AND suspended_at IS NULL AND taken_down_at IS NULL",
     )
     .bind(new_root)
     .bind(new_rev)
     .bind(did)
+    .bind(expected_root)
     .execute(executor)
     .await?;
 
@@ -1746,6 +1755,117 @@ mod tests {
             !swapped,
             "the commit CAS must not advance the root for a taken-down account"
         );
+    }
+
+    // ── swap_repo_root_for_deactivated (importRepo CAS) ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn swap_repo_root_fresh_deactivated_target_from_null() {
+        // A deactivated, repo-less migration target accepts a swap whose expected base is `None` —
+        // the original first-write-wins case, now expressed as a compare-and-swap against NULL.
+        let db = test_pool().await;
+        insert_account(&db, "did:plc:swap_fresh").await;
+        deactivate(&db, "did:plc:swap_fresh", None).await;
+
+        let swapped =
+            swap_repo_root_for_deactivated(&db, "did:plc:swap_fresh", "root-a", "rev-a", None)
+                .await
+                .unwrap();
+        assert!(
+            swapped,
+            "a NULL-based swap must land on a repo-less deactivated target"
+        );
+
+        let root: Option<String> =
+            sqlx::query_scalar("SELECT repo_root_cid FROM accounts WHERE did = ?")
+                .bind("did:plc:swap_fresh")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(root.as_deref(), Some("root-a"));
+    }
+
+    #[tokio::test]
+    async fn swap_repo_root_replaces_matching_prior_root() {
+        // A deactivated account carrying a completed prior residency's root accepts a swap that
+        // names that exact root as its expected base — the return-migration replacement.
+        let db = test_pool().await;
+        insert_account_with_repo(&db, "did:plc:swap_replace", "old-root").await;
+        deactivate(&db, "did:plc:swap_replace", None).await;
+
+        let swapped = swap_repo_root_for_deactivated(
+            &db,
+            "did:plc:swap_replace",
+            "new-root",
+            "rev-b",
+            Some("old-root"),
+        )
+        .await
+        .unwrap();
+        assert!(
+            swapped,
+            "a swap against the observed prior root must land while deactivated"
+        );
+
+        let root: Option<String> =
+            sqlx::query_scalar("SELECT repo_root_cid FROM accounts WHERE did = ?")
+                .bind("did:plc:swap_replace")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(root.as_deref(), Some("new-root"));
+    }
+
+    #[tokio::test]
+    async fn swap_repo_root_cas_mismatch_loses_and_preserves_root() {
+        // A swap whose expected base does not match the persisted root loses loudly (`false`) and
+        // leaves the stored root untouched — the anti-race property a concurrent import with a
+        // different base relies on: nothing silently clobbers the winner.
+        let db = test_pool().await;
+        insert_account_with_repo(&db, "did:plc:swap_cas", "winner-root").await;
+        deactivate(&db, "did:plc:swap_cas", None).await;
+
+        let swapped = swap_repo_root_for_deactivated(
+            &db,
+            "did:plc:swap_cas",
+            "loser-root",
+            "rev-l",
+            Some("stale-root"),
+        )
+        .await
+        .unwrap();
+        assert!(!swapped, "a CAS against a stale base must not land");
+
+        let root: Option<String> =
+            sqlx::query_scalar("SELECT repo_root_cid FROM accounts WHERE did = ?")
+                .bind("did:plc:swap_cas")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(
+            root.as_deref(),
+            Some("winner-root"),
+            "the winner's root must be preserved"
+        );
+    }
+
+    #[tokio::test]
+    async fn swap_repo_root_refuses_active_account() {
+        // An active account is refused even when the expected base matches — import is only for the
+        // deactivated migration window (the same guard `advance_repo_root_if_active` inverts).
+        let db = test_pool().await;
+        insert_account_with_repo(&db, "did:plc:swap_active", "live-root").await;
+
+        let swapped = swap_repo_root_for_deactivated(
+            &db,
+            "did:plc:swap_active",
+            "new-root",
+            "rev-x",
+            Some("live-root"),
+        )
+        .await
+        .unwrap();
+        assert!(!swapped, "an active account must not accept an import swap");
     }
 
     // ── login/session lifecycle enforcement ────────────────────────────────────────────────────
