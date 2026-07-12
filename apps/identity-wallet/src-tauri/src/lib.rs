@@ -784,6 +784,50 @@ fn get_stored_did_doc(
     }
 }
 
+/// Errors from [`refresh_did_doc`], serialized as `{ code: "SCREAMING_SNAKE_CASE" }`
+/// like every other IPC error enum so the frontend gets a branchable contract.
+#[derive(Debug, serde::Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RefreshDidDocError {
+    /// plc.directory fetch failed (network, 404, or parse).
+    #[error("failed to fetch PLC data document: {message}")]
+    FetchFailed { message: String },
+    /// Serializing or persisting the refreshed document failed.
+    #[error("failed to store DID document: {message}")]
+    StorageFailed { message: String },
+}
+
+/// Re-fetch a claimed identity's PLC data document from plc.directory and re-store it
+/// in the per-identity cache, returning the fresh document.
+///
+/// The cache self-heal: earlier builds cached the W3C DID document (or a doc with
+/// empty `rotationKeys`) after claim/migration/recovery, which starves the home
+/// card's custody badge and hides the migrate entry. `IdentityListHome` calls this
+/// (best-effort) whenever a cached doc is missing or has no `rotationKeys`, so stale
+/// caches repair on the next home load without user action.
+#[tauri::command]
+async fn refresh_did_doc(
+    state: tauri::State<'_, oauth::AppState>,
+    did: String,
+) -> Result<serde_json::Value, RefreshDidDocError> {
+    let did_doc = state
+        .pds_client()
+        .fetch_plc_data_document(&did)
+        .await
+        .map_err(|e| RefreshDidDocError::FetchFailed {
+            message: e.to_string(),
+        })?;
+    let json = serde_json::to_string(&did_doc).map_err(|e| RefreshDidDocError::StorageFailed {
+        message: format!("failed to serialize DID document: {e}"),
+    })?;
+    identity_store::IdentityStore
+        .store_did_doc(&did, &json)
+        .map_err(|e| RefreshDidDocError::StorageFailed {
+            message: e.to_string(),
+        })?;
+    Ok(did_doc)
+}
+
 /// Retrieve the device key ID (did:key URI) for a claimed identity.
 ///
 /// Returns the device key's did:key URI, which can be compared against rotation keys
@@ -973,6 +1017,7 @@ pub fn run() {
             get_available_user_domains,
             list_identities,
             get_stored_did_doc,
+            refresh_did_doc,
             get_device_key_id,
             get_pds_url,
             save_pds_url,
@@ -983,8 +1028,7 @@ pub fn run() {
             oauth::prepare_oauth_flow,
             oauth::complete_oauth_flow,
             claim::resolve_identity,
-            claim::prepare_pds_auth,
-            claim::complete_pds_auth,
+            claim::authenticate_source_pds,
             claim::request_claim_verification,
             claim::sign_and_verify_claim,
             claim::submit_claim,
@@ -1000,8 +1044,7 @@ pub fn run() {
             migrate::build_migration_op_cmd,
             migrate::submit_migration_op_cmd,
             migration_orchestrator::prepare_migration,
-            migration_orchestrator::prepare_source_auth,
-            migration_orchestrator::complete_source_auth,
+            migration_orchestrator::authenticate_migration_source,
             migration_orchestrator::create_destination_account,
             migration_orchestrator::transfer_repo,
             migration_orchestrator::transfer_blobs,

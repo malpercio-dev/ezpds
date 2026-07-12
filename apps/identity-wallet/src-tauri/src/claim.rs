@@ -4,8 +4,9 @@
 //                  ClaimState, ResolveError, ClaimError (types and errors)
 // Imperative Shell: resolve_identity (command: resolves handle/DID, fetches DID doc from
 //                   plc.directory, checks IdentityStore, stores state, returns IdentityInfo)
-//                   start_pds_auth (command: performs OAuth PKCE+DPoP flow against PDS,
-//                   stores OAuthClient in claim_state)
+//                   authenticate_source_pds (command: password createSession against the source
+//                   PDS → full-session Bearer OAuthClient stored in claim_state; PLC ops need a
+//                   full session that no OAuth transition:generic token can grant — MM-289)
 //                   request_claim_verification (command: calls requestPlcOperationSignature XRPC
 //                   endpoint on old PDS to trigger email verification)
 //                   sign_and_verify_claim (command: calls getRecommendedDidCredentials and
@@ -14,7 +15,6 @@
 //                   persists identity to IdentityStore, clears claim state)
 
 use serde::Serialize;
-use tauri::Emitter;
 
 use crate::identity_store::IdentityStore;
 use crate::oauth_client::OAuthClient;
@@ -108,7 +108,7 @@ pub struct ClaimResult {
 /// Claim flow state persisted in `AppState`.
 ///
 /// This state is set by `resolve_identity` and used by subsequent
-/// `start_pds_auth`, `request_claim_verification`, `sign_and_verify_claim`,
+/// `authenticate_source_pds`, `request_claim_verification`, `sign_and_verify_claim`,
 /// and `submit_claim` commands within the same claim flow session.
 #[derive(Clone)]
 pub struct ClaimState {
@@ -118,34 +118,12 @@ pub struct ClaimState {
     pub pds_url: String,
     /// The DID document fetched from plc.directory (discovered by `resolve_identity`)
     pub did_doc: PlcDidDocument,
-    /// OAuth client for the PDS (set after `start_pds_auth` succeeds)
-    /// Wrapped in Arc to allow cloning out of the Mutex without holding the lock
+    /// Full-session (Bearer) client for the source PDS (set after `authenticate_source_pds`
+    /// succeeds). Wrapped in Arc to allow cloning out of the Mutex without holding the lock
     /// across the network call in `request_claim_verification`.
     pub pds_oauth_client: Option<std::sync::Arc<OAuthClient>>,
     /// Verified signed operation (set after `sign_and_verify_claim` succeeds) as JSON value
     pub verified_signed_op: Option<serde_json::Value>,
-}
-
-/// State parked in `AppState.pending_pds_login` between `prepare_pds_auth` and
-/// `complete_pds_auth` while the ASWebAuthenticationSession runs. Holds the discovered
-/// auth-server metadata plus the secrets the token exchange needs — none of it is serialized to
-/// the webview.
-pub struct PendingPdsLogin {
-    /// The DID this auth was prepared for — re-checked against `ClaimState` in `complete_pds_auth`
-    /// so a concurrent `resolve_identity` can't attach this client to a different claim.
-    pub did: String,
-    /// The PDS URL this auth was prepared for (re-checked alongside `did`).
-    pub pds_url: String,
-    /// PKCE code_verifier for the token exchange.
-    pub pkce_verifier: String,
-    /// CSRF state — validated against the callback URL's `state` param.
-    pub csrf_state: String,
-    /// Auth-server metadata discovered from the PDS (needed for the token exchange).
-    pub metadata: crate::pds_client::AuthServerMetadata,
-    /// OAuth `client_id` for this PDS.
-    pub client_id: String,
-    /// PDS base URL the resulting `OAuthClient` targets (the identity's resolved PDS).
-    pub oauth_client_pds_url: String,
 }
 
 // ── Error types ────────────────────────────────────────────────────────────
@@ -190,11 +168,42 @@ pub enum ClaimError {
     /// User is not authorized for this operation
     #[error("unauthorized")]
     Unauthorized,
-    /// The authorization server rejected the OAuth request (e.g. a PAR refusal).
-    /// Carries the server's own `error: error_description` text so a policy
-    /// rejection is diagnosable in the UI instead of reading as a network failure.
-    #[error("oauth rejected: {message}")]
-    OauthRejected { message: String },
+    /// The source PDS rejected the password login (`createSession` 401). Distinct from a network
+    /// failure so the UI can say "wrong password" instead of blaming the connection.
+    #[error("source auth failed: {message}")]
+    SourceAuthFailed { message: String },
+    /// The source account has email two-factor enabled: `createSession` returned
+    /// `AuthFactorTokenRequired` and the PDS emailed a one-time code. The UI prompts for the code
+    /// and re-invokes `authenticate_source_pds` with it — distinct from a wrong password.
+    #[error("two-factor code required")]
+    TwoFactorRequired,
+    /// The source PDS session is for a different account than the one being claimed (the entered
+    /// credentials signed in to the wrong account). Refused before any PLC op is attempted.
+    #[error("account mismatch")]
+    AccountMismatch,
+    /// Refused to send the account password to a non-HTTPS source PDS (loopback excepted). The
+    /// PDS endpoint comes from the DID document, so a plaintext `http://` endpoint is rejected.
+    #[error("insecure source url")]
+    InsecureSourceUrl,
+    /// A PLC-operation endpoint refused the token for scope reasons. After MM-289 the source
+    /// session is a full password session, so this should not occur — but if a server still
+    /// refuses, surface it honestly instead of flattening it to "failed to send verification
+    /// email" (the misleading symptom this issue was filed against).
+    #[error("insufficient scope: {message}")]
+    InsufficientScope { message: String },
+    /// The source PDS rate-limited the PLC-operation request (HTTP 429). `retry_after` carries the
+    /// server's `Retry-After` value when present, so the UI can say how long to wait rather than
+    /// blaming the connection.
+    #[error("rate limited")]
+    RateLimited {
+        #[serde(rename = "retryAfter")]
+        retry_after: Option<String>,
+    },
+    /// The source PDS rejected the PLC operation with a non-2xx the wallet doesn't model specially.
+    /// `message` is the server's own error text (the atproto error envelope), shown verbatim so a
+    /// third-party PDS's real reason reaches the user instead of connectivity boilerplate.
+    #[error("server error: {message}")]
+    ServerError { message: String },
     /// Network error during claim flow (timeout, connection refused, etc.)
     #[error("network error: {message}")]
     NetworkError { message: String },
@@ -338,501 +347,163 @@ fn map_pds_error_to_resolve(err: PdsClientError) -> ResolveError {
         PdsClientError::DidAlreadyExists => ResolveError::NetworkError {
             message: "did already exists".to_string(),
         },
+        // Only produced by the claim flow's password createSession; not reachable from resolve.
+        PdsClientError::InvalidCredentials { message } => ResolveError::NetworkError { message },
+        PdsClientError::AuthFactorTokenRequired => ResolveError::NetworkError {
+            message: "auth factor token required".to_string(),
+        },
+        PdsClientError::InsecurePdsUrl { url } => ResolveError::NetworkError {
+            message: format!("insecure pds url: {}", url),
+        },
+        // The classified XRPC variants are produced by authenticated PLC/migration helpers, not by
+        // resolve's plc.directory lookups — but the match is exhaustive over the shared enum, so
+        // surface the server's own message rather than dropping it.
+        PdsClientError::RateLimited { message, .. } => ResolveError::NetworkError { message },
+        PdsClientError::Unauthorized { message, .. } => ResolveError::NetworkError { message },
+        PdsClientError::XrpcError { message, .. } => ResolveError::NetworkError { message },
     }
 }
 
-/// Phase 1 of the claim-flow PDS login: discover + PAR → the PDS's authorize URL.
+/// Authenticate against the source PDS with the account password (`createSession`).
 ///
-/// Validates `ClaimState` (must match `resolve_identity`'s `pds_url`), discovers the PDS's auth
-/// server, generates PKCE/CSRF + the DPoP proof, runs PAR (with the DID as `login_hint`), builds
-/// the authorize URL, and parks the verifier + CSRF + discovered metadata in
-/// `AppState.pending_pds_login` — none of which reaches the webview. The frontend feeds the
-/// returned URL into the auth-session plugin's `start()`, then calls `complete_pds_auth`.
+/// Replaces the claim flow's old OAuth PDS login. The next steps —
+/// `requestPlcOperationSignature` + `signPlcOperation` — are PLC (identity) operations that a
+/// spec-strict PDS such as bsky.social gates behind a **full session**; no OAuth
+/// `transition:generic` token can drive them (MM-289). A password `createSession` mints a full
+/// `com.atproto.access` session, the only credential class that can. `goat account migrate` asks
+/// for the password for the same reason.
 ///
-/// Replaces the old single `start_pds_auth` (external Safari + deep-link) for the same iOS reason
-/// as the create flow — see `oauth::prepare_oauth_flow`.
+/// The password is used for exactly one `createSession` request and is never stored — the wallet
+/// keeps only the resulting Bearer session, in memory, in `ClaimState.pds_oauth_client`. An app
+/// password is a lesser scope and is rejected the same way a wrong real password is.
+///
+/// `auth_factor_token` is the email 2FA one-time code. Pass `None` first; if the account has email
+/// two-factor enabled the call returns `TwoFactorRequired` (and the PDS emails a code), and the UI
+/// re-invokes with that code as `Some`.
 ///
 /// **Prerequisite:** `resolve_identity` must have run first to populate `ClaimState`.
 #[tauri::command]
-pub async fn prepare_pds_auth(
+pub async fn authenticate_source_pds(
     state: tauri::State<'_, crate::oauth::AppState>,
-    pds_url: String,
-) -> Result<crate::oauth::OAuthPrepared, ClaimError> {
-    tracing::info!("prepare_pds_auth: authenticating with {}", pds_url);
+    did: String,
+    identifier: String,
+    password: String,
+    auth_factor_token: Option<String>,
+) -> Result<(), ClaimError> {
+    tracing::info!("authenticate_source_pds: password login for {}", did);
 
-    // 1. Validate ClaimState is populated and pds_url matches (defense-in-depth).
-    let did = {
+    // Snapshot the claim's PDS URL under the lock; validate the DID matches (defense-in-depth).
+    let pds_url = {
         let claim_state = state.claim_state.lock().await;
         let Some(claim) = claim_state.as_ref() else {
-            tracing::warn!("prepare_pds_auth: ClaimState not found");
+            tracing::warn!("authenticate_source_pds: ClaimState not found");
             return Err(ClaimError::Unauthorized);
         };
-        if claim.pds_url != pds_url {
-            let expected = claim.pds_url.clone();
-            drop(claim_state);
-            tracing::warn!(expected = %expected, received = %pds_url, "prepare_pds_auth: pds_url mismatch");
+        if claim.did != did {
+            tracing::warn!("authenticate_source_pds: DID mismatch");
             return Err(ClaimError::Unauthorized);
         }
-        claim.did.clone()
-    };
+        claim.pds_url.clone()
+    }; // claim_state lock released here — createSession is a network call
 
-    let pds_client = state.pds_client();
-
-    // 2. Discover auth server metadata from the PDS.
-    tracing::debug!(pds_url = %pds_url, "discovering auth server metadata");
-    let metadata = pds_client
-        .discover_auth_server(&pds_url)
-        .await
-        .map_err(|e| {
-            tracing::error!(pds_url = %pds_url, error = %e, "auth server discovery failed");
-            ClaimError::NetworkError {
-                message: format!("failed to discover auth server: {}", e),
-            }
-        })?;
-    tracing::debug!(issuer = %metadata.issuer, "auth server metadata discovered");
-
-    // 3. PKCE + CSRF state.
-    let (pkce_verifier, pkce_challenge) = crate::oauth::pkce::generate();
-    let csrf_state = crate::oauth::generate_state_param();
-
-    // 4. DPoP keypair + thumbprint.
-    let dpop = crate::oauth::DPoPKeypair::get_or_create().map_err(|e| {
-        tracing::error!(error = %e, "DPoP keypair creation failed");
-        ClaimError::NetworkError {
-            message: "failed to create DPoP keypair".to_string(),
-        }
-    })?;
-    let dpop_jkt = dpop.public_jwk_thumbprint();
-
-    // 5-6. PAR with DPoP nonce retry.
-    let par_htu = metadata
-        .pushed_authorization_request_endpoint
-        .as_ref()
-        .cloned()
-        .unwrap_or_else(|| format!("{}/oauth/par", metadata.issuer));
-    // `client_id` is derived from the app's own client-metadata base URL, but the OAuthClient must
-    // target the *identity's resolved PDS* (`pds_url`) — not the app/custos base — or claim
-    // verification calls would hit the wrong endpoint.
-    let client_metadata_base_url = state.custos_client().base_url_str().to_string();
-    let client_id = crate::pds_client::client_id_for_pds(&client_metadata_base_url);
-    let oauth_client_pds_url = pds_url.clone();
-
-    let par_resp = pds_par_with_retry(PdsParWithRetryParams {
-        pds_client,
-        dpop: &dpop,
-        metadata: &metadata,
-        par_htu: &par_htu,
-        pkce_challenge: &pkce_challenge,
-        csrf_state: &csrf_state,
-        dpop_jkt: &dpop_jkt,
-        did: &did,
-        client_id: &client_id,
-    })
+    let oauth_client = authenticate_source_pds_impl(
+        state.pds_client(),
+        &pds_url,
+        &did,
+        &identifier,
+        &password,
+        auth_factor_token.as_deref(),
+    )
     .await?;
 
-    // 7. Build the authorize URL.
-    let auth_url = crate::pds_client::PdsClient::build_pds_authorize_url(
-        &metadata,
-        &par_resp.request_uri,
-        Some(&did),
-        &client_id,
-    );
-
-    // 8. Park the secrets + discovered metadata for `complete_pds_auth`, bound to this claim.
-    *state.pending_pds_login.lock().unwrap() = Some(PendingPdsLogin {
-        did: did.clone(),
-        pds_url: pds_url.clone(),
-        pkce_verifier,
-        csrf_state,
-        metadata,
-        client_id,
-        oauth_client_pds_url,
-    });
-
-    Ok(crate::oauth::OAuthPrepared {
-        auth_url,
-        callback_scheme: crate::pds_client::CALLBACK_SCHEME.to_string(),
-    })
-}
-
-/// Phase 2 of the claim-flow PDS login: exchange the code and store the `OAuthClient`.
-///
-/// Parses + CSRF-validates the auth-session callback URL against the parked `pending_pds_login`,
-/// exchanges the code for DPoP-bound tokens, builds the `OAuthClient`, stores it in
-/// `ClaimState.pds_oauth_client`, and emits `pds_auth_ready` (preserved for parity).
-#[tauri::command]
-pub async fn complete_pds_auth(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, crate::oauth::AppState>,
-    callback_url: String,
-) -> Result<(), ClaimError> {
-    // Take the parked flow — clears it so a stray second call can't reuse the verifier.
-    let pending = state
-        .pending_pds_login
-        .lock()
-        .unwrap()
-        .take()
-        .ok_or(ClaimError::Unauthorized)?;
-
-    // Parse + CSRF-validate the callback URL before any token exchange.
-    let (code, callback_state) =
-        crate::oauth::parse_callback_url(&callback_url).map_err(|_| ClaimError::Unauthorized)?;
-    if callback_state != pending.csrf_state {
-        tracing::error!("complete_pds_auth: CSRF state mismatch");
-        return Err(ClaimError::Unauthorized);
-    }
-
-    let pds_client = state.pds_client();
-    let dpop = crate::oauth::DPoPKeypair::get_or_create().map_err(|e| {
-        tracing::error!(error = %e, "DPoP keypair creation failed");
-        ClaimError::NetworkError {
-            message: "failed to create DPoP keypair".to_string(),
-        }
-    })?;
-
-    // Token exchange with nonce retry.
-    let (token_resp, initial_nonce) = pds_exchange_code_with_retry(
-        pds_client,
-        &dpop,
-        &code,
-        &pending.pkce_verifier,
-        &pending.metadata,
-        &pending.client_id,
-    )
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "PDS token exchange failed");
-        e
-    })?;
-
-    // Create OAuthClient and store in ClaimState.
-    let session = std::sync::Arc::new(std::sync::Mutex::new(crate::oauth::OAuthSession {
-        access_token: token_resp.access_token,
-        refresh_token: token_resp.refresh_token,
-        expires_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| ClaimError::NetworkError {
-                message: "system time error".to_string(),
-            })?
-            .as_secs()
-            + token_resp.expires_in,
-        dpop_nonce: initial_nonce,
-    }));
-
-    let oauth_client =
-        OAuthClient::new(session, pending.oauth_client_pds_url.clone()).map_err(|_| {
-            ClaimError::NetworkError {
-                message: "failed to create OAuth client".to_string(),
-            }
-        })?;
-
+    // Re-acquire the lock and store the Bearer client, rejecting the write if `resolve_identity`
+    // switched the active claim while we were on the network (same guard as the old OAuth flow).
     let mut claim_state = state.claim_state.lock().await;
-    if let Some(ref mut claim) = claim_state.as_mut() {
-        // Reject if `resolve_identity` switched the active claim while the auth session was open —
-        // otherwise this client (for the original DID/PDS) would attach to a different claim.
-        if claim.did != pending.did || claim.pds_url != pending.pds_url {
+    match claim_state.as_mut() {
+        Some(claim) if claim.did == did && claim.pds_url == pds_url => {
+            claim.pds_oauth_client = Some(std::sync::Arc::new(oauth_client));
+            Ok(())
+        }
+        _ => {
             drop(claim_state);
-            tracing::warn!("complete_pds_auth: pending auth no longer matches the active claim");
-            return Err(ClaimError::Unauthorized);
-        }
-        claim.pds_oauth_client = Some(std::sync::Arc::new(oauth_client));
-    } else {
-        drop(claim_state);
-        return Err(ClaimError::Unauthorized);
-    }
-    drop(claim_state);
-
-    // Emit the (vestigial but preserved) ready event.
-    app.emit("pds_auth_ready", ()).map_err(|e| {
-        tracing::error!(error = %e, "failed to emit pds_auth_ready event");
-        ClaimError::NetworkError {
-            message: "event emission failed".to_string(),
-        }
-    })?;
-
-    Ok(())
-}
-
-/// Parameters for PAR with DPoP nonce retry.
-struct PdsParWithRetryParams<'a> {
-    pds_client: &'a crate::pds_client::PdsClient,
-    dpop: &'a crate::oauth::DPoPKeypair,
-    metadata: &'a crate::pds_client::AuthServerMetadata,
-    par_htu: &'a str,
-    pkce_challenge: &'a str,
-    csrf_state: &'a str,
-    dpop_jkt: &'a str,
-    did: &'a str,
-    client_id: &'a str,
-}
-
-/// Helper function for PAR with DPoP nonce retry.
-///
-/// Some authorization servers (e.g. bsky.social) require a DPoP nonce even for
-/// PAR. On the first call, the server returns 400 `use_dpop_nonce` with a
-/// `DPoP-Nonce` header. We extract the nonce, rebuild the DPoP proof, and retry.
-async fn pds_par_with_retry(
-    params: PdsParWithRetryParams<'_>,
-) -> Result<crate::pds_client::PdsParResponse, ClaimError> {
-    let par_proof = params
-        .dpop
-        .make_proof("POST", params.par_htu, None, None)
-        .map_err(|e| {
-            tracing::error!(error = %e, "DPoP proof generation failed for PAR");
-            ClaimError::NetworkError {
-                message: "failed to create DPoP proof for PAR".to_string(),
-            }
-        })?;
-
-    tracing::debug!(par_endpoint = %params.par_htu, "sending PAR request");
-    match params
-        .pds_client
-        .pds_par(
-            params.metadata,
-            crate::pds_client::PdsParRequest {
-                pkce_challenge: params.pkce_challenge,
-                state_param: params.csrf_state,
-                dpop_proof: &par_proof,
-                dpop_jkt: params.dpop_jkt,
-                login_hint: Some(params.did),
-                client_id: params.client_id,
-            },
-        )
-        .await
-    {
-        Ok(resp) => return Ok(resp),
-        Err(crate::pds_client::PdsClientError::OauthFailed { message })
-            if message.contains("use_dpop_nonce") =>
-        {
-            tracing::debug!("PAR requires DPoP nonce, retrying");
-        }
-        // The AS rejected the request outright — surface its own error text, not a
-        // generic network failure (this is how bsky.social's invalid_redirect_uri
-        // stays diagnosable in the UI).
-        Err(crate::pds_client::PdsClientError::OauthFailed { message }) => {
-            tracing::error!(error = %message, "PAR rejected by authorization server");
-            return Err(ClaimError::OauthRejected { message });
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "PAR request failed");
-            return Err(ClaimError::NetworkError {
-                message: format!("PAR failed: {}", e),
-            });
+            tracing::warn!("authenticate_source_pds: active claim changed during login");
+            Err(ClaimError::Unauthorized)
         }
     }
-
-    // The nonce is in the error response body; we need to get it from the raw
-    // response. Re-issue the PAR as a raw request to extract the nonce header.
-    let raw_par_url = params
-        .metadata
-        .pushed_authorization_request_endpoint
-        .clone()
-        .unwrap_or_else(|| format!("{}/oauth/par", params.metadata.issuer));
-
-    let nonce_proof = params
-        .dpop
-        .make_proof("POST", params.par_htu, None, None)
-        .map_err(|_| ClaimError::NetworkError {
-            message: "failed to create DPoP proof for nonce discovery".to_string(),
-        })?;
-
-    let form_data = vec![
-        ("response_type", "code"),
-        ("code_challenge_method", "S256"),
-        ("code_challenge", params.pkce_challenge),
-        ("state", params.csrf_state),
-        ("client_id", params.client_id),
-        ("redirect_uri", crate::pds_client::REDIRECT_URI),
-        ("scope", "atproto transition:generic"),
-        ("dpop_jkt", params.dpop_jkt),
-        ("login_hint", params.did),
-    ];
-
-    let nonce_resp = params
-        .pds_client
-        .client()
-        .post(&raw_par_url)
-        .header("DPoP", &nonce_proof)
-        .form(&form_data)
-        .send()
-        .await
-        .map_err(|e| ClaimError::NetworkError {
-            message: format!("PAR nonce discovery failed: {}", e),
-        })?;
-
-    let nonce = nonce_resp
-        .headers()
-        .get("DPoP-Nonce")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-
-    let Some(nonce_val) = nonce else {
-        tracing::error!("PAR returned use_dpop_nonce but no DPoP-Nonce header");
-        return Err(ClaimError::NetworkError {
-            message: "PAR requires nonce but server did not provide one".to_string(),
-        });
-    };
-
-    tracing::debug!(nonce = %nonce_val, "retrying PAR with DPoP nonce");
-    let retry_proof = params
-        .dpop
-        .make_proof("POST", params.par_htu, Some(&nonce_val), None)
-        .map_err(|e| {
-            tracing::error!(error = %e, "DPoP proof with nonce failed");
-            ClaimError::NetworkError {
-                message: "failed to create DPoP proof with nonce".to_string(),
-            }
-        })?;
-
-    params
-        .pds_client
-        .pds_par(
-            params.metadata,
-            crate::pds_client::PdsParRequest {
-                pkce_challenge: params.pkce_challenge,
-                state_param: params.csrf_state,
-                dpop_proof: &retry_proof,
-                dpop_jkt: params.dpop_jkt,
-                login_hint: Some(params.did),
-                client_id: params.client_id,
-            },
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "PAR retry with nonce failed");
-            match e {
-                crate::pds_client::PdsClientError::OauthFailed { message } => {
-                    ClaimError::OauthRejected { message }
-                }
-                other => ClaimError::NetworkError {
-                    message: format!("PAR retry failed: {}", other),
-                },
-            }
-        })
 }
 
-/// Helper function for token exchange with nonce retry (PDS version).
+/// Testable core: run `createSession` against the source PDS and build a full-session Bearer
+/// `OAuthClient`. Extracted so it can be exercised without Tauri's `State` wrapper.
 ///
-/// Follows the same pattern as `exchange_code_with_retry` in oauth.rs.
-/// Uses the raw `pds_token_exchange` method which returns `reqwest::Response`.
-async fn pds_exchange_code_with_retry(
+/// `expected_did` is the DID being claimed: the session the PDS returns MUST be for that account,
+/// or the caller signed in to the wrong one and we refuse to bind those credentials to this claim.
+pub(crate) async fn authenticate_source_pds_impl(
     pds_client: &crate::pds_client::PdsClient,
-    dpop: &crate::oauth::DPoPKeypair,
-    code: &str,
-    pkce_verifier: &str,
-    metadata: &crate::pds_client::AuthServerMetadata,
-    client_id: &str,
-) -> Result<(crate::http::TokenResponse, Option<String>), ClaimError> {
-    let token_htu = &metadata.token_endpoint;
-    tracing::debug!(token_endpoint = %token_htu, "starting PDS token exchange");
-    let proof = dpop
-        .make_proof("POST", token_htu, None, None)
-        .map_err(|e| {
-            tracing::error!(error = %e, "DPoP proof for token exchange failed");
-            ClaimError::NetworkError {
-                message: "failed to create DPoP proof for token exchange".to_string(),
-            }
-        })?;
-
-    let resp = pds_client
-        .pds_token_exchange(metadata, code, pkce_verifier, &proof, client_id)
+    pds_url: &str,
+    expected_did: &str,
+    identifier: &str,
+    password: &str,
+    auth_factor_token: Option<&str>,
+) -> Result<OAuthClient, ClaimError> {
+    let session = pds_client
+        .create_session(pds_url, identifier, password, auth_factor_token)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "PDS token exchange request failed");
-            ClaimError::NetworkError {
-                message: format!("token exchange failed: {}", e),
+        .map_err(|e| match e {
+            crate::pds_client::PdsClientError::AuthFactorTokenRequired => {
+                tracing::info!("source account has email 2FA; a code was sent");
+                ClaimError::TwoFactorRequired
             }
-        })?;
-
-    tracing::debug!(status = %resp.status(), "PDS token exchange response received");
-    if resp.status().as_u16() == 200 {
-        let nonce = resp
-            .headers()
-            .get("DPoP-Nonce")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string);
-        let token = resp
-            .json::<crate::http::TokenResponse>()
-            .await
-            .map_err(|e| ClaimError::NetworkError {
-                message: format!("token response parsing failed: {}", e),
-            })?;
-        return Ok((token, nonce));
-    }
-
-    // Check for nonce retry
-    let nonce = resp
-        .headers()
-        .get("DPoP-Nonce")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-
-    let error_body = resp.text().await.unwrap_or_else(|_| "{}".to_string());
-    tracing::debug!(status = "non-200", body = %error_body, "token exchange needs retry or failed");
-
-    // Detect nonce retry by checking error JSON for "use_dpop_nonce" error code.
-    // This is fragile string matching based on PDS/OAuth server error responses.
-    // If the server's error format changes, this detection will fail silently.
-    if let Ok(error_json) = serde_json::from_str::<serde_json::Value>(&error_body) {
-        if error_json.get("error").and_then(|v| v.as_str()) == Some("use_dpop_nonce") {
-            if let Some(nonce_val) = nonce {
-                tracing::debug!(nonce = %nonce_val, "retrying token exchange with server nonce");
-                let proof_with_nonce = dpop
-                    .make_proof("POST", token_htu, Some(&nonce_val), None)
-                    .map_err(|_| ClaimError::NetworkError {
-                    message: "failed to create DPoP proof with nonce".to_string(),
-                })?;
-
-                let retry_resp = pds_client
-                    .pds_token_exchange(metadata, code, pkce_verifier, &proof_with_nonce, client_id)
-                    .await
-                    .map_err(|e| ClaimError::NetworkError {
-                        message: format!("token exchange retry failed: {}", e),
-                    })?;
-
-                if retry_resp.status().as_u16() == 200 {
-                    let retry_nonce = retry_resp
-                        .headers()
-                        .get("DPoP-Nonce")
-                        .and_then(|v| v.to_str().ok())
-                        .map(str::to_string);
-                    let token = retry_resp
-                        .json::<crate::http::TokenResponse>()
-                        .await
-                        .map_err(|e| ClaimError::NetworkError {
-                            message: format!("retry token response parsing failed: {}", e),
-                        })?;
-                    return Ok((token, retry_nonce));
-                } else {
-                    let status = retry_resp.status();
-                    let body = retry_resp
-                        .text()
-                        .await
-                        .unwrap_or_else(|_| "(unable to read response body)".to_string());
-                    tracing::error!(status = %status, body = %body, "token exchange retry failed");
-                    return Err(ClaimError::NetworkError {
-                        message: format!("token exchange retry returned {}: {}", status, body),
-                    });
+            crate::pds_client::PdsClientError::InvalidCredentials { message } => {
+                tracing::warn!(detail = %message, "source createSession rejected the password");
+                ClaimError::SourceAuthFailed {
+                    message: "The PDS did not accept that password.".to_string(),
                 }
             }
-        }
+            crate::pds_client::PdsClientError::InsecurePdsUrl { url } => {
+                tracing::error!(pds_url = %url, "refusing password login to a non-HTTPS PDS");
+                ClaimError::InsecureSourceUrl
+            }
+            // A rate limit or other server rejection during the password login must keep its real
+            // reason too — a 429 here is not a connectivity problem.
+            crate::pds_client::PdsClientError::RateLimited { retry_after, .. } => {
+                ClaimError::RateLimited { retry_after }
+            }
+            crate::pds_client::PdsClientError::XrpcError { message, .. } => {
+                ClaimError::ServerError { message }
+            }
+            other => ClaimError::NetworkError {
+                message: format!("createSession failed: {}", other),
+            },
+        })?;
+
+    // The session must be for the account being claimed. A mismatch means the user signed in to a
+    // different account (or a hostile PDS returned someone else's session) — refuse to bind those
+    // credentials to this claim rather than sign a PLC op against the wrong identity.
+    if session.did != expected_did {
+        tracing::warn!(
+            expected = %expected_did,
+            got = %session.did,
+            "source session DID does not match the claim"
+        );
+        return Err(ClaimError::AccountMismatch);
     }
 
-    tracing::error!(body = %error_body, "token exchange failed with non-retryable error");
-    Err(ClaimError::NetworkError {
-        message: format!(
-            "token exchange returned non-success response: {}",
-            error_body
-        ),
-    })
+    OAuthClient::new_bearer(session.access_jwt, session.refresh_jwt, pds_url.to_string()).map_err(
+        |e| {
+            tracing::error!(error = %e, "failed to build Bearer client from source session");
+            ClaimError::NetworkError {
+                message: "failed to build source session client".to_string(),
+            }
+        },
+    )
 }
 
 /// Request email verification for the PLC operation.
 ///
 /// Calls the `requestPlcOperationSignature` XRPC endpoint on the old PDS to trigger
-/// an email verification flow. This must be called after `start_pds_auth` succeeds.
+/// an email verification flow. This must be called after `authenticate_source_pds` succeeds.
 ///
-/// **Prerequisites:** `start_pds_auth` must have completed successfully and populated
+/// **Prerequisites:** `authenticate_source_pds` must have completed successfully and populated
 /// `ClaimState.pds_oauth_client`.
 ///
 /// The core logic is extracted into `request_claim_verification_impl` to make it testable
@@ -878,12 +549,107 @@ pub(crate) async fn request_claim_verification_impl(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "requestPlcOperationSignature failed");
-            ClaimError::NetworkError {
-                message: format!("request_plc_operation_signature failed: {}", e),
-            }
+            classify_plc_op_error(e)
         })?;
     tracing::info!("email verification requested successfully");
     Ok(())
+}
+
+/// Map a PLC-operation XRPC failure to a claim error, preserving the server's own words instead of
+/// flattening everything to a generic "network error".
+///
+/// The XRPC helpers now classify the response by status ([`crate::pds_client::classify_xrpc_error`]),
+/// so this maps typed variants rather than scraping a status out of a message string:
+/// - `429` → [`ClaimError::RateLimited`] (with the server's `Retry-After` when present);
+/// - `401` → [`ClaimError::Unauthorized`] (the source session is no longer accepted — re-login);
+/// - a recognizable insufficient-scope refusal → [`ClaimError::InsufficientScope`] (a spec-strict
+///   PDS refusing the op must never masquerade as "failed to send verification email");
+/// - any other server rejection → [`ClaimError::ServerError`] carrying the server's message verbatim;
+/// - a genuine transport failure → [`ClaimError::NetworkError`].
+fn classify_plc_op_error(e: crate::pds_client::PdsClientError) -> ClaimError {
+    use crate::pds_client::PdsClientError;
+    match e {
+        PdsClientError::RateLimited { retry_after, .. } => ClaimError::RateLimited { retry_after },
+        PdsClientError::Unauthorized { .. } => ClaimError::Unauthorized,
+        PdsClientError::XrpcError { error, message, .. }
+            if error.as_deref() == Some("InsufficientScope")
+                || message.to_lowercase().contains("insufficient") =>
+        {
+            ClaimError::InsufficientScope { message }
+        }
+        PdsClientError::XrpcError { message, .. } => ClaimError::ServerError { message },
+        PdsClientError::NetworkError { message } => ClaimError::NetworkError { message },
+        // No other PdsClientError variant is produced by a PLC-op call, but keep the mapping honest
+        // if one ever reaches here — surface its text rather than dropping it.
+        other => ClaimError::ServerError {
+            message: other.to_string(),
+        },
+    }
+}
+
+/// Map a `signPlcOperation` failure, recognizing an invalid/expired email verification token as
+/// [`ClaimError::InvalidToken`] before deferring to [`classify_plc_op_error`].
+///
+/// The email code the user just typed is the most likely cause of a rejection here, and the screen
+/// has a dedicated "check your code" state for it. The PDS may report it as a `400` with an
+/// `InvalidToken`/`ExpiredToken` error code or as a `401`, so this checks both the atproto error
+/// code and the message rather than a single status (previously this was a fragile substring
+/// scrape of a flattened `NetworkError` message, which structured classification broke).
+fn classify_sign_plc_error(e: crate::pds_client::PdsClientError) -> ClaimError {
+    use crate::pds_client::PdsClientError;
+    let invalid_token = match &e {
+        PdsClientError::XrpcError { error, message, .. } => {
+            mentions_invalid_token(error.as_deref(), message)
+        }
+        PdsClientError::Unauthorized { error, message } => {
+            mentions_invalid_token(error.as_deref(), message)
+        }
+        _ => false,
+    };
+    if invalid_token {
+        ClaimError::InvalidToken
+    } else {
+        classify_plc_op_error(e)
+    }
+}
+
+/// Whether an atproto error code or message names an invalid/expired verification token.
+fn mentions_invalid_token(error: Option<&str>, message: &str) -> bool {
+    let haystack = format!("{} {}", error.unwrap_or(""), message).to_lowercase();
+    haystack.contains("invalidtoken")
+        || haystack.contains("invalid token")
+        || haystack.contains("expiredtoken")
+        || haystack.contains("expired token")
+        || haystack.contains("not authenticated")
+}
+
+/// Register the claim DID in the `IdentityStore` (if not already) and return its device key.
+///
+/// The device key must exist BEFORE `submit_claim` registers the identity: this key goes at
+/// `rotationKeys[0]` of the operation the old PDS signs, and `IdentityStore` refuses key
+/// access for unregistered DIDs. Registering here (tolerating a prior partial claim's
+/// registration, the same tolerance `submit_claim` has) is what makes the sign step possible
+/// for a fresh identity. A store failure surfaces as `VerificationFailed` — it is a local
+/// keychain problem, never a network one.
+fn ensure_claim_device_key(did: &str) -> Result<crate::device_key::DevicePublicKey, ClaimError> {
+    use crate::identity_store::{IdentityStore, IdentityStoreError};
+
+    match IdentityStore.add_identity(did) {
+        Ok(()) | Err(IdentityStoreError::IdentityAlreadyExists) => {}
+        Err(e) => {
+            tracing::error!(did = %did, error = %e, "claim device-key registration failed");
+            return Err(ClaimError::VerificationFailed {
+                message: format!("failed to prepare device key: {}", e),
+            });
+        }
+    }
+
+    IdentityStore.get_or_create_device_key(did).map_err(|e| {
+        tracing::error!(did = %did, error = %e, "claim device-key creation failed");
+        ClaimError::VerificationFailed {
+            message: format!("failed to prepare device key: {}", e),
+        }
+    })
 }
 
 /// Sign and verify a PLC operation.
@@ -895,7 +661,7 @@ pub(crate) async fn request_claim_verification_impl(
 ///
 /// The signed operation and diff are stored in `ClaimState.verified_signed_op` for submission.
 ///
-/// **Prerequisites:** `start_pds_auth` must have completed successfully and populated
+/// **Prerequisites:** `authenticate_source_pds` must have completed successfully and populated
 /// `ClaimState.pds_oauth_client`.
 #[tauri::command]
 pub async fn sign_and_verify_claim(
@@ -931,12 +697,8 @@ pub async fn sign_and_verify_claim(
         )
     }; // claim_state lock released here
 
-    // Step 2: Look up the device key ID using IdentityStore
-    let device_key = crate::identity_store::IdentityStore
-        .get_or_create_device_key(&did)
-        .map_err(|e| ClaimError::NetworkError {
-            message: format!("failed to get device key: {}", e),
-        })?;
+    // Step 2: Register the DID (if new) and get its device key.
+    let device_key = ensure_claim_device_key(&did)?;
 
     let (verified_op, signed_op_json) = sign_and_verify_claim_impl(
         pds_client_ref,
@@ -983,9 +745,7 @@ pub(crate) async fn sign_and_verify_claim_impl(
         .await
         .map_err(|e| {
             tracing::error!(did = %did, error = %e, "getRecommendedDidCredentials failed");
-            ClaimError::NetworkError {
-                message: format!("get_recommended_did_credentials failed: {}", e),
-            }
+            classify_plc_op_error(e)
         })?;
     tracing::debug!(did = %did, "recommended credentials received");
 
@@ -1009,18 +769,7 @@ pub(crate) async fn sign_and_verify_claim_impl(
         .await
         .map_err(|e| {
             tracing::error!(did = %did, error = %e, "signPlcOperation failed");
-            if let crate::pds_client::PdsClientError::NetworkError { message } = &e {
-                let lower_msg = message.to_lowercase();
-                if lower_msg.contains("invalidtoken")
-                    || lower_msg.contains("expiredtoken")
-                    || lower_msg.contains("not authenticated")
-                {
-                    return ClaimError::InvalidToken;
-                }
-            }
-            ClaimError::NetworkError {
-                message: format!("sign_plc_operation failed: {}", e),
-            }
+            classify_sign_plc_error(e)
         })?;
     tracing::debug!(did = %did, "signPlcOperation succeeded");
 
@@ -1281,10 +1030,15 @@ pub(crate) async fn submit_claim_impl(
             }
         })?;
 
-    // 3c: Re-fetch the DID document from plc.directory
+    // 3c: Re-fetch the DID document from plc.directory. This must be the PLC *data*
+    // document (`/{did}/data`): the previous `discover_pds`-based rebuild parsed the
+    // W3C document, whose `PlcDidDocument.rotation_keys` is empty by construction —
+    // so the cache carried `rotationKeys: []`, the home card's custody badge showed
+    // "Unknown", and the migrate entry (gated on rotationKeys[0] == device key)
+    // never appeared for a claimed identity.
     tracing::debug!(did = %claim_state.did, "re-fetching DID document after claim");
-    let (_, updated_did_doc) = pds_client
-        .discover_pds(&claim_state.did)
+    let did_doc_value = pds_client
+        .fetch_plc_data_document(&claim_state.did)
         .await
         .map_err(|e| {
             tracing::error!(did = %claim_state.did, error = %e, "failed to re-fetch DID document");
@@ -1292,23 +1046,6 @@ pub(crate) async fn submit_claim_impl(
                 message: format!("failed to re-fetch DID document: {}", e),
             }
         })?;
-
-    // Store the updated DID document as JSON string
-    let did_doc_value = serde_json::json!({
-        "did": updated_did_doc.did,
-        "alsoKnownAs": updated_did_doc.also_known_as,
-        "rotationKeys": updated_did_doc.rotation_keys,
-        "verificationMethods": updated_did_doc.verification_methods,
-        "services": updated_did_doc.services
-            .iter()
-            .map(|(id, svc)| {
-                (id.clone(), serde_json::json!({
-                    "type": svc.service_type,
-                    "endpoint": svc.endpoint,
-                }))
-            })
-            .collect::<serde_json::Map<String, serde_json::Value>>()
-    });
 
     let did_doc_json =
         serde_json::to_string(&did_doc_value).map_err(|e| ClaimError::NetworkError {
@@ -1748,6 +1485,351 @@ mod tests {
         assert_eq!(json["message"], "DNS resolution failed");
     }
 
+    #[test]
+    fn test_claim_error_source_auth_failed_serializes_correctly() {
+        let err = ClaimError::SourceAuthFailed {
+            message: "bad password".to_string(),
+        };
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["code"], "SOURCE_AUTH_FAILED");
+        assert_eq!(json["message"], "bad password");
+    }
+
+    #[test]
+    fn test_claim_error_two_factor_required_serializes_correctly() {
+        let json = serde_json::to_value(ClaimError::TwoFactorRequired).unwrap();
+        assert_eq!(json["code"], "TWO_FACTOR_REQUIRED");
+    }
+
+    #[test]
+    fn test_claim_error_account_mismatch_serializes_correctly() {
+        let json = serde_json::to_value(ClaimError::AccountMismatch).unwrap();
+        assert_eq!(json["code"], "ACCOUNT_MISMATCH");
+    }
+
+    #[test]
+    fn test_claim_error_insecure_source_url_serializes_correctly() {
+        let json = serde_json::to_value(ClaimError::InsecureSourceUrl).unwrap();
+        assert_eq!(json["code"], "INSECURE_SOURCE_URL");
+    }
+
+    #[test]
+    fn test_claim_error_insufficient_scope_serializes_correctly() {
+        let err = ClaimError::InsufficientScope {
+            message: "token scope does not permit identity operations".to_string(),
+        };
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["code"], "INSUFFICIENT_SCOPE");
+        assert_eq!(
+            json["message"],
+            "token scope does not permit identity operations"
+        );
+    }
+
+    #[test]
+    fn test_classify_plc_op_error_flags_insufficient_scope() {
+        // A 403 insufficient-scope refusal (now a typed XrpcError carrying the atproto error code)
+        // must surface as InsufficientScope, not a generic error — recognized from the error code
+        // on the structured variant.
+        let scope_err = crate::pds_client::PdsClientError::XrpcError {
+            status: 403,
+            error: Some("InsufficientScope".to_string()),
+            message: "token scope does not permit identity operations".to_string(),
+        };
+        assert!(matches!(
+            classify_plc_op_error(scope_err),
+            ClaimError::InsufficientScope { .. }
+        ));
+    }
+
+    #[test]
+    fn test_classify_plc_op_error_maps_structured_statuses() {
+        use crate::pds_client::PdsClientError;
+
+        // 429 → RateLimited, carrying the Retry-After value through to the UI.
+        let rl = classify_plc_op_error(PdsClientError::RateLimited {
+            retry_after: Some("120".to_string()),
+            message: "slow down".to_string(),
+        });
+        assert!(matches!(
+            rl,
+            ClaimError::RateLimited { retry_after: Some(ref r) } if r == "120"
+        ));
+
+        // 401 → Unauthorized (source session no longer accepted).
+        assert!(matches!(
+            classify_plc_op_error(PdsClientError::Unauthorized {
+                error: Some("ExpiredToken".to_string()),
+                message: "Token has expired".to_string(),
+            }),
+            ClaimError::Unauthorized
+        ));
+
+        // An unrecognized non-2xx surfaces the server's own message as ServerError, NOT NetworkError.
+        let se = classify_plc_op_error(PdsClientError::XrpcError {
+            status: 400,
+            error: Some("InvalidRequest".to_string()),
+            message: "handle is required".to_string(),
+        });
+        assert!(
+            matches!(se, ClaimError::ServerError { ref message } if message == "handle is required")
+        );
+
+        // A genuine transport failure still classifies as NetworkError.
+        assert!(matches!(
+            classify_plc_op_error(PdsClientError::NetworkError {
+                message: "connection refused".to_string(),
+            }),
+            ClaimError::NetworkError { .. }
+        ));
+    }
+
+    #[test]
+    fn test_classify_sign_plc_error_detects_invalid_token() {
+        use crate::pds_client::PdsClientError;
+
+        // An expired/invalid email token as a 400 with the atproto error code → InvalidToken,
+        // whichever status the PDS chose to report it under.
+        assert!(matches!(
+            classify_sign_plc_error(PdsClientError::XrpcError {
+                status: 400,
+                error: Some("InvalidToken".to_string()),
+                message: "Token could not be verified".to_string(),
+            }),
+            ClaimError::InvalidToken
+        ));
+        // Same signal reported as a 401 — recognized from the atproto error CODE even when the
+        // human message alone ("Authentication failed") gives no token hint.
+        assert!(matches!(
+            classify_sign_plc_error(PdsClientError::Unauthorized {
+                error: Some("ExpiredToken".to_string()),
+                message: "Authentication failed".to_string(),
+            }),
+            ClaimError::InvalidToken
+        ));
+        // A rate limit is NOT an invalid token — it must still classify as RateLimited.
+        assert!(matches!(
+            classify_sign_plc_error(PdsClientError::RateLimited {
+                retry_after: None,
+                message: "slow down".to_string(),
+            }),
+            ClaimError::RateLimited { .. }
+        ));
+        // An unrelated server rejection surfaces as ServerError, not InvalidToken.
+        assert!(matches!(
+            classify_sign_plc_error(PdsClientError::XrpcError {
+                status: 400,
+                error: Some("InvalidRequest".to_string()),
+                message: "bad shape".to_string(),
+            }),
+            ClaimError::ServerError { .. }
+        ));
+    }
+
+    #[test]
+    fn test_claim_error_rate_limited_serializes_with_retry_after() {
+        let json = serde_json::to_value(ClaimError::RateLimited {
+            retry_after: Some("120".to_string()),
+        })
+        .unwrap();
+        assert_eq!(json["code"], "RATE_LIMITED");
+        assert_eq!(json["retryAfter"], "120");
+
+        // Absent Retry-After serializes as null (the field is always present for a stable contract).
+        let json_none =
+            serde_json::to_value(ClaimError::RateLimited { retry_after: None }).unwrap();
+        assert_eq!(json_none["code"], "RATE_LIMITED");
+        assert!(json_none["retryAfter"].is_null());
+    }
+
+    #[test]
+    fn test_claim_error_server_error_serializes_with_message() {
+        let json = serde_json::to_value(ClaimError::ServerError {
+            message: "handle is required".to_string(),
+        })
+        .unwrap();
+        assert_eq!(json["code"], "SERVER_ERROR");
+        assert_eq!(json["message"], "handle is required");
+    }
+
+    // ── authenticate_source_pds tests ─────────────────────────────────────────
+
+    /// Build a Bearer-session JWT with a future `exp` so `new_bearer` derives a live expiry.
+    fn future_exp_jwt() -> String {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"ES256"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{}}}"#, now + 3600).as_bytes());
+        format!("{}.{}.sig", header, payload)
+    }
+
+    /// Happy path: a 200 `createSession` yields a full-session Bearer client bound to the PDS URL.
+    #[tokio::test]
+    async fn test_authenticate_source_pds_impl_success() {
+        crate::keychain::clear_for_test();
+        use httpmock::MockServer;
+
+        let server = MockServer::start();
+        let access_jwt = future_exp_jwt();
+        let access_for_body = access_jwt.clone();
+        server.mock(move |when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.createSession");
+            then.status(200).json_body(serde_json::json!({
+                "accessJwt": access_for_body,
+                "refreshJwt": "refresh_jwt",
+                "did": "did:plc:test",
+                "handle": "alice.example.com",
+            }));
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new();
+        let result = authenticate_source_pds_impl(
+            &pds_client,
+            &server.base_url(),
+            "did:plc:test",
+            "alice.example.com",
+            "hunter2",
+            None,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "createSession 200 must build a Bearer client"
+        );
+    }
+
+    /// A 200 whose `did` differs from the claim's DID must be refused (wrong-account guard), never
+    /// bound as a session for the claimed identity.
+    #[tokio::test]
+    async fn test_authenticate_source_pds_impl_did_mismatch() {
+        crate::keychain::clear_for_test();
+        use httpmock::MockServer;
+
+        let server = MockServer::start();
+        let access_jwt = future_exp_jwt();
+        let access_for_body = access_jwt.clone();
+        server.mock(move |when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.createSession");
+            then.status(200).json_body(serde_json::json!({
+                "accessJwt": access_for_body,
+                "refreshJwt": "refresh_jwt",
+                "did": "did:plc:someone-else",
+                "handle": "mallory.example.com",
+            }));
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new();
+        let result = authenticate_source_pds_impl(
+            &pds_client,
+            &server.base_url(),
+            "did:plc:test",
+            "alice.example.com",
+            "hunter2",
+            None,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(ClaimError::AccountMismatch)),
+            "a session for a different DID must be refused, got: {:?}",
+            result.err()
+        );
+    }
+
+    /// The password must never be sent to a non-HTTPS, non-loopback PDS — refused before any
+    /// network call, so no mock server is needed.
+    #[tokio::test]
+    async fn test_authenticate_source_pds_impl_rejects_insecure_url() {
+        crate::keychain::clear_for_test();
+        let pds_client = crate::pds_client::PdsClient::new();
+        let result = authenticate_source_pds_impl(
+            &pds_client,
+            "http://pds.example.com",
+            "did:plc:test",
+            "alice.example.com",
+            "hunter2",
+            None,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(ClaimError::InsecureSourceUrl)),
+            "a non-HTTPS PDS URL must be refused, got: {:?}",
+            result.err()
+        );
+    }
+
+    /// A 401 `createSession` (wrong password) surfaces as SourceAuthFailed, never NetworkError.
+    #[tokio::test]
+    async fn test_authenticate_source_pds_impl_wrong_password() {
+        crate::keychain::clear_for_test();
+        use httpmock::MockServer;
+
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.createSession");
+            then.status(401).json_body(serde_json::json!({
+                "error": "AuthenticationRequired",
+                "message": "Invalid identifier or password"
+            }));
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new();
+        let result = authenticate_source_pds_impl(
+            &pds_client,
+            &server.base_url(),
+            "did:plc:test",
+            "alice.example.com",
+            "wrong",
+            None,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(ClaimError::SourceAuthFailed { .. })),
+            "a 401 must surface as SourceAuthFailed, got: {:?}",
+            result.err()
+        );
+    }
+
+    /// An email-2FA account answers a token-less attempt with `AuthFactorTokenRequired`, which must
+    /// surface as `TwoFactorRequired` (prompt for a code), NOT `SourceAuthFailed` (wrong password).
+    #[tokio::test]
+    async fn test_authenticate_source_pds_impl_two_factor_required() {
+        crate::keychain::clear_for_test();
+        use httpmock::MockServer;
+
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.createSession");
+            then.status(401).json_body(serde_json::json!({
+                "error": "AuthFactorTokenRequired",
+                "message": "A sign in code has been sent to your email address"
+            }));
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new();
+        let result = authenticate_source_pds_impl(
+            &pds_client,
+            &server.base_url(),
+            "did:plc:test",
+            "alice.example.com",
+            "correct-password",
+            None,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(ClaimError::TwoFactorRequired)),
+            "AuthFactorTokenRequired must surface as TwoFactorRequired, got: {:?}",
+            result.err()
+        );
+    }
+
     // ── request_claim_verification tests ──────────────────────────────────────
 
     /// Test 1: Success — calls XRPC endpoint with 200 response
@@ -1885,9 +1967,11 @@ mod tests {
         };
 
         let result = request_claim_verification_impl(&claim_state).await;
+        // A 500 is a server rejection, not a connectivity failure: it now surfaces as ServerError
+        // carrying the server's own message rather than the misleading "network error".
         assert!(
-            matches!(result, Err(ClaimError::NetworkError { .. })),
-            "should return NetworkError when PDS returns 500"
+            matches!(&result, Err(ClaimError::ServerError { message }) if message.contains("Internal Server Error")),
+            "should return ServerError carrying the server message when PDS returns 500, got {result:?}"
         );
     }
 
@@ -1937,6 +2021,29 @@ mod tests {
         .expect("build rotation op");
 
         (rotation.signed_op_json, device_key_id)
+    }
+
+    /// A FRESH claim DID (not yet registered — registration normally happens in
+    /// `submit_claim`, after the sign step) must still get a device key. The historical
+    /// bug: `get_or_create_device_key` on the unregistered DID returned `IdentityNotFound`,
+    /// mapped to NETWORK_ERROR, killing every first-time claim before any network call.
+    #[test]
+    fn ensure_claim_device_key_registers_fresh_did() {
+        crate::keychain::clear_for_test();
+        let did = "did:plc:freshclaimdevicekey";
+
+        let key = ensure_claim_device_key(did).expect("fresh DID must get a device key");
+
+        // Idempotent: a retry (or a prior partial claim) reuses the registration and key.
+        let again = ensure_claim_device_key(did).expect("existing registration is tolerated");
+        assert_eq!(key.multibase, again.multibase);
+        assert_eq!(key.key_id, again.key_id);
+
+        // The DID is now registered, so submit_claim's own add_identity tolerance applies.
+        let ids = crate::identity_store::IdentityStore
+            .list_identities()
+            .expect("list_identities");
+        assert!(ids.contains(&did.to_string()));
     }
 
     /// Test 1: Success path with device key at rotationKeys[0]
@@ -2616,7 +2723,7 @@ mod tests {
         crate::keychain::clear_for_test();
         use httpmock::MockServer;
         use std::collections::HashMap;
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
 
         let mock_server = MockServer::start();
         let device_key = "did:key:zQ3test_device".to_string();
@@ -2643,23 +2750,17 @@ mod tests {
 
         let pds_client = crate::pds_client::PdsClient::new_for_test(mock_server.base_url());
 
-        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
-            access_token: "test_token".to_string(),
-            refresh_token: "refresh".to_string(),
-            expires_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                + 3600,
-            dpop_nonce: None,
-        }));
-
-        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
-        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
-            keypair,
-            session,
+        // The claim flow's source client is a full-session **Bearer** client
+        // (`authenticate_source_pds` → `OAuthClient::new_bearer`), so the test must use one too.
+        // A Bearer client delivers the mock's 400 verbatim; a DPoP client would swallow any
+        // non-nonce 400 into `NotAuthenticated` (a separate transport-layer flattening), which is
+        // not the path this flow exercises.
+        let oauth_client = crate::oauth_client::OAuthClient::new_bearer(
+            future_exp_jwt(),
+            "refresh".to_string(),
             mock_server.base_url(),
-        );
+        )
+        .expect("new_bearer must succeed");
 
         let did_doc = PlcDidDocument {
             did: "did:plc:test".to_string(),
@@ -2702,24 +2803,26 @@ mod tests {
             then.status(200).json_body(serde_json::json!({}));
         });
 
-        // Mock GET to plc.directory (re-fetch DID doc)
-        // Use mock_server.base_url() as PDS endpoint so HEAD reachability check
-        // routes through the mock server instead of hitting the real internet.
+        // Mock GET to plc.directory (re-fetch the PLC *data* document — the cached
+        // shape carries rotationKeys, which the home card's custody badge and the
+        // migrate-entry gate read).
         let pds_endpoint = mock_server.base_url();
         let updated_doc = serde_json::json!({
-            "id": "did:plc:test",
+            "did": "did:plc:test",
             "alsoKnownAs": ["at://alice.example.com"],
-            "verificationMethod": [],
-            "service": [{
-                "id": "#atproto_pds",
-                "type": "AtprotoPersonalDataServer",
-                "serviceEndpoint": pds_endpoint
-            }]
+            "rotationKeys": ["did:key:zQ3test"],
+            "verificationMethods": {},
+            "services": {
+                "atproto_pds": {
+                    "type": "AtprotoPersonalDataServer",
+                    "endpoint": pds_endpoint
+                }
+            }
         });
 
         mock_server.mock(|when, then| {
             when.method(httpmock::Method::GET)
-                .path("/did:plc:test")
+                .path("/did:plc:test/data")
                 .header_exists("host");
             then.status(200)
                 .header("content-type", "application/json")
@@ -2776,6 +2879,14 @@ mod tests {
         );
         let claim_result = result.unwrap();
         assert_eq!(claim_result.updated_did_doc["did"], "did:plc:test");
+        // The cached doc must carry rotationKeys (PLC data shape) — the home card's
+        // custody badge and the migrate-entry gate read rotationKeys[0].
+        let cached = crate::identity_store::IdentityStore
+            .get_did_doc("did:plc:test")
+            .expect("get_did_doc should succeed")
+            .expect("DID doc should be cached after claim");
+        let cached: serde_json::Value = serde_json::from_str(&cached).expect("cached doc parses");
+        assert_eq!(cached["rotationKeys"][0], "did:key:zQ3test");
     }
 
     /// Test Failure: submit_claim returns PlcDirectoryError when POST fails

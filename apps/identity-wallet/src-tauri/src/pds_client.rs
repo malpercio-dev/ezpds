@@ -106,9 +106,46 @@ pub enum PdsClientError {
         reason: String,
     },
 
-    /// Transport-level failure (DNS timeout, connection refused, etc.).
+    /// Transport-level failure (DNS timeout, connection refused, TLS error, body read error) —
+    /// the request never got a well-formed HTTP response back. A non-2xx *response* is NOT a
+    /// `NetworkError`: it is classified into one of the status-specific variants below. Keeping
+    /// this variant transport-only is what lets screens tell "check your connection" apart from
+    /// "the server said no".
     #[error("network error: {message}")]
     NetworkError { message: String },
+
+    /// The server answered `429 Too Many Requests`. `retry_after` is the raw `Retry-After` header
+    /// (seconds or an HTTP date) when the server sent one, so the UI can say how long to wait
+    /// instead of blaming the connection. `message` is the server's own error text.
+    #[error("rate limited: {message}")]
+    RateLimited {
+        retry_after: Option<String>,
+        message: String,
+    },
+
+    /// The server answered `401 Unauthorized` — the session/token was rejected (expired, wrong
+    /// audience, a scope refusal presented as 401). Distinct from a transport failure so the UI
+    /// can prompt a re-login rather than a retry. `error` is the atproto error code from the
+    /// envelope when present (e.g. `ExpiredToken`, `InvalidToken`) — preserved so a token failure
+    /// reported under 401 is still recognizable by code rather than only by message text; `message`
+    /// is the server's own error text.
+    #[error("unauthorized: {message}")]
+    Unauthorized {
+        error: Option<String>,
+        message: String,
+    },
+
+    /// Any other non-2xx XRPC response, carrying the atproto error envelope so the real reason
+    /// reaches the UI instead of connectivity boilerplate. `error` is the envelope's `error` code
+    /// (e.g. `InvalidRequest`, `InsufficientScope`) when the body was a recognizable envelope;
+    /// `message` is the envelope's human-readable `message` (falling back to the error code, then
+    /// the raw body). `status` is the HTTP status code.
+    #[error("server error {status}: {message}")]
+    XrpcError {
+        status: u16,
+        error: Option<String>,
+        message: String,
+    },
 
     /// Response body couldn't be parsed or was missing expected fields.
     #[error("invalid response: {message}")]
@@ -121,6 +158,160 @@ pub enum PdsClientError {
     /// DID already exists (HTTP 409 from createAccount migration).
     #[error("did already exists")]
     DidAlreadyExists,
+
+    /// `createSession` rejected the identifier/password (HTTP 401). Distinct from a transport
+    /// failure so the claim flow can tell the user "wrong password" rather than "network error".
+    #[error("invalid credentials: {message}")]
+    InvalidCredentials { message: String },
+
+    /// `createSession` needs an email 2FA one-time code (`AuthFactorTokenRequired`, HTTP 401).
+    /// The account has email two-factor enabled and the server has emailed a code; retry
+    /// `create_session` with that code as `auth_factor_token`.
+    #[error("auth factor token required")]
+    AuthFactorTokenRequired,
+
+    /// Refused to send the account password to a non-HTTPS PDS URL (loopback excepted). The
+    /// `pds_url` is derived from the DID document, so a plaintext `http://` endpoint must never
+    /// receive the password.
+    #[error("insecure pds url: {url}")]
+    InsecurePdsUrl { url: String },
+}
+
+/// Whether a PDS URL is safe to send an account password to: HTTPS, or a loopback host over HTTP
+/// (localhost/127.0.0.1/::1) for local development and the test harness. Anything else — including
+/// an unparseable URL — is refused, so the password never crosses a plaintext link.
+fn pds_url_is_password_safe(pds_url: &str) -> bool {
+    match url::Url::parse(pds_url) {
+        Ok(url) => match url.scheme() {
+            "https" => true,
+            "http" => matches!(
+                url.host_str(),
+                Some("localhost") | Some("127.0.0.1") | Some("::1") | Some("[::1]")
+            ),
+            _ => false,
+        },
+        Err(_) => false,
+    }
+}
+
+/// Whether an atproto XRPC error body (`{"error":"...","message":"..."}`) carries `error == code`.
+fn error_code_is(body: &str, code: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(|s| s == code))
+        .unwrap_or(false)
+}
+
+/// Parse an atproto XRPC error envelope (`{"error":"Code","message":"human text"}`) out of a
+/// response body. Returns `(error_code, human_message)`:
+/// - `error_code` is the envelope's `error` field when the body was a recognizable JSON envelope,
+///   else `None` (e.g. an HTML gateway page or an empty body);
+/// - `human_message` is the envelope's `message`, falling back to the `error` code, then to the
+///   raw (trimmed) body when it wasn't an envelope at all.
+///
+/// The atproto error envelope is designed to be shown to users, so preserving both fields is what
+/// turns an opaque non-2xx into a diagnosable one.
+fn parse_xrpc_error_envelope(body: &str) -> (Option<String>, String) {
+    let envelope = serde_json::from_str::<serde_json::Value>(body).ok();
+    let error = envelope
+        .as_ref()
+        .and_then(|v| v.get("error"))
+        .and_then(|e| e.as_str())
+        .map(str::to_string);
+    let message = envelope
+        .as_ref()
+        .and_then(|v| v.get("message"))
+        .and_then(|m| m.as_str())
+        .map(str::to_string)
+        .or_else(|| error.clone())
+        .unwrap_or_else(|| body.trim().to_string());
+    (error, message)
+}
+
+/// Classify a non-2xx XRPC response into the typed `PdsClientError` variant that preserves the
+/// server's own words. A pure function of the HTTP status, the raw `Retry-After` header, and the
+/// parsed error envelope, so it is unit-testable without a live response.
+///
+/// Contract:
+/// - `429` → [`PdsClientError::RateLimited`], carrying `retry_after` when the server sent it.
+/// - `401` → [`PdsClientError::Unauthorized`], carrying the atproto `error` code when present so a
+///   token failure reported under 401 stays recognizable by code.
+/// - anything else → [`PdsClientError::XrpcError`] with the atproto `error` code and human message.
+///
+/// It must NEVER return [`PdsClientError::NetworkError`]: by the time we are here the server *did*
+/// answer, so this is never a transport failure.
+fn classify_xrpc_error(status: u16, retry_after: Option<String>, body: &str) -> PdsClientError {
+    let (error, message) = parse_xrpc_error_envelope(body);
+    match status {
+        429 => PdsClientError::RateLimited {
+            retry_after,
+            message,
+        },
+        401 => PdsClientError::Unauthorized { error, message },
+        // Everything else — including 403 — keeps its atproto error code and human message. Domain
+        // callers (e.g. `claim::classify_plc_op_error`) recognize codes like `InsufficientScope`
+        // here; this layer only speaks HTTP-status semantics. `retry_after` is meaningful only for
+        // 429, so it is intentionally dropped for these statuses.
+        _ => PdsClientError::XrpcError {
+            status,
+            error,
+            message,
+        },
+    }
+}
+
+/// Upper bound on how much of an error response body we buffer, keep, and log. An atproto error
+/// envelope is a short JSON object; anything larger is a broken or hostile server, and reading it
+/// in full would let an untrusted endpoint spike memory or flood the logs.
+const MAX_XRPC_ERROR_BODY: usize = 8 * 1024;
+
+/// Read at most `cap` bytes of a response body, streaming so an oversized (untrusted) payload is
+/// never fully buffered. Returns the decoded (lossy-UTF-8) prefix. A transport error mid-read
+/// propagates as `Err` so the caller can treat it as a `NetworkError` rather than a server verdict.
+async fn read_body_capped(
+    mut resp: reqwest::Response,
+    cap: usize,
+) -> Result<String, reqwest::Error> {
+    let mut buf: Vec<u8> = Vec::new();
+    while buf.len() < cap {
+        match resp.chunk().await? {
+            Some(chunk) => {
+                let take = (cap - buf.len()).min(chunk.len());
+                buf.extend_from_slice(&chunk[..take]);
+            }
+            None => break,
+        }
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Read the status, `Retry-After` header, and body off a non-success XRPC response and classify it.
+///
+/// The imperative wrapper around [`classify_xrpc_error`]. The `Retry-After` header is captured
+/// before the body (reading the body consumes the response). The body is bounded to
+/// [`MAX_XRPC_ERROR_BODY`] so an oversized untrusted payload can't spike memory or flood logs, and
+/// a mid-read transport failure surfaces as `NetworkError` rather than a fabricated server verdict.
+/// `context` names the call site (e.g. `"requestPlcOperationSignature"`) for the log line only —
+/// the returned error carries the server's own message, not the context, so screens show it
+/// verbatim.
+async fn classify_xrpc_response(context: &str, resp: reqwest::Response) -> PdsClientError {
+    let status = resp.status();
+    let retry_after = resp
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let body = match read_body_capped(resp, MAX_XRPC_ERROR_BODY).await {
+        Ok(body) => body,
+        Err(e) => {
+            tracing::warn!(context, status = %status, error = %e, "failed to read XRPC error body");
+            return PdsClientError::NetworkError {
+                message: format!("failed to read {status} response body: {e}"),
+            };
+        }
+    };
+    tracing::warn!(context, status = %status, body = %body, "XRPC call returned non-success");
+    classify_xrpc_error(status.as_u16(), retry_after, &body)
 }
 
 /// PLC operation data for a DID.
@@ -322,6 +513,22 @@ pub struct CreateAccountResponse {
     pub did: String,
     #[serde(default)]
     pub did_doc: Option<serde_json::Value>,
+}
+
+/// Response from `com.atproto.server.createSession` (legacy password login).
+///
+/// The `accessJwt`/`refreshJwt` are the full-session credentials the claim flow needs to drive
+/// PLC operations (`requestPlcOperationSignature`/`signPlcOperation`) — operations no OAuth
+/// `transition:generic` token can authorize (MM-289). They feed straight into
+/// `OAuthClient::new_bearer`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateSessionResponse {
+    pub access_jwt: String,
+    pub refresh_jwt: String,
+    pub did: String,
+    #[serde(default)]
+    pub handle: Option<String>,
 }
 
 /// Response from describeServer.
@@ -653,6 +860,88 @@ impl PdsClient {
             })
     }
 
+    /// Create a full password session against a PDS (`com.atproto.server.createSession`).
+    ///
+    /// This is the source-PDS login for the claim (inbound-migration) flow. Unlike OAuth,
+    /// a password `createSession` yields a **full-access** session (`com.atproto.access`), the
+    /// only credential class that can drive PLC operations on a spec-strict PDS like bsky.social
+    /// (MM-289). The `identifier` is a handle, DID, or email; the `password` must be the account's
+    /// real password (an app password is a lesser scope and is rejected the same way).
+    ///
+    /// The password is used for this single request and never persisted — the caller keeps only
+    /// the returned JWTs (in an in-memory Bearer `OAuthClient`).
+    ///
+    /// `auth_factor_token` carries the email one-time code for accounts with 2FA enabled. Pass
+    /// `None` on the first attempt; a 2FA account then answers with `AuthFactorTokenRequired`
+    /// ([`PdsClientError::AuthFactorTokenRequired`]) and emails a code — retry with that code as
+    /// `Some`. Any other 401 maps to [`PdsClientError::InvalidCredentials`] ("wrong password").
+    pub async fn create_session(
+        &self,
+        pds_url: &str,
+        identifier: &str,
+        password: &str,
+        auth_factor_token: Option<&str>,
+    ) -> Result<CreateSessionResponse, PdsClientError> {
+        // Never send the account password over a plaintext link. `pds_url` comes from the DID
+        // document, so a misconfigured or hostile `http://` endpoint must be refused here.
+        if !pds_url_is_password_safe(pds_url) {
+            tracing::error!(pds_url = %pds_url, "refusing to send password to a non-HTTPS PDS");
+            return Err(PdsClientError::InsecurePdsUrl {
+                url: pds_url.to_string(),
+            });
+        }
+
+        let url = format!(
+            "{}/xrpc/com.atproto.server.createSession",
+            pds_url.trim_end_matches('/')
+        );
+
+        let mut request_body = serde_json::json!({
+            "identifier": identifier,
+            "password": password,
+        });
+        if let Some(token) = auth_factor_token {
+            request_body["authFactorToken"] = serde_json::Value::String(token.to_string());
+        }
+
+        let response = self
+            .client
+            .post(&url)
+            .timeout(Duration::from_secs(30))
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| PdsClientError::NetworkError {
+                message: format!("createSession request failed: {}", e),
+            })?;
+
+        let status = response.status();
+        if status.as_u16() == 401 {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "(response body unreadable)".to_string());
+            // An account with email 2FA answers a token-less attempt with `AuthFactorTokenRequired`
+            // (and emails a code) — distinct from a wrong password, so the UI can prompt for the
+            // code instead of blaming the password.
+            if error_code_is(&body, "AuthFactorTokenRequired") {
+                return Err(PdsClientError::AuthFactorTokenRequired);
+            }
+            return Err(PdsClientError::InvalidCredentials { message: body });
+        }
+        if !status.is_success() {
+            // 401 is already handled above (wrong password / 2FA). Anything else — a 429 rate
+            // limit, a 400 validation error — is classified so its real reason survives.
+            return Err(classify_xrpc_response("createSession", response).await);
+        }
+
+        response.json::<CreateSessionResponse>().await.map_err(|e| {
+            PdsClientError::InvalidResponse {
+                message: format!("failed to parse createSession response: {}", e),
+            }
+        })
+    }
+
     /// Try to discover the authorization server URL from the PDS's protected
     /// resource metadata (RFC 9728). Returns `None` if the endpoint doesn't
     /// exist or can't be parsed — the caller should fall back to the PDS URL.
@@ -842,6 +1131,42 @@ impl PdsClient {
         })
     }
 
+    /// Fetch the PLC *data* document for a DID.
+    ///
+    /// Calls `GET {plc_directory_url}/{did}/data` — the PLC-native shape
+    /// (`did, alsoKnownAs, rotationKeys, verificationMethods, services`), which is
+    /// what the per-identity DID-doc cache stores and its readers (the home card's
+    /// `rotationKeys[0]` custody badge, `extractPdsFromPlcDoc`) parse. The W3C
+    /// document (`GET /{did}`) carries no `rotationKeys` and must never be cached.
+    pub async fn fetch_plc_data_document(
+        &self,
+        did: &str,
+    ) -> Result<serde_json::Value, PdsClientError> {
+        let url = format!("{}/{}/data", self.plc_directory_url, did);
+        let resp =
+            self.client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| PdsClientError::NetworkError {
+                    message: format!("failed to fetch PLC data document: {}", e),
+                })?;
+
+        match resp.status() {
+            s if s == 404 => return Err(PdsClientError::DidNotFound),
+            s if !s.is_success() => {
+                return Err(PdsClientError::NetworkError {
+                    message: format!("PLC data document fetch returned {}", s),
+                });
+            }
+            _ => {}
+        }
+
+        resp.json().await.map_err(|e| PdsClientError::NetworkError {
+            message: format!("failed to parse PLC data document: {}", e),
+        })
+    }
+
     /// Submit a signed PLC operation to plc.directory.
     ///
     /// Calls `POST {plc_directory_url}/{did}` with the signed operation as JSON body.
@@ -901,15 +1226,8 @@ impl PdsClient {
                 message: format!("failed to fetch repo CAR: {}", e),
             })?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp
-                .text()
-                .await
-                .unwrap_or_else(|_| "(response body unreadable)".to_string());
-            return Err(PdsClientError::NetworkError {
-                message: format!("fetch_repo_car returned {}: {}", status, body),
-            });
+        if !resp.status().is_success() {
+            return Err(classify_xrpc_response("getRepo", resp).await);
         }
 
         resp.bytes()
@@ -948,15 +1266,8 @@ impl PdsClient {
                 message: format!("failed to fetch blob: {}", e),
             })?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp
-                .text()
-                .await
-                .unwrap_or_else(|_| "(response body unreadable)".to_string());
-            return Err(PdsClientError::NetworkError {
-                message: format!("fetch_blob returned {}: {}", status, body),
-            });
+        if !resp.status().is_success() {
+            return Err(classify_xrpc_response("getBlob", resp).await);
         }
 
         resp.bytes()
@@ -992,15 +1303,8 @@ impl PdsClient {
                 message: format!("failed to reserve signing key: {}", e),
             })?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let body_text = resp
-                .text()
-                .await
-                .unwrap_or_else(|_| "(response body unreadable)".to_string());
-            return Err(PdsClientError::NetworkError {
-                message: format!("reserve_signing_key returned {}: {}", status, body_text),
-            });
+        if !resp.status().is_success() {
+            return Err(classify_xrpc_response("reserveSigningKey", resp).await);
         }
 
         #[derive(Deserialize)]
@@ -1159,34 +1463,24 @@ async fn try_resolve_http(
 
 /// Request a PLC operation signature from the PDS.
 ///
-/// Triggers email verification on the PDS.
+/// Triggers email verification on the PDS. `requestPlcOperationSignature` is a
+/// no-input procedure: the request must carry NO body — a spec-strict PDS
+/// (bsky.social) rejects `{}` with `InvalidRequest: A request body was provided
+/// when none was expected` (our own route is laxer, which is how the `{}` shipped).
 pub async fn request_plc_operation_signature(
     client: &crate::oauth_client::OAuthClient,
 ) -> Result<(), PdsClientError> {
     let resp = client
-        .post(
-            "/xrpc/com.atproto.identity.requestPlcOperationSignature",
-            &serde_json::json!({}),
-        )
+        .post_no_body("/xrpc/com.atproto.identity.requestPlcOperationSignature")
         .await
         .map_err(|e| PdsClientError::NetworkError {
             message: format!("request_plc_operation_signature failed: {}", e),
         })?;
 
-    let status = resp.status();
-    if status.is_success() {
+    if resp.status().is_success() {
         Ok(())
     } else {
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "(response body unreadable)".to_string());
-        Err(PdsClientError::NetworkError {
-            message: format!(
-                "request_plc_operation_signature returned {}: {}",
-                status, body
-            ),
-        })
+        Err(classify_xrpc_response("requestPlcOperationSignature", resp).await)
     }
 }
 
@@ -1202,15 +1496,8 @@ pub async fn sign_plc_operation(
             message: format!("sign_plc_operation failed: {}", e),
         })?;
 
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "(response body unreadable)".to_string());
-        return Err(PdsClientError::NetworkError {
-            message: format!("sign_plc_operation returned {}: {}", status, body),
-        });
+    if !resp.status().is_success() {
+        return Err(classify_xrpc_response("signPlcOperation", resp).await);
     }
 
     resp.json::<SignPlcOperationResponse>()
@@ -1231,18 +1518,8 @@ pub async fn get_recommended_did_credentials(
             message: format!("get_recommended_did_credentials failed: {}", e),
         })?;
 
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "(response body unreadable)".to_string());
-        return Err(PdsClientError::NetworkError {
-            message: format!(
-                "get_recommended_did_credentials returned {}: {}",
-                status, body
-            ),
-        });
+    if !resp.status().is_success() {
+        return Err(classify_xrpc_response("getRecommendedDidCredentials", resp).await);
     }
 
     resp.json::<RecommendedCredentials>()
@@ -1282,15 +1559,8 @@ pub async fn get_service_auth(
             message: format!("get_service_auth failed: {}", e),
         })?;
 
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "(response body unreadable)".to_string());
-        return Err(PdsClientError::NetworkError {
-            message: format!("get_service_auth returned {}: {}", status, body),
-        });
+    if !resp.status().is_success() {
+        return Err(classify_xrpc_response("getServiceAuth", resp).await);
     }
 
     resp.json::<ServiceAuthToken>()
@@ -1322,13 +1592,7 @@ pub async fn create_account_migration(
     }
 
     if !status.is_success() {
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "(response body unreadable)".to_string());
-        return Err(PdsClientError::NetworkError {
-            message: format!("create_account_migration returned {}: {}", status, body),
-        });
+        return Err(classify_xrpc_response("createAccount", resp).await);
     }
 
     resp.json::<CreateAccountResponse>()
@@ -1357,17 +1621,10 @@ pub async fn import_repo(
             message: format!("import_repo failed: {}", e),
         })?;
 
-    let status = resp.status();
-    if status.is_success() {
+    if resp.status().is_success() {
         Ok(())
     } else {
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "(response body unreadable)".to_string());
-        Err(PdsClientError::NetworkError {
-            message: format!("import_repo returned {}: {}", status, body),
-        })
+        Err(classify_xrpc_response("importRepo", resp).await)
     }
 }
 
@@ -1387,15 +1644,8 @@ pub async fn upload_blob(
             message: format!("upload_blob failed: {}", e),
         })?;
 
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "(response body unreadable)".to_string());
-        return Err(PdsClientError::NetworkError {
-            message: format!("upload_blob returned {}: {}", status, body),
-        });
+    if !resp.status().is_success() {
+        return Err(classify_xrpc_response("uploadBlob", resp).await);
     }
 
     resp.json::<UploadBlobResponse>()
@@ -1428,15 +1678,8 @@ pub async fn list_missing_blobs(
             message: format!("list_missing_blobs failed: {}", e),
         })?;
 
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "(response body unreadable)".to_string());
-        return Err(PdsClientError::NetworkError {
-            message: format!("list_missing_blobs returned {}: {}", status, body),
-        });
+    if !resp.status().is_success() {
+        return Err(classify_xrpc_response("listMissingBlobs", resp).await);
     }
 
     resp.json::<MissingBlobs>()
@@ -1460,15 +1703,8 @@ pub async fn get_preferences(
             message: format!("get_preferences failed: {}", e),
         })?;
 
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "(response body unreadable)".to_string());
-        return Err(PdsClientError::NetworkError {
-            message: format!("get_preferences returned {}: {}", status, body),
-        });
+    if !resp.status().is_success() {
+        return Err(classify_xrpc_response("getPreferences", resp).await);
     }
 
     resp.json::<serde_json::Value>()
@@ -1493,17 +1729,10 @@ pub async fn put_preferences(
             message: format!("put_preferences failed: {}", e),
         })?;
 
-    let status = resp.status();
-    if status.is_success() {
+    if resp.status().is_success() {
         Ok(())
     } else {
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "(response body unreadable)".to_string());
-        Err(PdsClientError::NetworkError {
-            message: format!("put_preferences returned {}: {}", status, body),
-        })
+        Err(classify_xrpc_response("putPreferences", resp).await)
     }
 }
 
@@ -1520,15 +1749,8 @@ pub async fn check_account_status(
             message: format!("check_account_status failed: {}", e),
         })?;
 
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "(response body unreadable)".to_string());
-        return Err(PdsClientError::NetworkError {
-            message: format!("check_account_status returned {}: {}", status, body),
-        });
+    if !resp.status().is_success() {
+        return Err(classify_xrpc_response("checkAccountStatus", resp).await);
     }
 
     resp.json::<AccountStatus>()
@@ -1540,34 +1762,26 @@ pub async fn check_account_status(
 
 /// Activate the account on the destination PDS.
 ///
-/// Calls `POST /xrpc/com.atproto.server.activateAccount` with a GENUINELY empty body.
-/// The handler (`crates/pds/src/routes/activate_account.rs`) rejects any non-whitespace body
-/// with a 400 — so we must send zero bytes, NOT `{}` (which `.post()` would serialize).
+/// Calls `POST /xrpc/com.atproto.server.activateAccount` with NO body and no
+/// `Content-Type` — it is a no-input procedure. Our handler
+/// (`crates/pds/src/routes/activate_account.rs`) rejects any non-whitespace body
+/// with a 400, and a spec-strict PDS rejects any body at all; `post_no_body`
+/// satisfies both (the previous `post_bytes(.., Vec::new())` workaround still sent
+/// a `Content-Type` header with zero bytes).
 pub async fn activate_account(
     client: &crate::oauth_client::OAuthClient,
 ) -> Result<(), PdsClientError> {
     let resp = client
-        .post_bytes(
-            "/xrpc/com.atproto.server.activateAccount",
-            "application/json",
-            Vec::new(),
-        )
+        .post_no_body("/xrpc/com.atproto.server.activateAccount")
         .await
         .map_err(|e| PdsClientError::NetworkError {
             message: format!("activate_account failed: {}", e),
         })?;
 
-    let status = resp.status();
-    if status.is_success() {
+    if resp.status().is_success() {
         Ok(())
     } else {
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "(response body unreadable)".to_string());
-        Err(PdsClientError::NetworkError {
-            message: format!("activate_account returned {}: {}", status, body),
-        })
+        Err(classify_xrpc_response("activateAccount", resp).await)
     }
 }
 
@@ -1590,17 +1804,10 @@ pub async fn deactivate_account(
             message: format!("deactivate_account failed: {}", e),
         })?;
 
-    let status = resp.status();
-    if status.is_success() {
+    if resp.status().is_success() {
         Ok(())
     } else {
-        let body_text = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "(response body unreadable)".to_string());
-        Err(PdsClientError::NetworkError {
-            message: format!("deactivate_account returned {}: {}", status, body_text),
-        })
+        Err(classify_xrpc_response("deactivateAccount", resp).await)
     }
 }
 
@@ -1674,6 +1881,109 @@ mod tests {
             par_rejection_message(status, "<html>gateway error</html>"),
             "PAR returned 400 Bad Request: <html>gateway error</html>"
         );
+    }
+
+    // ── XRPC error classification ───────────────────────────────────────────
+
+    /// The envelope parser pulls both the atproto `error` code and the human `message`, and falls
+    /// back sensibly when the body isn't an envelope.
+    #[test]
+    fn parse_xrpc_error_envelope_extracts_code_and_message() {
+        assert_eq!(
+            parse_xrpc_error_envelope(r#"{"error":"InvalidRequest","message":"Missing handle"}"#),
+            (
+                Some("InvalidRequest".to_string()),
+                "Missing handle".to_string()
+            )
+        );
+        // error code but no message → message falls back to the code.
+        assert_eq!(
+            parse_xrpc_error_envelope(r#"{"error":"ExpiredToken"}"#),
+            (Some("ExpiredToken".to_string()), "ExpiredToken".to_string())
+        );
+        // Non-envelope body → no code, message is the trimmed raw body.
+        assert_eq!(
+            parse_xrpc_error_envelope("  <html>502 Bad Gateway</html>  "),
+            (None, "<html>502 Bad Gateway</html>".to_string())
+        );
+    }
+
+    /// 429 classifies as RateLimited and carries the Retry-After value through verbatim.
+    #[test]
+    fn classify_xrpc_error_429_is_rate_limited_with_retry_after() {
+        let err = classify_xrpc_error(
+            429,
+            Some("120".to_string()),
+            r#"{"error":"RateLimitExceeded","message":"slow down"}"#,
+        );
+        match err {
+            PdsClientError::RateLimited {
+                retry_after,
+                message,
+            } => {
+                assert_eq!(retry_after.as_deref(), Some("120"));
+                assert_eq!(message, "slow down");
+            }
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
+    }
+
+    /// 401 classifies as Unauthorized, preserving both the atproto error code and the message.
+    #[test]
+    fn classify_xrpc_error_401_is_unauthorized() {
+        let err = classify_xrpc_error(
+            401,
+            None,
+            r#"{"error":"ExpiredToken","message":"Token has expired"}"#,
+        );
+        match err {
+            PdsClientError::Unauthorized { error, message } => {
+                assert_eq!(error.as_deref(), Some("ExpiredToken"));
+                assert_eq!(message, "Token has expired");
+            }
+            other => panic!("expected Unauthorized, got {other:?}"),
+        }
+    }
+
+    /// A 400 keeps the atproto error code and human message so the UI can show them.
+    #[test]
+    fn classify_xrpc_error_400_keeps_error_code_and_message() {
+        let err = classify_xrpc_error(
+            400,
+            None,
+            r#"{"error":"InsufficientScope","message":"token scope does not permit identity operations"}"#,
+        );
+        match err {
+            PdsClientError::XrpcError {
+                status,
+                error,
+                message,
+            } => {
+                assert_eq!(status, 400);
+                assert_eq!(error.as_deref(), Some("InsufficientScope"));
+                assert_eq!(message, "token scope does not permit identity operations");
+            }
+            other => panic!("expected XrpcError, got {other:?}"),
+        }
+    }
+
+    /// A 5xx with a non-envelope body still surfaces the raw body as the message (never a
+    /// NetworkError — the server did answer).
+    #[test]
+    fn classify_xrpc_error_5xx_non_envelope_falls_back_to_body() {
+        let err = classify_xrpc_error(503, None, "service unavailable");
+        match err {
+            PdsClientError::XrpcError {
+                status,
+                error,
+                message,
+            } => {
+                assert_eq!(status, 503);
+                assert_eq!(error, None);
+                assert_eq!(message, "service unavailable");
+            }
+            other => panic!("expected XrpcError, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2464,7 +2774,14 @@ mod tests {
             when.method(httpmock::Method::POST)
                 .path("/xrpc/com.atproto.identity.requestPlcOperationSignature")
                 .header_exists("Authorization")
-                .header_exists("DPoP");
+                .header_exists("DPoP")
+                // No-input procedure: a spec-strict PDS rejects any body or Content-Type.
+                .is_true(|req| req.body_ref().is_empty())
+                .is_true(|req| {
+                    !req.headers_vec()
+                        .iter()
+                        .any(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+                });
             then.status(200).json_body(serde_json::json!({}));
         });
 
@@ -2526,11 +2843,12 @@ mod tests {
 
         let result = request_plc_operation_signature(&oauth_client).await;
         assert!(result.is_err());
+        // A 401 is now classified as Unauthorized, not folded into a generic NetworkError.
         match result.unwrap_err() {
-            PdsClientError::NetworkError { .. } => {
+            PdsClientError::Unauthorized { .. } => {
                 // Expected
             }
-            e => panic!("Expected NetworkError, got: {:?}", e),
+            e => panic!("Expected Unauthorized, got: {:?}", e),
         }
     }
 
@@ -2767,11 +3085,12 @@ mod tests {
 
         let result = get_recommended_did_credentials(&oauth_client).await;
         assert!(result.is_err());
+        // A 403 is a classified server rejection: XrpcError carrying status + error code.
         match result.unwrap_err() {
-            PdsClientError::NetworkError { .. } => {
+            PdsClientError::XrpcError { status: 403, .. } => {
                 // Expected
             }
-            e => panic!("Expected NetworkError, got: {:?}", e),
+            e => panic!("Expected XrpcError(403), got: {:?}", e),
         }
     }
 
@@ -2805,7 +3124,9 @@ mod tests {
         assert!(json.contains("\"code\":\"OAUTH_FAILED\""));
     }
 
-    /// sign_plc_operation returns NetworkError on HTTP error
+    /// sign_plc_operation surfaces an HTTP error through classify_xrpc_response: a non-nonce 400
+    /// becomes a structured XrpcError carrying the server's status + error code, not a flattened
+    /// NetworkError. (The DPoP OAuthClient no longer swallows non-`use_dpop_nonce` 400s.)
     #[tokio::test]
     async fn test_sign_plc_operation_error() {
         use std::sync::{Arc, Mutex};
@@ -2848,11 +3169,19 @@ mod tests {
 
         let result = sign_plc_operation(&oauth_client, &request).await;
         assert!(result.is_err());
+        // The 400 `invalid_token` reaches classify_xrpc_response intact, so it is classified as an
+        // XrpcError that preserves the server's status and atproto error code — the whole point of
+        // surfacing (rather than swallowing) a non-nonce 400 in the DPoP client.
         match result.unwrap_err() {
-            PdsClientError::NetworkError { .. } => {
-                // Expected
+            PdsClientError::XrpcError { status, error, .. } => {
+                assert_eq!(status, 400, "status must be preserved");
+                assert_eq!(
+                    error.as_deref(),
+                    Some("invalid_token"),
+                    "the atproto error code must be preserved"
+                );
             }
-            e => panic!("Expected NetworkError, got: {:?}", e),
+            e => panic!("Expected XrpcError(400, invalid_token), got: {:?}", e),
         }
     }
 
@@ -3027,11 +3356,16 @@ mod tests {
             .await;
 
         assert!(result.is_err());
+        // A 404 is now a classified server response, carrying the status and body message.
         match result.unwrap_err() {
-            PdsClientError::NetworkError { message } => {
-                assert!(message.contains("404"));
+            PdsClientError::XrpcError {
+                status: 404,
+                message,
+                ..
+            } => {
+                assert!(message.contains("not found"));
             }
-            e => panic!("Expected NetworkError, got: {:?}", e),
+            e => panic!("Expected XrpcError(404), got: {:?}", e),
         }
     }
 
@@ -3085,11 +3419,16 @@ mod tests {
             .await;
 
         assert!(result.is_err());
+        // A 404 is now a classified server response, carrying the status and body message.
         match result.unwrap_err() {
-            PdsClientError::NetworkError { message } => {
-                assert!(message.contains("404"));
+            PdsClientError::XrpcError {
+                status: 404,
+                message,
+                ..
+            } => {
+                assert!(message.contains("blob not found"));
             }
-            e => panic!("Expected NetworkError, got: {:?}", e),
+            e => panic!("Expected XrpcError(404), got: {:?}", e),
         }
     }
 
@@ -3134,11 +3473,12 @@ mod tests {
             .await;
 
         assert!(result.is_err());
+        // A 400 is a classified server rejection: XrpcError carrying the status.
         match result.unwrap_err() {
-            PdsClientError::NetworkError { .. } => {
+            PdsClientError::XrpcError { status: 400, .. } => {
                 // Expected
             }
-            e => panic!("Expected NetworkError, got: {:?}", e),
+            e => panic!("Expected XrpcError(400), got: {:?}", e),
         }
     }
 
@@ -3216,11 +3556,12 @@ mod tests {
         .await;
 
         assert!(result.is_err());
+        // A 401 is now classified as Unauthorized, not a generic NetworkError.
         match result.unwrap_err() {
-            PdsClientError::NetworkError { .. } => {
+            PdsClientError::Unauthorized { .. } => {
                 // Expected
             }
-            e => panic!("Expected NetworkError, got: {:?}", e),
+            e => panic!("Expected Unauthorized, got: {:?}", e),
         }
     }
 
@@ -3577,6 +3918,13 @@ mod tests {
             when.method(httpmock::Method::POST)
                 .path("/xrpc/com.atproto.server.activateAccount")
                 .is_true(|req| req.body_ref().is_empty())
+                // No-input procedure: no Content-Type either (the old post_bytes
+                // workaround still sent one with zero bytes).
+                .is_true(|req| {
+                    !req.headers_vec()
+                        .iter()
+                        .any(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+                })
                 .is_true(|req| {
                     req.headers_vec()
                         .iter()

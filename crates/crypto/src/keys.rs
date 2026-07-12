@@ -14,6 +14,12 @@ use crate::CryptoError;
 /// 0x1200 encoded as LEB128 varint = [0x80, 0x24].
 pub(crate) const P256_MULTICODEC_PREFIX: &[u8] = &[0x80, 0x24];
 
+/// secp256k1 multicodec varint prefix for did:key URIs (`did:key:zQ3…`).
+/// 0xe7 encoded as LEB128 varint = [0xe7, 0x01]. The reference ATProto
+/// ecosystem (bsky.social) uses secp256k1 rotation/signing keys; this crate
+/// verifies against them but never signs with this curve.
+pub(crate) const SECP256K1_MULTICODEC_PREFIX: &[u8] = &[0xe7, 0x01];
+
 /// A `did:key:z...` URI — the canonical identifier for a P-256 keypair.
 ///
 /// Distinct from `public_key` (a bare multibase string) at the type level to prevent

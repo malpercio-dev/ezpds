@@ -43,6 +43,7 @@ pub struct SweepSnapshot {
     pub firehose_gc: Option<SweepRun>,
     pub account_reaper: Option<SweepRun>,
     pub agent_claim_sweep: Option<SweepRun>,
+    pub admin_nonce_sweep: Option<SweepRun>,
 }
 
 /// Shared readable sweep state; one lives in `AppState` for the process lifetime.
@@ -66,6 +67,10 @@ impl SweepStatus {
 
     pub fn record_agent_claim_sweep(&self, run: SweepRun) {
         self.write().agent_claim_sweep = Some(run);
+    }
+
+    pub fn record_admin_nonce_sweep(&self, run: SweepRun) {
+        self.write().admin_nonce_sweep = Some(run);
     }
 
     pub fn snapshot(&self) -> SweepSnapshot {
@@ -98,6 +103,7 @@ mod tests {
         assert!(before.firehose_gc.is_none());
         assert!(before.account_reaper.is_none());
         assert!(before.agent_claim_sweep.is_none());
+        assert!(before.admin_nonce_sweep.is_none());
 
         status.record_blob_gc(SweepRun {
             completed_at: 1000,

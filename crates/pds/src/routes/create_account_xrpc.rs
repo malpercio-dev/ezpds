@@ -14,7 +14,10 @@
 //   Migration mode (`did` present):
 //     Authenticated by a service-auth JWT the OLD PDS minted (Bearer), verified against the
 //     migrating DID's `#atproto` key. Creates the account DEACTIVATED with no repo yet — the repo
-//     arrives later via `importRepo`, and `activateAccount` finalizes it.
+//     arrives later via `importRepo`, and `activateAccount` finalizes it. Resumable: a retry for
+//     a DID whose account exists and is still deactivated re-issues a session (same credential
+//     proves the same control) instead of 409ing, so a mid-flight client failure never strands
+//     the migration.
 //
 // Invite codes are enforced (single-use, against `claim_codes`) when `config.invite_code_required`.
 
@@ -428,6 +431,49 @@ async fn create_account_migration(
         unix_now()?,
     )?;
 
+    // Resume path: a previous migration attempt already created this DID's account but the
+    // client lost its session (e.g. an app restart between createAccount and
+    // activateAccount). Without this, a mid-flight failure strands the migration: the
+    // retry 409s, the uniqueness preflight trips on the half-created account's own
+    // email/handle rows, and the reserved signing key was already promoted. The
+    // service-auth JWT verified above is the same credential that authorized creating the
+    // account — aud-bound to this server, lxm-bound to createAccount, signed by the DID's
+    // current #atproto key — so re-presenting a fresh one proves the same control; issue a
+    // new session for the existing account instead. Only a still-deactivated account
+    // resumes (no invite code is consumed): an active account is a genuine conflict, and
+    // moderation states stay closed.
+    match crate::db::accounts::account_lifecycle(&state.db, did).await? {
+        None => {}
+        Some(crate::db::accounts::AccountLifecycle::Deactivated) => {
+            tracing::info!(did = %did, "createAccount (migration): resuming existing deactivated account");
+            let handle = stored_handle_for_did(state, did)
+                .await?
+                .unwrap_or_else(|| payload.handle.clone());
+            let mut tx = state.db.begin().await.map_err(|e| {
+                tracing::error!(error = %e, "failed to begin migration-resume transaction");
+                ApiError::new(ErrorCode::InternalError, "failed to begin transaction")
+            })?;
+            let session = issue_session(&mut tx, state, did).await?;
+            tx.commit().await.map_err(|e| {
+                tracing::error!(error = %e, "failed to commit migration-resume transaction");
+                ApiError::new(ErrorCode::InternalError, "failed to commit transaction")
+            })?;
+            return Ok(Json(CreateAccountResponse {
+                access_jwt: session.access_jwt,
+                refresh_jwt: session.refresh_jwt,
+                handle,
+                did: did.to_string(),
+                did_doc: Some(did_document),
+            }));
+        }
+        Some(_) => {
+            return Err(ApiError::new(
+                ErrorCode::DidAlreadyExists,
+                "an account for this DID already exists",
+            ));
+        }
+    }
+
     // The migrating identity's handle is foreign (e.g. its old domain), so only structural
     // validity is required — not this server's served-domain policy.
     if let Err(msg) = crate::handle::validate_handle_structure(&payload.handle) {
@@ -669,6 +715,19 @@ async fn ensure_email_and_handle_free(
         ));
     }
     Ok(())
+}
+
+/// The handle bound to `did` at its original creation, for the migration-resume response —
+/// the stored binding is authoritative over whatever the retry request carries.
+async fn stored_handle_for_did(state: &AppState, did: &str) -> Result<Option<String>, ApiError> {
+    sqlx::query_scalar("SELECT handle FROM handles WHERE did = ? LIMIT 1")
+        .bind(did)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to load stored handle for migration resume");
+            ApiError::new(ErrorCode::InternalError, "failed to load account handle")
+        })
 }
 
 /// Confirm the DID is not already a fully-provisioned account.
@@ -1209,6 +1268,150 @@ mod tests {
             signing_key.is_some(),
             "reserved signing key must be promoted"
         );
+    }
+
+    #[tokio::test]
+    async fn migration_retry_resumes_deactivated_account_with_fresh_session() {
+        // A mid-flight failure between createAccount and activateAccount must be
+        // recoverable: a retried createAccount with a fresh service-auth JWT for the same
+        // DID resumes the existing deactivated account (new session, stored handle, no
+        // duplicate rows) instead of 409ing.
+        let state = test_state("http://unused.invalid".to_string(), false).await;
+        let db = state.db.clone();
+        let did = "did:plc:migrator33333333333333";
+        let kp = seed_migration_did(&db, did, "bob.migrated.example").await;
+        let aud = state.config.resolve_server_did();
+
+        let first = app(state.clone())
+            .oneshot(post(
+                serde_json::json!({
+                    "handle": "bob.migrated.example",
+                    "email": "bob@example.com",
+                    "did": did,
+                }),
+                Some(&service_auth_jwt(
+                    &kp,
+                    did,
+                    &aud,
+                    Some("com.atproto.server.createAccount"),
+                )),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_json = body_json(first).await;
+
+        // Retry — simulates the client losing its session after the first create.
+        let second = app(state)
+            .oneshot(post(
+                serde_json::json!({
+                    "handle": "bob.migrated.example",
+                    "email": "bob@example.com",
+                    "did": did,
+                }),
+                Some(&service_auth_jwt(
+                    &kp,
+                    did,
+                    &aud,
+                    Some("com.atproto.server.createAccount"),
+                )),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            second.status(),
+            StatusCode::OK,
+            "retry must resume, not 409"
+        );
+        let second_json = body_json(second).await;
+        assert_eq!(second_json["did"], did);
+        assert_eq!(second_json["handle"], "bob.migrated.example");
+        assert!(second_json["accessJwt"].as_str().is_some());
+        // The access JWT is deterministic over (did, scope, second-resolution iat), so two
+        // sessions minted in the same second can collide; the refresh JWT carries a unique
+        // jti and proves this is a distinct session row.
+        assert_ne!(
+            first_json["refreshJwt"], second_json["refreshJwt"],
+            "resume must issue a fresh session"
+        );
+
+        // No duplicate account/handle rows were created.
+        let accounts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE did = ?")
+            .bind(did)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(accounts, 1);
+        let handles: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM handles WHERE did = ?")
+            .bind(did)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(handles, 1);
+        // Still deactivated — resume must not activate.
+        let deactivated: Option<String> =
+            sqlx::query_scalar("SELECT deactivated_at FROM accounts WHERE did = ?")
+                .bind(did)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(
+            deactivated.is_some(),
+            "resume must leave the account deactivated"
+        );
+    }
+
+    #[tokio::test]
+    async fn migration_retry_against_active_account_returns_409() {
+        // Once the account has activated, a repeated createAccount is a genuine conflict.
+        let state = test_state("http://unused.invalid".to_string(), false).await;
+        let db = state.db.clone();
+        let did = "did:plc:migrator44444444444444";
+        let kp = seed_migration_did(&db, did, "carol.migrated.example").await;
+        let aud = state.config.resolve_server_did();
+
+        let first = app(state.clone())
+            .oneshot(post(
+                serde_json::json!({
+                    "handle": "carol.migrated.example",
+                    "email": "carol@example.com",
+                    "did": did,
+                }),
+                Some(&service_auth_jwt(
+                    &kp,
+                    did,
+                    &aud,
+                    Some("com.atproto.server.createAccount"),
+                )),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+
+        // Activate (as activateAccount would).
+        sqlx::query("UPDATE accounts SET deactivated_at = NULL WHERE did = ?")
+            .bind(did)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let second = app(state)
+            .oneshot(post(
+                serde_json::json!({
+                    "handle": "carol.migrated.example",
+                    "email": "carol@example.com",
+                    "did": did,
+                }),
+                Some(&service_auth_jwt(
+                    &kp,
+                    did,
+                    &aud,
+                    Some("com.atproto.server.createAccount"),
+                )),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(second.status(), StatusCode::CONFLICT);
     }
 
     #[tokio::test]

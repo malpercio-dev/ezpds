@@ -706,23 +706,18 @@ pub async fn submit_migration_op(
             message: format!("failed to cache updated PLC log: {e}"),
         })?;
 
-    let did_doc_url = format!("{}/{}", pds_client.plc_directory_url(), did);
-    let resp = pds_client
-        .client()
-        .get(&did_doc_url)
-        .send()
-        .await
-        .map_err(|e| MigrateError::NetworkError {
-            message: format!("failed to fetch DID document: {e}"),
-        })?;
-    if !resp.status().is_success() {
-        return Err(MigrateError::NetworkError {
-            message: format!("DID document fetch returned {}", resp.status()),
-        });
-    }
-    let did_doc: serde_json::Value = resp.json().await.map_err(|e| MigrateError::NetworkError {
-        message: format!("failed to parse DID document: {e}"),
-    })?;
+    // Fetch the PLC *data* document, not the W3C DID document: the per-identity
+    // cache — and everything that reads it (the home card's rotationKeys[0]
+    // custody badge, `extractPdsFromPlcDoc`'s `services` map) — expects the PLC
+    // shape. The W3C form carries no `rotationKeys`, so caching it degrades the
+    // badge to "Unknown".
+    let did_doc =
+        pds_client
+            .fetch_plc_data_document(did)
+            .await
+            .map_err(|e| MigrateError::NetworkError {
+                message: format!("failed to fetch DID document: {e}"),
+            })?;
     store
         .store_did_doc(did, &serde_json::to_string(&did_doc).unwrap_or_default())
         .map_err(|e| MigrateError::SigningFailed {
@@ -1342,11 +1337,19 @@ mod tests {
             when.method(POST).path(format!("/{did}"));
             then.status(200).json_body(serde_json::json!({}));
         });
+        // The refetch must hit the PLC *data* endpoint — the cached shape needs
+        // `rotationKeys` (the home card's custody badge reads rotationKeys[0]).
         let diddoc_mock = plc.mock(|when, then| {
-            when.method(GET).path(format!("/{did}"));
+            when.method(GET).path(format!("/{did}/data"));
             then.status(200)
                 .header("content-type", "application/json")
-                .json_body(serde_json::json!({ "id": did }));
+                .json_body(serde_json::json!({
+                    "did": did,
+                    "alsoKnownAs": [HANDLE],
+                    "rotationKeys": ["did:key:zMigratedDeviceKey", DEST_SIGN],
+                    "verificationMethods": { "atproto": DEST_SIGN },
+                    "services": { "atproto_pds": { "type": "AtprotoPersonalDataServer", "endpoint": "https://new.pds" } }
+                }));
         });
         let pds_client = PdsClient::new_for_test(plc.base_url());
 
@@ -1410,6 +1413,18 @@ mod tests {
             .expect("submit_migration_op should succeed");
         submit_mock.assert();
         diddoc_mock.assert();
+
+        // The cached doc must be the PLC data shape — rotationKeys present — or the
+        // home card's custody badge degrades to "Unknown" after migration.
+        let cached = store
+            .get_did_doc(did)
+            .expect("get_did_doc should succeed")
+            .expect("DID document should be cached after submission");
+        let cached: serde_json::Value = serde_json::from_str(&cached).expect("cached doc parses");
+        assert!(
+            cached["rotationKeys"].is_array(),
+            "cached DID doc must carry rotationKeys (PLC data shape), got: {cached}"
+        );
 
         let _ = store.remove_identity(did);
     }

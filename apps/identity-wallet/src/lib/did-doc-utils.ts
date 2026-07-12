@@ -29,6 +29,22 @@ export function extractPdsFromPlcDoc(doc: Record<string, unknown>): string | nul
 }
 
 /**
+ * Whether a cached DID document needs a re-fetch from plc.directory: missing
+ * entirely, or lacking a non-empty `rotationKeys` array (the PLC data shape).
+ * Earlier builds cached the W3C document — which has no `rotationKeys` — after
+ * claim/migration/recovery, starving the custody badge and hiding the migrate
+ * entry; `IdentityListHome` uses this predicate to self-heal those caches.
+ *
+ * @param doc - The cached DID document, or null when none is stored
+ * @returns true when the doc should be re-fetched and re-cached
+ */
+export function docNeedsRotationKeysRefresh(doc: Record<string, unknown> | null): boolean {
+  if (!doc) return true;
+  const keys = doc.rotationKeys;
+  return !Array.isArray(keys) || keys.length === 0;
+}
+
+/**
  * Extracts the handle from a PLC directory format DID document's alsoKnownAs array.
  * Strips the "at://" prefix from AT Protocol identifiers.
  *

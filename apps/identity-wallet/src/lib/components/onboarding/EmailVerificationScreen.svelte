@@ -7,6 +7,7 @@
     type ClaimError,
   } from '$lib/ipc';
   import { isCodedError } from '$lib/did-doc-utils';
+  import { formatRateLimitMessage, formatServerErrorMessage } from '$lib/claim-errors';
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
   import TextField from '$lib/components/ui/TextField.svelte';
   import Button from '$lib/components/ui/Button.svelte';
@@ -38,11 +39,33 @@
       sending = false;
     } catch (e) {
       sending = false;
-      console.error('Failed to send verification email:', e);
-      if (isCodedError(e) && e.code === 'UNAUTHORIZED') {
-        sendError = 'Authorization expired. Please go back and re-authenticate with your PDS.';
+      console.error('Failed to request PLC operation signature:', e);
+      // Report the real reason. In particular, an insufficient-scope refusal (the bug this flow
+      // was filed against) must NOT masquerade as an email-delivery failure.
+      if (isCodedError(e)) {
+        const err = e as ClaimError;
+        switch (err.code) {
+          case 'INSUFFICIENT_SCOPE':
+            sendError =
+              'Your PDS would not authorize the identity change for this session. Go back and sign in with your account password (an app password is not enough).';
+            break;
+          case 'UNAUTHORIZED':
+            sendError = 'Your session expired. Go back and sign in to your PDS again.';
+            break;
+          case 'RATE_LIMITED':
+            sendError = formatRateLimitMessage(err.retryAfter);
+            break;
+          case 'SERVER_ERROR':
+            sendError = formatServerErrorMessage(err.message);
+            break;
+          case 'NETWORK_ERROR':
+            sendError = 'Network error. Check your connection and try again.';
+            break;
+          default:
+            sendError = `Could not start verification (${err.code}). Please try again.`;
+        }
       } else {
-        sendError = 'Failed to send verification email. Please try again.';
+        sendError = 'Could not send the verification email. Please try again.';
       }
     }
   }
@@ -67,6 +90,12 @@
             break;
           case 'VERIFICATION_FAILED':
             verifyError = `Verification failed: ${err.message ?? 'Please try again.'}`;
+            break;
+          case 'RATE_LIMITED':
+            verifyError = formatRateLimitMessage(err.retryAfter);
+            break;
+          case 'SERVER_ERROR':
+            verifyError = formatServerErrorMessage(err.message);
             break;
           case 'NETWORK_ERROR':
             verifyError = 'Network error. Check your connection and try again.';

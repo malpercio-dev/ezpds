@@ -58,6 +58,10 @@ pub mod names {
     pub const AGENT_CLAIM_SWEEP_SWEPT: &str = "agent_claim_sweep_swept";
     /// Gauge: unix timestamp (seconds) of the last completed agent-claim-sweep run.
     pub const AGENT_CLAIM_SWEEP_LAST_RUN_TIMESTAMP: &str = "agent_claim_sweep_last_run_timestamp";
+    /// Counter (`_total`): stale `admin_nonces` rows deleted by the admin-nonce sweep.
+    pub const ADMIN_NONCE_SWEEP_SWEPT: &str = "admin_nonce_sweep_swept";
+    /// Gauge: unix timestamp (seconds) of the last completed admin-nonce-sweep run.
+    pub const ADMIN_NONCE_SWEEP_LAST_RUN_TIMESTAMP: &str = "admin_nonce_sweep_last_run_timestamp";
     /// Counter (`_total`): `repo_seq` rows pruned by the firehose-GC sweep.
     pub const FIREHOSE_GC_SWEPT: &str = "firehose_gc_swept";
     /// Gauge: unix timestamp (seconds) of the last completed firehose-GC run.
@@ -117,6 +121,8 @@ pub struct Metrics {
     pub account_reaper_last_run_timestamp: Gauge<f64>,
     pub agent_claim_sweep_swept: Counter<u64>,
     pub agent_claim_sweep_last_run_timestamp: Gauge<f64>,
+    pub admin_nonce_sweep_swept: Counter<u64>,
+    pub admin_nonce_sweep_last_run_timestamp: Gauge<f64>,
     pub firehose_gc_swept: Counter<u64>,
     pub firehose_gc_last_run_timestamp: Gauge<f64>,
     pub rate_limit_rejections: Counter<u64>,
@@ -175,6 +181,10 @@ impl Metrics {
             agent_claim_sweep_swept: meter.u64_counter(names::AGENT_CLAIM_SWEEP_SWEPT).build(),
             agent_claim_sweep_last_run_timestamp: meter
                 .f64_gauge(names::AGENT_CLAIM_SWEEP_LAST_RUN_TIMESTAMP)
+                .build(),
+            admin_nonce_sweep_swept: meter.u64_counter(names::ADMIN_NONCE_SWEEP_SWEPT).build(),
+            admin_nonce_sweep_last_run_timestamp: meter
+                .f64_gauge(names::ADMIN_NONCE_SWEEP_LAST_RUN_TIMESTAMP)
                 .build(),
             firehose_gc_swept: meter.u64_counter(names::FIREHOSE_GC_SWEPT).build(),
             firehose_gc_last_run_timestamp: meter
