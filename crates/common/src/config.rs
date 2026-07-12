@@ -811,6 +811,10 @@ pub enum EmailProvider {
     Log,
     /// Real delivery over SMTP (see the `smtp_*` fields of [`EmailConfig`]).
     Smtp,
+    /// Real delivery over Mailtrap's transactional HTTPS Send API (see the `http_*` fields of
+    /// [`EmailConfig`]). Unlike SMTP, this needs only outbound HTTPS, so it works on hosts that
+    /// block outbound SMTP ports (25/465/587/2525) — the reason it exists.
+    Mailtrap,
 }
 
 /// Transport security mode for the SMTP sender.
@@ -853,6 +857,17 @@ pub struct EmailConfig {
     /// Connect/send timeout for the SMTP transport, in seconds. `send()` is awaited on the request
     /// path, so this bounds how long a slow or unresponsive relay can stall a handler. Default 15.
     pub smtp_timeout_secs: u64,
+    /// HTTP-API bearer token (e.g. the Mailtrap API token). Required when `provider = "mailtrap"`.
+    /// Wrapped in [`Sensitive`] so it never appears in `Debug` output, like `smtp_password`.
+    pub http_token: Option<Sensitive<String>>,
+    /// HTTP-API send endpoint. Defaults to the provider's production endpoint
+    /// (`https://send.api.mailtrap.io/api/send` for Mailtrap) when unset; overridable so tests can
+    /// point at a local mock server.
+    pub http_api_url: Option<String>,
+    /// Request timeout for the HTTP-API sender, in seconds. Bounds how long a slow or unresponsive
+    /// email API can stall a handler (the `smtp_timeout_secs` precedent for the HTTPS path).
+    /// Default 15.
+    pub http_timeout_secs: u64,
 }
 
 impl Default for EmailConfig {
@@ -867,6 +882,9 @@ impl Default for EmailConfig {
             smtp_password: None,
             smtp_tls: SmtpTls::Starttls,
             smtp_timeout_secs: default_smtp_timeout_secs(),
+            http_token: None,
+            http_api_url: None,
+            http_timeout_secs: default_http_timeout_secs(),
         }
     }
 }
@@ -880,6 +898,15 @@ fn default_smtp_port() -> u16 {
 fn default_smtp_timeout_secs() -> u64 {
     15
 }
+
+fn default_http_timeout_secs() -> u64 {
+    15
+}
+
+/// The default HTTP-API send endpoint for `provider = "mailtrap"`. Used when `http_api_url` is
+/// unset so a production operator only has to set the token, while tests can override it with a
+/// mock server URL.
+pub const MAILTRAP_SEND_API_URL: &str = "https://send.api.mailtrap.io/api/send";
 
 /// The conventional submission port for a TLS mode: 465 for implicit TLS (SMTPS), 587 otherwise
 /// (STARTTLS submission / plaintext). Used to default `smtp_port` when the operator does not set it
@@ -905,6 +932,9 @@ pub(crate) struct RawEmailConfig {
     pub(crate) smtp_password: Option<Sensitive<String>>,
     pub(crate) smtp_tls: Option<SmtpTls>,
     pub(crate) smtp_timeout_secs: Option<u64>,
+    pub(crate) http_token: Option<Sensitive<String>>,
+    pub(crate) http_api_url: Option<String>,
+    pub(crate) http_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1312,6 +1342,19 @@ pub(crate) fn apply_env_overrides(
             ))
         })?);
     }
+    if let Some(v) = env.get("EZPDS_EMAIL_HTTP_TOKEN") {
+        raw.email.http_token = Some(Sensitive(v.clone()));
+    }
+    if let Some(v) = env.get("EZPDS_EMAIL_HTTP_API_URL") {
+        raw.email.http_api_url = Some(v.clone());
+    }
+    if let Some(v) = env.get("EZPDS_EMAIL_HTTP_TIMEOUT_SECS") {
+        raw.email.http_timeout_secs = Some(v.parse::<u64>().map_err(|e| {
+            ConfigError::Invalid(format!(
+                "EZPDS_EMAIL_HTTP_TIMEOUT_SECS is not a valid non-negative integer: '{v}': {e}"
+            ))
+        })?);
+    }
     if let Some(v) = env.get("EZPDS_ADMIN_TOKEN") {
         raw.admin_token = Some(Sensitive(v.clone()));
     }
@@ -1326,13 +1369,16 @@ pub(crate) fn apply_env_overrides(
 }
 
 /// Parse the `EZPDS_EMAIL_PROVIDER` env value into an [`EmailProvider`], matching the lowercase
-/// tokens the TOML form uses.
+/// tokens the TOML form uses. Case- and whitespace-insensitive: env values are conventionally
+/// written in caps (`EZPDS_EMAIL_PROVIDER=SMTP`), so normalize before matching rather than
+/// crash-looping the service on pure letter case (MM-313).
 fn parse_email_provider(value: &str) -> Result<EmailProvider, ConfigError> {
-    match value {
+    match value.trim().to_ascii_lowercase().as_str() {
         "log" => Ok(EmailProvider::Log),
         "smtp" => Ok(EmailProvider::Smtp),
-        other => Err(ConfigError::Invalid(format!(
-            "EZPDS_EMAIL_PROVIDER must be 'log' or 'smtp', got: {other:?}"
+        "mailtrap" => Ok(EmailProvider::Mailtrap),
+        _ => Err(ConfigError::Invalid(format!(
+            "EZPDS_EMAIL_PROVIDER must be 'log', 'smtp', or 'mailtrap', got: {value:?}"
         ))),
     }
 }
@@ -1368,6 +1414,12 @@ fn build_email_config(raw: RawEmailConfig) -> Result<EmailConfig, ConfigError> {
     let smtp_timeout_secs = raw
         .smtp_timeout_secs
         .unwrap_or_else(default_smtp_timeout_secs);
+    // Treat empty-string HTTP credentials/URL (an empty env override or TOML value) as unset.
+    let http_token = raw.http_token.map(|s| s.0).filter(|s| !s.is_empty());
+    let http_api_url = raw.http_api_url.filter(|s| !s.is_empty());
+    let http_timeout_secs = raw
+        .http_timeout_secs
+        .unwrap_or_else(default_http_timeout_secs);
 
     // A zero timeout is `Duration::from_secs(0)`, which lettre treats as "no timeout" (an
     // unbounded wait) — the opposite of what a timeout knob should do. Reject it rather than
@@ -1375,6 +1427,14 @@ fn build_email_config(raw: RawEmailConfig) -> Result<EmailConfig, ConfigError> {
     if smtp_timeout_secs == 0 {
         return Err(ConfigError::Invalid(
             "email.smtp_timeout_secs must be > 0 (0 would disable the SMTP timeout entirely)"
+                .to_string(),
+        ));
+    }
+    // Same reasoning for the HTTP-API sender: a zero request timeout is unbounded, which defeats
+    // the point of the knob (keeping `requestPasswordReset` from hanging on a stalled API).
+    if http_timeout_secs == 0 {
+        return Err(ConfigError::Invalid(
+            "email.http_timeout_secs must be > 0 (0 would disable the HTTP request timeout entirely)"
                 .to_string(),
         ));
     }
@@ -1399,6 +1459,21 @@ fn build_email_config(raw: RawEmailConfig) -> Result<EmailConfig, ConfigError> {
         }
     }
 
+    if provider == EmailProvider::Mailtrap {
+        // The sender needs a from address to populate the API's `from.email` and a bearer token to
+        // authenticate. Reject at load time rather than fail every send at runtime.
+        if from.is_none() {
+            return Err(ConfigError::Invalid(
+                "email.from is required when email.provider = \"mailtrap\"".to_string(),
+            ));
+        }
+        if http_token.is_none() {
+            return Err(ConfigError::Invalid(
+                "email.http_token (EZPDS_EMAIL_HTTP_TOKEN) is required when email.provider = \"mailtrap\"".to_string(),
+            ));
+        }
+    }
+
     Ok(EmailConfig {
         provider,
         from,
@@ -1413,6 +1488,9 @@ fn build_email_config(raw: RawEmailConfig) -> Result<EmailConfig, ConfigError> {
         smtp_password: smtp_password.map(Sensitive),
         smtp_tls,
         smtp_timeout_secs,
+        http_token: http_token.map(Sensitive),
+        http_api_url,
+        http_timeout_secs,
     })
 }
 
@@ -3737,5 +3815,172 @@ mod tests {
         let err = validate_and_build(raw).unwrap_err();
         assert!(matches!(err, ConfigError::Invalid(_)));
         assert!(err.to_string().contains("smtp_timeout_secs"));
+    }
+
+    // --- Mailtrap / HTTP-API email provider ---
+
+    #[test]
+    fn parses_mailtrap_provider_from_toml() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [email]
+            provider = "mailtrap"
+            from = "noreply@pds.example.com"
+            from_name = "Custos PDS"
+            http_token = "mt-token"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.email.provider, EmailProvider::Mailtrap);
+        assert_eq!(
+            config.email.from.as_deref(),
+            Some("noreply@pds.example.com")
+        );
+        assert_eq!(
+            config.email.http_token.as_ref().map(|s| s.0.as_str()),
+            Some("mt-token")
+        );
+        // The Send API endpoint defaults to Mailtrap's production URL when unset.
+        assert!(config.email.http_api_url.is_none());
+        assert_eq!(config.email.http_timeout_secs, 15);
+    }
+
+    #[test]
+    fn mailtrap_provider_requires_from() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [email]
+            provider = "mailtrap"
+            http_token = "mt-token"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("email.from"));
+    }
+
+    #[test]
+    fn mailtrap_provider_requires_http_token() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [email]
+            provider = "mailtrap"
+            from = "noreply@pds.example.com"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("http_token"));
+    }
+
+    #[test]
+    fn mailtrap_env_overrides() {
+        let env = HashMap::from([
+            ("EZPDS_EMAIL_PROVIDER".to_string(), "mailtrap".to_string()),
+            (
+                "EZPDS_EMAIL_FROM".to_string(),
+                "noreply@pds.test".to_string(),
+            ),
+            ("EZPDS_EMAIL_HTTP_TOKEN".to_string(), "mt-token".to_string()),
+            (
+                "EZPDS_EMAIL_HTTP_API_URL".to_string(),
+                "https://mock.local/api/send".to_string(),
+            ),
+            (
+                "EZPDS_EMAIL_HTTP_TIMEOUT_SECS".to_string(),
+                "30".to_string(),
+            ),
+        ]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.email.provider, EmailProvider::Mailtrap);
+        assert_eq!(config.email.from.as_deref(), Some("noreply@pds.test"));
+        assert_eq!(
+            config.email.http_token.as_ref().map(|s| s.0.as_str()),
+            Some("mt-token")
+        );
+        assert_eq!(
+            config.email.http_api_url.as_deref(),
+            Some("https://mock.local/api/send")
+        );
+        assert_eq!(config.email.http_timeout_secs, 30);
+    }
+
+    #[test]
+    fn zero_http_timeout_is_rejected() {
+        let env = HashMap::from([("EZPDS_EMAIL_HTTP_TIMEOUT_SECS".to_string(), "0".to_string())]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("http_timeout_secs"));
+    }
+
+    #[test]
+    fn empty_http_token_is_treated_as_unset() {
+        // An empty-string override must not produce Some("") — otherwise a Mailtrap sender would
+        // authenticate with a blank token (and the required-token check would pass spuriously).
+        let env = HashMap::from([("EZPDS_EMAIL_HTTP_TOKEN".to_string(), "".to_string())]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert!(config.email.http_token.is_none());
+    }
+
+    #[test]
+    fn http_token_is_redacted_in_debug() {
+        // The Mailtrap API token is Sensitive-wrapped, so it must never appear in Debug output.
+        let env = HashMap::from([(
+            "EZPDS_EMAIL_HTTP_TOKEN".to_string(),
+            "mt-topsecret".to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        let debug = format!("{:?}", config.email);
+        assert!(
+            !debug.contains("mt-topsecret"),
+            "http token must not leak in Debug: {debug}"
+        );
+        assert!(debug.contains("***"), "Sensitive should render as ***");
+    }
+
+    // --- Case-insensitive provider matching (MM-313) ---
+
+    #[test]
+    fn email_provider_env_is_case_insensitive() {
+        // Env-var values are conventionally written in caps; the service must not crash-loop on
+        // pure letter case. Uppercase/mixed-case tokens map to the same providers as lowercase.
+        for (value, expected) in [
+            ("SMTP", EmailProvider::Smtp),
+            ("Smtp", EmailProvider::Smtp),
+            ("LOG", EmailProvider::Log),
+            ("MAILTRAP", EmailProvider::Mailtrap),
+            ("MailTrap", EmailProvider::Mailtrap),
+            ("  mailtrap  ", EmailProvider::Mailtrap),
+        ] {
+            let provider = parse_email_provider(value)
+                .unwrap_or_else(|e| panic!("{value:?} should parse: {e}"));
+            assert_eq!(provider, expected, "{value:?} should map to {expected:?}");
+        }
+    }
+
+    #[test]
+    fn email_provider_env_unknown_value_lists_accepted_options() {
+        let err = parse_email_provider("carrierpigeon").unwrap_err();
+        let msg = err.to_string();
+        // A genuinely unknown value still fails, and the message enumerates the accepted options.
+        assert!(msg.contains("log"), "message should list 'log': {msg}");
+        assert!(msg.contains("smtp"), "message should list 'smtp': {msg}");
+        assert!(
+            msg.contains("mailtrap"),
+            "message should list 'mailtrap': {msg}"
+        );
     }
 }
