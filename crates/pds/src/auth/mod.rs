@@ -491,7 +491,7 @@ mod tests {
 
         let req = Request::builder()
             .uri("/protected")
-            .header("Authorization", format!("Bearer {token}"))
+            .header("Authorization", format!("DPoP {token}"))
             .header("DPoP", dpop_proof)
             .body(Body::empty())
             .unwrap();
@@ -523,7 +523,7 @@ mod tests {
 
         let req = Request::builder()
             .uri("/protected")
-            .header("Authorization", format!("Bearer {token}"))
+            .header("Authorization", format!("DPoP {token}"))
             .header("DPoP", dpop_proof)
             .body(Body::empty())
             .unwrap();
@@ -553,7 +553,7 @@ mod tests {
 
         let req = Request::builder()
             .uri("/protected")
-            .header("Authorization", format!("Bearer {token}"))
+            .header("Authorization", format!("DPoP {token}"))
             .header("DPoP", dpop_proof)
             .body(Body::empty())
             .unwrap();
@@ -584,7 +584,7 @@ mod tests {
 
         let req = Request::builder()
             .uri("/protected")
-            .header("Authorization", format!("Bearer {token}"))
+            .header("Authorization", format!("DPoP {token}"))
             .header("DPoP", dpop_proof)
             .body(Body::empty())
             .unwrap();
@@ -626,7 +626,7 @@ mod tests {
 
         let req = Request::builder()
             .uri("/protected")
-            .header("Authorization", format!("Bearer {token}"))
+            .header("Authorization", format!("DPoP {token}"))
             .header("DPoP", dpop_proof)
             .body(Body::empty())
             .unwrap();
@@ -668,7 +668,7 @@ mod tests {
 
         let req = Request::builder()
             .uri("/protected")
-            .header("Authorization", format!("Bearer {token}"))
+            .header("Authorization", format!("DPoP {token}"))
             .header("DPoP", dpop_proof)
             .body(Body::empty())
             .unwrap();
@@ -699,7 +699,7 @@ mod tests {
         );
         let req = Request::builder()
             .uri("/protected")
-            .header("Authorization", format!("Bearer {token}"))
+            .header("Authorization", format!("DPoP {token}"))
             .header("DPoP", dpop_proof)
             .body(Body::empty())
             .unwrap();
@@ -731,7 +731,7 @@ mod tests {
         );
         let req = Request::builder()
             .uri("/protected")
-            .header("Authorization", format!("Bearer {token}"))
+            .header("Authorization", format!("DPoP {token}"))
             .header("DPoP", dpop_proof)
             .body(Body::empty())
             .unwrap();
@@ -764,7 +764,7 @@ mod tests {
         );
         let req = Request::builder()
             .uri("/protected")
-            .header("Authorization", format!("Bearer {token}"))
+            .header("Authorization", format!("DPoP {token}"))
             .header("DPoP", dpop_proof)
             .body(Body::empty())
             .unwrap();
@@ -793,7 +793,7 @@ mod tests {
         let proof2 = make_dpop_proof(&dpop_key, "GET", &htu);
         let req = Request::builder()
             .uri("/protected")
-            .header("Authorization", format!("Bearer {token}"))
+            .header("Authorization", format!("DPoP {token}"))
             .header("DPoP", proof1)
             .header("DPoP", proof2)
             .body(Body::empty())

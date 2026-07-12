@@ -7,7 +7,7 @@ use crate::app::AppState;
 
 use common::ErrorCode;
 
-use super::bearer::extract_bearer_token;
+use super::bearer::{extract_access_token, AuthScheme};
 use super::dpop::validate_dpop;
 use super::jwt::{parse_scope, verify_access_token, AuthScope};
 
@@ -60,8 +60,12 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        // 1. Extract the raw Bearer token string from Authorization header.
-        let token_str = extract_bearer_token(&parts.headers)?;
+        // 1. Extract the access token from the Authorization header. Both schemes
+        //    are accepted here (RFC 9449 §7.1): a DPoP-bound OAuth token arrives as
+        //    `Authorization: DPoP <token>`, a plain session/agent token as
+        //    `Authorization: Bearer <token>`. Scheme ↔ binding consistency is
+        //    enforced below, after the token's claims are decoded.
+        let (scheme, token_str) = extract_access_token(&parts.headers)?;
 
         // 2. Detect the DPoP header before decoding the access token.
         //    RFC 9449 §11.1: reject if multiple DPoP headers are present — a
@@ -88,13 +92,17 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
         // 3. Decode and verify the access token (HS256 or ES256).
         let claims = verify_access_token(token_str, state)?;
 
-        // 4. Enforce DPoP binding (RFC 9449 §7.1).
-        //    When `cnf` is present the token carries a proof-of-possession claim; we
-        //    must require a DPoP proof to honour that binding.
+        // 4. Enforce DPoP binding and scheme ↔ binding consistency (RFC 9449 §7.1).
+        //    The authorization scheme *declares* the token's binding regime, so a
+        //    mismatch in either direction is rejected rather than downgraded:
         //    * `cnf` present but no `jkt` → explicit rejection: a future cnf variant
         //      (e.g. `x5t#S256` for cert binding) could be silently downgraded to plain
         //      Bearer if we only check `jkt.is_some()`.
         //    * `cnf.jkt` present but no DPoP header → downgrade attack; reject.
+        //    * `cnf.jkt` present but presented as `Bearer` → a bound token used
+        //      without declaring its binding (matches the reference PDS rejection).
+        //    * `DPoP` scheme but an unbound token → the client claims
+        //      proof-of-possession the token doesn't carry; reject.
         if let Some(cnf) = &claims.cnf {
             if cnf.jkt.is_none() {
                 return Err(ApiError::new(
@@ -108,6 +116,17 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
                     "DPoP-bound token requires a DPoP proof header",
                 ));
             }
+            if scheme != AuthScheme::Dpop {
+                return Err(ApiError::new(
+                    common::ErrorCode::InvalidToken,
+                    "DPoP-bound token must use the DPoP authorization scheme",
+                ));
+            }
+        } else if scheme == AuthScheme::Dpop {
+            return Err(ApiError::new(
+                common::ErrorCode::InvalidToken,
+                "DPoP authorization scheme requires a DPoP-bound access token",
+            ));
         }
 
         // 5. Resolve scope enum.

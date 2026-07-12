@@ -621,8 +621,110 @@ mod tests {
 
     #[tokio::test]
     async fn dpop_bound_token_with_valid_proof_returns_200() {
-        // A DPoP-bound access token (cnf.jkt present) WITH a valid DPoP proof returns 200.
-        // Exercises the full DPoP validation path: jkt binding + ath claim + signature.
+        // A DPoP-bound access token (cnf.jkt present), presented with the DPoP
+        // authorization scheme (RFC 9449 §7.1) and a valid DPoP proof, returns 200.
+        // Exercises the full DPoP validation path: scheme + jkt binding + ath claim
+        // + signature. This is the request shape the wallet's OAuth client sends.
+        let state = test_state().await;
+        insert_account(
+            &state.db,
+            "did:plc:dpop",
+            "dpop.test.example.com",
+            "dpop@example.com",
+        )
+        .await;
+
+        let dpop_key = p256::ecdsa::SigningKey::random(&mut rand_core::OsRng);
+        let jkt = thumbprint_of(&dpop_key);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = {
+            use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+            encode(
+                &Header::new(Algorithm::HS256),
+                &serde_json::json!({
+                    "scope": "com.atproto.access",
+                    "sub": "did:plc:dpop",
+                    "iat": now,
+                    "exp": now + 7200_u64,
+                    "cnf": { "jkt": jkt },
+                }),
+                &EncodingKey::from_secret(&state.jwt_secret),
+            )
+            .unwrap()
+        };
+
+        let public_url = &state.config.public_url;
+        let htu = format!("{public_url}/xrpc/com.atproto.server.getSession");
+        let proof = make_dpop_proof(&dpop_key, "GET", &htu, &token);
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/xrpc/com.atproto.server.getSession")
+                    .header("Authorization", format!("DPoP {token}"))
+                    .header("DPoP", proof)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json["did"], "did:plc:dpop");
+    }
+
+    #[tokio::test]
+    async fn dpop_bound_token_without_proof_returns_401() {
+        // A DPoP-bound access token (cnf.jkt present) WITHOUT a DPoP header must be
+        // rejected — RFC 9449 §7.1: cnf.jkt requires a DPoP proof to prevent downgrade.
+        let state = test_state().await;
+
+        let dpop_key = p256::ecdsa::SigningKey::random(&mut rand_core::OsRng);
+        let jkt = thumbprint_of(&dpop_key);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = {
+            use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+            encode(
+                &Header::new(Algorithm::HS256),
+                &serde_json::json!({
+                    "scope": "com.atproto.access",
+                    "sub": "did:plc:dpop",
+                    "iat": now,
+                    "exp": now + 7200_u64,
+                    "cnf": { "jkt": jkt },
+                }),
+                &EncodingKey::from_secret(&state.jwt_secret),
+            )
+            .unwrap()
+        };
+
+        // No DPoP header — should be rejected.
+        let response = app(state)
+            .oneshot(get_session_request(&token))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+    }
+
+    #[tokio::test]
+    async fn dpop_bound_token_with_bearer_scheme_returns_401() {
+        // A DPoP-bound token presented as `Authorization: Bearer` must be rejected
+        // even when a valid proof accompanies it — the Bearer scheme declares an
+        // unbound token, so a bound token arriving under it is a downgrade attempt
+        // (matches the reference PDS, which requires the DPoP scheme for bound tokens).
         let state = test_state().await;
         insert_account(
             &state.db,
@@ -672,43 +774,34 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let json = body_json(response).await;
-        assert_eq!(json["did"], "did:plc:dpop");
+        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
     }
 
     #[tokio::test]
-    async fn dpop_bound_token_without_proof_returns_401() {
-        // A DPoP-bound access token (cnf.jkt present) WITHOUT a DPoP header must be
-        // rejected — RFC 9449 §7.1: cnf.jkt requires a DPoP proof to prevent downgrade.
+    async fn dpop_scheme_with_unbound_token_returns_401() {
+        // `Authorization: DPoP <token>` with a plain (no cnf) session token must be
+        // rejected: the scheme claims proof-of-possession the token doesn't carry.
         let state = test_state().await;
+        insert_account(
+            &state.db,
+            "did:plc:unbound",
+            "unbound.test.example.com",
+            "unbound@example.com",
+        )
+        .await;
+        let token = access_jwt(&state.jwt_secret, "did:plc:unbound");
 
-        let dpop_key = p256::ecdsa::SigningKey::random(&mut rand_core::OsRng);
-        let jkt = thumbprint_of(&dpop_key);
-
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let token = {
-            use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-            encode(
-                &Header::new(Algorithm::HS256),
-                &serde_json::json!({
-                    "scope": "com.atproto.access",
-                    "sub": "did:plc:dpop",
-                    "iat": now,
-                    "exp": now + 7200_u64,
-                    "cnf": { "jkt": jkt },
-                }),
-                &EncodingKey::from_secret(&state.jwt_secret),
-            )
-            .unwrap()
-        };
-
-        // No DPoP header — should be rejected.
         let response = app(state)
-            .oneshot(get_session_request(&token))
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/xrpc/com.atproto.server.getSession")
+                    .header("Authorization", format!("DPoP {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
