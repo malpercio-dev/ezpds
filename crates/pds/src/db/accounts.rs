@@ -154,29 +154,36 @@ pub(crate) async fn update_account_email(
     }
 }
 
-/// Return `true` when an active account exists for `did` (not deactivated, suspended, or
-/// taken down).
+/// Fetch the account's derived [`AccountLifecycle`], or `None` when no account row exists.
 ///
-/// Used by handlers that authenticate via JWT but still need to reject tokens whose
-/// underlying account has since lost active status or been removed — e.g. `getPreferences`,
-/// which otherwise has no reason to read the `accounts` table. Mirrors the lifecycle guard
-/// that `get_session_account` applies.
-pub(crate) async fn account_is_active(db: &sqlx::SqlitePool, did: &str) -> Result<bool, ApiError> {
-    let row: Option<(i64,)> = sqlx::query_as(
-        "SELECT 1 FROM accounts \
-         WHERE did = ? AND deactivated_at IS NULL AND suspended_at IS NULL \
-           AND taken_down_at IS NULL \
-         LIMIT 1",
+/// Used by handlers that authenticate via JWT but still need account-lifecycle context —
+/// e.g. the preferences routes, which otherwise have no reason to read the `accounts`
+/// table. Deliberately unfiltered (unlike `get_session_account`'s lifecycle guard) so a
+/// route can keep serving a self-service-deactivated account — the migration window between
+/// a deactivated `createAccount` and `activateAccount` — while still refusing moderation
+/// states. The caller decides which lifecycle states it admits.
+pub(crate) async fn account_lifecycle(
+    db: &sqlx::SqlitePool,
+    did: &str,
+) -> Result<Option<AccountLifecycle>, ApiError> {
+    let row: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT deactivated_at, suspended_at, taken_down_at FROM accounts WHERE did = ?",
     )
     .bind(did)
     .fetch_optional(db)
     .await
     .map_err(|e| {
-        tracing::error!(did = %did, error = %e, "DB error checking account active state");
+        tracing::error!(did = %did, error = %e, "DB error loading account lifecycle");
         ApiError::new(ErrorCode::InternalError, "failed to load account")
     })?;
 
-    Ok(row.is_some())
+    Ok(row.map(|(deactivated_at, suspended_at, taken_down_at)| {
+        AccountLifecycle::from_timestamps(
+            deactivated_at.as_deref(),
+            suspended_at.as_deref(),
+            taken_down_at.as_deref(),
+        )
+    }))
 }
 
 /// Whether an `activate_account` / `deactivate_account` call actually changed the account status.
@@ -492,7 +499,7 @@ pub(crate) struct AccountOverview {
 /// Fetch an [`AccountOverview`] by DID for the operator usage/storage endpoints.
 ///
 /// Returns `None` only when no account row exists for `did` (the caller maps this to a 404).
-/// Unlike `resolve_identifier`/`account_is_active`, this does **not** filter deactivated
+/// Unlike `resolve_identifier`'s lifecycle gate, this does **not** filter deactivated
 /// accounts — an operator still needs their usage figures.
 pub(crate) async fn get_account_overview(
     db: &sqlx::SqlitePool,
@@ -1366,19 +1373,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn activate_makes_account_is_active_return_true() {
+    async fn activate_flips_account_lifecycle_back_to_active() {
         let db = test_pool().await;
         insert_account(&db, "did:plc:l").await;
         deactivate(&db, "did:plc:l", None).await;
-        assert!(
-            !account_is_active(&db, "did:plc:l").await.unwrap(),
-            "account_is_active must be false after deactivation"
+        assert_eq!(
+            account_lifecycle(&db, "did:plc:l").await.unwrap(),
+            Some(AccountLifecycle::Deactivated),
+            "lifecycle must be Deactivated after deactivation"
         );
 
         activate(&db, "did:plc:l").await;
-        assert!(
-            account_is_active(&db, "did:plc:l").await.unwrap(),
-            "account_is_active must be true after activation"
+        assert_eq!(
+            account_lifecycle(&db, "did:plc:l").await.unwrap(),
+            Some(AccountLifecycle::Active),
+            "lifecycle must be Active after activation"
         );
     }
 
@@ -1778,15 +1787,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn account_is_active_false_for_suspended_and_takendown() {
+    async fn account_lifecycle_reports_suspended_takendown_and_missing() {
         let db = test_pool().await;
         insert_account(&db, "did:plc:aia_susp").await;
         set_lifecycle_column(&db, "did:plc:aia_susp", "suspended_at").await;
-        assert!(!account_is_active(&db, "did:plc:aia_susp").await.unwrap());
+        assert_eq!(
+            account_lifecycle(&db, "did:plc:aia_susp").await.unwrap(),
+            Some(AccountLifecycle::Suspended)
+        );
 
         insert_account(&db, "did:plc:aia_td").await;
         set_lifecycle_column(&db, "did:plc:aia_td", "taken_down_at").await;
-        assert!(!account_is_active(&db, "did:plc:aia_td").await.unwrap());
+        assert_eq!(
+            account_lifecycle(&db, "did:plc:aia_td").await.unwrap(),
+            Some(AccountLifecycle::TakenDown)
+        );
+
+        assert_eq!(
+            account_lifecycle(&db, "did:plc:aia_ghost").await.unwrap(),
+            None,
+            "a DID with no account row must report None"
+        );
     }
 
     // ── set_account_takedown ───────────────────────────────────────────────────────────────────

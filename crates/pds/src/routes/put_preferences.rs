@@ -1,7 +1,8 @@
 // pattern: Imperative Shell
 //
 // Gathers: AuthenticatedUser (JWT extractor), DB pool via AppState, raw JSON body
-// Processes: scope validation → account-active check → parse + validate the preferences
+// Processes: scope validation → account-lifecycle check (deactivated allowed; moderation
+//            states and missing accounts rejected) → parse + validate the preferences
 //            array (each entry an object with an `app.bsky`-namespaced `$type`, none of them
 //            full-access-only unless the caller has full access) → merge with any
 //            full-access-only entries the caller can't manage → overwrite the account's
@@ -21,7 +22,7 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
-use crate::db::accounts::account_is_active;
+use crate::db::accounts::{account_lifecycle, AccountLifecycle};
 use crate::db::preferences::{get_preferences, put_preferences};
 use crate::routes::preference_scope::is_full_access_only_pref;
 
@@ -45,8 +46,10 @@ fn is_app_bsky_namespace(ty: &str) -> bool {
 /// The write companion to `getPreferences`. Preferences live on the PDS for user data
 /// sovereignty rather than being proxied to the AppView, so this route is registered ahead
 /// of the `app.bsky.*` catch-all. Like `getPreferences`, any access-level token is accepted
-/// (full access or an app password), and a token whose account has since been deactivated or
-/// removed is rejected even though the JWT is still cryptographically valid. The body must be
+/// (full access or an app password), and a token whose account has been removed, taken down,
+/// or suspended is rejected even though the JWT is still cryptographically valid — but a
+/// self-service-deactivated account is served, because migration imports preferences into
+/// the deactivated destination account before `activateAccount`. The body must be
 /// `{ "preferences": [ {…}, … ] }`; a malformed body — not an object, missing the field, a
 /// non-object entry, or an entry whose `$type` is missing or outside the `app.bsky` namespace
 /// — returns 400, as does an app-password caller submitting a full-access-only type (e.g.
@@ -71,12 +74,17 @@ pub async fn put_preferences_handler(
     }
     let has_access_full = user.scope == AuthScope::Access;
 
-    // A valid JWT is not enough: reject tokens whose account has been deactivated or removed,
-    // mirroring `getPreferences`. Without this an unexpired token would keep writing
-    // preferences after the account is gone.
-    if !account_is_active(&state.db, &user.did).await? {
-        tracing::warn!(did = %user.did, "putPreferences: account not found or deactivated");
-        return Err(ApiError::new(ErrorCode::InvalidToken, "account not found"));
+    // A valid JWT is not enough: reject tokens for a removed account or one in a moderation
+    // state (takedown/suspension), mirroring `getPreferences`. A self-service-deactivated
+    // account is deliberately still served: the standard migration sequence imports
+    // preferences into the deactivated destination account *before* `activateAccount`, and
+    // the reference PDS likewise gates preferences on moderation status, not deactivation.
+    match account_lifecycle(&state.db, &user.did).await? {
+        Some(AccountLifecycle::Active | AccountLifecycle::Deactivated) => {}
+        _ => {
+            tracing::warn!(did = %user.did, "putPreferences: account missing or in a moderation state");
+            return Err(ApiError::new(ErrorCode::InvalidToken, "account not found"));
+        }
     }
 
     // Parse the body ourselves rather than via the `Json` extractor so a malformed request
@@ -701,7 +709,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deactivated_account_returns_401() {
+    async fn deactivated_account_is_served() {
+        // A deactivated account can still write preferences: the migration flow imports
+        // preferences into the deactivated destination account before activateAccount.
         let state = test_state().await;
         insert_account(&state.db, "did:plc:deact", "deact@example.com").await;
         sqlx::query("UPDATE accounts SET deactivated_at = datetime('now') WHERE did = ?")
@@ -710,6 +720,32 @@ mod tests {
             .await
             .unwrap();
         let token = access_jwt(&state.jwt_secret, "did:plc:deact");
+
+        let response = app(state)
+            .oneshot(put_request(
+                &token,
+                serde_json::json!({ "preferences": [
+                    { "$type": "app.bsky.actor.defs#adultContentPref", "enabled": false }
+                ] }),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn takendown_account_returns_401() {
+        // Moderation states stay closed: a takedown must not be writable-around via
+        // preferences even though self-service deactivation is served.
+        let state = test_state().await;
+        insert_account(&state.db, "did:plc:takedown", "takedown@example.com").await;
+        sqlx::query("UPDATE accounts SET taken_down_at = datetime('now') WHERE did = ?")
+            .bind("did:plc:takedown")
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let token = access_jwt(&state.jwt_secret, "did:plc:takedown");
 
         let response = app(state)
             .oneshot(put_request(

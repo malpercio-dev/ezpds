@@ -16,7 +16,7 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
-use crate::db::accounts::account_is_active;
+use crate::db::accounts::{account_lifecycle, AccountLifecycle};
 use crate::db::preferences::get_preferences;
 use crate::routes::preference_scope::is_full_access_only_pref;
 
@@ -33,9 +33,10 @@ pub struct GetPreferencesResponse {
 /// token is accepted (full access or an app password), matching the reference PDS, but an
 /// app-password caller — privileged or not — never sees full-access-only preference types
 /// (e.g. `personalDetailsPref`, which can carry a birth date); those entries are filtered out
-/// of its response even though the same account stored them. A token whose account has since
-/// been deactivated or removed is rejected even though the JWT is still cryptographically
-/// valid.
+/// of its response even though the same account stored them. A token whose account has been
+/// removed, taken down, or suspended is rejected even though the JWT is still
+/// cryptographically valid — but a self-service-deactivated account is served, mirroring
+/// `putPreferences` (migration touches preferences before `activateAccount`).
 pub async fn get_preferences_handler(
     user: AuthenticatedUser,
     State(state): State<AppState>,
@@ -48,12 +49,17 @@ pub async fn get_preferences_handler(
     }
     let has_access_full = user.scope == AuthScope::Access;
 
-    // A valid JWT is not enough: reject tokens whose account has been deactivated or removed,
-    // mirroring `getSession`. Without this an unexpired token would keep reading preferences
-    // after the account is gone.
-    if !account_is_active(&state.db, &user.did).await? {
-        tracing::warn!(did = %user.did, "getPreferences: account not found or deactivated");
-        return Err(ApiError::new(ErrorCode::InvalidToken, "account not found"));
+    // A valid JWT is not enough: reject tokens for a removed account or one in a moderation
+    // state (takedown/suspension), mirroring `putPreferences`. A self-service-deactivated
+    // account is deliberately still served — the migration flow touches preferences on the
+    // deactivated destination account before `activateAccount`, and the reference PDS gates
+    // preferences on moderation status, not deactivation.
+    match account_lifecycle(&state.db, &user.did).await? {
+        Some(AccountLifecycle::Active | AccountLifecycle::Deactivated) => {}
+        _ => {
+            tracing::warn!(did = %user.did, "getPreferences: account missing or in a moderation state");
+            return Err(ApiError::new(ErrorCode::InvalidToken, "account not found"));
+        }
     }
 
     let mut preferences: Vec<Value> = match get_preferences(&state.db, &user.did).await? {
@@ -345,7 +351,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deactivated_account_returns_401() {
+    async fn deactivated_account_is_served() {
+        // A deactivated account can still read preferences — migration touches
+        // preferences on the deactivated destination account before activateAccount.
         let state = test_state().await;
         insert_account(&state.db, "did:plc:deact", "deact@example.com").await;
         sqlx::query("UPDATE accounts SET deactivated_at = datetime('now') WHERE did = ?")
@@ -354,6 +362,28 @@ mod tests {
             .await
             .unwrap();
         let token = access_jwt(&state.jwt_secret, "did:plc:deact");
+
+        let response = app(state)
+            .oneshot(get_preferences_request(&token))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json["preferences"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn takendown_account_returns_401() {
+        // Moderation states stay closed even though self-service deactivation is served.
+        let state = test_state().await;
+        insert_account(&state.db, "did:plc:takedown", "takedown@example.com").await;
+        sqlx::query("UPDATE accounts SET taken_down_at = datetime('now') WHERE did = ?")
+            .bind("did:plc:takedown")
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let token = access_jwt(&state.jwt_secret, "did:plc:takedown");
 
         let response = app(state)
             .oneshot(get_preferences_request(&token))
