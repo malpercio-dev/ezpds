@@ -66,7 +66,7 @@ pub async fn create_record(
     };
 
     // Delegate to the shared write helper with create_only=true.
-    let (_result, record_cid) = crate::record_write::write_record(
+    let record_cid = crate::record_write::write_record(
         &state,
         &headers,
         &did,

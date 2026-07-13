@@ -64,16 +64,6 @@ impl Default for RepoWriteLocks {
     }
 }
 
-/// Result of a successful record write operation.
-///
-/// `new_root` has no reader yet (hence `#[allow(dead_code)]`); it is retained to feed
-/// the ATProto `commit` field of the create/put responses and future sequencer emission.
-#[allow(dead_code)]
-pub struct WriteRecordResult {
-    /// The new repo root CID after the write.
-    pub new_root: String,
-}
-
 /// Optimistic-concurrency preconditions parsed from the ATProto `swapCommit` / `swapRecord`
 /// request parameters. An all-`None` value (the [`Default`]) imposes no preconditions, so the
 /// only guard is the existing commit-level compare-and-swap on the repo root.
@@ -195,7 +185,7 @@ pub async fn write_record(
     record: &serde_json::Value,
     create_only: bool,
     swap: &SwapCheck,
-) -> Result<(WriteRecordResult, repo_engine::Cid), ApiError> {
+) -> Result<repo_engine::Cid, ApiError> {
     // Validate DID format.
     if !crate::auth::validation::is_valid_did(did) {
         return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
@@ -341,7 +331,6 @@ pub async fn write_record(
     // The CAS and the firehose `#commit` event commit atomically (see `commit_repo_write`), while
     // both the previous and new block sets are still present (the diff CAR is computed against
     // them) — call this before GC.
-    let new_root = repo.root().to_string();
     let new_rev = repo.commit().rev().as_str().to_string();
     let (collection, rkey) = split_record_path(mst_key);
     let op = crate::firehose::RepoOp {
@@ -373,7 +362,7 @@ pub async fn write_record(
     // `commit_repo_write` reclaims this commit's superseded blocks incrementally (see its
     // post-commit GC); no separate full-repo reachability sweep runs on the write path.
 
-    Ok((WriteRecordResult { new_root }, record_cid))
+    Ok(record_cid)
 }
 
 /// Advance the repo root (optimistic-concurrency CAS) and, while both the previous and new block

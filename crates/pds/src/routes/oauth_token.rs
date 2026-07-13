@@ -397,9 +397,9 @@ async fn handle_authorization_code(
         return OAuthTokenError::new("server_error", "database error").into_response();
     }
 
-    // The access token carries the granular scope set granted at consent time,
-    // recording exactly what the client was granted. Per-request enforcement is a
-    // later change; today any granted atproto scope is treated as full access.
+    // The access token carries the granular scope set granted at consent time verbatim —
+    // `auth/oauth_scopes.rs` enforces it per route and `extractors.rs` reads the token's
+    // scope claim on every authenticated request.
     let granted_scope = auth_code.scope;
 
     // Issue ES256 access token.
