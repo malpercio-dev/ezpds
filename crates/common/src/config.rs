@@ -336,8 +336,9 @@ pub struct RateLimitConfig {
     /// `com.atproto.server.createAccount` requests per IP per 5 minutes (reference: 100). `0` disables.
     #[serde(default = "default_create_account_per_5min")]
     pub create_account_per_5min: u64,
-    /// `com.atproto.server.createSession` requests per IP per 5 minutes (reference: 30). `0` disables.
-    /// Complements the per-identifier failed-login sliding window already applied inside the handler.
+    /// Password or sovereign full-session creation requests per IP per 5 minutes (reference: 30).
+    /// Both endpoints share one budget. `0` disables. Complements the per-identifier failed-login
+    /// sliding window already applied inside the password handler.
     #[serde(default = "default_create_session_per_5min")]
     pub create_session_per_5min: u64,
     /// `com.atproto.server.resetPassword` requests per IP per 5 minutes (reference: 50). `0` disables.

@@ -151,7 +151,8 @@ sets this):
 1. **Global per-IP** — 1 point/request keyed by client IP (leftmost `X-Forwarded-For`, else the TCP
    peer), default 3000/5min. `com.atproto.sync.getRepo`, `subscribeRepos`, and `_health` are exempt
    so relay backfill/firehose and platform health checks are never throttled.
-2. **Per-endpoint per-IP** — tighter caps on `createAccount`/`createSession`/`resetPassword`/
+2. **Per-endpoint per-IP** — tighter caps on `createAccount`/`createSession` (password and
+   sovereign session creation share one budget)/`resetPassword`/
    `updateHandle` (plus the native `/v1/accounts[/mobile]` signup routes), `/v1/transfer/accept`
    (authenticated by a bare 6-char code, so a short-code endpoint belongs here by default), and
    the agent claim-ceremony pair `/agent/identity/claim/confirm` + `/v1/agents/claim-preview`
@@ -295,6 +296,7 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 | `static_assets.rs` | `GET /static/*path` — embedded brand fonts (woff2/ttf via `include_bytes!`) and future web-UI assets |
 | `landing.rs` | `GET /` — the instance landing page (embedded `assets/landing.html`, Sealed Credential register): host/DID/version/signup facts from config, a progressive-enhancement `_health` status chip, and pointers for joiners and developers |
 | `create_session.rs` | `POST /xrpc/com.atproto.server.createSession` — password auth. Verifies the main account password first (→ full `com.atproto.access`); on mismatch (or a mobile account with no main password) falls back to the account's app passwords (→ `com.atproto.appPass`/`com.atproto.appPassPrivileged`, email omitted from the response, refresh token tagged with the app password name) |
+| `sovereign_session.rs` | `POST /v1/sessions/sovereign` — passwordless full-access session issuance from a fresh timestamped proof signed by a key in the hosted DID's authoritative current PLC `rotationKeys`. The canonical envelope binds the protocol domain/version, destination server DID, method/path, account DID, signing-key DID, timestamp, and 32-byte random nonce; P-256 and secp256k1 signatures are accepted only in canonical low-S form. Local lifecycle is checked before and inside the nonce+session transaction; plc.directory failures fail closed; the cached W3C DID document is never a rotation-key source. Any current rotation key qualifies, including a Custos-held key, which grants Custos no new hosting power. |
 | `create_app_password.rs` | `POST /xrpc/com.atproto.server.createAppPassword` — mint a named app password (optionally `privileged`); returns the generated `xxxx-xxxx-xxxx-xxxx` secret once. Requires full access scope (app-pass tokens rejected); duplicate name → 409 |
 | `list_app_passwords.rs` | `GET /xrpc/com.atproto.server.listAppPasswords` — list an account's app passwords (name/createdAt/privileged, never the secret). Requires full access scope |
 | `revoke_app_password.rs` | `POST /xrpc/com.atproto.server.revokeAppPassword` — delete a named app password and its refresh tokens/sessions atomically (idempotent 200). Requires full access scope |

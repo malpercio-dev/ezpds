@@ -1,0 +1,45 @@
+meta {
+  name: Create Sovereign Session
+  type: http
+  seq: 115
+}
+
+post {
+  url: {{baseUrl}}/v1/sessions/sovereign
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "did": "{{accountDid}}",
+    "signingKey": "{{rotationKeyDid}}",
+    "timestamp": {{timestamp}},
+    "nonce": "{{nonce}}",
+    "signature": "{{signature}}"
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  accountDid:
+  rotationKeyDid:
+  timestamp:
+  nonce:
+  signature:
+}
+
+docs {
+  Exchanges a fresh proof from any key in the hosted DID's current plc.directory
+  `rotationKeys` set for the same full-access access/refresh session returned by password
+  `createSession`. `nonce` is unpadded base64url for 32 cryptographically random bytes;
+  `signature` is an unpadded base64url raw 64-byte r||s low-S ECDSA-SHA256 signature.
+
+  Sign the exact UTF-8 bytes produced by `crypto::encode_sovereign_session_envelope`.
+  Version 1 binds the protocol domain, destination server DID, POST method, route, account
+  DID, signing-key DID, Unix timestamp, and nonce using byte-length-prefixed fields.
+
+  The authoritative key set is the latest non-nullified PLC audit-log operation, never the
+  cached W3C DID document. A Custos-held rotation key also qualifies under PLC semantics;
+  this grants Custos no new hosting power over data it already hosts.
+}
