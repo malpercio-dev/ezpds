@@ -1,0 +1,69 @@
+meta {
+  name: Update hosted did:web document (POST /v1/did-web/document)
+  type: http
+  seq: 118
+}
+
+post {
+  url: {{baseUrl}}/v1/did-web/document
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sessionToken}}
+}
+
+body:json {
+  {
+    "document": {
+      "@context": ["https://www.w3.org/ns/did/v1"],
+      "id": "did:web:example.com",
+      "alsoKnownAs": ["at://example.com"],
+      "verificationMethod": [],
+      "service": []
+    }
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # POST /v1/did-web/document
+
+  Directly edit the DID document Custos hosts for the authenticated `did:web` account — the non-PLC
+  document-mutation path. Overwrites the stored document and emits an `#identity` firehose frame so
+  relays re-resolve, without any plc.directory round trip.
+
+  Authenticate as the account owner (wallet session token or full-access OAuth/XRPC token). Requires
+  a `did:web` account with managed hosting already enabled. The submitted `document.id` must equal
+  the authenticated DID — a direct edit may not re-point the subject.
+
+  ## Request
+
+  ```json
+  {
+    "document": {
+      "@context": ["https://www.w3.org/ns/did/v1"],
+      "id": "did:web:example.com",
+      "alsoKnownAs": ["at://example.com"],
+      "verificationMethod": [ ... ],
+      "service": [ ... ]
+    }
+  }
+  ```
+
+  ## Response (200)
+
+  ```json
+  {}
+  ```
+
+  ## Errors
+
+  - `400` — not a `did:web` account, hosting not enabled, missing/mismatched `id`, or no stored
+    document to update
+  - `401` / `403` — missing/invalid credential, or an agent-derived/app-password token
+}

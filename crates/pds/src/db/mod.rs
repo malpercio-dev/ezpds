@@ -227,6 +227,10 @@ static MIGRATIONS: &[Migration] = &[
         version: 43,
         sql: include_str!("migrations/V043__sovereign_session_nonces.sql"),
     },
+    Migration {
+        version: 44,
+        sql: include_str!("migrations/V044__did_web_hosting.sql"),
+    },
 ];
 
 /// Open a WAL-mode SQLite connection pool with a maximum of 1 connection.

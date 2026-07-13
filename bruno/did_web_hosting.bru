@@ -1,0 +1,55 @@
+meta {
+  name: Toggle managed did:web hosting (POST /v1/did-web/hosting)
+  type: http
+  seq: 117
+}
+
+post {
+  url: {{baseUrl}}/v1/did-web/hosting
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sessionToken}}
+}
+
+body:json {
+  {
+    "enabled": true
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # POST /v1/did-web/hosting
+
+  Opt the authenticated account in or out of Custos-managed `did:web` hosting. When enabled, Custos
+  serves the account's DID document at `https://{host}/.well-known/did.json`; when disabled, serving
+  stops immediately.
+
+  Authenticate as the account owner (wallet session token or full-access OAuth/XRPC token;
+  agent-derived and app-password credentials are refused). Only `did:web` accounts are eligible.
+  Enabling requires a stored DID document to serve (populated by the account's migration onto
+  Custos).
+
+  ## Request
+
+  ```json
+  { "enabled": true }
+  ```
+
+  ## Response (200)
+
+  ```json
+  { "enabled": true }
+  ```
+
+  ## Errors
+
+  - `400` — not a `did:web` account, or enabling with no stored document to serve
+  - `401` / `403` — missing/invalid credential, or an agent-derived/app-password token
+}

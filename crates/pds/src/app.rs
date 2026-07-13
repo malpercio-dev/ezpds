@@ -55,6 +55,10 @@ use crate::routes::delete_record::delete_record;
 use crate::routes::delete_session::delete_session;
 use crate::routes::describe_repo::describe_repo;
 use crate::routes::describe_server::describe_server;
+use crate::routes::did_json::did_json_handler;
+use crate::routes::did_web_hosting::{
+    set_did_web_hosting_handler, update_did_web_document_handler,
+};
 use crate::routes::get_blob::get_blob;
 use crate::routes::get_device_pds::get_device_pds;
 use crate::routes::get_did::get_did_handler;
@@ -304,6 +308,7 @@ pub fn app(state: AppState) -> Router {
         .route("/", get(landing))
         .route("/auth.md", get(serve_auth_md))
         .route("/.well-known/atproto-did", get(atproto_did_handler))
+        .route("/.well-known/did.json", get(did_json_handler))
         .route(
             "/.well-known/oauth-protected-resource",
             get(oauth_protected_resource_metadata),
@@ -542,6 +547,11 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/sessions/sovereign", post(create_sovereign_session))
         .route("/v1/accounts/{id}/usage", get(account_usage))
         .route("/v1/accounts/{id}/storage", get(account_storage))
+        .route("/v1/did-web/hosting", post(set_did_web_hosting_handler))
+        .route(
+            "/v1/did-web/document",
+            post(update_did_web_document_handler),
+        )
         .route("/v1/agents", get(list_agents))
         .route("/v1/agents/claim-preview", post(claim_preview))
         .route("/v1/agents/{registration_id}/revoke", post(revoke_agent))

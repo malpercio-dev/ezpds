@@ -1,0 +1,46 @@
+meta {
+  name: DID document (well-known did.json)
+  type: http
+  seq: 116
+}
+
+get {
+  url: {{baseUrl}}/.well-known/did.json
+  body: none
+  auth: none
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # GET /.well-known/did.json
+
+  Serves the DID document for a Custos-hosted `did:web` account, keyed on the request Host
+  (`X-Forwarded-Host` → `Host` → `:authority`) mapped to `did:web:{host}`. The document is returned
+  only when that account has opted in to managed hosting and is in an active lifecycle; otherwise a
+  host that isn't opted in returns 404 exactly like an unknown one (no opt-in existence oracle).
+
+  ## Response (200)
+
+  `Content-Type: application/did+json`
+
+  ```json
+  {
+    "@context": ["https://www.w3.org/ns/did/v1"],
+    "id": "did:web:example.com",
+    "alsoKnownAs": ["at://example.com"],
+    "verificationMethod": [ ... ],
+    "service": [ ... ]
+  }
+  ```
+
+  ## Errors
+
+  - `400` — no Host / `:authority` on the request
+  - `404` — the host is not an opted-in, active, Custos-hosted `did:web` account
+
+  Managed hosting is opt-in per account and only ever for user-owned domains: exit is a DNS repoint
+  away. See MM-279.
+}

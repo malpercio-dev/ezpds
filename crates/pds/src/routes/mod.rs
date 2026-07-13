@@ -33,6 +33,8 @@ pub mod delete_record;
 pub mod delete_session;
 pub mod describe_repo;
 pub mod describe_server;
+pub mod did_json;
+pub mod did_web_hosting;
 pub mod get_blob;
 pub mod get_device_pds;
 pub mod get_did;
