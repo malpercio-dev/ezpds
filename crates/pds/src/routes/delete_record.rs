@@ -3,7 +3,7 @@
 //! com.atproto.repo.deleteRecord - Delete a record from a repository.
 
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{Method, StatusCode, Uri};
 use axum::response::IntoResponse;
 use serde::Deserialize;
 
@@ -33,6 +33,8 @@ pub struct DeleteRecordBody {
 /// Delete a record. Idempotent: deleting a record that does not exist succeeds.
 pub async fn delete_record(
     State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
     headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<DeleteRecordBody>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -46,17 +48,18 @@ pub async fn delete_record(
         return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
     }
 
-    // Authenticate: require a valid access token whose subject owns this repo.
-    let token = crate::auth::extract_bearer_token(&headers)?;
-    let claims = crate::auth::jwt::verify_access_token(token, &state)?;
-    let auth_scope = crate::auth::jwt::parse_scope(&claims.scope)?;
-    if !auth_scope.is_access() {
+    // Authenticate: require a valid access token whose subject owns this repo. Runs the shared
+    // access-auth path so the RFC 9449 scheme ↔ `cnf.jkt` binding rules and DPoP-proof
+    // validation match the `AuthenticatedUser` extractor — a DPoP-bound token presented as
+    // plain `Bearer` with no proof is rejected here, not silently downgraded.
+    let user = crate::auth::authenticate_access(&headers, &method, &uri, &state)?;
+    if !user.scope.is_access() {
         return Err(ApiError::new(
             ErrorCode::InvalidToken,
             "access token required",
         ));
     }
-    if claims.sub != *did {
+    if user.did != *did {
         return Err(ApiError::new(
             ErrorCode::Forbidden,
             "authenticated account does not own this repository",
@@ -66,9 +69,9 @@ pub async fn delete_record(
     repo_engine::validate_record_path(collection, rkey)
         .map_err(|_| ApiError::new(ErrorCode::InvalidClaim, "invalid collection or record key"))?;
 
-    if auth_scope == crate::auth::jwt::AuthScope::Access {
+    if user.scope == crate::auth::jwt::AuthScope::Access {
         crate::auth::oauth_scopes::require_repo(
-            &claims.scope,
+            &user.scope_claim,
             collection,
             crate::auth::oauth_scopes::RepoAction::Delete,
         )?;
@@ -188,7 +191,7 @@ pub async fn delete_record(
         Some(prev_data),
         vec![op],
         &root_cid_str,
-        claims.registration_id.as_deref(),
+        user.registration_id.as_deref(),
     )
     .await?;
     // `commit_repo_write` reclaims this commit's superseded blocks incrementally; no separate
@@ -201,12 +204,12 @@ pub async fn delete_record(
 mod tests {
     use super::*;
     use axum::body::Body;
-    use axum::http::Request;
+    use axum::http::{self, Request};
     use tower::ServiceExt;
 
     use crate::routes::test_utils::{
-        access_jwt, delete_record_request, put_record_request, seed_account_with_repo,
-        state_with_master_key,
+        access_jwt, cnf_bound_access_jwt, delete_record_request, put_record_request,
+        seed_account_with_repo, state_with_master_key, DpopProofKey,
     };
 
     fn delete_req(did: &str, rkey: &str, token: Option<&str>) -> Request<Body> {
@@ -270,6 +273,64 @@ mod tests {
             StatusCode::FORBIDDEN,
             "a deactivated account must not be able to delete records"
         );
+    }
+
+    #[tokio::test]
+    async fn delete_record_dpop_bound_token_as_bearer_returns_401() {
+        // A DPoP-bound token (cnf.jkt present) presented as plain `Bearer` with no proof is the
+        // RFC 9449 binding downgrade; deleteRecord must reject it, matching the extractor.
+        let state = state_with_master_key().await;
+        let did = "did:plc:delrec".to_string();
+        seed_account_with_repo(&state.db, &did).await;
+        let dpop_key = DpopProofKey::generate();
+        let token = cnf_bound_access_jwt(&state.jwt_secret, &did, &dpop_key.thumbprint());
+        let app = crate::app::app(state);
+        let resp = app
+            .oneshot(delete_req(&did, "t1", Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "a cnf.jkt-bound token presented as plain Bearer must be rejected on deleteRecord"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_record_valid_dpop_bound_request_succeeds() {
+        // The same bound token under the DPoP scheme with a valid proof passes auth; deleting an
+        // absent record is the idempotent 200 path, reached only after auth — so a 200 proves the
+        // standalone handler threads the request method/URI into proof validation correctly.
+        let state = state_with_master_key().await;
+        let did = "did:plc:delrec".to_string();
+        seed_account_with_repo(&state.db, &did).await;
+        let dpop_key = DpopProofKey::generate();
+        let token = cnf_bound_access_jwt(&state.jwt_secret, &did, &dpop_key.thumbprint());
+        let htu = format!(
+            "{}/xrpc/com.atproto.repo.deleteRecord",
+            state.config.public_url
+        );
+        let proof = dpop_key.proof("POST", &htu, &token);
+        let app = crate::app::app(state);
+
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri("/xrpc/com.atproto.repo.deleteRecord")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("DPoP {token}"))
+            .header("DPoP", proof)
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({
+                    "repo": did,
+                    "collection": "app.bsky.feed.post",
+                    "rkey": "absent"
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(request).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     /// Helper: create a record via putRecord and return its CID.

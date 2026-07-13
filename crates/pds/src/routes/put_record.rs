@@ -3,7 +3,7 @@
 //! com.atproto.repo.putRecord - Create or update a record in a repository.
 
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{Method, StatusCode, Uri};
 use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 
@@ -55,6 +55,8 @@ pub struct PutRecordResponse {
 /// succeeds regardless of whether the record already exists (upsert semantics).
 pub async fn put_record(
     State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
     headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<PutRecordBody>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -78,6 +80,8 @@ pub async fn put_record(
     let (_result, record_cid) = crate::record_write::write_record(
         &state,
         &headers,
+        &method,
+        &uri,
         &did,
         &mst_key,
         &body.record,
@@ -99,10 +103,13 @@ pub async fn put_record(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
+    use axum::http::{self, Request};
     use tower::ServiceExt;
 
     use crate::routes::test_utils::{
-        access_jwt, put_record_request, seed_account_with_repo, state_with_master_key,
+        access_jwt, cnf_bound_access_jwt, put_record_request, seed_account_with_repo,
+        state_with_master_key, DpopProofKey,
     };
 
     async fn setup_account_with_repo() -> (AppState, String) {
@@ -145,6 +152,61 @@ mod tests {
 
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn put_record_dpop_bound_token_as_bearer_returns_401() {
+        // A DPoP-bound access token (cnf.jkt present) presented as plain `Bearer` with no proof is
+        // the RFC 9449 binding downgrade the write path must reject, matching the extractor.
+        let (state, did) = setup_account_with_repo().await;
+        let dpop_key = DpopProofKey::generate();
+        let token = cnf_bound_access_jwt(&state.jwt_secret, &did, &dpop_key.thumbprint());
+        let app = crate::app::app(state);
+
+        let request = put_record_request(
+            &did,
+            "app.bsky.feed.post",
+            "nolanding",
+            serde_json::json!({"record": {"text": "x"}}),
+            Some(&token),
+        );
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "a cnf.jkt-bound token presented as plain Bearer must be rejected on putRecord"
+        );
+    }
+
+    #[tokio::test]
+    async fn put_record_valid_dpop_bound_request_succeeds() {
+        // The same bound token under the DPoP scheme with a valid proof (htm/htu matching this
+        // request) is accepted — the shared write helper threads the method/URI through correctly.
+        let (state, did) = setup_account_with_repo().await;
+        let dpop_key = DpopProofKey::generate();
+        let token = cnf_bound_access_jwt(&state.jwt_secret, &did, &dpop_key.thumbprint());
+        let htu = format!(
+            "{}/xrpc/com.atproto.repo.putRecord",
+            state.config.public_url
+        );
+        let proof = dpop_key.proof("POST", &htu, &token);
+        let app = crate::app::app(state);
+
+        let mut body = serde_json::json!({"record": {"text": "written under dpop"}});
+        body["repo"] = serde_json::json!(did);
+        body["collection"] = serde_json::json!("app.bsky.feed.post");
+        body["rkey"] = serde_json::json!("dpopok");
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri("/xrpc/com.atproto.repo.putRecord")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("DPoP {token}"))
+            .header("DPoP", proof)
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]

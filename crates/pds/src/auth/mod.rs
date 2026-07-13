@@ -24,7 +24,7 @@ pub use dpop::{
 pub use permission_sets::{new_permission_set_cache, PermissionSetCache};
 // Foundational types: used once authenticated routes are wired up.
 #[allow(unused_imports)]
-pub use extractors::AuthenticatedUser;
+pub use extractors::{authenticate_access, AuthenticatedUser};
 #[allow(unused_imports)]
 pub use jwt::AuthScope;
 pub use signing_key::{
