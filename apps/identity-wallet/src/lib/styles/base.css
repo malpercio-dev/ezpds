@@ -16,6 +16,16 @@
      appearance control overrides it via an inline style on <html>
      ($lib/appearance + the pre-paint script in app.html). */
   color-scheme: light dark;
+
+  /* Safe-area insets (status bar / Dynamic Island / home indicator). These read
+     the real device insets only because app.html opts in with viewport-fit=cover;
+     off a notched device (desktop, older iOS) they fall back to 0px, so every
+     `max(--space-*, --safe-*)` collapses to the base spacing. Screens pad by these
+     so content never renders under the OS chrome. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
 }
 
 html {
@@ -27,6 +37,9 @@ html {
 
 body {
   margin: 0;
+  /* No whole-page rubber-band: the app frame is a fixed viewport and each screen
+     scrolls internally, so bouncing the document would only reveal blank ground. */
+  overscroll-behavior: none;
   background: var(--color-bg);
   color: var(--color-ink);
   font-family: var(--font-sans);

@@ -42,6 +42,9 @@
     flex-direction: column;
     height: 100%;
     padding: var(--space-xl) var(--space-lg);
+    /* Scroll when the content is taller than the frame (small devices, long
+       error copy) instead of trapping it off-screen. */
+    overflow-y: auto;
   }
 
   .back {
@@ -65,7 +68,12 @@
     display: flex;
     flex-direction: column;
     align-items: center;
+    /* `safe` centering: centered when it fits, top-aligned when it overflows, so
+       the top of tall content is never pushed above the scroll origin (unreachable).
+       The plain `center` first is the fallback for any WebView that doesn't parse the
+       `safe` keyword — it keeps centering rather than reverting to top alignment. */
     justify-content: center;
+    justify-content: safe center;
     gap: var(--space-md);
     text-align: center;
     width: 100%;

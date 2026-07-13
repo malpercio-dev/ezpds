@@ -530,9 +530,20 @@
 
 <style>
   .app {
+    /* A fixed viewport frame padded clear of the OS chrome. dvh (not vh) tracks the
+       real visible height on iOS; overflow:hidden keeps the frame itself from
+       scrolling — each screen owns its own scroll within the safe area. The 100vh
+       declared first is the fallback for iOS < 16 (deployment floor is iOS 13),
+       where dvh is unsupported and would otherwise leave the frame with no height. */
     height: 100vh;
+    height: 100dvh;
     display: flex;
     flex-direction: column;
+    overflow: hidden;
+    padding-top: var(--safe-top);
+    padding-right: var(--safe-right);
+    padding-bottom: var(--safe-bottom);
+    padding-left: var(--safe-left);
   }
 
   .code {
