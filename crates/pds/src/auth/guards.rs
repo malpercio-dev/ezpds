@@ -575,6 +575,48 @@ pub async fn require_session(
     Ok(SessionInfo { did })
 }
 
+/// Why account-owner authentication failed. Vocab-neutral (the `issuer_trust::TrustedJwtError`
+/// pattern): the `/v1/agents` surface maps it to XRPC `ApiError`s and the claim ceremony's
+/// confirm gate maps it to auth.md-style `{error, error_description}` responses.
+#[derive(Debug)]
+pub enum OwnerAuthError {
+    /// No usable credential: the bearer token is neither a live wallet session nor a verifiable
+    /// access token. Carries the underlying rejection for callers that speak XRPC.
+    Unauthenticated(ApiError),
+    /// A verified access token that is agent-derived (`registration_id` claim). An agent must
+    /// never act as the account owner — least of all to confirm its own claim ceremony.
+    AgentDerived,
+    /// A verified access token below full access (e.g. an app password).
+    NotFullAccess,
+}
+
+/// Authenticate the account owner behind the account-holder agent surfaces: a wallet session
+/// token first (`sessions` table — what Obsign holds after the create flow), then a full-access
+/// OAuth/XRPC access token. The same dual-credential posture as `transfer/complete`. Returns the
+/// caller's DID.
+pub async fn authenticate_account_owner(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<String, OwnerAuthError> {
+    if let Ok(session) = require_session(headers, &state.db).await {
+        return Ok(session.did);
+    }
+
+    let token =
+        crate::auth::extract_bearer_token(headers).map_err(OwnerAuthError::Unauthenticated)?;
+    let claims = crate::auth::jwt::verify_access_token(token, state)
+        .map_err(OwnerAuthError::Unauthenticated)?;
+    if claims.registration_id.is_some() {
+        return Err(OwnerAuthError::AgentDerived);
+    }
+    let scope =
+        crate::auth::jwt::parse_scope(&claims.scope).map_err(OwnerAuthError::Unauthenticated)?;
+    if scope != crate::auth::jwt::AuthScope::Access {
+        return Err(OwnerAuthError::NotFullAccess);
+    }
+    Ok(claims.sub)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

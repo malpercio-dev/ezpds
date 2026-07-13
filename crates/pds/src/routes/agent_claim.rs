@@ -18,7 +18,7 @@
 
 use axum::{
     extract::State,
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -30,8 +30,7 @@ use crate::auth::agent_assertion::{
     mint_identity_assertion, new_claim_attempt_id, parse_sqlite_datetime, record_agent_audit,
     scopes_to_json, to_sqlite_datetime, verification_uri, AgentAuthError, POLL_INTERVAL_SECS,
 };
-use crate::auth::extractors::AuthenticatedUser;
-use crate::auth::jwt::AuthScope;
+use crate::auth::guards::{authenticate_account_owner, OwnerAuthError};
 use crate::auth::oauth_scopes::intersect_scope_tokens;
 use crate::code_gen::generate_code;
 use crate::db::agent_auth::{
@@ -215,38 +214,42 @@ struct ClaimConfirmResponse {
 
 /// `POST /agent/identity/claim/confirm` — the account owner confirms a claim (full-access authed).
 pub async fn post_agent_claim_confirm(
-    user: AuthenticatedUser,
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<ClaimConfirmRequest>,
 ) -> Response {
-    match confirm(user, &state, &req).await {
+    match confirm(&headers, &state, &req).await {
         Ok(response) => response,
         Err(err) => err.into_response(),
     }
 }
 
 async fn confirm(
-    user: AuthenticatedUser,
+    headers: &HeaderMap,
     state: &AppState,
     req: &ClaimConfirmRequest,
 ) -> Result<Response, AgentAuthError> {
-    // Only the account holder's own full-access credential may confirm. App-password tokens
-    // (narrower scope) are refused by the scope check; agent-derived tokens map to `Access` for
-    // coarse admission, so `is_agent` closes the gap — an agent must never confirm itself.
-    if user.scope != AuthScope::Access {
-        return Err(AgentAuthError::new(
-            StatusCode::UNAUTHORIZED,
-            "invalid_token",
-            "a full-access token is required to confirm an agent claim",
-        ));
-    }
-    if user.is_agent() {
-        return Err(AgentAuthError::new(
-            StatusCode::FORBIDDEN,
-            "access_denied",
-            "agent-derived credentials cannot confirm a claim",
-        ));
-    }
+    // Only the account holder's own full-access credential may confirm — a wallet session token
+    // or a full-access OAuth/XRPC access token, the same dual posture as the `/v1/agents` owner
+    // surface (Obsign confirms with its opaque session token, so a JWT-only gate strands the
+    // ceremony at its last step). App-password scopes are below this trust bar, and an
+    // agent-derived token must never confirm a claim — least of all its own.
+    let caller_did = authenticate_account_owner(headers, state)
+        .await
+        .map_err(|err| match err {
+            OwnerAuthError::AgentDerived => AgentAuthError::new(
+                StatusCode::FORBIDDEN,
+                "access_denied",
+                "agent-derived credentials cannot confirm a claim",
+            ),
+            OwnerAuthError::Unauthenticated(_) | OwnerAuthError::NotFullAccess => {
+                AgentAuthError::new(
+                    StatusCode::UNAUTHORIZED,
+                    "invalid_token",
+                    "a session or full-access token is required to confirm an agent claim",
+                )
+            }
+        })?;
 
     let user_code = req
         .user_code
@@ -330,7 +333,7 @@ async fn confirm(
     // completes the ceremony — the `user_code` they were shown is the authorization.
     let bind_did = match identity.did.as_deref() {
         Some(bound) => {
-            if bound != user.did {
+            if bound != caller_did {
                 return Err(AgentAuthError::new(
                     StatusCode::FORBIDDEN,
                     "access_denied",
@@ -339,7 +342,7 @@ async fn confirm(
             }
             None
         }
-        None => Some(user.did.as_str()),
+        None => Some(caller_did.as_str()),
     };
 
     // The post-claim assertion carries the operator's current full granted-scope profile. Normalize
@@ -354,7 +357,7 @@ async fn confirm(
         &state.oauth_signing_keypair,
         &state.config.public_url,
         state.config.agent_auth.assertion_ttl_secs,
-        &user.did,
+        &caller_did,
         &identity.id,
         identity.registration_type.as_str(),
         &scopes,
@@ -404,7 +407,7 @@ async fn confirm(
         &mut *tx,
         &uuid::Uuid::new_v4().to_string(),
         &identity.id,
-        Some(&user.did),
+        Some(&caller_did),
         crate::db::agent_audit::AgentAuditEventType::ClaimConfirmed,
         Some(&confirm_detail),
     )
@@ -419,7 +422,7 @@ async fn confirm(
         Json(ClaimConfirmResponse {
             registration_id: identity.id,
             status: "claimed",
-            did: user.did,
+            did: caller_did,
         }),
     )
         .into_response())
@@ -911,5 +914,88 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    /// The wallet confirms with its opaque session token (`sessions` table), not an OAuth JWT.
+    /// The human gate must accept the same dual credential as the `/v1/agents` owner surface —
+    /// preview accepting a session the confirm then refuses strands the ceremony at its last step.
+    #[tokio::test]
+    async fn confirm_with_wallet_session_token_succeeds() {
+        let state = state_with(service_auth_cfg()).await;
+        let did = "did:plc:sessowner1111111111";
+        insert_account(&state.db, did, "sess@example.com").await;
+        let reg = register(
+            state.clone(),
+            json!({ "type": "service_auth", "login_hint": "sess@example.com" }),
+        )
+        .await;
+        let user_code = reg["claim"]["user_code"].as_str().unwrap().to_string();
+
+        let token = crate::token::generate_token();
+        sqlx::query(
+            "INSERT INTO sessions (id, did, device_id, token_hash, created_at, expires_at) \
+             VALUES (?, ?, NULL, ?, datetime('now'), datetime('now', '+1 year'))",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(did)
+        .bind(&token.hash)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let (status, body) = post_json(
+            state,
+            "/agent/identity/claim/confirm",
+            json!({ "user_code": user_code }),
+            Some(&token.plaintext),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "claimed");
+        assert_eq!(body["did"], did);
+    }
+
+    /// A session token held by a different account than the pre-bound owner must still be refused.
+    #[tokio::test]
+    async fn confirm_with_wrong_accounts_session_token_is_access_denied() {
+        let state = state_with(service_auth_cfg()).await;
+        let owner = "did:plc:sessright1111111111";
+        let intruder = "did:plc:sesswrong1111111111";
+        insert_account(&state.db, owner, "sright@example.com").await;
+        insert_account(&state.db, intruder, "swrong@example.com").await;
+        let reg = register(
+            state.clone(),
+            json!({ "type": "service_auth", "login_hint": "sright@example.com" }),
+        )
+        .await;
+        let user_code = reg["claim"]["user_code"].as_str().unwrap().to_string();
+
+        let token = crate::token::generate_token();
+        sqlx::query(
+            "INSERT INTO sessions (id, did, device_id, token_hash, created_at, expires_at) \
+             VALUES (?, ?, NULL, ?, datetime('now'), datetime('now', '+1 year'))",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(intruder)
+        .bind(&token.hash)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let (status, body) = post_json(
+            state.clone(),
+            "/agent/identity/claim/confirm",
+            json!({ "user_code": user_code }),
+            Some(&token.plaintext),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["error"], "access_denied");
+        let claimed: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM agent_identities WHERE status = 'claimed'")
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(claimed, 0);
     }
 }
