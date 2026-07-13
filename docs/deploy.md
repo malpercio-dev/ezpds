@@ -1,6 +1,6 @@
 # PDS Deployment
 
-**Last verified:** 2026-06-21
+**Last verified:** 2026-07-12
 
 ## Overview
 
@@ -18,6 +18,7 @@ The PDS container expects the following environment variables and mounts:
 - **`EZPDS_ADMIN_TOKEN`** (required) - Bearer token for admin-only endpoints (e.g., rotation key claiming)
 - **`EZPDS_DATA_DIR`** (optional, default `/data`) - Directory where `relay.db` is persisted. Set by the Dockerfile ENV; can be overridden if the data volume is mounted elsewhere. Must be writable by the container process.
 - **`PORT`** (optional, default `8080`) - Port to listen on inside the container
+- **`EZPDS_EMAIL_PROVIDER`** (optional, default `log`) - Outbound email delivery: `log`, `smtp`, or `mailtrap`. The default only *logs* messages — email-confirmation, password-reset, PLC-operation, and account-delete tokens go nowhere — so a real deployment must pick a delivering provider. **On Railway, note that non-Pro plans block outbound SMTP ports entirely**; use `mailtrap` (Mailtrap's transactional HTTPS Send API) there, with `EZPDS_EMAIL_FROM` and `EZPDS_EMAIL_HTTP_TOKEN` (sealed; `EZPDS_EMAIL_HTTP_API_URL` overrides the endpoint). Where SMTP egress works (Railway Pro, self-hosting), `smtp` takes `EZPDS_EMAIL_FROM`, `EZPDS_EMAIL_SMTP_HOST`, and as needed `EZPDS_EMAIL_SMTP_PORT` / `EZPDS_EMAIL_SMTP_USERNAME` / `EZPDS_EMAIL_SMTP_PASSWORD` (sealed) / `EZPDS_EMAIL_SMTP_TLS`.
 - **`EZPDS_IROH_ENABLED`** (optional, default `false`) - Set to `true` to bind the Iroh QUIC tunnel alongside the HTTP server, letting devices reach the PDS through NAT by dialing its node id. The node id is advertised via `GET /v1/devices/:id/pds` and is **stable across restarts only when `EZPDS_SIGNING_KEY_MASTER_KEY` is set** (otherwise the identity is ephemeral and rotates each boot). Iroh uses outbound UDP and the n0 discovery/relay servers for NAT traversal.
 
 ### Volumes
@@ -48,12 +49,13 @@ The PDS container expects the following environment variables and mounts:
 
 1. **Create Railway project** for the PDS.
 2. **Add a Dockerfile service:**
-   - Connect the Railway service to the GitHub repo and let Railway build and deploy on its own — see **CI/CD pipeline** below. Railway detects `railway.toml` and uses the Dockerfile builder automatically. (For initial bootstrap you can also run `railway up` from a local checkout.)
+   - Connect the Railway service to the GitHub repo and let Railway build and deploy on its own — see **CI/CD pipeline** below. Railway detects `railway.toml` and uses the Dockerfile builder automatically.
    - Set the following environment variables in the Railway dashboard:
      - `EZPDS_PUBLIC_URL` - Use the Railway domain once assigned (see chicken-and-egg note below).
      - `EZPDS_AVAILABLE_USER_DOMAINS` - Your handle domain list (comma-separated).
      - `EZPDS_SIGNING_KEY_MASTER_KEY` - 64-character hex string; generate with: `openssl rand -hex 32`
      - `EZPDS_ADMIN_TOKEN` - A secure random token.
+     - `EZPDS_EMAIL_PROVIDER` + provider settings - **Required for a real deployment.** Leaving the default `log` provider silently disables outbound email — confirmation, password-reset, PLC-operation, and account-delete tokens are only logged, never sent. On Railway non-Pro plans (outbound SMTP blocked) set `mailtrap` with `EZPDS_EMAIL_FROM` + `EZPDS_EMAIL_HTTP_TOKEN` (sealed); see the container contract above for the `smtp` alternative.
    - Do **not** set `PORT` or `EZPDS_DATA_DIR` — Railway injects `PORT` automatically, and `EZPDS_DATA_DIR=/data` is already set by the Dockerfile `ENV`.
 
 3. **Add a volume:**
@@ -77,7 +79,7 @@ The PDS validates its public URL against the domain it's accessed through. On fi
 
 CI/CD lives on **GitHub**. Deploys use **Railway's native GitHub integration** — each Railway environment is connected to the repo and watches a branch, so Railway pulls, builds the `Dockerfile`, and deploys on its own. There is **no `railway up` and no Railway token in CI**; GitHub Actions only runs the test gate.
 
-- **Test gate — `.github/workflows/ci.yml`.** Runs `just ci-pds` (fmt, lock-check, clippy, test, audit) on pull requests to `main`, on push to `main`, and on push to `production`. Both Railway services use **"Wait for CI"**, so this workflow's green check is the deploy gate. A second `verify-release` job runs only on the `production` branch and fails unless a `vX.Y.Z` tag points at the tip and matches the workspace version (`env!("CARGO_PKG_VERSION")`).
+- **Test gate — `.github/workflows/ci.yml`.** Runs `just ci-pds` (fmt-check, lock-check, bruno-check, font-check, cap-check, ios-paths-check, swift-rs-check, ios-template-check, clippy, test, cargo-audit, cargo-deny — excluding the iOS app crates) on pull requests to `main`, on push to `main`, and on push to `production`. Both PDS environments (staging and production) use **"Wait for CI"**, so this workflow's green check is the deploy gate. A second `verify-release` job runs only on the `production` branch and fails unless a `vX.Y.Z` tag points at the tip and matches the workspace version (`env!("CARGO_PKG_VERSION")`).
 
 | Environment | Railway watches | Deploys when |
 |-------------|-----------------|--------------|
@@ -211,7 +213,7 @@ The module creates a systemd unit `podman-ezpds.service` that starts the contain
 
 ## Image Distribution
 
-For the **Railway** path no registry is required — `railway up` uploads the build context and Railway builds the `Dockerfile`. A published image is only needed for the **secondary** colmena/NixOS path, via **GHCR** (GitHub Container Registry):
+For the **Railway** path no registry is required — Railway pulls the connected GitHub repo and builds the `Dockerfile` itself. A published image is only needed for the **secondary** colmena/NixOS path, via **GHCR** (GitHub Container Registry):
 
 ```bash
 # Build locally (development):

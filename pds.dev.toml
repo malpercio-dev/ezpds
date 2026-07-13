@@ -39,6 +39,27 @@ invite_code_required = true
 # [contact]
 # email = "admin@example.com"
 
+# Outbound email delivery. The default provider ("log") only logs messages — fine for local
+# dev and tests, but in production email-confirmation, password-reset, PLC-operation, and
+# account-delete tokens go nowhere until you switch to a delivering provider: "smtp" where
+# SMTP egress works, or "mailtrap" (transactional HTTPS Send API) on hosts that block
+# outbound SMTP ports — Railway does on non-Pro plans.
+# Override with EZPDS_EMAIL_* (e.g. EZPDS_EMAIL_PROVIDER, EZPDS_EMAIL_SMTP_HOST,
+# EZPDS_EMAIL_HTTP_TOKEN).
+# [email]
+# provider = "smtp"                # "log" (default), "smtp", or "mailtrap"
+# from = "noreply@example.com"     # required for smtp and mailtrap
+# from_name = "Custos"
+# --- provider = "smtp" ---
+# smtp_host = "smtp.example.com"   # required for smtp
+# smtp_port = 587
+# smtp_username = "..."
+# smtp_password = "..."            # secret — prefer EZPDS_EMAIL_SMTP_PASSWORD
+# smtp_tls = "starttls"            # "starttls" (default), "implicit", or "none"
+# --- provider = "mailtrap" ---
+# http_token = "..."               # secret — prefer EZPDS_EMAIL_HTTP_TOKEN
+# http_api_url = "https://send.api.mailtrap.io/api/send"  # default; override for mocks
+
 # AppView proxy for app.bsky.* methods the PDS doesn't handle locally (feeds, notifications,
 # search). Defaults to the public Bluesky AppView, so local dev gets real feed data out of the
 # box. Override with EZPDS_APPVIEW_URL / EZPDS_APPVIEW_DID to point at your own AppView.

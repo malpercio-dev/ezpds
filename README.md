@@ -63,8 +63,8 @@ Supporting pieces: [`sites/marketing/`](sites/marketing/) (zero-build static mar
 | `crates/crypto` | P-256 keys, did:key, did:plc genesis/rotation, Shamir secret sharing, AES-256-GCM | **Complete** — well-tested |
 | `crates/common` | Shared config, error types, serde utilities | **Complete** |
 | `crates/repo-engine` | MST construction, CAR export/import, genesis, record CRUD, commit signing | **Functional** — consumed by `crates/pds` |
-| `apps/identity-wallet` | Tauri v2 iOS app (SvelteKit 2 + Svelte 5) | **Active** — account creation, DID ceremony, handle registration, OAuth, PLC monitoring, recovery |
-| `apps/admin-companion` | Tauri v2 iOS operator console ("Brass Console") | **Active** — pairing, claim codes, device revocation |
+| `apps/identity-wallet` | Tauri v2 iOS app (SvelteKit 2 + Svelte 5) | **Active** — account creation, DID ceremony, handle registration, OAuth, PLC monitoring, recovery, account migration |
+| `apps/admin-companion` | Tauri v2 iOS operator console ("Brass Console") | **Active** — pairing, claim codes, accounts/moderation, transfers, server health |
 
 ### PDS endpoints
 
@@ -103,6 +103,7 @@ The mobile app guides users through:
 6. **Identity management** — Multi-identity home, DID document display, rotation key status
 7. **PLC monitoring** — Periodic audit log checks for unauthorized DID changes
 8. **Recovery** — Shamir secret sharing (3 shares, 2-of-3 threshold) with iCloud Keychain backup
+9. **Migration** — Move an existing account onto the PDS (inbound claim) or off it (outbound "credible exit"), signed by the wallet's own rotation key
 
 ## Getting started
 
@@ -143,7 +144,10 @@ cargo run -p pds -- --config pds.toml
 ### Run checks
 
 ```bash
-just ci          # Full local gate: fmt-check, lock-check, bruno-check, font-check, swift-rs-check, clippy, test, audit
+just ci          # Full local gate (macOS — builds the iOS app crates): fmt-check, lock-check,
+                 # bruno-check, font-check, cap-check, ios-paths-check, swift-rs-check,
+                 # ios-template-check, clippy, test, audit, deny
+just ci-pds      # Linux gate (what CI runs): the same checks, excluding the iOS app crates
 just test        # Run all tests
 just clippy      # Lint (warnings as errors)
 just fmt-check   # Check formatting
@@ -172,37 +176,42 @@ Key settings:
 - `appview` / `chat` — Service-proxy targets (AppView URL/DID/CDN, chat service)
 - `crawlers` — Relay hosts to notify via `requestCrawl`
 - `rate_limit` — Global, per-endpoint, and per-account write-point limits
+- `email` — Outbound email delivery (`provider = "log"` by default; set `"smtp"` or `"mailtrap"` (HTTPS Send API — for hosts like Railway non-Pro plans that block outbound SMTP) in production so email-confirmation, password-reset, and PLC-operation tokens actually deliver)
+- `agent_auth` — auth.md agent authentication (trusted issuers, granted scopes, claim-ceremony TTLs)
+- `iroh` — Optional QUIC tunnel for NAT traversal (devices dial the PDS by node id)
 - `telemetry` — OpenTelemetry trace export
 
 See [`pds.dev.toml`](pds.dev.toml) and `crates/common/src/config.rs` for the full set.
 
 ## Project status
 
-ezpds is under active development. The PDS server, repo engine, and crypto library are functional and deployed; both iOS apps are active. Key capabilities:
+ezpds is under active development. The **v0.1 milestone ("Mobile-Only PDS") is complete and validated**: the PDS is a full PDS — it hosts repos, signs commits, serves the complete `com.atproto.*` surface, and emits the firehose — and an ATProto identity created from an iPhone logs into the official Bluesky app for real (OAuth + DPoP, social actions, video posting, all proven against production). The server, repo engine, and crypto library are deployed to production; both iOS apps ship via TestFlight. Key capabilities:
 
 **Working now:**
 - Account creation (desktop + mobile flows)
 - DID creation (`did:plc`) with device-backed keys
 - Handle registration and resolution
 - Session management (JWT + refresh tokens), app passwords
-- OAuth 2.0 with DPoP
+- OAuth 2.0 with DPoP, granular auth scopes + Lexicon permission sets — validated by a real login from the official Bluesky app against production
 - Repo records — full CRUD, `applyWrites`, CAR export/import
 - Blob upload/download with garbage collection
-- Federation — firehose (`subscribeRepos` with durable sequencer), `getRepo`, `requestCrawl`
-- App proxy — AppView/chat proxying with read-after-write for the account's own writes
+- Federation — firehose (`subscribeRepos` with durable sequencer, Sync v1.1: `#sync` frames, `prevData`, per-op `prev` CIDs), `getRepo`, `requestCrawl`
+- Account migration — inbound and outbound ("credible exit"), wallet-driven; the full bsky.social → Custos → bsky.social round trip has been executed live ([validation record](docs/validation/2026-07-07-mm-241-live-migration.md))
+- Outbound email (SMTP or Mailtrap HTTPS-API provider) — email confirmation, password reset, PLC-operation tokens
+- App proxy — AppView/chat proxying with read-after-write for the account's own writes, `atproto-proxy` header dispatch
 - Interop test CLI ([`tools/interop/`](tools/interop/)) exercising a live deployment against the real ATProto network
 - Agent auth (auth.md) — agent registration, human claim ceremony, JWT-bearer exchange, granular scopes — with a first-party MCP server ([`tools/mcp/`](tools/mcp/)) that onboards itself through that flow
+- Operator console (admin-companion) — account listing/search + detail, takedown/restore, credential revocation, claim-code inventory, device pairing/revocation, in-flight transfer visibility, server health/metrics
 - PDS signing key management, provisioning transfer endpoints
 - Shamir secret sharing for recovery
-- OpenTelemetry observability
+- Observability — Prometheus `/metrics`, OpenTelemetry trace export, structured JSON logging
 
 **In progress / planned** (Linear is the live source of truth):
-- Firehose Sync v1.1 residuals (per-op `prev` CIDs)
-- Account migration (PDS↔PDS, inbound + outbound "credible exit")
-- Outbound email delivery + email confirmation endpoints
-- OAuth granular auth scopes + permission sets
-- Tauri IPC lockdown
-- Wave 8: auth.md agentic auth (agent identity, claim ceremony, JWT-bearer grants)
+- Propagating handle changes to plc.directory (`updateHandle` currently updates local state only) + a wallet "change handle" flow
+- Sovereign passwordless login (device-key signature as the account credential; design stage)
+- E2E-encrypted notification relay for self-hosted instances (design stage)
+- `did:web` account hosting and wallet ceremony
+- Reference-PDS strictness parity sweep
 
 ## License
 
