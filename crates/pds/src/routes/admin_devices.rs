@@ -1000,7 +1000,7 @@ mod tests {
 
     #[tokio::test]
     async fn revoked_device_signed_request_is_then_denied() {
-        // End-to-end of the Phase 4 integration: once revoked, the device's own signed
+        // End-to-end integration: once revoked, the device's own signed
         // requests are denied with 403.
         let state = test_state_with_admin_token().await;
         let (device_id, keypair) = seed_device(&state).await;

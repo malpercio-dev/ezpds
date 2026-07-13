@@ -1180,7 +1180,7 @@ mod tests {
         assert_eq!(json, expected_response);
     }
 
-    // --- atproto-proxy header honored generically for app.bsky.*/chat.bsky.* (MM-319) ---
+    // --- atproto-proxy header honored generically for app.bsky.*/chat.bsky.* ---
     //
     // Before this, the header was honored only for `com.atproto.moderation.*`; `app.bsky.*` and
     // `chat.bsky.*` always streamed to the configured default, silently ignoring it. The official

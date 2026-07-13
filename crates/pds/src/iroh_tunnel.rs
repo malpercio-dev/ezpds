@@ -132,7 +132,7 @@ mod tests {
         assert_eq!(ALPN, b"ezpds/iroh/0");
     }
 
-    /// AC2.2 + AC3.1: a client dials the pds's endpoint by node id over the `ezpds/iroh/0`
+    /// A client dials the pds's endpoint by node id over the `ezpds/iroh/0`
     /// ALPN and the accept loop echoes a bidirectional message back. Runs entirely over
     /// loopback against the real `spawn_accept_loop`/`handle_connection`.
     #[tokio::test]
@@ -161,7 +161,7 @@ mod tests {
         server.close().await;
     }
 
-    /// AC3.2: a connection on an unknown ALPN is rejected — the pds's endpoint only
+    /// A connection on an unknown ALPN is rejected — the pds's endpoint only
     /// negotiates `ezpds/iroh/0`, so a dial with a different ALPN fails at the handshake.
     #[tokio::test]
     async fn unknown_alpn_is_rejected() {

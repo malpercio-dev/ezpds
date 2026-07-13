@@ -58,7 +58,7 @@ fn free_port() -> u16 {
 
 /// Start a plc.directory mock. Account creation POSTs the signed genesis op to `/{did}`; the mock
 /// accepts any such POST with 200. A permissive audit-log GET is also mounted so any incidental
-/// state read resolves locally instead of reaching the real network (AC3.1: no network access).
+/// state read resolves locally instead of reaching the real network (no network access).
 async fn start_plc_mock() -> MockServer {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

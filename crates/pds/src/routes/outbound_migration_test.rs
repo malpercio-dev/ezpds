@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 //
-// MM-231 audit: composes the wallet-authorized outbound migration flow (ADR-0002) across two
+// Composes the wallet-authorized outbound migration flow (ADR-0002) across two
 // independently configured servers (their own DB pool, master key, and — critically — distinct
 // `resolve_server_did()`), driving every step through the real HTTP handlers rather than calling
 // internal functions directly. No test elsewhere exercises `getServiceAuth`'s output against a
@@ -443,8 +443,8 @@ async fn wallet_authorized_outbound_migration_transfers_repo_and_blobs_to_a_peer
         "migrating out"
     );
 
-    // 7. Source deactivates now the transfer is complete — the AC's "source account ends
-    //    deactivated" — and the transition is announced on the firehose.
+    // 7. Source deactivates now the transfer is complete — the source account ends
+    //    deactivated — and the transition is announced on the firehose.
     let mut source_firehose = source_state.firehose.subscribe();
     let deactivate_resp = source_app
         .clone()

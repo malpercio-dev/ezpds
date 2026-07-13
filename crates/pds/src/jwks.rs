@@ -389,7 +389,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_kid_burst_is_bounded_by_cooldown() {
-        // The MM-274 amplification vector: a stream of bogus kids for a trusted issuer. Within the
+        // The amplification vector: a stream of bogus kids for a trusted issuer. Within the
         // cooldown each one resolves negatively from the cached set — no outbound fetch per request.
         let (cache, _set, calls) =
             cache_with_cooldown(jwks_with_kid("k1"), false, Duration::from_secs(3600));

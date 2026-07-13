@@ -6,7 +6,7 @@
 //                   plc.directory, checks IdentityStore, stores state, returns IdentityInfo)
 //                   authenticate_source_pds (command: password createSession against the source
 //                   PDS → full-session Bearer OAuthClient stored in claim_state; PLC ops need a
-//                   full session that no OAuth transition:generic token can grant — MM-289)
+//                   full session that no OAuth transition:generic token can grant)
 //                   request_claim_verification (command: calls requestPlcOperationSignature XRPC
 //                   endpoint on old PDS to trigger email verification)
 //                   sign_and_verify_claim (command: calls getRecommendedDidCredentials and
@@ -185,8 +185,8 @@ pub enum ClaimError {
     /// PDS endpoint comes from the DID document, so a plaintext `http://` endpoint is rejected.
     #[error("insecure source url")]
     InsecureSourceUrl,
-    /// A PLC-operation endpoint refused the token for scope reasons. After MM-289 the source
-    /// session is a full password session, so this should not occur — but if a server still
+    /// A PLC-operation endpoint refused the token for scope reasons. The source session is now
+    /// a full password session, so this should not occur — but if a server still
     /// refuses, surface it honestly instead of flattening it to "failed to send verification
     /// email" (the misleading symptom this issue was filed against).
     #[error("insufficient scope: {message}")]
@@ -369,7 +369,7 @@ fn map_pds_error_to_resolve(err: PdsClientError) -> ResolveError {
 /// Replaces the claim flow's old OAuth PDS login. The next steps —
 /// `requestPlcOperationSignature` + `signPlcOperation` — are PLC (identity) operations that a
 /// spec-strict PDS such as bsky.social gates behind a **full session**; no OAuth
-/// `transition:generic` token can drive them (MM-289). A password `createSession` mints a full
+/// `transition:generic` token can drive them. A password `createSession` mints a full
 /// `com.atproto.access` session, the only credential class that can. `goat account migrate` asks
 /// for the password for the same reason.
 ///

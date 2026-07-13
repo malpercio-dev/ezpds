@@ -418,7 +418,7 @@ mod tests {
 
     #[tokio::test]
     async fn consume_inside_transaction_with_device_insert() {
-        // Mirrors the Phase 3 register-device flow: consume the code and insert the
+        // Mirrors the register-device flow: consume the code and insert the
         // device atomically in one transaction.
         let pool = test_pool().await;
         insert_pairing_code(&pool, "PAIR-TX", 5).await.unwrap();

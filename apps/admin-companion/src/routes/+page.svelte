@@ -12,7 +12,7 @@
   import Button from '$lib/components/ui/Button.svelte';
   import ErrorState from '$lib/components/ui/ErrorState.svelte';
 
-  // Phase 8→3 Home: multi-server home, tappable identity block opening an inline switcher,
+  // Home: multi-server home, tappable identity block opening an inline switcher,
   // explicit pick required when active is cleared (two+ remaining). The demo-lifesaver flow
   // is unchanged: generate a claim code via a signed request gated by biometric, share via
   // iOS Share Pane or copy. An unpaired app routes to Pair; a no-active-pick app forces

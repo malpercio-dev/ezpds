@@ -505,10 +505,10 @@ export type ClaimError =
   | { code: 'INSECURE_SOURCE_URL' }
   | { code: 'INSUFFICIENT_SCOPE'; message: string }
   // The source PDS rate-limited a claim-flow request (HTTP 429). `retryAfter` is the server's
-  // `Retry-After` value (seconds or an HTTP date) when present, else null (MM-290).
+  // `Retry-After` value (seconds or an HTTP date) when present, else null.
   | { code: 'RATE_LIMITED'; retryAfter: string | null }
   // A non-2xx the wallet doesn't model specially; `message` is the server's own error text, shown
-  // verbatim rather than as connectivity boilerplate (MM-290).
+  // verbatim rather than as connectivity boilerplate.
   | { code: 'SERVER_ERROR'; message: string }
   | { code: 'NETWORK_ERROR'; message: string };
 
@@ -529,7 +529,7 @@ export const resolveIdentity = (handleOrDid: string): Promise<IdentityInfo> =>
  *
  * The claim flow's next steps — requesting and signing a PLC operation — are identity operations
  * that a spec-strict PDS (bsky.social) gates behind a full session. No OAuth `transition:generic`
- * token can drive them (MM-289), so the wallet does a one-shot password `createSession` to obtain a
+ * token can drive them, so the wallet does a one-shot password `createSession` to obtain a
  * full-session Bearer client. The password is sent once to the user's own PDS and never stored;
  * an app password is a lesser scope and is rejected (`SOURCE_AUTH_FAILED`).
  *
@@ -743,7 +743,7 @@ export const detectMigrationPath = (did: string): Promise<MigrationPathDecision>
 /**
  * Build + locally sign the migration identity leg (repoint the DID to a new PDS).
  *
- * Requires the W1 orchestrator (MM-228) to have first authenticated to the destination
+ * Requires the migration orchestrator to have first authenticated to the destination
  * PDS and populated MigrationState; otherwise this rejects with MIGRATION_NOT_READY.
  * The built operation is parked in MigrationState for subsequent submitMigrationOp().
  */

@@ -4,9 +4,9 @@
 //                  ensure_phase_did, import_reconciles, extract_handle_from_also_known_as,
 //                  finalize_migration_impl (pure functions — no network, no side effects)
 // Imperative Shell: prepare_migration, authenticate_migration_source,
-//                   create_destination_account (Phase 3); transfer_repo, transfer_blobs,
-//                   transfer_preferences, verify_import (Phase 4); arm_identity_leg,
-//                   finalize_migration (Phase 5) — Tauri commands, plus their
+//                   create_destination_account; transfer_repo, transfer_blobs,
+//                   transfer_preferences, verify_import; arm_identity_leg,
+//                   finalize_migration — Tauri commands, plus their
 //                   *_impl / authenticate_migration_source_impl / drain_missing_blobs network cores.
 //
 // The source-PDS login is a password `createSession` → full-session Bearer client (ADR-0021),
@@ -159,7 +159,7 @@ pub enum MigrationError {
 // ── Pure prerequisite gate ─────────────────────────────────────────────────
 
 /// Pure prerequisite gate: state present, DID matches, and phase is at least `required`.
-/// No network, no side effects — this is what makes AC1.3/AC1.4 side-effect-free and
+/// No network, no side effects — this is what makes the gate side-effect-free and
 /// unit-testable.
 pub(crate) fn ensure_phase_did<'a>(
     state: &'a Option<OutboundMigrationState>,
@@ -223,7 +223,7 @@ async fn prepare_migration_impl(
     let (source_pds_url, plc_doc) = pds_client.discover_pds(did).await.map_err(|e| {
         tracing::error!(did = %did, error = %e, "failed to discover source PDS");
         // Preserve the unreachable distinction in the message (there is no SourceUnreachable
-        // variant; AC1.5 only names the destination, but a bare NetworkError is less actionable).
+        // variant; only the destination is named, but a bare NetworkError is less actionable).
         match e {
             crate::pds_client::PdsClientError::PdsUnreachable { .. } => {
                 MigrationError::NetworkError {
@@ -521,12 +521,12 @@ async fn create_destination_account_impl(
             Ok(Arc::new(dest_client))
         }
         // The account already exists at the destination. If we still hold an in-memory dest_client
-        // we tolerate it (AC5.1, idempotent re-establish — the fast path above usually covers this).
+        // we tolerate it (idempotent re-establish — the fast path above usually covers this).
         // If not, the destination session was lost (only possible after an app kill wiped in-memory
-        // state), so the flow must restart from prepare_migration (AC10.3 / DESTINATION_CONFLICT).
+        // state), so the flow must restart from prepare_migration (DESTINATION_CONFLICT).
         Err(crate::pds_client::PdsClientError::DidAlreadyExists) => match existing_dest_client {
             Some(client) => {
-                tracing::info!(did = %did, "createAccount 409 but dest_client held; tolerating (AC5.1)");
+                tracing::info!(did = %did, "createAccount 409 but dest_client held; tolerating");
                 Ok(client)
             }
             None => {
@@ -724,7 +724,7 @@ pub async fn transfer_repo(
 ///
 /// Loops: list_missing_blobs(cursor) → if empty, done; for each blob, fetch from source
 /// and upload to dest; advance cursor and repeat. Any leg failing aborts with
-/// BlobTransferFailed WITHOUT advancing the phase, so the whole step is retry-safe (AC2.6).
+/// BlobTransferFailed WITHOUT advancing the phase, so the whole step is retry-safe.
 async fn drain_missing_blobs(
     pds_client: &crate::pds_client::PdsClient,
     dest_client: &OAuthClient,
@@ -742,7 +742,7 @@ async fn drain_missing_blobs(
                 }
             })?;
 
-        // AC2.3 / AC2.5: terminate when page is empty
+        // Terminate when page is empty
         if page.blobs.is_empty() {
             tracing::debug!(did = %did, "blob drain complete: missing set is empty");
             return Ok(());
@@ -1095,7 +1095,7 @@ async fn finalize_migration_impl(
     dest_client: &OAuthClient,
     source_client: &OAuthClient,
 ) -> Result<(), MigrationError> {
-    // AC1.2 / AC5.3: Activate destination FIRST (retry-tolerant, server-idempotent)
+    // Activate destination FIRST (retry-tolerant, server-idempotent)
     tracing::debug!("finalizing migration: activating destination account");
     crate::pds_client::activate_account(dest_client)
         .await
@@ -1106,7 +1106,7 @@ async fn finalize_migration_impl(
             }
         })?;
 
-    // AC1.2: Deactivate source LAST (no deleteAfter per AC spec)
+    // Deactivate source LAST (no deleteAfter)
     tracing::debug!("finalizing migration: deactivating source account");
     crate::pds_client::deactivate_account(source_client, None)
         .await
@@ -1123,7 +1123,7 @@ async fn finalize_migration_impl(
 /// Tauri command: activate the destination account, then deactivate the source,
 /// advance to Finalized.
 ///
-/// Gate: ensure_phase_did(..., IdentityArmed) → AC4.2 defense-in-depth: migration_state
+/// Gate: ensure_phase_did(..., IdentityArmed) → defense-in-depth: migration_state
 /// must be cleared (None) to prove identity op was submitted; if Some → MIGRATION_NOT_READY.
 /// Clone dest_client + source_client; drop locks. Call finalize_migration_impl.
 /// Re-lock + advance to Finalized
@@ -1138,8 +1138,8 @@ pub async fn finalize_migration(
 
 /// Core of `finalize_migration`, parameterized over the two mutexes so its gating + phase advance
 /// are unit-testable without a Tauri `State`. Gate at IdentityArmed; require the migrate
-/// `migration_state` cleared (== None, proving `submit_migration_op_cmd` ran — AC4.2); then
-/// activate the destination and deactivate the source (via `finalize_migration_impl`, AC1.2) and
+/// `migration_state` cleared (== None, proving `submit_migration_op_cmd` ran); then
+/// activate the destination and deactivate the source (via `finalize_migration_impl`) and
 /// advance to `Finalized`.
 async fn finalize_migration_core(
     orchestration_state: &tokio::sync::Mutex<Option<OutboundMigrationState>>,
@@ -1171,7 +1171,7 @@ async fn finalize_migration_core(
         });
     };
 
-    // AC4.2 defense-in-depth: the identity op must have been submitted (migration_state cleared).
+    // Defense-in-depth: the identity op must have been submitted (migration_state cleared).
     if migration_state.lock().await.is_some() {
         tracing::error!(did = %did, "finalize_migration: migration identity op not yet submitted");
         return Err(MigrationError::MigrationNotReady {
@@ -1179,7 +1179,7 @@ async fn finalize_migration_core(
         });
     }
 
-    // Activate destination, then deactivate source (AC1.2 ordering).
+    // Activate destination, then deactivate source (ordering matters).
     finalize_migration_impl(&dest_client, &source_client).await?;
 
     // Advance orchestration phase to Finalized (defense-in-depth DID re-check under the lock).
@@ -1218,7 +1218,7 @@ mod tests {
     use super::*;
     use httpmock::MockServer;
 
-    // AC1.3: Phase too low returns MigrationNotReady
+    // Phase too low returns MigrationNotReady
     #[test]
     fn test_ensure_phase_did_phase_too_low() {
         let state = Some(OutboundMigrationState {
@@ -1239,7 +1239,7 @@ mod tests {
         ));
     }
 
-    // AC1.4: DID mismatch returns MigrationNotReady
+    // DID mismatch returns MigrationNotReady
     #[test]
     fn test_ensure_phase_did_did_mismatch() {
         let state = Some(OutboundMigrationState {
@@ -1270,7 +1270,7 @@ mod tests {
         ));
     }
 
-    // AC1.3/AC1.4: Happy path — state present, DID matches, phase sufficient
+    // Happy path — state present, DID matches, phase sufficient
     #[test]
     fn test_ensure_phase_did_success() {
         let state = Some(OutboundMigrationState {
@@ -1289,7 +1289,7 @@ mod tests {
         assert_eq!(result.unwrap().phase, MigrationPhase::RepoTransferred);
     }
 
-    // AC10.1: MigrationError serialization — MigrationNotReady
+    // MigrationError serialization — MigrationNotReady
     #[test]
     fn test_migration_error_serialization_not_ready() {
         let err = MigrationError::MigrationNotReady {
@@ -1300,7 +1300,7 @@ mod tests {
         assert_eq!(json["message"], "test message");
     }
 
-    // AC10.1: MigrationError serialization — VerificationIncomplete
+    // MigrationError serialization — VerificationIncomplete
     #[test]
     fn test_migration_error_serialization_verification_incomplete() {
         let err = MigrationError::VerificationIncomplete {
@@ -1313,7 +1313,7 @@ mod tests {
         assert_eq!(json["expected"], 10);
     }
 
-    // AC10.1: MigrationError serialization — DestinationUnreachable
+    // MigrationError serialization — DestinationUnreachable
     #[test]
     fn test_migration_error_serialization_destination_unreachable() {
         let err = MigrationError::DestinationUnreachable {
@@ -1324,7 +1324,7 @@ mod tests {
         assert_eq!(json["message"], "connection refused");
     }
 
-    // AC10.1: MigrationError serialization — SourceAuthFailed
+    // MigrationError serialization — SourceAuthFailed
     #[test]
     fn test_migration_error_serialization_source_auth_failed() {
         let err = MigrationError::SourceAuthFailed {
@@ -1335,7 +1335,7 @@ mod tests {
         assert_eq!(json["message"], "invalid grant");
     }
 
-    // AC10.1: MigrationError serialization — DestinationConflict
+    // MigrationError serialization — DestinationConflict
     #[test]
     fn test_migration_error_serialization_destination_conflict() {
         let err = MigrationError::DestinationConflict {
@@ -1610,7 +1610,7 @@ mod tests {
         format!("{}.{}.sig", header, payload)
     }
 
-    // AC5.1: create_destination_account_impl with an existing dest_client returns it (idempotent
+    // create_destination_account_impl with an existing dest_client returns it (idempotent
     // re-establish) WITHOUT any network — the fast path short-circuits before reserve/serviceAuth/
     // createAccount, so this also covers "409-with-existing is tolerated" (createAccount is never
     // reached when a client is held). No #[ignore] needed: no socket is bound.
@@ -1655,7 +1655,7 @@ mod tests {
         );
     }
 
-    // AC5.1: createAccount 409 with NO existing dest_client → DESTINATION_CONFLICT (session lost).
+    // createAccount 409 with NO existing dest_client → DESTINATION_CONFLICT (session lost).
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
     async fn test_create_destination_account_impl_409_no_existing_is_conflict() {
@@ -1767,7 +1767,7 @@ mod tests {
         assert_eq!(create_mock.calls(), 1);
     }
 
-    // AC1.3: create_destination_account before SourceAuthed phase returns MIGRATION_NOT_READY
+    // create_destination_account before SourceAuthed phase returns MIGRATION_NOT_READY
     #[test]
     fn test_create_destination_account_phase_gate() {
         let state = Some(OutboundMigrationState {
@@ -1826,7 +1826,7 @@ mod tests {
 
     // ── Task 1 tests: transfer_repo ────────────────────────────────────────
 
-    // AC2.1: transfer_repo fetches source CAR and imports to dest, advances phase.
+    // transfer_repo fetches source CAR and imports to dest, advances phase.
     // (Pure gate test: phase < RepoTransferred returns MIGRATION_NOT_READY)
     #[test]
     fn test_transfer_repo_phase_gate() {
@@ -1848,7 +1848,7 @@ mod tests {
         ));
     }
 
-    // AC2.1: transfer_repo phase gate (pure test, no network)
+    // transfer_repo phase gate (pure test, no network)
     #[test]
     fn test_transfer_repo_phase_too_low() {
         let state = Some(OutboundMigrationState {
@@ -1871,7 +1871,7 @@ mod tests {
 
     // ── Task 2 tests: transfer_blobs ───────────────────────────────────────
 
-    // AC2.5: transfer_blobs phase gate (pure test, no network)
+    // transfer_blobs phase gate (pure test, no network)
     #[test]
     fn test_transfer_blobs_phase_too_low() {
         let state = Some(OutboundMigrationState {
@@ -1899,7 +1899,7 @@ mod tests {
 
     // ── Task 1 mock tests: transfer_repo_impl ──────────────────────────────
 
-    // AC2.1: fetch the source CAR and POST the exact bytes to the destination importRepo.
+    // Fetch the source CAR and POST the exact bytes to the destination importRepo.
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
     async fn test_transfer_repo_impl_success() {
@@ -1935,7 +1935,7 @@ mod tests {
         assert_eq!(import.calls(), 1);
     }
 
-    // AC2.1 failure: a dest importRepo 500 → RepoTransferFailed (command leaves phase un-advanced).
+    // Failure case: a dest importRepo 500 → RepoTransferFailed (command leaves phase un-advanced).
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
     async fn test_transfer_repo_impl_import_failure() {
@@ -1971,7 +1971,7 @@ mod tests {
 
     // ── Task 2 mock tests: drain_missing_blobs ─────────────────────────────
 
-    // AC2.5: an empty first page completes immediately with no getBlob/uploadBlob calls.
+    // An empty first page completes immediately with no getBlob/uploadBlob calls.
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
     async fn test_drain_missing_blobs_empty_first_page() {
@@ -2000,7 +2000,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // AC2.2/AC2.3: walk two cursor pages, fetch every missing CID from source and upload to dest
+    // Walk two cursor pages, fetch every missing CID from source and upload to dest
     // once each, terminating on the empty page.
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
@@ -2084,7 +2084,7 @@ mod tests {
         assert_eq!(upload.calls(), 3, "each of the 3 blobs uploaded once");
     }
 
-    // AC2.6: a failing source getBlob mid-drain aborts with BlobTransferFailed (retry-safe).
+    // A failing source getBlob mid-drain aborts with BlobTransferFailed (retry-safe).
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
     async fn test_drain_missing_blobs_mid_failure_is_blob_transfer_failed() {
@@ -2124,7 +2124,7 @@ mod tests {
 
     // ── Task 3 tests: transfer_preferences ─────────────────────────────────
 
-    // AC2.4 pure gate test: transfer_preferences before BlobsTransferred phase fails
+    // Pure gate test: transfer_preferences before BlobsTransferred phase fails
     #[test]
     fn test_transfer_preferences_phase_too_low() {
         let state = Some(OutboundMigrationState {
@@ -2145,7 +2145,7 @@ mod tests {
         ));
     }
 
-    // AC2.4: transfer_preferences fetches from source and posts to destination, advances phase.
+    // transfer_preferences fetches from source and posts to destination, advances phase.
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
     async fn test_transfer_preferences_impl_success() {
@@ -2182,7 +2182,7 @@ mod tests {
         assert_eq!(put_prefs.calls(), 1);
     }
 
-    // AC2.4 failure: source getPreferences 500 → PreferencesTransferFailed
+    // Failure case: source getPreferences 500 → PreferencesTransferFailed
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
     async fn test_transfer_preferences_impl_source_failure() {
@@ -2206,7 +2206,7 @@ mod tests {
         ));
     }
 
-    // AC2.4 failure: dest putPreferences 500 → PreferencesTransferFailed
+    // Failure case: dest putPreferences 500 → PreferencesTransferFailed
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
     async fn test_transfer_preferences_impl_dest_failure() {
@@ -2239,7 +2239,7 @@ mod tests {
 
     // ── Task 4 tests: verify_import ────────────────────────────────────────
 
-    // AC3.1 pure: import_reconciles is true when imported_blobs == expected_blobs AND repo_commit exists
+    // Pure: import_reconciles is true when imported_blobs == expected_blobs AND repo_commit exists
     #[test]
     fn test_import_reconciles_true_when_complete() {
         let status = crate::pds_client::AccountStatus {
@@ -2257,7 +2257,7 @@ mod tests {
         assert!(import_reconciles(&status));
     }
 
-    // AC3.2 pure: import_reconciles is true even when valid_did = false
+    // Pure: import_reconciles is true even when valid_did = false
     #[test]
     fn test_import_reconciles_ignores_valid_did() {
         let status = crate::pds_client::AccountStatus {
@@ -2275,7 +2275,7 @@ mod tests {
         assert!(import_reconciles(&status));
     }
 
-    // AC3.3 pure: import_reconciles is false when imported_blobs < expected_blobs
+    // Pure: import_reconciles is false when imported_blobs < expected_blobs
     #[test]
     fn test_import_reconciles_false_when_blobs_incomplete() {
         let status = crate::pds_client::AccountStatus {
@@ -2293,7 +2293,7 @@ mod tests {
         assert!(!import_reconciles(&status));
     }
 
-    // AC3.3 pure: import_reconciles is false when repo_commit is None
+    // Pure: import_reconciles is false when repo_commit is None
     #[test]
     fn test_import_reconciles_false_when_repo_absent() {
         let status = crate::pds_client::AccountStatus {
@@ -2311,7 +2311,7 @@ mod tests {
         assert!(!import_reconciles(&status));
     }
 
-    // AC3.1: a real checkAccountStatus payload with imported==expected and a repo commit passes the
+    // A real checkAccountStatus payload with imported==expected and a repo commit passes the
     // import_reconciles gate (the branch verify_import uses to decide whether to advance to Verified).
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
@@ -2344,7 +2344,7 @@ mod tests {
         assert_eq!(status.expected_blobs, 10);
     }
 
-    // AC3.3: a real checkAccountStatus payload with imported<expected fails the import_reconciles
+    // A real checkAccountStatus payload with imported<expected fails the import_reconciles
     // gate (the branch on which verify_import returns VerificationIncomplete with these counts).
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
@@ -2380,7 +2380,7 @@ mod tests {
 
     // ── Task 1 tests: arm_identity_leg ─────────────────────────────────────
 
-    // AC4.3 pure gate: arm_identity_leg before Verified phase returns MIGRATION_NOT_READY
+    // Pure gate: arm_identity_leg before Verified phase returns MIGRATION_NOT_READY
     #[test]
     fn test_arm_identity_leg_phase_gate_too_low() {
         let state = Some(OutboundMigrationState {
@@ -2415,7 +2415,7 @@ mod tests {
         }
     }
 
-    // AC4.1: the REAL arm_identity_leg_core parks a migrate::MigrationState AND advances the
+    // The REAL arm_identity_leg_core parks a migrate::MigrationState AND advances the
     // orchestration phase to IdentityArmed (drives production code, not a hand-rolled copy).
     #[tokio::test]
     async fn test_arm_identity_leg_core_populates_state_and_advances_phase() {
@@ -2437,7 +2437,7 @@ mod tests {
         );
     }
 
-    // AC4.3: arm_identity_leg_core before Verified → MIGRATION_NOT_READY, and nothing is parked.
+    // arm_identity_leg_core before Verified → MIGRATION_NOT_READY, and nothing is parked.
     #[tokio::test]
     async fn test_arm_identity_leg_core_gate_before_verified() {
         let did = "did:plc:abc123";
@@ -2475,7 +2475,7 @@ mod tests {
 
     // ── Task 2 tests: finalize_migration ───────────────────────────────────
 
-    // AC4.2 gate: finalize_migration before IdentityArmed returns MIGRATION_NOT_READY
+    // Gate: finalize_migration before IdentityArmed returns MIGRATION_NOT_READY
     #[test]
     fn test_finalize_migration_phase_gate_too_low() {
         let state = Some(OutboundMigrationState {
@@ -2496,7 +2496,7 @@ mod tests {
         ));
     }
 
-    // AC1.2: finalize_migration_impl activates the destination BEFORE deactivating the source.
+    // finalize_migration_impl activates the destination BEFORE deactivating the source.
     // Ordering is OBSERVED: each mock records its name into a shared vec (the is_true closures move
     // in cloned Arcs, so they are 'static), and we assert the recorded sequence.
     #[tokio::test]
@@ -2540,11 +2540,11 @@ mod tests {
         assert_eq!(
             *order.lock().unwrap(),
             vec!["activate".to_string(), "deactivate".to_string()],
-            "AC1.2: destination activated before source deactivated"
+            "destination activated before source deactivated"
         );
     }
 
-    // AC5.3: activate returning 200 on already-active account (idempotent) → success
+    // Activate returning 200 on already-active account (idempotent) → success
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
     async fn test_finalize_migration_impl_idempotent_activate_200() {
@@ -2578,7 +2578,7 @@ mod tests {
         assert_eq!(deactivate.calls(), 2);
     }
 
-    // AC5.3 retry-safety: activate fails (e.g. transient 5xx) → ActivationFailed, no deactivate
+    // Retry-safety: activate fails (e.g. transient 5xx) → ActivationFailed, no deactivate
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
     async fn test_finalize_migration_impl_activate_failure_no_deactivate() {
@@ -2620,7 +2620,7 @@ mod tests {
         s
     }
 
-    // AC4.2: the REAL finalize_migration_core refuses while migrate::migration_state is still Some
+    // The REAL finalize_migration_core refuses while migrate::migration_state is still Some
     // (identity op not yet submitted). No network is reached, so this is a pure test.
     #[tokio::test]
     async fn test_finalize_migration_core_rejects_when_identity_op_not_submitted() {
@@ -2645,7 +2645,7 @@ mod tests {
         );
     }
 
-    // AC4.2 phase gate: finalize_migration_core before IdentityArmed → MIGRATION_NOT_READY.
+    // Phase gate: finalize_migration_core before IdentityArmed → MIGRATION_NOT_READY.
     #[tokio::test]
     async fn test_finalize_migration_core_gate_before_identity_armed() {
         let did = "did:plc:abc123";
@@ -2659,7 +2659,7 @@ mod tests {
         ));
     }
 
-    // AC1.2 (end-to-end via the core): armed + cleared migration_state + mock activate/deactivate
+    // End-to-end via the core: armed + cleared migration_state + mock activate/deactivate
     // → Ok AND the orchestration phase advances to Finalized.
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
@@ -2696,7 +2696,7 @@ mod tests {
 
     // ── Task 3 tests: Full-pipeline integration test ────────────────────────
 
-    // AC1.1 / AC4.2 / AC5.2 / AC5.4 / AC10.2: Full migration pipeline with three mock servers
+    // Full migration pipeline with three mock servers
     // (source/old-PDS, dest/new-PDS, plc.directory). Drives the sequence:
     // 1. reserveSigningKey + getServiceAuth + createAccount → dest_client
     // 2. getRepo + importRepo (assert importRepo before uploadBlob)
@@ -2705,10 +2705,10 @@ mod tests {
     // 5. checkAccountStatus → import_reconciles
     // 6. arm_identity_leg (populates migration_state)
     // 7. getRecommendedDidCredentials + plc.directory POST (identity submit)
-    // 8. activateAccount (dest) BEFORE deactivateAccount (source) — last hit (AC4.2 ordering)
-    // Asserts: full sequence completes (AC1.1), all three legs hit in order (AC4.2),
-    // plc.directory POST exactly once (AC10.2), resume with partial blobs (AC5.2),
-    // abort before identity leg leaves dest deactivated (AC5.4).
+    // 8. activateAccount (dest) BEFORE deactivateAccount (source) — last hit (ordering enforced)
+    // Asserts: full sequence completes, all three legs hit in order,
+    // plc.directory POST exactly once, resume with partial blobs,
+    // abort before identity leg leaves dest deactivated.
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
     async fn test_full_migration_pipeline_happy_path() {
@@ -2952,24 +2952,24 @@ mod tests {
             .await
             .expect("finalize_migration_impl should succeed");
 
-        // ─ AC10.2: Verify plc.directory POST was hit exactly once ─
+        // ─ Verify plc.directory POST was hit exactly once ─
         assert_eq!(
             plc_post.calls(),
             1,
-            "plc.directory POST must be hit exactly once (AC10.2)"
+            "plc.directory POST must be hit exactly once"
         );
 
-        // ─ AC1.2 / AC4.2: Verify activation before deactivation ─
+        // ─ Verify activation before deactivation ─
         assert_eq!(activate.calls(), 1, "activate must be called");
         assert_eq!(deactivate.calls(), 1, "deactivate must be called");
         // Ordering within finalize (activate before deactivate) is enforced by
         // finalize_migration_impl and proven by its dedicated ordering tests; here the
-        // exactly-once plc POST (AC10.2) plus a completed run cover AC1.1/AC4.2.
+        // exactly-once plc POST plus a completed run cover the full sequence.
 
         let _ = store.remove_identity(did);
     }
 
-    // AC5.2: Resume scenario — listMissingBlobs returns partial set on first call, then empty
+    // Resume scenario — listMissingBlobs returns partial set on first call, then empty
     // Verify only the still-missing blobs are uploaded (not the full set)
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
@@ -3029,15 +3029,15 @@ mod tests {
         .await;
 
         assert!(result.is_ok(), "drain should complete successfully");
-        // AC5.2: uploadBlob must be hit exactly twice (only the blobs on the first page)
+        // uploadBlob must be hit exactly twice (only the blobs on the first page)
         assert_eq!(
             upload.calls(),
             2,
-            "AC5.2: uploadBlob hit count must match still-missing blobs (not full set)"
+            "uploadBlob hit count must match still-missing blobs (not full set)"
         );
     }
 
-    // AC5.4: Abort before the identity leg — verify the dest stays deactivated (coherent state).
+    // Abort before the identity leg — verify the dest stays deactivated (coherent state).
     // Drives: create dest account → transfer repo → blobs → prefs → verify, then STOPS (no
     // arm_identity_leg / finalize). Asserts activateAccount is never hit.
     #[tokio::test]
@@ -3183,11 +3183,11 @@ mod tests {
             .expect("check status");
         assert!(import_reconciles(&status));
 
-        // ─ AC5.4: Verify dest was NEVER activated (coherent state on abort) ─
+        // ─ Verify dest was NEVER activated (coherent state on abort) ─
         assert_eq!(
             activate.calls(),
             0,
-            "AC5.4: activateAccount must never be hit on abort before identity leg"
+            "activateAccount must never be hit on abort before identity leg"
         );
     }
 }

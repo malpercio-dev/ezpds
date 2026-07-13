@@ -7,7 +7,7 @@
 //! the device's *admin credential*: the relay stores only the public key (as a
 //! `did:key`) and verifies the signature on each request, so no replayable
 //! secret ever sits on the phone. Request-envelope signing (binding method, path,
-//! timestamp, nonce, and a body hash) is layered on top in Phase 7; this module
+//! timestamp, nonce, and a body hash) is layered on top elsewhere; this module
 //! owns only key generation and raw message signing.
 //!
 //! Two compile-time paths share one public API (`get_or_create`, `sign`):
@@ -382,9 +382,9 @@ mod tests {
         );
     }
 
-    // The round-trip that is Phase 6's Definition of Done: a signature produced by
-    // sign() verifies against the public key get_or_create() advertised. This is the
-    // exact contract the relay's require_admin guard relies on in Phase 4.
+    // The round-trip: a signature produced by sign() verifies against the public key
+    // get_or_create() advertised. This is the exact contract the relay's require_admin
+    // guard relies on.
     #[test]
     fn sign_output_verifies_against_public_key() {
         crate::keychain::clear_for_test();

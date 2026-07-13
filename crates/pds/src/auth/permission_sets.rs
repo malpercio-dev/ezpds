@@ -524,10 +524,10 @@ mod tests {
         })
     }
 
-    // ── resolve_authority_endpoint: AC1.1-1.4 ───────────────────────────────
+    // ── resolve_authority_endpoint ───────────────────────────────────────────
 
     #[tokio::test]
-    async fn ac1_1_resolves_nsid_to_a_validated_service_endpoint() {
+    async fn resolves_nsid_to_a_validated_service_endpoint() {
         // An IP literal (rather than a domain) so `validate_proxy_endpoint` doesn't need to
         // perform a live DNS resolution in this test — same convention as
         // identity_resolution.rs's own SSRF tests.
@@ -541,7 +541,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ac1_2_missing_txt_record_fails_resolution() {
+    async fn missing_txt_record_fails_resolution() {
         let state = state_with_dns(test_state().await, vec![]);
         let err = resolve_authority_endpoint(&state, "app.bsky.authFull")
             .await
@@ -550,7 +550,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ac1_2_dns_transport_error_fails_resolution() {
+    async fn dns_transport_error_fails_resolution() {
         let state = AppState {
             txt_resolver: Some(Arc::new(ErrTxtResolver)),
             ..test_state().await
@@ -561,7 +561,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ac1_3_did_document_with_no_matching_service_fails_resolution() {
+    async fn did_document_with_no_matching_service_fails_resolution() {
         let state = state_with_dns(test_state().await, vec![format!("did={AUTHORITY_DID}")]);
         seed_did_document(
             &state.db,
@@ -577,7 +577,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ac1_4_endpoint_pointing_at_metadata_address_is_rejected() {
+    async fn endpoint_pointing_at_metadata_address_is_rejected() {
         let state = state_with_dns(test_state().await, vec![format!("did={AUTHORITY_DID}")]);
         seed_did_document(&state.db, AUTHORITY_DID, pds_doc("http://169.254.169.254")).await;
 
@@ -596,7 +596,7 @@ mod tests {
         assert!(err.contains("not a valid NSID"), "got: {err}");
     }
 
-    // ── resolve_permission_set: AC2.1-2.5 ───────────────────────────────────
+    // ── resolve_permission_set ───────────────────────────────────────────────
 
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -641,7 +641,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ac2_1_well_formed_record_expands_to_canonical_scopes() {
+    async fn well_formed_record_expands_to_canonical_scopes() {
         let server = MockServer::start().await;
         let nsid = "app.bsky.authFull";
         let schema = permission_set_schema(
@@ -667,7 +667,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ac2_2_malformed_record_fails_closed() {
+    async fn malformed_record_fails_closed() {
         let server = MockServer::start().await;
         let nsid = "app.bsky.authFull";
         // "defs" is a string, not an object — fails to deserialize.
@@ -681,7 +681,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ac2_3_blob_wildcard_entry_fails_closed() {
+    async fn blob_wildcard_entry_fails_closed() {
         let server = MockServer::start().await;
         let nsid = "app.bsky.authFull";
         let schema = permission_set_schema(
@@ -699,7 +699,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ac2_4_inherit_aud_takes_audience_from_include_token() {
+    async fn inherit_aud_takes_audience_from_include_token() {
         let server = MockServer::start().await;
         let nsid = "app.bsky.authFull";
         let schema = permission_set_schema(
@@ -720,7 +720,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ac2_5_inherit_aud_with_no_audience_available_fails_closed() {
+    async fn inherit_aud_with_no_audience_available_fails_closed() {
         let server = MockServer::start().await;
         let nsid = "app.bsky.authFull";
         let schema = permission_set_schema(
@@ -738,10 +738,10 @@ mod tests {
         assert!(err.contains("invalid permission entry"), "got: {err}");
     }
 
-    // ── resolve_permission_set_cached: AC3.1-3.3 ────────────────────────────
+    // ── resolve_permission_set_cached ────────────────────────────────────────
 
     #[tokio::test]
-    async fn ac3_1_cache_hit_within_ttl_skips_resolution() {
+    async fn cache_hit_within_ttl_skips_resolution() {
         let server = MockServer::start().await;
         let nsid = "app.bsky.authFull";
         let schema = permission_set_schema(
@@ -774,7 +774,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ac3_2_expired_entry_triggers_fresh_resolution() {
+    async fn expired_entry_triggers_fresh_resolution() {
         let server = MockServer::start().await;
         let nsid = "app.bsky.authFull";
         let schema = permission_set_schema(
@@ -805,7 +805,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ac3_3_failed_resolution_is_negatively_cached() {
+    async fn failed_resolution_is_negatively_cached() {
         // No DNS resolver configured at all — resolution fails immediately, before any
         // network fetch, so a second call within the negative-TTL window must return the
         // same cached failure without attempting resolution again.

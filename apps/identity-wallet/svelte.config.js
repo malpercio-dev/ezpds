@@ -8,7 +8,7 @@ const config = {
     adapter: adapter({
       // fallback: 'index.html' routes unmatched paths to index for client-side navigation (SPA mode)
       fallback: 'index.html',
-      // pages: 'dist' matches tauri.conf.json frontendDist: "../dist" (configured in Phase 2)
+      // pages: 'dist' matches tauri.conf.json frontendDist: "../dist"
       // Note: adapter-static 3.x uses 'pages' instead of 'out'
       pages: 'dist',
     }),
