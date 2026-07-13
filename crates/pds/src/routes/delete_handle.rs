@@ -111,7 +111,7 @@ pub async fn delete_handle_handler(
         );
     }
 
-    // Step 5b: Emit an `#identity` firehose frame so relays/AppViews re-resolve the account's
+    // Step 5c: Emit an `#identity` firehose frame so relays/AppViews re-resolve the account's
     // identity promptly. The removed handle is no longer asserted here, so `handle` is `None`: a
     // relay re-resolves the DID document to discover the remaining `alsoKnownAs`. Best-effort, like
     // the rest of the firehose emit path — the handle row is already gone and the DID-doc update is

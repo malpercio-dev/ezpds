@@ -1141,8 +1141,10 @@ mod tests {
         // we got the AppView response unmodified.
     }
 
-    // Integration test: verify read-after-write NSIDs are routed to the munged path and still
-    // return the AppView response verbatim in Phase 1 (before munging is wired).
+    // Integration test: verify read-after-write NSIDs are routed to the munged path
+    // (`read_after_write::pipethrough_munged`) and still return the AppView response verbatim
+    // here, because the test account has no unindexed local records — the munge path's fallback
+    // ladder returns the buffered original untouched when `LocalRecords` is empty.
     #[tokio::test]
     async fn read_after_write_nsids_return_appview_response_verbatim() {
         let server = MockServer::start().await;
