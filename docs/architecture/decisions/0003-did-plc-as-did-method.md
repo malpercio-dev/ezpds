@@ -1,6 +1,6 @@
 # ADR-0003: `did:plc` as the DID method
 
-- **Status:** Accepted (amended 2026-07-13 — see [Amendment](#amendment-2026-07-13-did-plc-is-the-minted-method-did-web-is-hosted-for-user-owned-domains))
+- **Status:** Accepted (amended 2026-07-13 — see [Amendment](#amendment-2026-07-13-didplc-is-the-minted-method-didweb-is-hosted-for-user-owned-domains))
 - **Date:** 2026-07-02 (backfilled)
 - **Deciders:** ezpds maintainers
 - **Related:** [ADR-0001](0001-client-held-rotation-key-custody.md) · [ADR-0002](0002-wallet-authorized-account-migration.md) · [ADR-0012](0012-canonical-dag-cbor-for-plc-ops.md) · [`../identity-and-key-custody.md`](../identity-and-key-custody.md) · [`crates/crypto/src/plc.rs`](../../../crates/crypto/src/plc.rs) · [MM-278](https://linear.app/atbb/issue/MM-278) (migrate `did:web:malpercio.dev` onto Custos) · [MM-279](https://linear.app/atbb/issue/MM-279) (managed did:web hosting) · [MM-285](https://linear.app/atbb/issue/MM-285) (wallet did:web ceremony)
