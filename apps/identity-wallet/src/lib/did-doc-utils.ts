@@ -78,6 +78,30 @@ export function truncateDid(did: string): string {
 }
 
 /**
+ * Returns the method segment of a DID (`did:<method>:<method-specific-id>` → `<method>`),
+ * or null when `did` is not a well-formed DID.
+ */
+export function didMethod(did: string): string | null {
+  const parts = did.split(':');
+  if (parts.length < 3 || parts[0] !== 'did' || parts[1] === '') return null;
+  return parts[1];
+}
+
+/**
+ * Whether `did` is a `did:web` identity.
+ *
+ * `did:web` has no rotation-key hierarchy, no plc.directory audit log, and no recovery window
+ * (ADR-0003): the DID document lives at the user's own domain and is defended by domain control,
+ * not by the PLC machinery. The wallet uses this to gate the `did:plc`-only surfaces (PLC
+ * monitoring, the recovery-window override, the claim/Shamir ceremonies) so it never presents
+ * those assurances for an identity they do not apply to — it says so in-app instead of silently
+ * showing an inapplicable "all secure" state.
+ */
+export function isDidWeb(did: string): boolean {
+  return didMethod(did) === 'web';
+}
+
+/**
  * Type guard for Tauri IPC error objects with a `code` field.
  * Use in catch blocks to distinguish typed IPC errors from generic JS errors.
  */

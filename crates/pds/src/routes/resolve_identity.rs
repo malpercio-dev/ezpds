@@ -15,7 +15,7 @@ use serde_json::Value;
 use crate::app::AppState;
 use crate::identity_resolution::{
     resolve_did_document, resolve_did_document_force_refresh, resolve_handle_to_did,
-    verified_handle_for_did, verified_handle_for_identifier,
+    verified_handle_for_did, verified_handle_for_identifier, INVALID_HANDLE,
 };
 
 #[derive(Deserialize)]
@@ -72,9 +72,38 @@ pub async fn refresh_identity_handler(
     // fresh fetch from the authoritative DID source (plc.directory / did:web) and rewrite the
     // cache row, rather than serving the possibly-stale cached document a plain resolveIdentity
     // would return.
-    resolve_identity(&state, &payload.identifier, true)
-        .await
-        .map(Json)
+    let info = resolve_identity(&state, &payload.identifier, true).await?;
+
+    // If this PDS hosts the refreshed account, announce the identity change on the firehose so
+    // relays re-resolve the DID document. This is the leg that propagates an externally-hosted
+    // did:web edit — the operator repointed `did.json` to Custos and the refresh above rewrote our
+    // cached copy, but a relay won't notice until an `#identity` frame tells it to re-resolve. The
+    // emission is method-agnostic: a did:plc doc change announces the same way.
+    emit_identity_if_hosted(&state, &info).await;
+
+    Ok(Json(info))
+}
+
+/// Emit an `#identity` firehose frame for `info` when this PDS hosts the account.
+///
+/// Best-effort throughout: the authoritative DID source already answered and the cache was
+/// rewritten, so neither the hosting check nor the firehose emission may fail the refresh. We only
+/// announce for DIDs this PDS actually hosts — its firehose describes its own repos, so emitting an
+/// `#identity` for a foreign DID would be spurious. A verified handle is asserted when we have one;
+/// `handle.invalid` collapses to `None` ("identity changed, re-resolve"), never a bogus handle.
+async fn emit_identity_if_hosted(state: &AppState, info: &IdentityInfoResponse) {
+    match crate::db::accounts::account_exists(&state.db, &info.did).await {
+        Ok(true) => {
+            let handle = (info.handle != INVALID_HANDLE).then(|| info.handle.clone());
+            if let Err(e) = state.firehose.emit_identity(info.did.clone(), handle).await {
+                tracing::warn!(error = %e, did = %info.did, "failed to emit #identity after refreshIdentity (non-fatal)");
+            }
+        }
+        Ok(false) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, did = %info.did, "failed to check hosting for #identity emission after refreshIdentity (non-fatal)");
+        }
+    }
 }
 
 async fn resolve_identity(
@@ -534,6 +563,96 @@ mod tests {
             resolve_body["didDoc"]["service"][0]["serviceEndpoint"], "https://new.example.com",
             "resolveDid must serve the refreshed document from cache"
         );
+    }
+
+    /// refreshIdentity announces the re-resolved identity on the firehose when this PDS hosts the
+    /// account — the leg that tells relays to re-resolve after an externally-hosted did.json edit.
+    #[tokio::test]
+    async fn refresh_identity_emits_identity_frame_for_hosted_account() {
+        let mock_server = MockServer::start().await;
+        let did = "did:plc:refreshemitshosted12345";
+        let handle = "hosted.test.example.com";
+        let doc = json!({
+            "@context": ["https://www.w3.org/ns/did/v1"],
+            "id": did,
+            "alsoKnownAs": [format!("at://{handle}")],
+            "verificationMethod": [],
+            "service": []
+        });
+        Mock::given(method("GET"))
+            .and(path(format!("/{did}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&doc))
+            .mount(&mock_server)
+            .await;
+
+        let state = test_state_with_plc_url(mock_server.uri()).await;
+        // `seed_handle` inserts the account row (so `account_exists` reports it hosted) and the
+        // handle (so `verified_handle_for_did` resolves it).
+        seed_handle(&state.db, handle, did).await;
+        seed_did_document(&state.db, did, doc).await;
+
+        let firehose = state.firehose.clone();
+        let mut rx = firehose.subscribe();
+
+        let response = app(state)
+            .oneshot(post_json(
+                "/xrpc/com.atproto.identity.refreshIdentity",
+                json!({ "identifier": did }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let event = rx.try_recv().expect("an #identity frame must be emitted");
+        let crate::firehose::FirehoseEvent::Identity(identity) = event else {
+            panic!("expected an #identity frame, got {event:?}");
+        };
+        assert_eq!(identity.did, did);
+        assert_eq!(identity.handle.as_deref(), Some(handle));
+        drop(firehose);
+    }
+
+    /// refreshIdentity must NOT announce an identity this PDS does not host — its firehose describes
+    /// only its own repos, so a foreign DID refresh emits nothing.
+    #[tokio::test]
+    async fn refresh_identity_does_not_emit_for_unhosted_did() {
+        let mock_server = MockServer::start().await;
+        let did = "did:plc:refreshnothosted123456";
+        let doc = json!({
+            "@context": ["https://www.w3.org/ns/did/v1"],
+            "id": did,
+            "alsoKnownAs": [],
+            "verificationMethod": [],
+            "service": []
+        });
+        Mock::given(method("GET"))
+            .and(path(format!("/{did}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&doc))
+            .mount(&mock_server)
+            .await;
+
+        // No account row for `did`: it is a foreign identity this PDS merely resolves.
+        let state = test_state_with_plc_url(mock_server.uri()).await;
+        let firehose = state.firehose.clone();
+        let mut rx = firehose.subscribe();
+
+        let response = app(state)
+            .oneshot(post_json(
+                "/xrpc/com.atproto.identity.refreshIdentity",
+                json!({ "identifier": did }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+            ),
+            "no firehose frame may be emitted for an unhosted DID"
+        );
+        drop(firehose);
     }
 
     #[tokio::test]

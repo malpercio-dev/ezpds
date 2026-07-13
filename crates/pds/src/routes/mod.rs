@@ -106,4 +106,7 @@ pub(crate) mod test_utils;
 mod outbound_migration_test;
 
 #[cfg(test)]
+mod didweb_migration_test;
+
+#[cfg(test)]
 mod agent_auth_test;

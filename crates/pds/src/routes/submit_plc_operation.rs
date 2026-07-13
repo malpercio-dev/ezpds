@@ -24,7 +24,7 @@ use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
 use crate::auth::oauth_scopes;
-use crate::plc_ops::{build_did_document_from_op, fetch_current_plc_state};
+use crate::plc_ops::{build_did_document_from_op, ensure_did_plc, fetch_current_plc_state};
 
 #[derive(Deserialize)]
 pub struct SubmitPlcOperationRequest {
@@ -47,6 +47,10 @@ pub async fn submit_plc_operation(
     }
     oauth_scopes::require_identity(&user.scope_claim, "*")?;
     let did = &user.did;
+
+    // PLC operations only apply to a did:plc identity — reject a did:web account explicitly here
+    // rather than 404ing later on its (non-existent) plc.directory audit log.
+    ensure_did_plc(did)?;
 
     let operation_str = serde_json::to_string(&request.operation).map_err(|e| {
         tracing::error!(error = %e, "failed to serialize submitted operation");
@@ -303,5 +307,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// A did:web account gets an explicit "not a did:plc" 400 up front, before any plc.directory
+    /// round trip.
+    #[tokio::test]
+    async fn did_web_account_rejected() {
+        let plc = MockServer::start().await;
+        // No audit-log mock: any plc.directory GET would 404, proving the guard short-circuits.
+        let state = state_with_plc(plc.uri()).await;
+        let did = "did:web:malpercio.dev";
+        let jwt = access_jwt(&[0x42u8; 32], did);
+
+        let response = app(state)
+            .oneshot(post_req(Some(&jwt), serde_json::json!({ "operation": {} })))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

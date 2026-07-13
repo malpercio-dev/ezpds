@@ -30,7 +30,9 @@ use crate::auth::jwt::AuthScope;
 use crate::auth::oauth_scopes;
 use crate::db::plc_operation_tokens::{consume_plc_operation_token, plc_operation_token_is_valid};
 use crate::db::repo_keys::get_signing_key_by_did;
-use crate::plc_ops::{fetch_current_plc_state, parse_services, parse_verification_methods};
+use crate::plc_ops::{
+    ensure_did_plc, fetch_current_plc_state, parse_services, parse_verification_methods,
+};
 use crate::token::hash_bearer_token;
 
 #[derive(Deserialize)]
@@ -66,6 +68,10 @@ pub async fn sign_plc_operation(
     }
     oauth_scopes::require_identity(&user.scope_claim, "*")?;
     let did = &user.did;
+
+    // PLC operations only apply to a did:plc identity — reject a did:web account explicitly here
+    // rather than 404ing later on its (non-existent) plc.directory audit log.
+    ensure_did_plc(did)?;
 
     // Two-factor gate: a full-access session (above) AND a single-use email token. We validate the
     // token here without consuming it, then redeem it atomically at the very end — so a transient
@@ -393,6 +399,28 @@ mod tests {
             used_at.is_none(),
             "a transient plc.directory failure must not burn the token"
         );
+    }
+
+    /// A did:web account gets an explicit "not a did:plc" 400 up front, without a plc.directory
+    /// round trip — the guard fires before any audit-log fetch that would otherwise 404.
+    #[tokio::test]
+    async fn did_web_account_rejected_without_plc_call() {
+        let plc = MockServer::start().await;
+        // No audit-log mock mounted: any plc.directory GET would 404, proving the guard short-circuits.
+        let state = state_with_master_key_and_plc(plc.uri()).await;
+        let did = "did:web:malpercio.dev";
+        let jwt = access_jwt(&[0x42u8; 32], did);
+
+        let response = app(state)
+            .oneshot(post_req(
+                Some(&jwt),
+                serde_json::json!({ "token": "irrelevant" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "InvalidRequest");
     }
 
     #[tokio::test]
