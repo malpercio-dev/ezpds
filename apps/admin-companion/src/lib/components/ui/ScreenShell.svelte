@@ -72,6 +72,9 @@
   .screen {
     display: flex;
     flex-direction: column;
+    /* 100vh first is the fallback for iOS < 16 (deployment floor is iOS 13), where
+       dvh is unsupported; dvh then wins where available and tracks the real height. */
+    min-height: 100vh;
     min-height: 100dvh;
     /* Pad clear of the OS chrome (status bar / Dynamic Island / home indicator),
        falling back to the base spacing off a notched device. */
