@@ -1,0 +1,8 @@
+{
+  "serverDid": "did:web:pds.example.com",
+  "accountDid": "did:plc:abcdefghijklmnopqrstuvwx",
+  "signingKeyDid": "did:key:zExample",
+  "timestamp": 1720000000,
+  "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "envelope": "domain:38:org.obsign.custos.sovereign-session.v1\naud:23:did:web:pds.example.com\nmethod:4:POST\npath:22:/v1/sessions/sovereign\ndid:32:did:plc:abcdefghijklmnopqrstuvwx\nkey:16:did:key:zExample\ntimestamp:10:1720000000\nnonce:43:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"
+}

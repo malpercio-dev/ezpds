@@ -12,6 +12,7 @@ pub mod oauth_client;
 pub mod pds_client;
 pub mod plc_monitor;
 pub mod recovery;
+pub mod sovereign_session;
 
 use crypto::{build_did_plc_genesis_op_with_external_signer, CryptoError, DidKeyUri};
 use serde::{Deserialize, Serialize};
@@ -1052,6 +1053,7 @@ pub fn run() {
             migration_orchestrator::verify_import,
             migration_orchestrator::arm_identity_leg,
             migration_orchestrator::finalize_migration,
+            sovereign_session::sovereign_login,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

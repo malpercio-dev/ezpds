@@ -906,6 +906,43 @@ export const authenticateBiometric = async (reason: string): Promise<void> => {
   await plugin.authenticate(reason, { allowDeviceCredential: true });
 };
 
+// ── Per-DID sovereign session ───────────────────────────────────────────────
+
+export type SovereignLoginResult = {
+  did: string;
+  pdsUrl: string;
+  accessExpiresAt: number;
+  refreshExpiresAt: number;
+};
+
+export type SovereignLoginError = {
+  code:
+    | 'IDENTITY_NOT_FOUND'
+    | 'UNSUPPORTED_HOST'
+    | 'AUTHORIZATION_FAILED'
+    | 'RATE_LIMITED'
+    | 'TRANSPORT_FAILURE'
+    | 'KEYCHAIN_FAILURE'
+    | 'SIGNING_FAILED'
+    | 'DID_MISMATCH'
+    | 'SERVER_MISMATCH'
+    | 'INVALID_RESPONSE'
+    | 'SERVER_FAILURE';
+  message?: string;
+  retryAfter?: string;
+  status?: number;
+};
+
+/**
+ * Prove control of one managed identity's device key and persist its full-access session.
+ * The biometric prompt deliberately precedes the IPC invocation: cancellation therefore
+ * reaches neither Rust signing code nor the network.
+ */
+export const sovereignLogin = async (did: string): Promise<SovereignLoginResult> => {
+  await authenticateBiometric('Sign in to your identity’s hosting server');
+  return invoke('sovereign_login', { did });
+};
+
 // ── Agent consent + audit (auth.md claim ceremony, "My agents") ──────────────
 
 /** One agent identity bound to this account. */

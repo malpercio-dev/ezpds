@@ -10,7 +10,7 @@
 //! All Keychain operations use the shared `keychain::SERVICE` prefix.
 
 use crate::device_key::DevicePublicKey;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -35,6 +35,29 @@ pub enum IdentityStoreError {
     KeyGenerationFailed,
     #[error("serialization error: {message}")]
     SerializationError { message: String },
+}
+
+/// Versioned full-access Bearer session stored in a managed DID's `oauth-tokens` slot.
+///
+/// The hosting PDS travels with the credentials so a restored session cannot be
+/// accidentally presented to another identity's host. Expiry values are copied
+/// from the JWT payloads for launch-time/session-lifecycle decisions without
+/// treating the unverified payload as authorization data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SovereignTokenRecord {
+    pub version: u8,
+    pub access_jwt: String,
+    pub refresh_jwt: String,
+    pub pds_url: String,
+    pub server_did: String,
+    pub access_expires_at: Option<u64>,
+    pub refresh_expires_at: Option<u64>,
+    pub stored_at: u64,
+}
+
+impl SovereignTokenRecord {
+    pub const VERSION: u8 = 1;
 }
 
 // ── Per-DID account name helpers ───────────────────────────────────────────────
@@ -368,6 +391,74 @@ impl IdentityStore {
                 Ok(Some(log_json))
             }
             Err(e) if crate::keychain::is_not_found(&e) => Ok(None),
+            Err(e) => Err(IdentityStoreError::KeychainError {
+                message: e.to_string(),
+            }),
+        }
+    }
+
+    /// Persist a full-access session in the selected DID's namespaced Keychain slot.
+    pub fn store_oauth_tokens(
+        &self,
+        did: &str,
+        record: &SovereignTokenRecord,
+    ) -> Result<(), IdentityStoreError> {
+        if !self.is_managed(did)? {
+            return Err(IdentityStoreError::IdentityNotFound);
+        }
+        if record.version != SovereignTokenRecord::VERSION {
+            return Err(IdentityStoreError::SerializationError {
+                message: format!("unsupported oauth token record version {}", record.version),
+            });
+        }
+        let json =
+            serde_json::to_vec(record).map_err(|e| IdentityStoreError::SerializationError {
+                message: format!("failed to serialize oauth token record: {e}"),
+            })?;
+        crate::keychain::store_item(&oauth_tokens_account(did), &json).map_err(|e| {
+            IdentityStoreError::KeychainError {
+                message: e.to_string(),
+            }
+        })
+    }
+
+    /// Load the selected DID's full-access session, if one has been stored.
+    pub fn load_oauth_tokens(
+        &self,
+        did: &str,
+    ) -> Result<Option<SovereignTokenRecord>, IdentityStoreError> {
+        if !self.is_managed(did)? {
+            return Err(IdentityStoreError::IdentityNotFound);
+        }
+        let bytes = match crate::keychain::get_item(&oauth_tokens_account(did)) {
+            Ok(bytes) => bytes,
+            Err(e) if crate::keychain::is_not_found(&e) => return Ok(None),
+            Err(e) => {
+                return Err(IdentityStoreError::KeychainError {
+                    message: e.to_string(),
+                })
+            }
+        };
+        let record: SovereignTokenRecord =
+            serde_json::from_slice(&bytes).map_err(|e| IdentityStoreError::SerializationError {
+                message: format!("failed to deserialize oauth token record: {e}"),
+            })?;
+        if record.version != SovereignTokenRecord::VERSION {
+            return Err(IdentityStoreError::SerializationError {
+                message: format!("unsupported oauth token record version {}", record.version),
+            });
+        }
+        Ok(Some(record))
+    }
+
+    /// Delete the selected DID's full-access session without removing the identity.
+    pub fn delete_oauth_tokens(&self, did: &str) -> Result<(), IdentityStoreError> {
+        if !self.is_managed(did)? {
+            return Err(IdentityStoreError::IdentityNotFound);
+        }
+        match crate::keychain::delete_item(&oauth_tokens_account(did)) {
+            Ok(()) => Ok(()),
+            Err(e) if crate::keychain::is_not_found(&e) => Ok(()),
             Err(e) => Err(IdentityStoreError::KeychainError {
                 message: e.to_string(),
             }),
@@ -918,6 +1009,86 @@ mod tests {
             .expect("get_plc_log failed")
             .expect("log not found");
         assert_eq!(retrieved, log);
+    }
+
+    fn token_record(pds_url: &str) -> SovereignTokenRecord {
+        SovereignTokenRecord {
+            version: SovereignTokenRecord::VERSION,
+            access_jwt: "access.jwt.value".into(),
+            refresh_jwt: "refresh.jwt.value".into(),
+            pds_url: pds_url.into(),
+            server_did: "did:web:pds.example.com".into(),
+            access_expires_at: Some(1_720_003_600),
+            refresh_expires_at: Some(1_720_086_400),
+            stored_at: 1_720_000_000,
+        }
+    }
+
+    #[test]
+    fn oauth_tokens_round_trip_and_delete() {
+        crate::keychain::clear_for_test();
+        let store = IdentityStore;
+        let did = "did:plc:tokens";
+        store.add_identity(did).unwrap();
+        let expected = token_record("https://pds.example.com");
+
+        store.store_oauth_tokens(did, &expected).unwrap();
+        assert_eq!(store.load_oauth_tokens(did).unwrap(), Some(expected));
+
+        store.delete_oauth_tokens(did).unwrap();
+        assert_eq!(store.load_oauth_tokens(did).unwrap(), None);
+    }
+
+    #[test]
+    fn oauth_tokens_are_isolated_per_did_and_never_use_legacy_accounts() {
+        crate::keychain::clear_for_test();
+        let store = IdentityStore;
+        let alice = "did:plc:alice";
+        let bob = "did:plc:bob";
+        store.add_identity(alice).unwrap();
+        store.add_identity(bob).unwrap();
+        let alice_record = token_record("https://alice-pds.example.com");
+        let bob_record = token_record("https://bob-pds.example.com");
+
+        store.store_oauth_tokens(alice, &alice_record).unwrap();
+        store.store_oauth_tokens(bob, &bob_record).unwrap();
+
+        assert_eq!(store.load_oauth_tokens(alice).unwrap(), Some(alice_record));
+        assert_eq!(store.load_oauth_tokens(bob).unwrap(), Some(bob_record));
+        assert!(crate::keychain::get_item("oauth-access-token").is_err());
+        assert!(crate::keychain::get_item("oauth-refresh-token").is_err());
+    }
+
+    #[test]
+    fn oauth_tokens_reject_unknown_record_version() {
+        crate::keychain::clear_for_test();
+        let store = IdentityStore;
+        let did = "did:plc:versioned";
+        store.add_identity(did).unwrap();
+        crate::keychain::store_item(
+            &oauth_tokens_account(did),
+            br#"{"version":2,"accessJwt":"a","refreshJwt":"r","pdsUrl":"https://pds.example.com","serverDid":"did:web:pds.example.com","accessExpiresAt":null,"refreshExpiresAt":null,"storedAt":1}"#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            store.load_oauth_tokens(did),
+            Err(IdentityStoreError::SerializationError { .. })
+        ));
+    }
+
+    #[test]
+    fn remove_identity_deletes_oauth_tokens_record() {
+        crate::keychain::clear_for_test();
+        let store = IdentityStore;
+        let did = "did:plc:removedtokens";
+        store.add_identity(did).unwrap();
+        store
+            .store_oauth_tokens(did, &token_record("https://pds.example.com"))
+            .unwrap();
+
+        store.remove_identity(did).unwrap();
+        assert!(crate::keychain::get_item(&oauth_tokens_account(did)).is_err());
     }
 
     #[test]
