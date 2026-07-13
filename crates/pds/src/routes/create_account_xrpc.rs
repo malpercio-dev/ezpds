@@ -25,19 +25,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{extract::State, http::HeaderMap, response::Json};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
+use crate::auth::jwt::{issue_access_jwt, issue_refresh_jwt, SCOPE_ACCESS};
 use crate::auth::password::hash_password;
 use crate::auth::service_auth::verify_service_auth_resolving_key;
 use crate::db::is_unique_violation;
 use crate::db::repo_keys::{
     get_reserved_repo_key_by_did, get_reserved_repo_key_by_id, insert_did_signing_key,
     RepoSigningKey,
-};
-use crate::session_issuer::{
-    issue_session, issue_session_in_transaction, IssuedSession, SessionKind,
 };
 use crate::uniqueness::{email_taken, handle_taken};
 
@@ -254,8 +253,8 @@ async fn create_account_new(
     Ok(Json(CreateAccountResponse {
         access_jwt: session.access_jwt,
         refresh_jwt: session.refresh_jwt,
-        handle: session.handle,
-        did: session.did,
+        handle: payload.handle.clone(),
+        did,
         did_doc: Some(did_document),
     }))
 }
@@ -374,8 +373,7 @@ async fn promote_new_account(
         .inspect_err(|e| tracing::error!(error = %e, did = %p.did, "failed to stage genesis firehose sync event"))
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to sequence genesis repo"))?;
 
-    let session =
-        issue_session_in_transaction(&mut tx, state, p.did, &SessionKind::FullAccess).await?;
+    let session = issue_session(&mut tx, state, p.did).await?;
 
     tx.commit()
         .await
@@ -444,12 +442,23 @@ async fn create_account_migration(
         None => {}
         Some(crate::db::accounts::AccountLifecycle::Deactivated) => {
             tracing::info!(did = %did, "createAccount (migration): resuming existing deactivated account");
-            let session = issue_session(state, did, &SessionKind::FullAccess).await?;
+            let handle = stored_handle_for_did(state, did)
+                .await?
+                .unwrap_or_else(|| payload.handle.clone());
+            let mut tx = state.db.begin().await.map_err(|e| {
+                tracing::error!(error = %e, "failed to begin migration-resume transaction");
+                ApiError::new(ErrorCode::InternalError, "failed to begin transaction")
+            })?;
+            let session = issue_session(&mut tx, state, did).await?;
+            tx.commit().await.map_err(|e| {
+                tracing::error!(error = %e, "failed to commit migration-resume transaction");
+                ApiError::new(ErrorCode::InternalError, "failed to commit transaction")
+            })?;
             return Ok(Json(CreateAccountResponse {
                 access_jwt: session.access_jwt,
                 refresh_jwt: session.refresh_jwt,
-                handle: session.handle,
-                did: session.did,
+                handle,
+                did: did.to_string(),
                 did_doc: Some(did_document),
             }));
         }
@@ -546,8 +555,7 @@ async fn create_account_migration(
         .inspect_err(|e| tracing::error!(error = %e, "failed to insert repo signing key"))
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store signing key"))?;
 
-    let session =
-        issue_session_in_transaction(&mut tx, state, did, &SessionKind::FullAccess).await?;
+    let session = issue_session(&mut tx, state, did).await?;
 
     tx.commit()
         .await
@@ -557,13 +565,72 @@ async fn create_account_migration(
     Ok(Json(CreateAccountResponse {
         access_jwt: session.access_jwt,
         refresh_jwt: session.refresh_jwt,
-        handle: session.handle,
-        did: session.did,
+        handle: payload.handle.clone(),
+        did: did.to_string(),
         did_doc: Some(did_document),
     }))
 }
 
 // ── Shared helpers ───────────────────────────────────────────────────────────
+
+struct IssuedSession {
+    access_jwt: String,
+    refresh_jwt: String,
+}
+
+/// Issue an access + refresh JWT pair and persist the `sessions` + `refresh_tokens` rows inside
+/// the caller's transaction — the standard `createSession` shape (full access scope, no app
+/// password), so the returned account can immediately act as itself.
+async fn issue_session(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    state: &AppState,
+    did: &str,
+) -> Result<IssuedSession, ApiError> {
+    let now = unix_now()?;
+    let aud = state
+        .config
+        .server_did
+        .as_deref()
+        .unwrap_or(&state.config.public_url)
+        .to_string();
+
+    let access_jwt = issue_access_jwt(&state.jwt_secret, did, &aud, now, SCOPE_ACCESS)?;
+    let refresh_jti = Uuid::new_v4().to_string();
+    let refresh_jwt = issue_refresh_jwt(&state.jwt_secret, did, &aud, &refresh_jti, now)?;
+    let session_id = Uuid::new_v4().to_string();
+
+    sqlx::query(
+        "INSERT INTO sessions (id, did, device_id, token_hash, created_at, expires_at) \
+         VALUES (?, ?, NULL, NULL, datetime('now'), datetime('now', '+90 days'))",
+    )
+    .bind(&session_id)
+    .bind(did)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "failed to insert session");
+        ApiError::new(ErrorCode::InternalError, "failed to create session")
+    })?;
+
+    sqlx::query(
+        "INSERT INTO refresh_tokens (jti, did, session_id, expires_at, app_password_name, created_at) \
+         VALUES (?, ?, ?, datetime('now', '+90 days'), NULL, datetime('now'))",
+    )
+    .bind(&refresh_jti)
+    .bind(did)
+    .bind(&session_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "failed to insert refresh token");
+        ApiError::new(ErrorCode::InternalError, "failed to create session")
+    })?;
+
+    Ok(IssuedSession {
+        access_jwt,
+        refresh_jwt,
+    })
+}
 
 async fn insert_did_document(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -644,6 +711,19 @@ async fn ensure_email_and_handle_free(
         ));
     }
     Ok(())
+}
+
+/// The handle bound to `did` at its original creation, for the migration-resume response —
+/// the stored binding is authoritative over whatever the retry request carries.
+async fn stored_handle_for_did(state: &AppState, did: &str) -> Result<Option<String>, ApiError> {
+    sqlx::query_scalar("SELECT handle FROM handles WHERE did = ? LIMIT 1")
+        .bind(did)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to load stored handle for migration resume");
+            ApiError::new(ErrorCode::InternalError, "failed to load account handle")
+        })
 }
 
 /// Confirm the DID is not already a fully-provisioned account.

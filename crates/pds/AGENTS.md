@@ -39,7 +39,6 @@ src/
   well_known.rs    — `WellKnownResolver`: HTTP `.well-known/atproto-did` fallback for resolveHandle (third fallback, after local DB and DNS TXT)
   jwks.rs          — dynamic issuer-key resolution for the auth.md `identity_assertion` flow: `JwksFetcher` (production `HttpJwksFetcher` + injectable mocks) + a TTL `JwksCache` (keyed by `jwks_url`, selects the ID-JAG `kid`), backing `[agent_auth] trusted_issuers[].jwks_url` (the static-PEM trust path never touches it). A per-URL refetch cooldown (`[agent_auth] jwks_refetch_cooldown_secs`, stamped per fetch *attempt*) bounds how often the public agent-auth endpoints can force an outbound fetch via an unverified bogus `kid` (or a failing issuer)
   token.rs         — bearer/device token generation + hashing (pure), shared by the auth guards and session-issuing routes
-  session_issuer.rs— shared legacy access+refresh JWT issuance transaction; explicit full-access vs app-password authority, atomically inserts sessions + initial refresh_tokens, and re-checks app-password existence inside the transaction
   code_gen.rs      — random claim-code generation (pure), shared by claim-code + account-creation routes
   uniqueness.rs    — email/handle pre-flight uniqueness DB checks, shared by the account-creation routes
   platform.rs      — device `Platform` enum, shared by the device-registration routes
@@ -264,7 +263,6 @@ and async query functions; no business logic lives here.
 | `firehose_seq.rs` | Persistent firehose event log (V028): `max_seq` (seed the sequencer on boot), `insert_event` (append one sequenced `#commit`/`#account`/`#identity`/`#sync` row with an explicit `seq`), `events_in_range(after, upper, limit)` (the cursor-replay page query). Consumed by `firehose.rs` (persist-before-broadcast) and `routes/sync_subscribe_repos.rs` (replay paging) |
 | `server_stats.rs` | Whole-server aggregates for `GET /v1/admin/health`: account totals bucketed by derived lifecycle (SUM(CASE) arms mirroring `AccountLifecycle::as_sql_predicate` precedence), physical blob count + total bytes, block count, retained `repo_seq` rows — one pass, no per-account filtering |
 | `admin_devices.rs` | Operator companion app admin-device model (V025): pairing-code mint/consume (single-use), device insert/get/list/revoke (derived active status) + `touch_last_seen` (liveness bump on auth), nonce insert-if-absent + stale-nonce sweep (anti-replay). Pairing/register wired by `routes/admin_devices.rs`; the `require_admin` signed-request guard (`auth/guards.rs`) consumes `get_device`/`insert_nonce_if_absent`/`touch_last_seen`; the list/revoke routes (`routes/admin_devices.rs`) consume `list_devices`/`revoke_device`/`get_device` |
-| `sovereign_session_nonces.rs` | Sovereign-session anti-replay store (V043): atomic DID-scoped `insert_nonce_if_absent` plus stale-row sweeping whose retention must exceed the signed request's full `2 * SOVEREIGN_TIMESTAMP_WINDOW_SECS` replay-acceptance span |
 
 See [`src/db/AGENTS.md`](src/db/AGENTS.md) for migration history and invariants.
 

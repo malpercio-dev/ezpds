@@ -230,12 +230,6 @@ fn default_deletion_reaper_interval_secs() -> u64 {
 /// stays tied to the exact window it derives its safety margin from.
 pub const ADMIN_TIMESTAMP_WINDOW_SECS: i64 = 60;
 
-/// Symmetric freshness window for sovereign-session signed requests.
-///
-/// Replay storage must retain a consumed nonce for strictly more than twice this interval: a
-/// request first accepted at the early edge remains timestamp-valid until the late edge.
-pub const SOVEREIGN_TIMESTAMP_WINDOW_SECS: i64 = 60;
-
 /// Operator companion-app admin-device configuration: retention for the anti-replay
 /// `admin_nonces` table.
 ///
