@@ -34,9 +34,12 @@ struct DPopClaims {
     htu: String,
     /// Issued-at (Unix timestamp). Used for freshness; replaces `exp`.
     iat: i64,
-    /// Unique token ID — must be present and non-empty for replay protection.
-    /// The server-issued nonce bounds the window for jti-based deduplication per RFC 9449 §11.1.
-    /// Nonce validation enforces rate limiting at the token endpoint only.
+    /// Unique token ID (RFC 9449 §4.2). Validated for **presence** only — the server keeps no
+    /// `jti` store, so proofs are never deduplicated by `jti` (RFC 9449 §11.1 makes such tracking
+    /// a SHOULD, not a MUST). Replay is bounded instead by the ±60s `iat` freshness window, plus
+    /// the single-use server nonce at the token endpoint and the `ath` access-token binding at
+    /// resource endpoints. See the posture notes on `validate_dpop` /
+    /// `validate_dpop_for_token_endpoint`.
     jti: String,
     /// Server-issued DPoP nonce (RFC 9449 §8). Required at the token endpoint.
     #[serde(default)]
@@ -232,10 +235,21 @@ pub async fn validate_dpop_for_token_endpoint(
 /// - `typ` header is `"dpop+jwt"`
 /// - Signature verifies against the embedded JWK
 /// - `htm` matches request method, `htu` matches `public_url + path`
-/// - `jti` is present and non-empty
+/// - `jti` is present and non-empty (presence only — **not** deduplicated; see Replay below)
 /// - `iat` is within the 60-second freshness window
 /// - Access token `cnf.jkt` matches the computed JWK thumbprint
 /// - `ath` claim is present and matches the access token
+///
+/// # Replay
+///
+/// There is no `jti` store anywhere in the codebase (the only store here is the token-endpoint
+/// nonce map), so resource-endpoint proofs are **not** deduplicated — RFC 9449 §11.1 makes `jti`
+/// tracking a SHOULD, not a MUST, and the reference PDS's posture is similar. Replay is bounded
+/// only by the ±60s `iat` freshness window plus the `ath` access-token binding: a captured
+/// (access token + proof) pair is replayable against the same method+URI until the proof goes
+/// stale (~60s). This is safe only while every endpoint behind `AuthenticatedUser` stays
+/// idempotent / content-addressed; if one ever authorizes a non-idempotent side effect, add `jti`
+/// (or nonce) tracking here first. Same posture as `service_auth::require_service_auth`.
 pub fn validate_dpop(
     dpop_token: &str,
     method: &Method,
@@ -349,9 +363,10 @@ pub fn validate_dpop(
         }
     }
 
-    // Require `jti` for replay protection. The server-issued nonce mechanism bounds
-    // the window for jti-based deduplication; nonce validation occurs only at the token endpoint,
-    // not at resource endpoints like this one.
+    // Require `jti` to be present for RFC 9449 §4.2 conformance. It is NOT deduplicated: there is
+    // no `jti` store, so this check alone provides no replay protection at resource endpoints (see
+    // the Replay note on this function). Replay is bounded by the freshness window and the `ath`
+    // binding verified above.
     if dpop_claims.jti.is_empty() {
         return Err(ApiError::new(
             ErrorCode::InvalidToken,
