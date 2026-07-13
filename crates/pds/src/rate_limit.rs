@@ -98,10 +98,14 @@ impl RateLimiterState {
         ] {
             endpoints.insert(path, create_account.clone());
         }
+        // Password and sovereign session creation share one per-IP budget. They mint the same
+        // full-access credential, so alternating authentication mechanisms must not double it.
+        let create_session = per_5min(cfg.create_session_per_5min);
         endpoints.insert(
             "/xrpc/com.atproto.server.createSession",
-            per_5min(cfg.create_session_per_5min),
+            create_session.clone(),
         );
+        endpoints.insert("/v1/sessions/sovereign", create_session);
         endpoints.insert(
             "/xrpc/com.atproto.server.resetPassword",
             per_5min(cfg.reset_password_per_5min),

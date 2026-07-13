@@ -1,6 +1,6 @@
 # Crypto Crate
 
-Last verified: 2026-07-05
+Last verified: 2026-07-13
 
 ## Purpose
 Provides cryptographic primitives for the ezpds workspace: P-256 key generation,
@@ -89,6 +89,21 @@ pub fn compute_cid(signed_op_cbor: &[u8]) -> Result<String, CryptoError>
 - Computes a CIDv1 (dag-cbor, sha-256) from signed operation CBOR bytes: `version(1) || codec(0x71) || hash(0x12) || length(0x20) || sha256(bytes)`
 - Returns a multibase base32lower-encoded CID string (`b` prefix), the format used in did:plc `prev` fields
 - Used as the `prev` value chaining a rotation op onto the operation before it
+
+**`encode_sovereign_session_envelope`**
+```rust
+pub fn encode_sovereign_session_envelope(
+    server_did: &str,
+    account_did: &str,
+    signing_key_did: &str,
+    timestamp: i64,
+    nonce: &str,
+) -> Vec<u8>
+```
+- Produces the shared server/wallet version-1 bytes for `POST /v1/sessions/sovereign`
+- Binds the protocol domain/version, destination server DID, method/path, account DID, signing-key DID, Unix timestamp, and nonce in a fixed field order
+- UTF-8 byte-length-prefixes every value so separators inside a future identifier syntax cannot make two field tuples encode identically
+- `SOVEREIGN_SESSION_DOMAIN`, `SOVEREIGN_SESSION_METHOD`, and `SOVEREIGN_SESSION_PATH` expose the pinned protocol constants
 
 **`build_did_plc_rotation_op`**
 ```rust
@@ -220,7 +235,7 @@ pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<Aud
 
 ## Dependencies
 - **Uses**: p256 (ECDSA/key generation), k256 (secp256k1 ECDSA — verification only, for ops signed by the reference ecosystem), aes-gcm (AES-256-GCM), multibase (base58btc encoding), rand_core (OS RNG), base64 (storage encoding), zeroize (secret cleanup), ciborium (CBOR serialization for did:plc), data-encoding (base32-lowercase), sha2 (SHA-256), serde/serde_json (struct serialization)
-- **Used by**: `crates/pds/` (key generation, did:plc genesis building and verification in POST /v1/dids; `crates/pds/src/plc_ops.rs` shares the interop PLC-signing surface's audit-log fetch + service parsing; `routes/sign_plc_operation.rs`/`routes/submit_plc_operation.rs` build/verify rotation ops via `build_did_plc_rotation_op`/`verify_plc_operation`), `apps/identity-wallet/` (external signer genesis op building in DID ceremony)
+- **Used by**: `crates/pds/` (key generation, did:plc genesis building and verification in POST /v1/dids; sovereign-session canonical proof encoding and dual-curve verification; `crates/pds/src/plc_ops.rs` shares the interop PLC-signing surface's audit-log fetch + service parsing; `routes/sign_plc_operation.rs`/`routes/submit_plc_operation.rs` build/verify rotation ops via `build_did_plc_rotation_op`/`verify_plc_operation`), `apps/identity-wallet/` (external signer genesis op building in DID ceremony; shared sovereign-session encoder for the wallet client)
 
 ## Invariants
 - Private key bytes are always wrapped in `Zeroizing` -- callers must not copy them into non-zeroizing storage
@@ -236,5 +251,6 @@ pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<Aud
 - `src/lib.rs` - Re-exports public API
 - `src/keys.rs` - P-256 key generation, AES-256-GCM encrypt/decrypt
 - `src/plc.rs` - did:plc genesis operation builder and verifier
+- `src/sovereign_session.rs` - canonical sovereign-session signed-envelope encoder and protocol constants
 - `src/shamir.rs` - Shamir Secret Sharing (split/combine, GF(2^8) arithmetic)
 - `src/error.rs` - CryptoError enum

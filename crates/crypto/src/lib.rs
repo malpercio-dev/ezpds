@@ -4,6 +4,7 @@ pub mod error;
 pub mod keys;
 pub mod plc;
 pub mod shamir;
+pub mod sovereign_session;
 
 pub use error::CryptoError;
 pub use keys::{
@@ -17,3 +18,7 @@ pub use plc::{
     VerifiedPlcOp,
 };
 pub use shamir::{combine_shares, split_secret, ShamirShare};
+pub use sovereign_session::{
+    encode_sovereign_session_envelope, SOVEREIGN_SESSION_DOMAIN, SOVEREIGN_SESSION_METHOD,
+    SOVEREIGN_SESSION_PATH,
+};

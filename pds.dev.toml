@@ -82,7 +82,7 @@ urls = []
 # enabled = true
 # global_ip_per_5min = 3000      # all requests, per client IP (sync.getRepo/subscribeRepos/_health exempt)
 # create_account_per_5min = 100  # per IP
-# create_session_per_5min = 30   # per IP
+# create_session_per_5min = 30   # password + sovereign session creation, shared per IP
 # reset_password_per_5min = 50   # per IP
 # update_handle_per_5min = 10    # per IP
 # write_points_hourly = 5000     # per account (create=3, update=2, delete=1)

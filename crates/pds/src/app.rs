@@ -102,6 +102,7 @@ use crate::routes::resolve_identity::{
 };
 use crate::routes::revoke_app_password::revoke_app_password;
 use crate::routes::sign_plc_operation::sign_plc_operation;
+use crate::routes::sovereign_session::create_sovereign_session;
 use crate::routes::standard_signup::{
     check_handle_availability, check_signup_queue, create_invite_code, create_invite_codes,
     get_account_invite_codes,
@@ -538,6 +539,7 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/v1/accounts/mobile", post(create_mobile_account))
         .route("/v1/accounts/sessions", post(create_provisioning_session))
+        .route("/v1/sessions/sovereign", post(create_sovereign_session))
         .route("/v1/accounts/{id}/usage", get(account_usage))
         .route("/v1/accounts/{id}/storage", get(account_storage))
         .route("/v1/agents", get(list_agents))

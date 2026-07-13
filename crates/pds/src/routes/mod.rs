@@ -81,6 +81,7 @@ pub mod resolve_identity;
 pub mod revoke_app_password;
 pub mod service_proxy;
 pub mod sign_plc_operation;
+pub mod sovereign_session;
 pub mod standard_signup;
 pub mod static_assets;
 pub mod submit_plc_operation;
