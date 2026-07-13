@@ -87,8 +87,10 @@ pub async fn issue_session_in_transaction(
     did: &str,
     kind: &SessionKind,
 ) -> Result<IssuedSession, ApiError> {
-    if let Some(name) = kind.app_password_name() {
-        if !crate::db::app_passwords::app_password_exists(&mut **tx, did, name).await? {
+    if let SessionKind::AppPassword { name, privileged } = kind {
+        let stored_privileged =
+            crate::db::app_passwords::app_password_privileged(&mut **tx, did, name).await?;
+        if stored_privileged != Some(*privileged) {
             return Err(ApiError::new(
                 ErrorCode::AuthenticationRequired,
                 "invalid identifier or password",
@@ -285,5 +287,44 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(stored_name.as_deref(), Some("cli"));
+    }
+
+    #[tokio::test]
+    async fn app_password_session_rejects_caller_privilege_mismatch() {
+        let state = test_state().await;
+        let did = "did:plc:app-session-mismatch";
+        seed_account(&state, did).await;
+        sqlx::query(
+            "INSERT INTO app_passwords \
+             (did, name, password_hash, privileged, created_at) \
+             VALUES (?, 'cli', 'unused-by-issuer', 0, datetime('now'))",
+        )
+        .bind(did)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let error = issue_session(
+            &state,
+            did,
+            &SessionKind::AppPassword {
+                name: "cli".to_string(),
+                privileged: true,
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.status_code(), 401);
+        let counts: (i64, i64) = sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM sessions WHERE did = ?), \
+                    (SELECT COUNT(*) FROM refresh_tokens WHERE did = ?)",
+        )
+        .bind(did)
+        .bind(did)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(counts, (0, 0));
     }
 }
