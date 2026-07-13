@@ -25,6 +25,7 @@ use crate::auth::jwt::AuthScope;
 use crate::auth::oauth_scopes;
 use crate::db::accounts::get_session_account;
 use crate::db::plc_operation_tokens::insert_plc_operation_token;
+use crate::plc_ops::ensure_did_plc;
 use crate::token::generate_token;
 
 pub async fn request_plc_operation_signature(
@@ -39,6 +40,10 @@ pub async fn request_plc_operation_signature(
         ));
     }
     oauth_scopes::require_identity(&user.scope_claim, "*")?;
+
+    // PLC operations only apply to a did:plc identity — reject a did:web account explicitly rather
+    // than minting a token for a signPlcOperation that could never succeed.
+    ensure_did_plc(&user.did)?;
 
     let account = get_session_account(&state.db, &user.did)
         .await?
@@ -131,6 +136,40 @@ mod tests {
 
         let response = app(state).oneshot(post_req(Some(&jwt))).await.unwrap();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// A did:web account gets an explicit "not a did:plc" 400 before any token is minted or emailed
+    /// — a signPlcOperation for a did:web identity could never succeed, so no token is issued.
+    #[tokio::test]
+    async fn did_web_account_rejected_and_no_token_minted() {
+        let state = test_state().await;
+        let db = state.db.clone();
+        let did = "did:web:malpercio.dev";
+        // Seed an account row so the guard, not a missing-account lookup, is what rejects.
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
+        )
+        .bind(did)
+        .bind("operator@malpercio.dev")
+        .execute(&db)
+        .await
+        .unwrap();
+        let jwt = access_jwt(&[0x42u8; 32], did);
+
+        let response = app(state).oneshot(post_req(Some(&jwt))).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM plc_operation_tokens WHERE did = ?")
+                .bind(did)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(
+            count, 0,
+            "no PLC operation token may be minted for a did:web account"
+        );
     }
 
     #[tokio::test]

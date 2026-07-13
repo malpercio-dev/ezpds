@@ -15,6 +15,28 @@ use std::collections::BTreeMap;
 use common::{ApiError, ErrorCode};
 use serde::Deserialize;
 
+/// Reject a DID whose method is not `did:plc`.
+///
+/// The `identity.*PlcOperation` endpoints only make sense for a `did:plc` identity — they build,
+/// sign, and submit operations against plc.directory's hash-linked operation log. A `did:web`
+/// identity (the operator hosts its own `did.json`; see ADR-0003) has no PLC log at all, so
+/// calling these endpoints for one would otherwise fail confusingly deep in the flow — a 404 on
+/// the plc.directory audit-log fetch. Guard the method up front instead, returning an explicit
+/// "not a did:plc" error the caller can act on: a did:web account repoints its PDS by editing its
+/// own `did.json`, not by signing a PLC operation.
+pub fn ensure_did_plc(did: &str) -> Result<(), ApiError> {
+    if did.starts_with("did:plc:") {
+        Ok(())
+    } else {
+        Err(ApiError::new(
+            ErrorCode::InvalidRequest,
+            "this account is not a did:plc identity; PLC operations do not apply. \
+             A did:web identity is repointed by editing its own did.json, not by signing a \
+             PLC operation.",
+        ))
+    }
+}
+
 /// A DID's current PLC state, distilled from its latest non-nullified audit-log
 /// entry. `cid` is the head operation's CID — the `prev` of the next operation.
 #[derive(Debug)]
@@ -326,5 +348,23 @@ mod tests {
         let services = BTreeMap::new();
         let err = build_did_document_from_op("did:plc:test", &vms, &[], &services).unwrap_err();
         assert_eq!(err.status_code(), 500);
+    }
+
+    #[test]
+    fn ensure_did_plc_accepts_did_plc_and_rejects_others() {
+        assert!(ensure_did_plc("did:plc:abc123").is_ok());
+        // did:web (and any non-plc method) is a 400 with an explicit, actionable message.
+        for did in [
+            "did:web:malpercio.dev",
+            "did:key:zabc",
+            "did:web:example.com:users:alice",
+        ] {
+            let err = ensure_did_plc(did).unwrap_err();
+            assert_eq!(
+                err.status_code(),
+                400,
+                "{did} must be rejected as not-a-did:plc"
+            );
+        }
     }
 }

@@ -1,5 +1,6 @@
 <script lang="ts">
   import ChevronLeftIcon from '$lib/components/ui/ChevronLeftIcon.svelte';
+  import { isDidWeb } from '$lib/did-doc-utils';
 
   let {
     didDoc,
@@ -12,6 +13,11 @@
      *  wallet-authorized outbound migration entry point (ADR-0002 path 1). */
     onmigrate?: () => void;
   } = $props();
+
+  // A did:web identity has no PLC machinery (ADR-0003): no rotation-key hierarchy, no public audit
+  // log, no recovery window. We say so plainly rather than presenting the wallet's PLC-only
+  // assurances (monitoring, recovery, the claim/Shamir ceremonies) as if they applied.
+  let isWebDid = $derived(typeof didDoc.id === 'string' && isDidWeb(didDoc.id));
 
   let showRaw = $state(false);
   let copiedKeyId = $state<string | null>(null);
@@ -56,6 +62,25 @@
     Back
   </button>
   <h1 class="title">DID document</h1>
+
+  {#if isWebDid}
+    <div class="didweb" role="note">
+      <span class="didweb-ic" aria-hidden="true">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+      </span>
+      <div class="didweb-body">
+        <p class="didweb-t">This is a did:web identity</p>
+        <p class="didweb-s">
+          Its DID document lives at a domain you control — not on the public PLC directory. The
+          wallet's PLC protections don't apply here: there is <strong>no rotation-key hierarchy</strong>,
+          <strong>no public audit log to monitor</strong>, and <strong>no 72-hour recovery window</strong>.
+          This identity is defended by control of its domain, so keep the domain and its
+          <code>did.json</code> secure. To move it to another PDS, edit that <code>did.json</code>
+          yourself — there is no PLC operation to sign.
+        </p>
+      </div>
+    </div>
+  {/if}
 
   <div class="section">
     <p class="label">Identifier</p>
@@ -148,6 +173,53 @@
     font-weight: var(--weight-bold);
     color: var(--color-ink);
     margin: 0;
+  }
+
+  /* did:web explainer — informational, not an alarm: aubergine "reveal the machinery" tone,
+     paired with an icon + text (never color alone) per the design brief. */
+  .didweb {
+    display: flex;
+    gap: var(--space-sm);
+    background: var(--color-seal-tint);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-lg);
+    padding: var(--space-md);
+  }
+  .didweb-ic {
+    width: 34px;
+    height: 34px;
+    border-radius: var(--radius-full);
+    background: var(--color-bg);
+    color: var(--color-accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .didweb-body {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+  .didweb-t {
+    font-size: var(--text-body);
+    font-weight: var(--weight-semibold);
+    color: var(--color-ink);
+    margin: 0;
+  }
+  .didweb-s {
+    font-size: var(--text-label);
+    color: var(--color-ink-soft);
+    margin: 0;
+    line-height: 1.5;
+  }
+  .didweb-s code {
+    font-family: var(--font-mono);
+    font-size: 0.92em;
+    background: var(--color-surface-sunk);
+    padding: 1px 4px;
+    border-radius: var(--radius-sm);
   }
 
   .section {

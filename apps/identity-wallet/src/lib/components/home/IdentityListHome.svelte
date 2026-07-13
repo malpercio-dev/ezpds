@@ -8,6 +8,7 @@
     extractHandle,
     truncateDid,
     docNeedsRotationKeysRefresh,
+    isDidWeb,
   } from '$lib/did-doc-utils';
   import DIDAvatar from './DIDAvatar.svelte';
 
@@ -45,6 +46,11 @@
   let alertCount = $derived(
     Array.from(alertData.values()).reduce((n, changes) => n + changes.length, 0)
   );
+
+  // PLC monitoring only watches did:plc identities (a did:web DID has no plc.directory audit log,
+  // so `plc_monitor` is a no-op for it). Only claim "Watching the public record" when at least one
+  // did:plc identity is actually being watched; an all-did:web wallet gets an honest note instead.
+  let watchingPlc = $derived(identities.some((c) => !isDidWeb(c.did)));
 
   function isDeviceKeyRoot(
     didDoc: Record<string, unknown>,
@@ -208,7 +214,7 @@
         <button class="btn btn-primary" onclick={onadd}>Create or import</button>
       </div>
     {:else}
-      {#if alertCount === 0}
+      {#if alertCount === 0 && watchingPlc}
         <div class="monitor monitor--safe">
           <span class="monitor-ic" aria-hidden="true">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
@@ -216,6 +222,18 @@
           <span class="monitor-body">
             <span class="monitor-t">All identities secure</span>
             <span class="monitor-s"><span class="pulse" aria-hidden="true"></span>Watching the public record</span>
+          </span>
+        </div>
+      {:else if alertCount === 0}
+        <!-- Every identity is did:web: there is no public record to watch. Say so plainly rather
+             than implying active monitoring the wallet does not perform for did:web. -->
+        <div class="monitor monitor--web">
+          <span class="monitor-ic" aria-hidden="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          </span>
+          <span class="monitor-body">
+            <span class="monitor-t">Held on your own domains</span>
+            <span class="monitor-s">did:web identities aren't watched on the public record — control of the domain is the safeguard</span>
           </span>
         </div>
       {:else}
@@ -243,21 +261,30 @@
               <span class="did">{truncateDid(card.did)}</span>
               {#if card.pdsUrl}<span class="pds">on {hostOf(card.pdsUrl)}</span>{/if}
               <span class="badges">
-                <span
-                  class="badge"
-                  class:badge--root={card.deviceKeyIsRoot === true}
-                  class:badge--notroot={card.deviceKeyIsRoot === false}
-                  class:badge--unknown={card.deviceKeyIsRoot === null}
-                >
-                  {#if card.deviceKeyIsRoot === true}
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg>
-                  {:else if card.deviceKeyIsRoot === false}
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.2 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.2a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
-                  {:else}
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 4.5 1.5c0 1.5-2 2-2 3"/><path d="M12 17h.01"/></svg>
-                  {/if}
-                  {getBadgeLabel(card.deviceKeyIsRoot)}
-                </span>
+                {#if isDidWeb(card.did)}
+                  <!-- did:web has no rotation keys, so "root key" doesn't apply. Name the method
+                       honestly instead of showing an "Unknown" root-key badge that reads as a fault. -->
+                  <span class="badge badge--web">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a13 13 0 0 1 3.4 9A13 13 0 0 1 12 21a13 13 0 0 1-3.4-9A13 13 0 0 1 12 3z"/></svg>
+                    did:web
+                  </span>
+                {:else}
+                  <span
+                    class="badge"
+                    class:badge--root={card.deviceKeyIsRoot === true}
+                    class:badge--notroot={card.deviceKeyIsRoot === false}
+                    class:badge--unknown={card.deviceKeyIsRoot === null}
+                  >
+                    {#if card.deviceKeyIsRoot === true}
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg>
+                    {:else if card.deviceKeyIsRoot === false}
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.2 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.2a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                    {:else}
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 4.5 1.5c0 1.5-2 2-2 3"/><path d="M12 17h.01"/></svg>
+                    {/if}
+                    {getBadgeLabel(card.deviceKeyIsRoot)}
+                  </span>
+                {/if}
               </span>
             </span>
             <svg class="chev" width="9" height="16" viewBox="0 0 11 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 1 7 8-7 8"/></svg>
@@ -399,6 +426,20 @@
   .monitor--safe .monitor-s {
     color: var(--color-safe-soft);
   }
+  /* did:web informational banner — neutral aubergine "reveal the machinery" tone, never the green
+     safe shield (which would imply active monitoring the wallet does not do for did:web). */
+  .monitor--web {
+    background: var(--color-seal-tint);
+  }
+  .monitor--web .monitor-ic {
+    color: var(--color-accent);
+  }
+  .monitor--web .monitor-t {
+    color: var(--color-ink);
+  }
+  .monitor--web .monitor-s {
+    color: var(--color-muted);
+  }
   .monitor--alert {
     background: var(--color-critical-surface);
   }
@@ -524,6 +565,12 @@
   .badge--unknown {
     background: var(--color-surface-sunk);
     color: var(--color-muted);
+  }
+  /* Neutral method badge for did:web — not a status, so it borrows the aubergine accent, not a
+     safe/warning color. */
+  .badge--web {
+    background: var(--color-seal-tint);
+    color: var(--color-accent);
   }
   .card-group {
     display: flex;
