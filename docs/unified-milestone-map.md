@@ -2,6 +2,15 @@
 
 Single source of truth for all ezpds phases.
 
+> **v0.1 — Mobile-Only PDS: COMPLETE (2026-07-13).** Validated end-to-end on the live
+> network: identity created from a phone, hosted on Custos production (v0.4.7), full
+> official-Bluesky-app service (OAuth/DPoP login, posts, images, **video**, email
+> verification), and the live bsky.social migration round trip with the Secure-Enclave
+> key at `rotationKeys[0]` throughout. Records: the closed
+> [daily-driver readiness audit](2026-07-08-daily-driver-readiness-audit.md) and the
+> [MM-241 execution record](validation/2026-07-07-mm-241-live-migration.md). Live issue
+> state: Linear (milestone "v0.1 — Mobile-Only PDS", marked complete).
+
 v0.1 Draft — March 2026
 
 Companion to: All spec documents

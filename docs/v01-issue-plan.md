@@ -1,5 +1,9 @@
 # v0.1 Linear Issue Plan
 
+> **CLOSED 2026-07-13 — the v0.1 milestone is complete** (see
+> [unified-milestone-map.md](unified-milestone-map.md) for the validation summary).
+> This document remains as the original planning record; Linear holds final issue state.
+
 Proposed breakdown for the ezpds v0.1 milestone.
 Each issue is scoped to be completable in hours by a human or within an agent's context window.
 

@@ -1,6 +1,6 @@
 # ezpds
 
-Last verified: 2026-07-10
+Last verified: 2026-07-13
 
 ## Tech Stack
 - Language: Rust (pinned to an exact stable version in rust-toolchain.toml, currently 1.96.0)
@@ -105,6 +105,7 @@ The two are **siblings** — shared security rigor (practice-what-you-preach, WC
 - **CI-enforced (path coverage):** `just bruno-check` (`scripts/bruno-parity.sh`, part of `just ci`/`ci-pds`) fails the gate if a registered route has no matching `.bru` request or a `.bru` targets a removed route. It checks paths only — method/body/auth changes still rely on the rule above.
 
 ## Project Status / Planning
+- **Milestone state:** **v0.1 — Mobile-Only PDS is COMPLETE (2026-07-13)** — validated live (official-app OAuth/posts/video, bsky.social migration round trip); see the closure banners in `docs/unified-milestone-map.md` and `docs/2026-07-08-daily-driver-readiness-audit.md`. Current work targets post-v0.1 phases (v0.2+ in the milestone map).
 - **Live status:** Linear is the source of truth. To see where the project stands, call `linear_wave_status` (team `MM`, `label_prefix: "Wave"`) — one call returns every wave with Done/In Progress/Backlog tallies and percent complete. Prefer this over manually scanning the backlog.
 - For exhaustive label/wave scans use `linear_list_issues` with the `label` filter and `limit=50+`. `linear_search_issues` is relevance-ranked full-text search (good for keyword lookups, NOT for "list every issue in Wave N").
 - **Static plan:** [`docs/v01-issue-plan.md`](docs/v01-issue-plan.md) is the original wave breakdown (does not track live Done/Backlog state — use Linear for that). [`docs/unified-milestone-map.md`](docs/unified-milestone-map.md) is the phase model (v0.1–v2.0+).
