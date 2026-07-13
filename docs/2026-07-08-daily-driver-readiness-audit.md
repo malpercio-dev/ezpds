@@ -1,5 +1,19 @@
 # Daily-driver readiness audit — 2026-07-08
 
+> **CLOSED 2026-07-13 — every finding and gap resolved; v0.1 validated.** All ranked
+> findings (H1–M3 + lower-severity, MM-260–271) fixed by 2026-07-09. Gap 1 (live migration
+> round trip) closed by MM-241 — all legs passed, record in
+> `docs/validation/2026-07-07-mm-241-live-migration.md`. Gap 2 (first real OAuth login by
+> the official Bluesky app) closed by MM-318 — full OAuth/DPoP login, social actions,
+> restart persistence, email verification, and end-to-end **video** posting from the
+> official app against production v0.4.7 (`malprd.obsign.org`). Gap 3 (`atproto-proxy`
+> for `app.bsky.*`) closed by MM-319 (+ MM-322: service-auth JWTs accepted on
+> `uploadBlob`, the video pipeline's final hop). Gap 4 (email delivery) closed by MM-321
+> (Mailtrap HTTPS provider; Railway blocks all outbound SMTP on non-Pro plans).
+> The validation runs surfaced and fixed twelve further defects
+> (MM-288–304, MM-310, MM-316, MM-322 families) — every one found by a live leg, fixed,
+> deployed, and re-validated by the leg that found it.
+
 A full-codebase sweep aimed at three questions: (1) is ezpds trustworthy enough to run as
 the operator's daily-driver Bluesky PDS, (2) where can the code be made easier to read and
 contribute to, and (3) are there hidden bugs — especially in `crates/crypto`.
