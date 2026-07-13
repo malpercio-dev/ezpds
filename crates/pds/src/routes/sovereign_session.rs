@@ -264,9 +264,11 @@ mod tests {
     use crate::auth::jwt::{parse_scope, verify_hs256_access_token, AuthScope};
     use crate::routes::test_utils::body_json;
 
+    type SignFn = Box<dyn Fn(&[u8]) -> String + Send + Sync>;
+
     struct TestKey {
         did: String,
-        sign: Box<dyn Fn(&[u8]) -> String + Send + Sync>,
+        sign: SignFn,
     }
 
     fn p256_key() -> TestKey {
