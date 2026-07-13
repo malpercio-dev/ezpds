@@ -19,6 +19,7 @@ The PDS container expects the following environment variables and mounts:
 - **`EZPDS_DATA_DIR`** (optional, default `/data`) - Directory where `relay.db` is persisted. Set by the Dockerfile ENV; can be overridden if the data volume is mounted elsewhere. Must be writable by the container process.
 - **`PORT`** (optional, default `8080`) - Port to listen on inside the container
 - **`EZPDS_IROH_ENABLED`** (optional, default `false`) - Set to `true` to bind the Iroh QUIC tunnel alongside the HTTP server, letting devices reach the PDS through NAT by dialing its node id. The node id is advertised via `GET /v1/devices/:id/pds` and is **stable across restarts only when `EZPDS_SIGNING_KEY_MASTER_KEY` is set** (otherwise the identity is ephemeral and rotates each boot). Iroh uses outbound UDP and the n0 discovery/relay servers for NAT traversal.
+- **`EZPDS_AGENT_AUTH_SERVICE_AUTH_ENABLED`** (optional, default `false`) - Opt-in for the auth.md `service_auth` agent-registration flow (`POST /agent/identity` with a `login_hint` email → claim ceremony the account owner confirms in Obsign). Every agent-registration flow is off by default; the discovery surface (AS metadata, `/auth.md`) is served regardless, and a disabled flow answers its `*_not_enabled` error instead of acting. Sibling knobs (`anonymous_enabled`, trusted issuers, TTLs, granted scopes) are documented on `[agent_auth]` in `crates/common/src/config.rs`. The Custos MCP server's self-onboarding depends on this flag.
 
 ### Volumes
 - **`/data`** - Host directory bind-mounted for SQLite database persistence. The PDS creates `relay.db` and `relay.db-shm`/`relay.db-wal` (WAL files) inside. Must be writable by the container's non-root user (uid 10001). Host permissions should be `0750` or `0755`.
@@ -39,6 +40,7 @@ The PDS container expects the following environment variables and mounts:
 | `EZPDS_AVAILABLE_USER_DOMAINS` | Railway dashboard | Deployment-specific |
 | `EZPDS_SIGNING_KEY_MASTER_KEY` | Railway dashboard (sealed) | Secret — never in git |
 | `EZPDS_ADMIN_TOKEN` | Railway dashboard (sealed) | Secret — never in git |
+| `EZPDS_AGENT_AUTH_SERVICE_AUTH_ENABLED` | Railway dashboard | Per-environment opt-in; `true` on production since 2026-07-13 (agent onboarding / Custos MCP) |
 | `EZPDS_DATA_DIR` | Not needed in Railway | Already set to `/data` by Dockerfile `ENV` |
 | `PORT` | Not needed in Railway | Railway injects it automatically; PDS falls through to this |
 | Volume mount | Railway dashboard | Railway infra — no `railway.toml` equivalent |
