@@ -9,7 +9,6 @@ use sqlx::Sqlite;
 /// Flat account row returned by `resolve_identifier`.
 pub(crate) struct AccountRow {
     pub(crate) did: String,
-    pub(crate) email: String,
     /// Argon2id PHC string. `None` for mobile accounts (password auth not allowed).
     pub(crate) password_hash: Option<String>,
     /// One associated handle (if any). `None` means no row exists in the `handles` table.
@@ -1027,7 +1026,6 @@ pub(crate) async fn resolve_by_email(
 
     Ok(row.map(|(did, password_hash, handle)| AccountRow {
         did,
-        email: email.to_string(),
         password_hash,
         handle,
     }))
@@ -1041,8 +1039,8 @@ pub(crate) async fn resolve_identifier(
     identifier: &str,
 ) -> Result<Option<AccountRow>, ApiError> {
     if identifier.starts_with("did:") {
-        let row: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
-            "SELECT a.email, a.password_hash, h.handle \
+        let row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT a.password_hash, h.handle \
              FROM accounts a \
              LEFT JOIN handles h ON h.did = a.did \
              WHERE a.did = ? AND a.deactivated_at IS NULL AND a.suspended_at IS NULL \
@@ -1057,15 +1055,14 @@ pub(crate) async fn resolve_identifier(
             ApiError::new(ErrorCode::InternalError, "failed to resolve identifier")
         })?;
 
-        Ok(row.map(|(email, password_hash, handle)| AccountRow {
+        Ok(row.map(|(password_hash, handle)| AccountRow {
             did: identifier.to_string(),
-            email,
             password_hash,
             handle,
         }))
     } else {
-        let row: Option<(String, String, Option<String>, String)> = sqlx::query_as(
-            "SELECT a.did, a.email, a.password_hash, h.handle \
+        let row: Option<(String, Option<String>)> = sqlx::query_as(
+            "SELECT a.did, a.password_hash \
              FROM handles h \
              JOIN accounts a ON a.did = h.did \
              WHERE h.handle = ? AND a.deactivated_at IS NULL AND a.suspended_at IS NULL \
@@ -1080,11 +1077,10 @@ pub(crate) async fn resolve_identifier(
             ApiError::new(ErrorCode::InternalError, "failed to resolve identifier")
         })?;
 
-        Ok(row.map(|(did, email, password_hash, handle)| AccountRow {
+        Ok(row.map(|(did, password_hash)| AccountRow {
             did,
-            email,
             password_hash,
-            handle: Some(handle),
+            handle: Some(identifier.to_string()),
         }))
     }
 }

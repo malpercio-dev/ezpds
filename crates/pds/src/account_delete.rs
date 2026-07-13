@@ -46,6 +46,7 @@ pub enum PurgeOutcome {
 ///   `agent_claim_attempts.identity_id → agent_identities.id`); audit events are keyed through
 ///   the identity rather than their own `did` column because pre-claim events on an anonymous
 ///   registration carry a NULL `did` but still pin the identity row via the FK
+/// * `sovereign_session_nonces` before `accounts` (each replay row is FK-owned by its DID)
 ///
 /// `did_documents` and `reserved_signing_keys` carry the DID with no FK to `accounts`, but are
 /// scoped by `did` so removing this account's rows is correct. `repo_seq` (the durable firehose
@@ -65,6 +66,7 @@ const DELETE_BY_DID: &[&str] = &[
     "DELETE FROM password_reset_tokens WHERE did = ?",
     "DELETE FROM plc_operation_tokens WHERE did = ?",
     "DELETE FROM account_deletion_tokens WHERE did = ?",
+    "DELETE FROM sovereign_session_nonces WHERE did = ?",
     "DELETE FROM agent_audit_events WHERE registration_id IN (SELECT id FROM agent_identities WHERE did = ?)",
     "DELETE FROM agent_claim_attempts WHERE identity_id IN (SELECT id FROM agent_identities WHERE did = ?)",
     "DELETE FROM agent_identities WHERE did = ?",
@@ -313,6 +315,13 @@ mod tests {
         .execute(&state.db)
         .await
         .unwrap();
+        crate::db::sovereign_session_nonces::insert_nonce_if_absent(
+            &state.db,
+            did,
+            "consumed-proof",
+        )
+        .await
+        .unwrap();
 
         let other_did = "did:plc:purge-other";
         seed_account_with_repo(&state.db, other_did).await;
@@ -341,6 +350,10 @@ mod tests {
         );
         assert_eq!(
             row_count(&state.db, "agent_identities", "did", did).await,
+            0
+        );
+        assert_eq!(
+            row_count(&state.db, "sovereign_session_nonces", "did", did).await,
             0
         );
         let claim_attempts: i64 = sqlx::query_scalar(
