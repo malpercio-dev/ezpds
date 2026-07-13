@@ -47,26 +47,31 @@ pub fn encode_sovereign_session_envelope(
 mod tests {
     use super::*;
 
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct EnvelopeVector {
+        server_did: String,
+        account_did: String,
+        signing_key_did: String,
+        timestamp: i64,
+        nonce: String,
+        envelope: String,
+    }
+
     #[test]
     fn canonical_envelope_has_a_stable_golden_vector() {
+        let vector: EnvelopeVector = serde_json::from_str(include_str!(
+            "../../../test-vectors/sovereign-session-envelope-v1.json"
+        ))
+        .unwrap();
         let encoded = encode_sovereign_session_envelope(
-            "did:web:pds.example.com",
-            "did:plc:abcdefghijklmnopqrstuvwx",
-            "did:key:zExample",
-            1_720_000_000,
-            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            &vector.server_did,
+            &vector.account_did,
+            &vector.signing_key_did,
+            vector.timestamp,
+            &vector.nonce,
         );
-        assert_eq!(
-            String::from_utf8(encoded).unwrap(),
-            "domain:38:org.obsign.custos.sovereign-session.v1\n\
-             aud:23:did:web:pds.example.com\n\
-             method:4:POST\n\
-             path:22:/v1/sessions/sovereign\n\
-             did:32:did:plc:abcdefghijklmnopqrstuvwx\n\
-             key:16:did:key:zExample\n\
-             timestamp:10:1720000000\n\
-             nonce:43:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"
-        );
+        assert_eq!(String::from_utf8(encoded).unwrap(), vector.envelope);
     }
 
     #[test]

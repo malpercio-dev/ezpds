@@ -259,6 +259,32 @@ mod tests {
         Mock, MockServer, ResponseTemplate,
     };
 
+    #[test]
+    fn server_uses_the_shared_canonical_envelope_vector() {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Vector {
+            server_did: String,
+            account_did: String,
+            signing_key_did: String,
+            timestamp: i64,
+            nonce: String,
+            envelope: String,
+        }
+        let vector: Vector = serde_json::from_str(include_str!(
+            "../../../../test-vectors/sovereign-session-envelope-v1.json"
+        ))
+        .unwrap();
+        let actual = crypto::encode_sovereign_session_envelope(
+            &vector.server_did,
+            &vector.account_did,
+            &vector.signing_key_did,
+            vector.timestamp,
+            &vector.nonce,
+        );
+        assert_eq!(String::from_utf8(actual).unwrap(), vector.envelope);
+    }
+
     use super::*;
     use crate::app::{app, test_state_with_plc_url, AppState};
     use crate::auth::jwt::{parse_scope, verify_hs256_access_token, AuthScope};
