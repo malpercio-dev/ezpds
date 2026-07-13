@@ -3,7 +3,7 @@
 //! com.atproto.repo.createRecord - Create a new record in a repository.
 
 use axum::extract::State;
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, Method, Uri};
 use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 
@@ -40,6 +40,8 @@ pub struct CreateRecordResponse {
 /// a TID is auto-generated. Returns 409 if the rkey already exists.
 pub async fn create_record(
     State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
     headers: HeaderMap,
     axum::Json(body): axum::Json<CreateRecordBody>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -69,6 +71,8 @@ pub async fn create_record(
     let record_cid = crate::record_write::write_record(
         &state,
         &headers,
+        &method,
+        &uri,
         &did,
         &mst_key,
         &body.record,
@@ -94,7 +98,10 @@ mod tests {
     use axum::http::{self, Request, StatusCode};
     use tower::ServiceExt;
 
-    use crate::routes::test_utils::{access_jwt, seed_account_with_repo, state_with_master_key};
+    use crate::routes::test_utils::{
+        access_jwt, cnf_bound_access_jwt, seed_account_with_repo, state_with_master_key,
+        DpopProofKey,
+    };
 
     async fn setup_account_with_repo() -> (AppState, String) {
         let state = state_with_master_key().await;
@@ -149,6 +156,75 @@ mod tests {
 
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn create_record_dpop_bound_token_as_bearer_returns_401() {
+        // A DPoP-bound access token (cnf.jkt present) presented as plain `Bearer` with no proof
+        // is the RFC 9449 binding downgrade — a stolen token used without its key. The write path
+        // must reject it exactly as the AuthenticatedUser extractor does, not accept it.
+        let (state, did) = setup_account_with_repo().await;
+        let dpop_key = DpopProofKey::generate();
+        let token = cnf_bound_access_jwt(&state.jwt_secret, &did, &dpop_key.thumbprint());
+        let app = crate::app::app(state);
+
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri("/xrpc/com.atproto.repo.createRecord")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({
+                    "repo": did,
+                    "collection": "app.bsky.feed.post",
+                    "record": {"text": "must not land"}
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "a cnf.jkt-bound token presented as plain Bearer must be rejected on createRecord"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_record_valid_dpop_bound_request_succeeds() {
+        // The positive counterpart: the same bound token, presented under the DPoP scheme with a
+        // valid proof whose htm/htu match this request, is accepted — proving the handler threads
+        // the request method/URI into proof validation correctly.
+        let (state, did) = setup_account_with_repo().await;
+        let dpop_key = DpopProofKey::generate();
+        let token = cnf_bound_access_jwt(&state.jwt_secret, &did, &dpop_key.thumbprint());
+        let htu = format!(
+            "{}/xrpc/com.atproto.repo.createRecord",
+            state.config.public_url
+        );
+        let proof = dpop_key.proof("POST", &htu, &token);
+        let app = crate::app::app(state);
+
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri("/xrpc/com.atproto.repo.createRecord")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("DPoP {token}"))
+            .header("DPoP", proof)
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({
+                    "repo": did,
+                    "collection": "app.bsky.feed.post",
+                    "rkey": "dpopok",
+                    "record": {"text": "written under dpop"}
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     /// Regression: a simulated `repo_seq` insert failure must not leave a committed

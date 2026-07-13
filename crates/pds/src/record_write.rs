@@ -12,7 +12,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, Method, Uri};
 use sqlx::SqlitePool;
 
 use crate::app::AppState;
@@ -165,7 +165,9 @@ pub(crate) async fn resolve_repo_did(state: &AppState, repo: &str) -> Result<Str
 ///
 /// # Arguments
 /// * `state` - Application state (DB pool, config, etc.)
-/// * `headers` - Request headers (for Bearer token extraction)
+/// * `headers` - Request headers (for access-token extraction + optional DPoP proof)
+/// * `method` / `uri` - The request method and URI, needed to validate a DPoP proof's
+///   `htm`/`htu` binding (RFC 9449); the calling handler has both.
 /// * `did` - The DID of the repo owner
 /// * `mst_key` - The MST key (collection/rkey)
 /// * `record` - The record data as JSON
@@ -177,9 +179,15 @@ pub(crate) async fn resolve_repo_did(state: &AppState, repo: &str) -> Result<Str
 /// # Precondition
 /// `mst_key` must already be validated via `repo_engine::validate_record_path`; this
 /// helper trusts it and does not re-check the collection/rkey format.
+// The request-context trio (`headers`/`method`/`uri`, needed for DPoP-proof `htm`/`htu`
+// validation) plus the write parameters push this over clippy's argument threshold; the
+// grouping is already as tight as it can be (same posture as `commit_repo_write`).
+#[allow(clippy::too_many_arguments)]
 pub async fn write_record(
     state: &AppState,
     headers: &HeaderMap,
+    method: &Method,
+    uri: &Uri,
     did: &str,
     mst_key: &str,
     record: &serde_json::Value,
@@ -191,17 +199,19 @@ pub async fn write_record(
         return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
     }
 
-    // Authenticate: require a valid access token whose subject owns this repo.
-    let token = crate::auth::extract_bearer_token(headers)?;
-    let claims = crate::auth::jwt::verify_access_token(token, state)?;
-    let auth_scope = crate::auth::jwt::parse_scope(&claims.scope)?;
-    if !auth_scope.is_access() {
+    // Authenticate: require a valid access token whose subject owns this repo. This runs the
+    // shared access-auth path (`authenticate_access`), so the RFC 9449 scheme ↔ `cnf.jkt`
+    // binding rules and DPoP-proof validation are identical to the `AuthenticatedUser`
+    // extractor — a DPoP-bound token presented as plain `Bearer` with no proof is rejected
+    // here, not silently downgraded.
+    let user = crate::auth::authenticate_access(headers, method, uri, state)?;
+    if !user.scope.is_access() {
         return Err(ApiError::new(
             ErrorCode::InvalidToken,
             "access token required",
         ));
     }
-    if claims.sub != *did {
+    if user.did != *did {
         return Err(ApiError::new(
             ErrorCode::Forbidden,
             "authenticated account does not own this repository",
@@ -271,9 +281,9 @@ pub async fn write_record(
     } else {
         crate::auth::oauth_scopes::RepoAction::Update
     };
-    if auth_scope == crate::auth::jwt::AuthScope::Access {
+    if user.scope == crate::auth::jwt::AuthScope::Access {
         crate::auth::oauth_scopes::require_repo(
-            &claims.scope,
+            &user.scope_claim,
             mst_key.split('/').next().unwrap_or(""),
             action,
         )?;
@@ -356,7 +366,7 @@ pub async fn write_record(
         Some(prev_data),
         vec![op],
         &root_cid_str,
-        claims.registration_id.as_deref(),
+        user.registration_id.as_deref(),
     )
     .await?;
     // `commit_repo_write` reclaims this commit's superseded blocks incrementally (see its

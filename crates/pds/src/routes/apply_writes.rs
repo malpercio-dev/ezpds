@@ -3,7 +3,7 @@
 //! com.atproto.repo.applyWrites - Apply a batch of record writes in one atomic commit.
 
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 
@@ -99,6 +99,8 @@ struct ApplyWritesResponse {
 /// error returns before the repo root is swapped, leaving the persisted repo untouched.
 pub async fn apply_writes(
     State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
     headers: HeaderMap,
     axum::Json(body): axum::Json<ApplyWritesBody>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -110,17 +112,18 @@ pub async fn apply_writes(
         return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
     }
 
-    // Authenticate: require a valid access token whose subject owns this repo.
-    let token = crate::auth::extract_bearer_token(&headers)?;
-    let claims = crate::auth::jwt::verify_access_token(token, &state)?;
-    let auth_scope = crate::auth::jwt::parse_scope(&claims.scope)?;
-    if !auth_scope.is_access() {
+    // Authenticate: require a valid access token whose subject owns this repo. Runs the shared
+    // access-auth path so the RFC 9449 scheme ↔ `cnf.jkt` binding rules and DPoP-proof
+    // validation match the `AuthenticatedUser` extractor — a DPoP-bound token presented as
+    // plain `Bearer` with no proof is rejected here, not silently downgraded.
+    let user = crate::auth::authenticate_access(&headers, &method, &uri, &state)?;
+    if !user.scope.is_access() {
         return Err(ApiError::new(
             ErrorCode::InvalidToken,
             "access token required",
         ));
     }
-    if claims.sub != *did {
+    if user.did != *did {
         return Err(ApiError::new(
             ErrorCode::Forbidden,
             "authenticated account does not own this repository",
@@ -172,8 +175,8 @@ pub async fn apply_writes(
             Kind::Update => crate::auth::oauth_scopes::RepoAction::Update,
             Kind::Delete => crate::auth::oauth_scopes::RepoAction::Delete,
         };
-        if auth_scope == crate::auth::jwt::AuthScope::Access {
-            crate::auth::oauth_scopes::require_repo(&claims.scope, &collection, repo_action)?;
+        if user.scope == crate::auth::jwt::AuthScope::Access {
+            crate::auth::oauth_scopes::require_repo(&user.scope_claim, &collection, repo_action)?;
         }
 
         let key = format!("{collection}/{rkey}");
@@ -337,7 +340,7 @@ pub async fn apply_writes(
             Some(prev_data),
             fh_ops,
             &root_cid_str,
-            claims.registration_id.as_deref(),
+            user.registration_id.as_deref(),
         )
         .await?;
         // `commit_repo_write` reclaims this commit's superseded and intermediate-batch blocks
@@ -388,7 +391,8 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::routes::test_utils::{
-        access_jwt, body_json, seed_account_with_repo, state_with_master_key,
+        access_jwt, body_json, cnf_bound_access_jwt, seed_account_with_repo, state_with_master_key,
+        DpopProofKey,
     };
 
     async fn setup() -> (AppState, String) {
@@ -434,6 +438,51 @@ mod tests {
         let body = serde_json::json!({ "repo": did, "writes": [create_item("k1", "hi")] });
         let resp = app.oneshot(apply_req(body, None)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn apply_writes_dpop_bound_token_as_bearer_returns_401() {
+        // A DPoP-bound token (cnf.jkt present) presented as plain `Bearer` with no proof is the
+        // RFC 9449 binding downgrade; applyWrites must reject it, matching the extractor.
+        let (state, did) = setup().await;
+        let dpop_key = DpopProofKey::generate();
+        let token = cnf_bound_access_jwt(&state.jwt_secret, &did, &dpop_key.thumbprint());
+        let app = crate::app::app(state);
+        let body = serde_json::json!({ "repo": did, "writes": [create_item("k1", "hi")] });
+        let resp = app.oneshot(apply_req(body, Some(&token))).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "a cnf.jkt-bound token presented as plain Bearer must be rejected on applyWrites"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_writes_valid_dpop_bound_request_succeeds() {
+        // The same bound token under the DPoP scheme with a valid proof (htm/htu matching this
+        // request) is accepted — the standalone handler threads the method/URI through correctly.
+        let (state, did) = setup().await;
+        let dpop_key = DpopProofKey::generate();
+        let token = cnf_bound_access_jwt(&state.jwt_secret, &did, &dpop_key.thumbprint());
+        let htu = format!(
+            "{}/xrpc/com.atproto.repo.applyWrites",
+            state.config.public_url
+        );
+        let proof = dpop_key.proof("POST", &htu, &token);
+        let app = crate::app::app(state);
+
+        let body = serde_json::json!({ "repo": did, "writes": [create_item("k1", "hi")] });
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri("/xrpc/com.atproto.repo.applyWrites")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("DPoP {token}"))
+            .header("DPoP", proof)
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(request).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]

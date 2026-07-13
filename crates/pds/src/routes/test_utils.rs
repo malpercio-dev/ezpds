@@ -379,6 +379,95 @@ pub(crate) fn access_jwt(secret: &[u8; 32], sub: &str) -> String {
     .unwrap()
 }
 
+/// Mint a short-lived HS256 access JWT bound to a DPoP key thumbprint (`cnf.jkt` present) — the
+/// shape of a DPoP-bound OAuth access token. Presented as plain `Bearer` with no proof, such a
+/// token must be rejected on every access-authed route (RFC 9449 binding-downgrade protection);
+/// presented as `DPoP` with a matching proof it is accepted. Used by the repo-write route tests.
+pub(crate) fn cnf_bound_access_jwt(secret: &[u8; 32], sub: &str, jkt: &str) -> String {
+    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    encode(
+        &Header::new(Algorithm::HS256),
+        &serde_json::json!({
+            "scope": "com.atproto.access",
+            "sub": sub,
+            "iat": now,
+            "exp": now + 7200_u64,
+            "cnf": { "jkt": jkt },
+        }),
+        &EncodingKey::from_secret(secret),
+    )
+    .unwrap()
+}
+
+/// A P-256 DPoP proof-of-possession key for tests, plus proof construction. Mirrors the DPoP
+/// machinery a real OAuth client holds: the key's RFC 7638 thumbprint goes in the access token's
+/// `cnf.jkt` (via [`cnf_bound_access_jwt`]), and [`DpopProofKey::proof`] builds the per-request
+/// proof binding that token to a method + URI.
+pub(crate) struct DpopProofKey {
+    signing_key: p256::ecdsa::SigningKey,
+}
+
+impl DpopProofKey {
+    /// Generate a fresh random P-256 key.
+    pub(crate) fn generate() -> Self {
+        Self {
+            signing_key: p256::ecdsa::SigningKey::random(&mut rand_core::OsRng),
+        }
+    }
+
+    /// The public key as a minimal EC JWK (the form embedded in a DPoP proof header).
+    fn jwk(&self) -> serde_json::Value {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        let point = self.signing_key.verifying_key().to_encoded_point(false);
+        serde_json::json!({
+            "kty": "EC",
+            "crv": "P-256",
+            "x": URL_SAFE_NO_PAD.encode(point.x().unwrap()),
+            "y": URL_SAFE_NO_PAD.encode(point.y().unwrap()),
+        })
+    }
+
+    /// The RFC 7638 thumbprint of this key — the value that goes in the token's `cnf.jkt`.
+    pub(crate) fn thumbprint(&self) -> String {
+        crate::auth::dpop::jwk_thumbprint(&self.jwk()).unwrap()
+    }
+
+    /// Build a fresh, valid DPoP proof JWT binding `access_token` (via its `ath`) to the given
+    /// HTTP method and URL, with `iat = now`. `htu` must be the full request URL
+    /// (`{public_url}{path}`), matching how the extractor reconstructs the expected value.
+    pub(crate) fn proof(&self, htm: &str, htu: &str, access_token: &str) -> String {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        use p256::ecdsa::{signature::Signer, Signature};
+        use sha2::{Digest, Sha256};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let ath = URL_SAFE_NO_PAD.encode(Sha256::digest(access_token.as_bytes()));
+        let header = serde_json::json!({ "typ": "dpop+jwt", "alg": "ES256", "jwk": self.jwk() });
+        let payload = serde_json::json!({
+            "htm": htm,
+            "htu": htu,
+            "iat": now,
+            "jti": uuid::Uuid::new_v4().to_string(),
+            "ath": ath,
+        });
+        let hdr_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&header).unwrap().as_bytes());
+        let pay_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&payload).unwrap().as_bytes());
+        let signing_input = format!("{hdr_b64}.{pay_b64}");
+        let sig: Signature = self.signing_key.sign(signing_input.as_bytes());
+        let sig_b64 = URL_SAFE_NO_PAD.encode(sig.to_bytes());
+        format!("{hdr_b64}.{pay_b64}.{sig_b64}")
+    }
+}
+
 /// Mint a short-lived HS256 access JWT carrying a `registration_id` claim — the shape of an
 /// agent-derived token from the jwt-bearer / claim-polling grants. Used by tests that exercise
 /// agent attribution (audit rows) and the agent-refusal gates. Callers must seed a matching
