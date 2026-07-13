@@ -104,6 +104,97 @@ pub async fn rewrite_did_document(
     Ok(result.rows_affected() > 0)
 }
 
+/// Fetch the DID document to serve for a Custos-hosted `did:web` account, gated on the opt-in.
+///
+/// Returns `Some(document)` only when the account for `did` exists, has managed did:web hosting
+/// enabled (`did_web_hosting_enabled_at IS NOT NULL`), is in an active lifecycle (not deactivated,
+/// suspended, or taken down — the same all-NULL gate as every other serving path), and has a stored
+/// document. Any of those failing yields `None`, so the `.well-known/did.json` route 404s a host
+/// that isn't opted in exactly as it does an unknown one — no existence oracle for the opt-in state.
+///
+/// The caller is responsible for having mapped the request host to `did:web:{host}`; this query does
+/// not itself constrain the DID method, but a `did:plc` account never sets the opt-in column, so it
+/// can never be served here.
+pub async fn serve_hosted_did_document(
+    db: &SqlitePool,
+    did: &str,
+) -> Result<Option<serde_json::Value>, ApiError> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT d.document \
+         FROM accounts a \
+         JOIN did_documents d ON d.did = a.did \
+         WHERE a.did = ? \
+           AND a.did_web_hosting_enabled_at IS NOT NULL \
+           AND a.deactivated_at IS NULL \
+           AND a.suspended_at IS NULL \
+           AND a.taken_down_at IS NULL \
+         LIMIT 1",
+    )
+    .bind(did)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| {
+        tracing::error!(did = %did, error = %e, "DB error fetching hosted DID document");
+        ApiError::new(ErrorCode::InternalError, "failed to load DID document")
+    })?;
+
+    match row {
+        None => Ok(None),
+        Some((doc_str,)) => {
+            let doc = serde_json::from_str(&doc_str).map_err(|e| {
+                let preview = &doc_str[..doc_str.len().min(500)];
+                tracing::error!(did = %did, error = %e, raw = %preview, "malformed hosted DID document in DB");
+                ApiError::new(ErrorCode::InternalError, "malformed DID document")
+            })?;
+            Ok(Some(doc))
+        }
+    }
+}
+
+/// Enable or disable Custos-managed did:web hosting for an account.
+///
+/// Sets `did_web_hosting_enabled_at` to the current time (enable) or `NULL` (disable). Status is
+/// derived from the column, so disabling stops the serve path immediately. Returns whether a row was
+/// updated (`false` = no such account). The caller enforces the business preconditions (the account
+/// is a `did:web` identity with a stored document) before enabling.
+pub async fn set_did_web_hosting(
+    db: &SqlitePool,
+    did: &str,
+    enabled: bool,
+) -> Result<bool, ApiError> {
+    let sql = if enabled {
+        "UPDATE accounts SET did_web_hosting_enabled_at = datetime('now'), updated_at = datetime('now') WHERE did = ?"
+    } else {
+        "UPDATE accounts SET did_web_hosting_enabled_at = NULL, updated_at = datetime('now') WHERE did = ?"
+    };
+
+    let result = sqlx::query(sql).bind(did).execute(db).await.map_err(|e| {
+        tracing::error!(did = %did, error = %e, "DB error toggling did:web hosting");
+        ApiError::new(ErrorCode::InternalError, "failed to update did:web hosting")
+    })?;
+
+    Ok(result.rows_affected() > 0)
+}
+
+/// Whether Custos-managed did:web hosting is currently enabled for an account.
+///
+/// A cheap probe over the derived opt-in state (`did_web_hosting_enabled_at IS NOT NULL`); `false`
+/// when the account doesn't exist or hosting is off.
+pub async fn did_web_hosting_enabled(db: &SqlitePool, did: &str) -> Result<bool, ApiError> {
+    let row: Option<(i64,)> = sqlx::query_as(
+        "SELECT 1 FROM accounts WHERE did = ? AND did_web_hosting_enabled_at IS NOT NULL LIMIT 1",
+    )
+    .bind(did)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| {
+        tracing::error!(did = %did, error = %e, "DB error checking did:web hosting state");
+        ApiError::new(ErrorCode::InternalError, "failed to check did:web hosting")
+    })?;
+
+    Ok(row.is_some())
+}
+
 /// Update the `alsoKnownAs` array in a DID document.
 ///
 /// Fetches the current document, replaces the `alsoKnownAs` field, and writes it back.
