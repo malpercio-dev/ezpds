@@ -11,24 +11,7 @@ use axum::{
 };
 
 use crate::app::AppState;
-
-/// Resolve the host the client addressed: `X-Forwarded-Host` (stamped by the deploy
-/// proxy — trusted here because the PDS is only reachable through it) → `Host` header
-/// (HTTP/1.1) → URI authority (HTTP/2 carries `:authority` instead of a Host header).
-///
-/// This replaces axum's `Host` extractor, which 0.8 moved to axum-extra and is being
-/// removed upstream (tokio-rs/axum#3442): honouring a client-supplied
-/// `X-Forwarded-Host` is only safe behind a proxy that overwrites it, which is this
-/// deployment's topology (Railway) — a direct-exposure deployment would need to drop
-/// the forwarded lookup.
-fn request_host(headers: &HeaderMap, uri: &Uri) -> Option<String> {
-    headers
-        .get("x-forwarded-host")
-        .or_else(|| headers.get(header::HOST))
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_owned)
-        .or_else(|| uri.authority().map(|a| a.to_string()))
-}
+use crate::request_host::request_host;
 
 pub async fn atproto_did_handler(
     headers: HeaderMap,

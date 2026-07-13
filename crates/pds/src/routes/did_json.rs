@@ -19,28 +19,15 @@ use axum::{
 };
 
 use crate::app::AppState;
+use crate::request_host::request_host;
 
-/// Resolve the host the client addressed: `X-Forwarded-Host` (stamped by the deploy proxy — trusted
-/// here because the PDS is only reachable through it) → `Host` header (HTTP/1.1) → URI authority
-/// (HTTP/2 carries `:authority` instead of a Host header).
-///
-/// Mirrors `atproto_did.rs`'s resolver (routes may not import from each other; this is the pure
-/// header-parsing helper duplicated deliberately). Honouring a client-supplied `X-Forwarded-Host`
-/// is only safe behind a proxy that overwrites it, which is this deployment's topology (Railway).
-fn request_host(headers: &HeaderMap, uri: &Uri) -> Option<String> {
-    headers
-        .get("x-forwarded-host")
-        .or_else(|| headers.get(header::HOST))
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_owned)
-        .or_else(|| uri.authority().map(|a| a.to_string()))
-}
-
-/// Map a request host to the `did:web` DID it would identify. A port's `:` is percent-encoded per
-/// the did:web method spec (`did:web:host%3A8080`), matching `Config::resolve_server_did`, so the
-/// derived DID compares equal to how the account's DID was minted.
+/// Map a request host to the `did:web` DID it would identify. The host is lowercased first — `Host`
+/// and `X-Forwarded-Host` are case-insensitive, but a did:web DID is a lowercased hostname, so a
+/// mixed-case request must normalise to the same DID the account was minted with. A port's `:` is
+/// then percent-encoded per the did:web method spec (`did:web:host%3A8080`), matching
+/// `Config::resolve_server_did`.
 fn host_to_did_web(host: &str) -> String {
-    format!("did:web:{}", host.replace(':', "%3A"))
+    format!("did:web:{}", host.to_ascii_lowercase().replace(':', "%3A"))
 }
 
 pub async fn did_json_handler(
@@ -162,6 +149,21 @@ mod tests {
                     .body(Body::empty())
                     .unwrap(),
             )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn mixed_case_host_normalises_to_lowercase_did() {
+        let state = test_state().await;
+        let did = "did:web:example.com";
+        seed_hosted_did_web(&state, "example.com", sample_doc(did)).await;
+
+        // A case-insensitive Host header must still resolve to the lowercased did:web DID.
+        let response = app(state)
+            .oneshot(did_json_request("Example.COM"))
             .await
             .unwrap();
 

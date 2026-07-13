@@ -43,6 +43,7 @@ src/
   code_gen.rs      — random claim-code generation (pure), shared by claim-code + account-creation routes
   uniqueness.rs    — email/handle pre-flight uniqueness DB checks, shared by the account-creation routes
   platform.rs      — device `Platform` enum, shared by the device-registration routes
+  request_host.rs  — `request_host` (Functional Core): resolve the client-addressed host (`X-Forwarded-Host` → `Host` → `:authority`) for the Host-keyed public routes (`.well-known/atproto-did`, `.well-known/did.json`); lives outside `routes/` so both handlers share it without a route-to-route import
   read_after_write/— buffered AppView response munge path for read-after-write: merges requester's unindexed records, rev-faithful selection via atproto-repo-rev, fallback ladder, Atproto-Upstream-Lag header
   auth/            — authentication primitives + route guards (HTTP-aware, no DB schema ownership)
   db/              — SQL query functions + migration runner (no business logic)

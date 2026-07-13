@@ -186,20 +186,22 @@ mod tests {
     /// Insert a `did:web` account with a stored document and an owner session token.
     async fn seed_did_web_owner(state: &AppState, host: &str, hosting_enabled: bool) -> TestOwner {
         let did = format!("did:web:{host}");
-        let enabled_col = if hosting_enabled {
-            "datetime('now')"
-        } else {
-            "NULL"
-        };
-        sqlx::query(&format!(
-            "INSERT INTO accounts (did, email, password_hash, did_web_hosting_enabled_at, created_at, updated_at) \
-             VALUES (?, ?, NULL, {enabled_col}, datetime('now'), datetime('now'))"
-        ))
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
+        )
         .bind(&did)
         .bind(format!("{host}@example.invalid"))
         .execute(&state.db)
         .await
         .expect("insert account");
+
+        if hosting_enabled {
+            // Flip the opt-in through the real parameterized toggle rather than an inlined column.
+            crate::db::dids::set_did_web_hosting(&state.db, &did, true)
+                .await
+                .expect("enable hosting");
+        }
 
         let doc = serde_json::json!({
             "@context": ["https://www.w3.org/ns/did/v1"],
@@ -270,6 +272,53 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         assert!(hosting_col(&db, &owner.did).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn enable_hosting_requires_stored_document() {
+        let state = test_state().await;
+        // A did:web account + session but no did_documents row — nothing to serve.
+        let did = "did:web:nodoc.example.com".to_string();
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
+        )
+        .bind(&did)
+        .bind("nodoc@example.invalid")
+        .execute(&state.db)
+        .await
+        .unwrap();
+        let token = generate_token();
+        sqlx::query(
+            "INSERT INTO sessions (id, did, device_id, token_hash, created_at, expires_at) \
+             VALUES (?, ?, NULL, ?, datetime('now'), datetime('now', '+1 year'))",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(&did)
+        .bind(&token.hash)
+        .execute(&state.db)
+        .await
+        .unwrap();
+        let db = state.db.clone();
+
+        let response = app(state)
+            .oneshot(post(
+                "/v1/did-web/hosting",
+                &token.plaintext,
+                serde_json::json!({ "enabled": true }),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        // The opt-in flag must not have been set.
+        let enabled: Option<String> =
+            sqlx::query_scalar("SELECT did_web_hosting_enabled_at FROM accounts WHERE did = ?")
+                .bind(&did)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(enabled.is_none());
     }
 
     #[tokio::test]
