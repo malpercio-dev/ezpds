@@ -57,7 +57,10 @@ struct PdsSigningKey {
 #[serde(rename_all = "camelCase")]
 struct CreateDidRequest {
     rotation_key_public: String,
-    signed_creation_op: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signed_creation_op: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    did_web_document: Option<String>,
     /// Initial password stored as an argon2id PHC string by the PDS.
     password: String,
 }
@@ -135,6 +138,14 @@ pub struct DIDCeremonyResult {
     /// Share 3 of 3 — the user's manual backup share.
     /// Share 1 has already been stored in iCloud Keychain by the Rust backend.
     pub share3: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DidWebPreparation {
+    pub device_key_multibase: String,
+    pub repo_key_multibase: String,
+    pub pds_url: String,
 }
 
 /// Typed error returned to the Svelte frontend as a rejected Promise.
@@ -475,10 +486,13 @@ async fn perform_did_ceremony(
     // Step 6: POST the signed genesis op to the PDS to promote the account to a full DID.
     let create_did_req = CreateDidRequest {
         rotation_key_public: device_key.key_id,
-        signed_creation_op: serde_json::from_str(&genesis_op.signed_op_json).map_err(|e| {
-            tracing::error!(error = %e, "genesis op JSON is not valid JSON");
-            DIDCeremonyError::SigningFailed
-        })?,
+        signed_creation_op: Some(serde_json::from_str(&genesis_op.signed_op_json).map_err(
+            |e| {
+                tracing::error!(error = %e, "genesis op JSON is not valid JSON");
+                DIDCeremonyError::SigningFailed
+            },
+        )?),
+        did_web_document: None,
         password,
     };
 
@@ -535,6 +549,104 @@ async fn perform_did_ceremony(
     Ok(DIDCeremonyResult {
         did: create_did_resp.did,
         share3: create_did_resp.shamir_share_3,
+    })
+}
+
+#[tauri::command]
+async fn prepare_did_web_ceremony(
+    state: tauri::State<'_, oauth::AppState>,
+) -> Result<DidWebPreparation, DIDCeremonyError> {
+    let device_key = device_key::get_or_create().map_err(|_| DIDCeremonyError::KeyNotFound)?;
+    let pending_token = String::from_utf8(
+        keychain::get_item("session-token").map_err(|_| DIDCeremonyError::KeychainError)?,
+    )
+    .map_err(|_| DIDCeremonyError::KeychainError)?;
+    let response = state
+        .custos_client()
+        .get_with_bearer("/v1/repo-signing-key", &pending_token)
+        .await
+        .map_err(|e| DIDCeremonyError::NetworkError {
+            message: e.to_string(),
+        })?;
+    if !response.status().is_success() {
+        return Err(DIDCeremonyError::PdsKeyFetchFailed);
+    }
+    let repo_key: PdsSigningKey = response
+        .json()
+        .await
+        .map_err(|_| DIDCeremonyError::PdsKeyFetchFailed)?;
+    Ok(DidWebPreparation {
+        device_key_multibase: device_key.multibase,
+        repo_key_multibase: repo_key
+            .key_id
+            .strip_prefix("did:key:")
+            .unwrap_or(&repo_key.key_id)
+            .to_string(),
+        pds_url: state
+            .custos_client()
+            .base_url_str()
+            .trim_end_matches('/')
+            .to_string(),
+    })
+}
+
+#[tauri::command]
+async fn complete_did_web_ceremony(
+    document_text: String,
+    password: String,
+    enable_managed_hosting: bool,
+    state: tauri::State<'_, oauth::AppState>,
+) -> Result<DIDCeremonyResult, DIDCeremonyError> {
+    let device_key = device_key::get_or_create().map_err(|_| DIDCeremonyError::KeyNotFound)?;
+    let pending_token = String::from_utf8(
+        keychain::get_item("session-token").map_err(|_| DIDCeremonyError::KeychainError)?,
+    )
+    .map_err(|_| DIDCeremonyError::KeychainError)?;
+    let request = CreateDidRequest {
+        rotation_key_public: device_key.key_id,
+        signed_creation_op: None,
+        did_web_document: Some(document_text),
+        password,
+    };
+    let response = state
+        .custos_client()
+        .post_with_bearer("/v1/dids", &request, &pending_token)
+        .await
+        .map_err(|e| DIDCeremonyError::NetworkError {
+            message: e.to_string(),
+        })?;
+    if !response.status().is_success() {
+        return Err(DIDCeremonyError::DidCreationFailed);
+    }
+    let created: CreateDidResponse = response
+        .json()
+        .await
+        .map_err(|_| DIDCeremonyError::DidCreationFailed)?;
+    if enable_managed_hosting {
+        let hosting_response = state
+            .custos_client()
+            .post_with_bearer(
+                "/v1/did-web/hosting",
+                &serde_json::json!({ "enabled": true }),
+                &created.session_token,
+            )
+            .await
+            .map_err(|e| DIDCeremonyError::NetworkError {
+                message: e.to_string(),
+            })?;
+        if !hosting_response.status().is_success() {
+            return Err(DIDCeremonyError::DidCreationFailed);
+        }
+    }
+    keychain::store_item("session-token", created.session_token.as_bytes())
+        .map_err(|_| DIDCeremonyError::KeychainError)?;
+    keychain::store_item("did", created.did.as_bytes())
+        .map_err(|_| DIDCeremonyError::KeychainError)?;
+    keychain::store_item("recovery-share-1", created.shamir_share_1.as_bytes())
+        .map_err(|_| DIDCeremonyError::ShareStorageFailed)?;
+    Ok(DIDCeremonyResult {
+        did: created.did,
+        share3: created.shamir_share_3,
     })
 }
 
@@ -971,7 +1083,9 @@ pub fn run() {
     // registering it behind `#[cfg(mobile)]` keeps the macOS host build and its test suite
     // free of a dependency they cannot compile.
     #[cfg(mobile)]
-    let builder = builder.plugin(tauri_plugin_biometric::init());
+    let builder = builder
+        .plugin(tauri_plugin_biometric::init())
+        .plugin(tauri_plugin_sharesheet::init());
 
     builder
         .setup(|app| {
@@ -1012,6 +1126,8 @@ pub fn run() {
             get_or_create_device_key,
             sign_with_device_key,
             perform_did_ceremony,
+            prepare_did_web_ceremony,
+            complete_did_web_ceremony,
             register_handle,
             register_created_identity,
             check_handle_resolution,
@@ -1044,6 +1160,8 @@ pub fn run() {
             migrate::detect_migration_path_cmd,
             migrate::build_migration_op_cmd,
             migrate::submit_migration_op_cmd,
+            migrate::build_did_web_migration_document_cmd,
+            migrate::submit_did_web_migration_document_cmd,
             migration_orchestrator::prepare_migration,
             migration_orchestrator::authenticate_migration_source,
             migration_orchestrator::create_destination_account,
@@ -1068,7 +1186,8 @@ mod tests {
     fn create_did_request_serializes_password_and_camel_case() {
         let req = CreateDidRequest {
             rotation_key_public: "did:key:z123".into(),
-            signed_creation_op: serde_json::json!({"type": "plc_operation"}),
+            signed_creation_op: Some(serde_json::json!({"type": "plc_operation"})),
+            did_web_document: None,
             password: "mysecretpassword".into(),
         };
         let json = serde_json::to_value(&req).unwrap();

@@ -156,6 +156,39 @@ export const performDIDCeremony = (
 ): Promise<DIDCeremonyResult> =>
   invoke('perform_did_ceremony', { handle, password });
 
+export type DidWebPreparation = {
+  deviceKeyMultibase: string;
+  repoKeyMultibase: string;
+  pdsUrl: string;
+};
+
+export const prepareDidWebCeremony = (): Promise<DidWebPreparation> =>
+  invoke('prepare_did_web_ceremony');
+
+export const completeDidWebCeremony = (
+  documentText: string,
+  password: string,
+  enableManagedHosting: boolean,
+): Promise<DIDCeremonyResult> =>
+  invoke('complete_did_web_ceremony', { documentText, password, enableManagedHosting });
+
+export type DidWebMigrationDocument = {
+  documentText: string;
+  deviceKey: string;
+  repoKey: string;
+  pdsEndpoint: string;
+};
+
+export const buildDidWebMigrationDocument = (did: string): Promise<DidWebMigrationDocument> =>
+  invoke('build_did_web_migration_document_cmd', { did });
+
+export const submitDidWebMigrationDocument = (
+  did: string,
+  documentText: string,
+  enableManagedHosting: boolean,
+): Promise<ClaimResult> =>
+  invoke('submit_did_web_migration_document_cmd', { did, documentText, enableManagedHosting });
+
 // ── register_handle ──────────────────────────────────────────────────────────
 
 /**

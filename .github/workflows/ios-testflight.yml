@@ -22,6 +22,7 @@ on:
     # fails on any drift — an unwatched app dependency or a re-widened entry alike.
     paths:
       - "apps/identity-wallet/**"
+      - "apps/admin-companion/vendor/tauri-plugin-sharesheet/**"
       - "crates/crypto/**"
       - "Cargo.toml"
       - "Cargo.lock"

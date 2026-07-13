@@ -57,6 +57,7 @@ chrono = { workspace = true }
 # `#[cfg(mobile)]` in lib.rs. Same version admin-companion already uses.
 [target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
 tauri-plugin-biometric = "2"
+tauri-plugin-sharesheet = { path = "../../admin-companion/vendor/tauri-plugin-sharesheet" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }

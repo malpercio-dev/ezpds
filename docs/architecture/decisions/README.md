@@ -37,7 +37,7 @@ understand why the architecture is the way it is.
 | [0000](0000-record-architecture-decisions.md) | Accepted | Record architecture decisions as ADRs |
 | [0001](0001-client-held-rotation-key-custody.md) | Accepted | The user's wallet holds `rotationKeys[0]`; the PDS holds `rotationKeys[1]` |
 | [0002](0002-wallet-authorized-account-migration.md) | Proposed | Account migration is wallet-authorized by default, with a PDS-signed interop fallback |
-| [0003](0003-did-plc-as-did-method.md) | Accepted (amended 2026-07-13) | `did:plc` is the *minted* DID method; `did:web` is *hosted* for user-owned domains, not minted |
+| [0003](0003-did-plc-as-did-method.md) | Accepted (amended 2026-07-13) | `did:plc` is the default; `did:web` may be minted or hosted only after proving control of a user-owned domain |
 | [0004](0004-pds-signed-repo-commits.md) | Accepted | The PDS holds the repo signing key and signs commits |
 | [0005](0005-functional-core-imperative-shell.md) | Accepted | Functional Core / Imperative Shell workspace architecture |
 | [0006](0006-oauth-callback-via-aswebauthenticationsession.md) | Accepted | OAuth callback via ASWebAuthenticationSession (vendored plugin), not deep links |

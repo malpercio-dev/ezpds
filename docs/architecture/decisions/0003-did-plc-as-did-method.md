@@ -54,14 +54,14 @@ We will mint and manage all ezpds accounts as **`did:plc`** identities.
   endpoint and no rotation, so it can neither point at a PDS nor be recovered.
   (`did:key` is still used throughout for representing individual public keys.)
 
-## Amendment (2026-07-13): `did:plc` is the *minted* method; `did:web` is *hosted* for user-owned domains
+## Amendment (2026-07-13): `did:web` is offered only for user-owned domains
 
 The original Decision said "`did:web` is not offered as an account identity
 method." Taken literally that reads as "Custos rejects `did:web` accounts,"
 which is too strong and was never the intent. The precise rule is:
 
-> **Custos never *mints* a `did:web` identity, but it will *host* (serve, and
-> act as PDS for) a `did:web` identity for a domain the user already controls.**
+> **Custos may mint or host a `did:web` identity only after the wallet proves control of the
+> user-owned domain by publishing the exact reviewed DID document there.**
 
 This is exactly the exit-liability boundary the superseded provisioning spec
 already drew ([`docs/provisioning-api-spec.md:44-47`](../../provisioning-api-spec.md)):
@@ -73,12 +73,13 @@ leaves, the opposite of credible exit.
 ### Why this is consistent with the original decision
 
 The Decision's *reasoning* was about **custody**, not about turning inbound
-`did:web` accounts away. `did:plc` is the method Custos mints because only it
+`did:web` accounts away. `did:plc` remains the default method Custos mints because only it
 carries the ordered `rotationKeys` and 72-hour recovery window that ADR-0001's
 client-held-custody model, `plc_monitor`, `recovery.rs`, and wallet-authorized
 migration (ADR-0002) depend on. None of that is expressible under `did:web`.
-That remains true and unchanged — it is why a *new* Custos identity is always
-`did:plc`.
+That remains true and unchanged. A new `did:web` identity instead uses domain control as its root
+of trust and publishes the wallet device key as an additional verification method; escrow restores
+that co-signing/monitoring key, not ownership of the domain.
 
 A `did:web` identity the user already owns is a different case. The user controls
 the DID document at their own domain, so the "who can repoint this identity"
@@ -104,18 +105,21 @@ store keys the DID as opaque TEXT.
    `requestPlcOperationSignature`) return an explicit "not a did:plc" error for
    these accounts rather than failing deep in a plc.directory audit-log fetch.
 
-2. **Custos-served `did:web` for a user-owned domain (MM-279, deferred).**
-   Optionally serving `did.json` for a user-owned domain — including the
-   `did:web:obsign.org` apex scenario — is a larger change that must carry the
-   attested safeguards that keep the exit-liability rule intact (proof of domain
-   control, and a clean way to stop hosting on exit). It is tracked separately
-   and is **not** authorized by this amendment.
+2. **Custos-served `did:web` for a user-owned domain (MM-279/MM-285, shipped).**
+   The wallet first makes the reviewed document independently resolvable to prove domain control,
+   then opts into Custos serving. DNS remains the instant override and exit boundary.
+
+3. **New `did:web` (MM-285, shipped).** The wallet composes and exports the document with its
+   device key, Custos's reserved repo-signing key, and Custos's PDS endpoint. `/v1/dids` resolves
+   the authoritative domain and compares the exact bytes before atomically creating the account,
+   genesis repo, session, and unchanged 2-of-3 Shamir shares. No PLC operation or plc.directory
+   request occurs.
 
 ### Honesty in the wallet
 
 Because `did:web` has **no rotation hierarchy, no audit log, and no recovery
 window**, the Obsign wallet must not present its `did:plc`-only assurances
-(PLC monitoring, recovery-window override, the claim/Shamir ceremonies) as if
+(PLC monitoring, recovery-window override, and PLC claim ceremonies) as if
 they applied to a `did:web` identity. Those surfaces are gated for `did:web` and
 replaced with an in-app explanation of what `did:web` does and does not provide —
 "practice the assurance you preach" (DESIGN.md), stated honestly rather than by
@@ -124,7 +128,5 @@ silently showing an inapplicable "all secure" state.
 ### Net effect on the Decision
 
 "`did:web` is not offered as an account identity method" is superseded by:
-**`did:web` is not *minted*, but is *hosted* for domains the user controls** —
-self-hosted today (MM-278), optionally Custos-served later under attested
-safeguards (MM-279). The custody rationale for minting only `did:plc` is
-unchanged.
+**`did:web` may be minted or hosted only for domains the user controls, after external publication
+proves that control.** The custody rationale for keeping `did:plc` as the default is unchanged.

@@ -15,6 +15,7 @@
   "dependencies": {
     "@tauri-apps/api": "~2.11.0",
     "@tauri-apps/plugin-biometric": "^2",
+    "@buildyourwebapp/tauri-plugin-sharesheet": "^0.0.1",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {

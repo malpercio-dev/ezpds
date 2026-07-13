@@ -16,8 +16,8 @@
     </SealEmblem>
   {/snippet}
   <div class="actions">
-    <Button onclick={oncreate}>Create new identity</Button>
-    <Button variant="secondary" onclick={onimport}>I have an identity</Button>
+    <Button onclick={oncreate}>Add an identity</Button>
+    <Button variant="secondary" onclick={onimport}>Move an identity to another PDS</Button>
   </div>
 </OnboardingShell>
 

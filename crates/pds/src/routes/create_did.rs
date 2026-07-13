@@ -68,7 +68,11 @@ use common::{ApiError, ErrorCode};
 #[serde(rename_all = "camelCase")]
 pub struct CreateDidRequest {
     pub rotation_key_public: String,
-    pub signed_creation_op: serde_json::Value,
+    /// Signed PLC genesis operation. Exactly one of this and `did_web_document` is required.
+    pub signed_creation_op: Option<serde_json::Value>,
+    /// Already-published did:web document for a user-owned domain. The server resolves the
+    /// authoritative URL and requires the parsed document to match before promotion.
+    pub did_web_document: Option<String>,
     /// Initial password, stored as an argon2id PHC string.
     /// Enables `createSession` for this account after promotion.
     pub password: String,
@@ -122,28 +126,66 @@ pub async fn create_did_handler(
         ));
     }
 
-    // Phase 2: Verify the genesis op and validate it against account + server config.
-    let (verified, signed_op_str) = crate::genesis::verify_and_validate_genesis_op(
-        &payload.rotation_key_public,
-        &payload.signed_creation_op,
-        &pending.handle,
-        &state.config.public_url,
-    )?;
-    let did = &verified.did;
-
-    // The op must publish the issued per-account key as its #atproto verification method.
-    // A mismatch means the PDS could not sign this repo's commits, so reject it.
-    if verified
-        .verification_methods
-        .get("atproto")
-        .map(String::as_str)
-        != Some(repo_key.key_id.as_str())
-    {
-        return Err(ApiError::new(
-            ErrorCode::InvalidClaim,
-            "op verificationMethods.atproto does not match the issued repo signing key",
-        ));
-    }
+    // Phase 2: validate one method-specific ceremony, yielding the same method-agnostic
+    // promotion inputs. did:web has no PLC operation: its already-published document is the
+    // authority, so we resolve it externally and compare the JSON value before creating anything.
+    let (did, did_document, signed_op_str) = match (
+        payload.signed_creation_op.as_ref(),
+        payload.did_web_document.as_ref(),
+    ) {
+        (Some(signed_op), None) => {
+            let (verified, signed_op_str) = crate::genesis::verify_and_validate_genesis_op(
+                &payload.rotation_key_public,
+                signed_op,
+                &pending.handle,
+                &state.config.public_url,
+            )?;
+            if verified
+                .verification_methods
+                .get("atproto")
+                .map(String::as_str)
+                != Some(repo_key.key_id.as_str())
+            {
+                return Err(ApiError::new(
+                    ErrorCode::InvalidClaim,
+                    "op verificationMethods.atproto does not match the issued repo signing key",
+                ));
+            }
+            let document = crate::genesis::build_did_document(&verified)?;
+            (verified.did, document, Some(signed_op_str))
+        }
+        (None, Some(document_bytes)) => {
+            let document: serde_json::Value =
+                serde_json::from_str(document_bytes).map_err(|_| {
+                    ApiError::new(
+                        ErrorCode::InvalidClaim,
+                        "did:web document is not valid JSON",
+                    )
+                })?;
+            let did = validate_did_web_document(
+                &document,
+                &pending.handle,
+                &payload.rotation_key_public,
+                &repo_key.key_id,
+                &state.config.public_url,
+            )?;
+            let resolved =
+                crate::identity_resolution::resolve_web_did_document_bytes(&state, &did).await?;
+            if resolved.as_bytes() != document_bytes.as_bytes() {
+                return Err(ApiError::new(
+                    ErrorCode::InvalidClaim,
+                    "published did:web document does not match the reviewed document",
+                ));
+            }
+            (did, document, None)
+        }
+        _ => {
+            return Err(ApiError::new(
+                ErrorCode::InvalidClaim,
+                "provide exactly one DID ceremony document",
+            ))
+        }
+    };
 
     // Build the (empty) genesis repo in memory, signed with the per-account key, so its
     // blocks are persisted atomically inside the promotion transaction below. Doing this
@@ -170,7 +212,7 @@ pub async fn create_did_handler(
         ApiError::new(ErrorCode::InternalError, "failed to prepare genesis repo")
     })?;
     let (genesis_root, genesis_rev, genesis_blocks) =
-        repo_engine::build_genesis_repo(did, &genesis_signer)
+        repo_engine::build_genesis_repo(&did, &genesis_signer)
             .await
             .map_err(|e| {
                 tracing::error!(error = %e, did = %did, "failed to build genesis repo");
@@ -194,25 +236,24 @@ pub async fn create_did_handler(
     // Shares are generated once and stored alongside pending_did so that retries return the
     // same shares — preventing Share 2 from being orphaned in accounts.recovery_share.
     let (skip_plc, share1, share2, share3) =
-        pre_store_did_and_shares(&state.db, &session.account_id, did, &pending).await?;
-    check_already_promoted(&state.db, did).await?;
-    if !skip_plc {
+        pre_store_did_and_shares(&state.db, &session.account_id, &did, &pending).await?;
+    check_already_promoted(&state.db, &did).await?;
+    if !skip_plc && signed_op_str.is_some() {
         crate::genesis::post_to_plc_directory(
             &state.http_client,
             &state.config.plc_directory_url,
-            did,
-            &signed_op_str,
+            &did,
+            signed_op_str.as_deref().expect("checked above"),
         )
         .await?;
     }
 
     // Phase 4: Build DID document, generate session, hash password, atomically promote.
-    let did_document = crate::genesis::build_did_document(&verified)?;
     let session_token = generate_token();
     let password_hash = hash_password(&payload.password)?;
     promote_account(
         &state,
-        did,
+        &did,
         &pending.email,
         &session.account_id,
         &did_document,
@@ -229,7 +270,7 @@ pub async fn create_did_handler(
     .await?;
 
     Ok(Json(CreateDidResponse {
-        did: did.clone(),
+        did,
         did_document,
         status: "active",
         session_token: session_token.plaintext,
@@ -239,6 +280,88 @@ pub async fn create_did_handler(
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
+
+fn validate_did_web_document(
+    document: &serde_json::Value,
+    handle: &str,
+    device_key: &str,
+    repo_key: &str,
+    pds_url: &str,
+) -> Result<String, ApiError> {
+    let did = document
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|did| did.starts_with("did:web:"))
+        .ok_or_else(|| ApiError::new(ErrorCode::InvalidClaim, "document id must be did:web"))?;
+    let expected_handle = format!("at://{handle}");
+    if !document
+        .get("alsoKnownAs")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|values| {
+            values
+                .iter()
+                .any(|value| value.as_str() == Some(&expected_handle))
+        })
+    {
+        return Err(ApiError::new(
+            ErrorCode::InvalidClaim,
+            "did:web document does not contain the pending account handle",
+        ));
+    }
+
+    let device_multibase = device_key.strip_prefix("did:key:").unwrap_or(device_key);
+    let repo_multibase = repo_key.strip_prefix("did:key:").unwrap_or(repo_key);
+    let methods = document
+        .get("verificationMethod")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| ApiError::new(ErrorCode::InvalidClaim, "verificationMethod is required"))?;
+    let has_key = |fragment: &str, multibase: &str| {
+        let id = format!("{did}#{fragment}");
+        methods.iter().any(|method| {
+            method.get("id").and_then(serde_json::Value::as_str) == Some(&id)
+                && method.get("controller").and_then(serde_json::Value::as_str) == Some(did)
+                && method
+                    .get("publicKeyMultibase")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(multibase)
+        })
+    };
+    if !has_key("device", device_multibase) {
+        return Err(ApiError::new(
+            ErrorCode::InvalidClaim,
+            "did:web document does not publish the device key as #device",
+        ));
+    }
+    if !has_key("atproto", repo_multibase) {
+        return Err(ApiError::new(
+            ErrorCode::InvalidClaim,
+            "did:web #atproto key does not match the issued repo signing key",
+        ));
+    }
+
+    let expected_endpoint = pds_url.trim_end_matches('/');
+    let expected_service = format!("{did}#atproto_pds");
+    let has_service = document
+        .get("service")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|services| {
+            services.iter().any(|service| {
+                service.get("id").and_then(serde_json::Value::as_str) == Some(&expected_service)
+                    && service
+                        .get("serviceEndpoint")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|endpoint| endpoint.trim_end_matches('/') == expected_endpoint)
+            })
+        });
+    if !has_service {
+        return Err(ApiError::new(
+            ErrorCode::InvalidClaim,
+            "did:web #atproto_pds does not point at this server",
+        ));
+    }
+
+    Ok(did.to_string())
+}
 
 // ── Phase helpers ─────────────────────────────────────────────────────────────
 
@@ -640,6 +763,42 @@ mod tests {
         matchers::{method, path_regex},
         Mock, MockServer, ResponseTemplate,
     };
+
+    #[test]
+    fn did_web_document_requires_device_repo_service_and_handle() {
+        let did = "did:web:alice.example.com";
+        let document = serde_json::json!({
+            "id": did,
+            "alsoKnownAs": ["at://alice.example.com"],
+            "verificationMethod": [
+                {"id": format!("{did}#device"), "controller": did, "publicKeyMultibase": "zdevice"},
+                {"id": format!("{did}#atproto"), "controller": did, "publicKeyMultibase": "zrepo"}
+            ],
+            "service": [{"id": format!("{did}#atproto_pds"), "serviceEndpoint": "https://pds.example.com"}]
+        });
+        assert_eq!(
+            validate_did_web_document(
+                &document,
+                "alice.example.com",
+                "did:key:zdevice",
+                "did:key:zrepo",
+                "https://pds.example.com/",
+            )
+            .unwrap(),
+            did
+        );
+
+        let mut wrong = document;
+        wrong["verificationMethod"][0]["publicKeyMultibase"] = serde_json::json!("zattacker");
+        assert!(validate_did_web_document(
+            &wrong,
+            "alice.example.com",
+            "did:key:zdevice",
+            "did:key:zrepo",
+            "https://pds.example.com",
+        )
+        .is_err());
+    }
 
     // ── Test setup helpers ────────────────────────────────────────────────────
 

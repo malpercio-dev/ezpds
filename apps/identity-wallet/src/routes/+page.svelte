@@ -2,6 +2,12 @@
   import { listen } from '@tauri-apps/api/event';
   import { onMount, onDestroy } from 'svelte';
   import ModeSelectScreen from '$lib/components/onboarding/ModeSelectScreen.svelte';
+  import IdentityMethodScreen from '$lib/components/onboarding/IdentityMethodScreen.svelte';
+  import DidWebPathScreen from '$lib/components/onboarding/DidWebPathScreen.svelte';
+  import DidWebDomainScreen from '$lib/components/onboarding/DidWebDomainScreen.svelte';
+  import DidWebCeremonyScreen from '$lib/components/onboarding/DidWebCeremonyScreen.svelte';
+  import DidWebMigrationReviewScreen from '$lib/components/onboarding/DidWebMigrationReviewScreen.svelte';
+  import { didWebFromDomain, type DidWebHosting } from '$lib/did-web';
   import PdsConfigScreen from '$lib/components/onboarding/PdsConfigScreen.svelte';
   import ClaimCodeScreen from '$lib/components/onboarding/ClaimCodeScreen.svelte';
   import EmailScreen from '$lib/components/onboarding/EmailScreen.svelte';
@@ -49,6 +55,11 @@
 
   type OnboardingStep =
     | 'mode_select'
+    | 'identity_method'
+    | 'did_web_path'
+    | 'did_web_domain'
+    | 'did_web_existing'
+    | 'did_web_ceremony'
     | 'pds_config'
     | 'claim_code'
     | 'email'
@@ -86,6 +97,9 @@
 
   let step = $state<OnboardingStep>('mode_select');
   let form = $state({ claimCode: '', email: '', handle: '', password: '', did: '', share3: '', registeredHandle: '', handleOrDid: '' });
+  let didWebHosting = $state<DidWebHosting>('self');
+  let identityMethod = $state<'plc' | 'web'>('plc');
+  let didWebDomain = $state('');
 
   // ── Import flow state ────────────────────────────────────────────────────────
   let identityInfo = $state<IdentityInfo | null>(null);
@@ -192,7 +206,7 @@
 
       // Rust guarantees nextStep is 'did_creation' on success; unrecognized
       // PDS values fail deserialization and surface as CreateAccountError::Unknown.
-      step = 'did_ceremony';
+      step = identityMethod === 'web' ? 'did_web_ceremony' : 'did_ceremony';
     } catch (raw: unknown) {
       // Guard against non-CreateAccountError shapes (e.g. JS runtime errors).
       if (
@@ -270,8 +284,40 @@
 <div class="app">
   {#if step === 'mode_select'}
     <ModeSelectScreen
-      oncreate={() => goTo('pds_config')}
+      oncreate={() => goTo('identity_method')}
       onimport={() => goTo('identity_input')}
+    />
+  {:else if step === 'identity_method'}
+    <IdentityMethodScreen
+      onplc={() => { identityMethod = 'plc'; goTo('pds_config'); }}
+      onweb={() => { identityMethod = 'web'; goTo('did_web_path'); }}
+      onback={() => goTo('mode_select')}
+    />
+  {:else if step === 'did_web_path'}
+    <DidWebPathScreen
+      onselect={(origin, hosting) => {
+        didWebHosting = hosting;
+        // Existing did:web identities enter the method-agnostic migration flow. New identities
+        // continue through account provisioning; the ceremony uses these levers after the PDS
+        // has issued its reserved repo key.
+        goTo(origin === 'existing' ? 'did_web_existing' : 'did_web_domain');
+      }}
+      onback={() => goTo('identity_method')}
+    />
+  {:else if step === 'did_web_domain'}
+    <DidWebDomainScreen
+      bind:value={didWebDomain}
+      onnext={() => goTo('pds_config')}
+      onback={() => goTo('did_web_path')}
+    />
+  {:else if step === 'did_web_existing'}
+    <DidWebDomainScreen
+      bind:value={didWebDomain}
+      onnext={() => {
+        migrationDid = didWebFromDomain(didWebDomain);
+        goTo('migration_start');
+      }}
+      onback={() => goTo('did_web_path')}
     />
   {:else if step === 'identity_input'}
     <IdentityInputScreen
@@ -351,6 +397,15 @@
       handle={form.handle}
       password={form.password}
       onsuccess={(result) => { form.did = result.did; form.share3 = result.share3; step = 'did_success'; }}
+    />
+  {:else if step === 'did_web_ceremony'}
+    <DidWebCeremonyScreen
+      domain={didWebDomain}
+      handle={form.handle}
+      password={form.password}
+      hosting={didWebHosting}
+      onsuccess={(result) => { form.did = result.did; form.share3 = result.share3; step = 'did_success'; }}
+      onback={() => goTo('password')}
     />
   {:else if step === 'did_success'}
     <DIDSuccessScreen
@@ -468,14 +523,23 @@
     />
 
   {:else if step === 'migration_review'}
-    <MigrationReviewScreen
-      did={migrationDid}
-      onnext={(result) => {
-        migrationResult = result;
-        goTo('migration_success');
-      }}
-      oncancel={() => goTo('identity_detail')}
-    />
+    {#if migrationDid.startsWith('did:web:')}
+      <DidWebMigrationReviewScreen
+        did={migrationDid}
+        hosting={didWebHosting}
+        onnext={(result) => { migrationResult = result; goTo('migration_success'); }}
+        oncancel={() => goTo('migration_start')}
+      />
+    {:else}
+      <MigrationReviewScreen
+        did={migrationDid}
+        onnext={(result) => {
+          migrationResult = result;
+          goTo('migration_success');
+        }}
+        oncancel={() => goTo('identity_detail')}
+      />
+    {/if}
 
   {:else if step === 'migration_success'}
     <MigrationSuccessScreen
