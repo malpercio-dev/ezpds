@@ -73,7 +73,10 @@
     display: flex;
     flex-direction: column;
     min-height: 100dvh;
-    padding: var(--space-xl) var(--space-lg) var(--space-lg);
+    /* Pad clear of the OS chrome (status bar / Dynamic Island / home indicator),
+       falling back to the base spacing off a notched device. */
+    padding: max(var(--space-xl), var(--safe-top)) max(var(--space-lg), var(--safe-right))
+      max(var(--space-lg), var(--safe-bottom)) max(var(--space-lg), var(--safe-left));
     gap: var(--space-lg);
   }
   .head {
