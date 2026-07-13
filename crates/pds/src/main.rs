@@ -33,6 +33,7 @@ mod rate_limit;
 mod read_after_write;
 mod record_write;
 mod routes;
+mod session_issuer;
 mod sweep_status;
 mod telemetry;
 mod token;

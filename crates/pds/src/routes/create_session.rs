@@ -9,20 +9,17 @@
 //
 // Implements: POST /xrpc/com.atproto.server.createSession
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use axum::{extract::State, http::StatusCode, response::Json};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::jwt::{app_pass_scope, issue_access_jwt, issue_refresh_jwt, SCOPE_ACCESS};
 use crate::auth::password::{verify_password, VerifyResult};
 use crate::auth::rate_limit::{clear_failures, is_rate_limited, record_failure};
 use crate::db::accounts::resolve_identifier;
 use crate::db::app_passwords::list_verify_candidates;
+use crate::session_issuer::{issue_session, SessionKind};
 
 // ── Request / Response types ─────────────────────────────────────────────────
 
@@ -110,14 +107,14 @@ pub async fn create_session(
     // failure. Mobile accounts (no main password) can still authenticate via an app password.
     let account_opt = resolve_identifier(&state.db, &payload.identifier).await?;
 
-    let (account, session_scope, app_password_name) = match account_opt {
+    let (account, session_kind) = match account_opt {
         Some(row) => {
             let main_result = match row.password_hash.as_deref() {
                 None | Some("") => VerifyResult::WrongPassword,
                 Some(h) => verify_password(h, &payload.password),
             };
             match main_result {
-                VerifyResult::Ok => (row, SCOPE_ACCESS, None),
+                VerifyResult::Ok => (row, SessionKind::FullAccess),
                 VerifyResult::CorruptHash => {
                     tracing::error!(
                         identifier = %payload.identifier,
@@ -127,9 +124,13 @@ pub async fn create_session(
                 }
                 VerifyResult::WrongPassword => {
                     match match_app_password(&state.db, &row.did, &payload.password).await? {
-                        Some(matched) => {
-                            (row, app_pass_scope(matched.privileged), Some(matched.name))
-                        }
+                        Some(matched) => (
+                            row,
+                            SessionKind::AppPassword {
+                                name: matched.name,
+                                privileged: matched.privileged,
+                            },
+                        ),
                         None => {
                             let mut attempts = crate::auth::validation::lock_failed_login_attempts(
                                 &state.failed_login_attempts,
@@ -158,85 +159,7 @@ pub async fn create_session(
         }
     };
 
-    // --- Issue legacy HS256 JWTs ---
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| {
-            tracing::error!(error = %e, "system clock is before Unix epoch");
-            ApiError::new(ErrorCode::InternalError, "failed to issue token")
-        })?
-        .as_secs();
-
-    // Prefer server_did as audience (what verify_hs256_access_token validates against
-    // when configured); fall back to public_url.
-    let aud = state
-        .config
-        .server_did
-        .as_deref()
-        .unwrap_or(&state.config.public_url)
-        .to_string();
-
-    let access_jwt = issue_access_jwt(&state.jwt_secret, &account.did, &aud, now, session_scope)?;
-
-    let refresh_jti = Uuid::new_v4().to_string();
-    let refresh_jwt = issue_refresh_jwt(&state.jwt_secret, &account.did, &aud, &refresh_jti, now)?;
-
-    // --- Persist session and refresh token atomically ---
-    let session_id = Uuid::new_v4().to_string();
-    let mut tx = state.db.begin().await.map_err(|e| {
-        tracing::error!(error = %e, "failed to begin transaction");
-        ApiError::new(ErrorCode::InternalError, "failed to create session")
-    })?;
-
-    // Re-check the matched app password still exists on the transaction's connection before
-    // minting a session. `match_app_password` verified it before this transaction began; a
-    // concurrent `revokeAppPassword` could have deleted it in between. Because the pool holds a
-    // single connection, this recheck and the revoke transaction are serialized — if the row is
-    // gone here, revocation won already, so the session must not be created.
-    if let Some(name) = app_password_name.as_deref() {
-        if !crate::db::app_passwords::app_password_exists(&mut *tx, &account.did, name).await? {
-            return Err(ApiError::new(
-                ErrorCode::AuthenticationRequired,
-                "invalid identifier or password",
-            ));
-        }
-    }
-
-    sqlx::query(
-        "INSERT INTO sessions (id, did, device_id, token_hash, created_at, expires_at) \
-         VALUES (?, ?, NULL, NULL, datetime('now'), datetime('now', '+90 days'))",
-    )
-    .bind(&session_id)
-    .bind(&account.did)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to insert session");
-        ApiError::new(ErrorCode::InternalError, "failed to create session")
-    })?;
-
-    // Tag the refresh token with the app password name (NULL for a full-access session) so
-    // rotation preserves the app-pass scope and revoking the app password can find and delete
-    // its sessions.
-    sqlx::query(
-        "INSERT INTO refresh_tokens (jti, did, session_id, expires_at, app_password_name, created_at) \
-         VALUES (?, ?, ?, datetime('now', '+90 days'), ?, datetime('now'))",
-    )
-    .bind(&refresh_jti)
-    .bind(&account.did)
-    .bind(&session_id)
-    .bind(app_password_name.as_deref())
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to insert refresh token");
-        ApiError::new(ErrorCode::InternalError, "failed to create session")
-    })?;
-
-    tx.commit().await.map_err(|e| {
-        tracing::error!(error = %e, "failed to commit session transaction");
-        ApiError::new(ErrorCode::InternalError, "failed to create session")
-    })?;
+    let issued = issue_session(&state, &account.did, &session_kind).await?;
 
     // Clear failure history only after the session is fully committed.
     // Doing this earlier would reset the counter even if JWT issuance or the
@@ -251,26 +174,14 @@ pub async fn create_session(
         ),
     }
 
-    // ATProto spec: "handle.invalid" is the sentinel for accounts without a resolvable handle.
-    let handle = account
-        .handle
-        .unwrap_or_else(|| "handle.invalid".to_string());
-
-    // Full-access sessions see the account email; app-password sessions do not.
-    let email = if app_password_name.is_some() {
-        None
-    } else {
-        Some(account.email)
-    };
-
     Ok((
         StatusCode::OK,
         Json(CreateSessionResponse {
-            access_jwt,
-            refresh_jwt,
-            handle,
-            did: account.did,
-            email,
+            access_jwt: issued.access_jwt,
+            refresh_jwt: issued.refresh_jwt,
+            handle: issued.handle,
+            did: issued.did,
+            email: issued.email,
         }),
     ))
 }

@@ -22,6 +22,7 @@ pub mod relay_signing_keys;
 pub mod repo_keys;
 pub mod server_stats;
 pub mod sessions;
+pub mod sovereign_session_nonces;
 pub mod transfers;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
@@ -221,6 +222,10 @@ static MIGRATIONS: &[Migration] = &[
     Migration {
         version: 42,
         sql: include_str!("migrations/V042__canonical_wallet_oauth_client.sql"),
+    },
+    Migration {
+        version: 43,
+        sql: include_str!("migrations/V043__sovereign_session_nonces.sql"),
     },
 ];
 
