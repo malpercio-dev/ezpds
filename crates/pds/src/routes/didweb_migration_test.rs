@@ -13,13 +13,22 @@
 // the handle `@malpercio.dev` binds even though this PDS serves neither that DID document nor that
 // handle domain.
 //
-// The externally-hosted `did.json` is modeled by the destination's `did_documents` cache — the
-// same technique every migration-mode test uses (`create_account_xrpc::seed_migration_did`,
-// `outbound_migration_test::seed_matching_did_document`). A `did:web` document is served over HTTPS
-// from a real domain, which is not hermetically mockable in-process; the operator's edit-then-
-// `refreshIdentity` leg (force-refresh rewrite of the cache + the `#identity` firehose frame) is
-// exercised method-agnostically by `resolve_identity.rs`'s refresh tests, so here we model the
-// post-refresh cache state directly and assert its observable effects.
+// COVERAGE BOUNDARY — read before trusting this test. The externally-hosted `did.json` is modeled
+// by the destination's `did_documents` cache — the same technique every migration-mode test uses
+// (`create_account_xrpc::seed_migration_did`, `outbound_migration_test::seed_matching_did_document`).
+// A `did:web` document is served over HTTPS from a real domain, which is not hermetically mockable
+// in-process (unlike `did:plc`, whose directory URL is configurable). So:
+//   * What this test genuinely proves: migration-mode `createAccount` / `importRepo` / blob drain /
+//     `getRecommendedDidCredentials` / `checkAccountStatus` / `activateAccount` accept a `did:web`
+//     DID and bind its foreign `@malpercio.dev` handle on a PDS that serves neither.
+//   * What it does NOT exercise: the live `did:web` HTTPS resolution path
+//     (`resolve_web_did_document`) — cache-seeding short-circuits it (as in production only on a
+//     cold cache) — nor the force-refresh cache rewrite for a `did:web`. Step 7 below MODELS the
+//     operator's edit by writing the post-edit document straight into the cache, so its `resolveDid`
+//     assertion documents the end state rather than driving the refresh network leg.
+//   * What is covered elsewhere: only the `#identity`-emission *decision* is method-agnostic (it
+//     branches on `account_exists`, not the DID method) and is unit-tested in `resolve_identity.rs`
+//     against `did:plc`. The `did:web` force-refresh network fetch + rewrite remains production-only.
 
 use std::sync::Arc;
 
@@ -440,10 +449,12 @@ async fn didweb_account_migrates_onto_custos_without_custos_serving_did_json() {
         .to_string();
 
     // 7. The operator edits https://malpercio.dev/.well-known/did.json: #atproto → the Custos key,
-    //    #atproto_pds → Custos. Custos re-resolves it. In production `refreshIdentity` force-
-    //    refreshes over HTTPS and rewrites this cache row while emitting an `#identity` frame (both
-    //    exercised method-agnostically in resolve_identity.rs); here we model the post-refresh cache
-    //    state directly, then confirm resolveDid serves the Custos-pointing document.
+    //    #atproto_pds → Custos. In production `refreshIdentity` force-refreshes this over HTTPS,
+    //    rewrites the cache row, and (on a real change) emits an `#identity` frame. That network leg
+    //    is not mockable here (see the COVERAGE BOUNDARY at the top), so this step MODELS its cache
+    //    effect directly. The `resolveDid` assertion below therefore documents the intended end
+    //    state — resolveDid is cache-first, so it necessarily returns what we just wrote — rather
+    //    than driving the refresh; treat it as end-state documentation, not as coverage of the leg.
     let post_edit_doc = serde_json::json!({
         "@context": ["https://www.w3.org/ns/did/v1"],
         "id": MIGRATING_DID,

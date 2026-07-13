@@ -68,30 +68,73 @@ pub async fn refresh_identity_handler(
     State(state): State<AppState>,
     Json(payload): Json<RefreshIdentityRequest>,
 ) -> Result<Json<IdentityInfoResponse>, ApiError> {
+    // Snapshot the currently-cached DID document *before* the force-refresh rewrites it, so we can
+    // tell whether this refresh actually changed anything.
+    let prior_doc = prior_cached_document(&state, &payload.identifier).await;
+
     // refreshIdentity's contract is "purge caches, re-resolve, return the fresh view". Force a
     // fresh fetch from the authoritative DID source (plc.directory / did:web) and rewrite the
     // cache row, rather than serving the possibly-stale cached document a plain resolveIdentity
     // would return.
     let info = resolve_identity(&state, &payload.identifier, true).await?;
 
-    // If this PDS hosts the refreshed account, announce the identity change on the firehose so
-    // relays re-resolve the DID document. This is the leg that propagates an externally-hosted
+    // If this PDS hosts the refreshed account *and the document actually changed*, announce it on
+    // the firehose so relays re-resolve. This is the leg that propagates an externally-hosted
     // did:web edit — the operator repointed `did.json` to Custos and the refresh above rewrote our
     // cached copy, but a relay won't notice until an `#identity` frame tells it to re-resolve. The
     // emission is method-agnostic: a did:plc doc change announces the same way.
-    emit_identity_if_hosted(&state, &info).await;
+    //
+    // The change check is load-bearing, not an optimization: refreshIdentity is an unauthenticated,
+    // public resolution endpoint, so emitting a durable, broadcast frame on *every* call would let
+    // anyone amplify re-resolution load onto every relay (and turn a status-polling client into a
+    // spurious-`#identity` source). A genuine change emits exactly once; a no-op refresh emits
+    // nothing.
+    emit_identity_if_changed_and_hosted(&state, &info, prior_doc.as_ref()).await;
 
     Ok(Json(info))
 }
 
-/// Emit an `#identity` firehose frame for `info` when this PDS hosts the account.
+/// The DID document currently cached for whatever `identifier` resolves to, read *before* a
+/// force-refresh so a real change can be told apart from a no-op re-resolution.
+///
+/// Best-effort: an unresolvable handle, a DB error, or an absent cache row all yield `None`, which
+/// the caller treats as "no prior" — a first-time resolution of a hosted DID is itself a change
+/// worth announcing (and a hosted account always has a cached row, so this is not a spam vector:
+/// repeated no-op refreshes read the same row and compare equal).
+async fn prior_cached_document(state: &AppState, identifier: &str) -> Option<Value> {
+    let did = if identifier.starts_with("did:") {
+        identifier.to_string()
+    } else {
+        resolve_handle_to_did(state, identifier)
+            .await
+            .ok()
+            .flatten()?
+    };
+    crate::db::dids::get_did_document(&state.db, &did)
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Emit an `#identity` firehose frame for `info` when this PDS hosts the account and the
+/// re-resolved document differs from `prior_doc` (the copy cached before the force-refresh).
 ///
 /// Best-effort throughout: the authoritative DID source already answered and the cache was
 /// rewritten, so neither the hosting check nor the firehose emission may fail the refresh. We only
 /// announce for DIDs this PDS actually hosts — its firehose describes its own repos, so emitting an
 /// `#identity` for a foreign DID would be spurious. A verified handle is asserted when we have one;
 /// `handle.invalid` collapses to `None` ("identity changed, re-resolve"), never a bogus handle.
-async fn emit_identity_if_hosted(state: &AppState, info: &IdentityInfoResponse) {
+async fn emit_identity_if_changed_and_hosted(
+    state: &AppState,
+    info: &IdentityInfoResponse,
+    prior_doc: Option<&Value>,
+) {
+    // A no-op refresh (the re-resolved document matches what we already had cached) announces
+    // nothing. Only an actual change — or a first-time resolution with no prior row — emits.
+    if prior_doc == Some(&info.did_doc) {
+        return;
+    }
+
     match crate::db::accounts::account_exists(&state.db, &info.did).await {
         Ok(true) => {
             let handle = (info.handle != INVALID_HANDLE).then(|| info.handle.clone());
@@ -566,22 +609,33 @@ mod tests {
     }
 
     /// refreshIdentity announces the re-resolved identity on the firehose when this PDS hosts the
-    /// account — the leg that tells relays to re-resolve after an externally-hosted did.json edit.
+    /// account AND the document actually changed — the leg that tells relays to re-resolve after an
+    /// externally-hosted did.json edit. Models the edit: the cache holds the old PDS endpoint, the
+    /// authoritative source now returns the new one.
     #[tokio::test]
-    async fn refresh_identity_emits_identity_frame_for_hosted_account() {
+    async fn refresh_identity_emits_identity_frame_on_change_for_hosted_account() {
         let mock_server = MockServer::start().await;
         let did = "did:plc:refreshemitshosted12345";
         let handle = "hosted.test.example.com";
-        let doc = json!({
-            "@context": ["https://www.w3.org/ns/did/v1"],
-            "id": did,
-            "alsoKnownAs": [format!("at://{handle}")],
-            "verificationMethod": [],
-            "service": []
-        });
+        let doc_with = |endpoint: &str| {
+            json!({
+                "@context": ["https://www.w3.org/ns/did/v1"],
+                "id": did,
+                "alsoKnownAs": [format!("at://{handle}")],
+                "verificationMethod": [],
+                "service": [{
+                    "id": "#atproto_pds",
+                    "type": "AtprotoPersonalDataServer",
+                    "serviceEndpoint": endpoint,
+                }]
+            })
+        };
+        // The authoritative source returns the *new* document (post-edit).
         Mock::given(method("GET"))
             .and(path(format!("/{did}")))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&doc))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(doc_with("https://new.example.com")),
+            )
             .mount(&mock_server)
             .await;
 
@@ -589,7 +643,8 @@ mod tests {
         // `seed_handle` inserts the account row (so `account_exists` reports it hosted) and the
         // handle (so `verified_handle_for_did` resolves it).
         seed_handle(&state.db, handle, did).await;
-        seed_did_document(&state.db, did, doc).await;
+        // Cache holds the *old* document, so the refresh sees a real change.
+        seed_did_document(&state.db, did, doc_with("https://old.example.com")).await;
 
         let firehose = state.firehose.clone();
         let mut rx = firehose.subscribe();
@@ -609,6 +664,54 @@ mod tests {
         };
         assert_eq!(identity.did, did);
         assert_eq!(identity.handle.as_deref(), Some(handle));
+        drop(firehose);
+    }
+
+    /// A no-op refreshIdentity (the re-resolved document matches the cache) must emit NOTHING, even
+    /// for a hosted account — otherwise the unauthenticated, public endpoint would let anyone
+    /// amplify `#identity` fan-out onto every relay just by polling it.
+    #[tokio::test]
+    async fn refresh_identity_does_not_emit_on_no_op_refresh() {
+        let mock_server = MockServer::start().await;
+        let did = "did:plc:refreshnoopnochange123";
+        let handle = "noop.test.example.com";
+        let doc = json!({
+            "@context": ["https://www.w3.org/ns/did/v1"],
+            "id": did,
+            "alsoKnownAs": [format!("at://{handle}")],
+            "verificationMethod": [],
+            "service": []
+        });
+        // The authoritative source returns the *same* document the cache already holds.
+        Mock::given(method("GET"))
+            .and(path(format!("/{did}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&doc))
+            .mount(&mock_server)
+            .await;
+
+        let state = test_state_with_plc_url(mock_server.uri()).await;
+        seed_handle(&state.db, handle, did).await;
+        seed_did_document(&state.db, did, doc).await;
+
+        let firehose = state.firehose.clone();
+        let mut rx = firehose.subscribe();
+
+        let response = app(state)
+            .oneshot(post_json(
+                "/xrpc/com.atproto.identity.refreshIdentity",
+                json!({ "identifier": did }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+            ),
+            "a no-op refresh must not emit an #identity frame"
+        );
         drop(firehose);
     }
 
