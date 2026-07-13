@@ -8,6 +8,7 @@ pub mod oauth_scopes;
 pub mod password;
 pub mod permission_sets;
 pub mod rate_limit;
+pub mod service_auth;
 pub mod signing_key;
 pub mod validation;
 

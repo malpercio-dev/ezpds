@@ -77,6 +77,23 @@ pub fn peek_jwt_typ(token: &str) -> Option<String> {
     header["typ"].as_str().map(|s| s.to_ascii_lowercase())
 }
 
+/// Peek at the JWT payload's `iss` claim without verifying the signature.
+///
+/// Returns the issuer string, or `None` if parsing fails or the claim is absent. Used to
+/// discriminate an inbound atproto **service-auth** JWT — whose `iss` is the issuing account's DID
+/// — from a server-issued session/OAuth access token (a legacy HS256 token carries no `iss`; an
+/// OAuth `at+jwt` token's `iss` is this server's URL, never a `did:`). The value is untrusted until
+/// the signature is verified against the resolved `#atproto` key; it only decides which auth path a
+/// route takes.
+pub fn peek_jwt_iss(token: &str) -> Option<String> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+
+    let payload_b64 = token.split('.').nth(1)?;
+    let payload_bytes = URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
+    let payload: serde_json::Value = serde_json::from_slice(&payload_bytes).ok()?;
+    payload["iss"].as_str().map(str::to_string)
+}
+
 /// Dispatch to the correct verification function based on token type.
 /// Uses `typ` header as algorithm discriminator to prevent algorithm confusion attacks.
 pub fn verify_access_token(token: &str, state: &AppState) -> Result<AccessTokenClaims, ApiError> {
