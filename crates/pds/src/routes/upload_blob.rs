@@ -1,15 +1,18 @@
 // pattern: Imperative Shell
 //
-// Gathers: raw request body, AppState, AuthenticatedUser
+// Gathers: raw request body, AppState, and the authenticated uploader — either a session/OAuth
+//          access token or an atproto service-auth JWT scoped to uploadBlob (the video-service path)
 // Processes: size check → store_blob on filesystem → insert_blob metadata into SQLite
 // Returns: JSON { blob: { $type, ref, mimeType, size } }
 //
 // Implements: POST /xrpc/com.atproto.repo.uploadBlob
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use axum::{
     body::Body,
-    extract::State,
-    http::{Request, StatusCode},
+    extract::{FromRequestParts, State},
+    http::{request::Parts, Request, StatusCode},
     response::Json,
 };
 use serde::Serialize;
@@ -18,8 +21,14 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
+use crate::auth::service_auth::{is_service_auth_request, require_service_auth, ServiceAuthUser};
 use crate::db::blobs;
 use crate::{auth::oauth_scopes, blob_store};
+
+/// The lexicon method a service-auth token must authorize to upload a blob. The official video
+/// flow mints a token with `lxm = com.atproto.repo.uploadBlob`, which `video.bsky.app` presents
+/// when pushing the transcoded blob back to the account's PDS.
+const UPLOAD_BLOB_LXM: &str = "com.atproto.repo.uploadBlob";
 
 // ── Response types ───────────────────────────────────────────────────────────
 
@@ -54,25 +63,33 @@ pub struct UploadBlobResponse {
 /// Uploads a blob for later reference in records.
 /// The blob is stored on the local filesystem and its metadata in SQLite.
 /// New blobs are marked temporary (6h TTL) until referenced by a repo record.
+///
+/// Two auth paths: a normal session/OAuth access token (the `AuthenticatedUser` path, with its
+/// scope semantics), or an atproto **service-auth** JWT scoped to exactly this method (the
+/// reference PDS accepts these here). The latter is how the official video flow works — the app
+/// mints a token with `aud` = its PDS's DID and `lxm` = `com.atproto.repo.uploadBlob`, hands it to
+/// `video.bsky.app`, and the video service pushes the transcoded blob back here with it. A service
+/// token never rides the general access path: it carries no session identity and no scope claims.
 pub async fn upload_blob(
     State(state): State<AppState>,
-    user: AuthenticatedUser,
     request: Request<Body>,
 ) -> Result<(StatusCode, Json<UploadBlobResponse>), ApiError> {
     let max_size = state.config.blobs.max_blob_size as usize;
 
+    let (mut parts, body) = request.into_parts();
+
     // Capture the client-declared blob type before the body is consumed. The reference PDS
     // records this `Content-Type` (reconciled against a content sniff) rather than sniffing
     // alone, so formats without magic bytes (SVG, JSON, VTT) keep their real type.
-    let declared_content_type = request
-        .headers()
+    let declared_content_type = parts
+        .headers
         .get("content-type")
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
 
     // 1. Fast-path rejection: check Content-Length header before reading the body.
-    if let Some(content_length) = request
-        .headers()
+    if let Some(content_length) = parts
+        .headers
         .get("content-length")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<usize>().ok())
@@ -85,27 +102,41 @@ pub async fn upload_blob(
         }
     }
 
-    if !user.scope.is_access() {
-        return Err(ApiError::new(
-            ErrorCode::InvalidToken,
-            "access token required",
-        ));
+    // 2. Authenticate: a service-auth JWT (issued by an account, scoped to uploadBlob) or a
+    //    session/OAuth access token.
+    let uploader = resolve_uploader(&state, &mut parts).await?;
+
+    // An access-token caller must carry an access-level scope. A service token is bound to
+    // uploadBlob by construction, so it has no separate scope gate here.
+    if let BlobUploader::Access(user) = &uploader {
+        if !user.scope.is_access() {
+            return Err(ApiError::new(
+                ErrorCode::InvalidToken,
+                "access token required",
+            ));
+        }
     }
 
-    // 2. Read the full request body, enforcing max size.
-    let bytes = collect_body_with_limit(request.into_body(), max_size).await?;
+    // 3. Read the full request body, enforcing max size.
+    let bytes = collect_body_with_limit(body, max_size).await?;
     // Resolve the stored MIME type from the declared Content-Type reconciled against a content
     // sniff (blob_store::resolve_mime_type). The same value gates the granular blob-scope check,
     // is persisted, and is served back by getBlob — so a `blob:image/*` token accepts a
     // legitimate SVG avatar instead of being rejected against a sniff-only octet-stream.
     let mime_type = blob_store::resolve_mime_type(declared_content_type.as_deref(), &bytes);
-    if user.scope == crate::auth::jwt::AuthScope::Access {
-        oauth_scopes::require_blob(&user.scope_claim, &mime_type)?;
+    // Granular blob-scope enforcement applies only to OAuth access tokens (which carry a granular
+    // scope claim). Service tokens are already narrowed to this one method.
+    if let BlobUploader::Access(user) = &uploader {
+        if user.scope == crate::auth::jwt::AuthScope::Access {
+            oauth_scopes::require_blob(&user.scope_claim, &mime_type)?;
+        }
     }
 
-    // 3. Check per-account storage quota.
+    let did = uploader.did();
+
+    // 4. Check per-account storage quota.
     let quota = state.config.blobs.max_storage_per_account as i64;
-    let used = blobs::account_storage_bytes(&state.db, &user.did)
+    let used = blobs::account_storage_bytes(&state.db, did)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to check account storage");
@@ -122,7 +153,7 @@ pub async fn upload_blob(
         ));
     }
 
-    // 4. Store blob on filesystem (CID computation + write); persist the resolved MIME type.
+    // 5. Store blob on filesystem (CID computation + write); persist the resolved MIME type.
     let stored = blob_store::store_blob(&state.config.data_dir, &bytes, &mime_type)
         .await
         .map_err(|e| {
@@ -130,7 +161,7 @@ pub async fn upload_blob(
             ApiError::new(ErrorCode::InternalError, "failed to store blob")
         })?;
 
-    // 5. Compute temp_until = now + the configured grace TTL. Until a repo record
+    // 6. Compute temp_until = now + the configured grace TTL. Until a repo record
     //    references this blob, it is a garbage-collection candidate after this instant.
     //    Format must match SQLite's `datetime('now')` (`YYYY-MM-DD HH:MM:SS`): `temp_until`
     //    is compared lexicographically as TEXT, so a `T`/`Z` ISO form would sort after the
@@ -139,11 +170,13 @@ pub async fn upload_blob(
         chrono::Utc::now() + chrono::Duration::seconds(state.config.blobs.temp_ttl_secs as i64);
     let temp_until_str = temp_until.format("%Y-%m-%d %H:%M:%S").to_string();
 
-    // 6. Insert blob metadata into SQLite.
+    // 7. Insert blob metadata into SQLite. The blob lands under the uploader's DID — for a service
+    //    token, that is the token's `iss` (the account on whose behalf the video service uploads),
+    //    exactly as a session-authed upload would.
     blobs::insert_blob(
         &state.db,
         &stored.cid,
-        &user.did,
+        did,
         &stored.mime_type,
         stored.size_bytes as i64,
         &stored.storage_path,
@@ -157,8 +190,9 @@ pub async fn upload_blob(
 
     // An agent-attributed upload records its audit row before the success response: the audit
     // trail is the accountability guarantee, so a failure here fails the request (the stored
-    // blob is content-addressed — a retry is an idempotent duplicate-CID upload).
-    if let Some(registration_id) = user.registration_id.as_deref() {
+    // blob is content-addressed — a retry is an idempotent duplicate-CID upload). Only OAuth
+    // agent-derived tokens carry a `registration_id`; service tokens are not agent-attributed.
+    if let Some(registration_id) = uploader.registration_id() {
         let detail = serde_json::json!({
             "cid": stored.cid,
             "mime_type": stored.mime_type,
@@ -169,7 +203,7 @@ pub async fn upload_blob(
             &state.db,
             &uuid::Uuid::new_v4().to_string(),
             registration_id,
-            Some(&user.did),
+            Some(did),
             crate::db::agent_audit::AgentAuditEventType::BlobUpload,
             Some(&detail),
         )
@@ -177,14 +211,14 @@ pub async fn upload_blob(
     }
 
     tracing::info!(
-        did = %user.did,
+        did = %did,
         cid = %stored.cid,
         mime = %stored.mime_type,
         size = stored.size_bytes,
         "blob uploaded"
     );
 
-    // 7. Build response.
+    // 8. Build response.
     Ok((
         StatusCode::OK,
         Json(UploadBlobResponse {
@@ -196,6 +230,59 @@ pub async fn upload_blob(
             },
         }),
     ))
+}
+
+/// The authenticated uploader: either a normal session/OAuth access token, or an atproto
+/// service-auth JWT scoped to exactly `com.atproto.repo.uploadBlob`.
+enum BlobUploader {
+    /// Session/OAuth access token — full `AuthenticatedUser` semantics (scope checks, agent audit).
+    Access(AuthenticatedUser),
+    /// Service-auth JWT — authorizes only this method, on behalf of the issuing account.
+    Service(ServiceAuthUser),
+}
+
+impl BlobUploader {
+    /// The DID the uploaded blob is attributed to.
+    fn did(&self) -> &str {
+        match self {
+            BlobUploader::Access(user) => &user.did,
+            BlobUploader::Service(user) => &user.did,
+        }
+    }
+
+    /// The agent registration id, when the credential is an auth.md agent-derived OAuth token. A
+    /// service token is never agent-attributed, so it has none.
+    fn registration_id(&self) -> Option<&str> {
+        match self {
+            BlobUploader::Access(user) => user.registration_id.as_deref(),
+            BlobUploader::Service(_) => None,
+        }
+    }
+}
+
+/// Resolve the request's credential to a [`BlobUploader`]. A service-auth JWT (its `iss` is a DID)
+/// goes through the [`require_service_auth`] guard; everything else through the standard
+/// access-token extractor.
+async fn resolve_uploader(state: &AppState, parts: &mut Parts) -> Result<BlobUploader, ApiError> {
+    if is_service_auth_request(&parts.headers) {
+        let user =
+            require_service_auth(state, &parts.headers, UPLOAD_BLOB_LXM, unix_now()?).await?;
+        Ok(BlobUploader::Service(user))
+    } else {
+        let user = AuthenticatedUser::from_request_parts(parts, state).await?;
+        Ok(BlobUploader::Access(user))
+    }
+}
+
+/// Current Unix time in seconds, for the service-auth token's `exp` validation.
+fn unix_now() -> Result<u64, ApiError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .map_err(|e| {
+            tracing::error!(error = %e, "system clock is before Unix epoch");
+            ApiError::new(ErrorCode::InternalError, "system clock error")
+        })
 }
 
 /// Read the request body up to `max_bytes`, returning an error if exceeded.
@@ -288,6 +375,122 @@ mod tests {
         .execute(&state.db)
         .await
         .unwrap();
+    }
+
+    /// Seed a local active account plus a cached DID document whose `#atproto` key is `kp` — the
+    /// shape a service-auth token's issuer must resolve to.
+    async fn seed_account_with_atproto_key(state: &AppState, did: &str, kp: &crypto::P256Keypair) {
+        seed_account(state, did).await;
+        let multibase = kp.key_id.0.strip_prefix("did:key:").unwrap().to_string();
+        crate::db::dids::seed_did_document(
+            &state.db,
+            did,
+            serde_json::json!({
+                "id": did,
+                "verificationMethod": [{
+                    "id": format!("{did}#atproto"),
+                    "type": "Multikey",
+                    "controller": did,
+                    "publicKeyMultibase": multibase,
+                }],
+            }),
+        )
+        .await;
+    }
+
+    /// Mint a service-auth JWT signed by `kp` (the issuer's `#atproto` key), like the token the
+    /// official video flow hands to `video.bsky.app`.
+    fn service_auth_token(kp: &crypto::P256Keypair, iss: &str, aud: &str, lxm: &str) -> String {
+        let key = *kp.private_key_bytes;
+        let signer = repo_engine::CommitSigner::from_bytes(&key).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        crate::auth::jwt::mint_service_auth_jwt(
+            |b| signer.sign(b),
+            iss,
+            aud,
+            Some(lxm),
+            now,
+            now + 300,
+        )
+    }
+
+    /// A service-auth JWT (as the video service presents) uploads a blob that lands under the
+    /// issuing account's DID, exactly as a session-authed upload would.
+    #[tokio::test]
+    async fn service_auth_uploads_blob_under_issuer_did() {
+        let state = test_state().await;
+        let did = "did:plc:svcblobupload00000000";
+        let kp = crypto::generate_p256_keypair().unwrap();
+        seed_account_with_atproto_key(&state, did, &kp).await;
+        let aud = state.config.resolve_server_did();
+        let token = service_auth_token(&kp, did, &aud, "com.atproto.repo.uploadBlob");
+
+        let png_bytes: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00];
+        let response = app_with_state(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.repo.uploadBlob")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::from(png_bytes.to_vec()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_json(response).await;
+        assert_eq!(body["blob"]["mimeType"], "image/png");
+        let cid = body["blob"]["ref"]["$link"].as_str().unwrap();
+
+        // The blob is owned by the issuer DID — the same ownership row a session upload writes.
+        let owner: Option<String> = sqlx::query_scalar(
+            "SELECT account_did FROM blob_owners WHERE cid = ? AND account_did = ?",
+        )
+        .bind(cid)
+        .bind(did)
+        .fetch_optional(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(owner.as_deref(), Some(did));
+
+        // A service upload is not agent-attributed: no audit row is written.
+        let audit_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM agent_audit_events WHERE did = ?")
+                .bind(did)
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(audit_count, 0);
+    }
+
+    /// A service-auth token minted for a *different* method is rejected on uploadBlob (401), proving
+    /// the guard's `lxm` binding is enforced through the handler.
+    #[tokio::test]
+    async fn service_auth_wrong_lxm_returns_401() {
+        let state = test_state().await;
+        let did = "did:plc:svcblobwronglxm00000";
+        let kp = crypto::generate_p256_keypair().unwrap();
+        seed_account_with_atproto_key(&state, did, &kp).await;
+        let aud = state.config.resolve_server_did();
+        let token = service_auth_token(&kp, did, &aud, "com.atproto.repo.createRecord");
+
+        let png_bytes: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        let response = app_with_state(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.repo.uploadBlob")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::from(png_bytes.to_vec()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     /// An agent-derived upload records a `blob_upload` audit row attributed to its

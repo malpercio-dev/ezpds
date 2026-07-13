@@ -30,17 +30,13 @@ use uuid::Uuid;
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::jwt::{
-    issue_access_jwt, issue_refresh_jwt, verify_service_auth_jwt, ServiceAuthError, SCOPE_ACCESS,
-};
+use crate::auth::jwt::{issue_access_jwt, issue_refresh_jwt, SCOPE_ACCESS};
 use crate::auth::password::hash_password;
+use crate::auth::service_auth::verify_service_auth_resolving_key;
 use crate::db::is_unique_violation;
 use crate::db::repo_keys::{
     get_reserved_repo_key_by_did, get_reserved_repo_key_by_id, insert_did_signing_key,
     RepoSigningKey,
-};
-use crate::identity_resolution::{
-    atproto_verification_key, resolve_did_document, resolve_did_document_force_refresh,
 };
 use crate::uniqueness::{email_taken, handle_taken};
 
@@ -416,10 +412,20 @@ async fn create_account_migration(
 
     // Resolve the incoming DID's document (cache-first) and verify the old-PDS service-auth token
     // against its #atproto key — force-refreshing the cache and retrying once on a signature
-    // mismatch, in case the cached key is a fossil. See `verify_migration_service_auth`.
+    // mismatch, in case the cached key is a fossil. Shared with the `uploadBlob` service-auth guard
+    // via `auth::service_auth::verify_service_auth_resolving_key`; here the `iss` is the migrating
+    // DID (foreign — no local account yet) and the `lxm` is `createAccount`. The verified document
+    // is stored and echoed, so a force-refresh reflects the current identity, not the stale cache.
     let server_did = state.config.resolve_server_did();
-    let did_document =
-        verify_migration_service_auth(state, service_auth, did, &server_did, unix_now()?).await?;
+    let did_document = verify_service_auth_resolving_key(
+        state,
+        service_auth,
+        did,
+        &server_did,
+        CREATE_ACCOUNT_LXM,
+        unix_now()?,
+    )
+    .await?;
 
     // Resume path: a previous migration attempt already created this DID's account but the
     // client lost its session (e.g. an app restart between createAccount and
@@ -566,71 +572,6 @@ async fn create_account_migration(
 }
 
 // ── Shared helpers ───────────────────────────────────────────────────────────
-
-/// Resolve the migrating DID's document and verify the old-PDS service-auth token against its
-/// `#atproto` key, force-refreshing the cached document and retrying the verification **once** on a
-/// signature mismatch.
-///
-/// The `did_documents` cache is a persistent store with no TTL, so a DID whose PLC document was
-/// rewritten after this server cached it — e.g. an account that migrated away (rotating its
-/// `#atproto` key / repointing its PDS) and is now migrating back — presents a provably-valid token
-/// that fails against the fossil key. This mirrors the reference PDS's `verifyServiceJwt`: try the
-/// cached key, and on a *signature* failure only, re-resolve the key from the authoritative source
-/// (plc.directory / did:web) and verify once more. Bounded to a single refetch per verification
-/// (and the route's per-endpoint rate limit covers it), so it can't be turned into a resolution
-/// amplifier. Non-signature failures (bad alg/curve, wrong `iss`/`aud`, expired, wrong `lxm`, or a
-/// missing `#atproto` method) skip the refresh — re-resolving the key can't fix them.
-///
-/// Returns the document that ultimately verified — the fresh one when a refresh was needed — so the
-/// caller stores and echoes the current identity, not the stale cache.
-async fn verify_migration_service_auth(
-    state: &AppState,
-    service_auth: &str,
-    did: &str,
-    server_did: &str,
-    now: u64,
-) -> Result<serde_json::Value, ApiError> {
-    let cached = resolve_did_document(state, did).await?;
-    match verify_service_auth_against_doc(service_auth, did, server_did, &cached, now) {
-        Ok(()) => Ok(cached),
-        Err(ServiceAuthError::SignatureMismatch) => {
-            tracing::info!(
-                did = %did,
-                "migration service-auth signature failed against the cached DID document; \
-                 force-refreshing the #atproto key and retrying once"
-            );
-            let fresh = resolve_did_document_force_refresh(state, did).await?;
-            verify_service_auth_against_doc(service_auth, did, server_did, &fresh, now)?;
-            Ok(fresh)
-        }
-        Err(other) => Err(other.into()),
-    }
-}
-
-/// Pull the `#atproto` verification key out of `did_document` and verify the migration
-/// service-auth token against it. A missing `#atproto` method is a non-retriable `Invalid`.
-fn verify_service_auth_against_doc(
-    service_auth: &str,
-    did: &str,
-    server_did: &str,
-    did_document: &serde_json::Value,
-    now: u64,
-) -> Result<(), ServiceAuthError> {
-    let atproto_key = atproto_verification_key(did_document).ok_or_else(|| {
-        ServiceAuthError::Invalid(ApiError::new(
-            ErrorCode::InvalidRequest,
-            "the DID document has no #atproto verification method",
-        ))
-    })?;
-    verify_service_auth_jwt(
-        service_auth,
-        did,
-        server_did,
-        CREATE_ACCOUNT_LXM,
-        &atproto_key,
-        now,
-    )
-}
 
 struct IssuedSession {
     access_jwt: String,
