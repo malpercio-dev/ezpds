@@ -1,4 +1,4 @@
-// Shared, presentation-only helpers for rendering claim-flow errors (MM-290).
+// Shared, presentation-only helpers for rendering claim-flow errors.
 //
 // The claim screens keep their own `switch` over `ClaimError.code` for context-specific phrasing,
 // but the two generic status-classified codes — RATE_LIMITED and SERVER_ERROR — should read the

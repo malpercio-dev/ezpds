@@ -519,7 +519,7 @@ pub struct CreateAccountResponse {
 ///
 /// The `accessJwt`/`refreshJwt` are the full-session credentials the claim flow needs to drive
 /// PLC operations (`requestPlcOperationSignature`/`signPlcOperation`) — operations no OAuth
-/// `transition:generic` token can authorize (MM-289). They feed straight into
+/// `transition:generic` token can authorize. They feed straight into
 /// `OAuthClient::new_bearer`.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -824,7 +824,7 @@ impl PdsClient {
     /// Fetch the server description from a PDS.
     ///
     /// Gets `GET {pds_url}/xrpc/com.atproto.server.describeServer` (public, no auth).
-    /// This is used as a destination reachability probe (AC1.5 prepare_migration) and to
+    /// This is used as a destination reachability probe (`prepare_migration`) and to
     /// obtain the destination server's DID for service-auth requests.
     /// Maps connection failure / non-2xx to `PdsClientError::PdsUnreachable`.
     pub async fn describe_server(
@@ -864,8 +864,8 @@ impl PdsClient {
     ///
     /// This is the source-PDS login for the claim (inbound-migration) flow. Unlike OAuth,
     /// a password `createSession` yields a **full-access** session (`com.atproto.access`), the
-    /// only credential class that can drive PLC operations on a spec-strict PDS like bsky.social
-    /// (MM-289). The `identifier` is a handle, DID, or email; the `password` must be the account's
+    /// only credential class that can drive PLC operations on a spec-strict PDS like bsky.social.
+    /// The `identifier` is a handle, DID, or email; the `password` must be the account's
     /// real password (an app password is a lesser scope and is rejected the same way).
     ///
     /// The password is used for this single request and never persisted — the caller keeps only
@@ -3317,7 +3317,7 @@ mod tests {
             when.method(httpmock::Method::GET)
                 .path("/xrpc/com.atproto.sync.getRepo")
                 .query_param("did", "did:plc:test123")
-                // AC7.3: this endpoint is auth:none — the request must carry no Authorization header.
+                // This endpoint is auth:none — the request must carry no Authorization header.
                 .is_true(|req| {
                     !req.headers_vec()
                         .iter()
@@ -3379,7 +3379,7 @@ mod tests {
                 .path("/xrpc/com.atproto.sync.getBlob")
                 .query_param("did", "did:plc:test123")
                 .query_param("cid", "bafy123")
-                // AC7.3: this endpoint is auth:none — the request must carry no Authorization header.
+                // This endpoint is auth:none — the request must carry no Authorization header.
                 .is_true(|req| {
                     !req.headers_vec()
                         .iter()
@@ -3719,7 +3719,7 @@ mod tests {
 
         assert!(result.is_ok());
         let resp = result.unwrap();
-        // Assert the fields Phase 3 actually consumes from the blob ref, not just $type.
+        // Assert the fields the migration flow actually consumes from the blob ref, not just $type.
         assert_eq!(resp.blob["ref"]["$link"], "bafy123");
         assert_eq!(resp.blob["mimeType"], "image/jpeg");
         assert_eq!(resp.blob["size"], 1234);

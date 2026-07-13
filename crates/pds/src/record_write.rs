@@ -714,7 +714,7 @@ mod tests {
     }
 
     /// A GC pass computed against a root that is no longer the persisted head must not delete
-    /// blocks belonging to the current head. This is the MM-260 corruption vector reduced to its
+    /// blocks belonging to the current head. This is the corruption vector reduced to its
     /// deterministic core: write B advances the root between write A's commit and A's post-commit
     /// GC, so A's reachable set does not contain B's new commit/MST/record blocks. B's commit is
     /// applied without its own GC pass here because in the race A's delete runs while B's blocks

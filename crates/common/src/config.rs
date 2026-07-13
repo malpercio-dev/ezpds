@@ -1371,7 +1371,7 @@ pub(crate) fn apply_env_overrides(
 /// Parse the `EZPDS_EMAIL_PROVIDER` env value into an [`EmailProvider`], matching the lowercase
 /// tokens the TOML form uses. Case- and whitespace-insensitive: env values are conventionally
 /// written in caps (`EZPDS_EMAIL_PROVIDER=SMTP`), so normalize before matching rather than
-/// crash-looping the service on pure letter case (MM-313).
+/// crash-looping the service on pure letter case.
 fn parse_email_provider(value: &str) -> Result<EmailProvider, ConfigError> {
     match value.trim().to_ascii_lowercase().as_str() {
         "log" => Ok(EmailProvider::Log),
@@ -3951,7 +3951,7 @@ mod tests {
         assert!(debug.contains("***"), "Sensitive should render as ***");
     }
 
-    // --- Case-insensitive provider matching (MM-313) ---
+    // --- Case-insensitive provider matching ---
 
     #[test]
     fn email_provider_env_is_case_insensitive() {

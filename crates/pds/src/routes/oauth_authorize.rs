@@ -1571,7 +1571,7 @@ mod tests {
         );
     }
 
-    // ── include: permission-set expansion (oauth-scopes-permission-sets.AC4) ─────
+    // ── include: permission-set expansion ─────
 
     use std::future::Future;
     use std::pin::Pin;
@@ -1800,7 +1800,7 @@ mod tests {
         assert!(location.contains("error=invalid_scope"), "got: {location}");
     }
 
-    // ── Consent UI grouping + per-scope opt-out (oauth-scopes-permission-sets.AC5) ──
+    // ── Consent UI grouping + per-scope opt-out ──
 
     async fn stored_scope_for(db: &sqlx::SqlitePool, location: &str) -> String {
         let plaintext = location

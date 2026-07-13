@@ -4,7 +4,7 @@
  * The relay deliberately returns generic messages (it never reveals which check
  * failed), so the *client* is where a failure becomes a specific, actionable state —
  * "check device time", "access revoked", "relay unreachable" — per the design plan's
- * error-handling note. Keeps copy in one place so Phase 8's screens reuse it.
+ * error-handling note. Keeps copy in one place so every screen reuses it.
  */
 import type { RelayClientError } from './ipc';
 import type { Status } from './components/ui/StatusChip.svelte';

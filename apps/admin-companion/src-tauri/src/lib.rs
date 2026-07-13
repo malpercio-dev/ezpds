@@ -25,7 +25,7 @@ fn get_or_create_device_key() -> Result<device_key::DevicePublicKey, device_key:
 
 /// Sign arbitrary bytes with the device's admin key, returning a raw 64-byte
 /// (r‖s, low-S) P-256 signature. Used by the signing client; also exposed for
-/// diagnostics and the Phase 6 round-trip check.
+/// diagnostics and the device-key round-trip check.
 #[tauri::command]
 fn sign_with_device_key(data: Vec<u8>) -> Result<Vec<u8>, device_key::DeviceKeyError> {
     device_key::sign(&data)

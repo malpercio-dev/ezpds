@@ -41,7 +41,7 @@ describe('requireUserPresence', () => {
   });
 
   it('always reaches authenticate() when the plugin is present — never pre-skips on availability', async () => {
-    // Regression (MM-240): a real iPhone with a passcode but no enrolled biometric reports
+    // Regression: a real iPhone with a passcode but no enrolled biometric reports
     // checkStatus().isAvailable === false, yet authenticate() with allowDeviceCredential can
     // still gate via the passcode. The gate must run authenticate() rather than short-circuit
     // to 'unavailable' and let the signing action proceed ungated. If checkStatus is even
@@ -58,7 +58,7 @@ describe('requireUserPresence', () => {
   });
 
   it('resolves to denied (blocks) when no credential is enrolled — authenticate rejects', async () => {
-    // Regression (MM-240): on a device with neither an enrolled biometric nor a passcode,
+    // Regression: on a device with neither an enrolled biometric nor a passcode,
     // authenticate() rejects. That must block the signing action, NOT resolve to 'unavailable'
     // and let it through.
     vi.doMock('./ipc', () => ({ biometricEnabled: vi.fn().mockResolvedValue(true) }));

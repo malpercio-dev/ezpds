@@ -846,7 +846,7 @@ pub fn allows_email(scope: &str) -> bool {
 /// migrate account" — i.e. it must NOT authorize identity/PLC operations. Only a granular
 /// `identity:*`/`identity:{attr}` grant (or a full `com.atproto.access` session, handled by the
 /// `require_*` gate) may drive them. bsky.social enforces the same rule; this keeps Custos from
-/// being the one lax counterparty that let insufficient-scope tokens slip through (MM-289).
+/// being the one lax counterparty that let insufficient-scope tokens slip through.
 pub fn allows_identity(scope: &str, attr: &str) -> bool {
     scope
         .split_whitespace()
@@ -1307,14 +1307,14 @@ mod tests {
         assert!(allows_account(scope, "status", "manage"));
         // ...with ONE exception: identity/PLC operations. `transition:generic` is
         // app-password-equivalent, which the atproto spec excludes from identity/account-management
-        // actions. Custos used to accept it here; MM-289 tightened it to match bsky.social.
+        // actions. Custos must refuse it here, matching bsky.social.
         assert!(!allows_identity(scope, "handle"));
         assert!(!allows_identity(scope, "*"));
     }
 
     #[test]
     fn transition_generic_is_refused_for_identity_ops() {
-        // Regression guard for MM-289: no OAuth token bsky.social can mint (its max is
+        // Regression guard: no OAuth token bsky.social can mint (its max is
         // `transition:generic`) may drive PLC operations. `require_identity` still passes a full
         // `com.atproto.access` password session (short-circuit before `allows_identity`), so the
         // wallet's password-based claim flow is unaffected — this only closes the OAuth path.

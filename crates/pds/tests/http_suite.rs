@@ -27,7 +27,7 @@ fn enc(value: &str) -> String {
     urlencoding::encode(value).into_owned()
 }
 
-/// Run one named step, prefixing any panic with the step name so failures localize (AC3.2).
+/// Run one named step, prefixing any panic with the step name so failures localize.
 async fn step<F, Fut>(name: &str, f: F)
 where
     F: FnOnce() -> Fut,
@@ -95,8 +95,8 @@ async fn http_golden_path_suite() {
     .await;
 
     // 3. /metrics → Prometheus exposition with http_requests_total. `firehose_subscribers` only
-    //    surfaces after a subscriber has connected once, so that half of AC1.1 is asserted in a
-    //    later /metrics scrape (step "metrics after firehose"), after step 7 has connected a WS.
+    //    surfaces after a subscriber has connected once, so that this half of the assertion happens
+    //    in a later /metrics scrape (step "metrics after firehose"), after step 7 has connected a WS.
     step("metrics before firehose", || async {
         let resp = h
             .http
@@ -298,7 +298,7 @@ async fn http_golden_path_suite() {
     })
     .await;
 
-    // AC1.1 second half: with a subscriber having connected, firehose_subscribers is now a
+    // With a subscriber having connected, firehose_subscribers is a
     // registered series in the exposition.
     step("metrics after firehose", || async {
         let resp = h

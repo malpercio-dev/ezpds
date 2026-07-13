@@ -30,7 +30,7 @@ pub struct AppState {
     /// `save_pds_url` on first launch. Falls back to the compile-time default if unset.
     custos_client: OnceLock<crate::http::CustosClient>,
     /// PDS client for discovery and XRPC operations against arbitrary PDS endpoints.
-    /// Stateless and cheap to construct; available to Phase 4 Tauri commands.
+    /// Stateless and cheap to construct; available to Tauri commands.
     pds_client: crate::pds_client::PdsClient,
     /// Claim flow state persisted across multi-step claim commands.
     /// Set by `resolve_identity`; used by subsequent `authenticate_source_pds`,

@@ -4,8 +4,7 @@
  * This is the ONLY file that calls `invoke()` directly; page components import
  * these functions instead. Mirrors the identity-wallet `ipc.ts` convention.
  *
- * Phase 7 adds the pairing + signed-request surface on top of the Phase 6 device-key
- * primitives.
+ * Adds the pairing + signed-request surface on top of the device-key primitives.
  */
 import { invoke } from '@tauri-apps/api/core';
 

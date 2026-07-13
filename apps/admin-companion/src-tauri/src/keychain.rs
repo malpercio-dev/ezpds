@@ -7,8 +7,7 @@
 //!
 //! This is the operator console's analogue of the identity-wallet Keychain
 //! module ([`apps/identity-wallet/src-tauri/src/keychain.rs`]). It manages the device
-//! key (Phase 6), the versioned multi-relay pairing document (Phase 8+), and the
-//! biometric-gate preference.
+//! key, the versioned multi-relay pairing document, and the biometric-gate preference.
 //!
 //! In test builds (`#[cfg(test)]`), all Keychain operations are redirected to an
 //! in-memory store so that tests never touch the real macOS Keychain and never
@@ -80,7 +79,7 @@ pub fn get_item(account: &str) -> Result<Vec<u8>, KeychainError> {
 /// Returns `Ok(())` on successful deletion, or `Err` if the item doesn't exist.
 //
 // Part of the Keychain primitive surface. Exercised on the Secure Enclave path
-// (key-creation rollback) and by Phase 7 (unpair / self-revoke); the macOS/simulator
+// (key-creation rollback) and by unpair / self-revoke; the macOS/simulator
 // software path never deletes, so the host non-test lib build sees it as unused.
 #[allow(dead_code)]
 pub fn delete_item(account: &str) -> Result<(), KeychainError> {
@@ -105,7 +104,7 @@ pub fn is_not_found(err: &KeychainError) -> bool {
     }
 }
 
-// ── Pairing document (Phase 8+) ──────────────────────────────────────────────────
+// ── Pairing document ─────────────────────────────────────────────────────────────
 //
 // The versioned multi-relay pairing document: which relays this device is paired to,
 // and which one unqualified operator actions (claim-code mint, self-revoke) currently
@@ -116,7 +115,7 @@ pub fn is_not_found(err: &KeychainError) -> bool {
 /// `pairings::PairingDoc`).
 const PAIRINGS_ACCOUNT: &str = "admin-pairings";
 
-/// Legacy accounts from Phase 7, retained only for one-time cleanup on first load.
+/// Legacy accounts, retained only for one-time cleanup on first load.
 /// New pairings go directly to the multi-relay document.
 const DEVICE_ID_ACCOUNT: &str = "admin-device-id";
 const RELAY_URL_ACCOUNT: &str = "admin-relay-url";

@@ -868,11 +868,11 @@ pub fn verify_genesis_op(
     signed_op_json: &str,
     rotation_key: &DidKeyUri,
 ) -> Result<VerifiedGenesisOp, CryptoError> {
-    // Step 1: Parse the signed op, rejecting unknown fields (AC1.5).
+    // Step 1: Parse the signed op, rejecting unknown fields.
     let signed_op: SignedPlcOp = serde_json::from_str(signed_op_json)
         .map_err(|e| CryptoError::PlcOperation(format!("invalid signed op JSON: {e}")))?;
 
-    // Step 2: Validate this is a genesis operation, not a rotation (C2).
+    // Step 2: Validate this is a genesis operation, not a rotation.
     if signed_op.prev.is_some() {
         return Err(CryptoError::PlcOperation(
             "genesis op must have prev = null".to_string(),
@@ -1487,9 +1487,9 @@ mod tests {
     }
 
     /// Golden interop test: a REAL operation signed by bsky.social (fibercap's
-    /// secp256k1 rotation key, via `signPlcOperation`), captured live during the
-    /// MM-241 migration run on 2026-07-11. Verifying it here proves byte-level
-    /// canonical-CBOR + k256 compatibility with the reference ecosystem, offline.
+    /// secp256k1 rotation key, via `signPlcOperation`), captured live from a real
+    /// bsky.social migration. Verifying it here proves byte-level canonical-CBOR +
+    /// k256 compatibility with the reference ecosystem, offline.
     /// (The op was never submitted to plc.directory — it is inert test data.)
     #[test]
     fn verify_plc_operation_real_bsky_signed_op() {

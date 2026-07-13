@@ -26,7 +26,7 @@ crypto = { workspace = true }
 p256 = { workspace = true }
 multibase = { workspace = true }
 tracing = { workspace = true }
-# Request-envelope signing (Phase 7): SHA-256 body hash + base64url-no-pad signature
+# Request-envelope signing: SHA-256 body hash + base64url-no-pad signature
 # encoding, byte-for-byte matching the relay's `admin_request_sign_string` contract.
 sha2 = { workspace = true }
 base64 = { workspace = true }
@@ -43,8 +43,8 @@ security-framework = { workspace = true, features = ["OSX_10_12"] }
 # its test suite never compile them. Registered behind `#[cfg(mobile)]` in lib.rs, granted
 # via capabilities/mobile.json:
 #   - barcode-scanner: camera QR on the Pair screen.
-#   - biometric: Face ID / Touch ID user-presence gate on every signing action (AC7.4).
-#   - sharesheet: the iOS Share Pane for a generated claim code (AC1.2).
+#   - biometric: Face ID / Touch ID user-presence gate on every signing action.
+#   - sharesheet: the iOS Share Pane for a generated claim code.
 [target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
 tauri-plugin-barcode-scanner = "2"
 tauri-plugin-biometric = "2"

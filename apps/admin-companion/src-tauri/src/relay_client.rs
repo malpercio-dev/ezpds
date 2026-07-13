@@ -5,7 +5,7 @@
 //      (`POST /v1/admin/devices`), self-signing the canonical registration message.
 //   2. Signed requests — every later admin call attaches the `X-Admin-*` envelope so
 //      the relay's `require_admin` guard accepts it (`POST /v1/accounts/claim-codes`
-//      is Phase 7's concrete consumer / demo action).
+//      is a concrete consumer / demo action).
 //
 // The request *construction* (which bytes get signed, which headers get attached) is
 // factored into pure, synchronous `build_*` functions so it can be tested without a
@@ -1236,9 +1236,9 @@ mod tests {
         .expect("registration self-signature must verify against the relay's verifier");
     }
 
-    // The Phase 7 Definition of Done, proven without a live relay: a signed claim-code
-    // request carries headers whose signature the relay's OWN verifier accepts over the
-    // canonical envelope. If this passes, `require_admin` accepts the request end-to-end.
+    // Proven without a live relay: a signed claim-code request carries headers whose
+    // signature the relay's OWN verifier accepts over the canonical envelope. If this
+    // passes, `require_admin` accepts the request end-to-end.
     #[test]
     fn signed_claim_code_request_is_accepted_by_relay_verifier() {
         keychain::clear_for_test();
@@ -1441,7 +1441,7 @@ mod tests {
 
     #[test]
     fn set_active_then_signed_request_targets_the_new_active_relay() {
-        // AC2.1's substance, offline. Seed: A ("https://staging.example", "device-a"),
+        // Exercised offline. Seed: A ("https://staging.example", "device-a"),
         // then B ("https://prod.example", "device-b") — append order makes B active.
         keychain::clear_for_test();
         let key = device_key::get_or_create().expect("device key");
@@ -1650,7 +1650,7 @@ mod tests {
 
     #[test]
     fn revoke_request_for_a_non_active_pairing_binds_its_own_relay_and_path() {
-        // AC6.2. Seed A (active, "https://staging.example") and B (non-active,
+        // Seed A (active, "https://staging.example") and B (non-active,
         // "https://prod.example", device "device-b"). Build the exact request
         // revoke_self(B.id) would send, from B (the doc's non-active entry, fetched via
         // keychain::load_pairings().get(B.id)):
@@ -2546,7 +2546,7 @@ mod tests {
     #[test]
     fn no_such_pairing_serializes_with_its_screaming_snake_code() {
         // serde_json::to_value(RelayClientError::NoSuchPairing)["code"]
-        //   == "NO_SUCH_PAIRING" — the IPC contract Phase 3's classifyRelayError keys on.
+        //   == "NO_SUCH_PAIRING" — the IPC contract classifyRelayError keys on.
         let error = RelayClientError::NoSuchPairing;
         let value = serde_json::to_value(&error).expect("serialize");
         assert_eq!(

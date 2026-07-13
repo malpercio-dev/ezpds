@@ -81,7 +81,7 @@ pub fn generate_p256_keypair() -> Result<P256Keypair, CryptoError> {
 ///
 /// Returns `base64( nonce(12) || ciphertext+tag(48) )` — always 80 base64 chars.
 /// A fresh 12-byte nonce is generated from the OS RNG on every call, so two calls
-/// with the same input produce different output (AC3.4).
+/// with the same input produce different output.
 pub fn encrypt_private_key(
     key_bytes: &[u8; 32],
     master_key: &[u8; 32],

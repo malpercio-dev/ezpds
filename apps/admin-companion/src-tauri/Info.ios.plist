@@ -19,8 +19,8 @@
   <false/>
 
   <!--
-    Camera access is used solely to scan the relay's pairing-code QR on the Pair screen
-    (Phase 7). The operator can always pair by entering the relay URL and code by hand,
+    Camera access is used solely to scan the relay's pairing-code QR on the Pair screen.
+    The operator can always pair by entering the relay URL and code by hand,
     so declining the camera prompt never blocks pairing. Tauri merges this key into the
     generated iOS Info.plist, satisfying iOS's NSCameraUsageDescription requirement.
   -->
@@ -29,8 +29,8 @@
 
   <!--
     Face ID gates every signing action (generating a claim code, revoking this device) so
-    a momentary unlock can't mint admin credentials — the user-presence requirement of
-    AC7.4. Touch ID / device passcode are used on devices without Face ID. Tauri merges
+    a momentary unlock can't mint admin credentials — a user-presence requirement.
+    Touch ID / device passcode are used on devices without Face ID. Tauri merges
     this key into the generated iOS Info.plist, satisfying iOS's NSFaceIDUsageDescription
     requirement for the biometric plugin.
   -->

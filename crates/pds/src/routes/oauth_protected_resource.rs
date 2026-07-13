@@ -128,7 +128,7 @@ mod tests {
 
     #[tokio::test]
     async fn scopes_supported_reflects_the_full_granular_scope_grammar() {
-        // Mirrors oauth_server_metadata.rs's contract (oauth-scopes-permission-sets.AC6.2) —
+        // Mirrors oauth_server_metadata.rs's contract —
         // both discovery documents advertise the same supported scope surface.
         let json = metadata_json().await;
         assert_eq!(

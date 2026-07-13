@@ -217,7 +217,7 @@ mod tests {
     #[tokio::test]
     async fn scopes_supported_reflects_the_full_granular_scope_grammar() {
         // Locks the discovery contract: the fixed/transition scopes plus a declarative
-        // summary of each granular resource-type prefix (oauth-scopes-permission-sets.AC6.1).
+        // summary of each granular resource-type prefix.
         // Each prefix accepts further positional/query parameters per oauth_scopes.rs's
         // grammar — this list summarizes the supported surface, it doesn't enumerate the
         // (unbounded) space of concrete grantable scopes.
