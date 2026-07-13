@@ -69,7 +69,7 @@ Supporting pieces: [`sites/marketing/`](sites/marketing/) (zero-build static mar
 ### PDS endpoints
 
 The route surface is large; the exhaustive, kept-current route table lives in
-[`crates/pds/CLAUDE.md`](crates/pds/CLAUDE.md), and every route has a matching
+[`crates/pds/AGENTS.md`](crates/pds/AGENTS.md), and every route has a matching
 request in the [`bruno/`](bruno/) collection (CI-enforced parity via
 `just bruno-check`). In summary:
 

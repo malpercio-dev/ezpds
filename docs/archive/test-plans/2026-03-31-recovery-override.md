@@ -5,7 +5,7 @@
 - macOS workstation with Xcode and iOS Simulator installed
 - Nix dev shell active (`nix develop --impure --accept-flake-config` from workspace root)
 - `pnpm install` completed in `apps/identity-wallet/`
-- `cargo tauri ios init` completed with PATH and sandboxing patches applied (see `apps/identity-wallet/CLAUDE.md` First-Time Setup)
+- `cargo tauri ios init` completed with PATH and sandboxing patches applied (see `apps/identity-wallet/AGENTS.md` First-Time Setup)
 - All automated tests passing: `cargo test -p identity-wallet recovery`
 - Ignored (integration) tests passing: `cargo test -p identity-wallet -- --ignored` (requires non-sandboxed environment)
 - TypeScript compiles: `cd apps/identity-wallet && npx tsc --noEmit`

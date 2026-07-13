@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-07-02 (backfilled)
 - **Deciders:** ezpds maintainers
-- **Related:** [`crates/pds/CLAUDE.md`](../../../crates/pds/CLAUDE.md) · [`crates/crypto/CLAUDE.md`](../../../crates/crypto/CLAUDE.md)
+- **Related:** [`crates/pds/AGENTS.md`](../../../crates/pds/AGENTS.md) · [`crates/crypto/AGENTS.md`](../../../crates/crypto/AGENTS.md)
 
 ## Context
 

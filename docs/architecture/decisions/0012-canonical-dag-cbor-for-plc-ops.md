@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-07-02 (backfilled)
 - **Deciders:** ezpds maintainers
-- **Related:** [ADR-0003](0003-did-plc-as-did-method.md) · [`crates/crypto/src/plc.rs`](../../../crates/crypto/src/plc.rs) · [`crates/crypto/CLAUDE.md`](../../../crates/crypto/CLAUDE.md)
+- **Related:** [ADR-0003](0003-did-plc-as-did-method.md) · [`crates/crypto/src/plc.rs`](../../../crates/crypto/src/plc.rs) · [`crates/crypto/AGENTS.md`](../../../crates/crypto/AGENTS.md)
 
 ## Context
 

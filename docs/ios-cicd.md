@@ -162,7 +162,7 @@ for the first time inside a CI log.
   dependencies) on every `cargo tauri ios init`, and `just ios-check` verifies every listed
   framework landed. (Historically this config was cosmetic — it only seeded a fresh
   project.yml — and a pbxproj patch enforced the link instead.) See
-  [`apps/identity-wallet/CLAUDE.md`](../apps/identity-wallet/CLAUDE.md) (Troubleshooting).
+  [`apps/identity-wallet/AGENTS.md`](../apps/identity-wallet/AGENTS.md) (Troubleshooting).
 - **First TestFlight upload.** It can only succeed after the App Store Connect app
   record exists for the bundle ID, and each upload's build number must exceed anything
   previously seen. The run-number scheme handles the latter automatically.

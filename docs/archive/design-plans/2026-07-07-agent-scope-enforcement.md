@@ -44,7 +44,7 @@ with a conservative default profile instead of `com.atproto.access`.
    re-exchange to fail with `access_denied`, and (c) the audit plan
    ([wallet consent & audit](2026-07-07-wallet-agent-consent-and-audit.md)) can attribute actions.
    Live-token invalidation on revoke may be bounded by access-token TTL — document the TTL bound
-   explicitly in `crates/pds/CLAUDE.md`.
+   explicitly in `crates/pds/AGENTS.md`.
 
 5. **Config surface.** `[agent_auth] granted_scopes` remains operator-overridable; the docs
    comment in `config.rs` states the default profile and warns that adding `account:*` /
@@ -80,7 +80,7 @@ the consent-screen plan's job; the anonymous registration flow (MM-242); scope U
 
 ## Implementation notes
 
-- Read `crates/pds/CLAUDE.md` route/DB rules first. Scope-check logic belongs in `auth/`, not in
+- Read `crates/pds/AGENTS.md` route/DB rules first. Scope-check logic belongs in `auth/`, not in
   route handlers; handlers declare required scopes the same way OAuth-protected routes already do.
 - The scope grammar and permission-set code shipped with MM-237
   (`docs/archive/design-plans/2026-07-05-oauth-scopes-permission-sets.md`) — read that archived

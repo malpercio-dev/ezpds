@@ -128,7 +128,7 @@ The Xcode project (`src-tauri/gen/apple/`) is machine-specific and gitignored. A
 cd apps/identity-wallet && cargo tauri ios init
 ```
 
-Then re-apply the two one-time Xcode patches from the CLAUDE.md:
+Then re-apply the two one-time Xcode patches from the AGENTS.md:
 
 ```bash
 # Patch 1: Add Nix devenv PATH to the build phase

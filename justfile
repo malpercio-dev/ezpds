@@ -312,7 +312,7 @@ ios-check:
 # Both iOS recipes `export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh` before `cargo tauri`
 # so the OUTER process re-resolves the Apple toolchain, overriding any stale
 # CARGO_TARGET_*/CC_*/AR_* a long-lived dev shell may carry from a pre-fix ios-env.sh
-# sourcing (see apps/identity-wallet/CLAUDE.md "Development Workflow").
+# sourcing (see apps/identity-wallet/AGENTS.md "Development Workflow").
 
 # Launch the app on the iOS Simulator (verifies patches first). With no argument,
 # `cargo tauri ios dev` auto-selects a target and PREFERS a connected physical

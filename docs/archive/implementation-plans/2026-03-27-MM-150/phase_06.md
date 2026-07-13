@@ -31,7 +31,7 @@
 **Files:**
 - Create: `apps/identity-wallet/src/lib/components/home/RecoveryInfoScreen.svelte`
 
-**Keychain account name for Share 1:** `"recovery-share-1"` (defined at `apps/identity-wallet/src-tauri/src/lib.rs:388` and documented in CLAUDE.md invariants). The Rust `load_home_data` command already checks this key and returns `share1InKeychain: boolean` in HomeData. This component simply displays the result — no IPC calls.
+**Keychain account name for Share 1:** `"recovery-share-1"` (defined at `apps/identity-wallet/src-tauri/src/lib.rs:388` and documented in AGENTS.md invariants). The Rust `load_home_data` command already checks this key and returns `share1InKeychain: boolean` in HomeData. This component simply displays the result — no IPC calls.
 
 **Share 3 status:** Share 3 is always shown as a manual backup reminder. It is the share returned to the user via `DIDCeremonyResult.share3` during onboarding and displayed in `ShamirBackupScreen`. This screen reminds the user that they are responsible for it.
 

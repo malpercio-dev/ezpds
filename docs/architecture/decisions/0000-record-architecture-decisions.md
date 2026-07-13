@@ -9,7 +9,7 @@
 
 ezpds spans a Rust PDS, a repo engine, a crypto core, and two Tauri iOS apps,
 with load-bearing decisions (custody model, signing model, DID method) scattered
-across long-form specs, design plans, and `CLAUDE.md` files. Those documents
+across long-form specs, design plans, and `AGENTS.md` files. Those documents
 answer "how does it work now" and "what are we planning", but not "why did we
 choose this over the obvious alternative" — and the reasoning behind the
 decisions that most shape the system is the easiest thing to lose. New
@@ -40,7 +40,7 @@ bearing but never had their rationale recorded.
 
 ## Alternatives considered
 
-- **Keep decisions in design plans and `CLAUDE.md` only.** Rejected: those
+- **Keep decisions in design plans and `AGENTS.md` only.** Rejected: those
   capture current state and get edited in place, erasing the history of *why*,
   and they mix rationale with mechanics.
 - **A single `DECISIONS.md` log.** Rejected: it grows unbounded, invites editing

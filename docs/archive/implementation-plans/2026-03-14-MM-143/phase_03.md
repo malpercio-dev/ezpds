@@ -2,11 +2,11 @@
 
 **Goal:** Add `cargo-tauri`, `nodejs_22`, and `pnpm` to the Nix dev shell; exclude the Tauri-generated Xcode project from git; and document the iOS developer setup.
 
-**Architecture:** Three infrastructure changes — devenv.nix package additions following the existing `pkgs.*` list pattern, a `.gitignore` entry for `apps/identity-wallet/src-tauri/gen/`, and two CLAUDE.md documents (new `apps/identity-wallet/CLAUDE.md` + pointer section in root `CLAUDE.md`) following the `nix/CLAUDE.md` domain-level documentation pattern.
+**Architecture:** Three infrastructure changes — devenv.nix package additions following the existing `pkgs.*` list pattern, a `.gitignore` entry for `apps/identity-wallet/src-tauri/gen/`, and two AGENTS.md documents (new `apps/identity-wallet/AGENTS.md` + pointer section in root `AGENTS.md`) following the `nix/AGENTS.md` domain-level documentation pattern.
 
 **Tech Stack:** Nix (devenv.nix, nixpkgs rolling via `cachix/devenv-nixpkgs/rolling`)
 
-**Scope:** Phase 3 of 3 — pure infrastructure and documentation. No code compilation. Verified by checking `devenv.nix` contents and CLAUDE.md existence.
+**Scope:** Phase 3 of 3 — pure infrastructure and documentation. No code compilation. Verified by checking `devenv.nix` contents and AGENTS.md existence.
 
 **Codebase verified:** 2026-03-14
 
@@ -22,8 +22,8 @@ This phase implements and verifies operationally:
 - **MM-143.AC5.1 Success:** `cargo-tauri` is available in PATH after `nix develop --impure --accept-flake-config`
 - **MM-143.AC5.2 Success:** `node` (22.x) is available in PATH after `nix develop`
 - **MM-143.AC5.3 Success:** `pnpm` is available in PATH after `nix develop`
-- **MM-143.AC5.4 Success:** `apps/identity-wallet/CLAUDE.md` exists and covers: macOS/Xcode prerequisites, Cocoapods installation, `pnpm install` first-time setup, `cargo tauri ios init` first-time setup, and `cargo tauri ios dev` development workflow
-- **MM-143.AC5.5 Success:** Root `CLAUDE.md` contains a pointer to `apps/identity-wallet/CLAUDE.md`
+- **MM-143.AC5.4 Success:** `apps/identity-wallet/AGENTS.md` exists and covers: macOS/Xcode prerequisites, Cocoapods installation, `pnpm install` first-time setup, `cargo tauri ios init` first-time setup, and `cargo tauri ios dev` development workflow
+- **MM-143.AC5.5 Success:** Root `AGENTS.md` contains a pointer to `apps/identity-wallet/AGENTS.md`
 - **MM-143.AC5.6 Success:** `apps/identity-wallet/src-tauri/gen/` is listed in `.gitignore`
 
 ### MM-143.AC6: CI pipeline documented (already satisfied)
@@ -154,16 +154,16 @@ git commit -m "chore(MM-143): gitignore Tauri-generated Xcode project at src-tau
 <!-- END_TASK_2 -->
 
 <!-- START_TASK_3 -->
-### Task 3: Create apps/identity-wallet/CLAUDE.md
+### Task 3: Create apps/identity-wallet/AGENTS.md
 
-**Verifies:** MM-143.AC5.4 (CLAUDE.md exists with all required sections)
+**Verifies:** MM-143.AC5.4 (AGENTS.md exists with all required sections)
 
 **Files:**
-- Create: `apps/identity-wallet/CLAUDE.md`
+- Create: `apps/identity-wallet/AGENTS.md`
 
-**Step 1: Create `apps/identity-wallet/CLAUDE.md`**
+**Step 1: Create `apps/identity-wallet/AGENTS.md`**
 
-Modeled on `nix/CLAUDE.md` (Purpose → Contracts → Dependencies → Key Decisions → Invariants → Key Files). Covers all AC5.4 requirements: macOS/Xcode prerequisites, Cocoapods, `pnpm install`, `cargo tauri ios init`, and `cargo tauri ios dev`.
+Modeled on `nix/AGENTS.md` (Purpose → Contracts → Dependencies → Key Decisions → Invariants → Key Files). Covers all AC5.4 requirements: macOS/Xcode prerequisites, Cocoapods, `pnpm install`, `cargo tauri ios init`, and `cargo tauri ios dev`.
 
 ```markdown
 # Identity Wallet Mobile App
@@ -294,22 +294,22 @@ cargo build
 **Step 2: Commit**
 
 ```bash
-git add apps/identity-wallet/CLAUDE.md
-git commit -m "docs(MM-143): add apps/identity-wallet/CLAUDE.md with iOS developer setup"
+git add apps/identity-wallet/AGENTS.md
+git commit -m "docs(MM-143): add apps/identity-wallet/AGENTS.md with iOS developer setup"
 ```
 <!-- END_TASK_3 -->
 
 <!-- START_TASK_4 -->
-### Task 4: Add Mobile section to root CLAUDE.md
+### Task 4: Add Mobile section to root AGENTS.md
 
-**Verifies:** MM-143.AC5.5 (root CLAUDE.md contains pointer to apps/identity-wallet/CLAUDE.md)
+**Verifies:** MM-143.AC5.5 (root AGENTS.md contains pointer to apps/identity-wallet/AGENTS.md)
 
 **Files:**
-- Modify: `/Users/malpercio/workspace/malpercio-dev/ezpds/CLAUDE.md`
+- Modify: `/Users/malpercio/workspace/malpercio-dev/ezpds/AGENTS.md`
 
-**Step 1: Read the current root `CLAUDE.md`**
+**Step 1: Read the current root `AGENTS.md`**
 
-The current `CLAUDE.md` has these h2 sections in order:
+The current `AGENTS.md` has these h2 sections in order:
 1. `## Tech Stack`
 2. `## Commands`
 3. `## Dev Environment`
@@ -327,10 +327,10 @@ Add the following section between the `## Project Structure` block and the `## F
 ## Mobile
 
 - `apps/identity-wallet/` — Tauri v2 iOS app (SvelteKit 2 + Svelte 5 frontend, Rust backend)
-- Developer setup and iOS workstation guide: see [`apps/identity-wallet/CLAUDE.md`](apps/identity-wallet/CLAUDE.md)
+- Developer setup and iOS workstation guide: see [`apps/identity-wallet/AGENTS.md`](apps/identity-wallet/AGENTS.md)
 ```
 
-Also update the `Last verified` line at the top of CLAUDE.md to `Last verified: 2026-03-14` (it already shows this date, so no change needed).
+Also update the `Last verified` line at the top of AGENTS.md to `Last verified: 2026-03-14` (it already shows this date, so no change needed).
 
 **Step 3: Update `## Project Structure` to include `apps/`**
 
@@ -366,8 +366,8 @@ Also update the `Last verified` date if it needs updating.
 **Step 5: Commit**
 
 ```bash
-git add CLAUDE.md
-git commit -m "docs(MM-143): add Mobile section to root CLAUDE.md, update Dev Environment and Project Structure"
+git add AGENTS.md
+git commit -m "docs(MM-143): add Mobile section to root AGENTS.md, update Dev Environment and Project Structure"
 ```
 <!-- END_TASK_4 -->
 

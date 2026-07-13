@@ -294,20 +294,20 @@ This is the **only** AC with an automated **unit-test** mapping. It is verified 
   grep -rnI -E "\.#(relay|docker-image)|packages\.[^.]*\.(relay|docker-image)|nix/docker\.nix" \
     --exclude-dir=.git --exclude-dir=docs . ; echo "dangling-exit=$?"
   ```
-  **Assert:** `dangling-exit=1` (no matches) — `justfile`, `tests/`, `nix/CLAUDE.md`, and root `CLAUDE.md` no
+  **Assert:** `dangling-exit=1` (no matches) — `justfile`, `tests/`, `nix/AGENTS.md`, and root `AGENTS.md` no
   longer reference the removed `.#relay`/`.#docker-image` outputs or the deleted `nix/docker.nix`. Historical
   mentions inside `docs/` are intentionally excluded.
 - **Date-bump spot check (scriptable):**
   ```bash
-  grep -RIl "Last verified: 2026-06-20" nix/CLAUDE.md CLAUDE.md crates/relay/CLAUDE.md
+  grep -RIl "Last verified: 2026-06-20" nix/AGENTS.md AGENTS.md crates/relay/AGENTS.md
   test -f docs/deploy.md && echo "deploy.md exists"
   ```
-  **Assert:** the three touched CLAUDE.md files carry the bumped `Last verified: 2026-06-20`; `docs/deploy.md`
+  **Assert:** the three touched AGENTS.md files carry the bumped `Last verified: 2026-06-20`; `docs/deploy.md`
   exists.
 - **Human read-through:** confirm `docs/deploy.md` covers the runtime contract (`EZPDS_*` env, `/data` volume,
   `/xrpc/_health`), Railway setup, the colmena/oci-containers path (GHCR ref + agenix/sops `environmentFile` +
   backend enablement), the GHCR distribution choice, and the explicit reproducibility tradeoff; and that
-  `nix/CLAUDE.md` + root `CLAUDE.md` describe the new workflow with no removed output shown as current. (Prose
+  `nix/AGENTS.md` + root `AGENTS.md` describe the new workflow with no removed output shown as current. (Prose
   completeness is not fully assertable by grep — a human confirms it reads correctly.)
 
 ---

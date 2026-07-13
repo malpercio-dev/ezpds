@@ -280,30 +280,30 @@ are **[developer-machine only]** (need the patched generated file).
 > Xcode needed. A light human read confirms the prose is coherent, but the
 > pass/fail gates are greps.
 
-### AC4.1 — `apps/identity-wallet/CLAUDE.md` documents `ios-env.sh` and the `just ios-*` workflow
+### AC4.1 — `apps/identity-wallet/AGENTS.md` documents `ios-env.sh` and the `just ios-*` workflow
 **Automated/scriptable check.** Phase 3 "Done When":
 ```bash
-grep -nE "ios-env\.sh|just ios-(postinit|check|dev|build)" apps/identity-wallet/CLAUDE.md
+grep -nE "ios-env\.sh|just ios-(postinit|check|dev|build)" apps/identity-wallet/AGENTS.md
 ```
 Expect hits for `ios-env.sh` and the `just ios-*` recipes. **[any machine]**.
 
 ### AC4.2 — No doc instructs editing `.cargo/config.toml` or hardcoding an Xcode path; obsolete cc-wrapper entries removed/relabeled
 **Automated/scriptable check.** Phase 3 Task 2 Step 3:
 ```bash
-grep -n "/Applications/Xcode" apps/identity-wallet/CLAUDE.md
-grep -n "\.cargo/config.toml" apps/identity-wallet/CLAUDE.md
-grep -niE "sed -i|ENABLE_USER_SCRIPT_SANDBOXING = YES" apps/identity-wallet/CLAUDE.md
+grep -n "/Applications/Xcode" apps/identity-wallet/AGENTS.md
+grep -n "\.cargo/config.toml" apps/identity-wallet/AGENTS.md
+grep -niE "sed -i|ENABLE_USER_SCRIPT_SANDBOXING = YES" apps/identity-wallet/AGENTS.md
 ```
 Expect no output except, at most, a clearly-labeled historical "(resolved)" note —
 no instruction tells the reader to perform these manually. **[any machine]**.
 
-### AC4.3 — "Last verified"/"Last updated" dates bumped on every edited CLAUDE.md
+### AC4.3 — "Last verified"/"Last updated" dates bumped on every edited AGENTS.md
 **Automated/scriptable check.** Phase 3 Task 3 Step 2:
 ```bash
-grep -nE "Last (verified|updated): 2026-06-20" apps/identity-wallet/CLAUDE.md
-grep -nE "Last verified: 2026-06-20" CLAUDE.md
+grep -nE "Last (verified|updated): 2026-06-20" apps/identity-wallet/AGENTS.md
+grep -nE "Last verified: 2026-06-20" AGENTS.md
 ```
-Both edited CLAUDE.md files carry `2026-06-20`. **[any machine]**.
+Both edited AGENTS.md files carry `2026-06-20`. **[any machine]**.
 
 ---
 
@@ -329,14 +329,14 @@ blocking Cargo) must be present, each with a Reproduction and Workaround section
 short human read confirms the reproductions are concrete (the `grep -c` proves both
 sections exist). **[any machine]**.
 
-### AC5.2 — Patch comment, `ios-postinit` script, and `CLAUDE.md` reference the record with "remove when fixed upstream"
+### AC5.2 — Patch comment, `ios-postinit` script, and `AGENTS.md` reference the record with "remove when fixed upstream"
 **Automated/scriptable check.** Phase 4 Task 2 Step 3:
 ```bash
 grep -rn "ios-upstream-bugs.md" \
   apps/identity-wallet/swift-rs-patch/src-rs/build.rs \
   Cargo.toml \
   apps/identity-wallet/scripts/ios-postinit.sh \
-  apps/identity-wallet/CLAUDE.md
+  apps/identity-wallet/AGENTS.md
 ```
 Expect at least one hit in each of the four files; the swift-rs/Cargo references
 carry a "remove when fixed upstream" note. **[any machine]**.
@@ -362,7 +362,7 @@ grep -niE "BGTaskScheduler|port the (ui )?shell|never|UniFFI" docs/mobile-native
 ```
 Expect matches for the trigger (background PLC monitoring → `BGTaskScheduler`), the
 "never reimplement the crypto in Swift" rule, and UniFFI. Also confirm the pointer
-from `apps/identity-wallet/CLAUDE.md` exists. A human read confirms the record reads
+from `apps/identity-wallet/AGENTS.md` exists. A human read confirms the record reads
 as a coherent decision. **[any machine]**.
 
 ### AC6.2 — No SwiftUI/UniFFI/FFI code added; Tauri dependency and app behavior unchanged (negative)

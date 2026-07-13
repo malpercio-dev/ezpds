@@ -18,7 +18,7 @@ in `docs/` are the home for ticket traceability.
 
 This document is the durable file:line index the review produced, so the cleanup
 issues can be executed without re-running the audit. Pattern comments required
-by `crates/pds/CLAUDE.md` were **not** flagged.
+by `crates/pds/AGENTS.md` were **not** flagged.
 
 ## Summary counts
 

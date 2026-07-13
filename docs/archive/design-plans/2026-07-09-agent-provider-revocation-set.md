@@ -101,7 +101,7 @@ registrations remain owner-revoked only.
 - **Modified:** `auth/mod.rs`, `routes/mod.rs`, `app.rs` (registration); `routes/agent_identity.rs`
   (call the shared module); `routes/oauth_server_metadata.rs` (`REVOKED_EVENT_TYPE`);
   `routes/agent_auth_test.rs` (round-trip the endpoint + full SET journey); `crates/pds/assets/auth.md`
-  (§ scope note, § metadata note, §7); `crates/pds/CLAUDE.md`; `pds.dev.toml`.
+  (§ scope note, § metadata note, §7); `crates/pds/AGENTS.md`; `pds.dev.toml`.
 
 ## Verification
 

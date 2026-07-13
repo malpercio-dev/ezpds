@@ -1,7 +1,7 @@
 name: Nix · flake check
 
 # Validates that the flake still evaluates: the devenv dev shell (the entire dev
-# environment) and nixosModules.default (a real deploy artifact, see nix/CLAUDE.md).
+# environment) and nixosModules.default (a real deploy artifact, see nix/AGENTS.md).
 # `just nix-check` has always existed as the local command; before this workflow no CI
 # lane ever ran it, so a broken flake.lock bump or module.nix typo surfaced only when
 # someone next entered `nix develop`. Path-filtered: only nix-related changes can break

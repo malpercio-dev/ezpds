@@ -5,7 +5,7 @@
 - macOS with Xcode and iOS Simulator installed
 - Nix dev shell active (`nix develop --impure --accept-flake-config` from workspace root)
 - `pnpm install` completed in `apps/identity-wallet/`
-- `cargo tauri ios init` completed with PATH and sandbox patches applied (see `apps/identity-wallet/CLAUDE.md` First-Time Setup)
+- `cargo tauri ios init` completed with PATH and sandbox patches applied (see `apps/identity-wallet/AGENTS.md` First-Time Setup)
 - All automated tests passing:
   ```bash
   cargo test -p identity-wallet -- claim

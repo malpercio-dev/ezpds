@@ -18,7 +18,7 @@
 ### Task 1: Move the crate directory with git
 
 **Files:**
-- Rename: `crates/relay/` → `crates/pds/` (entire directory, including `src/`, `assets/`, `Cargo.toml`, `CLAUDE.md`, `src/db/CLAUDE.md`, all migrations)
+- Rename: `crates/relay/` → `crates/pds/` (entire directory, including `src/`, `assets/`, `Cargo.toml`, `AGENTS.md`, `src/db/AGENTS.md`, all migrations)
 
 **Step 1: Move the directory**
 

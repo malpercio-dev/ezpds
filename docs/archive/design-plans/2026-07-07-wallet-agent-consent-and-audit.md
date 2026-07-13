@@ -100,7 +100,7 @@ registration flow.
 - **Prerequisite:** the [agent scope-enforcement plan](2026-07-07-agent-scope-enforcement.md) —
   audit attribution rides on the `registration_id` token claim it introduces.
 - New server routes need `.bru` files (`just bruno-check`); `/v1/agents*` are provisioning-style
-  routes — follow `crates/pds/CLAUDE.md` for route/DB layering and the guard choice
+  routes — follow `crates/pds/AGENTS.md` for route/DB layering and the guard choice
   (`require_session` family, not admin guards).
 - The Linear specs for MM-169/170 contain the exact request/response shapes — implement to those,
   and note that MM-169 (claim polling grant at the token endpoint) is how the *agent* learns the

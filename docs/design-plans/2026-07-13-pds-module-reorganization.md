@@ -30,7 +30,7 @@ Two facts make the reorganization cheap:
 
 None of the moves touch the crate's hard rules (route isolation, pattern
 comments, DB ownership) — pattern comments travel with their files, and the
-`crates/pds/CLAUDE.md` module map must be updated in the same PR as each move.
+`crates/pds/AGENTS.md` module map must be updated in the same PR as each move.
 
 ## Current top-level inventory
 
@@ -136,7 +136,7 @@ Result: 31 top-level files → ~17 entries.
   reached the same conclusion and extends it to `token.rs`: token *extraction*
   (`auth/bearer.rs`) lives inside `auth/` while the hashing/generation
   primitive lives outside, which blurs the "where do I audit token handling"
-  boundary. `oauth_client_resolution.rs` is also missing from the CLAUDE.md
+  boundary. `oauth_client_resolution.rs` is also missing from the AGENTS.md
   module map today.
 - **state.rs** — every file in the crate depends on `AppState`, so `app.rs`
   churns constantly and must be read for unrelated reasons. A `pub use` shim
@@ -178,4 +178,4 @@ Result: 31 top-level files → ~17 entries.
 6. **MM-333, MM-335** — dedup passes, any time.
 
 Each PR: move files with their pattern comments, update `main.rs` mods and
-import paths, update the module map in `crates/pds/CLAUDE.md`, run `just ci-pds`.
+import paths, update the module map in `crates/pds/AGENTS.md`, run `just ci-pds`.

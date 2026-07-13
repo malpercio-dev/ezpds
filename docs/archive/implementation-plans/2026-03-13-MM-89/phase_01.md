@@ -595,16 +595,16 @@ git commit -m "feat(crypto): implement build_did_plc_genesis_op for did:plc gene
 <!-- END_TASK_2 -->
 
 <!-- START_TASK_3 -->
-### Task 3: Update crates/crypto/CLAUDE.md
+### Task 3: Update crates/crypto/AGENTS.md
 
 **Verifies:** None (documentation)
 
 **Files:**
-- Modify: `crates/crypto/CLAUDE.md`
+- Modify: `crates/crypto/AGENTS.md`
 
-**Step 1: Add new contracts to CLAUDE.md**
+**Step 1: Add new contracts to AGENTS.md**
 
-In `/Users/malpercio/workspace/malpercio-dev/ezpds/crates/crypto/CLAUDE.md`, update the "Last verified" date to `2026-03-13` and add the following to the **Public API contracts** section (add after the existing contracts):
+In `/Users/malpercio/workspace/malpercio-dev/ezpds/crates/crypto/AGENTS.md`, update the "Last verified" date to `2026-03-13` and add the following to the **Public API contracts** section (add after the existing contracts):
 
 ```markdown
 ### `build_did_plc_genesis_op`
@@ -650,8 +650,8 @@ Add to the existing dependencies list:
 **Step 3: Commit**
 
 ```bash
-git add crates/crypto/CLAUDE.md
-git commit -m "docs(crypto): update CLAUDE.md with build_did_plc_genesis_op contracts (MM-89)"
+git add crates/crypto/AGENTS.md
+git commit -m "docs(crypto): update AGENTS.md with build_did_plc_genesis_op contracts (MM-89)"
 ```
 <!-- END_TASK_3 -->
 

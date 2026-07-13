@@ -13,7 +13,7 @@ The config and secrets story is unified across all three environments by the rel
 - The relay deploys to **Railway** from the committed `Dockerfile`, with a persistent volume mounted at the data dir and config/secrets supplied via Railway variables; the public URL resolves and `/xrpc/_health` is green.
 - The **NixOS lab host continues to deploy via colmena**, now running the *same* container image through `virtualisation.oci-containers`. `services.ezpds` is reworked (or wrapped) accordingly; the crane relay build (`flake.nix`) and `nix/docker.nix` are retired or explicitly deprecated.
 - Reproducibility is preserved at the **pinned-base-image-digest + `Cargo.lock`** level, documented as an explicit, accepted downgrade from flake-locked builds.
-- Docs (`nix/CLAUDE.md`, root `CLAUDE.md` commands, deploy notes) describe the Docker/Railway workflow and the retained NixOS-via-`oci-containers` path. The Bruno collection and health endpoints are unchanged.
+- Docs (`nix/AGENTS.md`, root `AGENTS.md` commands, deploy notes) describe the Docker/Railway workflow and the retained NixOS-via-`oci-containers` path. The Bruno collection and health endpoints are unchanged.
 - No relay behavior change beyond config/TLS wiring. The single-instance SQLite model is unchanged and documented (Railway = one instance + volume; no horizontal scale until the per-user-DB/Postgres story lands).
 
 ## Acceptance Criteria
@@ -41,7 +41,7 @@ The config and secrets story is unified across all three environments by the rel
 
 ### relay-containerization.AC5: Reproducibility & docs
 - **relay-containerization.AC5.1 Success:** the Dockerfile pins base images **by digest**, and the build uses the committed `Cargo.lock`.
-- **relay-containerization.AC5.2 Success:** `nix/CLAUDE.md`, root `CLAUDE.md` (Commands + Flake Outputs), and a deploy note describe the Docker/Railway/oci-containers workflow; no doc presents the removed Nix build outputs as current; "Last verified" dates are bumped.
+- **relay-containerization.AC5.2 Success:** `nix/AGENTS.md`, root `AGENTS.md` (Commands + Flake Outputs), and a deploy note describe the Docker/Railway/oci-containers workflow; no doc presents the removed Nix build outputs as current; "Last verified" dates are bumped.
 
 ### relay-containerization.AC6: No behavior/scope regression
 - **relay-containerization.AC6.1 Success:** relay routes/behavior are unchanged — `cargo test --workspace` (relay tests) pass.
@@ -201,8 +201,8 @@ This is flagged as a decision in the implementation plan's Phase 5; default to O
 **Goal:** Docs reflect the Docker/Railway/oci-containers reality.
 
 **Components:**
-- `nix/CLAUDE.md`: rewrite to describe the `oci-containers` module and the retired crane/docker.nix outputs.
-- Root `CLAUDE.md`: update the Commands/Flake-Outputs sections (Docker build is now `docker build`, not `nix build .#docker-image`); note Railway as a deploy target.
+- `nix/AGENTS.md`: rewrite to describe the `oci-containers` module and the retired crane/docker.nix outputs.
+- Root `AGENTS.md`: update the Commands/Flake-Outputs sections (Docker build is now `docker build`, not `nix build .#docker-image`); note Railway as a deploy target.
 - A short deploy/README note: the container runtime contract, the Railway setup, the colmena/oci path, the image-distribution choice, and the explicit reproducibility tradeoff. Bump "Last verified" dates.
 
 **Dependencies:** Phases 1-5.

@@ -2,7 +2,7 @@
 
 **Goal:** Guarantee graceful fallback across every failure mode, cap response buffering, and document the surface.
 
-**Architecture:** Complete the best-effort fallback ladder in `pipethrough_munged`, add a response buffer cap, add example Bruno requests, and update `crates/pds/CLAUDE.md`. No new endpoints.
+**Architecture:** Complete the best-effort fallback ladder in `pipethrough_munged`, add a response buffer cap, add example Bruno requests, and update `crates/pds/AGENTS.md`. No new endpoints.
 
 **Tech Stack:** Rust, serde_json, wiremock (tests), Bruno `.bru` files, Markdown docs.
 
@@ -102,18 +102,18 @@ Expected: Passes (route ⇄ Bruno parity intact).
 ### Task 4: Documentation
 
 **Files:**
-- Modify: `crates/pds/CLAUDE.md` (Module Map + `routes/service_proxy.rs` row)
+- Modify: `crates/pds/AGENTS.md` (Module Map + `routes/service_proxy.rs` row)
 
 **Implementation:**
 
 - Add a `read_after_write/` entry to the Module Map describing the buffered munge path, the six NSIDs, rev-faithful selection via `atproto-repo-rev` + `repo_seq`, `LocalViewer` hydration, best-effort fallback, and the `Atproto-Upstream-Lag` header.
 - Note the `service_proxy.rs` `proxy_request` extraction (shared streaming + buffered inner) and that `mint_service_auth` is now `pub(crate)`.
 - Note the new `[appview] cdn_url` config knob (`EZPDS_APPVIEW_CDN_URL`, default `https://cdn.bsky.app`).
-- Update the "Last verified" date at the top of `crates/pds/CLAUDE.md`.
+- Update the "Last verified" date at the top of `crates/pds/AGENTS.md`.
 
-Do **not** add ticket references (MM-226) to source or CLAUDE.md per repo convention.
+Do **not** add ticket references (MM-226) to source or AGENTS.md per repo convention.
 
-**Verification:** `just ci-pds` green (fmt, clippy `-D warnings`, tests, audit). Manual read-through of the CLAUDE.md diff.
+**Verification:** `just ci-pds` green (fmt, clippy `-D warnings`, tests, audit). Manual read-through of the AGENTS.md diff.
 
 **Commit:** `docs(pds): document read_after_write module and config`
 <!-- END_TASK_4 -->

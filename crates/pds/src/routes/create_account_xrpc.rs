@@ -288,7 +288,7 @@ async fn promote_new_account(
     })?;
 
     // Acquire the firehose lock *before* opening the transaction — see the firehose section of
-    // crates/pds/CLAUDE.md for why that order matters on the single-connection pool.
+    // crates/pds/AGENTS.md for why that order matters on the single-connection pool.
     let emit_guard = state.firehose.lock_emit().await;
     let mut tx = state
         .db

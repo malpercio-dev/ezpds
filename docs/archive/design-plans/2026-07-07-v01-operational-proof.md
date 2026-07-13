@@ -30,7 +30,7 @@ checklist document. Together these are the release gate for calling v0.1 done.
    compatibility) so operators can keep it off the public interface.
 
 2. **Initial instrument set** (deliberately small; each instrument documented in
-   `crates/pds/CLAUDE.md`):
+   `crates/pds/AGENTS.md`):
    - `firehose_subscribers` (gauge), `firehose_events_total` (counter, by frame type),
      `firehose_backfill_window_seconds` (gauge from oldest retained seq).
    - `relay_crawl_requests_total` (counter, by outcome) around the requestCrawl trigger.
@@ -104,7 +104,7 @@ metrics for the iOS apps, converting `tools/interop` itself.
   before `app()`, pass handles through state; avoid global statics except the exporter registry if
   the chosen crate requires it.
 - `GET /metrics` is a route: it needs a `bruno/` entry per repo policy (`just bruno-check`).
-- Keep instrument names/labels in one constants module so the CLAUDE.md table can't drift silently.
+- Keep instrument names/labels in one constants module so the AGENTS.md table can't drift silently.
 - The harness should reuse fixture helpers from existing `#[cfg(test)]` code where exportable;
   if that requires making a `pds` test-support feature, prefer a `tests/common/mod.rs` copy over
   adding a public feature to the crate.

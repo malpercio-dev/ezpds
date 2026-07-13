@@ -12,7 +12,7 @@ The "hybrid" part of the approach means Nix is kept as the sole provider of deve
 - Nix/devenv remains the single tool provider — node, pnpm, cargo-tauri, and rustup all stay Nix-provisioned, and the build still runs from the devenv shell. Inside that shell, `just build` (`cargo build --workspace`), `just test`, `just clippy`, and `nix build .#relay --accept-flake-config` all still pass — in particular the host `security-framework` C build still links.
 - The CLI build (`cargo tauri ios dev`/`build`) and the Xcode-driven build (Run Script "Build Rust Code" phase) resolve the toolchain from the **same** committed env script — one source of truth, no divergence.
 - The Tauri/macOS workarounds that survive de-Nixing — the `swift-rs` `--disable-sandbox` patch, the `project.pbxproj` PATH prepend, and `ENABLE_USER_SCRIPT_SANDBOXING = NO` — are applied by a single idempotent script invoked via a `just` recipe, plus a `just` drift-check recipe that exits non-zero when the generated Xcode project is missing any patch.
-- `apps/identity-wallet/CLAUDE.md` documents the de-Nixed workflow (the shared env script, the `just ios-*` entry points, the surviving patches). Manual prose-only pbxproj instructions and the hardcoded-path troubleshooting entries are removed or replaced by references to the script.
+- `apps/identity-wallet/AGENTS.md` documents the de-Nixed workflow (the shared env script, the `just ios-*` entry points, the surviving patches). Manual prose-only pbxproj instructions and the hardcoded-path troubleshooting entries are removed or replaced by references to the script.
 - The two novel macOS/Xcode bugs are documented **locally** (each with a minimal reproduction and the exact workaround), so they can be filed/PR'd upstream manually later. The `swift-rs` patch comment, the post-init script, and the docs reference this local record with a "remove when fixed upstream" note.
 - The native SwiftUI-shell-over-Rust-core migration is captured as a trigger-gated decision record (trigger: background PLC monitoring becomes a hard requirement) and is explicitly **not** implemented by this plan.
 
@@ -40,13 +40,13 @@ The "hybrid" part of the approach means Nix is kept as the sole provider of deve
 - **denix-ios-build.AC3.5 Success:** The Xcode Run Script "Build Rust Code" phase and `just ios-build` resolve the toolchain identically — both source `ios-env.sh` (single source of truth, no divergence).
 
 ### denix-ios-build.AC4: Documentation reflects the de-Nixed workflow
-- **denix-ios-build.AC4.1 Success:** `apps/identity-wallet/CLAUDE.md` documents `ios-env.sh` and the `just ios-*` workflow.
+- **denix-ios-build.AC4.1 Success:** `apps/identity-wallet/AGENTS.md` documents `ios-env.sh` and the `just ios-*` workflow.
 - **denix-ios-build.AC4.2 Success:** No doc instructs editing `.cargo/config.toml` or hardcoding an Xcode path; obsolete cc-wrapper troubleshooting entries are removed or marked historical.
-- **denix-ios-build.AC4.3 Success:** "Last verified"/"Last updated" dates are bumped on every edited CLAUDE.md.
+- **denix-ios-build.AC4.3 Success:** "Last verified"/"Last updated" dates are bumped on every edited AGENTS.md.
 
 ### denix-ios-build.AC5: Upstream bugs documented locally (for later manual filing)
 - **denix-ios-build.AC5.1 Success:** A local record documents both bugs — swift-rs `sandbox_apply` EPERM on macOS 26, and Xcode user-script-sandbox blocking Cargo — each with a minimal reproduction and the exact workaround applied.
-- **denix-ios-build.AC5.2 Success:** The swift-rs patch comment, the `ios-postinit` script, and `CLAUDE.md` reference this local record with a "remove when fixed upstream" note.
+- **denix-ios-build.AC5.2 Success:** The swift-rs patch comment, the `ios-postinit` script, and `AGENTS.md` reference this local record with a "remove when fixed upstream" note.
 
 ### denix-ios-build.AC6: Migration decision record (documentation only)
 - **denix-ios-build.AC6.1 Success:** A decision record states the SwiftUI-shell-over-Rust-core migration, its trigger (background PLC monitoring becomes a hard requirement), and "port the shell, never the crypto."
@@ -94,8 +94,8 @@ The current toolchain is already rustup-managed (`languages.rust` is deliberatel
 | `.cargo/config.toml` iOS sim/device linker | same file `:44-48` | Nix cc-wrapper injects macOS sysroot on iOS link (UIKit not found) | **Deleted**; linker set to xcrun-resolved clang |
 | `DEVELOPER_DIR` re-export (hardcoded) | `devenv.nix:33-38` | Nix Darwin hooks clobber `DEVELOPER_DIR` | **De-hardcoded**: derived via `xcode-select -p` in `ios-env.sh`, still exported in-shell |
 | `swift-rs` `--disable-sandbox` fork | `apps/identity-wallet/swift-rs-patch/src-rs/build.rs:264`, wired via `Cargo.toml:100-101` | macOS 26 `sandbox_apply()` EPERM in SwiftPM (not Nix) | **Survives** → scripted + local bug doc |
-| pbxproj PATH prepend | `apps/identity-wallet/CLAUDE.md:177-189` | Xcode Run Script phase doesn't inherit cargo's PATH (not Nix) | **Survives** → scripted (also sources `ios-env.sh`) |
-| pbxproj `ENABLE_USER_SCRIPT_SANDBOXING = NO` | `apps/identity-wallet/CLAUDE.md:191-207` | macOS 26 + Xcode 14+ sandbox blocks Cargo `readdir` (not Nix) | **Survives** → scripted |
+| pbxproj PATH prepend | `apps/identity-wallet/AGENTS.md:177-189` | Xcode Run Script phase doesn't inherit cargo's PATH (not Nix) | **Survives** → scripted (also sources `ios-env.sh`) |
+| pbxproj `ENABLE_USER_SCRIPT_SANDBOXING = NO` | `apps/identity-wallet/AGENTS.md:191-207` | macOS 26 + Xcode 14+ sandbox blocks Cargo `readdir` (not Nix) | **Survives** → scripted |
 
 Outcome: every hardcoded path is gone, `.cargo/config.toml` is deleted, the overrides live in one xcrun-derived script with a single source of truth, and the three survivors (macOS/Xcode issues independent of Nix) are automated and documented for later upstream filing. The residual, relative to a full Nix-free build: the build still runs in the devenv shell and a (now robust, `xcode-select`-derived) `DEVELOPER_DIR` is still exported. Both are harmless; full exit from Nix remains available later if desired.
 
@@ -112,10 +112,10 @@ De-Nixing does not improve background execution. `plc_monitor.rs` runs a foregro
 - **rustup-not-Nix-rust** is already the project's decision (`devenv.nix:16-19`, with `languages.rust` intentionally absent). This plan keeps rustup and Nix tooling but removes the hardcoded Xcode coupling layered on top of them.
 - **`Justfile` task runner** already centralizes developer commands (`check`, `build`, `test`, `fmt`, `clippy`, `nix-build`, `ci`, `nix-check`). New `ios-*` recipes follow the same one-line-recipe-with-comment style.
 - **`devenv.nix` `enterShell`** already runs shell logic at shell entry (the rustup install check, the `DEVELOPER_DIR` re-export). Sourcing `ios-env.sh` from `enterShell` extends an existing pattern rather than introducing a new mechanism.
-- **`src-tauri/gen/` is gitignored** and regenerated per machine by `cargo tauri ios init` (`apps/identity-wallet/CLAUDE.md:140`, `:175`). Patch automation must target this regenerated, untracked directory — hence an idempotent script rather than a committed patch.
+- **`src-tauri/gen/` is gitignored** and regenerated per machine by `cargo tauri ios init` (`apps/identity-wallet/AGENTS.md:140`, `:175`). Patch automation must target this regenerated, untracked directory — hence an idempotent script rather than a committed patch.
 - **Cargo `[patch.crates-io]`** already wires the vendored `swift-rs` fork (`Cargo.toml:100-101`). This plan keeps that mechanism and adds a local-bug-doc link so it can be retired cleanly.
 - **`flake.nix` `buildDepsOnly` is already scoped** to relay-related crates only (`flake.nix:46-48`), explicitly excluding `identity-wallet` because Tauri's native deps don't build under Nix. Removing the iOS app's hardcoded toolchain coupling is consistent with this existing boundary.
-- **CLAUDE.md as the developer runbook** — the project documents setup/troubleshooting in `apps/identity-wallet/CLAUDE.md`, with a "Last verified" freshness-date convention. Updates land there.
+- **AGENTS.md as the developer runbook** — the project documents setup/troubleshooting in `apps/identity-wallet/AGENTS.md`, with a "Last verified" freshness-date convention. Updates land there.
 
 ## Implementation Phases
 
@@ -152,16 +152,16 @@ De-Nixing does not improve background execution. `plc_monitor.rs` runs a foregro
 
 <!-- START_PHASE_3 -->
 ### Phase 3: Documentation overhaul
-**Goal:** `apps/identity-wallet/CLAUDE.md` reflects the de-Nixed reality so a fresh machine setup follows the script, not prose.
+**Goal:** `apps/identity-wallet/AGENTS.md` reflects the de-Nixed reality so a fresh machine setup follows the script, not prose.
 
 **Components:**
-- Rewrite "First-Time Setup", "Xcode build phase PATH", "Disable user script sandboxing", and the cc-wrapper "Troubleshooting" entries (`apps/identity-wallet/CLAUDE.md:157-210`, `:378-427`) to describe: `ios-env.sh`, the `just ios-*` workflow, and the surviving patches applied by `just ios-postinit`.
+- Rewrite "First-Time Setup", "Xcode build phase PATH", "Disable user script sandboxing", and the cc-wrapper "Troubleshooting" entries (`apps/identity-wallet/AGENTS.md:157-210`, `:378-427`) to describe: `ios-env.sh`, the `just ios-*` workflow, and the surviving patches applied by `just ios-postinit`.
 - Remove or mark-historical the troubleshooting entries that no longer apply (the three cc-wrapper failures; the hardcoded `DEVELOPER_DIR` entry).
-- Update the root `CLAUDE.md` mobile section and `devenv.nix` comments where they reference the old hardcoded iOS setup. Bump the "Last verified" dates.
+- Update the root `AGENTS.md` mobile section and `devenv.nix` comments where they reference the old hardcoded iOS setup. Bump the "Last verified" dates.
 
 **Dependencies:** Phases 1-2 (document the final shape).
 
-**Done when:** A reader following only `CLAUDE.md` can set up and build the iOS app on a fresh Mac without referring to this design plan; no doc instructs editing `.cargo/config.toml` or hardcoding an Xcode path.
+**Done when:** A reader following only `AGENTS.md` can set up and build the iOS app on a fresh Mac without referring to this design plan; no doc instructs editing `.cargo/config.toml` or hardcoding an Xcode path.
 <!-- END_PHASE_3 -->
 
 <!-- START_PHASE_4 -->
@@ -170,7 +170,7 @@ De-Nixing does not improve background execution. `plc_monitor.rs` runs a foregro
 
 **Components:**
 - A local record (e.g. `docs/` note or a clearly-marked section) for both bugs: (1) `swift-rs` `sandbox_apply()` EPERM on macOS 26 during SwiftPM manifest compilation — reference `apps/identity-wallet/swift-rs-patch/src-rs/build.rs:262-264`; (2) Xcode user-script-sandbox (`ENABLE_USER_SCRIPT_SANDBOXING = YES`) blocking Cargo's directory walk on macOS 26. Each entry includes a minimal reproduction and the exact workaround applied.
-- Link this local record from the `swift-rs` patch comment, the `ios-postinit` script, and `CLAUDE.md`, each with a "remove when fixed upstream" note.
+- Link this local record from the `swift-rs` patch comment, the `ios-postinit` script, and `AGENTS.md`, each with a "remove when fixed upstream" note.
 
 **Dependencies:** Phases 1-2 (so the reproductions and exact patch points are settled). No external action (no issues filed) is required for this phase to be done.
 
@@ -182,7 +182,7 @@ De-Nixing does not improve background execution. `plc_monitor.rs` runs a foregro
 **Goal:** Record the validated "destination" architecture and its trigger so the decision is captured, without building it.
 
 **Components:**
-- A decision-record note (in `docs/`, referenced from `CLAUDE.md`): migrate to a native SwiftUI shell over the same Rust core (UniFFI) **only** when background PLC monitoring becomes a hard requirement; port the shell, never the crypto core; note the migration is pre-de-risked because only `run_monitoring_loop` and `emit_if_alerts` in `plc_monitor.rs` touch Tauri.
+- A decision-record note (in `docs/`, referenced from `AGENTS.md`): migrate to a native SwiftUI shell over the same Rust core (UniFFI) **only** when background PLC monitoring becomes a hard requirement; port the shell, never the crypto core; note the migration is pre-de-risked because only `run_monitoring_loop` and `emit_if_alerts` in `plc_monitor.rs` touch Tauri.
 
 **Dependencies:** None (independent). Explicitly **not** an implementation phase for the migration itself — no FFI, no SwiftUI code.
 

@@ -35,7 +35,7 @@ separate commits (or separate PRs) in any order.
    for the public XRPC surface — but `/v1/admin/*` and the `/v1/*` provisioning routes have no
    cross-origin use case. Restructure so the permissive layer covers the XRPC/OAuth/public
    surface while admin/provisioning routes get no CORS layer (same-origin only), and add the
-   invariant to `crates/pds/CLAUDE.md`: **"Authentication must never be cookie-based; permissive
+   invariant to `crates/pds/AGENTS.md`: **"Authentication must never be cookie-based; permissive
    CORS on the public surface depends on it."**
 
 4. **Fix modulo bias in short-code generation.** `crates/pds/src/code_gen.rs` maps random bytes
@@ -83,7 +83,7 @@ dependency upgrades (axum 0.8 is MM-154).
 ### hardening.AC3: CORS scoping
 - **AC3.1:** Preflight `OPTIONS` against an `/xrpc/*` route still returns permissive headers;
   against `/v1/admin/*` it returns no `Access-Control-Allow-Origin`.
-- **AC3.2:** The no-cookie-auth invariant is stated in `crates/pds/CLAUDE.md`.
+- **AC3.2:** The no-cookie-auth invariant is stated in `crates/pds/AGENTS.md`.
 
 ### hardening.AC4: Code generation
 - **AC4.1:** Rejection sampling replaces the modulo; a uniformity test exists; all existing

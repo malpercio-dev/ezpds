@@ -187,11 +187,11 @@ Investigation mapped the current single-server binding and this design follows t
 
 **Components:**
 - New ADR in `docs/architecture/decisions/` — the multi-relay trust model: one global device key registered independently with N relays (revocation per-relay by design), and single-document keychain storage with Rust-owned active pointer.
-- `apps/admin-companion/CLAUDE.md` — keychain accounts, IPC command list, and contracts updated.
+- `apps/admin-companion/AGENTS.md` — keychain accounts, IPC command list, and contracts updated.
 
 **Dependencies:** Phases 1–3 (documents shipped behavior).
 
-**Done when:** admin-multi-server.AC5.1 satisfied (ADR exists and covers both decisions); CLAUDE.md contracts match the implemented command surface.
+**Done when:** admin-multi-server.AC5.1 satisfied (ADR exists and covers both decisions); AGENTS.md contracts match the implemented command surface.
 <!-- END_PHASE_4 -->
 
 ## Additional Considerations

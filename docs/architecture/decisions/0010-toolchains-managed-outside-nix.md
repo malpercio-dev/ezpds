@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-07-02 (backfilled)
 - **Deciders:** ezpds maintainers
-- **Related:** [`AGENTS.md`](../../../AGENTS.md) · [`apps/identity-wallet/CLAUDE.md`](../../../apps/identity-wallet/CLAUDE.md) · [`apps/identity-wallet/scripts/ios-env.sh`](../../../apps/identity-wallet/scripts/ios-env.sh) · [`docs/archive/design-plans/2026-06-20-denix-ios-build.md`](../../archive/design-plans/2026-06-20-denix-ios-build.md)
+- **Related:** [`AGENTS.md`](../../../AGENTS.md) · [`apps/identity-wallet/AGENTS.md`](../../../apps/identity-wallet/AGENTS.md) · [`apps/identity-wallet/scripts/ios-env.sh`](../../../apps/identity-wallet/scripts/ios-env.sh) · [`docs/archive/design-plans/2026-06-20-denix-ios-build.md`](../../archive/design-plans/2026-06-20-denix-ios-build.md)
 
 ## Context
 
@@ -43,7 +43,7 @@ Manage the compiler toolchains **outside Nix**:
   Script phase, so CLI and Xcode builds resolve identically.
 - **Complexity lives in `ios-env.sh`** (the `/nix/store` stripping, the
   `EZPDS_IOS_BUILD` gating). This is load-bearing and documented in the wallet
-  CLAUDE.md Troubleshooting section.
+  AGENTS.md Troubleshooting section.
 - Nix remains responsible for the *shell* (tools, headers, caches), just not the
   compilers.
 

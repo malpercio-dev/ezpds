@@ -146,7 +146,7 @@ Update the `EZPDS_CONFIG` path. Leave `EZPDS_DATA_DIR` state path as-is (keep pa
 - Modify: `.env.local.example` — comments "The relay requires…", "the relay's public HTTPS URL", and the example host `EZPDS_PUBLIC_URL=https://relay.local` → `https://pds.local` (Sense-A). (Env var *names* stay `EZPDS_*`.)
 - Modify: `.dockerignore` — comments at lines ~9, ~19, ~25 ("the relay build needs none of this", "to compile the relay", "even for `-p relay`") → `pds`. The `-p relay` in the comment is illustrative; update to `-p pds`.
 - Modify: `nix/module.nix` — description strings only: `mkEnableOption "ezpds relay (OCI container)"` → `"ezpds PDS (OCI container)"`; "Relay OCI image reference…/relay@sha256" → "PDS OCI image reference…/pds@sha256"; "Public https URL of the relay." → "…of the PDS."; the "relay uid 10001" hardening comment → keep `relay uid` if it documents the kept unix user, else update prose. **KEEP** the option path `services.ezpds` and container name `ezpds` (public NixOS interface — not renamed; only the OCI image *reference* string default changes if the image is retagged, coordinate with Phase 02 Task 3's `pds:latest` tag).
-- Modify: `nix/CLAUDE.md` — Sense-A "relay" prose → "pds"/"PDS"; update `Last verified:` to 2026-06-26.
+- Modify: `nix/AGENTS.md` — Sense-A "relay" prose → "pds"/"PDS"; update `Last verified:` to 2026-06-26.
 - Modify: `railway.toml` — comment "the relay returns 200…" → "the pds returns 200…".
 - Modify: `scripts/ci/railway-deploy.sh` — comment "Deploy the relay to a Railway environment" → "Deploy the pds…".
 - Modify: `apps/identity-wallet/src-tauri/Info.ios.plist` — Sense-A comment (if any) → pds.

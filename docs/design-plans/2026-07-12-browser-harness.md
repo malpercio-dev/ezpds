@@ -6,7 +6,7 @@ Tracking issue: [MM-324](https://linear.app/malpercio/issue/MM-324/browser-test-
 
 Both mobile apps' frontends already run fine under a plain browser dev server — Svelte doesn't need Tauri to render. The only thing that breaks is the seam where each frontend calls into native Rust code. This design closes that gap by intercepting calls at that single seam, using Tauri's own `mockIPC` test utility, rather than by rewriting or aliasing any app code. A small activation file (`hooks.client.ts`) checks a dev-only environment flag and, only then, swaps in one of two handler sets: a stateful in-memory "fake" that models each app's domain objects (identities, pairings, claim codes, etc.) in plain TypeScript and is driven at runtime through a `window.__harness` console API (switch scenarios, force a specific command to fail, deliver an event) — or a "proxy" mode that forwards the subset of commands that are thin HTTP wrappers to a real, hermetically-spawned local PDS, using a real WebCrypto keypair for signatures. Commands that embed substantial Rust-side logic (repo migration, DID ceremony internals, OAuth) stay faked even in proxy mode, since re-implementing them in TypeScript would be its own maintenance burden with limited payoff.
 
-The two apps share no frontend code today, so rather than introduce a shared package the harness is implemented twice, with a deliberately identical file layout and API shape per app. Work proceeds in seven phases: wallet fake mode, wallet scenarios/control API, admin-companion's equivalent, a shared hermetic-PDS spawn recipe plus a dev-server proxy route (keeping requests same-origin to sidestep CORS), each app's proxy mode, and finally a documented runbook (`.claude/launch.json` entries plus CLAUDE.md sections) so an agent can start and drive either harness without re-deriving any of this. A build-output check guards against the harness ever leaking into a production build.
+The two apps share no frontend code today, so rather than introduce a shared package the harness is implemented twice, with a deliberately identical file layout and API shape per app. Work proceeds in seven phases: wallet fake mode, wallet scenarios/control API, admin-companion's equivalent, a shared hermetic-PDS spawn recipe plus a dev-server proxy route (keeping requests same-origin to sidestep CORS), each app's proxy mode, and finally a documented runbook (`.claude/launch.json` entries plus AGENTS.md sections) so an agent can start and drive either harness without re-deriving any of this. A build-output check guards against the harness ever leaking into a production build.
 
 ## Definition of Done
 
@@ -14,7 +14,7 @@ The two apps share no frontend code today, so rather than introduce a shared pac
 2. **Fake mode** is the default: a stateful in-memory fake stands in for the Rust backend. It is scriptable — named scenario presets plus per-command error injection, controllable at runtime from the browser console via a `window.__harness` API — so any UI state (including rare error states) can be produced on demand.
 3. **Proxy mode** is available as an opt-in: commands that are thin HTTP wrappers over the PDS/relay API execute for real against a live Custos instance (a hermetic locally spawned PDS by default), with real P-256 signatures produced by WebCrypto. Commands that embed heavy Rust logic (repo migration legs, DID ceremony internals) remain faked in proxy mode and are documented as such.
 4. Harness code is provably absent from production builds — the activation seam is dev-gated and a build-output check enforces it.
-5. A runbook exists (per-app CLAUDE.md sections + `.claude/launch.json` entries) so a fresh agent session can start either app's harness and drive it without re-deriving any of this.
+5. A runbook exists (per-app AGENTS.md sections + `.claude/launch.json` entries) so a fresh agent session can start either app's harness and drive it without re-deriving any of this.
 
 Out of scope (deliberately): iOS-simulator automation (idb/XCUITest — separate effort), barcode-scan simulation (manual pairing entry already exists), and emulating ASWebAuthenticationSession for the wallet's OAuth flow (stays faked in both modes).
 
@@ -48,7 +48,7 @@ Out of scope (deliberately): iOS-simulator automation (idb/XCUITest — separate
 
 ### browser-harness.AC5: Agent runbook
 - **browser-harness.AC5.1 Success:** `.claude/launch.json` has named configurations to start each app's harness dev server.
-- **browser-harness.AC5.2 Success:** Each app's CLAUDE.md documents: how to start each mode, the `window.__harness` API, the scenario list, and the fake-only command list in proxy mode.
+- **browser-harness.AC5.2 Success:** Each app's AGENTS.md documents: how to start each mode, the `window.__harness` API, the scenario list, and the fake-only command list in proxy mode.
 
 ## Glossary
 
@@ -212,7 +212,7 @@ Fake mode maintains its own listener table; `window.__harness.emit('auth_ready')
 
 **Components:**
 - `.claude/launch.json` — named dev-server configurations for both apps' harness modes
-- `apps/identity-wallet/CLAUDE.md` + `apps/admin-companion/CLAUDE.md` — harness sections (modes, `window.__harness` API, scenario list, proxy-mode fake-only list)
+- `apps/identity-wallet/AGENTS.md` + `apps/admin-companion/AGENTS.md` — harness sections (modes, `window.__harness` API, scenario list, proxy-mode fake-only list)
 - `AGENTS.md` — one-paragraph pointer
 
 **Dependencies:** Phases 1–6 (documents what shipped).

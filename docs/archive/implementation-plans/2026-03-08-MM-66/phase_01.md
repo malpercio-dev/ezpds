@@ -6,7 +6,7 @@
 
 **Tech Stack:** Nix flakes, nixpkgs `dockerTools.buildLayeredImage`, crane (relay binary already built by MM-65)
 
-**Scope:** Phase 1 of 2 from the original design. Phase 2 covers build verification and CLAUDE.md update.
+**Scope:** Phase 1 of 2 from the original design. Phase 2 covers build verification and AGENTS.md update.
 
 **Codebase verified:** 2026-03-08
 

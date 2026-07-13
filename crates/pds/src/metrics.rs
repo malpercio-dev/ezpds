@@ -14,7 +14,7 @@
 //! unconditional while the endpoint 404s.
 //!
 //! Instrument names and label keys live in [`names`] — the single source of truth the
-//! documentation table in `crates/pds/CLAUDE.md` mirrors. Counters are named **without**
+//! documentation table in `crates/pds/AGENTS.md` mirrors. Counters are named **without**
 //! the `_total` suffix: the Prometheus exporter appends it per the OpenTelemetry
 //! Prometheus-compatibility spec (the unit test below pins the rendered names so drift or
 //! a double suffix fails fast).
@@ -32,7 +32,7 @@ use prometheus::{Encoder, TextEncoder};
 use crate::app::AppState;
 
 /// Instrument names (as constructed on the meter; counters gain `_total` when rendered)
-/// and label keys. Keep this module in lockstep with the table in `crates/pds/CLAUDE.md`.
+/// and label keys. Keep this module in lockstep with the table in `crates/pds/AGENTS.md`.
 pub mod names {
     /// Gauge: currently connected `subscribeRepos` WebSocket subscribers.
     pub const FIREHOSE_SUBSCRIBERS: &str = "firehose_subscribers";

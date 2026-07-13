@@ -2,7 +2,7 @@
 
 **Goal:** Record the validated "destination" architecture (native SwiftUI shell over the same Rust core) and its concrete trigger, so the decision is captured and discoverable — without building any of it.
 
-**Architecture:** One new decision-record doc + a CLAUDE.md pointer. **No FFI, no SwiftUI, no Tauri changes.**
+**Architecture:** One new decision-record doc + a AGENTS.md pointer. **No FFI, no SwiftUI, no Tauri changes.**
 
 **Tech Stack:** Markdown.
 
@@ -91,14 +91,14 @@ grep -niE "BGTaskScheduler|port the (ui )?shell|never|UniFFI" docs/mobile-native
 ```
 Expected: matches for the trigger (BGTaskScheduler), the "never reimplement … in Swift" rule, and UniFFI.
 
-**Step 3: Add a pointer from `apps/identity-wallet/CLAUDE.md`** — under the existing "Key Decisions" section, add:
+**Step 3: Add a pointer from `apps/identity-wallet/AGENTS.md`** — under the existing "Key Decisions" section, add:
 ```markdown
 - **Native migration is deferred, trigger-gated**: see `docs/mobile-native-migration-decision.md`. Migrate to a SwiftUI shell over the Rust core (UniFFI) only when background PLC monitoring becomes a hard requirement; port the shell, never the crypto.
 ```
 
 **Step 4: Commit**
 ```bash
-git add docs/mobile-native-migration-decision.md apps/identity-wallet/CLAUDE.md
+git add docs/mobile-native-migration-decision.md apps/identity-wallet/AGENTS.md
 git commit -m "docs: record deferred native SwiftUI migration decision + trigger"
 ```
 <!-- END_TASK_1 -->
@@ -129,6 +129,6 @@ Expected:
 
 ## Phase 5 Done When
 
-- `docs/mobile-native-migration-decision.md` exists, stating the SwiftUI-shell-over-Rust-core decision, the background-monitoring trigger, and "port the shell, never the crypto" (AC6.1), and is linked from `apps/identity-wallet/CLAUDE.md`.
+- `docs/mobile-native-migration-decision.md` exists, stating the SwiftUI-shell-over-Rust-core decision, the background-monitoring trigger, and "port the shell, never the crypto" (AC6.1), and is linked from `apps/identity-wallet/AGENTS.md`.
 - The Task 2 checks confirm no SwiftUI/UniFFI/FFI code or deps were added and Tauri is unchanged (AC6.2).
 - Edits committed.

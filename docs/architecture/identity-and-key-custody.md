@@ -46,7 +46,7 @@ index 1.
 ## Where keys live (wallet)
 
 Managed by the Obsign identity-wallet app
-([`apps/identity-wallet`](../../apps/identity-wallet/CLAUDE.md)):
+([`apps/identity-wallet`](../../apps/identity-wallet/AGENTS.md)):
 
 - **Device key** — `device_key.rs` dispatches at compile time: Secure Enclave
   `SecKey` on a real iOS device (private key never extractable), or a
@@ -57,7 +57,7 @@ Managed by the Obsign identity-wallet app
   create flow signs the genesis op with the *global* device key before the DID
   exists, then `adopt_global_device_key` aliases the per-DID slot to it.
 - **Shamir recovery shares** — the crypto crate splits the device key 2-of-3
-  ([`split_secret`/`combine_shares`](../../crates/crypto/CLAUDE.md)), matching
+  ([`split_secret`/`combine_shares`](../../crates/crypto/AGENTS.md)), matching
   the mapping in ADR-0001:
   - **Share 1 → iCloud Keychain** — the `POST /v1/dids` ceremony returns it and
     the app stores it under `recovery-share-1` (auto-backed-up by iCloud).
@@ -99,5 +99,5 @@ is the sovereign controller and subsequent operations can be self-signed.
 
 - Custody rationale and alternatives: [ADR-0001](decisions/0001-client-held-rotation-key-custody.md)
 - Migration design: [ADR-0002](decisions/0002-wallet-authorized-account-migration.md)
-- Crypto contracts: [`crates/crypto/CLAUDE.md`](../../crates/crypto/CLAUDE.md)
-- Wallet contracts: [`apps/identity-wallet/CLAUDE.md`](../../apps/identity-wallet/CLAUDE.md)
+- Crypto contracts: [`crates/crypto/AGENTS.md`](../../crates/crypto/AGENTS.md)
+- Wallet contracts: [`apps/identity-wallet/AGENTS.md`](../../apps/identity-wallet/AGENTS.md)

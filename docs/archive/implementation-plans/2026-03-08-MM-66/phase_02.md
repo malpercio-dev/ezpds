@@ -1,8 +1,8 @@
 # MM-66 Docker Image Implementation Plan — Phase 2
 
-**Goal:** Update CLAUDE.md with the `docker-image` Linux-only caveat, then verify the image builds, loads, runs, and meets size constraints on a Linux system.
+**Goal:** Update AGENTS.md with the `docker-image` Linux-only caveat, then verify the image builds, loads, runs, and meets size constraints on a Linux system.
 
-**Architecture:** No new Nix code. This phase has one code change (CLAUDE.md), and the remaining work is operational verification that must be executed on an x86_64-linux or aarch64-linux system (or via CI). All acceptance criteria in this phase require a Linux Docker daemon.
+**Architecture:** No new Nix code. This phase has one code change (AGENTS.md), and the remaining work is operational verification that must be executed on an x86_64-linux or aarch64-linux system (or via CI). All acceptance criteria in this phase require a Linux Docker daemon.
 
 **Tech Stack:** Nix CLI, Docker CLI (Linux only)
 
@@ -43,10 +43,10 @@ This phase verifies:
 <!-- START_SUBCOMPONENT_A (tasks 1-2) -->
 
 <!-- START_TASK_1 -->
-### Task 1: Update CLAUDE.md with `docker-image` Linux-only note
+### Task 1: Update AGENTS.md with `docker-image` Linux-only note
 
 **Files:**
-- Modify: `CLAUDE.md:13` (after the `nix build .#relay` line)
+- Modify: `AGENTS.md:13` (after the `nix build .#relay` line)
 
 **Current content at line 13:**
 
@@ -76,7 +76,7 @@ The full Commands section should read:
 **Verification:**
 
 ```bash
-grep "docker-image" CLAUDE.md
+grep "docker-image" AGENTS.md
 ```
 
 Expected: One line mentioning `nix build .#docker-image` and noting it is Linux-only.
@@ -84,8 +84,8 @@ Expected: One line mentioning `nix build .#docker-image` and noting it is Linux-
 **Commit:**
 
 ```bash
-git add CLAUDE.md
-git commit -m "docs(MM-66): note docker-image is Linux-only in CLAUDE.md"
+git add AGENTS.md
+git commit -m "docs(MM-66): note docker-image is Linux-only in AGENTS.md"
 ```
 
 <!-- END_TASK_1 -->

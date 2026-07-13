@@ -109,7 +109,7 @@ Investigation found the following patterns this design follows:
 - **Onboarding screen component pattern** — each step in `+page.svelte` corresponds to a component in `src/lib/components/onboarding/` that receives `onnext` / `onerror` callbacks and manages its own loading state.
 - **Health endpoint reuse** — `GET /xrpc/_health` is already used in `home.rs` to check relay reachability. The new `check_relay_health` command makes the same call against a caller-supplied URL.
 
-This design diverges from one existing decision: the CLAUDE.md documents "Compile-time relay URL" as an intentional choice. This design supersedes that decision — the compile-time constant becomes the default fallback only, with runtime configuration taking precedence.
+This design diverges from one existing decision: the AGENTS.md documents "Compile-time relay URL" as an intentional choice. This design supersedes that decision — the compile-time constant becomes the default fallback only, with runtime configuration taking precedence.
 
 ## Implementation Phases
 

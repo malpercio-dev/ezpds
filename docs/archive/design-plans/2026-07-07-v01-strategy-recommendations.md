@@ -57,11 +57,11 @@ v0.1 Operational Proof ───────────────────
 
 ## Ground rules for implementing agents
 
-These apply to every plan (they restate repo conventions from `AGENTS.md` / `crates/pds/CLAUDE.md`):
+These apply to every plan (they restate repo conventions from `AGENTS.md` / `crates/pds/AGENTS.md`):
 
 - Any new or changed PDS route **must** get a matching `.bru` file in `bruno/` (CI-enforced by
   `just bruno-check`).
-- No ticket references (`MM-xxx`) in source code or CLAUDE.md files — traceability lives in
+- No ticket references (`MM-xxx`) in source code or AGENTS.md files — traceability lives in
   `docs/` only.
 - Routes never import routes; shared logic goes in `auth/`, `db/`, or dedicated modules.
 - Tests are colocated `#[cfg(test)]` modules; router-level tests use `tower::ServiceExt::oneshot`

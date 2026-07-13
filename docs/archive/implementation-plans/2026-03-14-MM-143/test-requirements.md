@@ -29,8 +29,8 @@ Prerequisite for all checks: enter the Nix dev shell with `nix develop --impure 
 | AC5.1    | cargo-tauri in PATH after nix develop    | Automated         |
 | AC5.2    | node 22.x in PATH after nix develop     | Automated         |
 | AC5.3    | pnpm in PATH after nix develop          | Automated         |
-| AC5.4    | CLAUDE.md exists with required content   | Automated         |
-| AC5.5    | Root CLAUDE.md points to wallet CLAUDE.md| Automated         |
+| AC5.4    | AGENTS.md exists with required content   | Automated         |
+| AC5.5    | Root AGENTS.md points to wallet AGENTS.md| Automated         |
 | AC5.6    | src-tauri/gen/ in .gitignore             | Automated         |
 | AC6.1    | rust-check job documented                | Design-doc        |
 | AC6.2    | frontend-check job documented            | Design-doc        |
@@ -244,25 +244,25 @@ nix develop --impure --accept-flake-config --command bash -c \
   'command -v pnpm > /dev/null && echo "AC5.3 PASS" || echo "AC5.3 FAIL"'
 ```
 
-### AC5.4 — CLAUDE.md exists with required content (Automated)
+### AC5.4 — AGENTS.md exists with required content (Automated)
 
 Verify the file exists and contains all five required topics: macOS/Xcode prerequisites, Cocoapods, `pnpm install`, `cargo tauri ios init`, `cargo tauri ios dev`.
 
 ```bash
-test -f apps/identity-wallet/CLAUDE.md && \
-grep -q "Xcode" apps/identity-wallet/CLAUDE.md && \
-grep -q "Cocoapods" apps/identity-wallet/CLAUDE.md && \
-grep -q "cocoapods" apps/identity-wallet/CLAUDE.md && \
-grep -q "pnpm install" apps/identity-wallet/CLAUDE.md && \
-grep -q "cargo tauri ios init" apps/identity-wallet/CLAUDE.md && \
-grep -q "cargo tauri ios dev" apps/identity-wallet/CLAUDE.md && \
+test -f apps/identity-wallet/AGENTS.md && \
+grep -q "Xcode" apps/identity-wallet/AGENTS.md && \
+grep -q "Cocoapods" apps/identity-wallet/AGENTS.md && \
+grep -q "cocoapods" apps/identity-wallet/AGENTS.md && \
+grep -q "pnpm install" apps/identity-wallet/AGENTS.md && \
+grep -q "cargo tauri ios init" apps/identity-wallet/AGENTS.md && \
+grep -q "cargo tauri ios dev" apps/identity-wallet/AGENTS.md && \
 echo "AC5.4 PASS" || echo "AC5.4 FAIL"
 ```
 
-### AC5.5 — Root CLAUDE.md points to wallet CLAUDE.md (Automated)
+### AC5.5 — Root AGENTS.md points to wallet AGENTS.md (Automated)
 
 ```bash
-grep -q "apps/identity-wallet/CLAUDE.md" CLAUDE.md && \
+grep -q "apps/identity-wallet/AGENTS.md" AGENTS.md && \
 echo "AC5.5 PASS" || echo "AC5.5 FAIL"
 ```
 
@@ -392,14 +392,14 @@ check "AC2.5" bash -c '
 echo ""
 echo "=== AC5: Dev environment and documentation ==="
 check "AC5.4" bash -c '
-  test -f apps/identity-wallet/CLAUDE.md &&
-  grep -q "Xcode" apps/identity-wallet/CLAUDE.md &&
-  grep -q "Cocoapods" apps/identity-wallet/CLAUDE.md &&
-  grep -q "pnpm install" apps/identity-wallet/CLAUDE.md &&
-  grep -q "cargo tauri ios init" apps/identity-wallet/CLAUDE.md &&
-  grep -q "cargo tauri ios dev" apps/identity-wallet/CLAUDE.md
+  test -f apps/identity-wallet/AGENTS.md &&
+  grep -q "Xcode" apps/identity-wallet/AGENTS.md &&
+  grep -q "Cocoapods" apps/identity-wallet/AGENTS.md &&
+  grep -q "pnpm install" apps/identity-wallet/AGENTS.md &&
+  grep -q "cargo tauri ios init" apps/identity-wallet/AGENTS.md &&
+  grep -q "cargo tauri ios dev" apps/identity-wallet/AGENTS.md
 '
-check "AC5.5" bash -c 'grep -q "apps/identity-wallet/CLAUDE.md" CLAUDE.md'
+check "AC5.5" bash -c 'grep -q "apps/identity-wallet/AGENTS.md" AGENTS.md'
 check "AC5.6" bash -c 'grep -q "src-tauri/gen" .gitignore'
 
 echo ""

@@ -10,7 +10,7 @@
 - Apple Developer account with provisioning profile matching bundle ID `dev.malpercio.identitywallet`
 - Nix dev shell active from workspace root: `nix develop --impure --accept-flake-config`
 - Frontend dependencies installed: `cd apps/identity-wallet && pnpm install`
-- Xcode project generated: `cargo tauri ios init` (plus PATH and sandbox patches per CLAUDE.md)
+- Xcode project generated: `cargo tauri ios init` (plus PATH and sandbox patches per AGENTS.md)
 - Automated tests passing: `cargo test -p identity-wallet -- --test-threads=1 identity_store`
 
 ## Phase 1: Secure Enclave Device Key Generation (AC2.1)

@@ -29,7 +29,7 @@ git mv bruno/get_device_relay.bru bruno/get_device_pds.bru
 - `get_device_pds.bru`: `name: Get Device PDS`; `url: {{baseUrl}}/v1/devices/{{deviceId}}/pds`.
 - **`bruno/create_signing_key.bru`** — NOT renamed (its name isn't relay-based), but its `url:` is `{{baseUrl}}/v1/relay/keys` (the POST to the renamed route). Update → `{{baseUrl}}/v1/pds/keys`.
 
-(Per root CLAUDE.md, route changes mandate Bruno updates — all three `.bru` files touching the renamed routes are now covered.)
+(Per root AGENTS.md, route changes mandate Bruno updates — all three `.bru` files touching the renamed routes are now covered.)
 
 **Verification:** `grep -rn 'relay' bruno/` → no matches (incl. `create_signing_key.bru`).
 <!-- END_TASK_1 -->
@@ -38,21 +38,21 @@ git mv bruno/get_device_relay.bru bruno/get_device_pds.bru
 ### Task 2: Update the crate-level docs (moved with the crate in Phase 01)
 
 **Files:**
-- Modify: `crates/pds/CLAUDE.md` — title "# Relay Crate" → "# PDS Crate (Custos)"; "The relay is the axum-based web server…" → "The pds crate is the axum-based web server (the Custos PDS)…"; the module-map mentions of "relay" that are Sense-A. **KEEP** the `crawler.rs` description's Sense-B references to relays/BGSes and `requestCrawl`. Update the route table entries `get_device_relay`/`get_relay_signing_key` → `get_device_pds`/`get_pds_signing_key` and the paths.
-- Modify: `crates/pds/src/db/CLAUDE.md` — note that the `relay_signing_keys` table name is retained for migration-history reasons despite the rename (add a one-line "Naming note").
+- Modify: `crates/pds/AGENTS.md` — title "# Relay Crate" → "# PDS Crate (Custos)"; "The relay is the axum-based web server…" → "The pds crate is the axum-based web server (the Custos PDS)…"; the module-map mentions of "relay" that are Sense-A. **KEEP** the `crawler.rs` description's Sense-B references to relays/BGSes and `requestCrawl`. Update the route table entries `get_device_relay`/`get_relay_signing_key` → `get_device_pds`/`get_pds_signing_key` and the paths.
+- Modify: `crates/pds/src/db/AGENTS.md` — note that the `relay_signing_keys` table name is retained for migration-history reasons despite the rename (add a one-line "Naming note").
 - Update `Last verified:` dates to 2026-06-26.
 
-**Verification:** `grep -n 'relay' crates/pds/CLAUDE.md` → only Sense-B (crawler/BGS) + the explicit `relay_signing_keys` naming note remain.
+**Verification:** `grep -n 'relay' crates/pds/AGENTS.md` → only Sense-B (crawler/BGS) + the explicit `relay_signing_keys` naming note remain.
 <!-- END_TASK_2 -->
 
 <!-- START_TASK_3 -->
 ### Task 3: Update top-level project docs
 
 **Files:**
-- Modify: `AGENTS.md` — Project Structure: `crates/relay/` → `crates/pds/` and its description; add a one-line naming note ("the PDS crate, product name Custos; not to be confused with atproto's Relay"). Update the `crates/relay/CLAUDE.md` link → `crates/pds/CLAUDE.md`. Update `Last verified:` to 2026-06-26. Also sweep the **command docs** (not just paths): `docker build -t relay .`, `just ci-relay`, `cargo build ... -p relay`, `--exclude identity-wallet`-adjacent lines → `pds` / `ci-pds` / `-t pds`. Grep patterns: `grep -nE 'ci-relay|-p relay|-t relay|crates/relay' AGENTS.md`.
+- Modify: `AGENTS.md` — Project Structure: `crates/relay/` → `crates/pds/` and its description; add a one-line naming note ("the PDS crate, product name Custos; not to be confused with atproto's Relay"). Update the `crates/relay/AGENTS.md` link → `crates/pds/AGENTS.md`. Update `Last verified:` to 2026-06-26. Also sweep the **command docs** (not just paths): `docker build -t relay .`, `just ci-relay`, `cargo build ... -p relay`, `--exclude identity-wallet`-adjacent lines → `pds` / `ci-pds` / `-t pds`. Grep patterns: `grep -nE 'ci-relay|-p relay|-t relay|crates/relay' AGENTS.md`.
 - Modify: `README.md` — any Sense-A "relay" describing our server → "pds"/"PDS"/"Custos". **KEEP** the Wave 5 line mentioning `requestCrawl` (Sense-B).
-- Modify: root `CLAUDE.md` only if it has Sense-A relay references (it `@AGENTS.md` includes; check).
-- Check `crates/relay/CLAUDE.md` link references elsewhere: `grep -rn 'crates/relay' --include=*.md .` (excluding dated `docs/` plans) and fix living docs.
+- Modify: root `AGENTS.md` only if it has Sense-A relay references (it `@AGENTS.md` includes; check).
+- Check `crates/relay/AGENTS.md` link references elsewhere: `grep -rn 'crates/relay' --include=*.md .` (excluding dated `docs/` plans) and fix living docs.
 
 **Do NOT touch:** dated `docs/design-plans/*relay*`, `docs/implementation-plans/*relay*`, `docs/test-plans/*relay*` (historical records), or `.llm-wiki/` (regenerates).
 
@@ -78,7 +78,7 @@ For each hit: Sense-A (our server) → "PDS"/"Custos"/`pds`; Sense-B (the atprot
 
 **`.pi/` tooling:**
 - `\.pi/extensions/atproto/index.ts` — `relayRequest<T>()` helper → `pdsRequest`/`custosRequest`; ~15 tool descriptions "the relay issues…" → "the PDS issues…".
-- `\.pi/skills/ezpds-linear-pr-workflow/SKILL.md` — fix the broken `crates/relay/CLAUDE.md` link → `crates/pds/CLAUDE.md` (broken by Phase 01's `git mv`), and Sense-A prose.
+- `\.pi/skills/ezpds-linear-pr-workflow/SKILL.md` — fix the broken `crates/relay/AGENTS.md` link → `crates/pds/AGENTS.md` (broken by Phase 01's `git mv`), and Sense-A prose.
 
 **Design mock:**
 - `docs/design/relay-oauth-mock.html` — `git mv` → `pds-oauth-mock.html`; update `relay.ezpds.com` host and "Relay OAuth" title to Custos/PDS.

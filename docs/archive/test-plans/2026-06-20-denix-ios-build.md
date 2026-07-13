@@ -88,10 +88,10 @@ Operates on the **generated, gitignored** `project.pbxproj`. Run from repo root.
 | AC3.3 | ios-check.sh sentinel grep — verified | Phase 3 §5 |
 | AC3.4 | ios-check.sh failure paths — verified | Phase 3 §2 |
 | AC3.5 | ios-postinit path == devenv.nix path — PASS | Phase 3 §6 |
-| AC4.1 | CLAUDE.md grep — PASS | — |
+| AC4.1 | AGENTS.md grep — PASS | — |
 | AC4.2 | Three negative greps — PASS | — |
 | AC4.3 | Dates bumped to 2026-06-21 (newer than 2026-03-31 baseline) — PASS | — |
 | AC5.1 | `grep -c '^## Bug'` → 2 — PASS | Read reproductions in docs/ios-upstream-bugs.md |
 | AC5.2 | 4-file reference grep — PASS | — |
-| AC6.1 | Decision-record grep + CLAUDE.md pointer — PASS | Read docs/mobile-native-migration-decision.md for coherence |
+| AC6.1 | Decision-record grep + AGENTS.md pointer — PASS | Read docs/mobile-native-migration-decision.md for coherence |
 | AC6.2 | Negative dep/.swift grep + tauri present — PASS | — |

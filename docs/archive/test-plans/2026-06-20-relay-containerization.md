@@ -49,7 +49,7 @@ Do **not** use `cargo test --workspace` — `apps/identity-wallet` has pre-exist
 | A8 | AC5.1 digest pinning | `grep -E '^FROM .*@sha256:[0-9a-f]{64}' Dockerfile` then `test "$(grep -cE '^FROM ' Dockerfile)" -eq "$(grep -cE '^FROM .*@sha256:' Dockerfile)" && echo ALL_PINNED` | Both `FROM` lines show `@sha256:<64-hex>`; prints `ALL_PINNED` |
 | A9 | AC5.1 `--locked` | `grep -E 'cargo build .*--locked' Dockerfile && echo USES_LOCKED` | Prints the `cargo build --release --locked -p relay` line + `USES_LOCKED` |
 | A10 | AC5.2 no stale refs | `grep -rnI -E "\.#(relay\|docker-image)\|packages\.[^.]*\.(relay\|docker-image)\|nix/docker\.nix" --exclude-dir=.git --exclude-dir=docs . ; echo "dangling-exit=$?"` | `dangling-exit=1` (no matches outside `docs/`) |
-| A11 | AC5.2 dates | `grep -RIl "Last verified: 2026-06-21" nix/CLAUDE.md CLAUDE.md crates/relay/CLAUDE.md` and `test -f docs/deploy.md && echo "deploy.md exists"` | All three CLAUDE.md files listed; `deploy.md exists` |
+| A11 | AC5.2 dates | `grep -RIl "Last verified: 2026-06-21" nix/AGENTS.md AGENTS.md crates/relay/AGENTS.md` and `test -f docs/deploy.md && echo "deploy.md exists"` | All three AGENTS.md files listed; `deploy.md exists` |
 | A12 | AC6.1 | `cargo test -p relay -p common -p repo-engine -p crypto` | All pass, 0 failures |
 | A13 | AC6.2 | `git diff --name-only 4c6cbd4..HEAD -- crates/relay/src/db/migrations/` and `git log --oneline 4c6cbd4..HEAD -- devenv.nix apps/identity-wallet` | Both empty |
 
@@ -119,7 +119,7 @@ Open `docs/deploy.md` and confirm it covers:
 - Railway setup: Dockerfile builder, domain assignment, variables, `PORT` injection (not `EZPDS_PORT`).
 - Colmena/oci-containers path: GHCR image digest ref, `environmentFile` for agenix/sops, backend enablement.
 - GHCR distribution and the explicit reproducibility tradeoff.
-- `nix/CLAUDE.md` and root `CLAUDE.md` describe the new OCI-container workflow with **no** deleted Nix outputs presented as current.
+- `nix/AGENTS.md` and root `AGENTS.md` describe the new OCI-container workflow with **no** deleted Nix outputs presented as current.
 
 ---
 

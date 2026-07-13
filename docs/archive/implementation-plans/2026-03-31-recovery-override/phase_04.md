@@ -216,16 +216,16 @@ Expected: All tests pass
 <!-- END_TASK_3 -->
 
 <!-- START_TASK_4 -->
-### Task 4: Update identity-wallet CLAUDE.md
+### Task 4: Update identity-wallet AGENTS.md
 
 **Verifies:** None (documentation)
 
 **Files:**
-- Modify: `apps/identity-wallet/CLAUDE.md`
+- Modify: `apps/identity-wallet/AGENTS.md`
 
 **Implementation:**
 
-Add the recovery module documentation to the identity-wallet CLAUDE.md. Specifically:
+Add the recovery module documentation to the identity-wallet AGENTS.md. Specifically:
 
 1. Under **Contracts → Rust Backend → Exposes**, add:
 ```
@@ -253,9 +253,9 @@ buildRecoveryOverride(), submitRecoveryOverride(), SignedRecoveryOp, RecoveryErr
 ```
 
 **Verification:**
-Manually review the CLAUDE.md changes for accuracy.
+Manually review the AGENTS.md changes for accuracy.
 
-**Commit:** `docs(identity-wallet): document recovery override module in CLAUDE.md`
+**Commit:** `docs(identity-wallet): document recovery override module in AGENTS.md`
 
 <!-- END_TASK_4 -->
 

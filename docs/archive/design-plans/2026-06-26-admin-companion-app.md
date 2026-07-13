@@ -165,7 +165,7 @@ This design reuses established patterns rather than introducing new machinery:
 - **Derived status, not stored** — `admin_devices`/`admin_pairing_codes` follow `claim_codes` ([V004](../../crates/pds/src/db/migrations/V004__claim_codes_invite.sql)), computing pending/active/revoked from timestamps in queries.
 - **Forward-only migrations** with the custom `schema_migrations` runner (not sqlx's built-in). New tables ship in a new `V00x__admin_devices.sql`.
 - **Constant-time admin auth** — `require_admin` keeps the master-token comparison from [guards.rs](../../crates/pds/src/auth/guards.rs) (subtle ct_eq) as one of its two accepted credentials.
-- **Route isolation** — a dedicated `routes/admin_devices.rs` per the relay's route-isolation rule in [crates/pds/CLAUDE.md](../../crates/pds/CLAUDE.md); each new route gets a matching `bruno/*.bru` per the AGENTS.md mandate.
+- **Route isolation** — a dedicated `routes/admin_devices.rs` per the relay's route-isolation rule in [crates/pds/AGENTS.md](../../crates/pds/AGENTS.md); each new route gets a matching `bruno/*.bru` per the AGENTS.md mandate.
 - **P-256 in the Secure Enclave + external-signer callback** — Obsign already generates an SE key and signs via `ECDSASignatureMessageX962SHA256`, normalizing DER → raw 64-byte r‖s ([device_key.rs](../../apps/identity-wallet/src-tauri/src/device_key.rs)); the relay already verifies P-256 signatures against a `did:key` ([plc.rs:542](../../crates/crypto/src/plc.rs)). The companion app reuses both ends; the only new crypto surface is a thin public verify wrapper.
 - **OKLCH CSS-variable token system** — the admin app forks the *architecture* of `apps/identity-wallet/src/lib/styles/{tokens,fonts,base}.css` (hex-free, `var(--*)` references) with new values.
 

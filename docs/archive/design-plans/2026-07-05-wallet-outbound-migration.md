@@ -438,7 +438,7 @@ finalizes.
 **Components:**
 - `src/lib/ipc.ts` — typed wrappers for all new commands and types (`OutboundMigrationState` view
   fields, `AccountStatus`, `MigrationError` union matching the SCREAMING_SNAKE_CASE codes).
-- `apps/identity-wallet/CLAUDE.md` — extend the `ipc.ts` exports list and add the module's
+- `apps/identity-wallet/AGENTS.md` — extend the `ipc.ts` exports list and add the module's
   contract entry.
 
 **Dependencies:** Phases 3-5.

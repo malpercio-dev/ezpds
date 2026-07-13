@@ -393,9 +393,9 @@ cd apps/identity-wallet && cargo tauri ios dev
 | Enter correct relay URL (or accept default with relay running) and tap Connect | Loading spinner, then advances to Welcome screen |
 | Restart the app after saving URL | Relay config screen is NOT shown; Welcome screen appears directly |
 
-**Step 4: Update `apps/identity-wallet/CLAUDE.md`**
+**Step 4: Update `apps/identity-wallet/AGENTS.md`**
 
-The implementation plan's CLAUDE.md documents the app's key contracts and IPC commands. Update it to reflect the changes made across all four phases:
+The implementation plan's AGENTS.md documents the app's key contracts and IPC commands. Update it to reflect the changes made across all four phases:
 
 - Add `relay-base-url` to the Keychain accounts section (new account key added in Phase 3)
 - Add `get_relay_url` and `save_relay_url` to the IPC commands list
@@ -407,7 +407,7 @@ The implementation plan's CLAUDE.md documents the app's key contracts and IPC co
 git add apps/identity-wallet/src/lib/ipc.ts \
         apps/identity-wallet/src/lib/components/onboarding/RelayConfigScreen.svelte \
         apps/identity-wallet/src/routes/+page.svelte \
-        apps/identity-wallet/CLAUDE.md
+        apps/identity-wallet/AGENTS.md
 git commit -m "feat: add relay URL configuration screen to onboarding"
 ```
 <!-- END_TASK_4 -->

@@ -18,7 +18,7 @@
 #
 # SINGLE shared implementation for both app lanes; each app keeps a thin wrapper at
 # apps/<app>/scripts/ios-postinit.sh that pins its app dir and recipe prefix. See
-# apps/identity-wallet/CLAUDE.md and docs/ios-upstream-bugs.md for why each
+# apps/identity-wallet/AGENTS.md and docs/ios-upstream-bugs.md for why each
 # workaround exists.
 #
 # Usage: ios-postinit.sh <app-dir> <recipe-prefix>

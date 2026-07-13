@@ -2,7 +2,7 @@
 
 **Goal:** Record the two ADR-worthy decisions (one global device key across N relays; single-document keychain storage with a Rust-owned active pointer) and bring the contract docs in line with the shipped behavior.
 
-**Architecture:** One new ADR (`0017`, the next number in `docs/architecture/decisions/`) covering both decisions, added to the decisions README log per the documented procedure. `apps/admin-companion/CLAUDE.md` gets its keychain-accounts, IPC-command, and pairing-contract sections rewritten to match the implemented surface, and one stale `pairing_state` example in `docs/security/tauri-ipc-boundary.md` is corrected.
+**Architecture:** One new ADR (`0017`, the next number in `docs/architecture/decisions/`) covering both decisions, added to the decisions README log per the documented procedure. `apps/admin-companion/AGENTS.md` gets its keychain-accounts, IPC-command, and pairing-contract sections rewritten to match the implemented surface, and one stale `pairing_state` example in `docs/security/tauri-ipc-boundary.md` is corrected.
 
 **Tech Stack:** Markdown only. No code changes.
 
@@ -126,15 +126,15 @@ Then add the row to the log table in `docs/architecture/decisions/README.md` (sa
 <!-- START_TASK_2 -->
 ### Task 2: Contract docs match the shipped surface
 
-**Verifies:** Phase exit criterion "CLAUDE.md contracts match the implemented command surface".
+**Verifies:** Phase exit criterion "AGENTS.md contracts match the implemented command surface".
 
 **Files:**
-- Modify: `apps/admin-companion/CLAUDE.md`
+- Modify: `apps/admin-companion/AGENTS.md`
 - Modify: `docs/security/tauri-ipc-boundary.md` (one stale example, line 105)
 
 **Implementation:**
 
-**A. `apps/admin-companion/CLAUDE.md`** — update these regions (line numbers per 2026-07-06 verification; re-locate by content if drifted):
+**A. `apps/admin-companion/AGENTS.md`** — update these regions (line numbers per 2026-07-06 verification; re-locate by content if drifted):
 
 1. **Dates (lines 3–4):** `Last verified: 2026-07-06` / `Last updated: 2026-07-06`.
 2. **"Current status" pairing/persistence bullet (lines 39–42)** — replace the `store_pairing`/`get_pairing`/`clear_pairing` triple description with the document model. New text (adjust to the file's voice):
@@ -159,10 +159,10 @@ Cross-check the documented command list against the code — from the worktree r
 
 ```bash
 grep -A 13 'generate_handler!' apps/admin-companion/src-tauri/src/lib.rs
-grep -c 'pairing_state' apps/admin-companion/CLAUDE.md docs/security/tauri-ipc-boundary.md
+grep -c 'pairing_state' apps/admin-companion/AGENTS.md docs/security/tauri-ipc-boundary.md
 ```
 
-Expected: every command in `generate_handler!` appears in the CLAUDE.md list and vice versa; the `pairing_state` grep only matches (if at all) in the "is gone — superseded" sentence, and matches nothing in `tauri-ipc-boundary.md`.
+Expected: every command in `generate_handler!` appears in the AGENTS.md list and vice versa; the `pairing_state` grep only matches (if at all) in the "is gone — superseded" sentence, and matches nothing in `tauri-ipc-boundary.md`.
 
 **Commit:** `docs(admin-companion): contracts for the multi-server pairing document and command surface`
 <!-- END_TASK_2 -->

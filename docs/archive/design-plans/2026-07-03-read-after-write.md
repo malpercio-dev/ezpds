@@ -115,7 +115,7 @@ async fn munge(
 
 ## Existing Patterns
 
-- **Crate-root orchestration modules.** `record_write.rs`, `genesis.rs`, `plc_ops.rs` are shared, non-route orchestration helpers that compose `db/` queries with `repo-engine` calls. `read_after_write/` follows this precedent rather than living in `routes/` (one-file-per-endpoint) or `auth/`/`db/` (pure/queries only), per `crates/pds/CLAUDE.md`.
+- **Crate-root orchestration modules.** `record_write.rs`, `genesis.rs`, `plc_ops.rs` are shared, non-route orchestration helpers that compose `db/` queries with `repo-engine` calls. `read_after_write/` follows this precedent rather than living in `routes/` (one-file-per-endpoint) or `auth/`/`db/` (pure/queries only), per `crates/pds/AGENTS.md`.
 - **Catch-all interception ahead of the proxy.** `get_preferences.rs`/`put_preferences.rs` are registered ahead of the `/xrpc/{method}` catch-all so local handling wins over proxying. The six munged NSIDs use the same "handle locally before proxying" principle, expressed as a branch inside `xrpc_handler` (they share one handler shape, so a match set is cleaner than six route registrations).
 - **Service-auth minting.** `service_proxy.rs::mint_service_auth` (delegating to `auth::signing_key::mint_account_service_auth`) is reused verbatim for the shared inner proxy and for the quote-post `getPosts` hydration call — the same path `getServiceAuth` uses, so the three never drift.
 - **Repo reads.** `db::accounts::get_repo_root_cid` → `SqliteBlockStore::new(db, did)` → `repo_engine::Repository::open` → `repo_engine::get_record_json` / `list_records_json`, as used by `routes/get_record.rs` and `routes/list_records.rs`.
@@ -218,7 +218,7 @@ async fn munge(
 **Components:**
 - `pipethrough_munged` fallback ladder: non-2xx passthrough (except `getPostThread` NotFound); unparseable body ⇒ buffered passthrough; munge/hydration error ⇒ log `warn` + passthrough; response buffer cap (~10 MiB) overflow ⇒ upstream error envelope.
 - `bruno/` — example `.bru` requests for the six munged endpoints (documentation; catch-all path coverage is unchanged, so `bruno-check` stays green).
-- `crates/pds/CLAUDE.md` — document `read_after_write/` and the `service_proxy.rs` entry; note the `[appview] cdn_url` config.
+- `crates/pds/AGENTS.md` — document `read_after_write/` and the `service_proxy.rs` entry; note the `[appview] cdn_url` config.
 
 **Dependencies:** Phases 4–6.
 

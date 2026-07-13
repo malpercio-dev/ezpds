@@ -105,7 +105,7 @@ Rollback: because migrations are **forward-only** (no down-path), redeploying a 
 ### Observability: metrics and logs
 
 The PDS serves a Prometheus text exposition at `GET /metrics` (on by default; the
-federation-health instrument set is documented in `crates/pds/CLAUDE.md` → "Metrics"). The
+federation-health instrument set is documented in `crates/pds/AGENTS.md` → "Metrics"). The
 route is deliberately outside the permissive CORS layer and rate-limit accounting — it is a
 scrape/diagnostic surface, not a browser API.
 

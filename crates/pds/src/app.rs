@@ -519,7 +519,7 @@ pub fn app(state: AppState) -> Router {
     // Permissive CORS wraps only the public surface, applied *after* the shared layers so it stays
     // the outermost layer (see `apply_shared_layers`). This is safe ONLY because authentication is
     // never cookie-based (all Bearer/DPoP/signed-request), so a permissive policy cannot be abused
-    // to ride ambient cookie credentials — see the invariant in crates/pds/CLAUDE.md.
+    // to ride ambient cookie credentials — see the invariant in crates/pds/AGENTS.md.
     let public = apply_shared_layers(public, &state).layer(CorsLayer::permissive());
 
     // Admin (`/v1/admin/*`) and provisioning (`/v1/*`) routes have no cross-origin use case — they

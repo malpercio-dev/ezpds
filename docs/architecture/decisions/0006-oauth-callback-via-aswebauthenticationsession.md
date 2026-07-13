@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-07-02 (backfilled)
 - **Deciders:** ezpds maintainers
-- **Related:** [`apps/identity-wallet/CLAUDE.md`](../../../apps/identity-wallet/CLAUDE.md) · [`apps/identity-wallet/vendor/tauri-plugin-auth-session/VENDORED.md`](../../../apps/identity-wallet/vendor/tauri-plugin-auth-session/VENDORED.md)
+- **Related:** [`apps/identity-wallet/AGENTS.md`](../../../apps/identity-wallet/AGENTS.md) · [`apps/identity-wallet/vendor/tauri-plugin-auth-session/VENDORED.md`](../../../apps/identity-wallet/vendor/tauri-plugin-auth-session/VENDORED.md)
 
 ## Context
 
@@ -34,7 +34,7 @@ sits directly in the authentication path.
   captures the redirect itself; the PKCE verifier and CSRF state never leave the
   Rust backend.
 - **Links `AuthenticationServices.framework`** — enforced by the `ios-postinit`
-  `OTHER_LDFLAGS` patch (a staticlib → Xcode link gap; see the wallet CLAUDE.md
+  `OTHER_LDFLAGS` patch (a staticlib → Xcode link gap; see the wallet AGENTS.md
   Troubleshooting).
 - **Vendoring cost:** we track upstream ourselves and document provenance/audit
   in `VENDORED.md`, accepted because the plugin is security-sensitive.

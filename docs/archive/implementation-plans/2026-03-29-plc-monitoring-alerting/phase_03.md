@@ -446,9 +446,9 @@ Expected: All deadline utility tests pass
 
 ---
 
-## Identity-Wallet CLAUDE.md Updates
+## Identity-Wallet AGENTS.md Updates
 
-After completing Phase 3, the following updates should be made to `apps/identity-wallet/CLAUDE.md`:
+After completing Phase 3, the following updates should be made to `apps/identity-wallet/AGENTS.md`:
 
 **Exposes section additions:**
 - Add `checkIdentityStatus()` to the `ipc.ts` exports list

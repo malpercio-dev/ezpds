@@ -1,6 +1,6 @@
 # Wallet Outbound Migration — Phase 6: TypeScript IPC wrappers + types
 
-**Goal:** Make every new orchestrator command callable from the SvelteKit frontend through a typed wrapper in `src/lib/ipc.ts`, with an `AccountStatus` type and a `MigrationError` union that exactly matches the Rust enum's SCREAMING_SNAKE_CASE codes, and keep `apps/identity-wallet/CLAUDE.md` in sync.
+**Goal:** Make every new orchestrator command callable from the SvelteKit frontend through a typed wrapper in `src/lib/ipc.ts`, with an `AccountStatus` type and a `MigrationError` union that exactly matches the Rust enum's SCREAMING_SNAKE_CASE codes, and keep `apps/identity-wallet/AGENTS.md` in sync.
 
 **Architecture:** `ipc.ts` wraps each Tauri command with `invoke('<snake_case_name>', { camelCaseArgs })` from `@tauri-apps/api/core`. Rust `#[serde(tag="code", rename_all="SCREAMING_SNAKE_CASE")]` errors surface as `invoke` rejections shaped `{ code: "...", ... }`, modeled as a discriminated union. The source-auth prepare/complete pair is wrapped as one `startSourceAuth` helper driving `plugin:auth-session|start`, mirroring the claim flow's `startPdsAuth`.
 
@@ -47,7 +47,7 @@ File `apps/identity-wallet/src/lib/ipc.ts`:
 - All types are inline in `ipc.ts`, exported at module level. No `types.ts`.
 - `pnpm check` = `svelte-kit sync && svelte-check --tsconfig ./tsconfig.json` (package.json line 5). Run from `apps/identity-wallet/` (devenv provides Node 22 + pnpm).
 
-File `apps/identity-wallet/CLAUDE.md`:
+File `apps/identity-wallet/AGENTS.md`:
 - Lines 13–15: `**Exposes:**` → `src/lib/ipc.ts` with a comma-separated list of exported function names + `their associated types`. Ends with "migration wrappers (`buildMigrationOp()`, `submitMigrationOp()`)".
 - ~line 49: a Rust-module "contract" area describing `migrate.rs`.
 
@@ -171,12 +171,12 @@ Confirm the `OAuthPrepared` field names returned to JS: the Rust `OAuthPrepared 
 <!-- END_TASK_2 -->
 
 <!-- START_TASK_3 -->
-### Task 3: Update CLAUDE.md + run `pnpm check`
+### Task 3: Update AGENTS.md + run `pnpm check`
 
 **Verifies:** wallet-outbound-migration.AC8.3
 
 **Files:**
-- Modify: `apps/identity-wallet/CLAUDE.md` (Exposes list ~13–15; Rust-module contracts ~line 49)
+- Modify: `apps/identity-wallet/AGENTS.md` (Exposes list ~13–15; Rust-module contracts ~line 49)
 
 **Implementation:**
 - Append the new function names and types to the `src/lib/ipc.ts` Exposes list (lines 13–15), in the existing comma-separated format: `prepareMigration()`, `startSourceAuth()`, `createDestinationAccount()`, `transferRepo()`, `transferBlobs()`, `transferPreferences()`, `verifyImport()`, `armIdentityLeg()`, `finalizeMigration()`, and the types `AccountStatus`, `MigrationError`.
@@ -197,6 +197,6 @@ Expected: `svelte-check` reports 0 errors. Fix any type mismatch (e.g., a wrappe
 ## Phase 6 done when
 
 - `ipc.ts` has a typed wrapper for every new orchestrator command (AC8.1) and `AccountStatus` + a `MigrationError` union whose codes match the Rust enum exactly (AC8.2).
-- `apps/identity-wallet/CLAUDE.md` lists the new exports and the module contract.
+- `apps/identity-wallet/AGENTS.md` lists the new exports and the module contract.
 - `pnpm check` passes with 0 errors (AC8.3).
 - Covers wallet-outbound-migration.AC8.1–AC8.3.

@@ -9,7 +9,7 @@
 - iOS Simulator available (iPhone target)
 - Nix dev shell active from workspace root: `nix develop --impure --accept-flake-config`
 - Frontend dependencies installed: `cd apps/identity-wallet && pnpm install`
-- Xcode project generated: `cargo tauri ios init` (with PATH patch and sandbox disabling per `apps/identity-wallet/CLAUDE.md`)
+- Xcode project generated: `cargo tauri ios init` (with PATH patch and sandbox disabling per `apps/identity-wallet/AGENTS.md`)
 - TypeScript types compiling: `cd apps/identity-wallet && pnpm check`
 - Rust compiling: `cargo build -p identity-wallet --lib`
 - An existing AT Protocol identity on a reachable PDS (e.g., a Bluesky account) for the import flow

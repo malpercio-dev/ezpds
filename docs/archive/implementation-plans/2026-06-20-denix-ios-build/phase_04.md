@@ -21,7 +21,7 @@
 
 ### denix-ios-build.AC5: Upstream bugs documented locally (for later manual filing)
 - **denix-ios-build.AC5.1 Success:** A local record documents both bugs — swift-rs `sandbox_apply` EPERM on macOS 26, and Xcode user-script-sandbox blocking Cargo — each with a minimal reproduction and the exact workaround applied.
-- **denix-ios-build.AC5.2 Success:** The swift-rs patch comment, the `ios-postinit` script, and `CLAUDE.md` reference this local record with a "remove when fixed upstream" note.
+- **denix-ios-build.AC5.2 Success:** The swift-rs patch comment, the `ios-postinit` script, and `AGENTS.md` reference this local record with a "remove when fixed upstream" note.
 
 **Verifies (this phase):** denix-ios-build.AC5.1, AC5.2. Documentation — verified by read/grep.
 
@@ -131,7 +131,7 @@ git commit -m "docs: record iOS upstream bugs (swift-rs sandbox, Xcode user-scri
 # Remove when swift-rs ships a fix upstream. Tracked in docs/ios-upstream-bugs.md (Bug 1).
 ```
 
-(The `ios-postinit.sh` header comment created in Phase 2 already references `docs/ios-upstream-bugs.md`, and the `CLAUDE.md` swift-rs troubleshooting entry was repointed in Phase 3. Confirm both in Step 3.)
+(The `ios-postinit.sh` header comment created in Phase 2 already references `docs/ios-upstream-bugs.md`, and the `AGENTS.md` swift-rs troubleshooting entry was repointed in Phase 3. Confirm both in Step 3.)
 
 **Step 3: Verify all references exist**
 ```bash
@@ -139,7 +139,7 @@ grep -rn "ios-upstream-bugs.md" \
   apps/identity-wallet/swift-rs-patch/src-rs/build.rs \
   Cargo.toml \
   apps/identity-wallet/scripts/ios-postinit.sh \
-  apps/identity-wallet/CLAUDE.md
+  apps/identity-wallet/AGENTS.md
 ```
 Expected: at least one hit in each of the four files.
 
@@ -155,5 +155,5 @@ git commit -m "docs: link ios-upstream-bugs.md from swift-rs patch and Cargo.tom
 ## Phase 4 Done When
 
 - `docs/ios-upstream-bugs.md` exists with both bugs, each carrying a reproduction + the exact workaround (AC5.1).
-- The swift-rs patch comment, `Cargo.toml`, `ios-postinit.sh`, and `CLAUDE.md` all reference the record with a "remove when fixed upstream" note (AC5.2) — verified by the Task 2 grep.
+- The swift-rs patch comment, `Cargo.toml`, `ios-postinit.sh`, and `AGENTS.md` all reference the record with a "remove when fixed upstream" note (AC5.2) — verified by the Task 2 grep.
 - Edits committed. (No upstream issue is filed in this phase — that is a manual follow-up.)

@@ -47,7 +47,7 @@
 #!/usr/bin/env bash
 # ios-postinit.sh — re-apply the surviving Tauri/macOS workarounds to the gitignored
 # Xcode project that `cargo tauri ios init` regenerates. Run after EVERY
-# `cargo tauri ios init`. Idempotent. See apps/identity-wallet/CLAUDE.md and
+# `cargo tauri ios init`. Idempotent. See apps/identity-wallet/AGENTS.md and
 # docs/ios-upstream-bugs.md for why each patch exists.
 set -euo pipefail
 

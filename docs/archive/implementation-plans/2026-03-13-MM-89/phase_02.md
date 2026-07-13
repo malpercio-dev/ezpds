@@ -102,7 +102,7 @@ git commit -m "chore(relay): add reqwest 0.12 and wiremock 0.6 deps for POST /v1
 **Files:**
 - Create: `crates/relay/src/db/migrations/V008__did_promotion.sql`
 - Modify: `crates/relay/src/db/mod.rs` (add V008 to MIGRATIONS)
-- Modify: `crates/relay/src/db/CLAUDE.md` (document V008)
+- Modify: `crates/relay/src/db/AGENTS.md` (document V008)
 
 **Step 1: Create the migration file**
 
@@ -175,9 +175,9 @@ static MIGRATIONS: &[Migration] = &[
 ];
 ```
 
-**Step 3: Update crates/relay/src/db/CLAUDE.md**
+**Step 3: Update crates/relay/src/db/AGENTS.md**
 
-In `/Users/malpercio/workspace/malpercio-dev/ezpds/crates/relay/src/db/CLAUDE.md`, update the "Last verified" date to `2026-03-13` and add to the Key Files section:
+In `/Users/malpercio/workspace/malpercio-dev/ezpds/crates/relay/src/db/AGENTS.md`, update the "Last verified" date to `2026-03-13` and add to the Key Files section:
 
 ```
 - `migrations/V008__did_promotion.sql` - Rebuilds accounts with nullable password_hash (mobile accounts have no password); adds pending_did column to pending_accounts for DID pre-store retry resilience
@@ -194,7 +194,7 @@ Expected: all DB tests pass including migration idempotence test with V008 appli
 **Step 5: Commit**
 
 ```bash
-git add crates/relay/src/db/migrations/V008__did_promotion.sql crates/relay/src/db/mod.rs crates/relay/src/db/CLAUDE.md
+git add crates/relay/src/db/migrations/V008__did_promotion.sql crates/relay/src/db/mod.rs crates/relay/src/db/AGENTS.md
 git commit -m "feat(relay): V008 migration — nullable accounts.password_hash, pending_did column (MM-89)"
 ```
 <!-- END_TASK_2 -->

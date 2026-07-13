@@ -43,7 +43,7 @@ cd /Users/jacob.zweifel/workspace/malpercio-dev/ezpds && \
 - **Sequencing note:** Task 1 removes `pairingState()` from `ipc.ts`, which makes `pnpm check` fail until the screens are reworked (Tasks 5–7). Tasks 1–7 therefore verify with `pnpm test` (vitest only type-checks the modules the tests import); Task 8 is the full `pnpm check` + `pnpm test` gate for the phase. This is the same mid-branch posture Phase 2 declared for the frontend.
 - Sandbox: same as the Rust phases — run these through the main checkout with the sandbox disabled if `nix develop` hits daemon-socket errors.
 
-UI rules (from `apps/admin-companion/CLAUDE.md` + DESIGN.md — read both before Tasks 3–7):
+UI rules (from `apps/admin-companion/AGENTS.md` + DESIGN.md — read both before Tasks 3–7):
 - Tokens only: `var(--color-*)`, `var(--font-*)`, `var(--space-*)`; never hex/px literals.
 - Status/identity always by glyph + text + position, never color alone; WCAG 2.2 AAA pairs only (use existing token pairs — do not invent new color combinations).
 - Svelte 5 runes and snippets (`$props()`, `{@render children()}`), matching the existing components.
