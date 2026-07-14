@@ -319,6 +319,7 @@ fn validate_did_web_document(
         let id = format!("{did}#{fragment}");
         methods.iter().any(|method| {
             method.get("id").and_then(serde_json::Value::as_str) == Some(&id)
+                && method.get("type").and_then(serde_json::Value::as_str) == Some("Multikey")
                 && method.get("controller").and_then(serde_json::Value::as_str) == Some(did)
                 && method
                     .get("publicKeyMultibase")
@@ -771,8 +772,8 @@ mod tests {
             "id": did,
             "alsoKnownAs": ["at://alice.example.com"],
             "verificationMethod": [
-                {"id": format!("{did}#device"), "controller": did, "publicKeyMultibase": "zdevice"},
-                {"id": format!("{did}#atproto"), "controller": did, "publicKeyMultibase": "zrepo"}
+                {"id": format!("{did}#device"), "type": "Multikey", "controller": did, "publicKeyMultibase": "zdevice"},
+                {"id": format!("{did}#atproto"), "type": "Multikey", "controller": did, "publicKeyMultibase": "zrepo"}
             ],
             "service": [{"id": format!("{did}#atproto_pds"), "serviceEndpoint": "https://pds.example.com"}]
         });
@@ -790,6 +791,17 @@ mod tests {
 
         let mut wrong = document;
         wrong["verificationMethod"][0]["publicKeyMultibase"] = serde_json::json!("zattacker");
+        assert!(validate_did_web_document(
+            &wrong,
+            "alice.example.com",
+            "did:key:zdevice",
+            "did:key:zrepo",
+            "https://pds.example.com",
+        )
+        .is_err());
+
+        wrong["verificationMethod"][0]["publicKeyMultibase"] = serde_json::json!("zdevice");
+        wrong["verificationMethod"][0]["type"] = serde_json::json!("JsonWebKey2020");
         assert!(validate_did_web_document(
             &wrong,
             "alice.example.com",

@@ -244,16 +244,17 @@ pub async fn submit_did_web_migration_document_cmd(
         });
     }
     if enable_managed_hosting {
-        let response = dest_client
+        let result = dest_client
             .post("/v1/did-web/hosting", &serde_json::json!({"enabled": true}))
-            .await
-            .map_err(|e| MigrateError::NetworkError {
-                message: e.to_string(),
-            })?;
-        if !response.status().is_success() {
-            return Err(MigrateError::NetworkError {
-                message: "could not enable managed did:web hosting".into(),
-            });
+            .await;
+        match result {
+            Ok(response) if response.status().is_success() => {}
+            Ok(response) => {
+                tracing::warn!(status = %response.status(), did = %did, "migration verified, but optional managed hosting was not enabled")
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, did = %did, "migration verified, but optional managed hosting was unreachable")
+            }
         }
     }
     *state.migration_state.lock().await = None;

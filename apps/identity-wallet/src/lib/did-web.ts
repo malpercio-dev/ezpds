@@ -77,12 +77,3 @@ export function didWebDocumentUrl(did: string): string {
     ? `https://${host}/.well-known/did.json`
     : `https://${host}/${parts.join('/')}/did.json`;
 }
-
-/** Compare text, not parsed JSON: self-hosted publication must preserve the reviewed bytes. */
-export function documentBytesMatch(expected: string, served: string): boolean {
-  const encoder = new TextEncoder();
-  const expectedBytes = encoder.encode(expected);
-  const servedBytes = encoder.encode(served);
-  return expectedBytes.length === servedBytes.length
-    && expectedBytes.every((byte, i) => byte === servedBytes[i]);
-}

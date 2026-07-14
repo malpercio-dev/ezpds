@@ -622,28 +622,33 @@ async fn complete_did_web_ceremony(
         .json()
         .await
         .map_err(|_| DIDCeremonyError::DidCreationFailed)?;
-    if enable_managed_hosting {
-        let hosting_response = state
-            .custos_client()
-            .post_with_bearer(
-                "/v1/did-web/hosting",
-                &serde_json::json!({ "enabled": true }),
-                &created.session_token,
-            )
-            .await
-            .map_err(|e| DIDCeremonyError::NetworkError {
-                message: e.to_string(),
-            })?;
-        if !hosting_response.status().is_success() {
-            return Err(DIDCeremonyError::DidCreationFailed);
-        }
-    }
+    // Promotion is already durable and cannot be retried. Persist every irreplaceable response
+    // value before the optional hosting toggle so a transient failure cannot strand the user.
     keychain::store_item("session-token", created.session_token.as_bytes())
         .map_err(|_| DIDCeremonyError::KeychainError)?;
     keychain::store_item("did", created.did.as_bytes())
         .map_err(|_| DIDCeremonyError::KeychainError)?;
     keychain::store_item("recovery-share-1", created.shamir_share_1.as_bytes())
         .map_err(|_| DIDCeremonyError::ShareStorageFailed)?;
+    if enable_managed_hosting {
+        let hosting_result = state
+            .custos_client()
+            .post_with_bearer(
+                "/v1/did-web/hosting",
+                &serde_json::json!({ "enabled": true }),
+                &created.session_token,
+            )
+            .await;
+        match hosting_result {
+            Ok(response) if response.status().is_success() => {}
+            Ok(response) => {
+                tracing::warn!(status = %response.status(), did = %created.did, "DID created, but optional managed hosting was not enabled")
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, did = %created.did, "DID created, but optional managed hosting was unreachable")
+            }
+        }
+    }
     Ok(DIDCeremonyResult {
         did: created.did,
         share3: created.shamir_share_3,

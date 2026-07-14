@@ -57,6 +57,9 @@ chrono = { workspace = true }
 # `#[cfg(mobile)]` in lib.rs. Same version admin-companion already uses.
 [target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
 tauri-plugin-biometric = "2"
+# Reuse the audited in-repo native plugin. Its published JS guest package still declares the old
+# @tauri-apps/api 2.0.0-rc.0 peer as a direct dependency, so pnpm retains both API versions; the
+# guest only calls invoke and does not cross the Rust ABI boundary.
 tauri-plugin-sharesheet = { path = "../../admin-companion/vendor/tauri-plugin-sharesheet" }
 
 [dev-dependencies]

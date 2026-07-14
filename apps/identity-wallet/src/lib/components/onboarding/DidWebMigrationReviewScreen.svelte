@@ -3,7 +3,7 @@
   import Button from '$lib/components/ui/Button.svelte';
   import DiffRow from '$lib/components/ui/DiffRow.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
-  import { armIdentityLeg, buildDidWebMigrationDocument, finalizeMigration, submitDidWebMigrationDocument, type ClaimResult, type DidWebMigrationDocument } from '$lib/ipc';
+  import { armIdentityLeg, authenticateBiometric, buildDidWebMigrationDocument, finalizeMigration, submitDidWebMigrationDocument, type ClaimResult, type DidWebMigrationDocument } from '$lib/ipc';
   import type { DidWebHosting } from '$lib/did-web';
   import { shareDidDocument } from '$lib/share';
   let { did, hosting, onnext, oncancel }: { did: string; hosting: DidWebHosting; onnext: (result: ClaimResult) => void; oncancel: () => void } = $props();
@@ -20,6 +20,8 @@
   }
   async function submit() {
     if (!review) return;
+    try { await authenticateBiometric('Approve the domain identity update'); }
+    catch { return; }
     submitting = true; error = '';
     try {
       const result = await submitDidWebMigrationDocument(did, review.documentText, hosting === 'custos');
