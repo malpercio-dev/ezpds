@@ -116,19 +116,21 @@ pub trait DnsProvider: Send + Sync {
 /// Concatenate a single TXT record's character-string chunks into its full value.
 ///
 /// RFC 1035 splits a TXT value longer than 255 bytes across multiple chunks; clients must
-/// join them to recover the original string. `name` is only used for the non-UTF-8 warning.
-/// Returns `None` if every chunk was empty or invalid.
+/// join the raw bytes (not decode each chunk separately — a multi-byte UTF-8 character can
+/// straddle a chunk boundary) to recover the original string. Returns `None` if the combined
+/// bytes are empty or not valid UTF-8; `name` is only used for the warning in that case.
 fn combine_txt_chunks(chunks: &[Box<[u8]>], name: &str) -> Option<String> {
-    let mut combined = String::new();
+    let mut combined = Vec::new();
     for part in chunks.iter() {
-        match std::str::from_utf8(part) {
-            Ok(s) => combined.push_str(s),
-            Err(_) => {
-                tracing::warn!(name, "TXT record contains non-UTF-8 bytes; skipping part");
-            }
+        combined.extend_from_slice(part);
+    }
+    match String::from_utf8(combined) {
+        Ok(s) if !s.is_empty() => Some(s),
+        _ => {
+            tracing::warn!(name, "TXT record contains non-UTF-8 bytes or is empty");
+            None
         }
     }
-    (!combined.is_empty()).then_some(combined)
 }
 
 #[cfg(test)]
@@ -158,7 +160,10 @@ mod tests {
     }
 
     #[test]
-    fn combine_txt_chunks_skips_non_utf8_and_keeps_valid_parts() {
+    fn combine_txt_chunks_rejects_record_with_any_non_utf8_chunk() {
+        // A record with an invalid chunk is rejected whole, not partially salvaged — decoding
+        // chunks independently would corrupt a multi-byte UTF-8 character split across a
+        // chunk boundary.
         let chunks = [
             chunk(b"did=did:plc:abc"),
             chunk(&[0xff, 0xfe]),
@@ -166,7 +171,18 @@ mod tests {
         ];
         assert_eq!(
             combine_txt_chunks(&chunks, "_atproto.alice.example.com"),
-            Some("did=did:plc:abcxyz".to_string())
+            None
+        );
+    }
+
+    #[test]
+    fn combine_txt_chunks_joins_multi_byte_char_split_across_chunk_boundary() {
+        // "é" is 2 UTF-8 bytes (0xC3 0xA9); split it across two chunks so decoding each chunk
+        // independently would see two invalid partial sequences.
+        let chunks = [chunk(&[b'd', b'i', b'd', 0xC3]), chunk(&[0xA9, b'x'])];
+        assert_eq!(
+            combine_txt_chunks(&chunks, "_atproto.alice.example.com"),
+            Some("didéx".to_string())
         );
     }
 
