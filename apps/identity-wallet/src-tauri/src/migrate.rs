@@ -89,7 +89,10 @@ fn did_web_url(did: &str) -> Result<String, MigrateError> {
             reason: "only hostname-form did:web identities are supported".into(),
         });
     }
-    Ok(format!("https://{host}/.well-known/did.json"))
+    Ok(format!(
+        "https://{}/.well-known/did.json",
+        host.to_ascii_lowercase()
+    ))
 }
 
 #[tauri::command]
@@ -258,7 +261,6 @@ pub async fn submit_did_web_migration_document_cmd(
             }
         }
     }
-    *state.migration_state.lock().await = None;
     let updated_did_doc: serde_json::Value =
         serde_json::from_str(&document_text).map_err(|e| MigrateError::GuardRejected {
             reason: format!("reviewed did.json is invalid: {e}"),
@@ -284,6 +286,8 @@ pub async fn submit_did_web_migration_document_cmd(
         .map_err(|e| MigrateError::IdentityNotFound {
             message: e.to_string(),
         })?;
+    // Keep the armed leg available until every retryable local write has completed.
+    *state.migration_state.lock().await = None;
     Ok(ClaimResult { updated_did_doc })
 }
 
@@ -1068,6 +1072,14 @@ mod tests {
     //
     // These tests are the spec for `guard_migration_op`. Until it is implemented
     // they fail (the stub is `todo!()`); once the five rules are in place they pass.
+
+    #[test]
+    fn did_web_url_normalizes_host_casing() {
+        assert_eq!(
+            did_web_url("did:web:Alice.Example.COM").unwrap(),
+            "https://alice.example.com/.well-known/did.json"
+        );
+    }
 
     /// A well-formed migration: device key stays at [0], the only extra key is the
     /// destination's recommended key, the handle is preserved, and only atproto_pds

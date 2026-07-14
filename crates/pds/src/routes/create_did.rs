@@ -802,7 +802,7 @@ mod tests {
         )
         .is_err());
 
-        wrong["verificationMethod"][0]["type"] = serde_json::json!("Multikey");
+        wrong["verificationMethod"][0]["publicKeyMultibase"] = serde_json::json!("zdevice");
         wrong["service"][0]["type"] = serde_json::json!("WrongServiceType");
         assert!(validate_did_web_document(
             &wrong,
@@ -813,7 +813,7 @@ mod tests {
         )
         .is_err());
 
-        wrong["verificationMethod"][0]["publicKeyMultibase"] = serde_json::json!("zdevice");
+        wrong["service"][0]["type"] = serde_json::json!("AtprotoPersonalDataServer");
         wrong["verificationMethod"][0]["type"] = serde_json::json!("JsonWebKey2020");
         assert!(validate_did_web_document(
             &wrong,

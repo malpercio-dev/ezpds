@@ -193,6 +193,10 @@ export const submitDidWebMigrationDocument = (
 ): Promise<ClaimResult> =>
   invoke('submit_did_web_migration_document_cmd', { did, documentText, enableManagedHosting });
 
+/** Open the native platform share sheet for a text document. */
+export const shareTextNative = (text: string): Promise<void> =>
+  invoke('plugin:sharesheet|share_text', { text });
+
 // ── register_handle ──────────────────────────────────────────────────────────
 
 /**

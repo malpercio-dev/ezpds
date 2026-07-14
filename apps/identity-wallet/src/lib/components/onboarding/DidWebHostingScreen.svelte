@@ -14,6 +14,5 @@
 <style>
   .options { display: grid; gap: var(--space-sm); width: 100%; text-align: left; }
   button { display: grid; gap: var(--space-xs); padding: var(--space-md); border: 1px solid var(--color-line); border-radius: var(--radius-lg); background: var(--color-surface); color: var(--color-ink); font: inherit; cursor: pointer; }
-  button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
   span { font-size: var(--text-label); line-height: var(--leading-body); }
 </style>
