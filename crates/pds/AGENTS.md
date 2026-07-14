@@ -190,7 +190,11 @@ The Iroh QUIC tunnel — a NAT-traversing endpoint devices dial by node id inste
 routable address. Opt-in via `[iroh] enabled` (default off); when enabled, `main.rs` loads the
 persistent node identity (`auth::load_or_create_iroh_secret_key`, backed by the `iroh_identity`
 table so the node id is stable across restarts), binds the endpoint with the `N0` preset (n0
-discovery + relays), and spawns a detached accept loop. `AppState.iroh: Option<Arc<IrohState>>`
+discovery + relays), and spawns a detached accept loop. `[iroh] ipv6` (default true;
+`EZPDS_IROH_IPV6`) gates the IPv6 QUIC socket: on a v4-only host (e.g. a Railway container with
+no public v6 egress) set it false, and `start` clears the pre-configured IP transports and
+re-binds IPv4 only — without it iroh's v6 relay probes fail `NetworkUnreachable` forever, one
+WARN every ~80s that buries real errors. `AppState.iroh: Option<Arc<IrohState>>`
 holds the bound endpoint and its node-id string; `get_device_pds` advertises that node id.
 The accept loop speaks a minimal v0.1 echo protocol on the `ezpds/iroh/0` ALPN — enough to
 prove the bidirectional channel and serve as a liveness probe; the real repo-sync / push
