@@ -7,6 +7,7 @@
   import DidWebDomainScreen from '$lib/components/onboarding/DidWebDomainScreen.svelte';
   import DidWebCeremonyScreen from '$lib/components/onboarding/DidWebCeremonyScreen.svelte';
   import DidWebMigrationReviewScreen from '$lib/components/onboarding/DidWebMigrationReviewScreen.svelte';
+  import DidWebHostingScreen from '$lib/components/onboarding/DidWebHostingScreen.svelte';
   import { didWebFromDomain, type DidWebHosting } from '$lib/did-web';
   import PdsConfigScreen from '$lib/components/onboarding/PdsConfigScreen.svelte';
   import ClaimCodeScreen from '$lib/components/onboarding/ClaimCodeScreen.svelte';
@@ -90,6 +91,7 @@
     | 'migration_start'
     | 'migration_source_auth'
     | 'migration_progress'
+    | 'migration_hosting'
     | 'migration_review'
     | 'migration_success';
 
@@ -98,6 +100,7 @@
   let step = $state<OnboardingStep>('mode_select');
   let form = $state({ claimCode: '', email: '', handle: '', password: '', did: '', share3: '', registeredHandle: '', handleOrDid: '' });
   let didWebHosting = $state<DidWebHosting>('self');
+  let migrationHostingChosen = $state(false);
   let identityMethod = $state<'plc' | 'web'>('plc');
   let didWebDomain = $state('');
 
@@ -297,6 +300,7 @@
     <DidWebPathScreen
       onselect={(origin, hosting) => {
         didWebHosting = hosting;
+        migrationHostingChosen = origin === 'existing';
         // Existing did:web identities enter the method-agnostic migration flow. New identities
         // continue through account provisioning; the ceremony uses these levers after the PDS
         // has issued its reserved repo key.
@@ -482,6 +486,8 @@
       onmigrate={selectedDeviceKeyIsRoot === true
         ? () => {
             migrationDid = selectedDid ?? '';
+            didWebHosting = 'self';
+            migrationHostingChosen = false;
             goTo('migration_start');
           }
         : undefined}
@@ -515,7 +521,7 @@
       did={migrationDid}
       email={migrationEmail}
       inviteCode={migrationInviteCode}
-      onnext={() => goTo('migration_review')}
+      onnext={() => goTo(migrationDid.startsWith('did:web:') && !migrationHostingChosen ? 'migration_hosting' : 'migration_review')}
       onerror={() => {
         // Stay on the progress screen — it surfaces the error inline and offers Retry itself,
         // rather than rewinding. The parent has nothing to do on a per-leg failure.
@@ -540,6 +546,16 @@
         oncancel={() => goTo('identity_detail')}
       />
     {/if}
+
+  {:else if step === 'migration_hosting'}
+    <DidWebHostingScreen
+      onselect={(hosting) => {
+        didWebHosting = hosting;
+        migrationHostingChosen = true;
+        goTo('migration_review');
+      }}
+      onback={() => goTo('migration_progress')}
+    />
 
   {:else if step === 'migration_success'}
     <MigrationSuccessScreen

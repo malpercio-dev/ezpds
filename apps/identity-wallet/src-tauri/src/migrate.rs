@@ -168,7 +168,8 @@ pub async fn build_did_web_migration_document_cmd(
     let document = serde_json::json!({
         "@context": ["https://www.w3.org/ns/did/v1"],
         "id": did,
-        "alsoKnownAs": recommended.also_known_as.unwrap_or(current.also_known_as),
+        // Domain migration must never let destination recommendations change the user's handle.
+        "alsoKnownAs": current.also_known_as,
         "verificationMethod": methods,
         "service": [{"id": format!("{did}#atproto_pds"), "type": "AtprotoPersonalDataServer", "serviceEndpoint": pds_endpoint}],
     });
@@ -227,17 +228,15 @@ pub async fn submit_did_web_migration_document_cmd(
             reason: "published did.json does not match the reviewed bytes".into(),
         });
     }
-    let refresh_path = format!(
-        "/xrpc/com.atproto.identity.resolveIdentity?identifier={}",
-        urlencoding::encode(&did)
-    );
-    let refreshed =
-        dest_client
-            .get(&refresh_path)
-            .await
-            .map_err(|e| MigrateError::NetworkError {
-                message: e.to_string(),
-            })?;
+    let refreshed = dest_client
+        .post(
+            "/xrpc/com.atproto.identity.refreshIdentity",
+            &serde_json::json!({ "identifier": did }),
+        )
+        .await
+        .map_err(|e| MigrateError::NetworkError {
+            message: e.to_string(),
+        })?;
     if !refreshed.status().is_success() {
         return Err(MigrateError::NetworkError {
             message: "destination did not accept the published document".into(),

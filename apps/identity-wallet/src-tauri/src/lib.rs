@@ -556,25 +556,49 @@ async fn perform_did_ceremony(
 async fn prepare_did_web_ceremony(
     state: tauri::State<'_, oauth::AppState>,
 ) -> Result<DidWebPreparation, DIDCeremonyError> {
-    let device_key = device_key::get_or_create().map_err(|_| DIDCeremonyError::KeyNotFound)?;
+    let device_key = device_key::get_or_create().map_err(|e| {
+        tracing::warn!(error = %e, "device key creation failed during did:web ceremony preparation");
+        DIDCeremonyError::KeyNotFound
+    })?;
     let pending_token = String::from_utf8(
-        keychain::get_item("session-token").map_err(|_| DIDCeremonyError::KeychainError)?,
+        keychain::get_item("session-token").map_err(|e| {
+            tracing::warn!(error = %e, "failed to retrieve session-token during did:web ceremony preparation");
+            DIDCeremonyError::KeychainError
+        })?,
     )
-    .map_err(|_| DIDCeremonyError::KeychainError)?;
+    .map_err(|e| {
+        tracing::warn!(error = %e, "session-token bytes are not valid UTF-8");
+        DIDCeremonyError::KeychainError
+    })?;
     let response = state
         .custos_client()
         .get_with_bearer("/v1/repo-signing-key", &pending_token)
         .await
-        .map_err(|e| DIDCeremonyError::NetworkError {
-            message: e.to_string(),
+        .map_err(|e| {
+            tracing::warn!(error = %e, "repo signing key request failed during did:web ceremony preparation");
+            DIDCeremonyError::NetworkError {
+                message: e.to_string(),
+            }
         })?;
-    if !response.status().is_success() {
+    let status = response.status();
+    if status.as_u16() == 503 {
+        return Err(DIDCeremonyError::NoPdsSigningKey);
+    }
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to read repo signing key error response");
+            "<body read failed>".to_string()
+        });
+        tracing::error!(status = %status, body = %body, "repo signing key request failed during did:web ceremony preparation");
         return Err(DIDCeremonyError::PdsKeyFetchFailed);
     }
     let repo_key: PdsSigningKey = response
         .json()
         .await
-        .map_err(|_| DIDCeremonyError::PdsKeyFetchFailed)?;
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to deserialize repo signing key during did:web ceremony preparation");
+            DIDCeremonyError::PdsKeyFetchFailed
+        })?;
     Ok(DidWebPreparation {
         device_key_multibase: device_key.multibase,
         repo_key_multibase: repo_key

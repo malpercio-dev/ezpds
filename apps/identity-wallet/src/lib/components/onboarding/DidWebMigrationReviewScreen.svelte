@@ -11,6 +11,7 @@
   let loading = $state(true);
   let submitting = $state(false);
   let error = $state('');
+  let committedResult = $state<ClaimResult | null>(null);
 
   async function load() {
     loading = true; error = '';
@@ -25,10 +26,23 @@
     submitting = true; error = '';
     try {
       const result = await submitDidWebMigrationDocument(did, review.documentText, hosting === 'custos');
+      committedResult = result;
+    } catch {
+      error = 'The domain update could not be verified. Confirm the exact exported bytes are live, then retry.';
+      submitting = false;
+      return;
+    }
+    await finishCommittedMigration();
+  }
+  async function finishCommittedMigration() {
+    if (!committedResult) return;
+    submitting = true; error = '';
+    try {
       await finalizeMigration(did);
-      onnext(result);
-    } catch { error = 'The live did.json does not match the reviewed bytes yet. Publish the export, wait for propagation, then retry.'; }
-    finally { submitting = false; }
+      onnext(committedResult);
+    } catch {
+      error = 'The domain update succeeded, but account activation did not finish. Your identity is safe; retry activation.';
+    } finally { submitting = false; }
   }
   load();
 </script>
@@ -44,9 +58,12 @@
     </div>
     <code>{review.documentText}</code>
     <Button variant="secondary" onclick={() => shareDidDocument(review!.documentText)}>Export updated did.json</Button>
-    <Button disabled={submitting} onclick={submit}>{submitting ? 'Verifying and finishing…' : 'I’ve published this exact file'}</Button>
+    {#if !committedResult}<Button disabled={submitting} onclick={submit}>{submitting ? 'Verifying and finishing…' : 'I’ve published this exact file'}</Button>{/if}
   {/if}
-  {#if error}<p class="error" role="alert">⚠ {error}</p><Button onclick={load}>Retry preparation</Button>{/if}
+  {#if error}
+    <p class="error" role="alert">⚠ {error}</p>
+    <Button onclick={committedResult ? finishCommittedMigration : review ? submit : load}>{committedResult ? 'Retry activation' : review ? 'Retry verification' : 'Retry preparation'}</Button>
+  {/if}
 </OnboardingShell>
 
 <style>
