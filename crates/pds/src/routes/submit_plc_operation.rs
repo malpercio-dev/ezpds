@@ -24,7 +24,7 @@ use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
 use crate::auth::oauth_scopes;
-use crate::plc_ops::{build_did_document_from_op, ensure_did_plc, fetch_current_plc_state};
+use crate::identity::plc::{build_did_document_from_op, ensure_did_plc, fetch_current_plc_state};
 
 #[derive(Deserialize)]
 pub struct SubmitPlcOperationRequest {
@@ -81,7 +81,7 @@ pub async fn submit_plc_operation(
         ));
     }
 
-    crate::genesis::post_to_plc_directory(
+    crate::identity::genesis::post_to_plc_directory(
         &state.http_client,
         &state.config.plc_directory_url,
         did,

@@ -20,7 +20,7 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::token::generate_token;
-use crate::handle::validate_handle;
+use crate::identity::handle::validate_handle;
 use crate::platform::Platform;
 
 #[derive(Deserialize)]

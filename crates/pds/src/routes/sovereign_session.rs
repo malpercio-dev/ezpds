@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
 use crate::db::sovereign_session_nonces::insert_nonce_if_absent;
-use crate::plc_ops::fetch_current_plc_state;
+use crate::identity::plc::fetch_current_plc_state;
 use crate::session_issuer::{issue_session_in_transaction, SessionKind};
 
 const NONCE_BYTES: usize = 32;

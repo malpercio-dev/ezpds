@@ -26,7 +26,7 @@ use crate::auth::oauth_scopes;
 use crate::auth::token::generate_token;
 use crate::db::accounts::get_session_account;
 use crate::db::plc_operation_tokens::insert_plc_operation_token;
-use crate::plc_ops::ensure_did_plc;
+use crate::identity::plc::ensure_did_plc;
 
 pub async fn request_plc_operation_signature(
     user: AuthenticatedUser,

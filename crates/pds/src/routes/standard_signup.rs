@@ -245,7 +245,7 @@ pub async fn check_handle_availability(
     State(state): State<AppState>,
     Query(params): Query<CheckHandleAvailabilityParams>,
 ) -> Result<Json<CheckHandleAvailabilityResponse>, ApiError> {
-    let available = crate::handle::validate_handle(
+    let available = crate::identity::handle::validate_handle(
         &params.handle,
         &state.config.available_user_domains,
         &state.config.reserved_handles,
