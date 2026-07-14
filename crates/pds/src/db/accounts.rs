@@ -128,13 +128,14 @@ pub(crate) async fn update_account_email(
     did: &str,
     new_email: &str,
 ) -> Result<EmailUpdateOutcome, ApiError> {
+    let new_email = crate::uniqueness::normalize_email(new_email);
     let result = sqlx::query(
         "UPDATE accounts \
          SET email = ?, email_confirmed_at = NULL, updated_at = datetime('now') \
          WHERE did = ? AND deactivated_at IS NULL AND suspended_at IS NULL \
            AND taken_down_at IS NULL",
     )
-    .bind(new_email)
+    .bind(&new_email)
     .bind(did)
     .execute(db)
     .await;
@@ -1000,12 +1001,16 @@ pub(crate) async fn get_repo_status(
 
 /// Resolve an email address to an active account (not deactivated, suspended, or taken down).
 ///
-/// Used by the provisioning session login endpoint (`POST /v1/accounts/sessions`).
+/// Used by the provisioning session login endpoint (`POST /v1/accounts/sessions`) and
+/// `requestPasswordReset`. `email` is normalized first (see
+/// [`crate::uniqueness::normalize_email`]) since stored addresses are normalized — a caller does
+/// not need to normalize before calling, so a differently-cased submission still resolves.
 /// Returns `None` when not found or not active; `Err` only on DB errors.
 pub(crate) async fn resolve_by_email(
     db: &sqlx::SqlitePool,
     email: &str,
 ) -> Result<Option<AccountRow>, ApiError> {
+    let email = crate::uniqueness::normalize_email(email);
     let row: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
         "SELECT a.did, a.password_hash, h.handle \
          FROM accounts a \
@@ -1014,7 +1019,7 @@ pub(crate) async fn resolve_by_email(
            AND a.taken_down_at IS NULL \
          LIMIT 1",
     )
-    .bind(email)
+    .bind(&email)
     .fetch_optional(db)
     .await
     .map_err(|e| {
@@ -2132,5 +2137,79 @@ mod tests {
             .unwrap();
         assert_eq!(page2.len(), 1);
         assert_eq!(page2[0].did, "did:plc:laa_pg_c");
+    }
+
+    // ── resolve_by_email / update_account_email normalization ────────────────
+
+    #[tokio::test]
+    async fn resolve_by_email_matches_regardless_of_submitted_case() {
+        // The stored address is normalized (lowercase); a differently-cased or padded lookup
+        // must still resolve — this is the fix for a signup email whose case doesn't match a
+        // later requestPasswordReset submission.
+        let db = test_pool().await;
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES ('did:plc:mixed', 'alice@example.com', 'hash', datetime('now'), datetime('now'))",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let found = resolve_by_email(&db, "  Alice@Example.COM  ")
+            .await
+            .unwrap();
+        assert_eq!(
+            found.map(|a| a.did),
+            Some("did:plc:mixed".to_string()),
+            "a differently-cased, padded lookup must resolve the same account"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_by_email_unknown_case_variant_of_unknown_address_returns_none() {
+        let db = test_pool().await;
+        assert!(resolve_by_email(&db, "Nobody@Example.COM")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn update_account_email_stores_normalized_address() {
+        let db = test_pool().await;
+        insert_account(&db, "did:plc:updnorm").await;
+
+        let outcome = update_account_email(&db, "did:plc:updnorm", "  New@Example.COM  ")
+            .await
+            .unwrap();
+        assert!(matches!(outcome, EmailUpdateOutcome::Updated));
+
+        let stored: String = sqlx::query_scalar("SELECT email FROM accounts WHERE did = ?")
+            .bind("did:plc:updnorm")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(stored, "new@example.com");
+    }
+
+    #[tokio::test]
+    async fn update_account_email_reports_taken_across_case() {
+        let db = test_pool().await;
+        insert_account(&db, "did:plc:updtaken_a").await;
+        insert_account(&db, "did:plc:updtaken_b").await;
+        let existing_email: String =
+            sqlx::query_scalar("SELECT email FROM accounts WHERE did = 'did:plc:updtaken_a'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+
+        let outcome =
+            update_account_email(&db, "did:plc:updtaken_b", &existing_email.to_uppercase())
+                .await
+                .unwrap();
+        assert!(
+            matches!(outcome, EmailUpdateOutcome::Taken),
+            "a case-different collision with another account's email must be reported as Taken"
+        );
     }
 }

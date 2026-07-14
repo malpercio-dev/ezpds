@@ -45,10 +45,12 @@ pub async fn update_email(
     }
     oauth_scopes::require_account(&user.scope_claim, "email", "manage")?;
 
+    // Normalize (trim + lowercase) so storage/lookup match the reference PDS's case-insensitive
+    // email handling.
+    let new_email = crate::uniqueness::normalize_email(&payload.email);
     // Minimal shape check — a real address has an '@' with something on each side. The SMTP layer
     // rejects a truly malformed address later, but catching it here yields a clean 400.
-    let new_email = payload.email.trim();
-    if !is_plausible_email(new_email) {
+    if !is_plausible_email(&new_email) {
         return Err(ApiError::new(
             ErrorCode::InvalidRequest,
             "invalid email address",
@@ -80,7 +82,7 @@ pub async fn update_email(
         }
     }
 
-    match update_account_email(&state.db, &user.did, new_email).await? {
+    match update_account_email(&state.db, &user.did, &new_email).await? {
         EmailUpdateOutcome::Updated => Ok(StatusCode::OK),
         EmailUpdateOutcome::Taken => Err(ApiError::new(
             ErrorCode::InvalidRequest,
@@ -213,6 +215,46 @@ mod tests {
             confirmed_at.is_none(),
             "email_confirmed_at must be reset when the address changes"
         );
+    }
+
+    #[tokio::test]
+    async fn new_email_is_stored_normalized_lowercase() {
+        let state = test_state().await;
+        let db = state.db.clone();
+        let did = "did:plc:updemailnorm11111111111";
+        seed_account_with_signing_key(&db, did, "norm.example.com").await;
+        let jwt = access_jwt(&state.jwt_secret, did);
+
+        let response = app(state)
+            .oneshot(post_req(
+                Some(&jwt),
+                r#"{"email":"  MixedCase@Example.COM  "}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(email_of(&db, did).await, "mixedcase@example.com");
+    }
+
+    #[tokio::test]
+    async fn duplicate_email_differing_only_by_case_returns_400() {
+        let state = test_state().await;
+        let db = state.db.clone();
+        let existing = "did:plc:updemailexistingcase4444";
+        let did = "did:plc:updemailcase5555555555555";
+        seed_account_with_signing_key(&db, existing, "existingcase.example.com").await;
+        seed_account_with_signing_key(&db, did, "davecase.example.com").await;
+        let taken = email_of(&db, existing).await.to_uppercase();
+        let jwt = access_jwt(&state.jwt_secret, did);
+
+        let body = format!(r#"{{"email":"{taken}"}}"#);
+        let response = app(state)
+            .oneshot(post_req(Some(&jwt), &body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "InvalidRequest");
     }
 
     #[tokio::test]

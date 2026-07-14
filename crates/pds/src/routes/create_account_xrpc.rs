@@ -106,8 +106,9 @@ async fn create_account_new(
     payload: &CreateAccountRequest,
 ) -> Result<Json<CreateAccountResponse>, ApiError> {
     // New-account mode creates a fresh identity on this server: require email + password and a
-    // handle on a served domain.
-    let email = require_email(payload)?;
+    // handle on a served domain. The email is normalized (trim + lowercase) so it matches the
+    // reference PDS's storage/lookup behavior.
+    let email = crate::uniqueness::normalize_email(require_email(payload)?);
     let password = payload
         .password
         .as_deref()
@@ -177,7 +178,7 @@ async fn create_account_new(
         })?;
 
     // Uniqueness pre-flight (fast rejection before expensive genesis work) and invite pre-check.
-    ensure_email_and_handle_free(state, email, &payload.handle).await?;
+    ensure_email_and_handle_free(state, &email, &payload.handle).await?;
     precheck_invite_code(state, payload.invite_code.as_deref()).await?;
 
     // Build the (empty) genesis repo in memory, signed with the reserved per-account key, so its
@@ -234,7 +235,7 @@ async fn create_account_new(
         state,
         NewAccountPromotion {
             did: &did,
-            email,
+            email: &email,
             handle: &payload.handle,
             password_hash: &password_hash,
             did_document: &did_document,
@@ -477,7 +478,7 @@ async fn create_account_migration(
             "this handle name is reserved",
         ));
     }
-    let email = require_email(payload)?;
+    let email = crate::uniqueness::normalize_email(require_email(payload)?);
 
     // A repo signing key must have been reserved for this DID (via reserveSigningKey) so the PDS
     // can sign commits once the repo is imported.
@@ -494,7 +495,7 @@ async fn create_account_migration(
             )
         })?;
 
-    ensure_email_and_handle_free(state, email, &payload.handle).await?;
+    ensure_email_and_handle_free(state, &email, &payload.handle).await?;
     precheck_invite_code(state, payload.invite_code.as_deref()).await?;
 
     let did_document_str = serde_json::to_string(&did_document).map_err(|e| {
@@ -524,7 +525,7 @@ async fn create_account_migration(
          VALUES (?, ?, ?, datetime('now'), datetime('now'), datetime('now'))",
     )
     .bind(did)
-    .bind(email)
+    .bind(&email)
     .bind(password_hash.as_deref())
     .execute(&mut *tx)
     .await
@@ -925,6 +926,42 @@ mod tests {
             matches!(fh_rx.try_recv(), Ok(FirehoseEvent::Account(a)) if a.did == did && a.active),
             "expected an #account (active)"
         );
+    }
+
+    #[tokio::test]
+    async fn new_account_email_is_stored_normalized_lowercase() {
+        let plc = plc_mock().await;
+        let state = test_state(plc.uri(), false).await;
+        let db = state.db.clone();
+        let reserved = reserve_key(&db, None).await;
+        let op = signed_genesis_op(
+            "mixedcase.example.com",
+            &state.config.public_url,
+            &reserved.key_id.0,
+        );
+
+        let response = app(state)
+            .oneshot(post(
+                serde_json::json!({
+                    "handle": "mixedcase.example.com",
+                    "email": "  MixedCase@Example.COM  ",
+                    "password": "hunter2hunter2",
+                    "plcOp": op,
+                }),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        let did = json["did"].as_str().expect("did present");
+
+        let stored: String = sqlx::query_scalar("SELECT email FROM accounts WHERE did = ?")
+            .bind(did)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(stored, "mixedcase@example.com");
     }
 
     #[tokio::test]

@@ -64,8 +64,12 @@ pub async fn create_account(
         ));
     }
 
+    // Normalize (trim + lowercase) so storage/lookup match the reference PDS's case-insensitive
+    // email handling.
+    let email = crate::uniqueness::normalize_email(&payload.email);
+
     // --- Email uniqueness: fast-path rejection before INSERT ---
-    if crate::uniqueness::email_taken(&state.db, &payload.email)
+    if crate::uniqueness::email_taken(&state.db, &email)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to check email uniqueness");
@@ -102,7 +106,7 @@ pub async fn create_account(
         match insert_pending_account(
             &state.db,
             &account_id,
-            &payload.email,
+            &email,
             &payload.handle,
             &payload.tier,
             &claim_code,
@@ -398,6 +402,59 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "ACCOUNT_EXISTS");
+    }
+
+    #[tokio::test]
+    async fn duplicate_email_differing_only_by_case_returns_409() {
+        let state = test_state_with_admin_token().await;
+        let app = app(state);
+
+        let first = app
+            .clone()
+            .oneshot(post_create_account(
+                r#"{"email":"case@example.com","handle":"case1.example.com","tier":"free"}"#,
+                Some("test-admin-token"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::CREATED);
+
+        let second = app
+            .oneshot(post_create_account(
+                r#"{"email":"CASE@EXAMPLE.com","handle":"case2.example.com","tier":"free"}"#,
+                Some("test-admin-token"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(second.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(second.into_body(), 4096)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "ACCOUNT_EXISTS");
+    }
+
+    #[tokio::test]
+    async fn email_is_stored_normalized_lowercase() {
+        let state = test_state_with_admin_token().await;
+        let db = state.db.clone();
+
+        let response = app(state)
+            .oneshot(post_create_account(
+                r#"{"email":"  MixedCase@Example.COM  ","handle":"mixed.example.com","tier":"free"}"#,
+                Some("test-admin-token"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let stored: String = sqlx::query_scalar(
+            "SELECT email FROM pending_accounts WHERE handle = 'mixed.example.com'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(stored, "mixedcase@example.com");
     }
 
     // ── Duplicate handle ──────────────────────────────────────────────────────

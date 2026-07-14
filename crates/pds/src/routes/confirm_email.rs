@@ -49,9 +49,12 @@ pub async fn confirm_email(
         .await?
         .ok_or_else(|| ApiError::new(ErrorCode::InvalidToken, "account not found"))?;
 
-    // The submitted email must be the account's current address (case-insensitive). Rejecting a
-    // mismatch prevents confirming a stale address with a token minted before an email change.
-    if !account.email.eq_ignore_ascii_case(&payload.email) {
+    // The submitted email must be the account's current address. The stored address is always
+    // normalized (trim + lowercase), so normalizing the submission the same way and comparing
+    // exactly rejects a stale address (e.g. one submitted with a token minted before an email
+    // change) while tolerating case/whitespace differences in the submission itself.
+    let submitted_email = crate::uniqueness::normalize_email(&payload.email);
+    if account.email != submitted_email {
         return Err(ApiError::new(
             ErrorCode::InvalidRequest,
             "email does not match the account email",
@@ -155,6 +158,31 @@ mod tests {
         assert!(
             confirmed_at.is_some(),
             "email_confirmed_at must be set after confirmEmail"
+        );
+    }
+
+    #[tokio::test]
+    async fn differently_cased_matching_email_confirms() {
+        let state = test_state().await;
+        let db = state.db.clone();
+        let did = "did:plc:confirmemailcase111111111";
+        seed_account_with_signing_key(&db, did, "casey.example.com").await;
+        let email: String = sqlx::query_scalar("SELECT email FROM accounts WHERE did = ?")
+            .bind(did)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        let token = seed_confirm_token(&db, did).await;
+        let jwt = access_jwt(&state.jwt_secret, did);
+
+        let response = app(state)
+            .oneshot(post_req(Some(&jwt), &email.to_uppercase(), &token))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "a case-different but otherwise matching email must still confirm"
         );
     }
 
