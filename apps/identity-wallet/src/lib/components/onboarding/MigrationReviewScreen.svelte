@@ -36,6 +36,11 @@
   // Recoverable (retryable) vs terminal (no retry — a different path or state is needed).
   let error = $state<string | null>(null);
   let errorIsTerminal = $state(false);
+  // The PLC identity op is submitted exactly once. Once it lands, `migration_state` is cleared and
+  // re-submitting fails terminally — so a resumed cutover (finalize failed, user retries) must skip
+  // straight to finalize. The submit result is kept so a resumed attempt still resolves onnext.
+  let submitted = $state(false);
+  let submitResult = $state<ClaimResult | null>(null);
 
   let hasChanges = $derived(
     signedOp
@@ -91,6 +96,14 @@
           return { message: 'The destination account conflicts with this identity.', terminal: true };
         case 'DESTINATION_UNREACHABLE':
           return { message: "Couldn't reach the destination PDS.", terminal: false };
+        case 'ACTIVATION_FAILED':
+          return { message: 'Activating your new account failed. Please try again.', terminal: false };
+        case 'SOVEREIGN_LOGIN_FAILED':
+          return { message: 'Securing your new session failed. Your old account is untouched — please try again.', terminal: false };
+        case 'SESSION_PERSIST_FAILED':
+          return { message: "Couldn't save your new session. Your old account is untouched — please try again.", terminal: false };
+        case 'DEACTIVATION_FAILED':
+          return { message: 'Deactivating your old account failed. Please try again.', terminal: false };
         case 'SOURCE_AUTH_FAILED':
           return { message: 'Your source-PDS session expired. Please restart the migration flow.', terminal: true };
         default:
@@ -130,9 +143,15 @@
 
     submitting = true;
     try {
-      const result = await submitMigrationOp(did);
+      // Submit the PLC identity op exactly once; a resumed attempt skips straight to finalize
+      // (re-submitting after the op landed fails terminally). The biometric gate above still runs
+      // on every attempt, so a resumed cutover re-authorizes before finalize's device-key signature.
+      if (!submitted) {
+        submitResult = await submitMigrationOp(did);
+        submitted = true;
+      }
       await finalizeMigration(did);
-      onnext(result);
+      onnext(submitResult!);
     } catch (raw: unknown) {
       console.error('Migration submission failed:', raw);
       const described = describeError(raw);

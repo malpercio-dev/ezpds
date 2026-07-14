@@ -807,6 +807,12 @@ export type MigrationError =
   | { code: 'PREFERENCES_TRANSFER_FAILED'; message: string }
   | { code: 'VERIFICATION_INCOMPLETE'; imported: number; expected: number }
   | { code: 'ACTIVATION_FAILED'; message: string }
+  // Cutover: minting the destination sovereign session failed (proof rejected / rate-limited /
+  // 5xx / transport). Retryable — the source stays active and finalize can be retried.
+  | { code: 'SOVEREIGN_LOGIN_FAILED'; message: string }
+  // Cutover: persisting the destination session to the Keychain failed. Retryable — the source
+  // stays active; the prior valid token record (if any) is left intact.
+  | { code: 'SESSION_PERSIST_FAILED'; message: string }
   | { code: 'DEACTIVATION_FAILED'; message: string }
   | { code: 'NETWORK_ERROR'; message: string };
 
