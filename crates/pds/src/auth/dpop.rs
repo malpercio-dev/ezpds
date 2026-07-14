@@ -125,6 +125,176 @@ pub async fn cleanup_expired_nonces(store: &DpopNonceStore) {
     store.lock().await.retain(|_, expiry| *expiry > now);
 }
 
+/// A DPoP proof whose header and signature have passed the shared prologue.
+///
+/// Returned by [`verify_dpop_proof_prologue`]; the endpoint-specific tail reads
+/// `header.jwk` (for the thumbprint) and the `claims`.
+struct VerifiedProof {
+    header: DPopHeader,
+    claims: DPopClaims,
+}
+
+/// Which check in the shared DPoP proof prologue rejected the proof.
+///
+/// Each endpoint validator maps this to its own error vocabulary. The token /
+/// revocation endpoints surface a distinct `error_description` per variant
+/// (RFC 6749 `{error, error_description}`); the resource-endpoint path collapses
+/// every variant except `typ`/`crv` into one opaque `"DPoP proof invalid"`.
+/// Both mappings reproduce the pre-refactor strings exactly.
+enum DPopProofError {
+    /// The proof has no header segment before the first `.`.
+    MalformedSplit,
+    /// The header segment is not valid base64url.
+    MalformedBase64,
+    /// The header segment is not valid JSON / is missing required fields.
+    MalformedJson,
+    /// `typ` header is not `"dpop+jwt"`.
+    WrongTyp,
+    /// `alg` is `ES256` but the embedded JWK `crv` is not `P-256`.
+    WrongCrv,
+    /// The embedded JWK failed to parse.
+    JwkParse,
+    /// A `DecodingKey` could not be built from the embedded JWK.
+    DecodingKey,
+    /// `alg` is not an accepted DPoP algorithm.
+    UnsupportedAlg,
+    /// Signature verification (or claims decode) failed.
+    Signature,
+}
+
+impl DPopProofError {
+    /// `error_description` for the token / revocation endpoints (each variant
+    /// distinct, as before the prologue was factored out).
+    fn token_endpoint_message(self) -> &'static str {
+        match self {
+            DPopProofError::MalformedSplit => "malformed DPoP JWT",
+            DPopProofError::MalformedBase64 => "DPoP header base64 invalid",
+            DPopProofError::MalformedJson => "DPoP header JSON malformed",
+            DPopProofError::WrongTyp => "DPoP typ must be dpop+jwt",
+            DPopProofError::WrongCrv => "DPoP JWK crv must be P-256 for ES256",
+            DPopProofError::JwkParse => "DPoP JWK parse failed",
+            DPopProofError::DecodingKey => "DPoP DecodingKey build failed",
+            DPopProofError::UnsupportedAlg => "DPoP unsupported alg",
+            DPopProofError::Signature => "DPoP signature verification failed",
+        }
+    }
+
+    /// `ApiError` for the resource-endpoint path. Only `typ`/`crv` carry a
+    /// specific message; every other failure is deliberately opaque.
+    fn resource_error(self) -> ApiError {
+        match self {
+            DPopProofError::WrongTyp => {
+                ApiError::new(ErrorCode::InvalidToken, "DPoP proof typ must be dpop+jwt")
+            }
+            DPopProofError::WrongCrv => ApiError::new(
+                ErrorCode::InvalidToken,
+                "DPoP JWK crv must be P-256 for ES256",
+            ),
+            _ => ApiError::new(ErrorCode::InvalidToken, "DPoP proof invalid"),
+        }
+    }
+}
+
+/// The proof-validation prologue shared by both DPoP validators: base64-decode
+/// the header → `typ == "dpop+jwt"` → `ES256 ⇒ crv=P-256` → build the decoding
+/// key → verify the signature and decode the claims.
+///
+/// This is the security-critical common core; the endpoint-specific checks
+/// (nonce vs `ath` + `cnf.jkt`) live in each validator's tail. Diagnostic
+/// `tracing::debug!` logging happens here so both call sites benefit from it;
+/// the returned [`DPopProofError`] carries only which check failed, letting each
+/// caller render its own client-facing message.
+fn verify_dpop_proof_prologue(dpop_token: &str) -> Result<VerifiedProof, DPopProofError> {
+    // Decode the DPoP proof header manually — jsonwebtoken's Header type doesn't
+    // expose custom header fields like `jwk`, so we base64-decode the first segment.
+    let header_b64 = dpop_token
+        .split('.')
+        .next()
+        .ok_or(DPopProofError::MalformedSplit)?;
+    let header_bytes = URL_SAFE_NO_PAD.decode(header_b64).map_err(|e| {
+        tracing::debug!(error = %e, "DPoP proof header is not valid base64url");
+        DPopProofError::MalformedBase64
+    })?;
+    let dpop_header: DPopHeader = serde_json::from_slice(&header_bytes).map_err(|e| {
+        tracing::debug!(error = %e, "DPoP proof header JSON is malformed or missing required fields");
+        DPopProofError::MalformedJson
+    })?;
+
+    if dpop_header.typ != "dpop+jwt" {
+        tracing::debug!(typ = %dpop_header.typ, "DPoP proof typ is not dpop+jwt");
+        return Err(DPopProofError::WrongTyp);
+    }
+
+    // Validate that the embedded JWK curve matches the declared algorithm.
+    if dpop_header.alg == "ES256"
+        && dpop_header.jwk.get("crv").and_then(|v| v.as_str()) != Some("P-256")
+    {
+        return Err(DPopProofError::WrongCrv);
+    }
+
+    // Verify the DPoP JWT signature (before making any binding decisions based
+    // on the embedded JWK — defence-in-depth: prove key control before trusting claims).
+    let jwk: jsonwebtoken::jwk::Jwk =
+        serde_json::from_value(dpop_header.jwk.clone()).map_err(|e| {
+            tracing::debug!(error = %e, "failed to parse JWK from DPoP proof header");
+            DPopProofError::JwkParse
+        })?;
+    let decoding_key = DecodingKey::from_jwk(&jwk).map_err(|e| {
+        tracing::debug!(error = %e, "failed to build DecodingKey from DPoP JWK");
+        DPopProofError::DecodingKey
+    })?;
+    let alg = dpop_alg_from_str(&dpop_header.alg).ok_or_else(|| {
+        tracing::debug!(alg = %dpop_header.alg, "unsupported DPoP proof algorithm");
+        DPopProofError::UnsupportedAlg
+    })?;
+
+    let mut validation = Validation::new(alg);
+    // DPoP proofs don't carry `exp`; freshness is enforced via `iat` in the tail.
+    validation.validate_exp = false;
+    validation.set_required_spec_claims::<&str>(&[]);
+    validation.validate_aud = false;
+
+    let dpop_data = decode::<DPopClaims>(dpop_token, &decoding_key, &validation).map_err(|e| {
+        tracing::debug!(error = %e, "DPoP proof decoding or signature verification failed");
+        DPopProofError::Signature
+    })?;
+
+    Ok(VerifiedProof {
+        header: dpop_header,
+        claims: dpop_data.claims,
+    })
+}
+
+/// Maximum age — and future-dating tolerance — of a DPoP proof's `iat`, in
+/// seconds. RFC 9449 §11.1 leaves the window to the server; a tight ±60s bounds
+/// replay without tripping on ordinary clock skew.
+const DPOP_MAX_AGE_SECS: u64 = 60;
+
+/// Why the shared freshness check rejected a proof.
+enum FreshnessError {
+    /// The system clock is before the UNIX epoch — validation is impossible.
+    ClockError,
+    /// `iat` is more than [`DPOP_MAX_AGE_SECS`] from now (past or future).
+    Stale,
+}
+
+/// Reject a DPoP proof whose `iat` falls outside the ±[`DPOP_MAX_AGE_SECS`]
+/// freshness window.
+///
+/// Widen to i128 before subtracting so a malicious `iat = i64::MIN` can't
+/// overflow the i64 subtraction (debug panic; release wraparound bypass).
+fn check_dpop_freshness(iat: i64) -> Result<(), FreshnessError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| FreshnessError::ClockError)?
+        .as_secs() as i64;
+    let diff = (now as i128) - (iat as i128);
+    if diff.unsigned_abs() > DPOP_MAX_AGE_SECS as u128 {
+        return Err(FreshnessError::Stale);
+    }
+    Ok(())
+}
+
 /// Validate the DPoP proof at the token endpoint and return the JWK thumbprint.
 ///
 /// This is a token-endpoint-specific variant of `validate_dpop`:
@@ -140,48 +310,10 @@ pub async fn validate_dpop_for_token_endpoint(
     htu: &str,
     nonce_store: &DpopNonceStore,
 ) -> Result<String, DpopTokenEndpointError> {
-    // Decode the DPoP proof header manually (same pattern as validate_dpop).
-    let header_b64 = dpop_token
-        .split('.')
-        .next()
-        .ok_or(DpopTokenEndpointError::InvalidProof("malformed DPoP JWT"))?;
-    let header_bytes = URL_SAFE_NO_PAD
-        .decode(header_b64)
-        .map_err(|_| DpopTokenEndpointError::InvalidProof("DPoP header base64 invalid"))?;
-    let dpop_header: DPopHeader = serde_json::from_slice(&header_bytes)
-        .map_err(|_| DpopTokenEndpointError::InvalidProof("DPoP header JSON malformed"))?;
-
-    if dpop_header.typ != "dpop+jwt" {
-        return Err(DpopTokenEndpointError::InvalidProof(
-            "DPoP typ must be dpop+jwt",
-        ));
-    }
-
-    // Validate that the embedded JWK curve matches the declared algorithm.
-    if dpop_header.alg == "ES256"
-        && dpop_header.jwk.get("crv").and_then(|v| v.as_str()) != Some("P-256")
-    {
-        return Err(DpopTokenEndpointError::InvalidProof(
-            "DPoP JWK crv must be P-256 for ES256",
-        ));
-    }
-
-    // Verify the signature against the embedded JWK.
-    let jwk: jsonwebtoken::jwk::Jwk = serde_json::from_value(dpop_header.jwk.clone())
-        .map_err(|_| DpopTokenEndpointError::InvalidProof("DPoP JWK parse failed"))?;
-    let decoding_key = DecodingKey::from_jwk(&jwk)
-        .map_err(|_| DpopTokenEndpointError::InvalidProof("DPoP DecodingKey build failed"))?;
-    let alg = dpop_alg_from_str(&dpop_header.alg)
-        .ok_or(DpopTokenEndpointError::InvalidProof("DPoP unsupported alg"))?;
-
-    let mut validation = Validation::new(alg);
-    validation.validate_exp = false;
-    validation.set_required_spec_claims::<&str>(&[]);
-    validation.validate_aud = false;
-
-    let dpop_data = decode::<DPopClaims>(dpop_token, &decoding_key, &validation)
-        .map_err(|_| DpopTokenEndpointError::InvalidProof("DPoP signature verification failed"))?;
-    let claims = dpop_data.claims;
+    // Shared prologue: header decode + typ/crv/alg/signature checks.
+    let proof = verify_dpop_proof_prologue(dpop_token)
+        .map_err(|e| DpopTokenEndpointError::InvalidProof(e.token_endpoint_message()))?;
+    let claims = proof.claims;
 
     // Validate htm (HTTP method).
     if claims.htm.to_uppercase() != htm.to_uppercase() {
@@ -199,14 +331,10 @@ pub async fn validate_dpop_for_token_endpoint(
     }
 
     // Freshness: reject proofs older than 60 seconds or from the future.
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| DpopTokenEndpointError::InvalidProof("system clock error"))?
-        .as_secs() as i64;
-    let diff = (now as i128) - (claims.iat as i128);
-    if diff.unsigned_abs() > 60 {
-        return Err(DpopTokenEndpointError::InvalidProof("DPoP proof stale"));
-    }
+    check_dpop_freshness(claims.iat).map_err(|e| match e {
+        FreshnessError::ClockError => DpopTokenEndpointError::InvalidProof("system clock error"),
+        FreshnessError::Stale => DpopTokenEndpointError::InvalidProof("DPoP proof stale"),
+    })?;
 
     // Validate nonce claim.
     match claims.nonce.as_deref() {
@@ -225,7 +353,7 @@ pub async fn validate_dpop_for_token_endpoint(
     }
 
     // Compute and return the JWK thumbprint.
-    jwk_thumbprint(&dpop_header.jwk)
+    jwk_thumbprint(&proof.header.jwk)
         .map_err(|_| DpopTokenEndpointError::InvalidProof("JWK thumbprint computation failed"))
 }
 
@@ -260,63 +388,10 @@ pub fn validate_dpop(
 ) -> Result<(), ApiError> {
     let invalid = || ApiError::new(ErrorCode::InvalidToken, "DPoP proof invalid");
 
-    // Decode the DPoP proof header manually — jsonwebtoken's Header type doesn't
-    // expose custom header fields like `jwk`, so we base64-decode the first segment.
-    let header_b64 = dpop_token.split('.').next().ok_or_else(invalid)?;
-    let header_bytes = URL_SAFE_NO_PAD.decode(header_b64).map_err(|e| {
-        tracing::debug!(error = %e, "DPoP proof header is not valid base64url");
-        invalid()
-    })?;
-    let dpop_header: DPopHeader = serde_json::from_slice(&header_bytes).map_err(|e| {
-        tracing::debug!(error = %e, "DPoP proof header JSON is malformed or missing required fields");
-        invalid()
-    })?;
-
-    if dpop_header.typ != "dpop+jwt" {
-        tracing::debug!(typ = %dpop_header.typ, "DPoP proof typ is not dpop+jwt");
-        return Err(ApiError::new(
-            ErrorCode::InvalidToken,
-            "DPoP proof typ must be dpop+jwt",
-        ));
-    }
-
-    // Validate that the embedded JWK curve matches the declared algorithm.
-    if dpop_header.alg == "ES256"
-        && dpop_header.jwk.get("crv").and_then(|v| v.as_str()) != Some("P-256")
-    {
-        return Err(ApiError::new(
-            ErrorCode::InvalidToken,
-            "DPoP JWK crv must be P-256 for ES256",
-        ));
-    }
-
-    // Verify the DPoP JWT signature first (before making any binding decisions based
-    // on the embedded JWK — defence-in-depth: prove key control before trusting claims).
-    let jwk: jsonwebtoken::jwk::Jwk =
-        serde_json::from_value(dpop_header.jwk.clone()).map_err(|e| {
-            tracing::debug!(error = %e, "failed to parse JWK from DPoP proof header");
-            invalid()
-        })?;
-    let decoding_key = DecodingKey::from_jwk(&jwk).map_err(|e| {
-        tracing::debug!(error = %e, "failed to build DecodingKey from DPoP JWK");
-        invalid()
-    })?;
-    let alg = dpop_alg_from_str(&dpop_header.alg).ok_or_else(|| {
-        tracing::debug!(alg = %dpop_header.alg, "unsupported DPoP proof algorithm");
-        invalid()
-    })?;
-
-    let mut validation = Validation::new(alg);
-    // DPoP proofs don't carry `exp`; freshness is enforced via `iat` below.
-    validation.validate_exp = false;
-    validation.set_required_spec_claims::<&str>(&[]);
-    validation.validate_aud = false;
-
-    let dpop_data = decode::<DPopClaims>(dpop_token, &decoding_key, &validation).map_err(|e| {
-        tracing::debug!(error = %e, "DPoP proof decoding or signature verification failed");
-        invalid()
-    })?;
-    let dpop_claims = dpop_data.claims;
+    // Shared prologue: header decode + typ/crv/alg/signature checks.
+    let proof = verify_dpop_proof_prologue(dpop_token).map_err(DPopProofError::resource_error)?;
+    let dpop_header = proof.header;
+    let dpop_claims = proof.claims;
 
     // Compute JWK thumbprint (RFC 7638) and verify the access token was bound to this key.
     // Signature has already been verified above, so the JWK is authentic.
@@ -404,25 +479,13 @@ pub fn validate_dpop(
     }
 
     // Freshness: reject proofs issued more than 60 seconds ago or in the future.
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| {
-            tracing::error!(
-                error = %e,
-                "system clock is before UNIX epoch; DPoP validation impossible"
-            );
+    check_dpop_freshness(dpop_claims.iat).map_err(|e| match e {
+        FreshnessError::ClockError => {
+            tracing::error!("system clock is before UNIX epoch; DPoP validation impossible");
             ApiError::new(ErrorCode::InternalError, "internal server error")
-        })?
-        .as_secs() as i64;
-    // Widen to i128 before subtracting to prevent i64 overflow when a malicious
-    // client sends iat = i64::MIN (debug panic; release wraparound bypass).
-    let diff = (now as i128) - (dpop_claims.iat as i128);
-    if diff.unsigned_abs() > 60 {
-        return Err(ApiError::new(
-            ErrorCode::InvalidToken,
-            "DPoP proof is stale",
-        ));
-    }
+        }
+        FreshnessError::Stale => ApiError::new(ErrorCode::InvalidToken, "DPoP proof is stale"),
+    })?;
 
     Ok(())
 }
