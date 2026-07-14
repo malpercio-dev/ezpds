@@ -15,7 +15,7 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::extract_bearer_token;
-use crate::token::hash_bearer_token;
+use crate::auth::token::hash_bearer_token;
 use crate::transfer::{complete_transfer as complete_transfer_row, CompleteOutcome};
 
 #[derive(Deserialize)]
@@ -87,8 +87,8 @@ mod tests {
     use uuid::Uuid;
 
     use crate::app::{app, test_state, AppState};
+    use crate::auth::token::{generate_token, hash_bearer_token};
     use crate::routes::test_utils::body_json;
-    use crate::token::{generate_token, hash_bearer_token};
 
     struct AcceptedTransferFixture {
         did: String,

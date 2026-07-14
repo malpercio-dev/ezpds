@@ -24,9 +24,7 @@ mod genesis;
 mod handle;
 mod identity_resolution;
 mod iroh_tunnel;
-mod jwks;
 mod metrics;
-mod oauth_client_resolution;
 mod platform;
 mod plc_ops;
 mod rate_limit;
@@ -40,7 +38,6 @@ mod state;
 mod sweep_status;
 mod telemetry;
 mod time;
-mod token;
 mod transfer;
 mod uniqueness;
 mod well_known;
@@ -204,8 +201,8 @@ async fn run() -> anyhow::Result<()> {
     // Dynamic-trust JWKS cache for the auth.md `identity_assertion` flow: reuses the shared HTTP
     // client and the operator-configured cache TTL + refetch cooldown (the anti-amplification
     // bound for the public agent-auth endpoints). The static-PEM trust path never touches it.
-    let jwks_cache = Arc::new(jwks::JwksCache::new(
-        Arc::new(jwks::HttpJwksFetcher::new(http_client.clone())),
+    let jwks_cache = Arc::new(auth::jwks::JwksCache::new(
+        Arc::new(auth::jwks::HttpJwksFetcher::new(http_client.clone())),
         std::time::Duration::from_secs(config.agent_auth.jwks_cache_ttl_secs),
         std::time::Duration::from_secs(config.agent_auth.jwks_refetch_cooldown_secs),
     ));

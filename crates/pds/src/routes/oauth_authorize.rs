@@ -18,6 +18,7 @@ use serde::Deserialize;
 use crate::app::AppState;
 use crate::auth::password::{verify_password, VerifyResult, TIMING_DUMMY_HASH};
 use crate::auth::rate_limit::{clear_failures, is_rate_limited, record_failure};
+use crate::auth::token::generate_token;
 use crate::db::accounts::resolve_identifier;
 use crate::db::oauth::{
     consume_par_request, get_oauth_client, store_authorization_code, ClientMetadata,
@@ -26,7 +27,6 @@ use crate::db::oauth::{
 use crate::routes::oauth_templates::{
     encode_param, error_page, error_redirect, render_consent_page,
 };
-use crate::token::generate_token;
 
 /// Fully-resolved parameters for the authorization consent page.
 ///
@@ -707,8 +707,8 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
+    use crate::auth::token::hash_bearer_token;
     use crate::db::oauth::register_oauth_client;
-    use crate::token::hash_bearer_token;
 
     const CLIENT_ID: &str = "https://app.example.com/client-metadata.json";
     const REDIRECT_URI: &str = "https://app.example.com/callback";

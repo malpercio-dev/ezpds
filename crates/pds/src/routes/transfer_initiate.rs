@@ -119,8 +119,8 @@ mod tests {
     use uuid::Uuid;
 
     use crate::app::{app, test_state, AppState};
+    use crate::auth::token::generate_token;
     use crate::routes::test_utils::body_json;
-    use crate::token::generate_token;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 

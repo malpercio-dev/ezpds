@@ -23,10 +23,10 @@ use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
 use crate::auth::oauth_scopes;
+use crate::auth::token::generate_token;
 use crate::db::accounts::get_session_account;
 use crate::db::plc_operation_tokens::insert_plc_operation_token;
 use crate::plc_ops::ensure_did_plc;
-use crate::token::generate_token;
 
 pub async fn request_plc_operation_signature(
     user: AuthenticatedUser,

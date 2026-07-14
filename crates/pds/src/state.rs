@@ -41,8 +41,8 @@ pub struct AppState {
     pub well_known_resolver: Option<Arc<dyn WellKnownResolver>>,
     /// TTL cache resolving a dynamic-trust issuer's JWKS (`[agent_auth] trusted_issuers[].jwks_url`)
     /// to a decoding key when verifying an ID-JAG. Shared via Arc; the static-PEM trust path never
-    /// touches it. See [`crate::jwks::JwksCache`].
-    pub jwks_cache: Arc<crate::jwks::JwksCache>,
+    /// touches it. See [`crate::auth::jwks::JwksCache`].
+    pub jwks_cache: Arc<crate::auth::jwks::JwksCache>,
     /// HS256 signing secret for JWT access/refresh tokens.
     /// Generated randomly at startup via OsRng (ephemeral — rotates on restart).
     pub jwt_secret: [u8; 32],
@@ -207,8 +207,8 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
         well_known_resolver: None,
         // Real HTTP fetcher, but no test exercises it unless the test swaps in a mock fetcher
         // (the JWKS-trust tests in `routes/agent_identity.rs` do exactly that).
-        jwks_cache: Arc::new(crate::jwks::JwksCache::new(
-            Arc::new(crate::jwks::HttpJwksFetcher::new(http_client.clone())),
+        jwks_cache: Arc::new(crate::auth::jwks::JwksCache::new(
+            Arc::new(crate::auth::jwks::HttpJwksFetcher::new(http_client.clone())),
             Duration::from_secs(3600),
             // Cooldown disabled so a test's every lookup reaches its injected mock fetcher.
             Duration::ZERO,

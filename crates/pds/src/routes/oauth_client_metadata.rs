@@ -51,7 +51,7 @@ struct ClientMetadata {
 /// client_id-mismatch check.
 fn wallet_client_id(public_url: &str) -> String {
     let base = public_url.trim_end_matches('/');
-    if crate::oauth_client_resolution::url_is_loopback(base) {
+    if crate::auth::oauth_client_resolution::url_is_loopback(base) {
         format!("{base}{CLIENT_METADATA_PATH}")
     } else {
         CANONICAL_WALLET_CLIENT_ID.to_string()

@@ -28,12 +28,12 @@ use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
 use crate::auth::oauth_scopes;
+use crate::auth::token::hash_bearer_token;
 use crate::db::plc_operation_tokens::{consume_plc_operation_token, plc_operation_token_is_valid};
 use crate::db::repo_keys::get_signing_key_by_did;
 use crate::plc_ops::{
     ensure_did_plc, fetch_current_plc_state, parse_services, parse_verification_methods,
 };
-use crate::token::hash_bearer_token;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -259,7 +259,7 @@ mod tests {
 
     /// Seed a single-use PLC operation token, returning its plaintext.
     pub(super) async fn seed_token(db: &sqlx::SqlitePool, did: &str) -> String {
-        let token = crate::token::generate_token();
+        let token = crate::auth::token::generate_token();
         crate::db::plc_operation_tokens::insert_plc_operation_token(db, did, &token.hash)
             .await
             .unwrap();
@@ -449,7 +449,7 @@ mod tests {
         let jwt = access_jwt(&[0x42u8; 32], did);
 
         // A token that was never issued: base64url of 32 bytes so hash_bearer_token succeeds.
-        let bogus = crate::token::generate_token().plaintext;
+        let bogus = crate::auth::token::generate_token().plaintext;
         let response = app(state)
             .oneshot(post_req(Some(&jwt), serde_json::json!({ "token": bogus })))
             .await

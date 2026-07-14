@@ -21,9 +21,9 @@ use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
 use crate::auth::oauth_scopes;
+use crate::auth::token::hash_bearer_token;
 use crate::db::accounts::{get_session_account, set_email_confirmed};
 use crate::db::email_tokens::{consume_email_token, EmailTokenPurpose};
-use crate::token::hash_bearer_token;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -97,9 +97,9 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
+    use crate::auth::token::generate_token;
     use crate::db::email_tokens::{insert_email_token, EmailTokenPurpose};
     use crate::routes::test_utils::{access_jwt, body_json, seed_account_with_signing_key};
-    use crate::token::generate_token;
 
     fn post_req(jwt: Option<&str>, email: &str, token: &str) -> Request<Body> {
         let mut builder = Request::builder()

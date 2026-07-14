@@ -176,7 +176,7 @@ mod tests {
     use uuid::Uuid;
 
     use crate::app::{app, test_state, AppState};
-    use crate::token::generate_token;
+    use crate::auth::token::generate_token;
 
     struct TestOwner {
         did: String,

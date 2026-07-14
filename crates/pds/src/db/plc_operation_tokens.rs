@@ -109,8 +109,8 @@ pub async fn consume_plc_operation_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::token::generate_token;
     use crate::db::{open_pool, run_migrations};
-    use crate::token::generate_token;
 
     async fn test_pool() -> sqlx::SqlitePool {
         let pool = open_pool("sqlite::memory:").await.unwrap();
