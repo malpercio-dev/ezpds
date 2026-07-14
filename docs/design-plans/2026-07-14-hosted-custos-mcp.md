@@ -35,14 +35,38 @@ Two decisions in here are ADR-worthy and are flagged inline (see **§7 ADRs to w
 - **Litestream** backs up the production DB; as of 2026 it also supports live read replicas
   (object-store lease, no Consul). LiteFS is the FUSE-based HA alternative.
 
-## 1. The core reframing — agent as a sovereign *child* identity
+## 1. Two attribution models, chosen independently of hosting
 
-Today the MCP onboards an agent to **act as you** — write into *your* repo — so the durable
-credential a hosted service would hold maps to *your* identity. That is the entire source of the
-custody problem. Flip it: make the agent **its own ATProto principal** — own DID, own repo, own
-handle — created and owned by a parent account.
+The hosted-MCP conversation produced a reframing — the agent as its own identity — but that
+reframing is **not** a replacement for the current "agent acts as me" model. They answer two
+*independent* questions, and both remain first-class:
 
-The key-custody ladder then reads:
+- **Attribution** — does the agent act **as you** (writes into *your* repo, its actions carry your
+  identity) or **as itself** (its own DID/repo/handle, a named bot you own)?
+- **Hosting** — who runs the process, **you** (self-host) or the **operator** (hosted)?
+
+The custody concern that motivates the child-identity model is narrow: it bites *only* when a party
+**other than the user** holds a **durable credential that can act as the user**. That single
+condition partitions the matrix:
+
+| | **Acts as you** (delegate) | **Acts as itself** (sovereign child) |
+|---|---|---|
+| **Self-hosted** | ✅ **the shipped stdio MCP** — you hold your own credential on your own machine, so acting as you is exactly right | ✅ fine — you simply prefer a separate named identity |
+| **Hosted** (operator runs it) | ⚠️ only safe with strict credential-**forwarding** (operator holds nothing durable, §3); never with server-side custody | ✅ **the new hosted default** — even a durable bot credential cannot act as you |
+
+The only forbidden cell is *hosted + acts-as-you + durable custody*. Everything else is a legitimate
+user choice. **Self-hosting so the agent acts directly on your behalf is a supported, encouraged
+mode — not a power-user afterthought** — and it is what `tools/mcp/` already ships.
+
+Honest tradeoff to surface to the user, not decide for them: an agent that acts *as you* posts under
+*your* attribution (the audit trail reads "you did this"), which is what you want when the agent
+should *be* you (draft your real posts, manage your actual presence); the sovereign child identity
+is preferable when you'd rather the agent's actions be distinguishable from your own.
+
+### The sovereign-child-identity model (the hosted default)
+
+When the agent is **its own ATProto principal** — own DID, own repo, own handle, created and owned
+by a parent account — the key-custody ladder reads:
 
 | Key | Where it lives | In scope for the hosted tier? |
 |---|---|---|
@@ -51,14 +75,14 @@ The key-custody ladder then reads:
 | Agent's day-to-day signing capability | Delegated, short-lived, scope-clamped, revocable | Yes — but disposable and one-tap killable |
 | Agent's access token | 5-minute Bearer (existing) | Ephemeral by design |
 
-So "custodian of keys" collapses to "holder of a **revocable delegated signing capability** for a
-bot whose master key is in the user's wallet." That is arguably a *stronger* posture than the local
-stdio server, where the assertion sits `0600` on a laptop with no enclave. The agent's actions are
-attributable to a real, separate, named identity — more honest in a feed and in the wallet's audit
-list than an opaque "acting as you" token.
+So for the hosted case "custodian of keys" collapses to "holder of a **revocable delegated signing
+capability** for a bot whose master key is in the user's wallet." That is arguably a *stronger*
+posture than a self-hosted delegate, where the assertion sits `0600` on a laptop with no enclave —
+which is a fair trade the *self-hoster* accepts for the simplicity of the agent being them.
 
-**This is ADR-worthy** (§7, ADR-A): it changes the agent model from *acts-as-user delegate* to
-*sovereign child principal*, and defines who holds the agent's recovery key.
+**This is ADR-worthy** (§7, ADR-A): it establishes the sovereign-child-identity model as the
+default for the *hosted* path and defines who holds the agent's recovery key — while the
+acts-as-you delegate model stays supported, and is the right default for self-hosting.
 
 ## 2. Handles — subdomain now, custom domain later (both native to ATProto)
 
@@ -127,7 +151,10 @@ Net of §1–§3: **agent = sovereign child identity; hosted tier = credential-f
    1.3 raw-public-key auth, independent of WebPKI/DNS). Iroh is a **connectivity/topology**
    primitive here, **neutral on custody**. This reuses the existing endpoint; it does not require
    HTTP-over-iroh (see the iroh-tunnel exploration doc for that separate question).
-3. **Local stdio** (today) stays as-is for power users.
+3. **Self-hosted** (the shipped stdio MCP, and a future self-hosted HTTP sidecar). A first-class,
+   supported mode — *not* a fallback — for the user who wants the agent to **act directly as them**
+   and is content to hold the credential on their own machine (top-left of the §1 matrix). This is
+   the model to keep working and documented regardless of what the hosted tier becomes.
 
 ## 6. Explicitly deferred levers (recorded so they aren't re-litigated)
 
@@ -150,11 +177,13 @@ Net of §1–§3: **agent = sovereign child identity; hosted tier = credential-f
 Two decisions here are architecturally load-bearing and should be recorded as ADRs (next free
 number is 0022; assign in order when written):
 
-- **ADR-A — Agents are sovereign child identities.** The agent has its own DID/repo/handle; its
-  recovery key is held in the user's Obsign wallet (same genesis/rotation machinery as the user's
-  own identity); day-to-day signing is a delegated, revocable capability. Supersedes the
-  *acts-as-user* assumption baked into the current auth.md service_auth flow for the hosted path.
-  Relates to ADR-0019, ADR-0001, ADR-0004.
+- **ADR-A — Agents may be sovereign child identities (the hosted default).** The agent can have its
+  own DID/repo/handle; its recovery key is held in the user's Obsign wallet (same genesis/rotation
+  machinery as the user's own identity); day-to-day signing is a delegated, revocable capability.
+  This is the **default for the hosted path**; the *acts-as-you* delegate model (current auth.md
+  service_auth flow) **remains first-class and is the default for self-hosting** — the ADR records
+  when each applies (the §1 attribution × hosting matrix), not a replacement. Relates to ADR-0019,
+  ADR-0001, ADR-0004.
 - **ADR-B — The hosted agent tier forwards credentials; it never holds durable user/agent
   secrets.** MCP remote auth = OAuth against Custos (the existing AS); the caller's token rides each
   request; the tier caches nothing durable. This is the security-posture commitment that keeps a
@@ -172,10 +201,12 @@ off. The gate falls out of the ownership graph rather than being a bolted-on che
 
 ## 9. One-sentence compression
 
-Make the agent a **sovereign child identity** (own handle, recovery key in the wallet), run the MCP
-as a **credential-forwarding sidecar** (Node now over Railway private networking; Iroh for a
-self-host tier later), and keep **honker/Litestream** as separate "when we need async jobs / geo
-reads" levers — not part of the hosting decision.
+Attribution and hosting are **independent choices**: keep self-hosted "agent acts as me" first-class
+(the shipped stdio MCP), and for the *hosted* tier make the agent a **sovereign child identity**
+(own handle, recovery key in the wallet) served by a **credential-forwarding sidecar** (Node now
+over Railway private networking; Iroh for a self-host tier later) — with the only off-limits
+combination being hosted + acts-as-you + durable custody. Keep **honker/Litestream** as separate
+"when we need async jobs / geo reads" levers, not part of the hosting decision.
 
 ## Sequencing / next step
 
