@@ -64,3 +64,42 @@ export const sovereignLogin = async (did: string): Promise<SovereignLoginResult>
   await authenticateBiometric('Sign in to your identity’s hosting server');
   return invoke('sovereign_login', { did });
 };
+
+/** Why an identity is locked and must be unlocked with a fresh device-key signature. */
+export type UnlockReason = 'NO_REFRESH_CHAIN' | 'REFRESH_REVOKED' | 'HOST_CHANGED';
+
+/** A restored or rotated full-access session's status (the client stays in Rust). */
+export type SessionReady = {
+  did: string;
+  pdsUrl: string;
+  accessExpiresAt: number;
+  refreshExpiresAt: number | null;
+  rotated: boolean;
+};
+
+export type SessionError = {
+  code:
+    | 'IDENTITY_NOT_FOUND'
+    | 'NEEDS_UNLOCK'
+    | 'RATE_LIMITED'
+    | 'UNSUPPORTED_HOST'
+    | 'OFFLINE'
+    | 'SERVER_FAILURE'
+    | 'KEYCHAIN'
+    | 'INVALID_RESPONSE';
+  /** Present when `code === 'NEEDS_UNLOCK'`; drives the "Unlock identity" action. */
+  reason?: UnlockReason;
+  retryAfter?: string;
+  status?: number;
+  message?: string;
+};
+
+/**
+ * Pre-flight a managed identity's full-access session before an authenticated
+ * operation. Restores a still-valid session with no prompt, rotates a near-expiry
+ * one, or rejects with `NEEDS_UNLOCK` so the caller can offer the passwordless
+ * {@link sovereignLogin}. Unlike `sovereignLogin`, this performs no biometric prompt —
+ * a live token must never demand one.
+ */
+export const ensureIdentitySession = (did: string): Promise<SessionReady> =>
+  invoke('ensure_identity_session', { did });
