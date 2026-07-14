@@ -424,6 +424,13 @@ pub async fn require_pending_session(
     let token_hash = hash_bearer_token(token)?;
 
     // Look up the session by hash, rejecting expired sessions.
+    //
+    // Unlike `require_admin_token`'s constant-time compare, the session/pending/device paths
+    // do a plain `WHERE token_hash = ?` lookup that is *not* constant-time. That asymmetry is
+    // intentional and safe: the compared value is the SHA-256 of a 256-bit random secret, so a
+    // timing oracle on the hash reveals nothing exploitable — recovering the token from a leaked
+    // digest would require a SHA-256 preimage. (The admin token is compared in constant time
+    // because it is a human-configured secret, not a hash of one.)
     let row: Option<(String, String)> = sqlx::query_as(
         "SELECT account_id, device_id FROM pending_sessions \
          WHERE token_hash = ? AND expires_at > datetime('now')",

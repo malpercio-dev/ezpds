@@ -454,7 +454,7 @@ mod tests {
     #[tokio::test]
     async fn dpop_cnf_present_without_jkt_returns_401() {
         // Token with cnf:{} — cnf present but no jkt field. Must be rejected before
-        // any DPoP proof is considered (guard added in round 2).
+        // any DPoP proof is considered.
         let state = test_state().await;
         let token = mint_token(
             "did:plc:user",
