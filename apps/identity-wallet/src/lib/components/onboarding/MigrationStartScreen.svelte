@@ -2,9 +2,9 @@
   import {
     detectMigrationPath,
     prepareMigration,
+    isCodedError,
     type MigrationPathDecision,
   } from '$lib/ipc';
-  import { isCodedError } from '$lib/did-doc-utils';
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
   import TextField from '$lib/components/ui/TextField.svelte';
   import Button from '$lib/components/ui/Button.svelte';

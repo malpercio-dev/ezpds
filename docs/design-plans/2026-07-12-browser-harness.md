@@ -76,7 +76,7 @@ Out of scope (deliberately): iOS-simulator automation (idb/XCUITest — separate
 
 ## Architecture
 
-Both apps are SvelteKit 2 / Svelte 5 frontends that already run under plain `vite dev`; the only thing that breaks in a browser is the Tauri seam. Both apps route **all** native calls through one module per app — `apps/identity-wallet/src/lib/ipc.ts` (~45 commands, plus a `listen('auth_ready')` event subscription in `src/routes/+page.svelte`) and `apps/admin-companion/src/lib/ipc.ts` (~28 commands; its header already documents it as the only file that calls `invoke()` directly). The mobile plugins (biometric, sharesheet, barcode scanner) are dynamically imported and already degrade gracefully off-device.
+Both apps are SvelteKit 2 / Svelte 5 frontends that already run under plain `vite dev`; the only thing that breaks in a browser is the Tauri seam. Both apps route **all** native calls through one IPC surface per app — `apps/identity-wallet/src/lib/ipc/` (~45 commands split into per-domain modules re-exported from `index.ts`, plus a `listen('auth_ready')` event subscription in `src/routes/+page.svelte`) and `apps/admin-companion/src/lib/ipc.ts` (~28 commands; its header already documents it as the only file that calls `invoke()` directly). The mobile plugins (biometric, sharesheet, barcode scanner) are dynamically imported and already degrade gracefully off-device.
 
 The harness intercepts at the `invoke` layer using Tauri's official mock (`mockIPC`/`mockWindows` from `@tauri-apps/api/mocks`), which replaces `__TAURI_INTERNALS__` — no app code changes its imports. Two modes share one activation seam and one command registry; only the handlers differ.
 

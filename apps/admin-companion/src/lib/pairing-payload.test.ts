@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parsePairingPayload } from './ipc';
+import { parsePairingPayload } from './pairing-payload';
 
 describe('parsePairingPayload', () => {
   it('accepts a valid payload', () => {

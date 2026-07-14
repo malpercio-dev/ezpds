@@ -11,7 +11,7 @@ reviewed: it bridges the session and returns the callback URL to the caller; it 
 not log, store, or transmit the URL/code.
 
 The `guest-js/` npm API is intentionally NOT vendored — the app invokes
-`plugin:auth-session|start` directly from `src/lib/ipc.ts`.
+`plugin:auth-session|start` directly from `src/lib/ipc/oauth.ts`.
 
 ## Local modifications to the upstream source
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { formatCountdown, type Urgency } from '$lib/utils/deadline';
+  import { formatCountdown, type Urgency } from '$lib/deadline';
 
   let {
     urgency,

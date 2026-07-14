@@ -4,7 +4,8 @@
   import Button from '$lib/components/ui/Button.svelte';
   import DiffRow from '$lib/components/ui/DiffRow.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
-  import { authenticateBiometric, completeDidWebCeremony, prepareDidWebCeremony, type DIDCeremonyError, type DIDCeremonyResult } from '$lib/ipc';
+  import { completeDidWebCeremony, prepareDidWebCeremony, type DIDCeremonyError, type DIDCeremonyResult } from '$lib/ipc';
+  import { authenticateBiometric } from '$lib/biometric';
   import { composeDidWebDocument, didWebDocumentUrl, serializeDidWebDocument, type DidWebHosting } from '$lib/did-web';
   import { shareDidDocument } from '$lib/share';
 

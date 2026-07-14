@@ -1,6 +1,5 @@
 <script lang="ts">
-  import { submitClaim, type VerifiedClaimOp, type ClaimResult, type ClaimError } from '$lib/ipc';
-  import { isCodedError } from '$lib/did-doc-utils';
+  import { submitClaim, isCodedError, type VerifiedClaimOp, type ClaimResult, type ClaimError } from '$lib/ipc';
   import { formatRateLimitMessage, formatServerErrorMessage } from '$lib/claim-errors';
   import DiffRow from '$lib/components/ui/DiffRow.svelte';
   import Button from '$lib/components/ui/Button.svelte';

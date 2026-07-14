@@ -2,15 +2,15 @@
   import {
     armIdentityLeg,
     buildMigrationOp,
-    authenticateBiometric,
     submitMigrationOp,
     finalizeMigration,
+    isCodedError,
     type SignedMigrationOp,
     type ClaimResult,
     type MigrationError,
     type MigrateError,
   } from '$lib/ipc';
-  import { isCodedError } from '$lib/did-doc-utils';
+  import { authenticateBiometric } from '$lib/biometric';
   import DiffRow from '$lib/components/ui/DiffRow.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';

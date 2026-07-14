@@ -217,11 +217,12 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
 
 ### Frontend
 
-- `src/lib/ipc.ts` is the **only** file that calls `invoke()`; pages import from it.
+- `src/lib/ipc.ts` is the **only** file that calls `invoke()`; pages import from it. Pure
+  parsers that carry no IPC (e.g. `parsePairingPayload`) live in their own modules, not `ipc.ts`.
 - SSR/prerender disabled globally (`src/routes/+layout.ts`); static SPA in `dist/`.
 - **Pairing QR payload** is JSON `{"relayUrl","pairingCode"}` (parsed by
-  `parsePairingPayload`); the operator's code-minting tool encodes it. Manual entry fills the
-  same two fields, so pairing works on the simulator (no camera).
+  `parsePairingPayload` in `src/lib/pairing-payload.ts`); the operator's code-minting tool encodes
+  it. Manual entry fills the same two fields, so pairing works on the simulator (no camera).
 - **Mobile-only plugins** (camera QR, biometric, share) follow one pattern: the Rust dep is
   `cfg(target_os ios/android)`-gated in `Cargo.toml`, registered behind `#[cfg(mobile)]` in
   `lib.rs`, granted in `src-tauri/capabilities/mobile.json` (`platforms: [iOS, android]`), and

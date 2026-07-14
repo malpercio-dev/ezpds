@@ -3,7 +3,8 @@
   import Button from '$lib/components/ui/Button.svelte';
   import DiffRow from '$lib/components/ui/DiffRow.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
-  import { armIdentityLeg, authenticateBiometric, buildDidWebMigrationDocument, finalizeMigration, submitDidWebMigrationDocument, type ClaimResult, type DidWebMigrationDocument } from '$lib/ipc';
+  import { armIdentityLeg, buildDidWebMigrationDocument, finalizeMigration, submitDidWebMigrationDocument, type ClaimResult, type DidWebMigrationDocument } from '$lib/ipc';
+  import { authenticateBiometric } from '$lib/biometric';
   import type { DidWebHosting } from '$lib/did-web';
   import { shareDidDocument } from '$lib/share';
   let { did, hosting, onnext, oncancel }: { did: string; hosting: DidWebHosting; onnext: (result: ClaimResult) => void; oncancel: () => void } = $props();

@@ -9,7 +9,7 @@ vi.mock('@tauri-apps/plugin-biometric', () => ({
   },
 }));
 
-import { authenticateBiometric } from './ipc';
+import { authenticateBiometric } from './biometric';
 
 describe('authenticateBiometric', () => {
   beforeEach(() => {
@@ -56,7 +56,7 @@ describe('authenticateBiometric', () => {
       throw new Error('module not resolvable');
     });
     try {
-      const { authenticateBiometric: freshGate } = await import('./ipc');
+      const { authenticateBiometric: freshGate } = await import('./biometric');
       await expect(freshGate('reason')).resolves.toBeUndefined();
       expect(authenticate).not.toHaveBeenCalled();
     } finally {

@@ -5,10 +5,10 @@
     transferBlobs,
     transferPreferences,
     verifyImport,
+    isCodedError,
     type AccountStatus,
     type MigrationError,
   } from '$lib/ipc';
-  import { isCodedError } from '$lib/did-doc-utils';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import Button from '$lib/components/ui/Button.svelte';
 

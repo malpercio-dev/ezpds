@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { resolveIdentity, type IdentityInfo } from '$lib/ipc';
-  import { truncateDid, isCodedError } from '$lib/did-doc-utils';
+  import { resolveIdentity, isCodedError, type IdentityInfo } from '$lib/ipc';
+  import { truncateDid } from '$lib/did-doc-utils';
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
   import TextField from '$lib/components/ui/TextField.svelte';
   import Button from '$lib/components/ui/Button.svelte';

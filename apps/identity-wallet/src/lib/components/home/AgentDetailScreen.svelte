@@ -3,10 +3,10 @@
   import {
     revokeAgent,
     getAgentAudit,
-    authenticateBiometric,
     type AgentSummary,
     type AgentAuditEvent,
   } from '$lib/ipc';
+  import { authenticateBiometric } from '$lib/biometric';
   import { describeScopes } from '$lib/agent-scopes';
   import {
     AGENT_STATUS,
