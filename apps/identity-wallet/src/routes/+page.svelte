@@ -24,13 +24,12 @@
   import MigrationReviewScreen from '$lib/components/onboarding/MigrationReviewScreen.svelte';
   import MigrationSuccessScreen from '$lib/components/onboarding/MigrationSuccessScreen.svelte';
   import DIDDocumentScreen from '$lib/components/home/DIDDocumentScreen.svelte';
-  import RecoveryInfoScreen from '$lib/components/home/RecoveryInfoScreen.svelte';
   import AlertDetailScreen from '$lib/components/home/AlertDetailScreen.svelte';
   import RecoveryOverrideScreen from '$lib/components/home/RecoveryOverrideScreen.svelte';
   import MyAgentsScreen from '$lib/components/home/MyAgentsScreen.svelte';
   import AgentClaimApprovalScreen from '$lib/components/home/AgentClaimApprovalScreen.svelte';
   import SettingsScreen from '$lib/components/home/SettingsScreen.svelte';
-  import { createAccount, registerCreatedIdentity, listIdentities, checkIdentityStatus, type CreateAccountError, type OAuthError, type HomeData, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type UnauthorizedChange } from '$lib/ipc';
+  import { createAccount, registerCreatedIdentity, listIdentities, checkIdentityStatus, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type UnauthorizedChange } from '$lib/ipc';
   import { normalizePlcDocToW3c } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
@@ -59,8 +58,6 @@
     | 'authenticating'
     | 'home'
     | 'identity_detail'
-    | 'did_document'
-    | 'recovery_info'
     | 'alert_detail'
     | 'recovery_override'
     | 'my_agents'
@@ -97,8 +94,6 @@
   );
 
   let authError = $state<OAuthError | null>(null);
-
-  let homeData = $state<HomeData | null>(null);
 
   let selectedDid = $state<string | null>(null);
   let selectedDidDoc = $state<Record<string, unknown> | null>(null);
@@ -247,11 +242,10 @@
   // OAuth flow never writes to it — so without this call the home screen would show
   // "No identities yet" after login.
   //
-  // Error-handling strategy: best-effort, matching this app's "always reach
-  // home" pattern (loadHomeData / logOut never block the UI). If registration
-  // fails we log and continue — the user keeps their identity and can refresh
-  // the card later. (Strict alternative: surface the error and let the user
-  // retry before advancing — see the accompanying notes.)
+  // Error-handling strategy: best-effort. If registration fails we log and
+  // continue — the user keeps their identity and can refresh the card later.
+  // (Strict alternative: surface the error and let the user retry before
+  // advancing — see the accompanying notes.)
   async function finishCreateFlow(handle: string) {
     form.registeredHandle = handle;
     try {
@@ -478,18 +472,6 @@
       result={migrationResult!}
       destPdsLabel={migrationDestPds}
       ondone={() => goTo('home')}
-    />
-
-  {:else if step === 'did_document'}
-    <DIDDocumentScreen
-      didDoc={homeData?.session?.didDoc ?? {}}
-      onback={() => goTo('home')}
-    />
-
-  {:else if step === 'recovery_info'}
-    <RecoveryInfoScreen
-      share1InKeychain={homeData?.share1InKeychain ?? false}
-      onback={() => goTo('home')}
     />
 
   {:else if step === 'alert_detail'}

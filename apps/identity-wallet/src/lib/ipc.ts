@@ -46,65 +46,6 @@ export const createAccount = (
 ): Promise<CreateAccountResult> =>
   invoke('create_account', params);
 
-// ── Device Key types ──────────────────────────────────────────────────────────
-
-/**
- * Device public key returned by the `get_or_create_device_key` Rust command.
- * Matches DevicePublicKey struct with #[serde(rename_all = "camelCase")].
- */
-export type DevicePublicKey = {
-  /** 'z' + base58btc(33-byte compressed P-256 public key point). */
-  multibase: string;
-  /** Full did:key URI: 'did:key:z...' */
-  keyId: string;
-};
-
-/**
- * Error returned by device key commands.
- *
- * Serialized as `{ code: "KEY_GENERATION_FAILED" }` etc. by the Rust backend.
- * `message` is present only for KEYCHAIN_ERROR.
- */
-export type DeviceKeyError = {
-  code:
-    | 'KEY_GENERATION_FAILED'
-    | 'KEY_NOT_FOUND'
-    | 'SIGNING_FAILED'
-    | 'INVALID_SIGNATURE'
-    | 'KEYCHAIN_ERROR';
-  message?: string;
-};
-
-// ── get_or_create_device_key ─────────────────────────────────────────────────
-
-/**
- * Get or create the device's SE-backed (or simulator-fallback) P-256 keypair.
- *
- * Idempotent — returns the same key on every call for a given device.
- * On failure, the Promise rejects with a `DeviceKeyError`.
- */
-export const getOrCreateDeviceKey = (): Promise<DevicePublicKey> =>
-  invoke('get_or_create_device_key');
-
-// ── sign_with_device_key ─────────────────────────────────────────────────────
-
-/**
- * Sign arbitrary bytes using the device's SE-backed (or simulator-fallback) P-256 key.
- *
- * Returns the raw 64-byte ECDSA r||s signature as a Uint8Array.
- *
- * IMPORTANT: `data` is converted to `number[]` before passing to Tauri's IPC
- * because Tauri v2's JSON deserializer cannot accept a `Uint8Array` nested inside
- * an object property — it must be a plain number array. See tauri#10336.
- *
- * On failure, the Promise rejects with a `DeviceKeyError` (code: KEY_NOT_FOUND
- * if `getOrCreateDeviceKey` has never been called for this device).
- */
-export const signWithDeviceKey = (data: Uint8Array): Promise<Uint8Array> =>
-  (invoke('sign_with_device_key', { data: Array.from(data) }) as Promise<number[]>).then(
-    (bytes) => new Uint8Array(bytes),
-  );
-
 // ── perform_did_ceremony ─────────────────────────────────────────────────────
 
 /**
@@ -280,58 +221,6 @@ export const startOAuthFlow = async (): Promise<void> => {
   }
   await invoke('complete_oauth_flow', { callbackUrl });
 };
-
-// ── Home screen ──────────────────────────────────────────────────────────
-//
-// These types must exactly match the Rust structs in home.rs.
-// Rust serializes them with #[serde(rename_all = "camelCase")].
-
-/**
- * Session info returned by com.atproto.server.getSession.
- * null fields (email, emailConfirmed) default to empty string / false
- * when the PDS omits them.
- */
-export type SessionInfo = {
-  did: string;
-  handle: string;
-  email: string;
-  emailConfirmed: boolean;
-  /** Full DID document object, or null when the PDS has none for this DID. */
-  didDoc: Record<string, unknown> | null;
-};
-
-/**
- * Home screen data payload from the `load_home_data` Rust command.
- *
- * Always resolves (never rejects) — partial failures are encoded as fields
- * so the UI can render whatever is available.
- */
-export type HomeData = {
-  pdsHealthy: boolean;
-  /** null when getSession failed or no session exists */
-  session: SessionInfo | null;
-  /** SCREAMING_SNAKE_CASE error code when session is null */
-  sessionError: string | null;
-  share1InKeychain: boolean;
-};
-
-/**
- * Load PDS health, session info, and Keychain share status concurrently.
- *
- * Always resolves — never rejects. Partial failures encoded in HomeData fields.
- */
-export const loadHomeData = (): Promise<HomeData> =>
-  invoke<HomeData>('load_home_data').catch(
-    (): HomeData => ({ pdsHealthy: false, session: null, sessionError: 'UNKNOWN', share1InKeychain: false })
-  );
-
-/**
- * Clear OAuth access token, refresh token, and DID from Keychain and wipe
- * the in-memory session.
- *
- * Always resolves. Frontend should unconditionally navigate to the welcome screen.
- */
-export const logOut = (): Promise<void> => invoke('log_out').then(() => undefined);
 
 // ── PDS URL Configuration ──────────────────────────────────────────────
 
