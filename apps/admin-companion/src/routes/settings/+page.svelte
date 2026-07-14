@@ -16,6 +16,7 @@
     type RelayClientError,
   } from '$lib/ipc';
   import { serverIdentity } from '$lib/server-identity';
+  import { pinnedHref } from '$lib/pinned-pairing';
   import { classifyRelayError, type ErrorView } from '$lib/errors';
   import { requireUserPresence, presenceAllows } from '$lib/biometric';
   import ScreenShell from '$lib/components/ui/ScreenShell.svelte';
@@ -270,7 +271,7 @@
                      pinned to THIS pairing regardless of the active selection. -->
                 <Button
                   variant="secondary"
-                  onclick={() => goto(`/devices?server=${pairing.id}`)}
+                  onclick={() => goto(pinnedHref('/devices', pairing.id))}
                 >
                   View devices on this server
                 </Button>

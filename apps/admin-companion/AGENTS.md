@@ -1,7 +1,7 @@
 # Admin Companion (operator console) Mobile App
 
 Last verified: 2026-07-10
-Last updated: 2026-07-14 (removed the dead `sign_with_device_key` IPC command — no frontend caller; `relay_client.rs` calls `device_key::sign` directly)
+Last updated: 2026-07-14 (extracted the copy-paste route patterns into shared `$lib` helpers — see Frontend contracts; removed the dead `sign_with_device_key` IPC command — no frontend caller; `relay_client.rs` calls `device_key::sign` directly)
 
 ## Purpose
 
@@ -219,6 +219,30 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
 
 - `src/lib/ipc.ts` is the **only** file that calls `invoke()`; pages import from it. Pure
   parsers that carry no IPC (e.g. `parsePairingPayload`) live in their own modules, not `ipc.ts`.
+- **Shared route helpers** factor out the three copy-paste patterns the per-server operator
+  screens repeated. The security-relevant "pin the pairing at entry so a concurrent active
+  switch can't redirect what a screen reads or signs" logic lives once:
+  - `src/lib/pinned-pairing.ts` (Functional Core) — `resolvePinnedPairing(state, searchParams)`
+    (pin from `?server=`, else the active pairing), `loadPinnedPairing(searchParams)` (the
+    `onMount` load + resolve), and `pinnedHref(path, pairingId, extra?)` (uniform `?server=…`
+    link construction). Rendered by `components/ui/PinnedPairingGate.svelte`, which shows the
+    three pre-flight states (checking / check-failed / no-server) and hands the resolved,
+    non-null pairing to its `children` snippet. Used by Devices, Codes, Accounts, Account
+    detail, Moderation, Status, Transfers.
+  - `src/lib/guarded-action.svelte.ts` — `createGuardedActions()`: a reactive controller owning
+    the per-row busy/error maps + one gate-hint line for a biometric-gated relay action (busy
+    flag claimed synchronously before the gate await; a denial is a quiet hint). Used by
+    Devices/Codes/Transfers. (Settings keeps its own revoke logic — it shares one gate hint with
+    the non-gated local-forget and reloads on error, a different shape.)
+  - `src/lib/paged-list.svelte.ts` — `createPagedList(fetchPage)`: a reactive controller for a
+    cursor-paged relay list (loading/error/ready-with-cursor + a separate paging-error slot so a
+    failed page keeps the shown rows). Used by Codes/Transfers. (Accounts keeps its own
+    generation-counter pagination — it layers search + filter re-fetches on top.)
+  - `src/lib/armed-action.svelte.ts` — `createArmedAction()`: a reactive controller for an armed
+    two-tap + biometric-gated destructive action (arm → confirm → gate → run, with an optional
+    `commit` guard so a slow write can't land under a newer lookup). Moderation runs two
+    independent instances (takedown + credential sweep), each treating the other's `writing` as a
+    lock so two prompts never stack.
 - SSR/prerender disabled globally (`src/routes/+layout.ts`); static SPA in `dist/`.
 - **Pairing QR payload** is JSON `{"relayUrl","pairingCode"}` (parsed by
   `parsePairingPayload` in `src/lib/pairing-payload.ts`); the operator's code-minting tool encodes

@@ -1,9 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { page } from '$app/state';
-  import { SvelteMap } from 'svelte/reactivity';
   import {
-    listPairings,
     listClaimCodes,
     revokeClaimCode,
     type ClaimCodeEntry,
@@ -12,106 +10,53 @@
   } from '$lib/ipc';
   import { partitionCodes, chipFor, timelineLine } from '$lib/claim-codes';
   import { serverIdentity } from '$lib/server-identity';
-  import { classifyRelayError, type ErrorView } from '$lib/errors';
-  import { requireUserPresence, presenceAllows } from '$lib/biometric';
+  import { loadPinnedPairing } from '$lib/pinned-pairing';
+  import { createGuardedActions } from '$lib/guarded-action.svelte';
+  import { createPagedList } from '$lib/paged-list.svelte';
   import ScreenShell from '$lib/components/ui/ScreenShell.svelte';
   import StatusChip from '$lib/components/ui/StatusChip.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import ErrorState from '$lib/components/ui/ErrorState.svelte';
+  import PinnedPairingGate from '$lib/components/ui/PinnedPairingGate.svelte';
 
   // The claim-code inventory: every code minted on ONE relay with its derived
   // lifecycle status, split into outstanding live credentials (revocable) and the
-  // historical record. Pinned to a single pairing at entry (`?server=<pairingId>`,
-  // else the active pairing) — id-addressed like Devices, so a concurrent active
-  // switch on Home can never redirect what this screen shows or signs.
-
-  type InventoryState =
-    | { kind: 'loading' }
-    | { kind: 'error'; view: ErrorView }
-    | { kind: 'ready'; codes: ClaimCodeEntry[]; cursor?: string; paging: boolean };
+  // historical record. Pinned to a single pairing at entry (see $lib/pinned-pairing),
+  // id-addressed like Devices; paged via the relay cursor.
 
   let pairingsView = $state<PairingsState | 'loading' | 'error'>('loading');
-  let inventory = $state<InventoryState>({ kind: 'loading' });
-  // A failed *page* fetch never clobbers the rows already shown — it renders
-  // inline next to the paging button instead (mirrors the Accounts screen).
-  let pagingError = $state<ErrorView | undefined>(undefined);
   let expandedCode = $state<string | null>(null);
-  let revokingStates = $state<SvelteMap<string, boolean>>(new SvelteMap());
-  let revokeErrors = $state<SvelteMap<string, ErrorView | undefined>>(new SvelteMap());
-  let gateHint = $state<string | undefined>(undefined);
-
   // Pinned once at entry: the pairing this screen shows and signs for.
   let pairing = $state<Pairing | null>(null);
 
+  // The cursor-paged inventory, and the per-row busy/error + gate-hint state for the
+  // biometric-gated revoke.
+  const inventory = createPagedList<ClaimCodeEntry>((cursor) =>
+    listClaimCodes(pairing!.id, cursor).then((r) => ({ items: r.codes, cursor: r.cursor })),
+  );
+  const guarded = createGuardedActions();
+
   onMount(async () => {
-    try {
-      pairingsView = await listPairings();
-    } catch {
-      pairingsView = 'error';
-      return;
-    }
-    const requested = page.url.searchParams.get('server');
-    const targetId = requested ?? pairingsView.active;
-    pairing = pairingsView.pairings.find((p) => p.id === targetId) ?? null;
-    if (pairing) await loadInventory(pairing.id);
+    const resolved = await loadPinnedPairing(page.url.searchParams);
+    pairingsView = resolved.view;
+    pairing = resolved.pairing;
+    if (pairing) await inventory.load();
   });
-
-  async function loadInventory(pairingId: string) {
-    inventory = { kind: 'loading' };
-    pagingError = undefined;
-    try {
-      const first = await listClaimCodes(pairingId);
-      inventory = { kind: 'ready', codes: first.codes, cursor: first.cursor, paging: false };
-    } catch (e) {
-      inventory = { kind: 'error', view: classifyRelayError(e) };
-    }
-  }
-
-  /** Fetch the next page and append — the accumulated list stays newest-first. */
-  async function loadMore() {
-    if (!pairing || inventory.kind !== 'ready' || !inventory.cursor || inventory.paging) return;
-    inventory = { ...inventory, paging: true };
-    pagingError = undefined;
-    try {
-      const next = await listClaimCodes(pairing.id, inventory.cursor);
-      inventory = {
-        kind: 'ready',
-        codes: [...inventory.codes, ...next.codes],
-        cursor: next.cursor,
-        paging: false,
-      };
-    } catch (e) {
-      // A failed page keeps what is already shown; the error renders by the button.
-      pagingError = classifyRelayError(e);
-      inventory = { ...inventory, paging: false };
-    }
-  }
 
   async function doRevoke(entry: ClaimCodeEntry) {
     if (!pairing) return;
-    // Claim the busy flag synchronously, before the biometric prompt's await, so rapid
-    // taps can't open multiple gates and fire concurrent revokes.
-    if (revokingStates.get(entry.code)) return;
-    revokingStates.set(entry.code, true);
-    gateHint = undefined;
-    revokeErrors.set(entry.code, undefined);
-
-    try {
-      // Revoking kills a live credential — gate it on user presence.
-      const presence = await requireUserPresence('Revoke a claim code on this server');
-      if (!presenceAllows(presence)) {
-        gateHint = 'Confirm with Face ID to revoke this code.';
-        return;
-      }
-      await revokeClaimCode(pairing.id, entry.code);
-      // Reload so the row reports the relay's post-revoke truth (status flips to
-      // revoked with its timestamp) rather than an optimistic local edit.
-      await loadInventory(pairing.id);
-    } catch (e) {
-      revokeErrors.set(entry.code, classifyRelayError(e));
-    } finally {
-      revokingStates.set(entry.code, false);
-    }
+    const target = pairing;
+    await guarded.run({
+      id: entry.code,
+      reason: 'Revoke a claim code on this server',
+      deniedHint: 'Confirm with Face ID to revoke this code.',
+      action: async () => {
+        await revokeClaimCode(target.id, entry.code);
+        // Reload so the row reports the relay's post-revoke truth (status flips to
+        // revoked with its timestamp) rather than an optimistic local edit.
+        await inventory.load();
+      },
+    });
   }
 
   function toggleExpanded(code: string) {
@@ -120,7 +65,7 @@
 
   const identity = $derived(pairing ? serverIdentity(pairing) : null);
   const grouped = $derived(
-    inventory.kind === 'ready' ? partitionCodes(inventory.codes) : null,
+    inventory.kind === 'ready' ? partitionCodes(inventory.items) : null,
   );
 </script>
 
@@ -159,16 +104,16 @@
         {#if revocable}
           <Button
             variant="destructive"
-            loading={revokingStates.get(entry.code) ?? false}
+            loading={guarded.isBusy(entry.code)}
             onclick={() => doRevoke(entry)}
           >
             Revoke this code
           </Button>
-          {#if revokeErrors.get(entry.code)}
+          {#if guarded.errorFor(entry.code)}
             <ErrorState
-              view={revokeErrors.get(entry.code)!}
+              view={guarded.errorFor(entry.code)!}
               server={identity}
-              retrying={revokingStates.get(entry.code) ?? false}
+              retrying={guarded.isBusy(entry.code)}
               onretry={() => doRevoke(entry)}
             />
           {/if}
@@ -185,30 +130,12 @@
   onback={() => history.back()}
   server={identity}
 >
-  {#if pairingsView === 'loading'}
-    <p class="resolving">checking servers…</p>
-  {:else if pairingsView === 'error'}
-    <section class="panel" aria-label="Server check failed">
-      <StatusChip status="error" label="check failed" />
-      <p class="note" role="alert">Couldn't read this device's servers. Go back and retry.</p>
-    </section>
-  {:else if !pairing}
-    <!-- Unpaired, or no active pick and no ?server pin — there is no relay to ask. -->
-    <section class="panel" aria-label="No server selected">
-      <StatusChip status="pending" label="no server" />
-      <p class="note">
-        No server is selected. Pick or pair one first — the code inventory is always read
-        from a specific server.
-      </p>
-    </section>
-  {:else if inventory.kind === 'loading'}
+  <PinnedPairingGate view={pairingsView} {pairing} resource="the code inventory is always read from a specific server.">
+    {#snippet children()}
+    {#if inventory.kind === 'loading'}
     <p class="resolving">reading code inventory…</p>
   {:else if inventory.kind === 'error'}
-    <ErrorState
-      view={inventory.view}
-      server={identity}
-      onretry={() => pairing && loadInventory(pairing.id)}
-    />
+    <ErrorState view={inventory.errorView!} server={identity} onretry={() => inventory.load()} />
   {:else if grouped}
     <p class="lede">
       Every claim code minted on this server. An outstanding code is a live signup
@@ -242,25 +169,27 @@
     {/if}
 
     {#if inventory.cursor}
-      <Button variant="secondary" loading={inventory.paging} onclick={loadMore}>
+      <Button variant="secondary" loading={inventory.paging} onclick={() => inventory.loadMore()}>
         Load more
       </Button>
-      {#if pagingError}
-        <ErrorState view={pagingError} server={identity} retrying={inventory.paging} onretry={loadMore} />
+      {#if inventory.pagingError}
+        <ErrorState view={inventory.pagingError!} server={identity} retrying={inventory.paging} onretry={() => inventory.loadMore()} />
       {/if}
     {/if}
 
-    {#if gateHint}
+    {#if guarded.gateHint}
       <p class="hint" role="status">
         <StatusChip status="info" label="confirm" />
-        <span>{gateHint}</span>
+        <span>{guarded.gateHint}</span>
       </p>
     {/if}
   {/if}
+    {/snippet}
+  </PinnedPairingGate>
 
   {#snippet actions()}
     {#if pairing && inventory.kind === 'ready'}
-      <Button variant="secondary" onclick={() => pairing && loadInventory(pairing.id)}>
+      <Button variant="secondary" onclick={() => inventory.load()}>
         Refresh
       </Button>
     {/if}

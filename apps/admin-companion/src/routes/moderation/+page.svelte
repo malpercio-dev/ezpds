@@ -2,7 +2,6 @@
   import { onMount } from 'svelte';
   import { page } from '$app/state';
   import {
-    listPairings,
     getSubjectStatus,
     updateSubjectStatus,
     revokeAccountCredentials,
@@ -12,23 +11,23 @@
     type RevokedCredentials,
   } from '$lib/ipc';
   import { serverIdentity } from '$lib/server-identity';
+  import { loadPinnedPairing } from '$lib/pinned-pairing';
+  import { createArmedAction } from '$lib/armed-action.svelte';
   import { classifyRelayError, type ErrorView } from '$lib/errors';
-  import { requireUserPresence, presenceAllows } from '$lib/biometric';
   import ScreenShell from '$lib/components/ui/ScreenShell.svelte';
   import StatusChip from '$lib/components/ui/StatusChip.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import TextField from '$lib/components/ui/TextField.svelte';
   import ErrorState from '$lib/components/ui/ErrorState.svelte';
+  import PinnedPairingGate from '$lib/components/ui/PinnedPairingGate.svelte';
 
   // The moderation screen: look up an account by DID on ONE relay, then apply or clear
-  // an account-level takedown. Pinned to a single pairing at entry (`?server=<pairingId>`
-  // else the active pairing) like Devices, so a concurrent active-pointer switch on Home
-  // can never redirect what this screen reads or signs. Takedown is the one operator
-  // action with deliberate friction: the first tap ARMS an explicit confirmation that
-  // restates the relay-confirmed target, and confirming runs the biometric gate before
-  // anything is signed. The write always targets the DID from the last successful
-  // lookup — never the raw input field — so an edit between lookup and tap can't
-  // retarget a signed takedown.
+  // an account-level takedown. Pinned to a single pairing at entry (see
+  // $lib/pinned-pairing) like Devices. Takedown is the one operator action with
+  // deliberate friction: the first tap ARMS an explicit confirmation that restates the
+  // relay-confirmed target, and confirming runs the biometric gate before anything is
+  // signed. The write always targets the DID from the last successful lookup — never the
+  // raw input field — so an edit between lookup and tap can't retarget a signed takedown.
 
   type StatusView =
     | { kind: 'idle' }
@@ -39,32 +38,24 @@
   let pairingsView = $state<PairingsState | 'loading' | 'error'>('loading');
   let did = $state('');
   let statusView = $state<StatusView>({ kind: 'idle' });
-  let armed = $state(false);
-  let writing = $state(false);
-  let writeError = $state<ErrorView | undefined>(undefined);
-  let gateHint = $state<string | undefined>(undefined);
 
-  // The credential sweep carries its own arm/gate/result machinery — arming a takedown
-  // must never leave a credential revocation half-armed, and vice versa.
-  let credsArmed = $state(false);
-  let credsWriting = $state(false);
-  let credsError = $state<ErrorView | undefined>(undefined);
-  let credsGateHint = $state<string | undefined>(undefined);
+  // The two destructive flows are independent armed state machines — arming a takedown
+  // must never leave a credential revocation half-armed, and vice versa (each
+  // precondition treats the other's `writing` as a lock, so two biometric prompts can
+  // never stack for the same account). The sweep additionally renders the relay's
+  // literal per-family counts — route state, so a slower sweep can only land its result
+  // under the lookup it targeted.
+  const takedown = createArmedAction();
+  const creds = createArmedAction();
   let credsReport = $state<RevokedCredentials | null>(null);
 
   // Pinned once at entry: the pairing this screen reads from and signs for.
   let pairing = $state<Pairing | null>(null);
 
   onMount(async () => {
-    try {
-      pairingsView = await listPairings();
-    } catch {
-      pairingsView = 'error';
-      return;
-    }
-    const requested = page.url.searchParams.get('server');
-    const targetId = requested ?? pairingsView.active;
-    pairing = pairingsView.pairings.find((p) => p.id === targetId) ?? null;
+    const resolved = await loadPinnedPairing(page.url.searchParams);
+    pairingsView = resolved.view;
+    pairing = resolved.pairing;
 
     // Arriving from the account-detail screen (`?did=…`): pre-fill the lookup field
     // and run the lookup immediately — the DID came from this same relay's account
@@ -90,17 +81,14 @@
     statusView.kind === 'ready' && trimmedDid !== statusView.status.subject.did,
   );
 
-  // Staleness invalidates every signed-action affordance at once: the armed confirm,
-  // a failed write's retry panel, and any gate hint. Anything less leaves a live
-  // "retry" button pointing at the previous lookup after the input has moved on.
+  // Staleness invalidates every signed-action affordance at once: both armed confirms
+  // (with their gate hints and failed-write retry panels) and the credential-sweep
+  // report. Anything less leaves a live "retry" pointing at the previous lookup after
+  // the input has moved on.
   $effect(() => {
     if (stale) {
-      armed = false;
-      writeError = undefined;
-      gateHint = undefined;
-      credsArmed = false;
-      credsError = undefined;
-      credsGateHint = undefined;
+      takedown.disarm();
+      creds.disarm();
       credsReport = null;
     }
   });
@@ -108,12 +96,8 @@
   async function lookup() {
     if (!pairing || !didLooksValid) return;
     if (statusView.kind === 'loading') return;
-    armed = false;
-    writeError = undefined;
-    gateHint = undefined;
-    credsArmed = false;
-    credsError = undefined;
-    credsGateHint = undefined;
+    takedown.disarm();
+    creds.disarm();
     credsReport = null;
     statusView = { kind: 'loading' };
     try {
@@ -123,107 +107,55 @@
     }
   }
 
-  /** Tap 1 of the two-tap confirm: swap the action for an explicit Confirm/Cancel pair. */
-  function arm() {
-    writeError = undefined;
-    gateHint = undefined;
-    armed = true;
-  }
-
-  function disarm() {
-    armed = false;
-    writeError = undefined;
-    gateHint = undefined;
-  }
-
   /** Tap 2: gate on user presence, then sign the takedown (`applied: true`) or restore. */
   async function confirmWrite(applied: boolean) {
-    // `stale` is re-checked here (not just in the render path) so no caller — including
-    // the error panel's retry — can sign against a lookup the input has drifted from.
-    if (!pairing || statusView.kind !== 'ready' || stale) return;
-    // Claim the busy flag synchronously, before the biometric prompt's await, so rapid
-    // taps can't open multiple gates and fire concurrent writes. The credential sweep's
-    // flag is checked too: the two destructive flows are mutually exclusive, so two
-    // biometric prompts can never stack for the same account.
-    if (writing || credsWriting) return;
-    writing = true;
-    gateHint = undefined;
-    writeError = undefined;
+    if (!pairing || statusView.kind !== 'ready') return;
     // The relay-confirmed target from the lookup — never the raw input field.
     const target = statusView.status.subject.did;
-    try {
-      const presence = await requireUserPresence(
-        applied ? 'Take down an account on this server' : 'Restore an account on this server',
-      );
-      if (!presenceAllows(presence)) {
-        gateHint = applied
-          ? 'Confirm with Face ID to take down this account.'
-          : 'Confirm with Face ID to restore this account.';
-        return;
-      }
-      // The response reports the resulting takedown state as the relay derives it —
-      // re-render that truth, no optimistic edit.
-      statusView = {
-        kind: 'ready',
-        status: await updateSubjectStatus(pairing.id, target, applied),
-      };
-      armed = false;
-    } catch (e) {
-      writeError = classifyRelayError(e);
-    } finally {
-      writing = false;
-    }
-  }
-
-  /** Tap 1 of the credential-sweep confirm. */
-  function armCreds() {
-    credsError = undefined;
-    credsGateHint = undefined;
-    credsArmed = true;
-  }
-
-  function disarmCreds() {
-    credsArmed = false;
-    credsError = undefined;
-    credsGateHint = undefined;
+    const pinned = pairing;
+    await takedown.confirm({
+      reason: applied
+        ? 'Take down an account on this server'
+        : 'Restore an account on this server',
+      deniedHint: applied
+        ? 'Confirm with Face ID to take down this account.'
+        : 'Confirm with Face ID to restore this account.',
+      // Re-checks staleness here (not just in render) so no caller — including the error
+      // panel's retry — can sign against a lookup the input has drifted from; the sweep's
+      // `writing` is a lock so the two destructive prompts never stack.
+      precondition: () => statusView.kind === 'ready' && !stale && !creds.writing,
+      run: async () => {
+        // The response reports the resulting takedown state as the relay derives it —
+        // re-render that truth, no optimistic edit.
+        statusView = {
+          kind: 'ready',
+          status: await updateSubjectStatus(pinned.id, target, applied),
+        };
+      },
+    });
   }
 
   /** Tap 2 of the credential sweep: gate on user presence, then sign the revocation. */
   async function confirmRevokeCredentials() {
-    // Same discipline as `confirmWrite`: re-check staleness so no caller can sign
-    // against a lookup the input has drifted from, and claim the busy flag before the
-    // biometric await so rapid taps can't fire concurrent sweeps. Mutually exclusive
-    // with the takedown flow's flag, so the two destructive prompts can never stack.
-    if (!pairing || statusView.kind !== 'ready' || stale) return;
-    if (credsWriting || writing) return;
-    credsWriting = true;
-    credsGateHint = undefined;
-    credsError = undefined;
-    // The relay-confirmed target from the lookup — never the raw input field.
+    if (!pairing || statusView.kind !== 'ready') return;
     const target = statusView.status.subject.did;
-    try {
-      const presence = await requireUserPresence(
-        'Revoke all credentials of an account on this server',
-      );
-      if (!presenceAllows(presence)) {
-        credsGateHint = "Confirm with Face ID to revoke this account's credentials.";
-        return;
-      }
-      // The relay reports literal per-family counts — render that truth verbatim.
-      const report = await revokeAccountCredentials(pairing.id, target);
-      // A slower sweep must not land under a newer lookup (mirroring `loadMetrics`):
-      // only commit the result while the panel still shows the DID this sweep targeted.
-      if (statusView.kind === 'ready' && statusView.status.subject.did === target) {
-        credsReport = report;
-        credsArmed = false;
-      }
-    } catch (e) {
-      if (statusView.kind === 'ready' && statusView.status.subject.did === target) {
-        credsError = classifyRelayError(e);
-      }
-    } finally {
-      credsWriting = false;
-    }
+    const pinned = pairing;
+    // A slower sweep must not land its result under a newer lookup: only commit while
+    // the panel still shows the DID this sweep targeted (guards both the report and the
+    // disarm/error outcome via `commit`).
+    const stillTargeted = () =>
+      statusView.kind === 'ready' && statusView.status.subject.did === target;
+    await creds.confirm({
+      reason: 'Revoke all credentials of an account on this server',
+      deniedHint: "Confirm with Face ID to revoke this account's credentials.",
+      precondition: () => statusView.kind === 'ready' && !stale && !takedown.writing,
+      run: async () => {
+        // The relay reports literal per-family counts — render that truth verbatim.
+        const report = await revokeAccountCredentials(pinned.id, target);
+        if (stillTargeted()) credsReport = report;
+      },
+      commit: stillTargeted,
+    });
   }
 </script>
 
@@ -233,23 +165,8 @@
   onback={() => history.back()}
   server={identity}
 >
-  {#if pairingsView === 'loading'}
-    <p class="resolving">checking servers…</p>
-  {:else if pairingsView === 'error'}
-    <section class="panel" aria-label="Server check failed">
-      <StatusChip status="error" label="check failed" />
-      <p class="note" role="alert">Couldn't read this device's servers. Go back and retry.</p>
-    </section>
-  {:else if !pairing}
-    <!-- Unpaired, or no active pick and no ?server pin — there is no relay to act on. -->
-    <section class="panel" aria-label="No server selected">
-      <StatusChip status="pending" label="no server" />
-      <p class="note">
-        No server is selected. Pick or pair one first — moderation always acts on a
-        specific server.
-      </p>
-    </section>
-  {:else}
+  <PinnedPairingGate view={pairingsView} {pairing} resource="moderation always acts on a specific server.">
+    {#snippet children()}
     <p class="lede">
       Look up an account on this server by its DID, then take it down or restore it. A
       taken-down account stops being served: logins, writes, and sync are all refused
@@ -296,13 +213,13 @@
 
         {#if stale}
           <p class="note">The DID field changed since this lookup. Look up again before acting.</p>
-        {:else if !armed}
+        {:else if !takedown.armed}
           {#if takenDown}
-            <Button variant="primary" loading={writing} disabled={credsWriting} onclick={arm}>
+            <Button variant="primary" loading={takedown.writing} disabled={creds.writing} onclick={takedown.arm}>
               Restore this account
             </Button>
           {:else}
-            <Button variant="destructive" loading={writing} disabled={credsWriting} onclick={arm}>
+            <Button variant="destructive" loading={takedown.writing} disabled={creds.writing} onclick={takedown.arm}>
               Take down this account
             </Button>
           {/if}
@@ -325,28 +242,28 @@
             </p>
             <Button
               variant={takenDown ? 'primary' : 'destructive'}
-              loading={writing}
-              disabled={credsWriting}
+              loading={takedown.writing}
+              disabled={creds.writing}
               onclick={() => confirmWrite(!takenDown)}
             >
               {takenDown ? 'Confirm restore' : 'Confirm takedown'}
             </Button>
-            <Button variant="secondary" disabled={writing} onclick={disarm}>Cancel</Button>
+            <Button variant="secondary" disabled={takedown.writing} onclick={takedown.disarm}>Cancel</Button>
           </div>
         {/if}
 
-        {#if writeError}
+        {#if takedown.error}
           <ErrorState
-            view={writeError}
+            view={takedown.error}
             server={identity}
-            retrying={writing}
+            retrying={takedown.writing}
             onretry={() => confirmWrite(!takenDown)}
           />
         {/if}
-        {#if gateHint}
+        {#if takedown.gateHint}
           <p class="hint" role="status">
             <StatusChip status="info" label="confirm" />
-            <span>{gateHint}</span>
+            <span>{takedown.gateHint}</span>
           </p>
         {/if}
       </section>
@@ -379,12 +296,12 @@
 
         {#if stale}
           <p class="note">The DID field changed since this lookup. Look up again before acting.</p>
-        {:else if !credsArmed}
+        {:else if !creds.armed}
           <Button
             variant="destructive"
-            loading={credsWriting}
-            disabled={writing}
-            onclick={armCreds}
+            loading={creds.writing}
+            disabled={takedown.writing}
+            onclick={creds.arm}
           >
             {credsReport ? 'Revoke credentials again' : 'Revoke all credentials'}
           </Button>
@@ -398,36 +315,37 @@
             </p>
             <Button
               variant="destructive"
-              loading={credsWriting}
-              disabled={writing}
+              loading={creds.writing}
+              disabled={takedown.writing}
               onclick={confirmRevokeCredentials}
             >
               Confirm revocation
             </Button>
-            <Button variant="secondary" disabled={credsWriting} onclick={disarmCreds}>
+            <Button variant="secondary" disabled={creds.writing} onclick={creds.disarm}>
               Cancel
             </Button>
           </div>
         {/if}
 
-        {#if credsError}
+        {#if creds.error}
           <ErrorState
-            view={credsError}
+            view={creds.error}
             server={identity}
-            retrying={credsWriting}
+            retrying={creds.writing}
             onretry={confirmRevokeCredentials}
           />
         {/if}
-        {#if credsGateHint}
+        {#if creds.gateHint}
           <p class="hint" role="status">
             <StatusChip status="info" label="confirm" />
-            <span>{credsGateHint}</span>
+            <span>{creds.gateHint}</span>
           </p>
         {/if}
       </section>
 
     {/if}
-  {/if}
+    {/snippet}
+  </PinnedPairingGate>
 </ScreenShell>
 
 <style>
@@ -456,12 +374,6 @@
     margin: 0;
     font-size: var(--text-label);
     line-height: var(--leading-body);
-    color: var(--color-ink-soft);
-  }
-  .resolving {
-    margin: 0;
-    font-family: var(--font-mono);
-    font-size: var(--text-data);
     color: var(--color-ink-soft);
   }
   .hint {

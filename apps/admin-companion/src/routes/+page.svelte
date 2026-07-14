@@ -3,6 +3,7 @@
   import { goto } from '$app/navigation';
   import { listPairings, setActivePairing, generateClaimCode, unpair, type PairingsState } from '$lib/ipc';
   import { serverIdentity, type ServerIdentity } from '$lib/server-identity';
+  import { pinnedHref } from '$lib/pinned-pairing';
   import { classifyRelayError, type ErrorView } from '$lib/errors';
   import { requireUserPresence, presenceAllows } from '$lib/biometric';
   import { shareText } from '$lib/share';
@@ -151,7 +152,7 @@
    */
   function openPinned(path: string) {
     if (!activePairing) return;
-    void goto(`${path}?server=${encodeURIComponent(activePairing.id)}`);
+    void goto(pinnedHref(path, activePairing.id));
   }
 </script>
 
