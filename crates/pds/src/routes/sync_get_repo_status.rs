@@ -7,9 +7,7 @@ use axum::response::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::db::blocks::SqliteBlockStore;
 use common::{ApiError, ErrorCode};
-use repo_engine::Repository;
 
 #[derive(Deserialize)]
 pub struct GetRepoStatusParams {
@@ -67,7 +65,7 @@ pub async fn sync_get_repo_status(
     // from the commit block. An account with no repo at all reports no rev.
     let rev = match (row.rev, row.head) {
         (Some(rev), _) => Some(rev),
-        (None, Some(head)) => read_repo_rev(&state, did, &head).await,
+        (None, Some(head)) => crate::repo_rev::read_repo_rev(&state, did, &head).await,
         (None, None) => None,
     };
 
@@ -77,33 +75,6 @@ pub async fn sync_get_repo_status(
         status,
         rev,
     }))
-}
-
-/// Open `did`'s repo at `head` and return its commit revision (`rev`), or `None` if the
-/// repo cannot be read.
-///
-/// The rev lives in the signed commit block, so reading it means opening the repo. A
-/// parse/open failure (bad CID, missing block) yields `None`: the status is still reported,
-/// just without a `rev`, rather than failing the whole request.
-async fn read_repo_rev(state: &AppState, did: &str, head: &str) -> Option<String> {
-    let root_cid = match repo_engine::Cid::try_from(head) {
-        Ok(cid) => cid,
-        Err(e) => {
-            tracing::error!(error = %e, did = %did, "invalid repo root CID in database; omitting rev");
-            return None;
-        }
-    };
-
-    let block_store = SqliteBlockStore::new(state.db.clone(), did.to_string());
-    let repo = match Repository::open(block_store, root_cid).await {
-        Ok(repo) => repo,
-        Err(e) => {
-            tracing::warn!(error = %e, did = %did, "failed to open repo for getRepoStatus; omitting rev");
-            return None;
-        }
-    };
-
-    Some(repo.commit().rev().as_str().to_string())
 }
 
 #[cfg(test)]

@@ -14,6 +14,7 @@ use subtle::ConstantTimeEq;
 use common::{ApiError, ErrorCode, ADMIN_TIMESTAMP_WINDOW_SECS};
 
 use crate::app::AppState;
+use crate::time::unix_now_secs;
 
 /// Information about an authenticated pending session.
 #[derive(Debug)]
@@ -140,16 +141,6 @@ fn is_json_content_type(headers: &HeaderMap) -> bool {
         .to_ascii_lowercase();
     essence == "application/json"
         || (essence.starts_with("application/") && essence.ends_with("+json"))
-}
-
-/// Current Unix time in seconds. Clamps a pre-epoch clock to 0 rather than panicking;
-/// such a request fails the timestamp-window check anyway.
-fn unix_now_secs() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 /// Which credential authenticated an admin request — the master (break-glass) token, or a

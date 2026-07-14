@@ -7,9 +7,7 @@ use axum::response::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::db::blocks::SqliteBlockStore;
 use common::{ApiError, ErrorCode};
-use repo_engine::Repository;
 
 #[derive(Deserialize)]
 pub struct GetLatestCommitParams {
@@ -72,39 +70,12 @@ pub async fn sync_get_latest_commit(
     // commit, so it is reported as not found rather than as a 500.
     let rev = match row.rev {
         Some(rev) => rev,
-        None => read_repo_rev(&state, did, &head)
+        None => crate::repo_rev::read_repo_rev(&state, did, &head)
             .await
             .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "repo not found"))?,
     };
 
     Ok(Json(GetLatestCommitResponse { cid: head, rev }))
-}
-
-/// Open `did`'s repo at `head` and return its commit revision (`rev`), or `None` if the
-/// repo cannot be read.
-///
-/// The rev lives in the signed commit block, so reading it means opening the repo. A
-/// parse/open failure (bad CID, missing block) yields `None`: the caller maps that to a 404,
-/// since a commit it cannot read is, to a client, no servable latest commit.
-async fn read_repo_rev(state: &AppState, did: &str, head: &str) -> Option<String> {
-    let root_cid = match repo_engine::Cid::try_from(head) {
-        Ok(cid) => cid,
-        Err(e) => {
-            tracing::error!(error = %e, did = %did, "invalid repo root CID in database; omitting rev");
-            return None;
-        }
-    };
-
-    let block_store = SqliteBlockStore::new(state.db.clone(), did.to_string());
-    let repo = match Repository::open(block_store, root_cid).await {
-        Ok(repo) => repo,
-        Err(e) => {
-            tracing::warn!(error = %e, did = %did, "failed to open repo for getLatestCommit; omitting rev");
-            return None;
-        }
-    };
-
-    Some(repo.commit().rev().as_str().to_string())
 }
 
 #[cfg(test)]

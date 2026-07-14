@@ -480,11 +480,6 @@ struct StoredSyncOwned {
     blocks: Vec<u8>,
 }
 
-/// Current UTC time as an RFC 3339 / ISO-8601 string with millisecond precision.
-pub(super) fn now_rfc3339() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

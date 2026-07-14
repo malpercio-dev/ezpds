@@ -7,9 +7,7 @@ use axum::response::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::db::blocks::SqliteBlockStore;
 use common::{ApiError, ErrorCode};
-use repo_engine::Repository;
 
 const DEFAULT_LIMIT: i64 = 500;
 const MAX_LIMIT: i64 = 1000;
@@ -80,7 +78,7 @@ pub async fn list_repos(
         // landed — must not 500 the whole enumeration, so skip it and keep paging.
         let rev = match row.rev {
             Some(rev) => rev,
-            None => match read_repo_rev(&state, &row.did, &row.head).await {
+            None => match crate::repo_rev::read_repo_rev(&state, &row.did, &row.head).await {
                 Some(rev) => rev,
                 None => continue,
             },
@@ -97,33 +95,6 @@ pub async fn list_repos(
         repos,
         cursor: next_cursor,
     }))
-}
-
-/// Open `did`'s repo at `head` and return its commit revision (`rev`), or `None` if the
-/// repo cannot be read.
-///
-/// The rev is not stored in the accounts table; it lives in the signed commit block, so
-/// reading it means opening the repo. A parse/open failure (bad CID, missing block) yields
-/// `None` — the caller skips the repo rather than failing the whole page.
-async fn read_repo_rev(state: &AppState, did: &str, head: &str) -> Option<String> {
-    let root_cid = match repo_engine::Cid::try_from(head) {
-        Ok(cid) => cid,
-        Err(e) => {
-            tracing::error!(error = %e, did = %did, "invalid repo root CID in database; skipping");
-            return None;
-        }
-    };
-
-    let block_store = SqliteBlockStore::new(state.db.clone(), did.to_string());
-    let repo = match Repository::open(block_store, root_cid).await {
-        Ok(repo) => repo,
-        Err(e) => {
-            tracing::warn!(error = %e, did = %did, "failed to open repo for listRepos; skipping");
-            return None;
-        }
-    };
-
-    Some(repo.commit().rev().as_str().to_string())
 }
 
 #[cfg(test)]
