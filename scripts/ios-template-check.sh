@@ -38,7 +38,11 @@ if [ -z "${stamped}" ]; then
   fail=1
 else
   pins_found=0
-  for wf in "${REPO_ROOT}"/.github/workflows/*.yml; do
+  # The tauri-cli pin now lives in the shared runner-preamble composite action
+  # (.github/actions/ios-setup/action.yml) — one home for all iOS lanes. Scan it
+  # alongside the workflow files so a pin lingering in either location is still caught.
+  for wf in "${REPO_ROOT}"/.github/workflows/*.yml "${REPO_ROOT}"/.github/actions/ios-setup/action.yml; do
+    [ -f "${wf}" ] || continue
     pin="$(sed -n "s/.*cargo binstall -y --locked tauri-cli --version '\([0-9][0-9.]*\)'.*/\1/p" "${wf}")"
     [ -z "${pin}" ] && continue
     pins_found=$((pins_found + 1))
@@ -51,7 +55,7 @@ else
     fi
   done
   if [ "${pins_found}" -eq 0 ]; then
-    echo "ios-template-check: FAIL — no tauri-cli binstall pin found in .github/workflows/*.yml (did the pin format change? update this script's sed)" >&2
+    echo "ios-template-check: FAIL — no tauri-cli binstall pin found in .github/workflows/*.yml or .github/actions/ios-setup/action.yml (did the pin format or location change? update this script's sed)" >&2
     fail=1
   fi
 fi

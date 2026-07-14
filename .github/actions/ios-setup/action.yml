@@ -1,0 +1,114 @@
+# Shared runner preamble for the macOS iOS lanes. The two TestFlight lanes
+# (via .github/workflows/ios-testflight-reusable.yml) and the ios-pr-check
+# `ios-compile` job all need the identical toolchain setup — pnpm + node, the
+# Rust iOS target, a warm rust-cache, tauri-cli at the pinned version, and the
+# arm64 Homebrew shim. Keeping it here means a pin bump, a cache tweak, or a new
+# brew workaround is applied in ONE place instead of being copied across lanes.
+#
+# NOT included: `actions/checkout` (a local composite action can only run after
+# the repo is already checked out, so each caller checks out first) and the
+# App Store Connect .p8 decode (signing-only — its single home is the reusable
+# TestFlight workflow, since the secret-free PR lane must not touch it).
+name: iOS setup
+description: Toolchain preamble for the macOS iOS build lanes (pnpm, node, Rust iOS target, tauri-cli, brew shim).
+
+inputs:
+  app:
+    description: App directory name under apps/ (identity-wallet | admin-companion). Scopes the pnpm cache and the per-app rust-cache key.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install just
+      uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
+
+    - name: Install pnpm
+      uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      with:
+        # Exact pin — keep in lockstep with "packageManager" in apps/*/package.json,
+        # so --frozen-lockfile can never fail on a pnpm lockfile-format difference
+        # between local and CI.
+        version: 9.15.9
+
+    - name: Setup Node 22
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      with:
+        node-version: 22
+        # Cache the pnpm store (keyed by the lockfile hash) so `pnpm install
+        # --frozen-lockfile` restores from cache instead of re-downloading the whole
+        # dependency tree every run. pnpm is already on PATH from the action-setup step
+        # above — setup-node's `cache: pnpm` requires it to be installed first.
+        cache: pnpm
+        cache-dependency-path: apps/${{ inputs.app }}/pnpm-lock.yaml
+
+    - name: Install frontend dependencies
+      working-directory: apps/${{ inputs.app }}
+      shell: bash
+      run: pnpm install --frozen-lockfile
+
+    # rust-toolchain.toml pins the channel AND lists aarch64-apple-ios, so a bare
+    # `rustup toolchain install` (run at repo root) provisions both. The explicit
+    # `target add` is belt-and-suspenders in case the runner's default toolchain wins.
+    - name: Rust toolchain + iOS target
+      shell: bash
+      run: |
+        rustup toolchain install --no-self-update
+        rustup target add aarch64-apple-ios
+
+    - name: Cache Rust build
+      uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      with:
+        # cache-bin: false — same footgun ci.yml already guards against: with the
+        # default (true), rust-cache can restore the "tauri-cli is installed"
+        # .crates2.json metadata WITHOUT the binary; `cargo binstall` then skips the
+        # install and `cargo tauri` is missing at use time. Cache the registry/git/
+        # target (the real speedup), never ~/.cargo/bin.
+        cache-bin: false
+        # shared-key ties the main-branch TestFlight lane to the ios-pr-check
+        # `ios-compile` job for the SAME app. rust-cache keys by `github.job` unless
+        # overridden, so the PR lane and the TestFlight lane otherwise never share a
+        # cache. Because ios-pr-check runs on pull_request ONLY, its cache is never
+        # seeded on main, so every PR cold-built the whole tauri dependency tree and
+        # then saved a ~1 GB per-PR cache that no other PR could read (GitHub caches are
+        # ref-scoped) — write-only garbage that churned the 10 GB repo quota. The
+        # TestFlight lane runs on push to main, so it seeds the warm cache the PR lane
+        # restores. Distinct per app (ios-identity-wallet / ios-admin-companion) so the
+        # two apps don't clobber each other's deps under a shared job id.
+        shared-key: ios-${{ inputs.app }}
+        # Only write from main (the TestFlight lanes' normal trigger). A
+        # workflow_dispatch off a feature branch, or a pull_request run (github.ref is
+        # refs/pull/N/merge), must not save a branch-scoped copy that consumes quota
+        # without ever being reused.
+        save-if: ${{ github.ref == 'refs/heads/main' }}
+
+    - name: Install cargo-binstall
+      # Pinned release tag (not @main): a mutable branch ref would let upstream changes
+      # land in every CI run — on a runner that later holds the signing cert.
+      uses: cargo-bins/cargo-binstall@732870f031d2fb36309d0deaf36abcc704a7be65 # v1.20.1
+
+    - name: Install Tauri CLI
+      # Exact pin (was '^2'): the ios-postinit patches regex-edit the Xcode project
+      # template THIS CLI version generates, so a floating 2.x means two runs of the
+      # same commit can patch different templates. Bump deliberately, together with the
+      # Nix dev shell's cargo-tauri (devenv.nix), and re-verify `just ios-postinit` /
+      # `just admin-postinit` applies. CI-enforced: scripts/ios-template-check.sh greps
+      # this line to keep it in lockstep with the forked XcodeGen template.
+      shell: bash
+      run: cargo binstall -y --locked tauri-cli --version '2.11.4'
+
+    # The Tauri CLI runs x86_64 (Rosetta) on the arm64 runner, so every `brew` it shells
+    # out to (cargo-mobile2 installs xcodegen, libimobiledevice, ios-deploy, ...) is
+    # refused: "Cannot install under Rosetta 2 in ARM default prefix". Shim `brew` to
+    # always re-exec under arm64 — fixes all of cargo-mobile2's brew calls at once,
+    # rather than pre-installing each dep (tauri#11244, cargo-mobile2#291).
+    - name: Force Homebrew under arm64 (Tauri CLI runs under Rosetta)
+      shell: bash
+      run: |
+        mkdir -p "$RUNNER_TEMP/arm64-shims"
+        cat > "$RUNNER_TEMP/arm64-shims/brew" <<'SH'
+        #!/bin/bash
+        exec arch -arm64 /opt/homebrew/bin/brew "$@"
+        SH
+        chmod +x "$RUNNER_TEMP/arm64-shims/brew"
+        echo "$RUNNER_TEMP/arm64-shims" >> "$GITHUB_PATH"

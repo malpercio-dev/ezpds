@@ -197,11 +197,19 @@ for the first time inside a CI log.
 
 The operator console (`apps/admin-companion/`, bundle id `dev.malpercio.admincompanion`)
 ships through its own macOS lane,
-[`.github/workflows/admin-testflight.yml`](../.github/workflows/admin-testflight.yml) — a
-near-clone of the wallet workflow driven by `admin-*` recipes (`just admin-ipa`,
-`just admin-upload`, `just admin-release`). It triggers on push to `main` under
-`apps/admin-companion/**` (plus the shared `crates/**`, `Cargo.toml`, `Cargo.lock`,
-`rust-toolchain.toml`) and on manual `workflow_dispatch`.
+[`.github/workflows/admin-testflight.yml`](../.github/workflows/admin-testflight.yml). Both
+TestFlight lanes are thin callers of one reusable workflow,
+[`.github/workflows/ios-testflight-reusable.yml`](../.github/workflows/ios-testflight-reusable.yml)
+(the whole build/sign/upload body): each caller keeps only its per-app `on.push.paths`
+filter and passes `app`, `recipe-prefix`, and its provisioning-profile secret. The admin
+caller is driven by `admin-*` recipes (`just admin-ipa`, `just admin-upload`,
+`just admin-release`) and triggers on push to `main` under `apps/admin-companion/**` (plus
+the shared `crates/crypto/**`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`,
+`scripts/ios/**`, and the shared `.github/actions/ios-setup/**` composite action + reusable
+workflow) and on manual `workflow_dispatch`. The reusable workflow and the ios-pr-check
+`ios-compile` job share the `.github/actions/ios-setup` composite action for the toolchain
+preamble (pnpm/node, Rust iOS target, warm rust-cache, the pinned tauri-cli, the arm64 brew
+shim).
 
 **Reused as-is** (team-wide; already configured for the wallet): the Apple Distribution
 cert (`IOS_CERTIFICATE` / `IOS_CERTIFICATE_PASSWORD`), the App Store Connect API key

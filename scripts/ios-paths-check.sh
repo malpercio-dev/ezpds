@@ -54,18 +54,34 @@ path_deps() {
 }
 
 # Non-crate entries every iOS lane must carry regardless of the crate graph.
-# (Each workflow additionally watches its own file, added in expected_for.)
-#   Cargo.toml / Cargo.lock  — a shared-dependency bump can change what the apps build
-#   justfile                 — the lanes' build steps are just recipes
-#   scripts/ios/**           — the shared iOS toolchain/patch scripts
-#   rust-toolchain.toml      — pins the toolchain + iOS targets
+# (Each lane additionally watches its own workflow file(s), added in expected_for
+# via watched_workflows_for.)
+#   Cargo.toml / Cargo.lock     — a shared-dependency bump can change what the apps build
+#   justfile                    — the lanes' build steps are just recipes
+#   scripts/ios/**              — the shared iOS toolchain/patch scripts
+#   .github/actions/ios-setup/**— the shared runner-preamble composite action all three
+#                                 lanes use (toolchain, cache, tauri-cli pin, brew shim)
+#   rust-toolchain.toml         — pins the toolchain + iOS targets
 INFRA=(
   "Cargo.toml"
   "Cargo.lock"
   "justfile"
   "scripts/ios/**"
+  ".github/actions/ios-setup/**"
   "rust-toolchain.toml"
 )
+
+# Workflow file(s) whose changes must re-trigger a given lane. Normally a lane just
+# watches its own file, but the two TestFlight callers are thin wrappers around the
+# shared reusable workflow (ios-testflight-reusable.yml) — editing the reusable body
+# changes what they build, so both must watch it too.
+watched_workflows_for() { # <caller workflow>
+  printf '.github/workflows/%s\n' "$1"
+  case "$1" in
+    ios-testflight.yml | admin-testflight.yml)
+      printf '.github/workflows/ios-testflight-reusable.yml\n' ;;
+  esac
+}
 
 iw_deps="$(path_deps identity-wallet)"
 ac_deps="$(path_deps admin-companion)"
@@ -81,7 +97,8 @@ deps_for() {
 expected_for() { # <workflow file> <app>...
   local wf="$1"; shift
   local app dir covered
-  printf '%s\n' "${INFRA[@]}" ".github/workflows/$wf"
+  printf '%s\n' "${INFRA[@]}"
+  watched_workflows_for "$wf"
   for app in "$@"; do
     printf 'apps/%s/**\n' "$app"
   done
