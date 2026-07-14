@@ -1,4 +1,4 @@
-// pattern: Functional Core
+// pattern: Imperative Shell
 
 //! Shared test fixtures for the firehose module's test suites, split across `mod.rs`,
 //! `events.rs`, and `replay.rs` test modules — this file holds what's common to more than one
