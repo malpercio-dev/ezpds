@@ -18,7 +18,7 @@ use axum::{
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::identity::resolution::HeaderProxyGuard;
+use crate::identity::proxy::HeaderProxyGuard;
 
 /// Maximum buffered request body when proxying to an upstream service. `app.bsky.*` and
 /// `chat.bsky.*` procedures carry small JSON payloads (preferences, mutes, message sends);
@@ -41,7 +41,7 @@ fn is_length_limit_error(err: &axum::Error) -> bool {
 ///
 /// `header_guard` is `Some` whenever the target host was resolved and SSRF-validated from a
 /// caller-supplied `atproto-proxy` header naming a caller-controlled DID document
-/// (`identity::resolution::resolve_atproto_proxy_target`) — always for `com.atproto.moderation.*`
+/// (`identity::proxy::resolve_atproto_proxy_target`) — always for `com.atproto.moderation.*`
 /// (which has no configured default), and for `app.bsky.*`/`chat.bsky.*` only when the caller's
 /// header overrides that namespace's default upstream. When present, the outbound request is sent
 /// on a one-off hardened client (see `build_header_proxy_client`) rather than `state.http_client`:
@@ -207,7 +207,7 @@ pub async fn proxy_xrpc(
 /// changed record between validation and connection) could point at an address that was never
 /// checked.
 fn build_header_proxy_client(guard: &HeaderProxyGuard) -> Result<reqwest::Client, ApiError> {
-    crate::identity::resolution::build_pinned_client(guard.pinned.as_ref()).map_err(|e| {
+    crate::identity::proxy::build_pinned_client(guard.pinned.as_ref()).map_err(|e| {
         tracing::error!(error = %e, "failed to build header-target proxy client");
         ApiError::new(
             ErrorCode::InternalError,

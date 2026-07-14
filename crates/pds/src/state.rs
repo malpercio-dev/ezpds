@@ -79,7 +79,7 @@ pub struct AppState {
     /// `email.provider = "smtp"` swaps in real SMTP delivery. Shared via Arc.
     pub email: Arc<dyn crate::email::EmailSender>,
     /// Test-only relaxation of the `atproto-proxy` SSRF guard
-    /// (`identity::resolution::resolve_atproto_proxy_target`): when `true`, a loopback address is
+    /// (`identity::proxy::resolve_atproto_proxy_target`): when `true`, a loopback address is
     /// accepted alongside public ones, so tests can proxy to a local `wiremock` server standing in
     /// for a labeler. Always `false` in the real server (`main.rs`) — only `test_state()` sets it.
     pub allow_loopback_proxy_targets: bool,

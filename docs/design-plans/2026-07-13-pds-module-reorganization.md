@@ -125,9 +125,10 @@ Result: 31 top-level files → ~17 entries.
   imports. Optional follow-on: extract the shared interval-loop scaffolding
   into `sweeps/mod.rs`.
 - **identity/** — six files, one conceptual domain (resolution chain +
-  did:plc ops); ~26 import sites total. The proxy split (MM-327) additionally
-  isolates the SSRF guard + DNS-pinning client into its own reviewable file;
-  consumers are `app.rs::xrpc_handler` and `routes/service_proxy.rs`.
+  did:plc ops); ~26 import sites total. The proxy split (MM-327, done)
+  additionally isolates the SSRF guard + DNS-pinning client into its own
+  reviewable `identity/proxy.rs`; consumers are `xrpc_dispatch.rs`,
+  `routes/service_proxy.rs`, and `auth::permission_sets`.
 - **firehose/** — three cohesive layers (event model, durable emit/staging,
   replay); `mod.rs` re-exports keep the 19 consumer files untouched. The
   1270-line test module splits along the same seams.
