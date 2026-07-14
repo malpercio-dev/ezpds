@@ -64,6 +64,20 @@
   const normalizedEmail = $derived(email.trim().toLowerCase());
   const emailLooksValid = $derived(/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(normalizedEmail));
 
+  // The address the operator reviewed when they armed the confirm. If the field drifts
+  // from it, auto-disarm — a second tap must never sign a value the operator didn't review
+  // (the same stale-target guard the Moderation screen applies to a drifted DID lookup).
+  let armedEmail = $state<string | null>(null);
+  function armEmailRepair() {
+    armedEmail = normalizedEmail;
+    emailRepair.arm();
+  }
+  $effect(() => {
+    if (emailRepair.armed && !emailRepair.writing && normalizedEmail !== armedEmail) {
+      emailRepair.disarm();
+    }
+  });
+
   /** Fetch usage + storage for the account. Reads only — no biometric gate. */
   async function loadMetrics(target: string) {
     if (!pairing) return;
@@ -206,7 +220,7 @@
         error={email !== '' && !emailLooksValid ? 'Enter a complete email address.' : undefined}
       />
       {#if !emailRepair.armed}
-        <Button variant="secondary" disabled={!emailLooksValid || tokenIssue.writing} onclick={emailRepair.arm}>Review email change</Button>
+        <Button variant="secondary" disabled={!emailLooksValid || tokenIssue.writing} onclick={armEmailRepair}>Review email change</Button>
       {:else}
         <div class="confirm" role="group" aria-label="Confirm email repair">
           <p class="note">Set <span class="literal">{did}</span> to <span class="literal">{normalizedEmail}</span> and reset confirmation?</p>
@@ -223,7 +237,7 @@
 
     <section class="panel" aria-labelledby="reset-token-label">
       <span id="reset-token-label" class="label">Credential issuance</span>
-      <p class="note">Mint a single-use password-reset token valid for one hour. Deliver it out of band; the operator never chooses or sees the new password.</p>
+      <p class="note">Mint a single-use password-reset token valid for one hour. Deliver it out of band; the operator never chooses or sees the new password. Only an account that already uses a password can be issued one — a passwordless (key-sovereign) account is recovered through its escrowed key share, not a reset.</p>
       {#if !tokenIssue.armed}
         <Button variant="secondary" disabled={emailRepair.writing} onclick={tokenIssue.arm}>Issue reset token</Button>
       {:else}

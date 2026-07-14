@@ -144,17 +144,31 @@ pub async fn issue_reset_token(
         Ok(tx) => tx,
         Err(error) => return db_error(error, "begin reset-token issuance").into_response(),
     };
-    let exists: bool =
-        match sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM accounts WHERE did = ?)")
+    // Load the current password hash (NULL for a passwordless account). Outer `None` = no
+    // such account (404); inner `None`/empty = an account with no password credential.
+    let password_hash: Option<Option<String>> =
+        match sqlx::query_scalar("SELECT password_hash FROM accounts WHERE did = ?")
             .bind(&did)
-            .fetch_one(&mut *tx)
+            .fetch_optional(&mut *tx)
             .await
         {
             Ok(value) => value,
             Err(error) => return db_error(error, "load reset-token account").into_response(),
         };
-    if !exists {
+    let Some(password_hash) = password_hash else {
         return ApiError::new(ErrorCode::NotFound, "account not found").into_response();
+    };
+    // A reset token only resets an *existing* password. Minting one for a passwordless
+    // (key-sovereign / mobile) account would bootstrap a password-login vector where the
+    // holder deliberately has none — a repair tool must not quietly widen the auth surface.
+    // Recovery of a passwordless account is a key-custody problem (escrowed share), not a
+    // password reset. Refuse loudly instead.
+    if password_hash.as_deref().unwrap_or("").is_empty() {
+        return ApiError::new(
+            ErrorCode::InvalidRequest,
+            "account has no password to reset",
+        )
+        .into_response();
     }
     if let Err(error) = sqlx::query(
         "INSERT INTO password_reset_tokens (token_hash, did, expires_at, created_at) VALUES (?, ?, datetime('now', '+1 hour'), datetime('now'))",
@@ -335,5 +349,161 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(token.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn refuses_reset_token_for_passwordless_account() {
+        // A key-sovereign / mobile account deliberately has no password. Minting a reset
+        // token would bootstrap a password-login path where the holder chose to have none,
+        // so the operation is refused with 400 and writes nothing (no token, no audit).
+        let state = test_state_with_admin_token().await;
+        let did = "did:plc:passwordless";
+        insert_account_with_password(
+            &state.db,
+            did,
+            "passwordless.test.example.com",
+            "passwordless@example.com",
+            "password",
+        )
+        .await;
+        sqlx::query("UPDATE accounts SET password_hash = NULL WHERE did = ?")
+            .bind(did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        let response = app(state.clone())
+            .oneshot(post(
+                &format!("/v1/admin/accounts/{did}/reset-token"),
+                None,
+                true,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let tokens: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM password_reset_tokens WHERE did = ?")
+                .bind(did)
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(tokens, 0, "no reset token may be minted");
+        let audits: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM operator_account_audit_events WHERE did = ?")
+                .bind(did)
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(audits, 0, "the refused operation writes no audit event");
+    }
+
+    #[tokio::test]
+    async fn reset_token_for_unknown_account_returns_404() {
+        let state = test_state_with_admin_token().await;
+        let response = app(state)
+            .oneshot(post(
+                "/v1/admin/accounts/did:plc:absent/reset-token",
+                None,
+                true,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn email_repair_for_unknown_account_returns_404() {
+        let state = test_state_with_admin_token().await;
+        let response = app(state)
+            .oneshot(post(
+                "/v1/admin/accounts/did:plc:absent/email",
+                Some(r#"{"email":"someone@example.com"}"#),
+                true,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn email_repair_rejects_invalid_address_without_writing() {
+        let state = test_state_with_admin_token().await;
+        let did = "did:plc:bad-email";
+        insert_account_with_password(
+            &state.db,
+            did,
+            "bad-email.test.example.com",
+            "keep@example.com",
+            "password",
+        )
+        .await;
+
+        let response = app(state.clone())
+            .oneshot(post(
+                &format!("/v1/admin/accounts/{did}/email"),
+                Some(r#"{"email":"not-an-email"}"#),
+                true,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let email: String = sqlx::query_scalar("SELECT email FROM accounts WHERE did = ?")
+            .bind(did)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert_eq!(email, "keep@example.com", "the stored email is untouched");
+        let audits: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM operator_account_audit_events WHERE did = ?")
+                .bind(did)
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(audits, 0, "a rejected email writes no audit event");
+    }
+
+    #[tokio::test]
+    async fn email_repair_rejects_address_already_in_use() {
+        // The `accounts.email` UNIQUE index is enforced: repairing one account's email to an
+        // address another account already holds is a 400, and the target account is untouched.
+        let state = test_state_with_admin_token().await;
+        insert_account_with_password(
+            &state.db,
+            "did:plc:holder",
+            "holder.test.example.com",
+            "taken@example.com",
+            "password",
+        )
+        .await;
+        insert_account_with_password(
+            &state.db,
+            "did:plc:mover",
+            "mover.test.example.com",
+            "mover@example.com",
+            "password",
+        )
+        .await;
+
+        let response = app(state.clone())
+            .oneshot(post(
+                "/v1/admin/accounts/did:plc:mover/email",
+                Some(r#"{"email":"taken@example.com"}"#),
+                true,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let email: String =
+            sqlx::query_scalar("SELECT email FROM accounts WHERE did = 'did:plc:mover'")
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(
+            email, "mover@example.com",
+            "the collision leaves the row unchanged"
+        );
     }
 }

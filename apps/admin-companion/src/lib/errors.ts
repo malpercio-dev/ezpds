@@ -54,6 +54,12 @@ export function classifyRelayError(error: unknown): ErrorView {
       if (e.status === 404) {
         return { status: 'info', chipLabel: 'not found', message, recovery: 'none' };
       }
+      // A 400 is a well-formed request the relay refused on its merits (e.g. "account has
+      // no password to reset", a duplicate email). `message` carries the relay's own
+      // reason — a definitive answer, so no retry.
+      if (e.status === 400) {
+        return { status: 'info', chipLabel: 'not applicable', message, recovery: 'none' };
+      }
       return { status: 'error', chipLabel: 'rejected', message, recovery: 'retry' };
     case 'NO_SUCH_PAIRING':
       // The pairing has been removed (likely on another screen). It may have been
@@ -94,6 +100,12 @@ export function describeRelayError(error: unknown): string {
       // matching record. Literal truth, no alarm.
       if (e.status === 404) {
         return 'Nothing on this server matches that identifier.';
+      }
+      // 400: a well-formed request refused on its merits. The relay's own reason is the
+      // most useful thing to show an authenticated operator; fall back if it sent none.
+      if (e.status === 400) {
+        const reason = e.message?.trim();
+        return reason ? reason : 'The relay rejected the request as invalid.';
       }
       return `The relay rejected the request (HTTP ${e.status}).`;
     case 'NO_SUCH_PAIRING':
