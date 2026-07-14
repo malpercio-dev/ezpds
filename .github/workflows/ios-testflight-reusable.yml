@@ -1,0 +1,136 @@
+name: iOS · TestFlight (reusable)
+
+# The shared body of the two TestFlight lanes. The macOS half of CI — the PDS test
+# gate runs on Linux (.github/workflows/ci.yml) and cannot build a Tauri iOS app
+# (`cargo tauri ios build` needs macOS + Xcode) — so both app builds live here.
+# GitHub-hosted macOS runners are free for public repos.
+#
+# The two apps (identity-wallet, admin-companion) build identically except for the
+# app dir, the just-recipe prefix, and which provisioning profile signs them, so the
+# whole build/sign/upload flow is factored here and each app has a thin caller
+# (ios-testflight.yml, admin-testflight.yml) that keeps only its per-app on.push.paths
+# filter and passes `app`, `recipe-prefix`, and its provisioning-profile secret.
+#
+# Flow: regenerate the (gitignored) Xcode project -> re-apply the postinit patches ->
+# build a signed App Store IPA (`just <prefix>-ipa` stamps a unique build number) ->
+# upload to TestFlight. Code signing is explicit (cert + App Store profile); the API
+# key is upload-only.
+#
+# One-time setup (mirror, App Store Connect, secrets): see docs/ios-cicd.md.
+
+on:
+  workflow_call:
+    inputs:
+      app:
+        description: App directory name under apps/ (identity-wallet | admin-companion).
+        required: true
+        type: string
+      recipe-prefix:
+        description: The just-recipe family that builds/uploads this app (ios | admin).
+        required: true
+        type: string
+    secrets:
+      # The App Store provisioning profile is bound to each app's own bundle id, so the
+      # caller decides which secret feeds it (IOS_MOBILE_PROVISION for identity-wallet,
+      # IOS_MOBILE_PROVISION_ADMIN for admin-companion) by mapping it onto this name.
+      IOS_MOBILE_PROVISION:
+        required: true
+      # The Apple Distribution cert and the App Store Connect API key are team-wide and
+      # shared by both apps; the callers map them 1:1.
+      IOS_CERTIFICATE:
+        required: true
+      IOS_CERTIFICATE_PASSWORD:
+        required: true
+      APPLE_DEVELOPMENT_TEAM:
+        required: true
+      APPLE_API_ISSUER:
+        required: true
+      APPLE_API_KEY:
+        required: true
+      APPLE_API_KEY_B64:
+        required: true
+
+# Public repo + signing secrets: the callers must never run for pull_request events, so
+# a fork PR cannot exfiltrate the Apple key (push + workflow_dispatch only, both gated to
+# collaborators with write access). This reusable workflow itself only runs when called.
+permissions:
+  contents: read
+
+jobs:
+  testflight:
+    name: Build & upload to TestFlight
+    # macos-26 ships Xcode 26 / iOS 26 SDK — Apple rejects uploads built with older SDKs,
+    # and it matches the local macOS 26 / Xcode 26 dev environment. Apple Silicon native.
+    runs-on: macos-26
+    timeout-minutes: 60
+    # Signing/API secrets are scoped to the individual steps that use them (Decode, Build,
+    # Upload) instead of declared job-wide, so they are absent from the environment of the
+    # third-party install steps (pnpm install, cargo binstall) that execute untrusted
+    # lifecycle/installer code — limiting blast radius if a dependency is compromised.
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        # Don't persist the job token in .git/config where later steps could read it
+        # (zizmor `artipacked`); nothing here pushes back to the repo.
+        with:
+          persist-credentials: false
+
+      # pnpm + node + frontend deps, Rust iOS target, warm rust-cache, tauri-cli pin,
+      # and the arm64 brew shim — shared with the ios-pr-check `ios-compile` job.
+      - name: iOS toolchain setup
+        uses: ./.github/actions/ios-setup
+        with:
+          app: ${{ inputs.app }}
+
+      - name: Decode App Store Connect API key (.p8)
+        # Secrets are passed via env (not inline ${{ }}) so they never land in argv/logs.
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_B64: ${{ secrets.APPLE_API_KEY_B64 }}
+        run: |
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          KEY_PATH="$HOME/.appstoreconnect/private_keys/AuthKey_${APPLE_API_KEY}.p8"
+          # python (not `base64 --decode`): the runner ships BSD base64, whose decode
+          # flag is -D, not GNU's --decode; b64decode also tolerates the newlines that
+          # `base64 -i` inserts. Reads the secret from env, never from argv.
+          KEY_PATH="$KEY_PATH" python3 -c "import base64,os; open(os.environ['KEY_PATH'],'wb').write(base64.b64decode(os.environ['APPLE_API_KEY_B64']))"
+          # Tauri reads APPLE_API_KEY_PATH for signing; altool finds the key by ID
+          # in ~/.appstoreconnect/private_keys, so writing it there satisfies both.
+          echo "APPLE_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+
+      # gen/apple is gitignored — regenerate it from scratch. `cargo tauri ios init`
+      # renders the committed scripts/ios/project.yml template (bundle > iOS >
+      # template; the path is cwd-relative, hence working-directory), which carries
+      # every workaround: sandbox off, Run Script env, entitlements allowance,
+      # framework linking, libapp.a strip. Postinit checks the swift-rs fork,
+      # installs the app icon, and runs the full <prefix>-check.
+      - name: Generate the Xcode project
+        working-directory: apps/${{ inputs.app }}
+        run: cargo tauri ios init
+
+      - name: Finish + verify the generated project (postinit)
+        run: just ${{ inputs.recipe-prefix }}-postinit
+
+      # No build-number step here: `just <prefix>-ipa` stamps a unique, monotonic
+      # CFBundleVersion (UTC epoch seconds) itself, so CI and the local
+      # `just <prefix>-release` escape hatch share one scheme and can never collide.
+      - name: Build signed IPA
+        # SIGNING — explicit cert + App Store profile (Tauri's automatic signing emits an
+        # "Apple Distribution: Tauri (unset)" placeholder App Store rejects, tauri#11092).
+        # IOS_MOBILE_PROVISION is the caller-selected, bundle-id-bound profile; the APPLE_*
+        # vars also feed the app-store-connect export. Scoped to this step, not the job.
+        env:
+          IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_MOBILE_PROVISION: ${{ secrets.IOS_MOBILE_PROVISION }}
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: just ${{ inputs.recipe-prefix }}-ipa
+
+      - name: Upload to TestFlight
+        # altool authenticates with the App Store Connect API key (ID + issuer); the .p8
+        # was written to ~/.appstoreconnect/private_keys in the Decode step.
+        env:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: just ${{ inputs.recipe-prefix }}-upload

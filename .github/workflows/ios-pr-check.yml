@@ -34,6 +34,8 @@ on:
       # scripts are thin wrappers). PDS-only scripts directly under scripts/
       # (bruno-parity, font-parity, ...) are deliberately excluded.
       - "scripts/ios/**"
+      # The shared runner preamble (toolchain, cache, tauri-cli pin, brew shim).
+      - ".github/actions/ios-setup/**"
       - "rust-toolchain.toml"
       - ".github/workflows/ios-pr-check.yml"
   workflow_dispatch:
@@ -110,81 +112,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install just
-        uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      # pnpm + node + frontend deps, Rust iOS target, warm rust-cache (restored from the
+      # app's TestFlight lane's main-branch seed under the same ios-<app> shared-key),
+      # tauri-cli pin, and the arm64 brew shim — shared with the TestFlight lanes.
+      - name: iOS toolchain setup
+        uses: ./.github/actions/ios-setup
         with:
-          # Exact pin — keep in lockstep with "packageManager" in apps/*/package.json.
-          version: 9.15.9
-
-      - name: Setup Node 22
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-          # Cache the pnpm store (keyed by the lockfile hash). pnpm is already on PATH
-          # from the action-setup step above, which setup-node's `cache: pnpm` requires.
-          cache: pnpm
-          cache-dependency-path: apps/${{ matrix.app }}/pnpm-lock.yaml
-
-      - name: Install frontend dependencies
-        working-directory: apps/${{ matrix.app }}
-        run: pnpm install --frozen-lockfile
-
-      # rust-toolchain.toml pins the channel AND lists aarch64-apple-ios, so a bare
-      # `rustup toolchain install` (run at repo root) provisions both. The explicit
-      # `target add` is belt-and-suspenders in case the runner's default toolchain wins.
-      - name: Rust toolchain + iOS target
-        run: |
-          rustup toolchain install --no-self-update
-          rustup target add aarch64-apple-ios
-
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          # cache-bin: false — same footgun ci.yml already guards against: with the
-          # default (true), rust-cache can restore the "tauri-cli is installed"
-          # .crates2.json metadata WITHOUT the binary; `cargo binstall` then skips the
-          # install and `cargo tauri` is missing at use time. Cache the registry/git/
-          # target (the real speedup), never ~/.cargo/bin.
-          cache-bin: false
-          # Restore the warm cache the app's TestFlight lane seeds on push to main
-          # (ios-testflight.yml / admin-testflight.yml both use this same shared-key).
-          # rust-cache keys by `github.job` by default, so without this the PR job
-          # `ios-compile` could never see the main-branch `testflight` cache and
-          # cold-built the whole tauri dependency tree every PR. matrix.app is
-          # identity-wallet / admin-companion → ios-identity-wallet / ios-admin-companion.
-          shared-key: ios-${{ matrix.app }}
-          # Restore-only on PRs: this lane runs on pull_request, where github.ref is
-          # refs/pull/N/merge, so save-if is false and it never writes. That stops the
-          # ~1 GB-per-PR write-only caches (ref-scoped, unreadable by any other PR) that
-          # were churning the shared 10 GB quota and evicting the caches that ARE reused.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Install cargo-binstall
-        # Pinned release tag (not @main) — see the same pin in the TestFlight lanes.
-        uses: cargo-bins/cargo-binstall@732870f031d2fb36309d0deaf36abcc704a7be65 # v1.20.1
-
-      - name: Install Tauri CLI
-        # Exact pin, same version as the TestFlight lanes: the postinit patches target
-        # the Xcode project template THIS version generates, so a floating CLI version
-        # could pass here and fail there (or vice versa). Bump all lanes together.
-        run: cargo binstall -y --locked tauri-cli --version '2.11.4'
-
-      # The Tauri CLI runs x86_64 (Rosetta) on the arm64 runner, so every `brew` it
-      # shells out to (cargo-mobile2 installs xcodegen, ...) is refused: "Cannot install
-      # under Rosetta 2 in ARM default prefix". Shim `brew` to always re-exec under
-      # arm64 (tauri#11244, cargo-mobile2#291) — same shim as the TestFlight lanes.
-      - name: Force Homebrew under arm64 (Tauri CLI runs under Rosetta)
-        run: |
-          mkdir -p "$RUNNER_TEMP/arm64-shims"
-          cat > "$RUNNER_TEMP/arm64-shims/brew" <<'SH'
-          #!/bin/bash
-          exec arch -arm64 /opt/homebrew/bin/brew "$@"
-          SH
-          chmod +x "$RUNNER_TEMP/arm64-shims/brew"
-          echo "$RUNNER_TEMP/arm64-shims" >> "$GITHUB_PATH"
+          app: ${{ matrix.app }}
 
       # gen/apple is gitignored — regenerate it. `cargo tauri ios init` renders the
       # committed scripts/ios/project.yml template into gen/apple/project.yml (the
