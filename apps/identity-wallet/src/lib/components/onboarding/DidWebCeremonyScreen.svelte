@@ -4,7 +4,7 @@
   import Button from '$lib/components/ui/Button.svelte';
   import DiffRow from '$lib/components/ui/DiffRow.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
-  import { authenticateBiometric, completeDidWebCeremony, prepareDidWebCeremony, type DIDCeremonyResult } from '$lib/ipc';
+  import { authenticateBiometric, completeDidWebCeremony, prepareDidWebCeremony, type DIDCeremonyError, type DIDCeremonyResult } from '$lib/ipc';
   import { composeDidWebDocument, didWebDocumentUrl, serializeDidWebDocument, type DidWebHosting } from '$lib/did-web';
   import { shareDidDocument } from '$lib/share';
 
@@ -29,7 +29,14 @@
     catch { return; }
     busy = true; error = '';
     try { onsuccess(await completeDidWebCeremony(rendered, password, hosting === 'custos')); }
-    catch { error = `The live document at ${didWebDocumentUrl(String(document.id))} does not match yet. Publish the exported bytes, wait for propagation, then retry.`; }
+    catch (raw: unknown) {
+      const ceremonyError = typeof raw === 'object' && raw !== null && 'code' in raw
+        ? raw as DIDCeremonyError
+        : null;
+      error = ceremonyError?.code === 'DID_CREATION_FAILED'
+        ? `The live document at ${didWebDocumentUrl(String(document.id))} does not match yet. Publish the exported bytes, wait for propagation, then retry.`
+        : ceremonyError?.message ?? 'Could not finish creating the domain identity. Check your connection and device keychain, then retry.';
+    }
     finally { busy = false; }
   }
 </script>

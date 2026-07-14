@@ -18,6 +18,16 @@ describe('did:web ceremony document', () => {
     expect(rendered.endsWith('\n')).toBe(true);
   });
 
+  it('resolves nested-path did:web identifiers', () => {
+    expect(didWebDocumentUrl('did:web:example.com:user:alice')).toBe('https://example.com/user/alice/did.json');
+  });
+
+  it('rejects unsafe did:web authorities and path segments', () => {
+    for (const did of ['did:web:localhost', 'did:web:127.0.0.1', 'did:web:user@example.com', 'did:web:example.com:%2Fadmin', 'did:web:example.com::alice']) {
+      expect(() => didWebDocumentUrl(did)).toThrow('Invalid did:web identifier.');
+    }
+  });
+
   it('rejects paths, ports, and non-public-looking names', () => {
     for (const value of ['localhost', 'example.com/path', 'example.com:8443']) {
       expect(() => didWebFromDomain(value)).toThrow();

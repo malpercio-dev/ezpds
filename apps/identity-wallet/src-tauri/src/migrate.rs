@@ -93,6 +93,7 @@ fn did_web_url(did: &str) -> Result<String, MigrateError> {
 }
 
 #[tauri::command]
+/// Compose the exact did:web document that the user must review and publish for migration.
 pub async fn build_did_web_migration_document_cmd(
     state: tauri::State<'_, crate::oauth::AppState>,
     did: String,
@@ -188,6 +189,7 @@ pub async fn build_did_web_migration_document_cmd(
 }
 
 #[tauri::command]
+/// Verify the reviewed bytes are authoritative, refresh the destination, and adopt the identity.
 pub async fn submit_did_web_migration_document_cmd(
     state: tauri::State<'_, crate::oauth::AppState>,
     did: String,

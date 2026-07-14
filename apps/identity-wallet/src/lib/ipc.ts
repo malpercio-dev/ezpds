@@ -162,9 +162,11 @@ export type DidWebPreparation = {
   pdsUrl: string;
 };
 
+/** Load the device, repository, and PDS values needed to compose a new did:web document. */
 export const prepareDidWebCeremony = (): Promise<DidWebPreparation> =>
   invoke('prepare_did_web_ceremony');
 
+/** Verify the live did:web bytes and promote the pending account. */
 export const completeDidWebCeremony = (
   documentText: string,
   password: string,
@@ -179,9 +181,11 @@ export type DidWebMigrationDocument = {
   pdsEndpoint: string;
 };
 
+/** Compose the reviewed did:web update for an armed migration identity leg. */
 export const buildDidWebMigrationDocument = (did: string): Promise<DidWebMigrationDocument> =>
   invoke('build_did_web_migration_document_cmd', { did });
 
+/** Verify and adopt the published did:web migration document. */
 export const submitDidWebMigrationDocument = (
   did: string,
   documentText: string,

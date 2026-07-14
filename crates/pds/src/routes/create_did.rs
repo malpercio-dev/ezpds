@@ -348,6 +348,8 @@ fn validate_did_web_document(
         .is_some_and(|services| {
             services.iter().any(|service| {
                 service.get("id").and_then(serde_json::Value::as_str) == Some(&expected_service)
+                    && service.get("type").and_then(serde_json::Value::as_str)
+                        == Some("AtprotoPersonalDataServer")
                     && service
                         .get("serviceEndpoint")
                         .and_then(serde_json::Value::as_str)
@@ -775,7 +777,7 @@ mod tests {
                 {"id": format!("{did}#device"), "type": "Multikey", "controller": did, "publicKeyMultibase": "zdevice"},
                 {"id": format!("{did}#atproto"), "type": "Multikey", "controller": did, "publicKeyMultibase": "zrepo"}
             ],
-            "service": [{"id": format!("{did}#atproto_pds"), "serviceEndpoint": "https://pds.example.com"}]
+            "service": [{"id": format!("{did}#atproto_pds"), "type": "AtprotoPersonalDataServer", "serviceEndpoint": "https://pds.example.com"}]
         });
         assert_eq!(
             validate_did_web_document(
@@ -791,6 +793,17 @@ mod tests {
 
         let mut wrong = document;
         wrong["verificationMethod"][0]["publicKeyMultibase"] = serde_json::json!("zattacker");
+        assert!(validate_did_web_document(
+            &wrong,
+            "alice.example.com",
+            "did:key:zdevice",
+            "did:key:zrepo",
+            "https://pds.example.com",
+        )
+        .is_err());
+
+        wrong["verificationMethod"][0]["type"] = serde_json::json!("Multikey");
+        wrong["service"][0]["type"] = serde_json::json!("WrongServiceType");
         assert!(validate_did_web_document(
             &wrong,
             "alice.example.com",

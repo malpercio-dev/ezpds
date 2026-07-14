@@ -531,7 +531,24 @@ pub(crate) async fn resolve_web_did_document_bytes(
     did: &str,
 ) -> Result<String, ApiError> {
     let url = did_web_document_url(did)?;
-    let response = state.http_client.get(&url).send().await.map_err(|e| {
+    let parsed = reqwest::Url::parse(&url)
+        .map_err(|_| ApiError::new(ErrorCode::InvalidClaim, "invalid did:web DID"))?;
+    let authority = parsed
+        .host_str()
+        .map(|host| match parsed.port() {
+            Some(port) => format!("https://{host}:{port}"),
+            None => format!("https://{host}"),
+        })
+        .ok_or_else(|| ApiError::new(ErrorCode::InvalidClaim, "invalid did:web DID"))?;
+    let pinned = validate_proxy_endpoint(&authority, state.allow_loopback_proxy_targets).await?;
+    let client = build_pinned_client(pinned.as_ref()).map_err(|e| {
+        tracing::error!(did = %did, error = %e, "failed to build hardened did:web client");
+        ApiError::new(
+            ErrorCode::PlcDirectoryError,
+            "failed to resolve did:web document",
+        )
+    })?;
+    let response = client.get(&url).send().await.map_err(|e| {
         tracing::error!(did = %did, error = %e, url = %url, "failed to resolve did:web document bytes");
         ApiError::new(
             ErrorCode::PlcDirectoryError,

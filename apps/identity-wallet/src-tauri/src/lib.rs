@@ -409,59 +409,74 @@ async fn sign_with_device_key(data: Vec<u8>) -> Result<Vec<u8>, device_key::Devi
     device_key::sign(&data)
 }
 
+struct DidCeremonyContext {
+    device_key: device_key::DevicePublicKey,
+    pending_token: String,
+}
+
+/// Load the device key and pending account token shared by both DID ceremony methods.
+fn load_did_ceremony_context() -> Result<DidCeremonyContext, DIDCeremonyError> {
+    let device_key = device_key::get_or_create().map_err(|e| {
+        tracing::warn!(error = %e, "device key creation failed during DID ceremony");
+        DIDCeremonyError::KeyNotFound
+    })?;
+    let token_bytes = keychain::get_item("session-token").map_err(|e| {
+        tracing::warn!(error = %e, "failed to retrieve session-token from keychain");
+        DIDCeremonyError::KeychainError
+    })?;
+    let pending_token = String::from_utf8(token_bytes).map_err(|e| {
+        tracing::warn!(error = %e, "session-token bytes are not valid UTF-8");
+        DIDCeremonyError::KeychainError
+    })?;
+    Ok(DidCeremonyContext {
+        device_key,
+        pending_token,
+    })
+}
+
+/// Fetch the account's reserved repo key with consistent status mapping and diagnostics.
+async fn fetch_repo_signing_key(
+    state: &oauth::AppState,
+    pending_token: &str,
+) -> Result<PdsSigningKey, DIDCeremonyError> {
+    let response = state
+        .custos_client()
+        .get_with_bearer("/v1/repo-signing-key", pending_token)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "repo signing key request failed during DID ceremony");
+            DIDCeremonyError::NetworkError {
+                message: e.to_string(),
+            }
+        })?;
+    let status = response.status();
+    if status.as_u16() == 503 {
+        return Err(DIDCeremonyError::NoPdsSigningKey);
+    }
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to read repo signing key error response");
+            "<body read failed>".to_string()
+        });
+        tracing::error!(status = %status, body = %body, "repo signing key request returned non-success status");
+        return Err(DIDCeremonyError::PdsKeyFetchFailed);
+    }
+    response.json().await.map_err(|e| {
+        tracing::error!(error = %e, "failed to deserialize repo signing key response");
+        DIDCeremonyError::PdsKeyFetchFailed
+    })
+}
+
 #[tauri::command]
 async fn perform_did_ceremony(
     handle: String,
     password: String,
     state: tauri::State<'_, oauth::AppState>,
 ) -> Result<DIDCeremonyResult, DIDCeremonyError> {
-    // Step 1: Get or create the device's P-256 key (serves as rotation key).
-    let device_key = device_key::get_or_create().map_err(|e| {
-        tracing::warn!(error = %e, "device key creation failed during DID ceremony");
-        DIDCeremonyError::KeyNotFound
-    })?;
-
-    // Step 2: Retrieve the pending session token — needed to authenticate the
-    // per-account signing-key request below and the DID promotion later.
-    let pending_token = {
-        let token_bytes = keychain::get_item("session-token").map_err(|e| {
-            tracing::warn!(error = %e, "failed to retrieve session-token from keychain");
-            DIDCeremonyError::KeychainError
-        })?;
-        String::from_utf8(token_bytes).map_err(|e| {
-            tracing::warn!(error = %e, "session-token bytes are not valid UTF-8");
-            DIDCeremonyError::KeychainError
-        })?
-    };
-
-    // Step 3: Fetch this account's per-account repo signing key (pending-session auth).
-    // The PDS issues it idempotently; we publish it as the DID's #atproto verification
-    // method, and the PDS signs the repo's commits with the matching private key.
-    let resp = state
-        .custos_client()
-        .get_with_bearer("/v1/repo-signing-key", &pending_token)
-        .await
-        .map_err(|e| DIDCeremonyError::NetworkError {
-            message: e.to_string(),
-        })?;
-
-    let status = resp.status();
-    if status.as_u16() == 503 {
-        return Err(DIDCeremonyError::NoPdsSigningKey);
-    }
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "failed to read GET /v1/repo-signing-key error body");
-            "<body read failed>".to_string()
-        });
-        tracing::error!(status = %status, body = %body, "GET /v1/repo-signing-key returned non-success status");
-        return Err(DIDCeremonyError::PdsKeyFetchFailed);
-    }
-
-    let pds_key: PdsSigningKey = resp.json().await.map_err(|e| {
-        tracing::error!(error = %e, "failed to deserialize repo signing key response");
-        DIDCeremonyError::PdsKeyFetchFailed
-    })?;
+    let context = load_did_ceremony_context()?;
+    let device_key = context.device_key;
+    let pending_token = context.pending_token;
+    let pds_key = fetch_repo_signing_key(&state, &pending_token).await?;
 
     // Step 4: Build signed genesis op — device key as rotation key, per-account repo key as signing key.
     // On device, the private key never leaves the Secure Enclave; on Simulator and macOS, a software key is used instead.
@@ -553,54 +568,14 @@ async fn perform_did_ceremony(
 }
 
 #[tauri::command]
+/// Prepare the device and reserved repository keys used to compose a did:web document.
 async fn prepare_did_web_ceremony(
     state: tauri::State<'_, oauth::AppState>,
 ) -> Result<DidWebPreparation, DIDCeremonyError> {
-    let device_key = device_key::get_or_create().map_err(|e| {
-        tracing::warn!(error = %e, "device key creation failed during did:web ceremony preparation");
-        DIDCeremonyError::KeyNotFound
-    })?;
-    let pending_token = String::from_utf8(
-        keychain::get_item("session-token").map_err(|e| {
-            tracing::warn!(error = %e, "failed to retrieve session-token during did:web ceremony preparation");
-            DIDCeremonyError::KeychainError
-        })?,
-    )
-    .map_err(|e| {
-        tracing::warn!(error = %e, "session-token bytes are not valid UTF-8");
-        DIDCeremonyError::KeychainError
-    })?;
-    let response = state
-        .custos_client()
-        .get_with_bearer("/v1/repo-signing-key", &pending_token)
-        .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "repo signing key request failed during did:web ceremony preparation");
-            DIDCeremonyError::NetworkError {
-                message: e.to_string(),
-            }
-        })?;
-    let status = response.status();
-    if status.as_u16() == 503 {
-        return Err(DIDCeremonyError::NoPdsSigningKey);
-    }
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "failed to read repo signing key error response");
-            "<body read failed>".to_string()
-        });
-        tracing::error!(status = %status, body = %body, "repo signing key request failed during did:web ceremony preparation");
-        return Err(DIDCeremonyError::PdsKeyFetchFailed);
-    }
-    let repo_key: PdsSigningKey = response
-        .json()
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to deserialize repo signing key during did:web ceremony preparation");
-            DIDCeremonyError::PdsKeyFetchFailed
-        })?;
+    let context = load_did_ceremony_context()?;
+    let repo_key = fetch_repo_signing_key(&state, &context.pending_token).await?;
     Ok(DidWebPreparation {
-        device_key_multibase: device_key.multibase,
+        device_key_multibase: context.device_key.multibase,
         repo_key_multibase: repo_key
             .key_id
             .strip_prefix("did:key:")
@@ -615,26 +590,23 @@ async fn prepare_did_web_ceremony(
 }
 
 #[tauri::command]
+/// Verify a published did:web document, promote the account, and persist recovery state.
 async fn complete_did_web_ceremony(
     document_text: String,
     password: String,
     enable_managed_hosting: bool,
     state: tauri::State<'_, oauth::AppState>,
 ) -> Result<DIDCeremonyResult, DIDCeremonyError> {
-    let device_key = device_key::get_or_create().map_err(|_| DIDCeremonyError::KeyNotFound)?;
-    let pending_token = String::from_utf8(
-        keychain::get_item("session-token").map_err(|_| DIDCeremonyError::KeychainError)?,
-    )
-    .map_err(|_| DIDCeremonyError::KeychainError)?;
+    let context = load_did_ceremony_context()?;
     let request = CreateDidRequest {
-        rotation_key_public: device_key.key_id,
+        rotation_key_public: context.device_key.key_id,
         signed_creation_op: None,
         did_web_document: Some(document_text),
         password,
     };
     let response = state
         .custos_client()
-        .post_with_bearer("/v1/dids", &request, &pending_token)
+        .post_with_bearer("/v1/dids", &request, &context.pending_token)
         .await
         .map_err(|e| DIDCeremonyError::NetworkError {
             message: e.to_string(),
