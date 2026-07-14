@@ -135,7 +135,6 @@
   onMount(async () => {
     loadData();
 
-    // Fetch initial alert status
     checkIdentityStatus()
       .then((statuses) => {
         const data = new Map<string, UnauthorizedChange[]>();

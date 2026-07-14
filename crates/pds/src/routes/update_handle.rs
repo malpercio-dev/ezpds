@@ -59,13 +59,11 @@ pub async fn update_handle_handler(
     }
     oauth_scopes::require_identity(&user.scope_claim, "handle")?;
 
-    // Step 1: Validate handle structure.
     crate::handle::validate_handle_structure(&payload.handle)
         .map_err(|msg| ApiError::new(ErrorCode::InvalidHandle, msg))?;
 
-    // Step 2: Check whether the new handle is already owned locally, BEFORE any
-    // external resolution. If the caller already owns it → no-op (idempotent).
-    // If a different DID owns it → 409 immediately without hitting a resolver.
+    // Checked before external resolution, so a caller updating to a handle they already
+    // own never pays for an external resolver round trip.
     let existing_owner = crate::db::handles::resolve_handle(&state.db, &payload.handle).await?;
 
     if let Some(owner_did) = existing_owner {
@@ -79,8 +77,6 @@ pub async fn update_handle_handler(
         // Still proceed to emit #identity (idempotent).
     }
 
-    // Step 3: For handles the caller does not already own, verify the new handle
-    // resolves (or will resolve) to the caller's DID.
     let is_served_domain = {
         // Structural validation guarantees at least one dot.
         let dot = payload
@@ -123,8 +119,7 @@ pub async fn update_handle_handler(
         }
     }
 
-    // Step 4: Atomically swap handles (DELETE old + INSERT new) in a single
-    // transaction so the two writes commit or roll back together.
+    // DELETE old + INSERT new share one transaction so the swap commits or rolls back together.
     {
         let mut tx = state.db.begin().await.map_err(|e| {
             tracing::error!(error = %e, "failed to begin transaction for handle swap");
@@ -167,7 +162,6 @@ pub async fn update_handle_handler(
         })?;
     }
 
-    // Step 5: Update DID document alsoKnownAs to reflect the new handle set.
     let also_known_as = fetch_also_known_as(&state.db, did).await?;
 
     if let Err(e) = update_also_known_as(&state.db, did, &also_known_as).await {
@@ -179,7 +173,6 @@ pub async fn update_handle_handler(
         );
     }
 
-    // Step 6: Emit #identity firehose frame with the new handle.
     if let Err(e) = state
         .firehose
         .emit_identity(did.clone(), Some(payload.handle.clone()))

@@ -1,7 +1,6 @@
 // pattern: Imperative Shell
 //
 // Gathers: DB pool (via AppState)
-// Processes: SELECT most recently created signing key
 // Returns: JSON { keyId, publicKey, algorithm } on success; 503 if no key provisioned
 
 use axum::{extract::State, response::Json};

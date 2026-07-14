@@ -38,15 +38,12 @@ pub async fn delete_handle_handler(
     headers: HeaderMap,
     Path(handle): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    // Step 1: Authenticate via session Bearer token.
     let session = require_session(&headers, &state.db).await?;
 
-    // Step 2: Fetch the handle owner; 404 if the handle does not exist.
     let owner_did = crate::db::handles::resolve_handle(&state.db, &handle)
         .await?
         .ok_or_else(|| ApiError::new(ErrorCode::HandleNotFound, "handle not found"))?;
 
-    // Step 3: Verify ownership — session DID must match the handle owner.
     if session.did != owner_did {
         return Err(ApiError::new(
             ErrorCode::Forbidden,
@@ -78,7 +75,6 @@ pub async fn delete_handle_handler(
         );
     }
 
-    // Step 5: Delete the handle row; 404 if the row was concurrently removed.
     let result = sqlx::query("DELETE FROM handles WHERE handle = ?")
         .bind(&handle)
         .execute(&state.db)
@@ -97,8 +93,6 @@ pub async fn delete_handle_handler(
         return Err(ApiError::new(ErrorCode::HandleNotFound, "handle not found"));
     }
 
-    // Step 5b: Update DID document alsoKnownAs to remove the deleted handle.
-    // Fetch remaining handles for this DID and update the document.
     let also_known_as = fetch_also_known_as(&state.db, &session.did).await?;
 
     if let Err(e) = update_also_known_as(&state.db, &session.did, &also_known_as).await {
@@ -111,11 +105,10 @@ pub async fn delete_handle_handler(
         );
     }
 
-    // Step 5c: Emit an `#identity` firehose frame so relays/AppViews re-resolve the account's
-    // identity promptly. The removed handle is no longer asserted here, so `handle` is `None`: a
-    // relay re-resolves the DID document to discover the remaining `alsoKnownAs`. Best-effort, like
-    // the rest of the firehose emit path — the handle row is already gone and the DID-doc update is
-    // durable, so a sequencer write failure is logged and dropped.
+    // The removed handle is no longer asserted here, so `handle` is `None`: a relay re-resolves
+    // the DID document to discover the remaining `alsoKnownAs`. Best-effort, like the rest of the
+    // firehose emit path — the handle row is already gone and the DID-doc update is durable, so a
+    // sequencer write failure is logged and dropped.
     if let Err(e) = state
         .firehose
         .emit_identity(session.did.clone(), None)
@@ -129,7 +122,6 @@ pub async fn delete_handle_handler(
         );
     }
 
-    // Step 6: Return 204 No Content.
     Ok(StatusCode::NO_CONTENT)
 }
 
