@@ -174,6 +174,13 @@ async fn run() -> anyhow::Result<()> {
         .build()
         .expect("failed to build HTTP client");
 
+    // Shared, pooled client for every SSRF-guarded fetch to a caller-influenced target
+    // (atproto-proxy header target, did:web document, Lexicon-authority permission-set record):
+    // redirects disabled + a DNS resolver that re-checks the public-address allowlist at connect
+    // time. `false` (never `allow_loopback`) in production.
+    let hardened_http_client = identity::proxy::build_hardened_client(false)
+        .expect("failed to build hardened HTTP client");
+
     let txt_resolver: Option<Arc<dyn identity::dns::TxtResolver>> =
         match identity::dns::HickoryTxtResolver::from_system_conf() {
             Ok(r) => {
@@ -318,6 +325,7 @@ async fn run() -> anyhow::Result<()> {
         config: Arc::new(config),
         db: pool,
         http_client,
+        hardened_http_client,
         dns_provider: None,
         txt_resolver,
         well_known_resolver,

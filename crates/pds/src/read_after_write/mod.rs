@@ -260,7 +260,9 @@ pub(crate) async fn pipethrough_munged(
         &state.config.appview.did,
         nsid,
         did,
-        None,
+        // The munge path always hits the admin-configured AppView, never a caller-controlled
+        // header target, so it uses the plain client — not the SSRF-hardened one.
+        false,
         req,
     )
     .await

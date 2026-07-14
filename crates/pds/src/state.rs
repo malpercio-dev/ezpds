@@ -27,6 +27,13 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub db: sqlx::SqlitePool,
     pub http_client: Client,
+    /// Shared, pooled HTTP client for every fetch to a caller-influenced target — the
+    /// `atproto-proxy` header target, a did:web document, and a Lexicon-authority permission-set
+    /// record. Hardened against SSRF: redirects disabled, env proxies ignored, and a custom DNS
+    /// resolver that re-applies the public-address allowlist to every domain resolution at connect
+    /// time (see [`crate::identity::proxy::build_hardened_client`]). Distinct from `http_client`,
+    /// which serves admin-configured, trusted upstreams (plc.directory, the default AppView/chat).
+    pub hardened_http_client: Client,
     /// Optional DNS provider for subdomain record creation on handle registration.
     /// `None` in v0.1 — operators manage DNS records manually.
     /// Populated by real provider implementations (Cloudflare, Route53) when configured.
@@ -124,6 +131,11 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
         .build()
         .expect("test http client");
 
+    // Loopback allowed so tests can proxy to a local wiremock server standing in for a
+    // caller-controlled target, mirroring `allow_loopback_proxy_targets` below.
+    let hardened_http_client =
+        crate::identity::proxy::build_hardened_client(true).expect("test hardened http client");
+
     // Generate a fresh ephemeral P-256 keypair for tests (no DB persistence needed).
     let test_signing_key = {
         use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -202,6 +214,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
         }),
         db,
         http_client: http_client.clone(),
+        hardened_http_client,
         dns_provider: None,
         txt_resolver: None,
         well_known_resolver: None,

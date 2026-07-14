@@ -7,8 +7,6 @@
 //            forwards the request to the given upstream under that token
 // Returns: the upstream's status, content-type, and streamed response body
 
-use std::borrow::Cow;
-
 use axum::{
     body::Body,
     extract::Request,
@@ -18,7 +16,6 @@ use axum::{
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::identity::proxy::HeaderProxyGuard;
 
 /// Maximum buffered request body when proxying to an upstream service. `app.bsky.*` and
 /// `chat.bsky.*` procedures carry small JSON payloads (preferences, mutes, message sends);
@@ -39,23 +36,24 @@ fn is_length_limit_error(err: &axum::Error) -> bool {
 /// response. Both `proxy_xrpc` (streaming) and `read_after_write::pipethrough_munged` (buffering)
 /// build on this so request construction never diverges.
 ///
-/// `header_guard` is `Some` whenever the target host was resolved and SSRF-validated from a
-/// caller-supplied `atproto-proxy` header naming a caller-controlled DID document
+/// `caller_controlled_target` is `true` whenever the target host was resolved and SSRF-validated
+/// from a caller-supplied `atproto-proxy` header naming a caller-controlled DID document
 /// (`identity::proxy::resolve_atproto_proxy_target`) — always for `com.atproto.moderation.*`
 /// (which has no configured default), and for `app.bsky.*`/`chat.bsky.*` only when the caller's
-/// header overrides that namespace's default upstream. When present, the outbound request is sent
-/// on a one-off hardened client (see `build_header_proxy_client`) rather than `state.http_client`:
-/// redirects are disabled, since the SSRF check only inspects the first URL and a malicious target
-/// could otherwise 3xx its way onto a private address; when the host was a domain name, DNS
-/// resolution is additionally pinned to exactly the addresses already validated, so the client
-/// can't re-resolve at connect time and land on an address that was never checked.
+/// header overrides that namespace's default upstream. When set, the outbound request is sent on
+/// the shared `state.hardened_http_client` rather than `state.http_client`: redirects disabled
+/// (the SSRF check only inspects the first URL, so a malicious target could otherwise 3xx its way
+/// onto a private address) and a DNS resolver that re-validates any domain resolution at connect
+/// time so the client can't land on an address that was never checked. A `false` (no header)
+/// request uses `state.http_client` — its upstream is the admin-configured default, not
+/// caller-controlled, so neither concern applies.
 pub(crate) async fn proxy_request(
     state: &AppState,
     upstream_url: &str,
     proxy_did: &str,
     nsid: &str,
     did: &str,
-    header_guard: Option<&HeaderProxyGuard>,
+    caller_controlled_target: bool,
     req: Request,
 ) -> Result<reqwest::Response, Response> {
     // Preserve the original query string verbatim so upstream query params survive the hop.
@@ -66,12 +64,10 @@ pub(crate) async fn proxy_request(
         .unwrap_or_default();
     let target = format!("{upstream_url}/xrpc/{nsid}{query}");
 
-    let client: Cow<'_, reqwest::Client> = match header_guard {
-        Some(guard) => match build_header_proxy_client(guard) {
-            Ok(client) => Cow::Owned(client),
-            Err(err) => return Err(err.into_response()),
-        },
-        None => Cow::Borrowed(&state.http_client),
+    let client = if caller_controlled_target {
+        &state.hardened_http_client
+    } else {
+        &state.http_client
     };
 
     let (parts, body) = req.into_parts();
@@ -157,21 +153,30 @@ pub async fn proxy_xrpc(
     proxy_did: &str,
     nsid: &str,
     did: &str,
-    header_guard: Option<&HeaderProxyGuard>,
+    caller_controlled_target: bool,
     req: Request,
 ) -> Response {
-    let upstream =
-        match proxy_request(state, upstream_url, proxy_did, nsid, did, header_guard, req).await {
-            Ok(resp) => resp,
-            Err(resp) => return resp,
-        };
+    let upstream = match proxy_request(
+        state,
+        upstream_url,
+        proxy_did,
+        nsid,
+        did,
+        caller_controlled_target,
+        req,
+    )
+    .await
+    {
+        Ok(resp) => resp,
+        Err(resp) => return resp,
+    };
 
     // Map status and content-type, then stream the body through without buffering it.
     let status =
         StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let content_type = upstream.headers().get(header::CONTENT_TYPE).cloned();
-    // A 3xx is passed through, not followed (see `build_header_proxy_client`), but is useless to
-    // the caller without its Location — forward it so "passed through verbatim" actually holds.
+    // A 3xx is passed through, not followed (the hardened client disables redirects), but is
+    // useless to the caller without its Location — forward it so "passed through verbatim" holds.
     let location = upstream.headers().get(header::LOCATION).cloned();
 
     let mut builder = Response::builder().status(status);
@@ -191,29 +196,6 @@ pub async fn proxy_xrpc(
             ApiError::new(ErrorCode::InternalError, "proxy response build failed").into_response()
         }
     }
-}
-
-/// Build a one-off HTTP client hardened for proxying to a caller-controlled `atproto-proxy`
-/// target (always the case for `com.atproto.moderation.*`; for `app.bsky.*`/`chat.bsky.*` only
-/// when the caller's header overrides the namespace's configured default).
-///
-/// Always disables redirects: `resolve_atproto_proxy_target`'s SSRF check only inspects the
-/// *first* URL, so a malicious target returning a 3xx to a private/loopback/metadata address
-/// would otherwise sail straight past it — `state.http_client` and a naive pinned client both
-/// follow redirects by default. When `guard.pinned` is present (the host was a domain name), DNS
-/// resolution for that domain is additionally overridden to exactly the addresses already
-/// validated: without this, `proxy_xrpc` would hand the *domain* to the client, which re-resolves
-/// it independently at connect time, and a second DNS answer (attacker-controlled, or simply a
-/// changed record between validation and connection) could point at an address that was never
-/// checked.
-fn build_header_proxy_client(guard: &HeaderProxyGuard) -> Result<reqwest::Client, ApiError> {
-    crate::identity::proxy::build_pinned_client(guard.pinned.as_ref()).map_err(|e| {
-        tracing::error!(error = %e, "failed to build header-target proxy client");
-        ApiError::new(
-            ErrorCode::InternalError,
-            "failed to prepare proxied request",
-        )
-    })
 }
 
 /// Mint a fresh ES256 service-auth JWT for proxying `nsid` to `proxy_did` on behalf of `did`.
