@@ -15,7 +15,9 @@ src/
   main.rs          — startup: open pool, run migrations, bind server
   telemetry.rs     — OTel tracing-subscriber init (`init_subscriber`) + shutdown-flushing `OtelGuard`; wired by main.rs at startup, dropped after graceful shutdown. `[telemetry] log_format = "json"` switches the stdout fmt layer to one-JSON-object-per-line
   metrics.rs       — OTel meter + Prometheus registry behind `GET /metrics` (see "Metrics" section below): typed `Metrics` handle in AppState, instrument/label name constants (`metrics::names`), the `http_requests_total` middleware, and the `SubscriberGuard` RAII gauge
-  app.rs           — AppState definition and construction
+  app.rs           — router construction (route table + shared middleware layers); re-exports `AppState`/`FailedLoginStore` (and, under `#[cfg(test)]`, `test_state`/`test_state_with_plc_url`) from `state.rs` so the ~120 existing `crate::app::AppState` imports across the crate stay unchanged
+  state.rs         — `AppState` definition + `FailedLoginStore`, plus the `#[cfg(test)]` `test_state`/`test_state_with_plc_url` constructors
+  xrpc_dispatch.rs — the catch-all XRPC proxy dispatcher (`xrpc_handler`, registered by `app.rs` at `/xrpc/{method}`): resolves `app.bsky.*`/`chat.bsky.*`/`com.atproto.moderation.*` to an upstream (configured default or an `atproto-proxy`-header target), enforces the read-after-write munge branch, and records `proxy_requests_total`
   firehose.rs      — persistent subscribeRepos event pipeline (durable sequencer + broadcast fan-out)
   firehose_gc.rs   — periodic `repo_seq` retention sweep (age/count pruning below the live frontier)
   blob_store.rs    — blob storage backend: filesystem I/O, CID computation, MIME-type detection; blobs live at `{data_dir}/blobs/{cid[0:2]}/{cid}`
