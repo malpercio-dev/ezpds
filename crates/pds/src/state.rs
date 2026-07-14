@@ -29,10 +29,10 @@ pub struct AppState {
     pub http_client: Client,
     /// Shared, pooled HTTP client for every fetch to a caller-influenced target — the
     /// `atproto-proxy` header target, a did:web document, and a Lexicon-authority permission-set
-    /// record. Hardened against SSRF: redirects disabled, and a custom DNS resolver that re-applies
-    /// the public-address allowlist to every domain resolution at connect time (see
-    /// [`crate::identity::proxy::build_hardened_client`]). Distinct from `http_client`, which
-    /// serves admin-configured, trusted upstreams (plc.directory, the default AppView/chat).
+    /// record. Hardened against SSRF: redirects disabled, env proxies ignored, and a custom DNS
+    /// resolver that re-applies the public-address allowlist to every domain resolution at connect
+    /// time (see [`crate::identity::proxy::build_hardened_client`]). Distinct from `http_client`,
+    /// which serves admin-configured, trusted upstreams (plc.directory, the default AppView/chat).
     pub hardened_http_client: Client,
     /// Optional DNS provider for subdomain record creation on handle registration.
     /// `None` in v0.1 — operators manage DNS records manually.

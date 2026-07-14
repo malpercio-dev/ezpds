@@ -106,11 +106,17 @@ impl reqwest::dns::Resolve for SsrfResolver {
 /// four SSRF-guarded call sites share one connection pool + TLS context instead of constructing a
 /// fresh client (and handshaking anew) per request.
 ///
-/// Two hardenings, both always on:
+/// Three hardenings, all always on:
 ///   * **Redirects disabled** — a [`validate_proxy_endpoint`] check only inspects the *first* URL,
 ///     so following a 3xx could sail past it onto a private/loopback/metadata address.
 ///   * **[`SsrfResolver`] DNS** — every domain-name resolution is re-checked against the allowlist
 ///     at connect time, so a second DNS answer can't substitute an address that was never checked.
+///   * **Env proxies ignored** (`no_proxy`) — reqwest otherwise honors `HTTP_PROXY`/`HTTPS_PROXY`/
+///     `ALL_PROXY`, which would tunnel the request through an intermediary that resolves the target
+///     host itself, bypassing `SsrfResolver` entirely. The whole point of this client is to control
+///     exactly which address a caller-influenced fetch connects to, so it must not delegate that to
+///     a proxy. (The plain `http_client`, which only talks to trusted admin-configured upstreams,
+///     deliberately still honors an operator's egress proxy.)
 ///
 /// `allow_loopback` is baked into the resolver (see [`SsrfResolver`]); production always passes
 /// `false`.
@@ -120,6 +126,7 @@ pub(crate) fn build_hardened_client(
     reqwest::Client::builder()
         .timeout(HARDENED_CLIENT_TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
         .dns_resolver(Arc::new(SsrfResolver { allow_loopback }))
         .build()
 }
