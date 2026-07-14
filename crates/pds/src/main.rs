@@ -229,7 +229,7 @@ async fn run() -> anyhow::Result<()> {
         )
         .await
         .with_context(|| "failed to load or create Iroh node identity")?;
-        let iroh_state = iroh_tunnel::start(secret)
+        let iroh_state = iroh_tunnel::start(secret, config.iroh.ipv6)
             .await
             .with_context(|| "failed to bind Iroh endpoint")?;
         tracing::info!(node_id = %iroh_state.node_id, "Iroh endpoint bound");

@@ -38,11 +38,23 @@ pub struct IrohState {
 /// Uses the `N0` preset (n0 discovery + relays) so a device can dial the pds by node id
 /// alone — discovery resolves the pds's reachable addresses and QUIC holepunches through
 /// NAT. The endpoint accepts only the `ezpds/iroh/0` ALPN.
-pub async fn start(secret: [u8; 32]) -> anyhow::Result<IrohState> {
+///
+/// The builder pre-configures both an IPv4 (`0.0.0.0`) and an IPv6 (`[::]`) socket. When
+/// `ipv6` is false (a v4-only host — e.g. a Railway container with no public v6 egress), we
+/// clear the pre-configured transports and re-bind IPv4 only, so iroh never opens the v6
+/// socket whose relay probes would otherwise fail with `NetworkUnreachable` forever.
+pub async fn start(secret: [u8; 32], ipv6: bool) -> anyhow::Result<IrohState> {
     let secret_key = SecretKey::from_bytes(&secret);
-    let endpoint = Endpoint::builder(presets::N0)
+    let mut builder = Endpoint::builder(presets::N0)
         .secret_key(secret_key)
-        .alpns(vec![ALPN.to_vec()])
+        .alpns(vec![ALPN.to_vec()]);
+    if !ipv6 {
+        builder = builder
+            .clear_ip_transports()
+            .bind_addr("0.0.0.0:0")
+            .map_err(|e| anyhow::anyhow!("invalid IPv4 bind address for v4-only iroh: {e}"))?;
+    }
+    let endpoint = builder
         .bind()
         .await
         .map_err(|e| anyhow::anyhow!("failed to bind Iroh endpoint: {e}"))?;
@@ -130,6 +142,24 @@ mod tests {
     #[test]
     fn alpn_is_versioned() {
         assert_eq!(ALPN, b"ezpds/iroh/0");
+    }
+
+    /// With `ipv6 = false` the endpoint binds only IPv4 sockets — no `[::]` socket exists, so
+    /// iroh's v6 QUIC-address-discovery actor never spawns and can't flood `NetworkUnreachable`
+    /// warnings on a v4-only host. Uses the real `start` (N0 preset); `.bind()` is local, so no
+    /// outbound network is required to observe which sockets were bound.
+    #[tokio::test]
+    async fn v4_only_binds_no_ipv6_socket() {
+        let state = start([7u8; 32], false)
+            .await
+            .expect("bind v4-only endpoint");
+        let sockets = state.endpoint.bound_sockets();
+        assert!(!sockets.is_empty(), "expected at least one bound socket");
+        assert!(
+            sockets.iter().all(|addr| addr.is_ipv4()),
+            "ipv6 = false must bind IPv4 sockets only, got {sockets:?}"
+        );
+        state.endpoint.close().await;
     }
 
     /// A client dials the pds's endpoint by node id over the `ezpds/iroh/0`

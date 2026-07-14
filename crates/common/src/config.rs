@@ -617,7 +617,7 @@ fn default_idjag_algorithm() -> String {
 const SUPPORTED_IDJAG_ALGORITHMS: &[&str] = &["ES256", "ES384", "RS256", "RS384", "RS512", "EdDSA"];
 
 /// Iroh networking configuration.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct IrohConfig {
     /// Whether to run the Iroh QUIC endpoint alongside the HTTP server. Off by default, so
     /// a relay (and the test suite) behaves exactly as before unless explicitly enabled.
@@ -628,7 +628,25 @@ pub struct IrohConfig {
     /// when set, this exact string is advertised instead. The override is read straight from
     /// config by the handler, so it applies even when `enabled` is false (i.e. with no live
     /// endpoint running).
+    #[serde(default)]
     pub endpoint: Option<String>,
+    /// Whether to bind the IPv6 QUIC socket. Defaults to true. Set to false on hosts with no
+    /// public IPv6 egress (e.g. Railway containers, which carry internal v6 addresses but can't
+    /// route them): iroh's v6 relay probes would otherwise fail with `NetworkUnreachable`
+    /// forever, one WARN every ~80s, drowning real errors. IPv4 paths carry all traffic either
+    /// way — this only skips the doomed v6 socket.
+    #[serde(default = "default_true")]
+    pub ipv6: bool,
+}
+
+impl Default for IrohConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: None,
+            ipv6: true,
+        }
+    }
 }
 
 /// Bluesky AppView proxy configuration.
@@ -1171,6 +1189,13 @@ pub(crate) fn apply_env_overrides(
     }
     if let Some(v) = env.get("EZPDS_IROH_ENDPOINT") {
         raw.iroh.endpoint = Some(v.clone());
+    }
+    if let Some(v) = env.get("EZPDS_IROH_IPV6") {
+        raw.iroh.ipv6 = v.parse::<bool>().map_err(|e| {
+            ConfigError::Invalid(format!(
+                "EZPDS_IROH_IPV6 is not a valid boolean: '{v}': {e}"
+            ))
+        })?;
     }
     if let Some(v) = env.get("EZPDS_APPVIEW_URL") {
         raw.appview.url = v.clone();
@@ -3045,6 +3070,42 @@ mod tests {
         let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
         let config = validate_and_build(raw).unwrap();
         assert_eq!(config.iroh.endpoint, Some("nodeabc123".to_string()));
+    }
+
+    #[test]
+    fn iroh_ipv6_defaults_to_true() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert!(config.iroh.ipv6);
+    }
+
+    #[test]
+    fn iroh_ipv6_parses_from_toml() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [iroh]
+            ipv6 = false
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert!(!config.iroh.ipv6);
+    }
+
+    #[test]
+    fn env_override_iroh_ipv6() {
+        let env = HashMap::from([("EZPDS_IROH_IPV6".to_string(), "false".to_string())]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert!(!config.iroh.ipv6);
+    }
+
+    #[test]
+    fn env_override_iroh_ipv6_rejects_non_boolean() {
+        let env = HashMap::from([("EZPDS_IROH_IPV6".to_string(), "sometimes".to_string())]);
+        let err = apply_env_overrides(minimal_raw(), &env).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
     }
 
     #[test]
