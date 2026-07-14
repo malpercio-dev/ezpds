@@ -1,8 +1,8 @@
 // pattern: Mixed (Functional Core types + Imperative Shell commands)
 //
 // Functional Core: MigrationPhase, OutboundMigrationState, MigrationError, PreparedMigration,
-//                  ensure_phase_did, import_reconciles, extract_handle_from_also_known_as,
-//                  finalize_migration_impl (pure functions — no network, no side effects)
+//                  ensure_phase_did, import_reconciles, extract_handle_from_also_known_as
+//                  (pure functions — no network, no side effects)
 // Imperative Shell: prepare_migration, authenticate_migration_source,
 //                   create_destination_account; transfer_repo, transfer_blobs,
 //                   transfer_preferences, verify_import; arm_identity_leg,
@@ -148,6 +148,16 @@ pub enum MigrationError {
     /// Identity activation failed
     #[error("activation failed: {message}")]
     ActivationFailed { message: String },
+    /// Minting the destination sovereign session failed (device-key proof rejected, rate limited,
+    /// server error, or transport failure). A retryable *pre-cutover* failure: the source account
+    /// is still active and the migration can be retried. Never advances to `Finalized`.
+    #[error("sovereign login failed: {message}")]
+    SovereignLoginFailed { message: String },
+    /// Persisting the destination sovereign session to the Keychain failed. Retryable pre-cutover
+    /// failure — the source stays active and the migration can be retried. The prior valid token
+    /// record (if any) is left intact because the write is atomic (replace-or-fail).
+    #[error("session persist failed: {message}")]
+    SessionPersistFailed { message: String },
     /// Account deactivation failed
     #[error("deactivation failed: {message}")]
     DeactivationFailed { message: String },
@@ -1089,13 +1099,9 @@ async fn arm_identity_leg_core(
 
 // ── Task 2: finalize_migration ─────────────────────────────────────────────
 
-/// Pure core: activate the destination account, then deactivate the source account.
-/// Extracted for unit testability with mocked servers.
-async fn finalize_migration_impl(
-    dest_client: &OAuthClient,
-    source_client: &OAuthClient,
-) -> Result<(), MigrationError> {
-    // Activate destination FIRST (retry-tolerant, server-idempotent)
+/// Activate the destination account. First cutover step — retry-tolerant and
+/// server-idempotent, so a resumed finalize can safely call it again.
+async fn activate_destination_account(dest_client: &OAuthClient) -> Result<(), MigrationError> {
     tracing::debug!("finalizing migration: activating destination account");
     crate::pds_client::activate_account(dest_client)
         .await
@@ -1104,9 +1110,13 @@ async fn finalize_migration_impl(
             MigrationError::ActivationFailed {
                 message: format!("failed to activate destination account: {}", e),
             }
-        })?;
+        })
+}
 
-    // Deactivate source LAST (no deleteAfter)
+/// Deactivate the source account (no `deleteAfter`). Last cutover step — runs only
+/// after the destination is active AND its sovereign session is durably persisted,
+/// so a wallet crash can never strand the account credential-less.
+async fn deactivate_source_account(source_client: &OAuthClient) -> Result<(), MigrationError> {
     tracing::debug!("finalizing migration: deactivating source account");
     crate::pds_client::deactivate_account(source_client, None)
         .await
@@ -1115,37 +1125,120 @@ async fn finalize_migration_impl(
             MigrationError::DeactivationFailed {
                 message: format!("failed to deactivate source account: {}", e),
             }
-        })?;
-
-    Ok(())
+        })
 }
 
-/// Tauri command: activate the destination account, then deactivate the source,
-/// advance to Finalized.
+/// Map a sovereign-login failure onto the retryable pre-cutover migration errors.
+/// A Keychain write failure is a *persistence* failure (the mint succeeded but could
+/// not be saved); everything else is a *login* failure. Both keep the source active.
+fn map_sovereign_error(error: crate::sovereign_session::SovereignLoginError) -> MigrationError {
+    use crate::sovereign_session::SovereignLoginError as E;
+    match error {
+        E::KeychainFailure { message } => MigrationError::SessionPersistFailed { message },
+        other => MigrationError::SovereignLoginFailed {
+            message: other.to_string(),
+        },
+    }
+}
+
+/// Ensure the migrated DID has a durably persisted destination sovereign session,
+/// minting one with the DID's current rotation key if needed.
+///
+/// Idempotency (the resume seam): if a persisted record whose *refresh* token is
+/// still unexpired already exists, this returns `Ok` without signing anything — a
+/// resumed finalize must not re-mint (and thus must not require a fresh device-key
+/// signature) when a durable credential already exists. Only a missing or
+/// refresh-expired record triggers a new device-signed mint via
+/// `sovereign_login_impl`, which discovers plc.directory's current rotation set and
+/// the hosted account, proves control, and atomically replaces the token record.
+async fn ensure_sovereign_session_persisted(
+    pds_client: &crate::pds_client::PdsClient,
+    store: &crate::identity_store::IdentityStore,
+    did: &str,
+    now: i64,
+    nonce: &str,
+) -> Result<(), MigrationError> {
+    if let Some(record) =
+        store
+            .load_oauth_tokens(did)
+            .map_err(|e| MigrationError::SessionPersistFailed {
+                message: e.to_string(),
+            })?
+    {
+        if record
+            .refresh_expires_at
+            .is_some_and(|exp| (exp as i64) > now)
+        {
+            tracing::info!(did = %did, "sovereign session already persisted; skipping re-mint");
+            return Ok(());
+        }
+    }
+
+    crate::sovereign_session::sovereign_login_impl(pds_client, store, did, now, nonce)
+        .await
+        .map(|_| ())
+        .map_err(map_sovereign_error)
+}
+
+/// Tauri command: run the safe cutover — activate the destination, mint + persist its
+/// sovereign session, deactivate the source, then advance to Finalized.
 ///
 /// Gate: ensure_phase_did(..., IdentityArmed) → defense-in-depth: migration_state
-/// must be cleared (None) to prove identity op was submitted; if Some → MIGRATION_NOT_READY.
-/// Clone dest_client + source_client; drop locks. Call finalize_migration_impl.
-/// Re-lock + advance to Finalized
+/// must be cleared (None) to prove the identity op was submitted; if Some → MIGRATION_NOT_READY.
+/// The sovereign-session mint runs against the DID's *current* PLC rotation set (the identity op
+/// has already landed) using a fresh device-key proof; the frontend re-gates biometric before
+/// every finalize invocation, so a resumed attempt obtains fresh authorization before that
+/// signature (and the idempotent skip means an already-persisted session signs nothing at all).
 #[tauri::command]
 pub async fn finalize_migration(
     state: tauri::State<'_, crate::oauth::AppState>,
     did: String,
 ) -> Result<(), MigrationError> {
-    tracing::info!(did = %did, "finalize_migration: activating destination and deactivating source");
-    finalize_migration_core(&state.orchestration_state, &state.migration_state, &did).await
+    tracing::info!(did = %did, "finalize_migration: activate → sovereign session → deactivate");
+
+    // Proof material for the sovereign-session mint (imperative shell: clock + RNG).
+    let now = crate::sovereign_session::unix_timestamp().map_err(map_sovereign_error)?;
+    let nonce = crate::sovereign_session::fresh_nonce();
+    let pds_client = state.pds_client();
+    let session_did = did.clone();
+
+    finalize_migration_core(
+        &state.orchestration_state,
+        &state.migration_state,
+        &did,
+        || async move {
+            ensure_sovereign_session_persisted(
+                pds_client,
+                &crate::identity_store::IdentityStore,
+                &session_did,
+                now,
+                &nonce,
+            )
+            .await
+        },
+    )
+    .await
 }
 
-/// Core of `finalize_migration`, parameterized over the two mutexes so its gating + phase advance
-/// are unit-testable without a Tauri `State`. Gate at IdentityArmed; require the migrate
-/// `migration_state` cleared (== None, proving `submit_migration_op_cmd` ran); then
-/// activate the destination and deactivate the source (via `finalize_migration_impl`) and
-/// advance to `Finalized`.
-async fn finalize_migration_core(
+/// Core of `finalize_migration`, parameterized over the two mutexes and an injected
+/// `ensure_session` step so its gating, ordering, and phase advance are unit-testable without a
+/// Tauri `State`, a Keychain, or a live PDS. Gate at IdentityArmed; require the migrate
+/// `migration_state` cleared (== None, proving `submit_migration_op_cmd` ran); then run the cutover
+/// in strict order — **activate destination → ensure sovereign session persisted → deactivate
+/// source** — and advance to `Finalized`.
+///
+/// The ordering is the whole point: `ensure_session` (mint + Keychain persist) runs *after*
+/// activation and *before* deactivation, so a sovereign-login or persistence failure aborts the
+/// cutover with the source still active and no phase advance — retryable, never `Finalized`.
+async fn finalize_migration_core<Fut>(
     orchestration_state: &tokio::sync::Mutex<Option<OutboundMigrationState>>,
     migration_state: &tokio::sync::Mutex<Option<crate::migrate::MigrationState>>,
     did: &str,
-) -> Result<(), MigrationError> {
+    ensure_session: impl FnOnce() -> Fut,
+) -> Result<(), MigrationError>
+where
+    Fut: std::future::Future<Output = Result<(), MigrationError>>,
+{
     // Gate: ensure phase + DID, extract clients
     let (dest_client, source_client) = {
         let orchestration = orchestration_state.lock().await;
@@ -1179,8 +1272,16 @@ async fn finalize_migration_core(
         });
     }
 
-    // Activate destination, then deactivate source (ordering matters).
-    finalize_migration_impl(&dest_client, &source_client).await?;
+    // 1. Activate destination (idempotent, server-side).
+    activate_destination_account(&dest_client).await?;
+
+    // 2. Mint + persist the destination sovereign session BEFORE touching the source. A failure
+    //    here (login rejected/rate-limited/5xx/transport, or Keychain write) leaves the source
+    //    active and is retryable; the migration never reaches `Finalized`.
+    ensure_session().await?;
+
+    // 3. Deactivate source (no deleteAfter) — the destination credential is now durable.
+    deactivate_source_account(&source_client).await?;
 
     // Advance orchestration phase to Finalized (defense-in-depth DID re-check under the lock).
     let mut orchestration = orchestration_state.lock().await;
@@ -2496,18 +2597,27 @@ mod tests {
         ));
     }
 
-    // finalize_migration_impl activates the destination BEFORE deactivating the source.
-    // Ordering is OBSERVED: each mock records its name into a shared vec (the is_true closures move
-    // in cloned Arcs, so they are 'static), and we assert the recorded sequence.
+    // Build an IdentityArmed state wired to two live mock servers for cutover tests.
+    fn armed_state_at(did: &str, dest_url: &str, source_url: &str) -> OutboundMigrationState {
+        let mut s = armed_state(did);
+        s.dest_client = Some(Arc::new(bearer_client_at(dest_url.to_string())));
+        s.source_client = Some(Arc::new(bearer_client_at(source_url.to_string())));
+        s
+    }
+
+    // The cutover runs in strict order: activate destination → sovereign session → deactivate
+    // source. Ordering is OBSERVED — the two account mocks and the injected session step each
+    // record their name into a shared vec, and we assert the recorded sequence.
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
-    async fn test_finalize_migration_impl_activate_before_deactivate() {
+    async fn test_finalize_migration_core_orders_activate_session_deactivate() {
         use std::sync::Mutex as StdMutex;
+        let did = "did:plc:abc123";
         let order: Arc<StdMutex<Vec<String>>> = Arc::new(StdMutex::new(Vec::new()));
 
         let dest = MockServer::start();
         let order_a = order.clone();
-        let activate_mock = dest.mock(|when, then| {
+        let activate = dest.mock(|when, then| {
             when.method(httpmock::Method::POST)
                 .path("/xrpc/com.atproto.server.activateAccount")
                 .is_true(move |_req| {
@@ -2519,7 +2629,7 @@ mod tests {
 
         let source = MockServer::start();
         let order_d = order.clone();
-        let deactivate_mock = source.mock(|when, then| {
+        let deactivate = source.mock(|when, then| {
             when.method(httpmock::Method::POST)
                 .path("/xrpc/com.atproto.server.deactivateAccount")
                 .is_true(move |_req| {
@@ -2529,32 +2639,51 @@ mod tests {
             then.status(200).body("{}");
         });
 
-        let dest_client = bearer_client_at(dest.base_url());
-        let source_client = bearer_client_at(source.base_url());
+        let orchestration = tokio::sync::Mutex::new(Some(armed_state_at(
+            did,
+            &dest.base_url(),
+            &source.base_url(),
+        )));
+        let migration_state = tokio::sync::Mutex::new(None);
 
-        let result = finalize_migration_impl(&dest_client, &source_client).await;
+        let order_s = order.clone();
+        let result =
+            finalize_migration_core(&orchestration, &migration_state, did, || async move {
+                order_s.lock().unwrap().push("session".to_string());
+                Ok::<(), MigrationError>(())
+            })
+            .await;
 
         assert!(result.is_ok());
-        assert_eq!(activate_mock.calls(), 1, "activate must be called once");
-        assert_eq!(deactivate_mock.calls(), 1, "deactivate must be called once");
+        assert_eq!(activate.calls(), 1, "activate must be called once");
+        assert_eq!(deactivate.calls(), 1, "deactivate must be called once");
         assert_eq!(
             *order.lock().unwrap(),
-            vec!["activate".to_string(), "deactivate".to_string()],
-            "destination activated before source deactivated"
+            vec![
+                "activate".to_string(),
+                "session".to_string(),
+                "deactivate".to_string()
+            ],
+            "activate → persist sovereign session → deactivate"
+        );
+        assert_eq!(
+            orchestration.lock().await.as_ref().unwrap().phase,
+            MigrationPhase::Finalized
         );
     }
 
-    // Activate returning 200 on already-active account (idempotent) → success
+    // A sovereign-login failure (401/429/5xx/transport) after activation leaves the source
+    // account untouched (deactivate never called) and the phase un-advanced — retryable.
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
-    async fn test_finalize_migration_impl_idempotent_activate_200() {
+    async fn test_finalize_migration_core_sovereign_failure_leaves_source_untouched() {
+        let did = "did:plc:abc123";
         let dest = MockServer::start();
         let activate = dest.mock(|when, then| {
             when.method(httpmock::Method::POST)
                 .path("/xrpc/com.atproto.server.activateAccount");
-            then.status(200).body("{}"); // Idempotent: already-active → 200 no-op
+            then.status(200).body("{}");
         });
-
         let source = MockServer::start();
         let deactivate = source.mock(|when, then| {
             when.method(httpmock::Method::POST)
@@ -2562,55 +2691,179 @@ mod tests {
             then.status(200).body("{}");
         });
 
-        let dest_client = bearer_client_at(dest.base_url());
-        let source_client = bearer_client_at(source.base_url());
+        let orchestration = tokio::sync::Mutex::new(Some(armed_state_at(
+            did,
+            &dest.base_url(),
+            &source.base_url(),
+        )));
+        let migration_state = tokio::sync::Mutex::new(None);
 
-        // First finalize
-        let result1 = finalize_migration_impl(&dest_client, &source_client).await;
-        assert!(result1.is_ok());
-        assert_eq!(activate.calls(), 1);
-        assert_eq!(deactivate.calls(), 1);
-
-        // Second finalize: both are idempotent
-        let result2 = finalize_migration_impl(&dest_client, &source_client).await;
-        assert!(result2.is_ok());
-        assert_eq!(activate.calls(), 2);
-        assert_eq!(deactivate.calls(), 2);
-    }
-
-    // Retry-safety: activate fails (e.g. transient 5xx) → ActivationFailed, no deactivate
-    #[tokio::test]
-    #[ignore] // Requires socket binding; ignore in sandboxed environments
-    async fn test_finalize_migration_impl_activate_failure_no_deactivate() {
-        let dest = MockServer::start();
-        let activate = dest.mock(|when, then| {
-            when.method(httpmock::Method::POST)
-                .path("/xrpc/com.atproto.server.activateAccount");
-            then.status(500).body("transient error");
-        });
-
-        let source = MockServer::start();
-        let deactivate = source.mock(|when, then| {
-            when.method(httpmock::Method::POST)
-                .path("/xrpc/com.atproto.server.deactivateAccount");
-            then.status(200).body("{}");
-        });
-
-        let dest_client = bearer_client_at(dest.base_url());
-        let source_client = bearer_client_at(source.base_url());
-
-        let result = finalize_migration_impl(&dest_client, &source_client).await;
+        let result = finalize_migration_core(&orchestration, &migration_state, did, || async {
+            Err::<(), MigrationError>(MigrationError::SovereignLoginFailed {
+                message: "destination rejected the device-key proof".into(),
+            })
+        })
+        .await;
 
         assert!(matches!(
             result,
-            Err(MigrationError::ActivationFailed { .. })
+            Err(MigrationError::SovereignLoginFailed { .. })
         ));
-        assert_eq!(activate.calls(), 1, "activate was called");
+        assert_eq!(
+            activate.calls(),
+            1,
+            "destination activated before the sovereign leg"
+        );
         assert_eq!(
             deactivate.calls(),
             0,
-            "deactivate was NOT called (ordering guarantee)"
+            "source untouched — deactivate not called"
         );
+        assert_eq!(
+            orchestration.lock().await.as_ref().unwrap().phase,
+            MigrationPhase::IdentityArmed,
+            "phase not advanced — the cutover is retryable"
+        );
+    }
+
+    // A Keychain write failure (session minted but not persisted) also leaves the source untouched
+    // and keeps the phase resumable, without corrupting an existing token record.
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn test_finalize_migration_core_persist_failure_leaves_source_untouched() {
+        let did = "did:plc:abc123";
+        let dest = MockServer::start();
+        let activate = dest.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.activateAccount");
+            then.status(200).body("{}");
+        });
+        let source = MockServer::start();
+        let deactivate = source.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.deactivateAccount");
+            then.status(200).body("{}");
+        });
+
+        let orchestration = tokio::sync::Mutex::new(Some(armed_state_at(
+            did,
+            &dest.base_url(),
+            &source.base_url(),
+        )));
+        let migration_state = tokio::sync::Mutex::new(None);
+
+        let result = finalize_migration_core(&orchestration, &migration_state, did, || async {
+            Err::<(), MigrationError>(MigrationError::SessionPersistFailed {
+                message: "keychain write denied".into(),
+            })
+        })
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(MigrationError::SessionPersistFailed { .. })
+        ));
+        assert_eq!(
+            deactivate.calls(),
+            0,
+            "source untouched — deactivate not called"
+        );
+        assert_eq!(activate.calls(), 1);
+        assert_eq!(
+            orchestration.lock().await.as_ref().unwrap().phase,
+            MigrationPhase::IdentityArmed
+        );
+    }
+
+    // Repeating finalize after a successful activation is safe: activate/deactivate are server
+    // idempotent and the account is never recreated or reactivated. (No reserveSigningKey /
+    // createAccount mock exists, so a re-finalize that tried to recreate would fail loudly.)
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn test_finalize_migration_core_repeat_is_safe() {
+        let did = "did:plc:abc123";
+        let dest = MockServer::start();
+        let activate = dest.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.activateAccount");
+            then.status(200).body("{}");
+        });
+        let source = MockServer::start();
+        let deactivate = source.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.deactivateAccount");
+            then.status(200).body("{}");
+        });
+
+        let orchestration = tokio::sync::Mutex::new(Some(armed_state_at(
+            did,
+            &dest.base_url(),
+            &source.base_url(),
+        )));
+        let migration_state = tokio::sync::Mutex::new(None);
+
+        for _ in 0..2 {
+            finalize_migration_core(&orchestration, &migration_state, did, || async {
+                Ok::<(), MigrationError>(())
+            })
+            .await
+            .expect("repeating finalize after activation is safe");
+        }
+
+        assert_eq!(
+            activate.calls(),
+            2,
+            "activate is server-idempotent (no-op when active)"
+        );
+        assert_eq!(
+            deactivate.calls(),
+            2,
+            "source deactivated, never reactivated"
+        );
+        assert_eq!(
+            orchestration.lock().await.as_ref().unwrap().phase,
+            MigrationPhase::Finalized
+        );
+    }
+
+    // Idempotency of the sovereign leg itself: when a persisted record with an unexpired refresh
+    // token already exists, ensure_sovereign_session_persisted returns Ok WITHOUT minting (no
+    // device-key signature, no network). Proven by pointing the PdsClient at an unroutable address
+    // — a mint attempt would error, so Ok is only reachable via the skip.
+    #[tokio::test]
+    async fn test_ensure_sovereign_session_persisted_skips_when_valid_record_exists() {
+        let did = "did:plc:idempotentskip";
+        crate::keychain::clear_for_test();
+        let store = crate::identity_store::IdentityStore;
+        store.add_identity(did).unwrap();
+        store.get_or_create_device_key(did).unwrap();
+
+        let now = 1_000i64;
+        let record = crate::identity_store::SovereignTokenRecord {
+            version: crate::identity_store::SovereignTokenRecord::VERSION,
+            access_jwt: "access".into(),
+            refresh_jwt: "refresh".into(),
+            pds_url: "https://dest.example".into(),
+            server_did: "did:web:dest.example".into(),
+            access_expires_at: Some(9_999),
+            refresh_expires_at: Some(9_999), // well beyond `now`
+            stored_at: now as u64,
+        };
+        store.store_oauth_tokens(did, &record).unwrap();
+
+        let pds_client = crate::pds_client::PdsClient::new_for_test("http://127.0.0.1:1/".into());
+        let result =
+            ensure_sovereign_session_persisted(&pds_client, &store, did, now, "nonce").await;
+        assert!(
+            result.is_ok(),
+            "valid persisted session → skip mint (no network, no signature)"
+        );
+
+        // The pre-existing record is untouched.
+        let loaded = store.load_oauth_tokens(did).unwrap().unwrap();
+        assert_eq!(loaded.refresh_jwt, "refresh");
+
+        let _ = store.remove_identity(did);
     }
 
     // An IdentityArmed OutboundMigrationState with both clients populated.
@@ -2633,7 +2886,10 @@ mod tests {
             signed_op: None,
         }));
 
-        let result = finalize_migration_core(&orchestration, &migration_state, did).await;
+        let result = finalize_migration_core(&orchestration, &migration_state, did, || async {
+            Ok::<(), MigrationError>(())
+        })
+        .await;
         assert!(matches!(
             result,
             Err(MigrationError::MigrationNotReady { .. })
@@ -2652,7 +2908,10 @@ mod tests {
         let orchestration = tokio::sync::Mutex::new(Some(verified_state(did))); // Verified, not armed
         let migration_state = tokio::sync::Mutex::new(None);
 
-        let result = finalize_migration_core(&orchestration, &migration_state, did).await;
+        let result = finalize_migration_core(&orchestration, &migration_state, did, || async {
+            Ok::<(), MigrationError>(())
+        })
+        .await;
         assert!(matches!(
             result,
             Err(MigrationError::MigrationNotReady { .. })
@@ -2684,9 +2943,11 @@ mod tests {
         let orchestration = tokio::sync::Mutex::new(Some(state));
         let migration_state = tokio::sync::Mutex::new(None); // identity op already submitted
 
-        finalize_migration_core(&orchestration, &migration_state, did)
-            .await
-            .expect("finalize should succeed when armed + identity op submitted");
+        finalize_migration_core(&orchestration, &migration_state, did, || async {
+            Ok::<(), MigrationError>(())
+        })
+        .await
+        .expect("finalize should succeed when armed + identity op submitted");
 
         assert_eq!(
             orchestration.lock().await.as_ref().unwrap().phase,
@@ -2888,6 +3149,70 @@ mod tests {
             then.status(200);
         });
 
+        // ─ Sovereign-session leg (cutover step 2) ─
+        // discover_pds resolves the DID doc from plc.directory (now pointing at dest after the
+        // identity op landed) and HEAD-probes the endpoint; describeServer yields the server DID;
+        // then the device-key-signed proof is POSTed to /v1/sessions/sovereign.
+
+        // plc.directory GET /{did} — the W3C DID document (dest is the current PDS).
+        plc.mock(|when, then| {
+            when.method(httpmock::Method::GET).path(format!("/{}", did));
+            then.status(200).json_body(serde_json::json!({
+                "id": did,
+                "alsoKnownAs": ["at://alice.test"],
+                "verificationMethod": [],
+                "service": [{
+                    "id": "#atproto_pds",
+                    "type": "AtprotoPersonalDataServer",
+                    "serviceEndpoint": &dest_url,
+                }],
+            }));
+        });
+
+        // dest HEAD / — discover_pds reachability probe.
+        dest.mock(|when, then| {
+            when.method(httpmock::Method::HEAD).path("/");
+            then.status(200);
+        });
+
+        // dest describeServer — yields the destination server DID used as the proof audience.
+        dest.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.server.describeServer");
+            then.status(200).json_body(serde_json::json!({
+                "did": "did:web:dest",
+                "availableUserDomains": [".dest.example"],
+            }));
+        });
+
+        // Sovereign-session response JWTs: sub == did, aud == dest PDS URL (so
+        // audience_matches_server accepts them), exp far in the future.
+        let sovereign_jwt = {
+            use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+            use base64::Engine;
+            let payload = URL_SAFE_NO_PAD.encode(
+                serde_json::to_vec(&serde_json::json!({
+                    "exp": 9_999_999_999u64,
+                    "sub": did,
+                    "aud": dest_url.as_str(),
+                }))
+                .unwrap(),
+            );
+            format!("e30.{payload}.sig")
+        };
+
+        // dest POST /v1/sessions/sovereign — mints the durable full-access session.
+        let sovereign = dest.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path(crypto::SOVEREIGN_SESSION_PATH);
+            then.status(200).json_body(serde_json::json!({
+                "accessJwt": &sovereign_jwt,
+                "refreshJwt": &sovereign_jwt,
+                "handle": "alice.test",
+                "did": did,
+            }));
+        });
+
         // ─ Build clients and state ─
         let pds_client = crate::pds_client::PdsClient::new_for_test(plc_url.clone());
 
@@ -2947,10 +3272,36 @@ mod tests {
             .expect("submit_migration_op should succeed");
         plc_post.assert(); // Verify plc.directory was hit exactly once
 
-        // ─ Step 9: finalize_migration_impl (activate dest, THEN deactivate source) ─
-        finalize_migration_impl(&dest_client, &source_client)
+        // ─ Step 9: the safe cutover via the production seam — activate dest → mint + persist the
+        //   sovereign session → deactivate source → Finalized. Driven through finalize_migration_core
+        //   with the real ensure_sovereign_session_persisted closure so the new seam is covered
+        //   end-to-end (not the pure activate/deactivate helper). ─
+        let now = 1_720_000_000i64;
+        let nonce = crate::sovereign_session::fresh_nonce();
+        let orchestration = tokio::sync::Mutex::new(Some(OutboundMigrationState {
+            did: did.into(),
+            source_pds_url: source_url.clone(),
+            dest_pds_url: dest_url.clone(),
+            dest_did: "did:web:dest".into(),
+            handle: "alice.test".into(),
+            source_client: Some(source_client.clone()),
+            dest_client: Some(dest_client),
+            phase: MigrationPhase::IdentityArmed,
+        }));
+        let migration_state = tokio::sync::Mutex::new(None); // identity op already submitted
+
+        finalize_migration_core(&orchestration, &migration_state, did, || async move {
+            ensure_sovereign_session_persisted(
+                &pds_client,
+                &crate::identity_store::IdentityStore,
+                did,
+                now,
+                &nonce,
+            )
             .await
-            .expect("finalize_migration_impl should succeed");
+        })
+        .await
+        .expect("safe cutover should succeed");
 
         // ─ Verify plc.directory POST was hit exactly once ─
         assert_eq!(
@@ -2959,12 +3310,27 @@ mod tests {
             "plc.directory POST must be hit exactly once"
         );
 
-        // ─ Verify activation before deactivation ─
+        // ─ Verify the full cutover: activate, mint sovereign session, deactivate ─
         assert_eq!(activate.calls(), 1, "activate must be called");
+        assert_eq!(
+            sovereign.calls(),
+            1,
+            "sovereign session must be minted once"
+        );
         assert_eq!(deactivate.calls(), 1, "deactivate must be called");
-        // Ordering within finalize (activate before deactivate) is enforced by
-        // finalize_migration_impl and proven by its dedicated ordering tests; here the
-        // exactly-once plc POST plus a completed run cover the full sequence.
+        assert_eq!(
+            orchestration.lock().await.as_ref().unwrap().phase,
+            MigrationPhase::Finalized
+        );
+
+        // ─ The destination credential is durable: after this cutover a fresh client can be
+        //   reconstructed from the persisted record alone (no in-memory session truth). ─
+        assert!(
+            crate::sovereign_session::stored_bearer_client(did)
+                .expect("stored session should load")
+                .is_some(),
+            "migrated DID must have a persisted destination session"
+        );
 
         let _ = store.remove_identity(did);
     }

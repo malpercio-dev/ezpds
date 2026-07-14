@@ -94,7 +94,14 @@ fn audience_matches_server(audience: &str, server_did: &str, pds_url: &str) -> b
     audience == server_did || audience.trim_end_matches('/') == pds_url.trim_end_matches('/')
 }
 
-fn unix_timestamp() -> Result<i64, SovereignLoginError> {
+/// Generate a fresh 32-byte canonical base64url nonce for a sovereign-session proof.
+pub(crate) fn fresh_nonce() -> String {
+    let mut nonce_bytes = [0u8; NONCE_BYTES];
+    OsRng.fill_bytes(&mut nonce_bytes);
+    URL_SAFE_NO_PAD.encode(nonce_bytes)
+}
+
+pub(crate) fn unix_timestamp() -> Result<i64, SovereignLoginError> {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| SovereignLoginError::InvalidResponse {
@@ -153,9 +160,7 @@ pub async fn sovereign_login(
     state: tauri::State<'_, AppState>,
     did: String,
 ) -> Result<SovereignLoginResult, SovereignLoginError> {
-    let mut nonce_bytes = [0u8; NONCE_BYTES];
-    OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = URL_SAFE_NO_PAD.encode(nonce_bytes);
+    let nonce = fresh_nonce();
     sovereign_login_impl(
         state.pds_client(),
         &IdentityStore,
@@ -166,7 +171,7 @@ pub async fn sovereign_login(
     .await
 }
 
-async fn sovereign_login_impl(
+pub(crate) async fn sovereign_login_impl(
     pds_client: &PdsClient,
     store: &IdentityStore,
     did: &str,
