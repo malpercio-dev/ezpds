@@ -57,7 +57,10 @@ path_deps() {
 # (Each lane additionally watches its own workflow file(s), added in expected_for
 # via watched_workflows_for.)
 #   Cargo.toml / Cargo.lock     — a shared-dependency bump can change what the apps build
-#   justfile                    — the lanes' build steps are just recipes
+#   justfile                    — the root justfile; the lanes' build steps are just recipes
+#   just/release.just, just/ios.just — the imported recipe files the root justfile pulls
+#                                 in (the iOS build recipes now live in just/ios.just); a
+#                                 broken import fails `just` at parse time for every lane
 #   scripts/ios/**              — the shared iOS toolchain/patch scripts
 #   .github/actions/ios-setup/**— the shared runner-preamble composite action all three
 #                                 lanes use (toolchain, cache, tauri-cli pin, brew shim)
@@ -66,6 +69,8 @@ INFRA=(
   "Cargo.toml"
   "Cargo.lock"
   "justfile"
+  "just/release.just"
+  "just/ios.just"
   "scripts/ios/**"
   ".github/actions/ios-setup/**"
   "rust-toolchain.toml"
