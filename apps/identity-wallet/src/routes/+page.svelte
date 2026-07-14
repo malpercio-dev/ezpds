@@ -39,13 +39,9 @@
 
   // ── Onboarding step type ─────────────────────────────────────────────────
   //
-  // Design plan originally specified an 'error' state for displaying errors,
-  // but the implementation uses per-screen error rewinding instead.
-  // When an error occurs (e.g., EXPIRED_CODE, EMAIL_TAKEN), the app rewinds
-  // to the relevant screen and displays an inline error message below the
-  // input field, rather than showing a separate error screen. This is a better
-  // UX pattern — users can immediately correct the issue on the same screen
-  // instead of navigating through an extra modal. No 'error' step is needed.
+  // There is no dedicated 'error' step: when an error occurs (e.g. EXPIRED_CODE,
+  // EMAIL_TAKEN), the app rewinds to the relevant screen and shows an inline error
+  // below the input field, so the user can correct it without an extra modal.
 
   type OnboardingStep =
     | 'mode_select'
@@ -248,8 +244,8 @@
   // Called once the new identity's DID (form.did) and full handle both exist.
   // Registering here is what makes the identity appear on the home screen:
   // IdentityListHome lists identities from IdentityStore alone, and the PDS
-  // OAuth flow never writes to it — so without this call the home screen shows
-  // "No identities yet" after login. This is the fix for that bug.
+  // OAuth flow never writes to it — so without this call the home screen would show
+  // "No identities yet" after login.
   //
   // Error-handling strategy: best-effort, matching this app's "always reach
   // home" pattern (loadHomeData / logOut never block the UI). If registration

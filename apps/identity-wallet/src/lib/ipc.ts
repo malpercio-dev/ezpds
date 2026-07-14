@@ -261,8 +261,8 @@ export type OAuthError =
  * the code for tokens. The PKCE verifier and CSRF state never leave the Rust backend — only the
  * authorize URL and (briefly) the callback URL transit the webview.
  *
- * This replaces the old external-Safari + deep-link flow, which iOS Safari blocks: it will not
- * auto-launch the app from a server-side redirect to a custom URL scheme.
+ * An in-app session is required because iOS Safari will not auto-launch the app from a
+ * server-side redirect to a custom URL scheme.
  */
 export const startOAuthFlow = async (): Promise<void> => {
   const prepared = await invoke<{ authUrl: string; callbackScheme: string }>('prepare_oauth_flow');

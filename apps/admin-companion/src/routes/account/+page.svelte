@@ -20,15 +20,15 @@
   import ErrorState from '$lib/components/ui/ErrorState.svelte';
 
   // The account-detail screen: the read-only inspection home for ONE account on ONE
-  // relay — identity facts plus the usage/storage readout that used to be grafted onto
-  // the moderation screen. Reached from the accounts list (`?server=…&did=…`) and
-  // pinned to a single pairing at entry like Devices/Moderation, so a concurrent
-  // active-pointer switch on Home can never redirect what this screen reads. Nothing
-  // here signs: destructive work (takedown/restore, credential revocation) lives one
-  // hop deeper on the moderation screen, reached from here with the same pin + DID.
+  // relay — identity facts plus the usage/storage readout. Reached from the accounts
+  // list (`?server=…&did=…`) and pinned to a single pairing at entry like
+  // Devices/Moderation, so a concurrent active-pointer switch on Home can never
+  // redirect what this screen reads. Nothing here signs: destructive work
+  // (takedown/restore, credential revocation) lives one hop deeper on the moderation
+  // screen, reached from here with the same pin + DID.
 
   // Usage/storage readouts for the account. Both metrics land together or the panel
-  // reports one error, exactly as they did on the moderation screen.
+  // reports one error.
   type MetricsView =
     | { kind: 'loading' }
     | { kind: 'error'; view: ErrorView }

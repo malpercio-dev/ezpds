@@ -28,7 +28,7 @@
   import DeviceRow from '$lib/components/ui/DeviceRow.svelte';
 
   // Settings: global device identity (admin key), per-server list with rename/revoke/forget,
-  // and the biometric-gate toggle. Unpair is now per-server — a *server-side self-revoke* for each
+  // and the biometric-gate toggle. Unpair is per-server — a *server-side self-revoke* for each
   // pairing with a local-only "forget anyway" fallback when the relay can't be reached.
 
   type KeyState =
