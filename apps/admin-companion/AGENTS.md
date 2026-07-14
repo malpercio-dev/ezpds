@@ -1,7 +1,7 @@
 # Admin Companion (operator console) Mobile App
 
 Last verified: 2026-07-10
-Last updated: 2026-07-10 (server health readout: get_server_health IPC chain + Status screen; merged over the MM-259 Transfers screen)
+Last updated: 2026-07-14 (removed the dead `sign_with_device_key` IPC command — no frontend caller; `relay_client.rs` calls `device_key::sign` directly)
 
 ## Purpose
 
@@ -107,8 +107,8 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   `RELAY_REJECTED` 409, unknown → 404),
   `revoke_account_credentials(pairing_id, did)` (signed account-wide credential sweep; repeat
   sweeps are idempotent 200s of zero counts, unknown DID → `RELAY_REJECTED` 404),
-  `biometric_enabled`, `set_biometric_enabled` (plus Phase 6's `get_or_create_device_key`,
-  `sign_with_device_key`). `pairing_state` is gone — superseded by `list_pairings`.
+  `biometric_enabled`, `set_biometric_enabled` (plus Phase 6's `get_or_create_device_key`).
+  `pairing_state` is gone — superseded by `list_pairings`.
 - **Screens**: **Pair** (`src/routes/pair/` — QR/manual + required nickname, reachable while
   paired), **Home** (`src/routes/+page.svelte` — biometric-gated claim code for the *active*
   server, tappable identity block → inline switcher, explicit-pick state when no active pairing),
