@@ -13,9 +13,9 @@
     AGENT_EVENT_LABELS,
     AGENT_TYPE_LABELS,
     agentName,
-    formatAgentWhen,
     agentDetailLine,
   } from '$lib/agent-display';
+  import { formatTimestamp } from '$lib/datetime';
   import Button from '$lib/components/ui/Button.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import ScreenHeader from '$lib/components/ui/ScreenHeader.svelte';
@@ -122,8 +122,8 @@
     <dt>Kind</dt><dd>{AGENT_TYPE_LABELS[agent.registrationType] ?? agent.registrationType}</dd>
     {#if agent.issuer}<dt>Issuer</dt><dd class="mono">{agent.issuer}</dd>{/if}
     <dt>Registration</dt><dd class="mono">{agent.registrationId}</dd>
-    <dt>Added</dt><dd>{formatAgentWhen(agent.createdAt)}</dd>
-    {#if agent.lastUsedAt}<dt>Last used</dt><dd>{formatAgentWhen(agent.lastUsedAt)}</dd>{/if}
+    <dt>Added</dt><dd>{formatTimestamp(agent.createdAt)}</dd>
+    {#if agent.lastUsedAt}<dt>Last used</dt><dd>{formatTimestamp(agent.lastUsedAt)}</dd>{/if}
   </dl>
 
   <p class="section-label">Permissions</p>
@@ -162,7 +162,7 @@
           <span class="entry-body">
             <span class="entry-t">{AGENT_EVENT_LABELS[event.eventType] ?? event.eventType}</span>
             {#if agentDetailLine(event)}<span class="entry-d">{agentDetailLine(event)}</span>{/if}
-            <span class="entry-when">{formatAgentWhen(event.createdAt)}</span>
+            <span class="entry-when">{formatTimestamp(event.createdAt)}</span>
           </span>
         </li>
       {/each}

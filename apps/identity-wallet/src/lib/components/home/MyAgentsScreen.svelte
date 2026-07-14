@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { listAgents, type AgentSummary } from '$lib/ipc';
-  import { AGENT_STATUS, AGENT_TYPE_LABELS, agentName, formatAgentWhen } from '$lib/agent-display';
+  import { AGENT_STATUS, AGENT_TYPE_LABELS, agentName } from '$lib/agent-display';
+  import { formatTimestamp } from '$lib/datetime';
   import Button from '$lib/components/ui/Button.svelte';
   import ScreenHeader from '$lib/components/ui/ScreenHeader.svelte';
   import SkeletonCard from '$lib/components/ui/SkeletonCard.svelte';
@@ -103,7 +104,7 @@
                   {status.label}
                 </span>
                 {#if agent.lastUsedAt}
-                  <span class="badge badge--muted">Last used {formatAgentWhen(agent.lastUsedAt)}</span>
+                  <span class="badge badge--muted">Last used {formatTimestamp(agent.lastUsedAt)}</span>
                 {/if}
               </span>
             </span>

@@ -10,6 +10,7 @@
     docNeedsRotationKeysRefresh,
     isDidWeb,
   } from '$lib/did-doc-utils';
+  import { hostOf } from '$lib/url';
   import Button from '$lib/components/ui/Button.svelte';
   import ScreenHeader from '$lib/components/ui/ScreenHeader.svelte';
   import SkeletonCard from '$lib/components/ui/SkeletonCard.svelte';
@@ -62,15 +63,6 @@
     const rotationKeys = didDoc.rotationKeys;
     if (!Array.isArray(rotationKeys) || rotationKeys.length === 0) return null;
     return rotationKeys[0] === deviceKeyId;
-  }
-
-  // Display the PDS host rather than the full URL ("bsky.social", not "https://bsky.social").
-  function hostOf(url: string): string {
-    try {
-      return new URL(url).host;
-    } catch {
-      return url;
-    }
   }
 
   async function loadData() {
@@ -135,27 +127,30 @@
     }
   }
 
+  // Index identity statuses by DID, keeping only those with unauthorized changes.
+  // Shared by the foreground check and the background plc_alert event so both build
+  // the alert map the same way.
+  function toAlertMap(statuses: IdentityStatus[]): Map<string, UnauthorizedChange[]> {
+    const data = new Map<string, UnauthorizedChange[]>();
+    for (const s of statuses) {
+      if (s.unauthorizedChanges.length > 0) data.set(s.did, s.unauthorizedChanges);
+    }
+    return data;
+  }
+
   onMount(async () => {
     loadData();
 
     checkIdentityStatus()
       .then((statuses) => {
-        const data = new Map<string, UnauthorizedChange[]>();
-        for (const s of statuses) {
-          if (s.unauthorizedChanges.length > 0) data.set(s.did, s.unauthorizedChanges);
-        }
-        alertData = data;
+        alertData = toAlertMap(statuses);
       })
       .catch((e) => console.warn('Alert check failed:', e));
 
     // Listen for plc_alert events from background monitoring timer
     unlisten = await listen<IdentityStatus[]>('plc_alert', (event) => {
       if (!Array.isArray(event.payload)) return;
-      const data = new Map<string, UnauthorizedChange[]>();
-      for (const s of event.payload) {
-        if (s.unauthorizedChanges.length > 0) data.set(s.did, s.unauthorizedChanges);
-      }
-      alertData = data;
+      alertData = toAlertMap(event.payload);
     });
   });
 

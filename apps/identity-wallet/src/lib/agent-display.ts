@@ -28,16 +28,6 @@ export function agentName(agent: AgentSummary): string {
   return agent.subject ?? agent.registrationId;
 }
 
-export function formatAgentWhen(iso: string): string {
-  const d = new Date(iso);
-  return d.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
-}
-
 /** Mechanical detail facts → one short human line; unknown shapes stay hidden behind the label. */
 export function agentDetailLine(event: AgentAuditEvent): string | null {
   const d = event.detail;

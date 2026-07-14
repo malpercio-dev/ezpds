@@ -2,6 +2,7 @@
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
   import SealEmblem from '$lib/components/ui/SealEmblem.svelte';
   import Button from '$lib/components/ui/Button.svelte';
+  import { truncateDid } from '$lib/did-doc-utils';
 
   let {
     did,
@@ -12,12 +13,7 @@
   } = $props();
 
   // Truncate the DID suffix for display on a narrow mobile screen.
-  // "did:plc:abcdefghijklmnopqrstuvwx" → "did:plc:abcde…uvwx"
-  let displayDid = $derived(
-    did.startsWith('did:plc:') && did.length > 20
-      ? `did:plc:${did.slice(8, 13)}…${did.slice(-4)}`
-      : did
-  );
+  let displayDid = $derived(truncateDid(did));
 
   let copied = $state(false);
 

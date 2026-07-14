@@ -2,6 +2,7 @@
   import {
     previewAgentClaim,
     confirmAgentClaim,
+    isCodedError,
     type AgentClaimPreview,
     type AgentsError,
   } from '$lib/ipc';
@@ -39,7 +40,7 @@
   };
 
   function errorCode(e: unknown): AgentsError['code'] | 'UNEXPECTED' {
-    if (e && typeof e === 'object' && 'code' in e) return (e as AgentsError).code;
+    if (isCodedError(e)) return (e as AgentsError).code;
     return 'UNEXPECTED';
   }
 

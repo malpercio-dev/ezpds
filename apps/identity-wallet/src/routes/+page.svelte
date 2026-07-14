@@ -36,7 +36,7 @@
   import MyAgentsScreen from '$lib/components/home/MyAgentsScreen.svelte';
   import AgentClaimApprovalScreen from '$lib/components/home/AgentClaimApprovalScreen.svelte';
   import SettingsScreen from '$lib/components/home/SettingsScreen.svelte';
-  import { createAccount, registerCreatedIdentity, listIdentities, checkIdentityStatus, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type UnauthorizedChange } from '$lib/ipc';
+  import { createAccount, registerCreatedIdentity, listIdentities, checkIdentityStatus, isCodedError, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type UnauthorizedChange } from '$lib/ipc';
   import { normalizePlcDocToW3c } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
@@ -203,12 +203,7 @@
       step = identityMethod === 'web' ? 'did_web_ceremony' : 'did_ceremony';
     } catch (raw: unknown) {
       // Guard against non-CreateAccountError shapes (e.g. JS runtime errors).
-      if (
-        typeof raw === 'object' &&
-        raw !== null &&
-        'code' in raw &&
-        typeof (raw as CreateAccountError).code === 'string'
-      ) {
+      if (isCodedError(raw)) {
         handleError(raw as CreateAccountError);
       } else {
         errors.handle = "Couldn't reach the server. Check your connection.";
