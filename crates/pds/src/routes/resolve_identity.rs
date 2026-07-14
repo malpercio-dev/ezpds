@@ -460,7 +460,7 @@ mod tests {
     #[tokio::test]
     async fn refresh_identity_returns_identity_info() {
         // The handle-identifier path: resolve handle → DID locally, then force-refresh the DID
-        // document from the authoritative source (a plc mock here, since refreshIdentity no longer
+        // document from the authoritative source (a plc mock here, since refreshIdentity never
         // serves the cached document).
         let mock_server = MockServer::start().await;
         let did = "did:plc:refreshidentity12345678901";

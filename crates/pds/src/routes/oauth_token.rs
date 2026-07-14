@@ -1146,7 +1146,7 @@ mod tests {
         serde_json::from_slice(&bytes).unwrap()
     }
 
-    // ── Phase 4 tests (retained) ──────────────────────────────────────────────
+    // ── Grant-type dispatch tests ─────────────────────────────────────────────
 
     #[tokio::test]
     async fn unknown_grant_type_returns_400_unsupported() {

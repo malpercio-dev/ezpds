@@ -13,8 +13,7 @@ use sqlx::SqlitePool;
 pub struct OAuthClientRow {
     pub client_id: String,
     pub client_metadata: String,
-    // created_at is included for future handlers (admin listing, DCR);
-    // not read by any handler yet.
+    // created_at is unread by handlers (kept for audit value: admin listing, DCR).
     #[allow(dead_code)]
     pub created_at: String,
 }
@@ -38,8 +37,7 @@ pub struct ClientMetadata {
 /// Returns `sqlx::Error` on failure. Callers should use `crate::db::is_unique_violation`
 /// to detect duplicate `client_id` conflicts.
 ///
-/// No HTTP handler calls this yet; a future dynamic client registration endpoint (RFC 7591)
-/// will call it.
+/// Unwired: no handler registers clients dynamically (RFC 7591).
 #[allow(dead_code)]
 pub async fn register_oauth_client(
     pool: &SqlitePool,

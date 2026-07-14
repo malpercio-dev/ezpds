@@ -22,7 +22,7 @@ pub type SqliteTransaction<'a> = Transaction<'a, Sqlite>;
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct BlockRow {
     pub cid: String,
-    // For global lookups this is the legacy first-writer value from `blocks`; for account-scoped
+    // For global lookups this is the first-writer value from `blocks`; for account-scoped
     // lookups this is projected from `block_owners`.
     #[allow(dead_code)]
     pub account_did: String,
@@ -99,8 +99,8 @@ pub async fn get_block(pool: &SqlitePool, cid: &str) -> Result<Option<BlockRow>,
 
 /// Check whether a block exists.
 ///
-/// Part of the block-store query surface; the live read paths currently fetch
-/// blocks directly rather than probe for existence, so no route calls this yet.
+/// Part of the block-store query surface; the live read paths fetch
+/// blocks directly rather than probe for existence, so no route calls this; test-only.
 #[allow(dead_code)]
 pub async fn has_block(pool: &SqlitePool, cid: &str) -> Result<bool, sqlx::Error> {
     let row: (bool,) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM blocks WHERE cid = ?)")

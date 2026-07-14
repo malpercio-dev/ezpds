@@ -680,7 +680,7 @@ async fn identity_assertion_provider_set_revokes_and_blocks_reexchange() {
 /// A genuinely expired ID-JAG (`exp` in the past) fails signature/claim verification with
 /// `invalid_grant` — distinct from a stale `auth_time` (which maps to `login_required`, covered in
 /// `agent_identity.rs`). The per-route `make_id_jag` helper can't forge this (it hardcodes a future
-/// `exp`), so it was previously untested.
+/// `exp`), so this test covers the case directly with a hand-built token.
 #[tokio::test]
 async fn expired_id_jag_is_invalid_grant() {
     let (priv_pem, pub_pem) = es256_keys();

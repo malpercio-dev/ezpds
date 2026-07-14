@@ -985,9 +985,8 @@ mod tests {
     async fn get_consent_page_rejects_malformed_scope_instead_of_rendering_it() {
         // scope=<b>bold</b> URL-encoded in the request — not a valid scope (no `atproto` base,
         // not a recognized token). `expand_include_scopes`'s embedded `normalize_scope_request`
-        // now validates the GET path's scope too (it never did before granular scopes), so this
-        // is rejected via redirect before ever reaching render — a stronger property than
-        // escaping malicious/malformed content, which is what this test used to check for.
+        // validates the GET path's scope too, so this is rejected via redirect before ever
+        // reaching render — a stronger property than merely escaping malicious/malformed content.
         let url = authorize_url("").replace("scope=atproto", "scope=%3Cb%3Ebold%3C%2Fb%3E");
         let resp = get_authorize(state_with_client().await, &url).await;
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);

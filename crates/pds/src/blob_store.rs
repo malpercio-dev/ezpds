@@ -214,7 +214,7 @@ mod tests {
 
     #[tokio::test]
     async fn store_blob_persists_the_resolved_mime_verbatim() {
-        // store_blob no longer sniffs — it stores exactly the type the caller resolved.
+        // store_blob does not sniff — it stores exactly the caller-resolved type.
         let dir = tempfile::tempdir().unwrap();
         let stored = store_blob(dir.path(), b"<svg></svg>", "image/svg+xml")
             .await

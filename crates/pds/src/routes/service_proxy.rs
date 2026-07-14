@@ -721,8 +721,8 @@ mod tests {
         let state = state_with_chat(&server.uri()).await;
         let auth = bearer(&state);
 
-        // The forwarded Authorization is now a minted service-auth JWT, not the inbound token,
-        // so we no longer match on its value — but the chat branch must still send *an*
+        // The forwarded Authorization is a minted service-auth JWT, not the inbound token,
+        // so its value is not matched — but the chat branch must still send *an*
         // Authorization header, so assert its presence. The `atproto-proxy` header still carries
         // the full service DID (fragment included) so the chat service routes the request.
         Mock::given(method("GET"))
@@ -1184,10 +1184,10 @@ mod tests {
 
     // --- atproto-proxy header honored generically for app.bsky.*/chat.bsky.* ---
     //
-    // Before this, the header was honored only for `com.atproto.moderation.*`; `app.bsky.*` and
-    // `chat.bsky.*` always streamed to the configured default, silently ignoring it. The official
-    // app routes `app.bsky.video.*` calls to the video service this way, so ignoring the header
-    // broke video posting.
+    // The header is honored generically for `app.bsky.*`, `chat.bsky.*`, and
+    // `com.atproto.moderation.*` alike: whenever present, it routes to the named target instead
+    // of the namespace's configured default. The official app relies on this for
+    // `app.bsky.video.*`, routing those calls to the video service.
 
     #[tokio::test]
     async fn appbsky_header_target_routes_to_named_service_not_configured_appview() {

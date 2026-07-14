@@ -110,7 +110,7 @@ async fn import_repo_inner(
     // The repo root observed at precondition time. `None` for a fresh migration target; `Some` when
     // a completed prior residency's repo is still present — a migrate-away-and-return round trip
     // resumes a still-deactivated account (see `createAccount`'s resumable migration mode) that
-    // still carries its previous root. Import is no longer strictly first-write-wins: an existing
+    // still carries its previous root. Import is not strictly first-write-wins: an existing
     // root is either reimported idempotently (same root, below) or replaced under a compare-and-swap
     // (different root, at commit), so a return migration is not blocked while the CAS preserves the
     // anti-race guarantee.
@@ -153,8 +153,7 @@ async fn import_repo_inner(
     // prior import (atomic, all-or-nothing) already persisted every block reachable from it. Return
     // success without rewriting: a retried import — and the common return-migration case where
     // nothing was written at the other residency, so the incoming CAR is byte-identical (same rev) —
-    // is a no-op. This is what replaces the old first-write-wins 409 that deterministically blocked
-    // a migrate-away-and-return round trip.
+    // is a no-op, keeping a migrate-away-and-return round trip from deterministically 409ing.
     if observed_root.as_deref() == Some(root_str.as_str()) {
         tracing::info!(
             did = %did,
@@ -459,10 +458,10 @@ mod tests {
         assert_eq!(r1.status(), StatusCode::OK);
         let root_after_first = stored_root(&state, did).await;
 
-        // A second import of the SAME CAR (same root) is now an idempotent no-op success — the
+        // A second import of the SAME CAR (same root) is an idempotent no-op success — the
         // return-migration path where nothing was written at the other residency, so the incoming
-        // repo is byte-identical. This replaces the old first-write-wins 409 that deterministically
-        // blocked a migrate-away-and-return round trip.
+        // repo is byte-identical — keeping a migrate-away-and-return round trip from
+        // deterministically 409ing.
         let r2 = app.oneshot(import_req(car, Some(&token))).await.unwrap();
         assert_eq!(
             r2.status(),

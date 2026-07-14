@@ -7,8 +7,8 @@
 //! GET /v1/repo-signing-key — issue (idempotently) the authenticated pending
 //! account's ATProto repo signing key. The wallet publishes the returned
 //! did:key as the new DID's `#atproto` verification method, and the PDS later
-//! signs every repo commit with the matching private key. Replaces the shared
-//! operator key (`relay_signing_keys`) for repo signing with a per-account key.
+//! signs every repo commit with this per-account key, not the shared operator
+//! key (`relay_signing_keys`).
 
 use axum::{extract::State, http::HeaderMap, response::Json};
 use serde::Serialize;

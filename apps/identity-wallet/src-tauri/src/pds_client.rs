@@ -2843,7 +2843,7 @@ mod tests {
 
         let result = request_plc_operation_signature(&oauth_client).await;
         assert!(result.is_err());
-        // A 401 is now classified as Unauthorized, not folded into a generic NetworkError.
+        // A 401 is classified as Unauthorized, not folded into a generic NetworkError.
         match result.unwrap_err() {
             PdsClientError::Unauthorized { .. } => {
                 // Expected
@@ -3126,7 +3126,7 @@ mod tests {
 
     /// sign_plc_operation surfaces an HTTP error through classify_xrpc_response: a non-nonce 400
     /// becomes a structured XrpcError carrying the server's status + error code, not a flattened
-    /// NetworkError. (The DPoP OAuthClient no longer swallows non-`use_dpop_nonce` 400s.)
+    /// NetworkError. (The DPoP OAuthClient does not swallow non-`use_dpop_nonce` 400s.)
     #[tokio::test]
     async fn test_sign_plc_operation_error() {
         use std::sync::{Arc, Mutex};
@@ -3356,7 +3356,7 @@ mod tests {
             .await;
 
         assert!(result.is_err());
-        // A 404 is now a classified server response, carrying the status and body message.
+        // A 404 is a classified server response, carrying the status and body message.
         match result.unwrap_err() {
             PdsClientError::XrpcError {
                 status: 404,
@@ -3419,7 +3419,7 @@ mod tests {
             .await;
 
         assert!(result.is_err());
-        // A 404 is now a classified server response, carrying the status and body message.
+        // A 404 is a classified server response, carrying the status and body message.
         match result.unwrap_err() {
             PdsClientError::XrpcError {
                 status: 404,
@@ -3556,7 +3556,7 @@ mod tests {
         .await;
 
         assert!(result.is_err());
-        // A 401 is now classified as Unauthorized, not a generic NetworkError.
+        // A 401 is classified as Unauthorized, not a generic NetworkError.
         match result.unwrap_err() {
             PdsClientError::Unauthorized { .. } => {
                 // Expected

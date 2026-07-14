@@ -263,7 +263,7 @@ async fn sweep(state: &AppState) -> GcStats {
     // `MAX(seq)` and guarantees the retained suffix is non-empty. Emit safety does not require the
     // firehose `emit_lock` because a row emitted during this pass has `seq` greater than the
     // `max_seq` we read, hence greater than the watermark, so the range delete can't touch it.
-    // Replay safety no longer needs a lock either: a cursor reader whose snapshotted `(cursor,
+    // Replay safety needs no lock either: a cursor reader whose snapshotted `(cursor,
     // upper]` range this prune eats degrades to best-effort via the prune floor published below
     // (see `firehose.rs::ReplayReader::next_batch`), instead of the sweep blocking on the reader.
     let watermark = watermark.min(max_seq.saturating_sub(1));
@@ -619,9 +619,9 @@ mod tests {
 
     #[tokio::test]
     async fn gc_prunes_while_a_replay_reader_is_alive() {
-        // Regression: a slow cursor reader must not block the retention sweep. The sweep no
-        // longer takes an exclusive lock the reader holds for its whole drain, so this pass prunes
-        // even while an undrained reader is still alive (previously it would deadlock on the lock).
+        // Regression: a slow cursor reader must not block the retention sweep. The sweep takes
+        // no exclusive lock the reader holds for its whole drain, so this pass prunes
+        // even while an undrained reader is still alive.
         let state = state_with(FirehoseConfig {
             gc_interval_secs: 3600,
             log_retention_secs: 0,

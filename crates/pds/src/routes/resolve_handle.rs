@@ -215,9 +215,8 @@ mod tests {
 
     /// A DNS resolver error (timeout / SERVFAIL / transport — not NXDOMAIN, which the resolver
     /// already maps to an empty list) must not abort resolution: it falls through to the next
-    /// method and, if nothing resolves, returns 404. Previously this returned 500, which broke
-    /// the fallback chain and surfaced transient DNS failures as server errors (observed on the
-    /// staging deploy resolving `_atproto.<handle>`).
+    /// method and, if nothing resolves, returns 404. A 500 here would break the fallback chain
+    /// and surface transient DNS failures as server errors.
     #[tokio::test]
     async fn dns_error_falls_through_to_404() {
         let state = AppState {

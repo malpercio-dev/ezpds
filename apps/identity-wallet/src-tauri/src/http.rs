@@ -130,7 +130,7 @@ impl CustosClient {
     /// Includes a `DPoP` proof header per RFC 9449 §6.
     ///
     /// `dpop_jkt` is the JWK thumbprint of the DPoP key; included as a form field for
-    /// servers that support PAR-level DPoP key binding (the PDS currently ignores it,
+    /// servers that support PAR-level DPoP key binding (the PDS ignores it,
     /// but it is spec-correct to send it).
     pub async fn par(
         &self,
