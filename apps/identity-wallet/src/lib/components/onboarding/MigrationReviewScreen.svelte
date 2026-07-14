@@ -36,9 +36,12 @@
   // Recoverable (retryable) vs terminal (no retry — a different path or state is needed).
   let error = $state<string | null>(null);
   let errorIsTerminal = $state(false);
-  // The PLC identity op is submitted exactly once. Once it lands, `migration_state` is cleared and
-  // re-submitting fails terminally — so a resumed cutover (finalize failed, user retries) must skip
-  // straight to finalize. The submit result is kept so a resumed attempt still resolves onnext.
+  // The PLC identity op is submitted exactly once. `submitMigrationOp` is idempotent across a retry:
+  // the backend reconciles the op's landed-state against plc.directory before deciding to re-POST
+  // (MM-355), so a lost/ambiguous response no longer strands the migration — a retry that re-invokes
+  // it resolves cleanly whether the op landed or still needs sending. Once `submitted` is set we skip
+  // straight to finalize on a resumed cutover (finalize failed, user retries), keeping the stored
+  // submit result so onnext still resolves.
   let submitted = $state(false);
   let submitResult = $state<ClaimResult | null>(null);
 
@@ -143,9 +146,11 @@
 
     submitting = true;
     try {
-      // Submit the PLC identity op exactly once; a resumed attempt skips straight to finalize
-      // (re-submitting after the op landed fails terminally). The biometric gate above still runs
-      // on every attempt, so a resumed cutover re-authorizes before finalize's device-key signature.
+      // Submit the PLC identity op; on a retry the backend reconciles its landed-state instead of
+      // blindly re-POSTing (MM-355), so re-invoking after an ambiguous response is safe and
+      // idempotent. Once submitted, a resumed cutover skips straight to finalize. The biometric gate
+      // above still runs on every attempt, so a resumed cutover re-authorizes before finalize's
+      // device-key signature.
       if (!submitted) {
         submitResult = await submitMigrationOp(did);
         submitted = true;

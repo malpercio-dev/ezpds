@@ -50,6 +50,12 @@ pub struct SignedMigrationOp {
     pub diff: OpDiff,
     /// The signed PLC operation JSON, ready to POST to plc.directory.
     pub signed_op: serde_json::Value,
+    /// CID of the signed op — the content-address plc.directory assigns it once it
+    /// lands. Recorded so a submit can reconcile the op's landed-state against the
+    /// audit log after an ambiguous/lost-response POST (MM-355). Internal only; not
+    /// part of the frontend contract.
+    #[serde(skip)]
+    pub op_cid: String,
 }
 
 /// State for a pending migration, held between build and submit (mirrors
@@ -61,8 +67,15 @@ pub struct MigrationState {
     pub did: String,
     /// Authenticated client for the DESTINATION PDS (used for getRecommendedDidCredentials).
     pub dest_oauth_client: std::sync::Arc<OAuthClient>,
-    /// The signed PLC op, set by `build_migration_op_cmd`, consumed by submit.
+    /// The signed PLC op, set by `build_migration_op_cmd`. Kept parked (cloned, not
+    /// taken) across a submit so an ambiguous/lost-response POST can be reconciled and
+    /// retried; cleared only once the op is confirmed landed (MM-355).
     pub signed_op: Option<serde_json::Value>,
+    /// CID of `signed_op` — the identity plc.directory assigns the op once it lands.
+    /// Set alongside `signed_op` by `build_migration_op_cmd`, and used by the submit to
+    /// detect (via the audit log) whether the op already landed before deciding to
+    /// re-POST (MM-355).
+    pub op_cid: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -900,6 +913,8 @@ pub async fn build_migration_op(
                 message: format!("failed to parse signed op JSON: {e}"),
             }
         })?,
+        // The CID plc.directory will assign this op once it lands — the reconciliation key.
+        op_cid: signed.cid,
     })
 }
 
@@ -910,8 +925,6 @@ pub async fn submit_migration_op(
     did: &str,
     signed_op: &serde_json::Value,
 ) -> Result<ClaimResult, MigrateError> {
-    let store = IdentityStore;
-
     pds_client
         .post_plc_operation(did, signed_op)
         .await
@@ -919,6 +932,17 @@ pub async fn submit_migration_op(
             message: format!("plc.directory rejected the operation: {e}"),
         })?;
 
+    refresh_migration_cache(pds_client, did).await
+}
+
+/// Refresh the per-identity cache (PLC audit log + DID document) from plc.directory
+/// and return the equivalent `ClaimResult`. Fetches a fresh audit log — use when the
+/// caller does not already hold the post-landing log (the direct-submit success path,
+/// which must re-read plc.directory *after* the POST).
+async fn refresh_migration_cache(
+    pds_client: &PdsClient,
+    did: &str,
+) -> Result<ClaimResult, MigrateError> {
     let updated_log =
         pds_client
             .fetch_audit_log(did)
@@ -926,8 +950,21 @@ pub async fn submit_migration_op(
             .map_err(|e| MigrateError::NetworkError {
                 message: format!("failed to fetch updated audit log: {e}"),
             })?;
+    refresh_migration_cache_with_log(pds_client, did, &updated_log).await
+}
+
+/// Cache an already-fetched audit log + the DID document, returning the equivalent
+/// `ClaimResult`. Lets the reconciliation path reuse the log it just read to detect the
+/// landing instead of fetching it twice.
+async fn refresh_migration_cache_with_log(
+    pds_client: &PdsClient,
+    did: &str,
+    updated_log: &str,
+) -> Result<ClaimResult, MigrateError> {
+    let store = IdentityStore;
+
     store
-        .store_plc_log(did, &updated_log)
+        .store_plc_log(did, updated_log)
         .map_err(|e| MigrateError::SigningFailed {
             message: format!("failed to cache updated PLC log: {e}"),
         })?;
@@ -953,6 +990,94 @@ pub async fn submit_migration_op(
     Ok(ClaimResult {
         updated_did_doc: did_doc,
     })
+}
+
+/// Whether the migration op identified by `op_cid` has already landed on plc.directory:
+/// a non-nullified audit-log entry carrying that CID. Pure, so the landed/not-landed
+/// decision is trivially testable.
+fn migration_op_landed(audit_log: &[AuditEntry], op_cid: &str) -> bool {
+    audit_log
+        .iter()
+        .any(|entry| !entry.nullified && entry.cid == op_cid)
+}
+
+/// Reconcile whether the built migration op (`op_cid`) already landed on plc.directory.
+///
+/// Fetches the DID's audit log and, if the op is present and non-nullified, refreshes
+/// the local cache and returns the equivalent `ClaimResult`. Returns `Ok(None)` when
+/// the op has not landed — the caller may then safely (re-)submit, since `prev` is
+/// unchanged. A fetch/parse failure is surfaced as a (retryable) error so the caller
+/// leaves the op parked rather than assuming either state.
+async fn reconcile_landed_migration_op(
+    pds_client: &PdsClient,
+    did: &str,
+    op_cid: &str,
+) -> Result<Option<ClaimResult>, MigrateError> {
+    let log_json =
+        pds_client
+            .fetch_audit_log(did)
+            .await
+            .map_err(|e| MigrateError::NetworkError {
+                message: format!("failed to fetch audit log for reconciliation: {e}"),
+            })?;
+    let audit_log =
+        crypto::parse_audit_log(&log_json).map_err(|e| MigrateError::InvalidAuditLog {
+            message: format!("failed to parse audit log: {e}"),
+        })?;
+
+    if migration_op_landed(&audit_log, op_cid) {
+        // Reuse the log we just read — it already reflects the landing.
+        Ok(Some(
+            refresh_migration_cache_with_log(pds_client, did, &log_json).await?,
+        ))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Submit the migration op with ambiguous / lost-response reconciliation (MM-355).
+///
+/// A PLC operation is `prev`-chained and non-idempotent, and a mobile network can drop
+/// the HTTP response *after* plc.directory has already committed the op. Rather than
+/// consuming the op to prevent a double-POST (which strands the migration when the
+/// response is lost), this reconciles the op's landed-state around the submit:
+///
+///   1. Reconcile-first: if the op already landed (a prior attempt whose response was
+///      lost), finalize from current state instead of re-POSTing.
+///   2. Otherwise POST it.
+///   3. If the POST fails, reconcile once more — the op may have committed even though
+///      the response was lost — before surfacing the (retryable) error.
+///
+/// The caller keeps the signed op parked until this returns `Ok`, so any retry re-enters
+/// step 1. Double-apply is impossible: reconcile-first suppresses a re-POST after a
+/// landing, and PLC `prev`-chaining rejects a stale re-POST even under a concurrent race.
+pub async fn submit_migration_op_reconciling(
+    pds_client: &PdsClient,
+    did: &str,
+    signed_op: &serde_json::Value,
+    op_cid: &str,
+) -> Result<ClaimResult, MigrateError> {
+    // 1. Reconcile-first: never re-POST an op that already landed.
+    if let Some(result) = reconcile_landed_migration_op(pds_client, did, op_cid).await? {
+        tracing::info!(did = %did, "migration op already landed; reconciled without re-submitting");
+        return Ok(result);
+    }
+
+    // 2. POST the op.
+    match submit_migration_op(pds_client, did, signed_op).await {
+        Ok(result) => Ok(result),
+        Err(post_err) => {
+            // 3. Reconcile-after: a lost response can hide an op that plc.directory
+            //    actually committed (or the POST succeeded but the cache refresh failed).
+            if let Some(result) = reconcile_landed_migration_op(pds_client, did, op_cid).await? {
+                tracing::warn!(did = %did, error = %post_err, "submit response ambiguous but op landed; reconciled");
+                return Ok(result);
+            }
+            // Genuinely not landed — surface the original (retryable) submit error and
+            // leave the op parked for the next retry.
+            Err(post_err)
+        }
+    }
 }
 
 // ── Tauri commands ───────────────────────────────────────────────────────────
@@ -1014,23 +1139,29 @@ pub async fn build_migration_op_cmd(
         });
     }
     ms.signed_op = Some(result.signed_op.clone());
+    ms.op_cid = Some(result.op_cid.clone());
 
     Ok(result)
 }
 
 /// Tauri command: submit the pending migration op to plc.directory.
+///
+/// Clones (does NOT take) the signed op + its CID under the lock, so an ambiguous /
+/// lost-response POST leaves the op parked and a retry can reconcile-then-resubmit
+/// instead of dead-ending on `MIGRATION_NOT_READY` (MM-355). The reconciliation lives
+/// in `submit_migration_op_reconciling`; the op is cleared here only once it is
+/// confirmed landed. Re-submitting the same non-idempotent op is prevented by that
+/// reconcile-first check and by PLC `prev`-chaining (a stale re-POST is rejected), so
+/// the old `.take()` anti-double-post guard is no longer needed.
 #[tauri::command]
 pub async fn submit_migration_op_cmd(
     state: tauri::State<'_, crate::oauth::AppState>,
     did: String,
 ) -> Result<ClaimResult, MigrateError> {
-    // Take (not clone) the signed op under the lock, so a concurrent or retried
-    // submit cannot double-post the same non-idempotent PLC operation. The
-    // destination client is left in place, so a failed submit can be rebuilt.
-    let signed_op = {
-        let mut migration = state.migration_state.lock().await;
+    let (signed_op, op_cid) = {
+        let migration = state.migration_state.lock().await;
         let ms = migration
-            .as_mut()
+            .as_ref()
             .ok_or_else(|| MigrateError::MigrationNotReady {
                 message: "no pending migration to submit".to_string(),
             })?;
@@ -1042,18 +1173,28 @@ pub async fn submit_migration_op_cmd(
                 ),
             });
         }
-        ms.signed_op
-            .take()
-            .ok_or_else(|| MigrateError::MigrationNotReady {
-                message: "no signed op; build the migration operation first".to_string(),
-            })?
+        // signed_op and op_cid are set together by build_migration_op_cmd; treat either
+        // being absent as "not built yet".
+        match (ms.signed_op.clone(), ms.op_cid.clone()) {
+            (Some(signed_op), Some(op_cid)) => (signed_op, op_cid),
+            _ => {
+                return Err(MigrateError::MigrationNotReady {
+                    message: "no signed op; build the migration operation first".to_string(),
+                })
+            }
+        }
     };
 
-    let result = submit_migration_op(state.pds_client(), &did, &signed_op).await?;
+    let result =
+        submit_migration_op_reconciling(state.pds_client(), &did, &signed_op, &op_cid).await?;
 
-    // Migration complete — clear the state.
+    // Landed (posted or reconciled) — clear the state, but only if it is still THIS
+    // DID's migration (a concurrent prepare_migration could have replaced it while we
+    // were on the network).
     let mut migration = state.migration_state.lock().await;
-    *migration = None;
+    if migration.as_ref().is_some_and(|ms| ms.did == did) {
+        *migration = None;
+    }
 
     Ok(result)
 }
@@ -1661,5 +1802,232 @@ mod tests {
         );
 
         let _ = store.remove_identity(did);
+    }
+
+    // ── MM-355: ambiguous / lost-response reconciliation ─────────────────────
+    //
+    // A did:plc op can commit at plc.directory even when the HTTP response is lost
+    // (mobile network drop). The reconciliation reads the DID's audit log and decides
+    // "already landed → finalize" vs "not landed → (re-)submit is safe" by matching the
+    // built op's CID against the non-nullified entries.
+
+    fn audit_log_of(entries: serde_json::Value) -> Vec<AuditEntry> {
+        crypto::parse_audit_log(&entries.to_string()).expect("parse audit log")
+    }
+
+    #[test]
+    fn migration_op_landed_detects_non_nullified_match() {
+        let log = audit_log_of(serde_json::json!([
+            audit_entry(
+                "bafyGENESIS",
+                false,
+                serde_json::json!({ "rotationKeys": [DEVICE], "alsoKnownAs": [HANDLE] })
+            ),
+            audit_entry(
+                "bafyLANDED",
+                false,
+                serde_json::json!({ "rotationKeys": [DEVICE], "alsoKnownAs": [HANDLE] })
+            ),
+        ]));
+        assert!(migration_op_landed(&log, "bafyLANDED"));
+    }
+
+    #[test]
+    fn migration_op_landed_false_when_absent() {
+        // The op has not landed yet: its CID appears nowhere in the log, so a
+        // (re-)submit is safe — `prev` is unchanged.
+        let log = audit_log_of(serde_json::json!([audit_entry(
+            "bafyGENESIS",
+            false,
+            serde_json::json!({ "rotationKeys": [DEVICE], "alsoKnownAs": [HANDLE] })
+        )]));
+        assert!(!migration_op_landed(&log, "bafyLANDED"));
+    }
+
+    #[test]
+    fn migration_op_landed_ignores_nullified_match() {
+        // A NULLIFIED entry carrying the op's CID means the op was reverted (e.g. a
+        // recovery fork won). It must NOT count as landed, or we would wrongly skip a
+        // required re-submit.
+        let log = audit_log_of(serde_json::json!([
+            audit_entry(
+                "bafyGENESIS",
+                false,
+                serde_json::json!({ "rotationKeys": [DEVICE], "alsoKnownAs": [HANDLE] })
+            ),
+            audit_entry(
+                "bafyLANDED",
+                true,
+                serde_json::json!({ "rotationKeys": [DEVICE], "alsoKnownAs": [HANDLE] })
+            ),
+        ]));
+        assert!(!migration_op_landed(&log, "bafyLANDED"));
+    }
+
+    /// A PLC data document for the mock `/{did}/data` endpoint, repointed at `endpoint`.
+    fn plc_data_doc(did: &str, endpoint: &str) -> serde_json::Value {
+        serde_json::json!({
+            "did": did,
+            "alsoKnownAs": [HANDLE],
+            "rotationKeys": [DEVICE, DEST],
+            "verificationMethods": { "atproto": DEST },
+            "services": { "atproto_pds": { "type": "AtprotoPersonalDataServer", "endpoint": endpoint } }
+        })
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn submit_reconciling_skips_post_when_op_already_landed() {
+        // Reconcile-first: the op's CID is already in the audit log (a prior attempt
+        // whose response was lost), so submit finalizes from current state and NEVER
+        // re-POSTs the non-idempotent op.
+        use httpmock::prelude::*;
+
+        let did = "did:plc:reconcilelanded";
+        let op_cid = "bafyLANDEDOP";
+
+        let store = IdentityStore;
+        let _ = store.remove_identity(did);
+        store.add_identity(did).expect("add_identity");
+
+        let plc = MockServer::start();
+        let audit_mock = plc.mock(|when, then| {
+            when.method(GET).path(format!("/{did}/log/audit"));
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(serde_json::json!([
+                    audit_entry(
+                        "bafyGENESIS",
+                        false,
+                        serde_json::json!({ "rotationKeys": [DEVICE], "alsoKnownAs": [HANDLE] })
+                    ),
+                    audit_entry(
+                        op_cid,
+                        false,
+                        serde_json::json!({ "rotationKeys": [DEVICE], "alsoKnownAs": [HANDLE] })
+                    ),
+                ]));
+        });
+        let data_mock = plc.mock(|when, then| {
+            when.method(GET).path(format!("/{did}/data"));
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(plc_data_doc(did, "https://new.pds"));
+        });
+        let submit_mock = plc.mock(|when, then| {
+            when.method(POST).path(format!("/{did}"));
+            then.status(200).json_body(serde_json::json!({}));
+        });
+        let pds_client = PdsClient::new_for_test(plc.base_url());
+
+        // A dummy op body — reconcile-first must return before this is ever POSTed.
+        let dummy_op = serde_json::json!({ "type": "plc_operation" });
+        let result = submit_migration_op_reconciling(&pds_client, did, &dummy_op, op_cid)
+            .await
+            .expect("reconcile should succeed when the op already landed");
+
+        assert_eq!(
+            result.updated_did_doc["services"]["atproto_pds"]["endpoint"],
+            "https://new.pds"
+        );
+        submit_mock.assert_calls(0); // the non-idempotent op was never re-POSTed
+        audit_mock.assert();
+        data_mock.assert();
+
+        let _ = store.remove_identity(did);
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn submit_reconciling_posts_when_op_not_landed() {
+        // Happy path: the op's CID is absent from the audit log, so reconcile-first
+        // returns "not landed" and the op is POSTed, then the cache is refreshed.
+        use httpmock::prelude::*;
+
+        let did = "did:plc:reconcilefresh";
+        let op_cid = "bafyPENDINGOP";
+
+        let store = IdentityStore;
+        let _ = store.remove_identity(did);
+        store.add_identity(did).expect("add_identity");
+
+        let plc = MockServer::start();
+        let audit_mock = plc.mock(|when, then| {
+            when.method(GET).path(format!("/{did}/log/audit"));
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(serde_json::json!([audit_entry(
+                    "bafyGENESIS",
+                    false,
+                    serde_json::json!({ "rotationKeys": [DEVICE], "alsoKnownAs": [HANDLE] })
+                )]));
+        });
+        let data_mock = plc.mock(|when, then| {
+            when.method(GET).path(format!("/{did}/data"));
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(plc_data_doc(did, "https://new.pds"));
+        });
+        let submit_mock = plc.mock(|when, then| {
+            when.method(POST).path(format!("/{did}"));
+            then.status(200).json_body(serde_json::json!({}));
+        });
+        let pds_client = PdsClient::new_for_test(plc.base_url());
+
+        let op = serde_json::json!({ "type": "plc_operation" });
+        submit_migration_op_reconciling(&pds_client, did, &op, op_cid)
+            .await
+            .expect("submit should succeed when the op has not landed");
+
+        // The op was POSTed exactly because it had not landed.
+        submit_mock.assert();
+        // Two audit reads: reconcile-first (pre-POST, "not landed") + the post-POST
+        // cache refresh (which must re-read the now-updated log).
+        audit_mock.assert_calls(2);
+        data_mock.assert();
+
+        let _ = store.remove_identity(did);
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn submit_reconciling_propagates_error_when_post_fails_and_not_landed() {
+        // A genuine failure must NOT be masked: the op is not in the audit log, the
+        // POST is rejected, and the reconcile-after check still sees "not landed", so
+        // the retryable submit error is surfaced (and the caller keeps the op parked).
+        use httpmock::prelude::*;
+
+        let did = "did:plc:reconcilefail";
+        let op_cid = "bafyDOOMEDOP";
+
+        let plc = MockServer::start();
+        // Both the reconcile-first and reconcile-after fetches see "not landed".
+        let audit_mock = plc.mock(|when, then| {
+            when.method(GET).path(format!("/{did}/log/audit"));
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(serde_json::json!([audit_entry(
+                    "bafyGENESIS",
+                    false,
+                    serde_json::json!({ "rotationKeys": [DEVICE], "alsoKnownAs": [HANDLE] })
+                )]));
+        });
+        let submit_mock = plc.mock(|when, then| {
+            when.method(POST).path(format!("/{did}"));
+            then.status(400).body("bad op");
+        });
+        let pds_client = PdsClient::new_for_test(plc.base_url());
+
+        let op = serde_json::json!({ "type": "plc_operation" });
+        let err = submit_migration_op_reconciling(&pds_client, did, &op, op_cid)
+            .await
+            .expect_err("a rejected op that did not land must surface an error");
+
+        assert!(matches!(err, MigrateError::PlcDirectoryError { .. }));
+        // The POST was attempted.
+        submit_mock.assert();
+        // Two audit reads: reconcile-first (before the POST) + reconcile-after (which
+        // still sees "not landed", so the real error is surfaced, not masked).
+        audit_mock.assert_calls(2);
     }
 }
