@@ -1075,6 +1075,20 @@ fn hex_nibble(var_name: &str, b: u8) -> Result<u8, ConfigError> {
     }
 }
 
+/// Parse a boolean env value case- and whitespace-insensitively (`TRUE`/`False`/`true` all
+/// accepted). Env values are conventionally written in caps, and `str::parse::<bool>` accepts
+/// only the exact lowercase `"true"`/`"false"` — normalize before matching rather than
+/// crash-looping the service on pure letter case.
+fn parse_bool_env(var_name: &str, value: &str) -> Result<bool, ConfigError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(ConfigError::Invalid(format!(
+            "{var_name} must be 'true' or 'false', got: {value:?}"
+        ))),
+    }
+}
+
 /// Apply `EZPDS_*` and selected OTel standard environment variable overrides to a [`RawConfig`],
 /// returning the updated config.
 ///
@@ -1116,11 +1130,7 @@ pub(crate) fn apply_env_overrides(
         raw.server_did = Some(v.clone());
     }
     if let Some(v) = env.get("EZPDS_INVITE_CODE_REQUIRED") {
-        raw.invite_code_required = Some(v.parse::<bool>().map_err(|e| {
-            ConfigError::Invalid(format!(
-                "EZPDS_INVITE_CODE_REQUIRED is not a valid boolean: '{v}': {e}"
-            ))
-        })?);
+        raw.invite_code_required = Some(parse_bool_env("EZPDS_INVITE_CODE_REQUIRED", v)?);
     }
     if let Some(v) = env.get("EZPDS_AVAILABLE_USER_DOMAINS") {
         raw.available_user_domains = Some(
@@ -1143,11 +1153,7 @@ pub(crate) fn apply_env_overrides(
         );
     }
     if let Some(v) = env.get("EZPDS_TELEMETRY_ENABLED") {
-        raw.telemetry.enabled = Some(v.parse::<bool>().map_err(|e| {
-            ConfigError::Invalid(format!(
-                "EZPDS_TELEMETRY_ENABLED is not a valid boolean: '{v}': {e}"
-            ))
-        })?);
+        raw.telemetry.enabled = Some(parse_bool_env("EZPDS_TELEMETRY_ENABLED", v)?);
     }
     if let Some(v) = env.get("EZPDS_OTLP_ENDPOINT") {
         raw.telemetry.otlp_endpoint = Some(v.clone());
@@ -1156,46 +1162,23 @@ pub(crate) fn apply_env_overrides(
         raw.telemetry.service_name = Some(v.clone());
     }
     if let Some(v) = env.get("EZPDS_METRICS_ENABLED") {
-        raw.telemetry.metrics_enabled = Some(v.parse::<bool>().map_err(|e| {
-            ConfigError::Invalid(format!(
-                "EZPDS_METRICS_ENABLED is not a valid boolean: '{v}': {e}"
-            ))
-        })?);
+        raw.telemetry.metrics_enabled = Some(parse_bool_env("EZPDS_METRICS_ENABLED", v)?);
     }
     if let Some(v) = env.get("EZPDS_METRICS_REQUIRE_ADMIN") {
-        raw.telemetry.metrics_require_admin = Some(v.parse::<bool>().map_err(|e| {
-            ConfigError::Invalid(format!(
-                "EZPDS_METRICS_REQUIRE_ADMIN is not a valid boolean: '{v}': {e}"
-            ))
-        })?);
+        raw.telemetry.metrics_require_admin =
+            Some(parse_bool_env("EZPDS_METRICS_REQUIRE_ADMIN", v)?);
     }
     if let Some(v) = env.get("EZPDS_LOG_FORMAT") {
-        raw.telemetry.log_format = Some(match v.as_str() {
-            "text" => LogFormat::Text,
-            "json" => LogFormat::Json,
-            other => {
-                return Err(ConfigError::Invalid(format!(
-                    "EZPDS_LOG_FORMAT must be 'text' or 'json', got: '{other}'"
-                )))
-            }
-        });
+        raw.telemetry.log_format = Some(parse_log_format(v)?);
     }
     if let Some(v) = env.get("EZPDS_IROH_ENABLED") {
-        raw.iroh.enabled = v.parse::<bool>().map_err(|e| {
-            ConfigError::Invalid(format!(
-                "EZPDS_IROH_ENABLED is not a valid boolean: '{v}': {e}"
-            ))
-        })?;
+        raw.iroh.enabled = parse_bool_env("EZPDS_IROH_ENABLED", v)?;
     }
     if let Some(v) = env.get("EZPDS_IROH_ENDPOINT") {
         raw.iroh.endpoint = Some(v.clone());
     }
     if let Some(v) = env.get("EZPDS_IROH_IPV6") {
-        raw.iroh.ipv6 = v.parse::<bool>().map_err(|e| {
-            ConfigError::Invalid(format!(
-                "EZPDS_IROH_IPV6 is not a valid boolean: '{v}': {e}"
-            ))
-        })?;
+        raw.iroh.ipv6 = parse_bool_env("EZPDS_IROH_IPV6", v)?;
     }
     if let Some(v) = env.get("EZPDS_APPVIEW_URL") {
         raw.appview.url = v.clone();
@@ -1224,11 +1207,7 @@ pub(crate) fn apply_env_overrides(
     // Rate-limit overrides. A small local helper keeps the repetitive u64 parse+error-wrap in one
     // place; each knob is independent so a partial overlay (e.g. only the global cap) is fine.
     if let Some(v) = env.get("EZPDS_RATE_LIMIT_ENABLED") {
-        raw.rate_limit.enabled = v.parse::<bool>().map_err(|e| {
-            ConfigError::Invalid(format!(
-                "EZPDS_RATE_LIMIT_ENABLED is not a valid boolean: '{v}': {e}"
-            ))
-        })?;
+        raw.rate_limit.enabled = parse_bool_env("EZPDS_RATE_LIMIT_ENABLED", v)?;
     }
     let parse_u64 = |name: &str, v: &str| -> Result<u64, ConfigError> {
         v.parse::<u64>().map_err(|e| {
@@ -1300,18 +1279,11 @@ pub(crate) fn apply_env_overrides(
     // (each carrying a PEM key or a JWKS URL), which does not map to a flat env var — it stays
     // TOML-only.
     if let Some(v) = env.get("EZPDS_AGENT_AUTH_SERVICE_AUTH_ENABLED") {
-        raw.agent_auth.service_auth_enabled = v.parse::<bool>().map_err(|e| {
-            ConfigError::Invalid(format!(
-                "EZPDS_AGENT_AUTH_SERVICE_AUTH_ENABLED is not a valid boolean: '{v}': {e}"
-            ))
-        })?;
+        raw.agent_auth.service_auth_enabled =
+            parse_bool_env("EZPDS_AGENT_AUTH_SERVICE_AUTH_ENABLED", v)?;
     }
     if let Some(v) = env.get("EZPDS_AGENT_AUTH_ANONYMOUS_ENABLED") {
-        raw.agent_auth.anonymous_enabled = v.parse::<bool>().map_err(|e| {
-            ConfigError::Invalid(format!(
-                "EZPDS_AGENT_AUTH_ANONYMOUS_ENABLED is not a valid boolean: '{v}': {e}"
-            ))
-        })?;
+        raw.agent_auth.anonymous_enabled = parse_bool_env("EZPDS_AGENT_AUTH_ANONYMOUS_ENABLED", v)?;
     }
     if let Some(v) = env.get("EZPDS_AGENT_AUTH_ASSERTION_TTL_SECS") {
         raw.agent_auth.assertion_ttl_secs = parse_u64("EZPDS_AGENT_AUTH_ASSERTION_TTL_SECS", v)?;
@@ -1416,14 +1388,26 @@ fn parse_email_provider(value: &str) -> Result<EmailProvider, ConfigError> {
 }
 
 /// Parse the `EZPDS_EMAIL_SMTP_TLS` env value into an [`SmtpTls`], matching the lowercase tokens
-/// the TOML form uses.
+/// the TOML form uses. Case- and whitespace-insensitive, like [`parse_email_provider`].
 fn parse_smtp_tls(value: &str) -> Result<SmtpTls, ConfigError> {
-    match value {
+    match value.trim().to_ascii_lowercase().as_str() {
         "implicit" => Ok(SmtpTls::Implicit),
         "starttls" => Ok(SmtpTls::Starttls),
         "none" => Ok(SmtpTls::None),
-        other => Err(ConfigError::Invalid(format!(
-            "EZPDS_EMAIL_SMTP_TLS must be 'implicit', 'starttls', or 'none', got: {other:?}"
+        _ => Err(ConfigError::Invalid(format!(
+            "EZPDS_EMAIL_SMTP_TLS must be 'implicit', 'starttls', or 'none', got: {value:?}"
+        ))),
+    }
+}
+
+/// Parse the `EZPDS_LOG_FORMAT` env value into a [`LogFormat`], matching the lowercase tokens the
+/// TOML form uses. Case- and whitespace-insensitive, like [`parse_email_provider`].
+fn parse_log_format(value: &str) -> Result<LogFormat, ConfigError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "text" => Ok(LogFormat::Text),
+        "json" => Ok(LogFormat::Json),
+        _ => Err(ConfigError::Invalid(format!(
+            "EZPDS_LOG_FORMAT must be 'text' or 'json', got: {value:?}"
         ))),
     }
 }
@@ -4050,5 +4034,126 @@ mod tests {
             msg.contains("mailtrap"),
             "message should list 'mailtrap': {msg}"
         );
+    }
+
+    #[test]
+    fn smtp_tls_env_is_case_insensitive() {
+        for (value, expected) in [
+            ("IMPLICIT", SmtpTls::Implicit),
+            ("Implicit", SmtpTls::Implicit),
+            ("STARTTLS", SmtpTls::Starttls),
+            ("NONE", SmtpTls::None),
+            ("  none  ", SmtpTls::None),
+        ] {
+            let tls =
+                parse_smtp_tls(value).unwrap_or_else(|e| panic!("{value:?} should parse: {e}"));
+            assert_eq!(tls, expected, "{value:?} should map to {expected:?}");
+        }
+    }
+
+    #[test]
+    fn smtp_tls_env_unknown_value_lists_accepted_options() {
+        let err = parse_smtp_tls("carrierpigeon").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("implicit"),
+            "message should list 'implicit': {msg}"
+        );
+        assert!(
+            msg.contains("starttls"),
+            "message should list 'starttls': {msg}"
+        );
+        assert!(msg.contains("none"), "message should list 'none': {msg}");
+    }
+
+    #[test]
+    fn log_format_env_is_case_insensitive() {
+        for (value, expected) in [
+            ("TEXT", LogFormat::Text),
+            ("Text", LogFormat::Text),
+            ("JSON", LogFormat::Json),
+            ("  json  ", LogFormat::Json),
+        ] {
+            let format =
+                parse_log_format(value).unwrap_or_else(|e| panic!("{value:?} should parse: {e}"));
+            assert_eq!(format, expected, "{value:?} should map to {expected:?}");
+        }
+    }
+
+    #[test]
+    fn log_format_env_unknown_value_lists_accepted_options() {
+        let err = parse_log_format("yaml").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("text"), "message should list 'text': {msg}");
+        assert!(msg.contains("json"), "message should list 'json': {msg}");
+    }
+
+    #[test]
+    fn bool_env_is_case_insensitive() {
+        for (value, expected) in [
+            ("TRUE", true),
+            ("True", true),
+            ("  true  ", true),
+            ("FALSE", false),
+            ("False", false),
+        ] {
+            let parsed = parse_bool_env("EZPDS_SOME_FLAG", value)
+                .unwrap_or_else(|e| panic!("{value:?} should parse: {e}"));
+            assert_eq!(parsed, expected, "{value:?} should map to {expected}");
+        }
+    }
+
+    #[test]
+    fn bool_env_unknown_value_names_the_var_and_options() {
+        let err = parse_bool_env("EZPDS_SOME_FLAG", "maybe").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("EZPDS_SOME_FLAG"),
+            "message should name the var: {msg}"
+        );
+        assert!(msg.contains("true"), "message should list 'true': {msg}");
+        assert!(msg.contains("false"), "message should list 'false': {msg}");
+    }
+
+    #[test]
+    fn env_override_smtp_tls_is_case_insensitive_end_to_end() {
+        let env = HashMap::from([
+            ("EZPDS_EMAIL_PROVIDER".to_string(), "SMTP".to_string()),
+            (
+                "EZPDS_EMAIL_FROM".to_string(),
+                "noreply@pds.example.com".to_string(),
+            ),
+            (
+                "EZPDS_EMAIL_SMTP_HOST".to_string(),
+                "smtp.example.com".to_string(),
+            ),
+            ("EZPDS_EMAIL_SMTP_TLS".to_string(), "IMPLICIT".to_string()),
+        ]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert_eq!(config.email.provider, EmailProvider::Smtp);
+        assert_eq!(config.email.smtp_tls, SmtpTls::Implicit);
+    }
+
+    #[test]
+    fn env_override_log_format_is_case_insensitive_end_to_end() {
+        let env = HashMap::from([("EZPDS_LOG_FORMAT".to_string(), "JSON".to_string())]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert_eq!(config.telemetry.log_format, LogFormat::Json);
+    }
+
+    #[test]
+    fn env_override_invite_code_required_is_case_insensitive_end_to_end() {
+        let env = HashMap::from([(
+            "EZPDS_INVITE_CODE_REQUIRED".to_string(),
+            "FALSE".to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert!(!config.invite_code_required);
     }
 }
