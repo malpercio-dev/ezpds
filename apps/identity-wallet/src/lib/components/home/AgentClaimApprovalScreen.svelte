@@ -2,10 +2,10 @@
   import {
     previewAgentClaim,
     confirmAgentClaim,
-    authenticateBiometric,
     type AgentClaimPreview,
     type AgentsError,
   } from '$lib/ipc';
+  import { authenticateBiometric } from '$lib/biometric';
   import { describeScopes } from '$lib/agent-scopes';
   import Button from '$lib/components/ui/Button.svelte';
   import TextField from '$lib/components/ui/TextField.svelte';

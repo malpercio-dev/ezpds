@@ -3,11 +3,12 @@
   import {
     buildRecoveryOverride,
     submitRecoveryOverride,
+    isCodedError,
     type SignedRecoveryOp,
     type RecoveryError,
   } from '$lib/ipc';
-  import { getDeadline, getUrgency } from '$lib/utils/deadline';
-  import { isCodedError, truncateDid } from '$lib/did-doc-utils';
+  import { getDeadline, getUrgency } from '$lib/deadline';
+  import { truncateDid } from '$lib/did-doc-utils';
   import UrgencyBadge from '$lib/components/ui/UrgencyBadge.svelte';
   import DiffRow from '$lib/components/ui/DiffRow.svelte';
   import Button from '$lib/components/ui/Button.svelte';

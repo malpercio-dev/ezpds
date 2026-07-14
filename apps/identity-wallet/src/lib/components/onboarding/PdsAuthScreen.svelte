@@ -1,6 +1,5 @@
 <script lang="ts">
-  import { authenticateSourcePds, type ClaimError } from '$lib/ipc';
-  import { isCodedError } from '$lib/did-doc-utils';
+  import { authenticateSourcePds, isCodedError, type ClaimError } from '$lib/ipc';
   import { formatRateLimitMessage, formatServerErrorMessage } from '$lib/claim-errors';
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
   import TextField from '$lib/components/ui/TextField.svelte';

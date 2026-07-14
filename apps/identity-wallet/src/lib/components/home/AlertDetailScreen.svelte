@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getUrgency, getDeadline } from '$lib/utils/deadline';
+  import { getUrgency, getDeadline } from '$lib/deadline';
   import type { UnauthorizedChange } from '$lib/ipc';
   import { truncateDid } from '$lib/did-doc-utils';
   import UrgencyBadge from '$lib/components/ui/UrgencyBadge.svelte';

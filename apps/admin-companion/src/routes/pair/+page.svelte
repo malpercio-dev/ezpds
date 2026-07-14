@@ -5,9 +5,9 @@
     pairDevice,
     scanQrCode,
     cancelQrScan,
-    parsePairingPayload,
     type RelayClientError,
   } from '$lib/ipc';
+  import { parsePairingPayload } from '$lib/pairing-payload';
   import { describeRelayError } from '$lib/errors';
   import ScreenShell from '$lib/components/ui/ScreenShell.svelte';
   import TextField from '$lib/components/ui/TextField.svelte';
