@@ -57,10 +57,8 @@ pub async fn create_handle_handler(
     headers: HeaderMap,
     Json(payload): Json<CreateHandleRequest>,
 ) -> Result<Json<CreateHandleResponse>, ApiError> {
-    // Step 1: Authenticate via session Bearer token.
     let session = require_session(&headers, &state.db).await?;
 
-    // Step 2: Validate account_id matches the authenticated session.
     if payload.account_id != session.did {
         return Err(ApiError::new(
             ErrorCode::Unauthorized,
@@ -68,7 +66,6 @@ pub async fn create_handle_handler(
         ));
     }
 
-    // Step 3: Validate handle format (structure + domain policy).
     let name = crate::handle::validate_handle(
         &payload.handle,
         &state.config.available_user_domains,
@@ -76,7 +73,6 @@ pub async fn create_handle_handler(
     )
     .map_err(|msg| ApiError::new(ErrorCode::InvalidHandle, msg))?;
 
-    // Step 4: Insert the handle. A UNIQUE violation means the handle is already taken.
     match crate::db::handles::insert_handle(&state.db, &payload.handle, &session.did).await? {
         crate::db::handles::InsertHandleOutcome::Inserted => {}
         crate::db::handles::InsertHandleOutcome::HandleTaken => {
@@ -87,8 +83,6 @@ pub async fn create_handle_handler(
         }
     }
 
-    // Step 4b: Update DID document alsoKnownAs to include the new handle.
-    // Fetch all handles for this DID and update the document.
     let also_known_as = fetch_also_known_as(&state.db, &session.did).await?;
 
     if let Err(e) = update_also_known_as(&state.db, &session.did, &also_known_as).await {
@@ -101,7 +95,6 @@ pub async fn create_handle_handler(
         );
     }
 
-    // Step 5: Create DNS record if a provider is configured.
     // INSERT precedes this call: a row with no DNS record is recoverable; a DNS record
     // with no row would be an invisible orphan.
     let public_url = &state.config.public_url;
@@ -125,9 +118,8 @@ pub async fn create_handle_handler(
         "not_configured"
     };
 
-    // Step 5b: Emit an `#identity` firehose frame once the handle's externally-visible create
-    // path has completed. Placed after the DNS step so DNS failure (which returns 502 and exits
-    // this handler before reaching here) does not broadcast a handle the route has reported as
+    // Emitted after the DNS step so DNS failure (which returns 502 and exits this handler
+    // before reaching here) does not broadcast a handle the route has reported as
     // not-yet-provisioned; a later successful create/retry or a subsequent commit will emit it.
     // Best-effort, matching the rest of the firehose emit path: a sequencer write failure is
     // logged and dropped (a subscriber that misses the event backfills via the DID document).
@@ -144,7 +136,6 @@ pub async fn create_handle_handler(
         );
     }
 
-    // Step 6: Return the result.
     Ok(Json(CreateHandleResponse {
         handle: payload.handle,
         dns_status,

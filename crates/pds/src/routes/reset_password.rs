@@ -32,11 +32,9 @@ pub async fn reset_password(
     State(state): State<AppState>,
     axum::Json(payload): axum::Json<ResetPasswordRequest>,
 ) -> Result<StatusCode, ApiError> {
-    // --- Hash the incoming plaintext token to look it up in the DB ---
     let token_hash = hash_bearer_token(&payload.token)
         .map_err(|_| ApiError::new(ErrorCode::InvalidToken, "invalid reset token"))?;
 
-    // --- Begin atomic transaction ---
     // The lookup and the two writes (mark used + update password) must be atomic.
     // The transaction is the correctness guarantee; don't rely on pool configuration.
     let mut tx = state.db.begin().await.map_err(|e| {
@@ -44,12 +42,11 @@ pub async fn reset_password(
         ApiError::new(ErrorCode::InternalError, "failed to reset password")
     })?;
 
-    // --- Look up token (expiry evaluated in the same query) ---
+    // Expiry is evaluated in the same query as the lookup, not a separate check.
     let row = get_reset_token(&mut tx, &token_hash)
         .await?
         .ok_or_else(|| ApiError::new(ErrorCode::InvalidToken, "invalid or unknown reset token"))?;
 
-    // --- Validate: not already used ---
     // Check used_at first — a consumed token is non-recoverable regardless of expiry.
     if row.used_at.is_some() {
         tracing::warn!(did = %row.did, "password reset attempted with already-used token");
@@ -59,7 +56,6 @@ pub async fn reset_password(
         ));
     }
 
-    // --- Validate: not expired ---
     if row.is_expired {
         tracing::warn!(did = %row.did, "password reset attempted with expired token");
         return Err(ApiError::new(
@@ -68,10 +64,8 @@ pub async fn reset_password(
         ));
     }
 
-    // --- Hash new password ---
     let new_hash = hash_password(&payload.password)?;
 
-    // --- Atomically: mark token used + update password ---
     mark_reset_token_used(&mut tx, &token_hash).await?;
     update_password_hash(&mut tx, &row.did, &new_hash).await?;
 

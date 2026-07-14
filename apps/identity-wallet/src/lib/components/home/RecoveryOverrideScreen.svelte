@@ -65,7 +65,6 @@
   }
 
   onMount(async () => {
-    // Build the recovery operation
     loading = true;
     error = null;
 

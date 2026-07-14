@@ -2,54 +2,25 @@
 //
 // POST /v1/dids — Device-signed DID ceremony and account promotion
 //
-// Inputs:
-//   - Authorization: Bearer <pending_session_token>
-//   - JSON body: {
-//       "rotationKeyPublic": "did:key:z...",
-//       "signedCreationOp": { ...genesis op fields... },
-//       "password": "<plaintext>"  // required; stored as argon2id PHC string
-//     }
+// Verifies the client-signed did:plc genesis op against the previously issued per-account
+// repo signing key and server config, then builds the genesis repo in memory before the
+// plc.directory POST — so a build failure aborts cleanly, with no orphaned PLC registration
+// and no account without a repo.
 //
-// Processing steps:
-//   1. require_pending_session → PendingSessionInfo { account_id, device_id }
-//   2. SELECT handle, pending_did, email, pending_share_{1,2,3} FROM pending_accounts WHERE id = account_id
-//   2a. Reject if password is empty (400 INVALID_CLAIM) — argon2 hashes "" so guard is explicit
-//   3. Validate rotationKeyPublic starts with "did:key:z" → DidKeyUri
-//   4. serde_json::to_string(signedCreationOp) → signed_op_str
-//   5. crypto::verify_genesis_op(signed_op_str, rotation_key) → VerifiedGenesisOp
-//   6. Semantic validation:
-//        verified.rotation_keys[0] == rotationKeyPublic
-//        verified.also_known_as[0] == "at://{handle}"
-//        verified.atproto_pds_endpoint  == config.public_url
-//   7. If pending_did IS NULL: generate 3 Shamir shares; UPDATE pending_accounts SET
-//        pending_did = verified.did, pending_share_{1,2,3} = <base32 shares>
-//      If pending_did IS NOT NULL: verify match, reuse stored shares, set skip_plc = true
-//   8. SELECT EXISTS(SELECT 1 FROM accounts WHERE did = verified.did) → 409 if true
-//   9. If !skip_plc: POST {plc_directory_url}/{did} with signed_op_str
-//  10. build_did_document(&verified) → serde_json::Value
-//  11. Generate session token: 32 random bytes → base64url (returned) + SHA-256 hex (stored)
-//  12. Hash password with argon2id → password_hash
-//  13. Atomic transaction:
-//        INSERT accounts (did, email, password_hash=argon2id(password), recovery_share=pending_share_2)
-//        INSERT did_documents (did, document)
-//        INSERT sessions (id, did, device_id=NULL, token_hash, expires_at=+1 year)
-//        stage the genesis repo's #commit firehose event (same tx as the account row)
-//        DELETE pending_sessions WHERE account_id = ?
-//        DELETE devices WHERE account_id = ?
-//        DELETE pending_accounts WHERE id = ?
-//  13a. After the transaction commits: finish the staged #commit, emit an #account (active)
-//       event, and notify configured crawlers — so a never-crawled host self-announces to the
-//       relay instead of staying invisible until its first record write.
-//  14. Return { "did", "did_document", "status": "active", "session_token",
-//               "shamir_share_1": <base32>, "shamir_share_3": <base32> }
+// The derived DID and its 3 Shamir shares are pre-stored on the pending account before that
+// POST: a retry (pending_did already set) reuses the stored shares and skips plc.directory
+// instead of re-splitting the secret, which would orphan Share 2 from a prior attempt in
+// accounts.recovery_share.
 //
-// Note: handles are NOT inserted here. Handle creation is the caller's responsibility
-// via POST /v1/handles, which validates format and optionally creates DNS records.
+// Handles are NOT inserted here — that is POST /v1/handles' job (format validation +
+// optional DNS record creation), so a handle failure never has to unwind an already-
+// promoted account.
 //
-// Outputs (success):  200 { "did": "...", "did_document": {...}, "status": "active",
-//                          "session_token": "...", "shamir_share_1": "...", "shamir_share_3": "..." }
-// Outputs (error):    400 INVALID_CLAIM, 401 UNAUTHORIZED, 409 DID_ALREADY_EXISTS,
-//                     502 PLC_DIRECTORY_ERROR, 500 INTERNAL_ERROR
+// Account, DID document, session, and genesis repo blocks are promoted in one transaction
+// that also stages the genesis #commit + #sync firehose events; only after it commits does
+// the handler best-effort emit a separate #account (active) frame and request a crawl, so a
+// never-crawled host self-announces to the relay instead of staying invisible until its
+// first record write.
 
 use axum::{extract::State, http::HeaderMap, Json};
 use data_encoding::BASE32_NOPAD;
