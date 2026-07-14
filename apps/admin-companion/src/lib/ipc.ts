@@ -69,16 +69,6 @@ export function getOrCreateDeviceKey(): Promise<DevicePublicKey> {
 }
 
 /**
- * Sign arbitrary bytes with the device's admin key. Returns a raw 64-byte
- * (r‖s, low-S) P-256 signature. The canonical request envelope is built in Rust.
- */
-export function signWithDeviceKey(data: Uint8Array): Promise<Uint8Array> {
-  return invoke<number[]>('sign_with_device_key', { data: Array.from(data) }).then(
-    (bytes) => Uint8Array.from(bytes),
-  );
-}
-
-/**
  * Pair this device with `relayUrl` by claiming `pairingCode`. Persists the
  * relay-assigned device id and returns it. Throws a {@link RelayClientError}.
  */
