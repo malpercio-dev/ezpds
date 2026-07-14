@@ -1,5 +1,5 @@
 <script lang="ts">
-  import ChevronLeftIcon from '$lib/components/ui/ChevronLeftIcon.svelte';
+  import ScreenHeader from '$lib/components/ui/ScreenHeader.svelte';
   import {
     readLocalMirror,
     setAppearance,
@@ -54,12 +54,7 @@
 </script>
 
 <div class="screen">
-  <div class="topbar">
-    <button class="back" onclick={onback} aria-label="Back">
-      <ChevronLeftIcon />
-    </button>
-    <h1 class="title">Settings</h1>
-  </div>
+  <ScreenHeader title="Settings" {onback} />
 
   <section class="group" aria-labelledby="appearance-title">
     <div class="group-head">
@@ -131,34 +126,6 @@
     padding: var(--space-lg) var(--space-md) var(--space-xl);
     gap: var(--space-md);
     overflow-y: auto;
-  }
-
-  .topbar {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-  }
-  .back {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 44px;
-    height: 44px;
-    border-radius: var(--radius-full);
-    background: var(--color-surface);
-    border: 1px solid var(--color-line);
-    color: var(--color-ink);
-    cursor: pointer;
-    flex-shrink: 0;
-  }
-  .title {
-    font-family: var(--font-sans);
-    font-size: 1.375rem;
-    font-weight: var(--weight-bold);
-    letter-spacing: -0.01em;
-    color: var(--color-ink);
-    margin: 0;
-    min-width: 0;
   }
 
   /* One parchment group, flat at rest — depth is a tonal step and a hairline. */

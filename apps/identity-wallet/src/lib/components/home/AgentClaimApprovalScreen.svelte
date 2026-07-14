@@ -10,7 +10,7 @@
   import Button from '$lib/components/ui/Button.svelte';
   import TextField from '$lib/components/ui/TextField.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
-  import ChevronLeftIcon from '$lib/components/ui/ChevronLeftIcon.svelte';
+  import ScreenHeader from '$lib/components/ui/ScreenHeader.svelte';
 
   let {
     onback,
@@ -138,12 +138,7 @@
 </script>
 
 <div class="screen">
-  <div class="topbar">
-    <button class="back" onclick={onback} aria-label="Back">
-      <ChevronLeftIcon />
-    </button>
-    <h1 class="title">Approve an agent</h1>
-  </div>
+  <ScreenHeader title="Approve an agent" {onback} />
 
   {#if phase === 'enter' || phase === 'loading'}
     <div class="body">
@@ -259,32 +254,6 @@
     padding: var(--space-lg) var(--space-md) var(--space-xl);
     gap: var(--space-lg);
     overflow-y: auto;
-  }
-
-  .topbar {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-  }
-  .back {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 44px;
-    height: 44px;
-    border-radius: var(--radius-full);
-    background: var(--color-surface);
-    border: 1px solid var(--color-line);
-    color: var(--color-ink);
-    cursor: pointer;
-  }
-  .title {
-    font-family: var(--font-sans);
-    font-size: 1.375rem;
-    font-weight: var(--weight-bold);
-    letter-spacing: -0.01em;
-    color: var(--color-ink);
-    margin: 0;
   }
 
   .body {
