@@ -115,11 +115,11 @@ use crate::routes::update_email::update_email;
 use crate::routes::update_handle::update_handle_handler;
 use crate::routes::update_subject_status::update_subject_status;
 use crate::routes::upload_blob::upload_blob;
-pub use crate::state::{AppState, FailedLoginStore};
 #[cfg(test)]
 pub(crate) use crate::state::test_state;
 #[cfg(test)]
 pub use crate::state::test_state_with_plc_url;
+pub use crate::state::{AppState, FailedLoginStore};
 use crate::xrpc_dispatch::xrpc_handler;
 
 /// Wraps an `axum::http::HeaderMap` as an OTel text-map [`Extractor`] so that
