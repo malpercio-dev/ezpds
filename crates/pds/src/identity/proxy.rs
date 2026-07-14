@@ -274,6 +274,33 @@ fn is_global_ipv6(ip: std::net::Ipv6Addr) -> bool {
     if segments[0] == 0x2001 && segments[1] == 0x0db8 {
         return false;
     }
+    // 2001::/32 — Teredo tunneling (RFC 4380): can carry an obfuscated IPv4 address, a bypass
+    // for the IPv4 checks below if left unrejected.
+    if segments[0] == 0x2001 && segments[1] == 0x0000 {
+        return false;
+    }
+    // 2002::/16 — 6to4 (RFC 3056): embeds a raw IPv4 address in the next 32 bits, the same
+    // bypass shape as Teredo above.
+    if segments[0] == 0x2002 {
+        return false;
+    }
+    // 64:ff9b::/96 (well-known) and 64:ff9b:1::/48 (local-use) — NAT64 (RFC 6052/8215): embed a
+    // raw IPv4 address in the low bits.
+    if segments[0] == 0x0064
+        && segments[1] == 0xff9b
+        && (segments[2] == 0x0001
+            || (segments[2] == 0x0000
+                && segments[3] == 0x0000
+                && segments[4] == 0x0000
+                && segments[5] == 0x0000))
+    {
+        return false;
+    }
+    // ::/96 — IPv4-compatible (deprecated, RFC 4291 §2.5.5.1): embeds a raw IPv4 address in the
+    // low 32 bits. `::` and `::1` are already excluded above by is_unspecified/is_loopback.
+    if segments[..6].iter().all(|&s| s == 0) {
+        return false;
+    }
     let first_segment = segments[0];
     // fc00::/7 — unique local addresses (RFC 4193).
     if (first_segment & 0xfe00) == 0xfc00 {
@@ -445,12 +472,17 @@ mod tests {
     #[tokio::test]
     async fn rejects_ipv6_loopback_unique_local_and_mapped_ipv4() {
         for host in [
-            "[::1]",                // loopback
-            "[fc00::1]",            // unique-local (RFC 4193)
-            "[fe80::1]",            // link-local
-            "[2001:db8::1]",        // documentation (RFC 3849)
-            "[::ffff:127.0.0.1]",   // IPv4-mapped loopback — must not bypass the IPv4 checks
-            "[::ffff:169.254.1.1]", // IPv4-mapped link-local/metadata range
+            "[::1]",                  // loopback
+            "[fc00::1]",              // unique-local (RFC 4193)
+            "[fe80::1]",              // link-local
+            "[2001:db8::1]",          // documentation (RFC 3849)
+            "[::ffff:127.0.0.1]",     // IPv4-mapped loopback — must not bypass the IPv4 checks
+            "[::ffff:169.254.1.1]",   // IPv4-mapped link-local/metadata range
+            "[2001::1]",              // Teredo (RFC 4380) — can carry an obfuscated IPv4 address
+            "[2002:7f00:1::]",        // 6to4 (RFC 3056) — embeds 127.0.0.1 in the next 32 bits
+            "[64:ff9b::127.0.0.1]",   // NAT64 well-known prefix (RFC 6052) — embeds 127.0.0.1
+            "[64:ff9b:1::127.0.0.1]", // NAT64 local-use prefix (RFC 8215) — embeds 127.0.0.1
+            "[::127.0.0.1]",          // IPv4-compatible (deprecated, RFC 4291 §2.5.5.1)
         ] {
             let err = validate_proxy_endpoint(&format!("http://{host}"), false)
                 .await
