@@ -149,16 +149,14 @@ pub fn verify_es256_access_token(
         })
 }
 
-/// Verify HS256 access/refresh JWT issued by this server (legacy tokens).
-pub fn verify_hs256_access_token(
-    token: &str,
-    state: &AppState,
-) -> Result<AccessTokenClaims, ApiError> {
-    let decoding_key = DecodingKey::from_secret(&state.jwt_secret);
-
-    let mut validation = Validation::new(Algorithm::HS256);
-    // Validate audience only when the server DID is configured.
-    match state.config.server_did.as_deref() {
+/// Apply audience validation to a `Validation` for an HS256 token this server issued.
+///
+/// Validates the `aud` claim against the configured `server_did` when set; when it is unset,
+/// audience validation is **disabled** — a real security downgrade, so it lives in one place
+/// (shared by every HS256 verifier below) rather than being hand-copied. A future tightening
+/// (e.g. a hard error in production when `server_did` is unset) then changes exactly one site.
+fn apply_audience_validation(validation: &mut Validation, config: &common::Config) {
+    match config.server_did.as_deref() {
         Some(did) => validation.set_audience(&[did]),
         None => {
             validation.validate_aud = false;
@@ -168,6 +166,17 @@ pub fn verify_hs256_access_token(
             );
         }
     }
+}
+
+/// Verify HS256 access/refresh JWT issued by this server (legacy tokens).
+pub fn verify_hs256_access_token(
+    token: &str,
+    state: &AppState,
+) -> Result<AccessTokenClaims, ApiError> {
+    let decoding_key = DecodingKey::from_secret(&state.jwt_secret);
+
+    let mut validation = Validation::new(Algorithm::HS256);
+    apply_audience_validation(&mut validation, &state.config);
     // `sub` is required by AT Protocol but not in jsonwebtoken's default required set.
     validation.set_required_spec_claims(&["exp", "sub"]);
     // Zero leeway: tokens we issued ourselves need no clock-skew tolerance.
@@ -235,16 +244,7 @@ pub(crate) struct RefreshTokenClaims {
 pub fn verify_refresh_token(token: &str, state: &AppState) -> Result<RefreshTokenClaims, ApiError> {
     let decoding_key = DecodingKey::from_secret(&state.jwt_secret);
     let mut validation = Validation::new(Algorithm::HS256);
-    match state.config.server_did.as_deref() {
-        Some(did) => validation.set_audience(&[did]),
-        None => {
-            validation.validate_aud = false;
-            tracing::warn!(
-                "server_did not configured; JWT audience validation is disabled — \
-                 set server_did in config for production deployments"
-            );
-        }
-    }
+    apply_audience_validation(&mut validation, &state.config);
     validation.set_required_spec_claims(&["exp", "sub"]);
     validation.leeway = 0;
 
@@ -281,16 +281,7 @@ pub fn verify_refresh_token_allow_expired(
 ) -> Result<RefreshTokenClaims, ApiError> {
     let decoding_key = DecodingKey::from_secret(&state.jwt_secret);
     let mut validation = Validation::new(Algorithm::HS256);
-    match state.config.server_did.as_deref() {
-        Some(did) => validation.set_audience(&[did]),
-        None => {
-            validation.validate_aud = false;
-            tracing::warn!(
-                "server_did not configured; JWT audience validation is disabled — \
-                 set server_did in config for production deployments"
-            );
-        }
-    }
+    apply_audience_validation(&mut validation, &state.config);
     validation.validate_exp = false;
     validation.set_required_spec_claims(&["sub"]);
     validation.leeway = 0;
