@@ -31,6 +31,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 REINIT_HINT="(re-run 'cargo tauri ios init' from ${APP_DIR}, then 'just ${RECIPE}-postinit')"
 
+# shellcheck source=scripts/ios/lib.sh
+. "${SCRIPT_DIR}/lib.sh"
+
 PBXPROJ="$(ls "${APP_DIR}"/src-tauri/gen/apple/*.xcodeproj/project.pbxproj 2>/dev/null | head -n1 || true)"
 if [ -z "${PBXPROJ}" ]; then
   echo "ios-check: FAIL — no project.pbxproj (run 'cargo tauri ios init' then 'just ${RECIPE}-postinit')" >&2
@@ -134,10 +137,7 @@ fi
 # asset catalog must have been built from exactly that file — postinit stamps its
 # sha256 into the catalog (resampled PNGs can't be byte-compared to the source).
 if [ -f "${APP_DIR}/app-icon.png" ]; then
-  sha256_file() {
-    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
-    else /usr/bin/shasum -a 256 "$1" | cut -d' ' -f1; fi
-  }
+  # sha256_file: from lib.sh (sourced above) — the same hasher ios-postinit stamps with.
   marker="$(dirname "${PBXPROJ}")/../Assets.xcassets/AppIcon.appiconset/.ezpds-app-icon.sha256"
   if [ ! -f "${marker}" ] || [ "$(cat "${marker}")" != "$(sha256_file "${APP_DIR}/app-icon.png")" ]; then
     echo "ios-check: FAIL — AppIcon.appiconset not regenerated from app-icon.png (run 'just ${RECIPE}-postinit')" >&2

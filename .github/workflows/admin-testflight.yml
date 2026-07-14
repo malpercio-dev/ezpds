@@ -28,6 +28,10 @@ on:
       - "Cargo.lock"
       # The build/upload delegate to `just admin-*`, so a recipe change can break the lane.
       - "justfile"
+      # The imported recipe files the root justfile pulls in (the iOS build recipes
+      # live in just/ios.just); a broken import fails `just` at parse time.
+      - "just/release.just"
+      - "just/ios.just"
       # The shared iOS toolchain/patch scripts live in scripts/ios/ (per-app
       # scripts are thin wrappers). PDS-only scripts directly under scripts/
       # (bruno-parity, font-parity, ...) are deliberately excluded.

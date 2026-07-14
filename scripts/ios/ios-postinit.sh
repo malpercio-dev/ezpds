@@ -36,6 +36,9 @@ RECIPE="$2"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
+# shellcheck source=scripts/ios/lib.sh
+. "${SCRIPT_DIR}/lib.sh"
+
 PBXPROJ="$(ls "${APP_DIR}"/src-tauri/gen/apple/*.xcodeproj/project.pbxproj 2>/dev/null | head -n1 || true)"
 if [ -z "${PBXPROJ}" ]; then
   echo "error: no project.pbxproj under ${APP_DIR}/src-tauri/gen/apple/. Run 'cargo tauri ios init' first." >&2
@@ -72,12 +75,8 @@ fi
 # it derives that path from the output dir's PARENT (src-tauri/) and only falls back
 # to the -o dir when the catalog is missing. --ios-color flattens any transparency
 # onto Console Slate rather than tauri's white default. The sha256 marker written at
-# the end is what ios-check verifies (catalog contents can't be byte-compared to the
-# source, since every size is a resample).
-sha256_file() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
-  else /usr/bin/shasum -a 256 "$1" | cut -d' ' -f1; fi
-}
+# the end (sha256_file, from lib.sh) is what ios-check verifies (catalog contents
+# can't be byte-compared to the source, since every size is a resample).
 APP_ICON="${APP_DIR}/app-icon.png"
 APPICONSET="$(dirname "${PBXPROJ}")/../Assets.xcassets/AppIcon.appiconset"
 if [ ! -f "${APP_ICON}" ]; then
