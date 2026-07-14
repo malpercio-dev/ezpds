@@ -26,9 +26,11 @@ docs {
   be changed by someone who can still receive mail at it. An unconfirmed address can be changed
   without a token, and none is minted or sent.
 
-  Requires a full access-scope token (app-password / refresh tokens are rejected).
+  Requires a full access-scope token (app-password / refresh tokens are rejected). Takes no body —
+  a non-empty payload is rejected with 400 InvalidRequest, matching the reference PDS.
 
   Errors:
+  - 400 INVALID_REQUEST: a request body was provided when none was expected
   - 401 AUTHENTICATION_REQUIRED: missing Authorization header
   - 401 INVALID_TOKEN: app-password / refresh-scope token (full access required)
   - 503 SERVICE_UNAVAILABLE: a token was required but the email could not be delivered

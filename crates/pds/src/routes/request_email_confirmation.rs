@@ -21,10 +21,13 @@ use crate::auth::oauth_scopes;
 use crate::auth::token::generate_token;
 use crate::db::accounts::get_session_account;
 use crate::db::email_tokens::{insert_email_token, EmailTokenPurpose};
+use crate::no_input::NoInputBody;
 
 pub async fn request_email_confirmation(
     user: AuthenticatedUser,
     State(state): State<AppState>,
+    // No lexicon input; reject a spurious body with 400 like the reference PDS (MM-291).
+    _: NoInputBody,
 ) -> Result<StatusCode, ApiError> {
     // Managing the account email is a full-account action; app-password/refresh scopes are refused.
     if user.scope != AuthScope::Access {
@@ -121,6 +124,35 @@ mod tests {
         let state = test_state().await;
         let response = app(state).oneshot(post_req(None)).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// No lexicon input: a spurious body is rejected with 400 (reference-PDS parity, MM-291) and
+    /// no token is minted.
+    #[tokio::test]
+    async fn non_empty_body_returns_400() {
+        let state = test_state().await;
+        let db = state.db.clone();
+        let did = "did:plc:reqconfirm4444444444444444";
+        seed_account_with_signing_key(&db, did, "dave.example.com").await;
+        let jwt = access_jwt(&state.jwt_secret, did);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/xrpc/com.atproto.server.requestEmailConfirmation")
+            .header("Authorization", format!("Bearer {jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+
+        let response = app(state).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM email_tokens WHERE did = ?")
+            .bind(did)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "a rejected request must not mint a token");
     }
 
     #[tokio::test]

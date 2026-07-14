@@ -8,7 +8,7 @@
 //
 // Implements: POST /xrpc/com.atproto.server.activateAccount
 
-use axum::{body::Bytes, extract::State, http::StatusCode};
+use axum::{extract::State, http::StatusCode};
 
 use common::{ApiError, ErrorCode};
 
@@ -19,6 +19,7 @@ use crate::auth::oauth_scopes;
 use crate::db::accounts::{activate_account, AccountStateChange};
 use crate::db::blocks::SqliteBlockStore;
 use crate::firehose::SyncInput;
+use crate::no_input::NoInputBody;
 use repo_engine::Cid;
 
 /// POST /xrpc/com.atproto.server.activateAccount
@@ -33,7 +34,10 @@ use repo_engine::Cid;
 pub async fn activate_account_handler(
     user: AuthenticatedUser,
     State(state): State<AppState>,
-    body: Bytes,
+    // The lexicon defines no input for activateAccount; `NoInputBody` rejects any non-empty payload
+    // with a 400 `InvalidRequest`, matching the reference PDS (shared with the other no-input
+    // procedures so the strictness can't drift route to route).
+    _: NoInputBody,
 ) -> Result<StatusCode, ApiError> {
     if user.scope != AuthScope::Access {
         return Err(ApiError::new(
@@ -42,15 +46,6 @@ pub async fn activate_account_handler(
         ));
     }
     oauth_scopes::require_account(&user.scope_claim, "status", "manage")?;
-
-    // The lexicon defines no input for activateAccount. Accept an empty (or whitespace-only) body,
-    // but reject any actual payload so a malformed request is not silently treated as valid.
-    if !body.iter().all(u8::is_ascii_whitespace) {
-        return Err(ApiError::new(
-            ErrorCode::InvalidRequest,
-            "activateAccount does not accept a request body",
-        ));
-    }
 
     // Build the Sync v1.1 `#sync` state assertion (a CAR carrying just the signed commit block)
     // *before* opening the transaction: this crate's single-connection pool can't serve the block

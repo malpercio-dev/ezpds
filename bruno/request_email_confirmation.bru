@@ -22,13 +22,15 @@ docs {
   Mints a single-use, 1-hour email token and delivers it to the account's current email address.
   Presenting that token to `confirmEmail` sets `emailConfirmed = true` (which `getSession` reports).
 
-  Requires a full access-scope token (app-password / refresh tokens are rejected). Takes no body
-  and returns 200 with an empty body.
+  Requires a full access-scope token (app-password / refresh tokens are rejected). Takes no body —
+  a non-empty payload is rejected with 400 InvalidRequest, matching the reference PDS — and returns
+  200 with an empty body.
 
   Delivery goes through the configured email sender: the default `log` provider writes the token to
   the server log, `smtp` sends a real email.
 
   Errors:
+  - 400 INVALID_REQUEST: a request body was provided when none was expected
   - 401 AUTHENTICATION_REQUIRED: missing Authorization header
   - 401 INVALID_TOKEN: app-password / refresh-scope token (full access required)
   - 503 SERVICE_UNAVAILABLE: the email could not be delivered

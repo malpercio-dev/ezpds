@@ -24,8 +24,9 @@ docs {
   before the deletion is honored — the token is the second factor alongside the account password
   that `deleteAccount` checks.
 
-  Requires a full access-scope token (app-password tokens are rejected). Takes no body and returns
-  200 with an empty body.
+  Requires a full access-scope token (app-password tokens are rejected). Takes no body — a non-empty
+  payload is rejected with 400 InvalidRequest, matching the reference PDS — and returns 200 with an
+  empty body.
 
   Delivery goes through the configured email sender: the default `log` provider writes the token to
   the server log, `smtp` sends a real email. A delivery failure returns 503.

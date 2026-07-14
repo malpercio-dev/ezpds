@@ -21,6 +21,7 @@ use crate::auth::jwt::{
     app_pass_scope, issue_access_jwt, issue_refresh_jwt, parse_scope, verify_refresh_token,
     AuthScope, SCOPE_ACCESS,
 };
+use crate::no_input::NoInputBody;
 
 // ── Response type ────────────────────────────────────────────────────────────
 
@@ -44,6 +45,8 @@ pub struct RefreshSessionResponse {
 pub async fn refresh_session(
     State(state): State<AppState>,
     headers: HeaderMap,
+    // No lexicon input; reject a spurious body with 400 like the reference PDS (MM-291).
+    _: NoInputBody,
 ) -> Result<(StatusCode, Json<RefreshSessionResponse>), ApiError> {
     // --- Extract and verify the refresh JWT ---
     let token = extract_bearer_token(&headers)?;
@@ -348,6 +351,34 @@ mod tests {
         assert!(json["refreshJwt"].as_str().is_some(), "refreshJwt required");
         assert_eq!(json["did"], "did:plc:alice");
         assert_eq!(json["handle"], "alice.test.example.com");
+    }
+
+    /// The lexicon defines no input; a spurious body is rejected with 400 (reference-PDS parity,
+    /// MM-291), leaving the refresh token unrotated.
+    #[tokio::test]
+    async fn non_empty_body_returns_400() {
+        let state = test_state().await;
+        insert_account_with_password(
+            &state.db,
+            "did:plc:refbody",
+            "refbody.test.example.com",
+            "refbody@example.com",
+            "hunter2",
+        )
+        .await;
+        let tokens = create_session_tokens(&state, "did:plc:refbody", "hunter2").await;
+        let refresh_jwt = tokens["refreshJwt"].as_str().unwrap().to_string();
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/xrpc/com.atproto.server.refreshSession")
+            .header("Authorization", format!("Bearer {refresh_jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+
+        let response = app(state).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

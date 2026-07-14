@@ -22,6 +22,7 @@ mod firehose_gc;
 mod identity;
 mod iroh_tunnel;
 mod metrics;
+mod no_input;
 mod platform;
 mod rate_limit;
 mod read_after_write;

@@ -14,6 +14,7 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::auth::extract_bearer_token;
 use crate::auth::jwt::{parse_scope, verify_refresh_token_allow_expired, AuthScope};
+use crate::no_input::NoInputBody;
 
 // ── Handler ──────────────────────────────────────────────────────────────────
 
@@ -28,6 +29,8 @@ use crate::auth::jwt::{parse_scope, verify_refresh_token_allow_expired, AuthScop
 pub async fn delete_session(
     State(state): State<AppState>,
     headers: HeaderMap,
+    // No lexicon input; reject a spurious body with 400 like the reference PDS (MM-291).
+    _: NoInputBody,
 ) -> Result<StatusCode, ApiError> {
     // --- Extract and verify the refresh JWT (expiry allowed) ---
     let token = extract_bearer_token(&headers)?;
@@ -183,6 +186,34 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// The lexicon defines no input; a spurious body is rejected with 400 (reference-PDS parity,
+    /// MM-291) — the reference validates input before auth, so this holds regardless of the token.
+    #[tokio::test]
+    async fn non_empty_body_returns_400() {
+        let state = test_state().await;
+        insert_account_with_password(
+            &state.db,
+            "did:plc:delbody",
+            "delbody.test.example.com",
+            "delbody@example.com",
+            "hunter2",
+        )
+        .await;
+        let tokens = create_session_tokens(&state, "did:plc:delbody", "hunter2").await;
+        let refresh_jwt = tokens["refreshJwt"].as_str().unwrap();
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/xrpc/com.atproto.server.deleteSession")
+            .header("Authorization", format!("Bearer {refresh_jwt}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+
+        let response = app(state).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
