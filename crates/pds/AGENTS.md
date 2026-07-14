@@ -18,7 +18,7 @@ src/
   app.rs           — router construction (route table + shared middleware layers); re-exports `AppState`/`FailedLoginStore` (and, under `#[cfg(test)]`, `test_state`/`test_state_with_plc_url`) from `state.rs` so the ~120 existing `crate::app::AppState` imports across the crate stay unchanged
   state.rs         — `AppState` definition + `FailedLoginStore`, plus the `#[cfg(test)]` `test_state`/`test_state_with_plc_url` constructors
   xrpc_dispatch.rs — the catch-all XRPC proxy dispatcher (`xrpc_handler`, registered by `app.rs` at `/xrpc/{method}`): resolves `app.bsky.*`/`chat.bsky.*`/`com.atproto.moderation.*` to an upstream (configured default or an `atproto-proxy`-header target), enforces the read-after-write munge branch, and records `proxy_requests_total`
-  firehose.rs      — persistent subscribeRepos event pipeline (durable sequencer + broadcast fan-out)
+  firehose/        — persistent subscribeRepos event pipeline (durable sequencer + broadcast fan-out)
   firehose_gc.rs   — periodic `repo_seq` retention sweep (age/count pruning below the live frontier)
   blob_store.rs    — blob storage backend: filesystem I/O, CID computation, MIME-type detection; blobs live at `{data_dir}/blobs/{cid[0:2]}/{cid}`
   blob_gc.rs       — periodic blob GC over per-account ownership rows (`blob_owners`, V039): reconciles each account's MST-referenced blobs into its ownership rows (permanent vs released-with-grace, adopting referenced-but-unowned stored CIDs), then sweeps expired unreferenced rows — the shared physical row + file are deleted only when the last owner is gone
@@ -52,9 +52,20 @@ src/
   routes/          — HTTP handlers, one file per endpoint
 ```
 
-### `firehose.rs`
+### `firehose/`
 
-The **persistent** event pipeline behind `com.atproto.sync.subscribeRepos`. Holds a durable
+The **persistent** event pipeline behind `com.atproto.sync.subscribeRepos`, split into three
+cohesive layers so the subtle invariant-heavy staging code is reviewable in isolation. `mod.rs`
+re-exports every submodule's public types (`Firehose`, `FirehoseEvent`, `CommitInput`, `Subscription`,
+etc.) at `crate::firehose::*`, so the 19 consumer files address them exactly as before the split.
+
+| File | Contents |
+|---|---|
+| `mod.rs` | `Firehose` (the durable sequencer + broadcast fan-out), the bare `emit_commit`/`emit_account`/`emit_identity`/`emit_sync` primitives, and the atomic staged-transaction path (`lock_emit`/`EmitGuard`/`PendingCommit`/`PendingAccount`/`PendingWithSync`) — the emit-lock/staging invariants documented below |
+| `events.rs` | The wire-facing event model (`RepoOp`, `CommitEvent`, `AccountEvent`, `IdentityEvent`, `SyncEvent`, `FirehoseEvent`), their DAG-CBOR stored-payload encoding, `decode_stored_event` (reconstructs an event from a persisted `repo_seq` row for replay), and the pre-persist wire-CID/CAR-size validation. Pure data + (de)serialization, no `Firehose` state |
+| `replay.rs` | Cursor replay over the durable log: `Subscription`/`SubscribeOutcome` (the subscribe handshake) and `ReplayReader` (paged `(cursor, upper]` replay with the best-effort-vs-fail-closed pruning logic) |
+
+The module holds a durable
 monotonic sequencer (backed by the `repo_seq` table, V028) and a Tokio `broadcast` channel;
 `AppState.firehose: Arc<Firehose>` is shared by every handler. Each repo commit calls
 `record_write::commit_repo_write`, which builds the commit's block diff
@@ -265,7 +276,7 @@ and async query functions; no business logic lives here.
 | `sessions.rs` | `sessions` writes (V009): `insert_provisioning_session` (standalone bearer session, no device, 1-year TTL). Every other session insert is one leg of a multi-table auth transaction and stays in its route handler |
 | `repo_keys.rs` | Per-account repo signing keys: pending-account key storage for the mobile DID ceremony, reserved signing keys for standard account migration, promotion into DID-keyed `signing_keys`, and commit-signer lookup |
 | `transfers.rs` | Planned device-swap sessions (V027/V029/V030): `insert_transfer` opens a `pending` transfer for a DID, sweeping any expired active row first then letting the partial unique indexes reject a still-active duplicate (→ `DuplicateActive`, the 409 path) or an already-taken active code (→ `CodeCollision`, caller regenerates and retries). Transfer-accept query helpers store promoted-device credentials in `transfer_devices`; completion helpers revoke superseded sessions/transfer-device credentials and append `transfer_audit_events`. `transfer_device_token_exists` lets the `auth/guards.rs` device-token auth path accept those credentials later. `list_inflight_transfers` (the operator view: `accepted`/`completing` rows regardless of expiry — completion has no expiry check — plus unexpired `pending`, keyset-paged, **never the code**), `mark_transfer_cancelled` (guarded UPDATE to terminal `cancelled`), and `revoke_transfer_device` (single-credential tombstone) back the admin transfer routes. Wired by `routes/transfer_initiate.rs`, the root `transfer.rs` accept/complete/cancel workflows, `routes/transfer_accept.rs`, `routes/transfer_complete.rs`, `routes/admin_transfers.rs`, and `auth/guards.rs` |
-| `firehose_seq.rs` | Persistent firehose event log (V028): `max_seq` (seed the sequencer on boot), `insert_event` (append one sequenced `#commit`/`#account`/`#identity`/`#sync` row with an explicit `seq`), `events_in_range(after, upper, limit)` (the cursor-replay page query). Consumed by `firehose.rs` (persist-before-broadcast) and `routes/sync_subscribe_repos.rs` (replay paging) |
+| `firehose_seq.rs` | Persistent firehose event log (V028): `max_seq` (seed the sequencer on boot), `insert_event` (append one sequenced `#commit`/`#account`/`#identity`/`#sync` row with an explicit `seq`), `events_in_range(after, upper, limit)` (the cursor-replay page query). Consumed by `firehose/mod.rs` (persist-before-broadcast), `firehose/replay.rs` (cursor replay), and `routes/sync_subscribe_repos.rs` (replay paging) |
 | `server_stats.rs` | Whole-server aggregates for `GET /v1/admin/health`: account totals bucketed by derived lifecycle (SUM(CASE) arms mirroring `AccountLifecycle::as_sql_predicate` precedence), physical blob count + total bytes, block count, retained `repo_seq` rows — one pass, no per-account filtering |
 | `admin_devices.rs` | Operator companion app admin-device model (V025): pairing-code mint/consume (single-use), device insert/get/list/revoke (derived active status) + `touch_last_seen` (liveness bump on auth), nonce insert-if-absent + stale-nonce sweep (anti-replay). Pairing/register wired by `routes/admin_devices.rs`; the `require_admin` signed-request guard (`auth/guards.rs`) consumes `get_device`/`insert_nonce_if_absent`/`touch_last_seen`; the list/revoke routes (`routes/admin_devices.rs`) consume `list_devices`/`revoke_device`/`get_device` |
 | `sovereign_session_nonces.rs` | Sovereign-session anti-replay store (V043): atomic DID-scoped `insert_nonce_if_absent` plus stale-row sweeping whose retention must exceed the signed request's full `2 * SOVEREIGN_TIMESTAMP_WINDOW_SECS` replay-acceptance span |
