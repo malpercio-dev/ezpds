@@ -169,16 +169,13 @@
     }
   }
 
-  const pairings = $derived(
-    pairingsState !== null && pairingsState !== 'loading' && pairingsState !== 'error'
-      ? pairingsState.pairings
-      : [],
+  // `pairingsState` is a loaded PairingsState or one of the two string sentinels — never
+  // null, so narrowing off the sentinels recovers the loaded state (mirrors Home).
+  const loadedState = $derived(
+    pairingsState !== 'loading' && pairingsState !== 'error' ? pairingsState : null,
   );
-  const activeId = $derived(
-    pairingsState !== null && pairingsState !== 'loading' && pairingsState !== 'error'
-      ? pairingsState.active
-      : null,
-  );
+  const pairings = $derived(loadedState?.pairings ?? []);
+  const activeId = $derived(loadedState?.active ?? null);
   const activePairing = $derived(
     pairings.find((p) => p.id === activeId) ?? null,
   );

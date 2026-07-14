@@ -129,12 +129,11 @@
     }
   }
 
-  const loadedState = $derived.by(() => {
-    if (pairingsView !== null && pairingsView !== 'loading' && pairingsView !== 'error') {
-      return pairingsView;
-    }
-    return null;
-  });
+  // `pairingsView` is a loaded PairingsState or one of the two string sentinels — never
+  // null, so narrowing off the sentinels is all that is needed to recover the loaded state.
+  const loadedState = $derived(
+    pairingsView !== 'loading' && pairingsView !== 'error' ? pairingsView : null,
+  );
   const pairings = $derived(loadedState?.pairings ?? []);
   const activePairing = $derived(
     loadedState ? loadedState.pairings.find((p) => p.id === loadedState.active) ?? null : null,

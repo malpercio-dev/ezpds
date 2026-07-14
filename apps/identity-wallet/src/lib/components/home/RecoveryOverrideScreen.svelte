@@ -9,6 +9,7 @@
   } from '$lib/ipc';
   import { getDeadline, getUrgency } from '$lib/deadline';
   import { truncateDid } from '$lib/did-doc-utils';
+  import { formatTimestamp } from '$lib/datetime';
   import UrgencyBadge from '$lib/components/ui/UrgencyBadge.svelte';
   import DiffRow from '$lib/components/ui/DiffRow.svelte';
   import Button from '$lib/components/ui/Button.svelte';
@@ -175,7 +176,7 @@
     <div class="identity">
       <span class="id-label">Identity</span>
       <span class="id-did">{truncateDid(did)}</span>
-      <span class="id-deadline">Window closes {deadline.toLocaleString()}</span>
+      <span class="id-deadline">Window closes {formatTimestamp(deadline)}</span>
     </div>
 
     {#if loading}

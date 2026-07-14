@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import LoadingScreen from './LoadingScreen.svelte';
-  import { registerHandle, checkHandleResolution, type RegisterHandleError } from '$lib/ipc';
+  import { registerHandle, checkHandleResolution, isCodedError, type RegisterHandleError } from '$lib/ipc';
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
@@ -88,12 +88,7 @@
       startPolling(result.handle);
     } catch (raw: unknown) {
       console.error('[HandleRegistrationScreen] registerHandle failed:', raw);
-      if (
-        typeof raw === 'object' &&
-        raw !== null &&
-        'code' in raw &&
-        typeof (raw as RegisterHandleError).code === 'string'
-      ) {
+      if (isCodedError(raw)) {
         phase = { kind: 'error', error: raw as RegisterHandleError };
       } else {
         phase = { kind: 'error', error: { code: 'UNKNOWN', message: 'An unexpected error occurred.' } };

@@ -2,6 +2,7 @@
   import { getUrgency, getDeadline } from '$lib/deadline';
   import type { UnauthorizedChange } from '$lib/ipc';
   import { truncateDid } from '$lib/did-doc-utils';
+  import { formatTimestamp } from '$lib/datetime';
   import UrgencyBadge from '$lib/components/ui/UrgencyBadge.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import ChevronLeftIcon from '$lib/components/ui/ChevronLeftIcon.svelte';
@@ -56,11 +57,11 @@
         </div>
         <div class="field">
           <span class="k">Detected</span>
-          <span class="v">{new Date(change.createdAt).toLocaleString()}</span>
+          <span class="v">{formatTimestamp(change.createdAt)}</span>
         </div>
         <div class="field">
           <span class="k">Recovery deadline</span>
-          <span class="v">{deadline.toLocaleString()}</span>
+          <span class="v">{formatTimestamp(deadline)}</span>
         </div>
 
         <Button disabled={urgency === 'expired'} onclick={() => onoverride(change.cid, change.createdAt)}>

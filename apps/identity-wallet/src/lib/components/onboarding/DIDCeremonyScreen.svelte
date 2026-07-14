@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { performDIDCeremony, type DIDCeremonyError } from '$lib/ipc';
+  import { performDIDCeremony, isCodedError, type DIDCeremonyError } from '$lib/ipc';
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
@@ -57,12 +57,7 @@
       const result = await performDIDCeremony(handle, password);
       onsuccess(result);
     } catch (raw: unknown) {
-      if (
-        typeof raw === 'object' &&
-        raw !== null &&
-        'code' in raw &&
-        typeof (raw as DIDCeremonyError).code === 'string'
-      ) {
+      if (isCodedError(raw)) {
         error = raw as DIDCeremonyError;
       } else {
         error = { code: 'NETWORK_ERROR', message: 'An unexpected error occurred.' };
