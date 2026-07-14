@@ -139,6 +139,41 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
+    /// Accounts are now stored with a normalized (lowercase) email. This confirms a reset
+    /// request submitted in a *different* case than what the user originally typed at signup
+    /// still resolves — this is the fix for a `requestPasswordReset` that used to silently
+    /// no-op whenever the submitted email's case didn't byte-exact-match the stored one.
+    #[tokio::test]
+    async fn differently_cased_reset_request_resolves_normalized_stored_email() {
+        let state = test_state().await;
+        insert_account_with_password(
+            &state.db,
+            "did:plc:mixedcasereset",
+            "mixedcasereset.test.example.com",
+            "mixedcase@example.com",
+            "hunter2",
+        )
+        .await;
+
+        let db = state.db.clone();
+        let response = app(state)
+            .oneshot(post_request_password_reset("MixedCase@Example.com"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM password_reset_tokens WHERE did = 'did:plc:mixedcasereset'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            count, 1,
+            "a differently-cased reset request must resolve the normalized stored email"
+        );
+    }
+
     #[tokio::test]
     async fn known_email_inserts_token_in_db() {
         let state = test_state().await;

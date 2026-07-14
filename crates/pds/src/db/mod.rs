@@ -231,6 +231,10 @@ static MIGRATIONS: &[Migration] = &[
         version: 44,
         sql: include_str!("migrations/V044__did_web_hosting.sql"),
     },
+    Migration {
+        version: 45,
+        sql: include_str!("migrations/V045__normalize_account_emails.sql"),
+    },
 ];
 
 /// Open a WAL-mode SQLite connection pool with a maximum of 1 connection.
@@ -1659,6 +1663,89 @@ mod tests {
         assert!(
             !detail.contains("SCAN repo_seq"),
             "seq range query must not be a full table scan; got: {detail}"
+        );
+    }
+
+    // ── V045 tests ───────────────────────────────────────────────────────────
+
+    /// V045 lowercases (and trims) existing mixed-case accounts.email / pending_accounts.email
+    /// rows in place.
+    #[tokio::test]
+    async fn v045_lowercases_existing_emails() {
+        let pool = in_memory_pool().await;
+        apply_migrations_before(&pool, 45).await;
+
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES ('did:plc:v045a', '  Alice@Example.COM ', 'hash', datetime('now'), datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO claim_codes (code, expires_at, created_at) \
+             VALUES ('V045CODE', datetime('now', '+1 hour'), datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO pending_accounts (id, email, handle, tier, claim_code, created_at) \
+             VALUES ('v045-pending', 'Bob@Example.COM', 'bob.example.com', 'free', 'V045CODE', datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let v045 = MIGRATIONS.iter().find(|m| m.version == 45).unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::raw_sql(v045.sql).execute(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let account_email: String =
+            sqlx::query_scalar("SELECT email FROM accounts WHERE did = 'did:plc:v045a'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(account_email, "alice@example.com");
+
+        let pending_email: String =
+            sqlx::query_scalar("SELECT email FROM pending_accounts WHERE id = 'v045-pending'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(pending_email, "bob@example.com");
+    }
+
+    /// If two account rows would collide once normalized (differing only by case today, since
+    /// the pre-V045 UNIQUE index is case-sensitive), V045 must fail loudly rather than silently
+    /// merging or dropping one of them.
+    #[tokio::test]
+    async fn v045_fails_loudly_on_case_collision() {
+        let pool = in_memory_pool().await;
+        apply_migrations_before(&pool, 45).await;
+
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES ('did:plc:v045collide1', 'dup@example.com', 'hash', datetime('now'), datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES ('did:plc:v045collide2', 'DUP@Example.com', 'hash', datetime('now'), datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let v045 = MIGRATIONS.iter().find(|m| m.version == 45).unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        let result = sqlx::raw_sql(v045.sql).execute(&mut *tx).await;
+        assert!(
+            result.is_err(),
+            "normalizing two case-colliding emails must fail loudly, not silently merge"
         );
     }
 }

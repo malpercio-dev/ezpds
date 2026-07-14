@@ -68,8 +68,12 @@ pub async fn create_mobile_account(
         return Err(ApiError::new(ErrorCode::InvalidHandle, msg));
     }
 
+    // Normalize (trim + lowercase) so storage/lookup match the reference PDS's case-insensitive
+    // email handling.
+    let email = crate::uniqueness::normalize_email(&payload.email);
+
     // --- Email uniqueness: fast-path rejection before INSERT ---
-    if crate::uniqueness::email_taken(&state.db, &payload.email)
+    if crate::uniqueness::email_taken(&state.db, &email)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to check email uniqueness");
@@ -110,7 +114,7 @@ pub async fn create_mobile_account(
         ProvisionParams {
             claim_code: &payload.claim_code,
             account_id: &account_id,
-            email: &payload.email,
+            email: &email,
             handle: &payload.handle,
             device_id: &device_id,
             platform: payload.platform.as_str(),
@@ -888,6 +892,58 @@ mod tests {
         let body = axum::body::to_bytes(resp2.into_body(), 4096).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "HANDLE_TAKEN");
+    }
+
+    #[tokio::test]
+    async fn email_is_stored_normalized_lowercase() {
+        let state = test_state().await;
+        let db = state.db.clone();
+        let claim_code = seed_claim_code(&db).await;
+        let body = format!(
+            r#"{{"email":"  MixedCase@Example.COM  ","handle":"mixed.example.com","devicePublicKey":"dGVzdC1rZXk=","platform":"ios","claimCode":"{claim_code}"}}"#
+        );
+
+        let response = app(state)
+            .oneshot(post_create_mobile_account(&body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let stored: String = sqlx::query_scalar(
+            "SELECT email FROM pending_accounts WHERE handle = 'mixed.example.com'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(stored, "mixedcase@example.com");
+    }
+
+    #[tokio::test]
+    async fn duplicate_email_differing_only_by_case_returns_409() {
+        let state = test_state().await;
+        let db = state.db.clone();
+        let code1 = seed_claim_code(&db).await;
+        let code2 = seed_claim_code(&db).await;
+
+        let resp1 = app(state.clone())
+            .oneshot(post_create_mobile_account(&format!(
+                r#"{{"email":"case@example.com","handle":"case1.example.com","devicePublicKey":"dGVzdC1rZXk=","platform":"ios","claimCode":"{code1}"}}"#
+            )))
+            .await
+            .unwrap();
+        assert_eq!(resp1.status(), StatusCode::CREATED);
+
+        let resp2 = app(state)
+            .oneshot(post_create_mobile_account(&format!(
+                r#"{{"email":"CASE@EXAMPLE.com","handle":"case2.example.com","devicePublicKey":"dGVzdC1rZXk=","platform":"ios","claimCode":"{code2}"}}"#
+            )))
+            .await
+            .unwrap();
+
+        assert_eq!(resp2.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(resp2.into_body(), 4096).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "ACCOUNT_EXISTS");
     }
 
     #[tokio::test]
