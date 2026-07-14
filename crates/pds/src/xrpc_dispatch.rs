@@ -66,7 +66,7 @@ pub async fn xrpc_handler(
 ) -> Response {
     use crate::auth::jwt::AuthScope;
     use crate::auth::oauth_scopes;
-    use crate::identity::proxy::{resolve_atproto_proxy_target, HeaderProxyGuard};
+    use crate::identity::proxy::resolve_atproto_proxy_target;
     use crate::routes::service_proxy::proxy_xrpc;
 
     let upstream = if method.starts_with("app.bsky.") {
@@ -171,43 +171,36 @@ pub async fn xrpc_handler(
         return response;
     }
 
-    let (url, proxy_did, guard, upstream_label): (
+    let (url, proxy_did, caller_controlled_target, upstream_label): (
         String,
         String,
-        Option<HeaderProxyGuard>,
+        bool,
         &'static str,
     ) = match header_target {
-        // Always a guard, whether or not the host needed DNS pinning: the caller-controlled
-        // target still requires the redirect-disabled hardened client. `moderation` keeps its own
-        // label (it always resolves this way); an `app.bsky.*`/`chat.bsky.*` request that used a
-        // header to override its namespace's default gets the bounded `header_target` label
-        // instead of the raw destination, per the metrics cardinality rule.
+        // Always caller-controlled, so the request routes through the redirect-disabled,
+        // SSRF-resolving hardened client. `moderation` keeps its own label (it always resolves
+        // this way); an `app.bsky.*`/`chat.bsky.*` request that used a header to override its
+        // namespace's default gets the bounded `header_target` label instead of the raw
+        // destination, per the metrics cardinality rule.
         Some(target) => {
             let label = if matches!(upstream, ProxyUpstream::Moderation) {
                 "moderation"
             } else {
                 "header_target"
             };
-            (
-                target.url,
-                target.header_value,
-                Some(HeaderProxyGuard {
-                    pinned: target.pinned,
-                }),
-                label,
-            )
+            (target.url, target.header_value, true, label)
         }
         None => match upstream {
             ProxyUpstream::AppView => (
                 state.config.appview.url.clone(),
                 state.config.appview.did.clone(),
-                None,
+                false,
                 "appview",
             ),
             ProxyUpstream::Chat => (
                 state.config.chat.url.clone(),
                 state.config.chat.did.clone(),
-                None,
+                false,
                 "chat",
             ),
             ProxyUpstream::Moderation => unreachable!("moderation always resolves a header target"),
@@ -220,7 +213,7 @@ pub async fn xrpc_handler(
         &proxy_did,
         &method,
         &user.did,
-        guard.as_ref(),
+        caller_controlled_target,
         req,
     )
     .await;

@@ -149,7 +149,6 @@ pub async fn expand_include_scopes(
 pub(crate) struct AuthorityEndpoint {
     pub did: String,
     pub url: String,
-    pub pinned: Option<proxy::PinnedResolution>,
 }
 
 /// Reverse an NSID's authority segments into the domain that publishes it, per the atproto
@@ -217,7 +216,7 @@ pub(crate) async fn resolve_authority_endpoint(
         .and_then(Value::as_str)
         .ok_or_else(|| format!("\"{authority_did}\" does not advertise a PDS service endpoint"))?;
 
-    let pinned = proxy::validate_proxy_endpoint(endpoint, state.allow_loopback_proxy_targets)
+    proxy::validate_proxy_endpoint(endpoint, state.allow_loopback_proxy_targets)
         .await
         .map_err(|_| {
             format!("\"{authority_did}\"'s service endpoint is not a usable public address")
@@ -226,7 +225,6 @@ pub(crate) async fn resolve_authority_endpoint(
     Ok(AuthorityEndpoint {
         did: authority_did,
         url: endpoint.to_string(),
-        pinned,
     })
 }
 
@@ -351,26 +349,22 @@ fn is_blob_wildcard(entry: &PermissionEntry) -> bool {
     matches!(entry, PermissionEntry::Blob { accept } if accept.iter().any(|a| a == "*/*"))
 }
 
-/// Build a one-off HTTP client hardened for fetching from a caller-influenced Lexicon
-/// authority endpoint — the NSID (and therefore the authority) comes from the client's
-/// requested scope string. Delegates to the shared `proxy::build_pinned_client`,
-/// the same hardening `routes::service_proxy::build_header_proxy_client` uses for its own
-/// caller-controlled target.
-fn build_fetch_client(pinned: Option<&proxy::PinnedResolution>) -> Result<reqwest::Client, String> {
-    proxy::build_pinned_client(pinned).map_err(|e| {
-        tracing::error!(error = %e, "failed to build permission-set fetch client");
-        "failed to prepare the permission-set fetch".to_string()
-    })
-}
-
 #[derive(Deserialize)]
 struct GetRecordResponse {
     value: Value,
 }
 
 /// Fetch `nsid`'s Lexicon schema record from `authority`'s PDS via `com.atproto.repo.getRecord`.
-async fn fetch_lexicon_schema(authority: &AuthorityEndpoint, nsid: &str) -> Result<Value, String> {
-    let client = build_fetch_client(authority.pinned.as_ref())?;
+///
+/// The authority (and therefore this endpoint) is derived from the client's requested scope
+/// string, so the fetch goes through the shared SSRF-hardened client (`state.hardened_http_client`)
+/// — redirects disabled + a DNS resolver enforcing the public-address allowlist at connect time —
+/// the same client `routes::service_proxy` uses for its own caller-controlled targets.
+async fn fetch_lexicon_schema(
+    client: &reqwest::Client,
+    authority: &AuthorityEndpoint,
+    nsid: &str,
+) -> Result<Value, String> {
     let url = format!(
         "{}/xrpc/com.atproto.repo.getRecord?repo={}&collection={}&rkey={}",
         authority.url.trim_end_matches('/'),
@@ -410,7 +404,7 @@ pub(crate) async fn resolve_permission_set(
     include_aud: Option<&str>,
 ) -> Result<Vec<String>, String> {
     let authority = resolve_authority_endpoint(state, nsid).await?;
-    let record = fetch_lexicon_schema(&authority, nsid).await?;
+    let record = fetch_lexicon_schema(&state.hardened_http_client, &authority, nsid).await?;
     let doc: std::collections::HashMap<String, PermissionSetDef> = record
         .get("defs")
         .cloned()

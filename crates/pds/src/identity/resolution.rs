@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use crate::app::AppState;
 
-use super::proxy::{build_pinned_client, validate_proxy_endpoint};
+use super::proxy::validate_proxy_endpoint;
 
 pub const INVALID_HANDLE: &str = "handle.invalid";
 
@@ -238,26 +238,12 @@ pub(crate) async fn resolve_web_did_document(
 ) -> Result<Value, ApiError> {
     let url = did_web_document_url(did)?;
     // The did:web authority is caller-controlled (the requested `did`), so this fetch is
-    // SSRF-guarded exactly like resolve_web_did_document_bytes: validate the resolved endpoint,
-    // then pin the connection to the already-validated addresses.
-    let parsed = reqwest::Url::parse(&url)
-        .map_err(|_| ApiError::new(ErrorCode::InvalidClaim, "invalid did:web DID"))?;
-    let authority = parsed
-        .host_str()
-        .map(|host| match parsed.port() {
-            Some(port) => format!("https://{host}:{port}"),
-            None => format!("https://{host}"),
-        })
-        .ok_or_else(|| ApiError::new(ErrorCode::InvalidClaim, "invalid did:web DID"))?;
-    let pinned = validate_proxy_endpoint(&authority, state.allow_loopback_proxy_targets).await?;
-    let client = build_pinned_client(pinned.as_ref()).map_err(|e| {
-        tracing::error!(did = %did, error = %e, "failed to build hardened did:web client");
-        ApiError::new(
-            ErrorCode::PlcDirectoryError,
-            "failed to resolve did:web document",
-        )
-    })?;
-    let response = client.get(&url).send().await.map_err(|e| {
+    // SSRF-guarded exactly like resolve_web_did_document_bytes: validate the endpoint's URL shape
+    // (and, for an IP literal, its address), then send on the shared hardened client whose DNS
+    // resolver re-checks any domain-name resolution against the allowlist at connect time.
+    let authority = did_web_authority(&url)?;
+    validate_proxy_endpoint(&authority, state.allow_loopback_proxy_targets).await?;
+    let response = state.hardened_http_client.get(&url).send().await.map_err(|e| {
         tracing::error!(did = %did, error = %e, url = %url, "failed to resolve did:web document");
         ApiError::new(
             ErrorCode::PlcDirectoryError,
@@ -299,24 +285,9 @@ pub(crate) async fn resolve_web_did_document_bytes(
     did: &str,
 ) -> Result<String, ApiError> {
     let url = did_web_document_url(did)?;
-    let parsed = reqwest::Url::parse(&url)
-        .map_err(|_| ApiError::new(ErrorCode::InvalidClaim, "invalid did:web DID"))?;
-    let authority = parsed
-        .host_str()
-        .map(|host| match parsed.port() {
-            Some(port) => format!("https://{host}:{port}"),
-            None => format!("https://{host}"),
-        })
-        .ok_or_else(|| ApiError::new(ErrorCode::InvalidClaim, "invalid did:web DID"))?;
-    let pinned = validate_proxy_endpoint(&authority, state.allow_loopback_proxy_targets).await?;
-    let client = build_pinned_client(pinned.as_ref()).map_err(|e| {
-        tracing::error!(did = %did, error = %e, "failed to build hardened did:web client");
-        ApiError::new(
-            ErrorCode::PlcDirectoryError,
-            "failed to resolve did:web document",
-        )
-    })?;
-    let response = client.get(&url).send().await.map_err(|e| {
+    let authority = did_web_authority(&url)?;
+    validate_proxy_endpoint(&authority, state.allow_loopback_proxy_targets).await?;
+    let response = state.hardened_http_client.get(&url).send().await.map_err(|e| {
         tracing::error!(did = %did, error = %e, url = %url, "failed to resolve did:web document bytes");
         ApiError::new(
             ErrorCode::PlcDirectoryError,
@@ -369,6 +340,20 @@ pub(crate) async fn bounded_body_preview(mut response: reqwest::Response) -> Str
 
 fn safe_body_preview(body: &str) -> String {
     body.chars().take(500).collect()
+}
+
+/// Extract the `https://host[:port]` authority from an already-built did:web document URL, for the
+/// SSRF `validate_proxy_endpoint` shape check. Shared by both did:web fetch paths.
+fn did_web_authority(url: &str) -> Result<String, ApiError> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|_| ApiError::new(ErrorCode::InvalidClaim, "invalid did:web DID"))?;
+    parsed
+        .host_str()
+        .map(|host| match parsed.port() {
+            Some(port) => format!("https://{host}:{port}"),
+            None => format!("https://{host}"),
+        })
+        .ok_or_else(|| ApiError::new(ErrorCode::InvalidClaim, "invalid did:web DID"))
 }
 
 fn did_web_document_url(did: &str) -> Result<String, ApiError> {

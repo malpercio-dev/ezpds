@@ -2,14 +2,18 @@
 //
 // The `atproto-proxy` header target guard: resolves a caller-supplied `<did>#<serviceId>` header
 // to an upstream service endpoint, then SSRF-validates that endpoint (scheme, userinfo,
-// query/fragment, and public-address checks on both IP literals and resolved domain names) before
-// it's ever handed to the HTTP client. Since the target DID is caller-chosen, an attacker can make
-// its DID document advertise anything — this is the only thing standing between an authenticated
-// request and an SSRF into the PDS's private network. Also provides the DNS-pinning hardened
-// client builder (`build_pinned_client`) that closes the redirect/re-resolution TOCTOU gap between
-// validation and connect.
+// query/fragment, and a public-address check on IP-literal hosts) before it's ever handed to the
+// HTTP client. Since the target DID is caller-chosen, an attacker can make its DID document
+// advertise anything — this is the only thing standing between an authenticated request and an
+// SSRF into the PDS's private network. Also provides the SSRF-hardened HTTP client
+// (`build_hardened_client`), a single shared/pooled client whose custom DNS resolver
+// (`SsrfResolver`) re-applies the same allowlist to every resolved address at connect time — the
+// domain-name half of the guard, closing the redirect/re-resolution TOCTOU gap without a fresh
+// client per request.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
+use std::time::Duration;
 
 use common::{ApiError, ErrorCode};
 use serde_json::Value;
@@ -21,62 +25,103 @@ use super::resolution::resolve_did_document;
 /// A validated `atproto-proxy` target, ready to hand to `proxy_xrpc`.
 #[derive(Debug)]
 pub struct ProxyTarget {
-    /// The service base URL: validated http(s) scheme, no userinfo/query/fragment, and a host
-    /// confirmed to resolve only to public (non-loopback/private/link-local/metadata) addresses.
+    /// The service base URL: validated http(s) scheme, no userinfo/query/fragment, and — for an
+    /// IP-literal host — a public (non-loopback/private/link-local/metadata) address. A domain
+    /// host's addresses are validated at connect time by the hardened client's [`SsrfResolver`].
     pub url: String,
     /// The original `atproto-proxy` header value, echoed back verbatim as the outbound header.
     pub header_value: String,
-    /// Present when `url`'s host is a domain name: the exact addresses it was validated against.
-    /// `proxy_xrpc` pins the outbound connection to these (rather than letting the HTTP client
-    /// re-resolve the domain at connect time), so a second DNS answer can't substitute an address
-    /// that was never checked (DNS-rebinding TOCTOU).
-    pub pinned: Option<PinnedResolution>,
 }
 
-/// Marks a `proxy_xrpc` call as targeting a caller-controlled destination — resolved from a
-/// caller-supplied `atproto-proxy` header via `resolve_atproto_proxy_target`, whether the request
-/// is `com.atproto.moderation.*` (which always resolves this way, having no configured default)
-/// or an `app.bsky.*`/`chat.bsky.*` request that named an explicit header target overriding its
-/// namespace's default. Either way the request must go through a hardened client: redirects
-/// disabled (a malicious target can't 3xx its way onto a private/loopback address past the SSRF
-/// check that only inspects the *first* URL) and, when the host was a domain name, DNS resolution
-/// pinned to the addresses `resolve_atproto_proxy_target` already validated. A request with no
-/// `atproto-proxy` header passes `None` for this and uses the shared `state.http_client`
-/// unchanged — its upstream is the admin-configured default, not caller-controlled, so neither
-/// concern applies.
-#[derive(Debug)]
-pub struct HeaderProxyGuard {
-    pub pinned: Option<PinnedResolution>,
-}
+/// The read timeout applied to every outbound fetch to a caller-influenced target, and the bound
+/// on a single DNS resolution inside [`SsrfResolver`] (kept well under it so a slow/hostile
+/// resolver for a caller-chosen host can't tie up request handling).
+const HARDENED_CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
+const HARDENED_RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// A domain name plus the specific addresses an outbound connection to it must be pinned to.
-#[derive(Debug)]
-pub struct PinnedResolution {
-    pub domain: String,
-    pub addrs: Vec<std::net::SocketAddr>,
-}
-
-/// Build a one-off HTTP client hardened for fetching from a caller-influenced target.
+/// A [`reqwest::dns::Resolve`] that enforces the SSRF allowlist on every address it hands back.
 ///
-/// Always disables redirects: a `validate_proxy_endpoint` check only inspects the *first* URL,
-/// so following a redirect could sail past it onto a private/loopback/metadata address. When
-/// `pinned` is present (the host was a domain name), DNS resolution for that domain is
-/// additionally overridden to exactly the addresses already validated — without this, the
-/// client would re-resolve the domain independently at connect time, and a second DNS answer
-/// (attacker-controlled, or simply a changed record) could point at an address that was never
-/// checked. Shared by `routes::service_proxy`'s moderation-proxy branch and
-/// `auth::permission_sets`'s Lexicon-authority fetch — both face the identical
-/// "attacker names the resolution target" shape.
-pub(crate) fn build_pinned_client(
-    pinned: Option<&PinnedResolution>,
-) -> Result<reqwest::Client, reqwest::Error> {
-    let mut builder = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .redirect(reqwest::redirect::Policy::none());
-    if let Some(pin) = pinned {
-        builder = builder.resolve_to_addrs(&pin.domain, &pin.addrs);
+/// Installed on the shared hardened client ([`build_hardened_client`]). hyper only consults it for
+/// hostnames that need DNS resolution — a URL whose host is already an IP literal bypasses it
+/// entirely, which is exactly why [`validate_proxy_endpoint`] still checks IP literals itself. For
+/// a domain, it resolves the name and rejects the *whole* resolution unless every returned address
+/// is public and routable, so a second DNS answer at connect time (DNS-rebinding TOCTOU, or simply
+/// a record that changed since the request began) can never substitute an address that was never
+/// checked. This is the domain-name half of the guard the per-request `resolve_to_addrs` pin used
+/// to provide; folding it into a resolver lets one pooled client serve every SSRF-guarded call
+/// site instead of a fresh client (and TLS handshake) per request.
+///
+/// `allow_loopback` mirrors [`AppState::allow_loopback_proxy_targets`]: baked in when the client is
+/// built (`false` in production, `true` only under the test harness). The one test that flips the
+/// flag after construction targets an IP literal, so it never reaches this resolver.
+#[derive(Debug)]
+struct SsrfResolver {
+    allow_loopback: bool,
+}
+
+impl reqwest::dns::Resolve for SsrfResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let allow_loopback = self.allow_loopback;
+        Box::pin(async move {
+            type BoxError = Box<dyn std::error::Error + Send + Sync>;
+            let host = name.as_str().to_owned();
+            // Port 0: the resolved SocketAddrs' ports are overridden by the URL's port at connect
+            // time (see the `reqwest::dns::Resolve` contract), so the port is irrelevant here — we
+            // only care about the IPs to validate them.
+            let addrs: Vec<SocketAddr> = match tokio::time::timeout(
+                HARDENED_RESOLVE_TIMEOUT,
+                tokio::net::lookup_host((host.as_str(), 0)),
+            )
+            .await
+            {
+                Ok(Ok(iter)) => iter.collect(),
+                Ok(Err(e)) => return Err(Box::new(e) as BoxError),
+                Err(_) => return Err(format!("DNS resolution for {host:?} timed out").into()),
+            };
+
+            if addrs.is_empty() {
+                return Err(format!("no addresses resolved for {host:?}").into());
+            }
+            // Fail closed: reject the entire resolution if *any* address is non-public, so a mixed
+            // answer can't smuggle a private target past the guard.
+            if !addrs
+                .iter()
+                .all(|addr| ip_allowed(addr.ip(), allow_loopback))
+            {
+                return Err(format!(
+                    "refusing to connect to {host:?}: it resolves to a non-public address"
+                )
+                .into());
+            }
+
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
     }
-    builder.build()
+}
+
+/// Build the shared HTTP client used for every fetch to a caller-influenced target — the
+/// `atproto-proxy` header target (`routes::service_proxy`), a did:web document
+/// (`identity::resolution`), and a Lexicon-authority permission-set record
+/// (`auth::permission_sets`). Built once and stored in [`AppState::hardened_http_client`], so all
+/// four SSRF-guarded call sites share one connection pool + TLS context instead of constructing a
+/// fresh client (and handshaking anew) per request.
+///
+/// Two hardenings, both always on:
+///   * **Redirects disabled** — a [`validate_proxy_endpoint`] check only inspects the *first* URL,
+///     so following a 3xx could sail past it onto a private/loopback/metadata address.
+///   * **[`SsrfResolver`] DNS** — every domain-name resolution is re-checked against the allowlist
+///     at connect time, so a second DNS answer can't substitute an address that was never checked.
+///
+/// `allow_loopback` is baked into the resolver (see [`SsrfResolver`]); production always passes
+/// `false`.
+pub(crate) fn build_hardened_client(
+    allow_loopback: bool,
+) -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .timeout(HARDENED_CLIENT_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(Arc::new(SsrfResolver { allow_loopback }))
+        .build()
 }
 
 /// Resolve an inbound `atproto-proxy` header (`<did>#<serviceId>`) to the upstream service it
@@ -129,28 +174,29 @@ pub async fn resolve_atproto_proxy_target(
             )
         })?;
 
-    let pinned = validate_proxy_endpoint(endpoint, state.allow_loopback_proxy_targets).await?;
+    validate_proxy_endpoint(endpoint, state.allow_loopback_proxy_targets).await?;
 
     Ok(ProxyTarget {
         url: endpoint.to_string(),
         header_value: header_value.to_string(),
-        pinned,
     })
 }
 
-/// Parse and validate a caller-influenced proxy endpoint URL, resolving its host to concrete
-/// addresses so the connection can later be pinned against exactly what was checked here.
+/// Parse and validate the URL shape of a caller-influenced proxy endpoint, plus the address of an
+/// IP-literal host.
 ///
 /// Rejects: non-http(s) schemes, userinfo (`user:pass@host`), a query or fragment (both
 /// meaningless on a base URL `proxy_xrpc` only ever appends `/xrpc/{nsid}` to, and a vector for
-/// smuggling tricks past a naive parser), and any host — whether given as a literal IP or
-/// resolved from a domain name — that isn't a public address (loopback, RFC 1918 private,
-/// link-local/cloud-metadata, unique-local IPv6, unspecified, multicast, broadcast, or
-/// documentation ranges are all rejected, for both IPv4 and IPv4-mapped-into-IPv6 forms).
+/// smuggling tricks past a naive parser), and an IP-literal host that isn't a public address
+/// (loopback, RFC 1918 private, link-local/cloud-metadata, unique-local IPv6, unspecified,
+/// multicast, broadcast, or documentation ranges are all rejected, for both IPv4 and
+/// IPv4-mapped-into-IPv6 forms).
 ///
-/// Returns `Some(PinnedResolution)` when the host is a domain name (the validated addresses to
-/// pin at connect time); `None` when the host is already an IP literal, so there is no separate
-/// resolution step for a later DNS answer to race.
+/// A **domain-name** host is not resolved here: the hardened client's [`SsrfResolver`] applies the
+/// identical allowlist to whatever the domain resolves to at connect time. Doing the check there —
+/// against the answer actually connected to — is what lets one shared, pooled client replace the
+/// old per-request pinned client while keeping the DNS-rebinding TOCTOU closed. This function's job
+/// on a domain host is therefore only the URL-shape checks; the address check is the resolver's.
 ///
 /// `allow_loopback` is a test-only relaxation (see `AppState::allow_loopback_proxy_targets`):
 /// production always passes `false`.
@@ -160,14 +206,13 @@ pub async fn resolve_atproto_proxy_target(
 pub(crate) async fn validate_proxy_endpoint(
     endpoint: &str,
     allow_loopback: bool,
-) -> Result<Option<PinnedResolution>, ApiError> {
+) -> Result<(), ApiError> {
     let bad_target = || {
         ApiError::new(
             ErrorCode::ServiceUnavailable,
             "atproto-proxy target is not a usable public service endpoint",
         )
     };
-    let ip_allowed = |ip: IpAddr| is_global_ip(ip) || (allow_loopback && ip.is_loopback());
 
     let url = reqwest::Url::parse(endpoint).map_err(|_| bad_target())?;
     if url.scheme() != "http" && url.scheme() != "https" {
@@ -181,40 +226,23 @@ pub(crate) async fn validate_proxy_endpoint(
     }
 
     let host = url.host().ok_or_else(bad_target)?;
-    let port = url.port_or_known_default().ok_or_else(bad_target)?;
 
     match host {
-        url::Host::Ipv4(ip) => {
-            if !ip_allowed(IpAddr::V4(ip)) {
-                return Err(bad_target());
-            }
-            Ok(None)
-        }
-        url::Host::Ipv6(ip) => {
-            if !ip_allowed(IpAddr::V6(ip)) {
-                return Err(bad_target());
-            }
-            Ok(None)
-        }
-        url::Host::Domain(domain) => {
-            let domain = domain.to_string();
-            // The domain comes from a caller-chosen DID document, so a resolver that's slow (or
-            // made slow on purpose) must not be able to tie up request handling indefinitely —
-            // bound it well under the outbound HTTP client's own 10s timeout.
-            let addrs: Vec<std::net::SocketAddr> = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                tokio::net::lookup_host((domain.as_str(), port)),
-            )
-            .await
-            .map_err(|_| bad_target())?
-            .map_err(|_| bad_target())?
-            .collect();
-            if addrs.is_empty() || !addrs.iter().all(|addr| ip_allowed(addr.ip())) {
-                return Err(bad_target());
-            }
-            Ok(Some(PinnedResolution { domain, addrs }))
-        }
+        // An IP-literal host never reaches the hardened client's `SsrfResolver` (hyper connects to
+        // the literal directly), so its address must be checked here.
+        url::Host::Ipv4(ip) if !ip_allowed(IpAddr::V4(ip), allow_loopback) => Err(bad_target()),
+        url::Host::Ipv6(ip) if !ip_allowed(IpAddr::V6(ip), allow_loopback) => Err(bad_target()),
+        // A domain host's addresses are validated at connect time by `SsrfResolver`.
+        _ => Ok(()),
     }
+}
+
+/// Whether `ip` may be connected to for a caller-influenced target: a public, routable address, or
+/// loopback when the test-only relaxation is in effect. Shared by [`validate_proxy_endpoint`]'s
+/// IP-literal branch and [`SsrfResolver`]'s connect-time domain check, so both enforce one
+/// allowlist.
+fn ip_allowed(ip: IpAddr, allow_loopback: bool) -> bool {
+    is_global_ip(ip) || (allow_loopback && ip.is_loopback())
 }
 
 /// Whether `ip` is a public, routable address — i.e. not loopback, private, link-local
@@ -315,7 +343,9 @@ fn is_global_ipv6(ip: std::net::Ipv6Addr) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_atproto_proxy_target, validate_proxy_endpoint};
+    use std::str::FromStr;
+
+    use super::{ip_allowed, resolve_atproto_proxy_target, validate_proxy_endpoint, SsrfResolver};
     use crate::app::test_state;
     use crate::routes::test_utils::seed_did_document;
 
@@ -345,8 +375,6 @@ mod tests {
             .unwrap();
         assert_eq!(target.url, "https://1.2.3.4:8443");
         assert_eq!(target.header_value, "did:plc:labeler123#atproto_labeler");
-        // An IP literal has no separate DNS-resolution step, so there's nothing to pin.
-        assert!(target.pinned.is_none());
     }
 
     #[tokio::test]
@@ -410,13 +438,11 @@ mod tests {
     async fn accepts_public_ipv4_and_ipv6() {
         assert!(validate_proxy_endpoint("https://1.2.3.4", false)
             .await
-            .unwrap()
-            .is_none());
+            .is_ok());
         assert!(
             validate_proxy_endpoint("https://[2606:4700:4700::1111]", false)
                 .await
-                .unwrap()
-                .is_none()
+                .is_ok()
         );
     }
 
@@ -445,8 +471,7 @@ mod tests {
             .is_err());
         assert!(validate_proxy_endpoint("http://127.0.0.1:8080", true)
             .await
-            .unwrap()
-            .is_none());
+            .is_ok());
     }
 
     #[tokio::test]
@@ -491,17 +516,74 @@ mod tests {
         }
     }
 
-    // Confirms the domain-resolution branch actually wires up (pins to the addresses it
-    // validated), not just the IP-literal fast path exercised above. Uses `localhost` under the
-    // loopback relaxation rather than a real external domain, so the test stays hermetic — no
-    // live DNS/network dependency.
+    // A domain-name host passes the URL-shape checks without being resolved here — its address is
+    // validated at connect time by `SsrfResolver` (exercised directly below). Even a domain that
+    // would resolve to loopback is accepted at this stage regardless of `allow_loopback`, since no
+    // address check happens on the domain branch.
     #[tokio::test]
-    async fn resolves_and_pins_a_domain_name() {
-        let pinned = validate_proxy_endpoint("http://localhost:80", true)
+    async fn domain_host_passes_shape_checks_without_resolving() {
+        assert!(validate_proxy_endpoint("https://example.com", false)
             .await
-            .unwrap()
-            .expect("localhost is a domain name, not an IP literal");
-        assert_eq!(pinned.domain, "localhost");
-        assert!(!pinned.addrs.is_empty());
+            .is_ok());
+        assert!(validate_proxy_endpoint("http://localhost:80", false)
+            .await
+            .is_ok());
+    }
+
+    // ── ip_allowed: the one allowlist both branches share ────────────────────
+
+    #[test]
+    fn ip_allowed_permits_public_and_gates_loopback_on_the_relaxation() {
+        use std::net::IpAddr;
+        let public: IpAddr = "1.2.3.4".parse().unwrap();
+        let loopback: IpAddr = "127.0.0.1".parse().unwrap();
+        let private: IpAddr = "10.0.0.1".parse().unwrap();
+
+        assert!(ip_allowed(public, false));
+        assert!(ip_allowed(public, true));
+        assert!(!ip_allowed(loopback, false));
+        assert!(ip_allowed(loopback, true)); // relaxation on
+        assert!(!ip_allowed(private, false));
+        assert!(!ip_allowed(private, true)); // relaxation never widens past loopback
+    }
+
+    // ── SsrfResolver: the connect-time domain guard ──────────────────────────
+    //
+    // `localhost` resolves to loopback on every host, so these stay hermetic (no external DNS) yet
+    // exercise both the reject-non-public path and the loopback relaxation the domain branch of
+    // `validate_proxy_endpoint` now defers to.
+
+    #[tokio::test]
+    async fn ssrf_resolver_rejects_non_public_resolution() {
+        use reqwest::dns::Resolve;
+        let resolver = SsrfResolver {
+            allow_loopback: false,
+        };
+        let name = reqwest::dns::Name::from_str("localhost").unwrap();
+        // `Addrs` (the Ok type) isn't `Debug`, so match rather than `expect_err`.
+        let err = match resolver.resolve(name).await {
+            Ok(_) => panic!("localhost resolves to loopback, which is not public"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("non-public"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ssrf_resolver_allows_loopback_when_relaxed() {
+        use reqwest::dns::Resolve;
+        let resolver = SsrfResolver {
+            allow_loopback: true,
+        };
+        let name = reqwest::dns::Name::from_str("localhost").unwrap();
+        let addrs: Vec<_> = resolver
+            .resolve(name)
+            .await
+            .expect("loopback is permitted under the relaxation")
+            .collect();
+        assert!(!addrs.is_empty());
+        assert!(addrs.iter().all(|a| a.ip().is_loopback()));
     }
 }
