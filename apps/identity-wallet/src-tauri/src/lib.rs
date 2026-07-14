@@ -1,7 +1,6 @@
 pub mod agents;
 pub mod claim;
 pub mod device_key;
-pub mod home;
 pub mod http;
 pub mod identity_store;
 pub mod keychain;
@@ -396,17 +395,6 @@ async fn create_account(
             }),
         }
     }
-}
-
-#[tauri::command]
-async fn get_or_create_device_key(
-) -> Result<device_key::DevicePublicKey, device_key::DeviceKeyError> {
-    device_key::get_or_create()
-}
-
-#[tauri::command]
-async fn sign_with_device_key(data: Vec<u8>) -> Result<Vec<u8>, device_key::DeviceKeyError> {
-    device_key::sign(&data)
 }
 
 struct DidCeremonyContext {
@@ -1124,8 +1112,6 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             create_account,
-            get_or_create_device_key,
-            sign_with_device_key,
             perform_did_ceremony,
             prepare_did_web_ceremony,
             complete_did_web_ceremony,
@@ -1141,8 +1127,6 @@ pub fn run() {
             save_pds_url,
             get_appearance_preference,
             set_appearance_preference,
-            home::load_home_data,
-            home::log_out,
             oauth::prepare_oauth_flow,
             oauth::complete_oauth_flow,
             claim::resolve_identity,

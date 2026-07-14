@@ -23,14 +23,6 @@ fn get_or_create_device_key() -> Result<device_key::DevicePublicKey, device_key:
     device_key::get_or_create()
 }
 
-/// Sign arbitrary bytes with the device's admin key, returning a raw 64-byte
-/// (r‖s, low-S) P-256 signature. Used by the signing client; also exposed for
-/// diagnostics and the device-key round-trip check.
-#[tauri::command]
-fn sign_with_device_key(data: Vec<u8>) -> Result<Vec<u8>, device_key::DeviceKeyError> {
-    device_key::sign(&data)
-}
-
 /// Pair this device with a relay by claiming a pairing code (typed manually or scanned
 /// from the operator's QR). Registers the device's public key, appends the pairing to
 /// the document, and makes it the active selection; returns the relay-assigned
@@ -272,7 +264,6 @@ pub fn run() {
     builder
         .invoke_handler(tauri::generate_handler![
             get_or_create_device_key,
-            sign_with_device_key,
             pair_device,
             list_pairings,
             set_active_pairing,
