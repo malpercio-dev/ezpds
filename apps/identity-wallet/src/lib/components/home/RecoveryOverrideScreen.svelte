@@ -37,8 +37,7 @@
 
   const countdown = useCountdown(15_000);
 
-  // Derived so the countdown stays reactive as `now` ticks (was a plain const that
-  // captured only the initial value of `createdAt`).
+  // Derived so the countdown stays reactive as `now` ticks.
   let deadline = $derived(getDeadline(createdAt));
   let urgency = $derived(getUrgency(deadline, countdown.now));
   let isExpired = $derived(urgency === 'expired');
