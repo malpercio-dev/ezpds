@@ -78,19 +78,26 @@ struct SovereignSessionResponse {
 }
 
 #[derive(Deserialize)]
-struct BearerJwtClaims {
-    exp: u64,
-    sub: String,
-    aud: String,
+pub(crate) struct BearerJwtClaims {
+    pub(crate) exp: u64,
+    pub(crate) sub: String,
+    pub(crate) aud: String,
 }
 
-fn bearer_jwt_claims(token: &str) -> Option<BearerJwtClaims> {
+/// Decode a Bearer JWT's unverified payload into its `exp`/`sub`/`aud` claims.
+///
+/// The signature is NOT checked — the claims are only used for session-lifecycle
+/// decisions (expiry) and to bind a restored/rotated session to the DID and hosting
+/// server it was issued for, never as authorization data.
+pub(crate) fn bearer_jwt_claims(token: &str) -> Option<BearerJwtClaims> {
     let payload = token.split('.').nth(1)?;
     let bytes = URL_SAFE_NO_PAD.decode(payload).ok()?;
     serde_json::from_slice(&bytes).ok()
 }
 
-fn audience_matches_server(audience: &str, server_did: &str, pds_url: &str) -> bool {
+/// Whether a JWT `aud` claim identifies the hosting server, accepting either the
+/// server DID or the PDS URL (some issuers set the public URL as the audience).
+pub(crate) fn audience_matches_server(audience: &str, server_did: &str, pds_url: &str) -> bool {
     audience == server_did || audience.trim_end_matches('/') == pds_url.trim_end_matches('/')
 }
 
