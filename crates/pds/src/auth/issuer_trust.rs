@@ -24,7 +24,7 @@ use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::jwks::JwksCache;
+use crate::auth::jwks::JwksCache;
 
 /// The WorkOS auth.md event type a provider-driven revocation SET must carry. Advertised as the sole
 /// entry of `events_supported` in the AS metadata (`routes/oauth_server_metadata.rs`) and required

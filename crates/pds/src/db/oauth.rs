@@ -200,7 +200,7 @@ pub struct AuthCodeRow {
 /// Callers must treat `None` as `invalid_grant`.
 ///
 /// The code column stores the SHA-256 hex hash of the raw code bytes. Callers must
-/// hash the presented code before calling this function (use `token::sha256_hex`).
+/// hash the presented code before calling this function (use `auth::token::sha256_hex`).
 ///
 /// Use this to retrieve the code for validation, then call `delete_authorization_code`
 /// after all checks pass. The SELECT+DELETE are serialized due to `max_connections(1)`

@@ -315,7 +315,7 @@ mod tests {
 
     /// Insert a promoted account and session, returns the DID + access JWT.
     async fn insert_account_and_session(db: &sqlx::SqlitePool, handle: &str) -> TestSession {
-        use crate::token::generate_token;
+        use crate::auth::token::generate_token;
 
         let did = format!(
             "did:plc:{}",

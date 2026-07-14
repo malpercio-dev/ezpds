@@ -130,8 +130,8 @@ pub async fn delete_handle_handler(
 #[cfg(test)]
 mod tests {
     use crate::app::test_state;
+    use crate::auth::token::generate_token;
     use crate::routes::test_utils::{seed_handle, state_with_err_dns, state_with_ok_dns};
-    use crate::token::generate_token;
     use axum::{
         body::Body,
         http::{Request, StatusCode},

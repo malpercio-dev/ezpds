@@ -48,6 +48,7 @@ use crate::auth::agent_assertion::{
 use crate::auth::issuer_trust::{
     select_issuer, unverified_claim, verify_trusted_jwt, TrustedJwtError,
 };
+use crate::auth::token::generate_token;
 use crate::code_gen::generate_code;
 use crate::db::accounts::resolve_by_email;
 use crate::db::agent_audit::AgentAuditEventType;
@@ -56,7 +57,6 @@ use crate::db::agent_auth::{
     set_agent_identity_assertion, AgentIdentityRow, AgentIdentityStatus,
     InsertAgentIdentityOutcome, NewAgentClaimAttempt, NewAgentIdentity, RegistrationType,
 };
-use crate::token::generate_token;
 
 /// The one assertion type this server accepts for the `identity_assertion` flow.
 const ID_JAG_ASSERTION_TYPE: &str = "urn:ietf:params:oauth:token-type:id-jag";
@@ -787,7 +787,7 @@ mod tests {
         jsonwebtoken::encode(&header, &claims, &key).unwrap()
     }
 
-    /// A counting mock [`crate::jwks::JwksFetcher`]: returns `set` (or a failure) and records how
+    /// A counting mock [`crate::auth::jwks::JwksFetcher`]: returns `set` (or a failure) and records how
     /// many times it was called, so a test can assert the cache elided a second fetch.
     struct TestJwksFetcher {
         set: jsonwebtoken::jwk::JwkSet,
@@ -795,14 +795,14 @@ mod tests {
         fail: bool,
     }
 
-    impl crate::jwks::JwksFetcher for TestJwksFetcher {
+    impl crate::auth::jwks::JwksFetcher for TestJwksFetcher {
         fn fetch<'a>(
             &'a self,
             _url: &'a str,
         ) -> std::pin::Pin<
             Box<
                 dyn std::future::Future<
-                        Output = Result<jsonwebtoken::jwk::JwkSet, crate::jwks::JwksError>,
+                        Output = Result<jsonwebtoken::jwk::JwkSet, crate::auth::jwks::JwksError>,
                     > + Send
                     + 'a,
             >,
@@ -813,7 +813,9 @@ mod tests {
             Box::pin(async move {
                 calls.fetch_add(1, Ordering::SeqCst);
                 if fail {
-                    Err(crate::jwks::JwksError("mock fetch failed".to_string()))
+                    Err(crate::auth::jwks::JwksError(
+                        "mock fetch failed".to_string(),
+                    ))
                 } else {
                     Ok(set)
                 }
@@ -834,7 +836,7 @@ mod tests {
             calls: calls.clone(),
             fail: false,
         });
-        let jwks_cache = Arc::new(crate::jwks::JwksCache::new(
+        let jwks_cache = Arc::new(crate::auth::jwks::JwksCache::new(
             fetcher,
             std::time::Duration::from_secs(3600),
             // Cooldown disabled: these tests pin fetch counts, not the cooldown (jwks.rs does).
@@ -851,7 +853,7 @@ mod tests {
             calls: Arc::new(AtomicUsize::new(0)),
             fail: true,
         });
-        let jwks_cache = Arc::new(crate::jwks::JwksCache::new(
+        let jwks_cache = Arc::new(crate::auth::jwks::JwksCache::new(
             fetcher,
             std::time::Duration::from_secs(3600),
             std::time::Duration::ZERO,

@@ -135,7 +135,7 @@ pub async fn post_revoke(
     // random bytes) — e.g. an access-token JWT, whose dots fail to decode — so a decode failure
     // is simply "nothing to revoke".
     if let Ok(bytes) = URL_SAFE_NO_PAD.decode(token.as_str()) {
-        let token_hash = crate::token::sha256_hex(&bytes);
+        let token_hash = crate::auth::token::sha256_hex(&bytes);
         match get_oauth_refresh_token(&state.db, &token_hash).await {
             Ok(Some(stored)) => {
                 // Only the DPoP key the token is bound to may revoke it. `jkt` is compared in
@@ -196,8 +196,8 @@ mod tests {
 
     use crate::app::{app, test_state, AppState};
     use crate::auth::issue_nonce;
+    use crate::auth::token::generate_token;
     use crate::db::oauth::register_oauth_client;
-    use crate::token::generate_token;
 
     // ── DPoP proof test helpers (mirrors oauth_token.rs's test harness) ───────────
 
@@ -289,7 +289,7 @@ mod tests {
 
     async fn refresh_token_exists(state: &AppState, plaintext: &str) -> bool {
         let bytes = URL_SAFE_NO_PAD.decode(plaintext).unwrap();
-        let hash = crate::token::sha256_hex(&bytes);
+        let hash = crate::auth::token::sha256_hex(&bytes);
         let row: Option<(String,)> = sqlx::query_as("SELECT id FROM oauth_tokens WHERE id = ?")
             .bind(hash)
             .fetch_optional(&state.db)

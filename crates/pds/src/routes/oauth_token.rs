@@ -24,6 +24,7 @@ use sha2::{Digest, Sha256};
 
 use crate::app::AppState;
 use crate::auth::agent_assertion::{parse_sqlite_datetime, POLL_INTERVAL_SECS};
+use crate::auth::token::{generate_token, sha256_hex};
 use crate::auth::{
     cleanup_expired_nonces, issue_nonce, validate_dpop_for_token_endpoint, DpopTokenEndpointError,
 };
@@ -37,7 +38,6 @@ use crate::db::oauth::{
     store_oauth_refresh_token,
 };
 use crate::routes::oauth_errors::OAuthTokenError;
-use crate::token::{generate_token, sha256_hex};
 
 // ── Request / response types ──────────────────────────────────────────────────
 
@@ -346,7 +346,7 @@ async fn handle_authorization_code(
 
     // Hash the presented code for DB lookup.
     let code_hash = match URL_SAFE_NO_PAD.decode(code) {
-        Ok(bytes) => crate::token::sha256_hex(&bytes),
+        Ok(bytes) => crate::auth::token::sha256_hex(&bytes),
         Err(_) => {
             return OAuthTokenError::new("invalid_grant", "authorization code invalid or expired")
                 .into_response();
@@ -525,7 +525,7 @@ async fn handle_refresh_token(
 
     // Hash the presented refresh token for DB lookup.
     let token_hash = match URL_SAFE_NO_PAD.decode(refresh_token_plaintext.as_str()) {
-        Ok(bytes) => crate::token::sha256_hex(&bytes),
+        Ok(bytes) => crate::auth::token::sha256_hex(&bytes),
         Err(_) => {
             return OAuthTokenError::new("invalid_grant", "refresh token not found or expired")
                 .into_response();
@@ -1031,10 +1031,10 @@ mod tests {
 
     use crate::app::{app, test_state, AppState};
     use crate::auth::issue_nonce;
+    use crate::auth::token::generate_token;
     use crate::db::oauth::{
         register_oauth_client, store_authorization_code, store_oauth_refresh_token,
     };
-    use crate::token::generate_token;
 
     // ── DPoP proof test helpers ───────────────────────────────────────────────
 

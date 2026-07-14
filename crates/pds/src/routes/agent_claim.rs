@@ -931,7 +931,7 @@ mod tests {
         .await;
         let user_code = reg["claim"]["user_code"].as_str().unwrap().to_string();
 
-        let token = crate::token::generate_token();
+        let token = crate::auth::token::generate_token();
         sqlx::query(
             "INSERT INTO sessions (id, did, device_id, token_hash, created_at, expires_at) \
              VALUES (?, ?, NULL, ?, datetime('now'), datetime('now', '+1 year'))",
@@ -970,7 +970,7 @@ mod tests {
         .await;
         let user_code = reg["claim"]["user_code"].as_str().unwrap().to_string();
 
-        let token = crate::token::generate_token();
+        let token = crate::auth::token::generate_token();
         sqlx::query(
             "INSERT INTO sessions (id, did, device_id, token_hash, created_at, expires_at) \
              VALUES (?, ?, NULL, ?, datetime('now'), datetime('now', '+1 year'))",

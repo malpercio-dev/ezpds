@@ -22,9 +22,9 @@ use common::{ApiError, ErrorCode};
 use crate::account_delete::purge_account;
 use crate::app::AppState;
 use crate::auth::password::{verify_password, VerifyResult};
+use crate::auth::token::hash_bearer_token;
 use crate::db::account_deletion_tokens::consume_account_deletion_token;
 use crate::db::accounts::account_password_hash;
-use crate::token::hash_bearer_token;
 
 #[derive(Deserialize)]
 pub struct DeleteAccountRequest {
@@ -116,10 +116,10 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state, AppState};
+    use crate::auth::token::generate_token;
     use crate::db::account_deletion_tokens::insert_account_deletion_token;
     use crate::firehose::FirehoseEvent;
     use crate::routes::test_utils::{body_json, insert_account_with_password};
-    use crate::token::generate_token;
 
     fn post_req(json: serde_json::Value) -> Request<Body> {
         Request::builder()
@@ -211,7 +211,7 @@ mod tests {
         insert_account_with_password(&db, did, "del3.example.com", "del3@example.com", "hunter2")
             .await;
         // A syntactically valid but never-issued token (base64url of 32 bytes hashes cleanly).
-        let bogus = crate::token::generate_token().plaintext;
+        let bogus = crate::auth::token::generate_token().plaintext;
 
         let response = app(state)
             .oneshot(post_req(serde_json::json!({

@@ -3,13 +3,16 @@ pub mod dpop;
 pub mod extractors;
 pub mod guards;
 pub mod issuer_trust;
+pub mod jwks;
 pub mod jwt;
+pub mod oauth_client_resolution;
 pub mod oauth_scopes;
 pub mod password;
 pub mod permission_sets;
 pub mod rate_limit;
 pub mod service_auth;
 pub mod signing_key;
+pub mod token;
 pub mod validation;
 
 mod bearer;

@@ -15,7 +15,7 @@ use uuid::Uuid;
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::token::generate_token;
+use crate::auth::token::generate_token;
 use crate::transfer::{accept_transfer as accept_transfer_row, AcceptOutcome};
 
 #[derive(Deserialize)]

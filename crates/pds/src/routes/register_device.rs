@@ -16,8 +16,8 @@ use uuid::Uuid;
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
+use crate::auth::token::generate_token;
 use crate::platform::Platform;
-use crate::token::generate_token;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -377,7 +377,7 @@ mod tests {
 
     #[tokio::test]
     async fn token_hash_is_sha256_of_token() {
-        use crate::token::hash_bearer_token;
+        use crate::auth::token::hash_bearer_token;
 
         let state = test_state().await;
         let db = state.db.clone();

@@ -16,11 +16,11 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
+use crate::auth::token::generate_token;
 use crate::db::oauth::{
     cleanup_expired_par_requests, get_oauth_client, store_par_request, upsert_oauth_client,
     ClientMetadata, StoredPARParams,
 };
-use crate::token::generate_token;
 
 // ── Request / response types ──────────────────────────────────────────────────
 
@@ -199,7 +199,7 @@ pub async fn post_par(State(state): State<AppState>, Form(form): Form<PARForm>) 
     let (client_metadata_json, freshly_fetched) = match known_client {
         Some(row) => (row.client_metadata, false),
         None if client_id.starts_with("https://") || client_id.starts_with("http://") => {
-            match crate::oauth_client_resolution::resolve_client_metadata(
+            match crate::auth::oauth_client_resolution::resolve_client_metadata(
                 &state.http_client,
                 &client_id,
             )

@@ -264,7 +264,7 @@ mod tests {
     async fn wrong_device_token_returns_401() {
         let state = test_state().await;
         let (device_id, _) = seed_device(&state.db).await;
-        let wrong_token = crate::token::generate_token().plaintext;
+        let wrong_token = crate::auth::token::generate_token().plaintext;
 
         let response = app(state)
             .oneshot(get_device_pds(&device_id, &wrong_token))

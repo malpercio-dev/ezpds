@@ -313,7 +313,7 @@ pub(crate) use crate::db::dids::seed_did_document;
 /// Creates a claim code + pending account + device row in one shot. Each call
 /// generates unique IDs so the helper is safe to call multiple times on the same pool.
 pub async fn seed_device(db: &sqlx::SqlitePool) -> (String, String) {
-    use crate::token::generate_token;
+    use crate::auth::token::generate_token;
     use uuid::Uuid;
 
     let claim_code = format!("TEST-{}", Uuid::new_v4());
