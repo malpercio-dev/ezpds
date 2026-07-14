@@ -21,3 +21,10 @@ body:json {
     "password": "{{password}}"
   }
 }
+
+docs {
+  Promote a pending mobile account using exactly one identity ceremony: `signedCreationOp` for
+  did:plc, or `didWebDocument` for did:web after the reviewed document is live at its authoritative
+  URL. The did:web branch verifies `#device`, `#atproto`, `#atproto_pds`, the handle, and external
+  resolution before promotion. Both branches return the unchanged 2-of-3 Shamir shares.
+}

@@ -57,7 +57,10 @@ struct PdsSigningKey {
 #[serde(rename_all = "camelCase")]
 struct CreateDidRequest {
     rotation_key_public: String,
-    signed_creation_op: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signed_creation_op: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    did_web_document: Option<String>,
     /// Initial password stored as an argon2id PHC string by the PDS.
     password: String,
 }
@@ -135,6 +138,14 @@ pub struct DIDCeremonyResult {
     /// Share 3 of 3 — the user's manual backup share.
     /// Share 1 has already been stored in iCloud Keychain by the Rust backend.
     pub share3: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DidWebPreparation {
+    pub device_key_multibase: String,
+    pub repo_key_multibase: String,
+    pub pds_url: String,
 }
 
 /// Typed error returned to the Svelte frontend as a rejected Promise.
@@ -398,59 +409,74 @@ async fn sign_with_device_key(data: Vec<u8>) -> Result<Vec<u8>, device_key::Devi
     device_key::sign(&data)
 }
 
+struct DidCeremonyContext {
+    device_key: device_key::DevicePublicKey,
+    pending_token: String,
+}
+
+/// Load the device key and pending account token shared by both DID ceremony methods.
+fn load_did_ceremony_context() -> Result<DidCeremonyContext, DIDCeremonyError> {
+    let device_key = device_key::get_or_create().map_err(|e| {
+        tracing::warn!(error = %e, "device key creation failed during DID ceremony");
+        DIDCeremonyError::KeyNotFound
+    })?;
+    let token_bytes = keychain::get_item("session-token").map_err(|e| {
+        tracing::warn!(error = %e, "failed to retrieve session-token from keychain");
+        DIDCeremonyError::KeychainError
+    })?;
+    let pending_token = String::from_utf8(token_bytes).map_err(|e| {
+        tracing::warn!(error = %e, "session-token bytes are not valid UTF-8");
+        DIDCeremonyError::KeychainError
+    })?;
+    Ok(DidCeremonyContext {
+        device_key,
+        pending_token,
+    })
+}
+
+/// Fetch the account's reserved repo key with consistent status mapping and diagnostics.
+async fn fetch_repo_signing_key(
+    state: &oauth::AppState,
+    pending_token: &str,
+) -> Result<PdsSigningKey, DIDCeremonyError> {
+    let response = state
+        .custos_client()
+        .get_with_bearer("/v1/repo-signing-key", pending_token)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "repo signing key request failed during DID ceremony");
+            DIDCeremonyError::NetworkError {
+                message: e.to_string(),
+            }
+        })?;
+    let status = response.status();
+    if status.as_u16() == 503 {
+        return Err(DIDCeremonyError::NoPdsSigningKey);
+    }
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to read repo signing key error response");
+            "<body read failed>".to_string()
+        });
+        tracing::error!(status = %status, body = %body, "repo signing key request returned non-success status");
+        return Err(DIDCeremonyError::PdsKeyFetchFailed);
+    }
+    response.json().await.map_err(|e| {
+        tracing::error!(error = %e, "failed to deserialize repo signing key response");
+        DIDCeremonyError::PdsKeyFetchFailed
+    })
+}
+
 #[tauri::command]
 async fn perform_did_ceremony(
     handle: String,
     password: String,
     state: tauri::State<'_, oauth::AppState>,
 ) -> Result<DIDCeremonyResult, DIDCeremonyError> {
-    // Step 1: Get or create the device's P-256 key (serves as rotation key).
-    let device_key = device_key::get_or_create().map_err(|e| {
-        tracing::warn!(error = %e, "device key creation failed during DID ceremony");
-        DIDCeremonyError::KeyNotFound
-    })?;
-
-    // Step 2: Retrieve the pending session token — needed to authenticate the
-    // per-account signing-key request below and the DID promotion later.
-    let pending_token = {
-        let token_bytes = keychain::get_item("session-token").map_err(|e| {
-            tracing::warn!(error = %e, "failed to retrieve session-token from keychain");
-            DIDCeremonyError::KeychainError
-        })?;
-        String::from_utf8(token_bytes).map_err(|e| {
-            tracing::warn!(error = %e, "session-token bytes are not valid UTF-8");
-            DIDCeremonyError::KeychainError
-        })?
-    };
-
-    // Step 3: Fetch this account's per-account repo signing key (pending-session auth).
-    // The PDS issues it idempotently; we publish it as the DID's #atproto verification
-    // method, and the PDS signs the repo's commits with the matching private key.
-    let resp = state
-        .custos_client()
-        .get_with_bearer("/v1/repo-signing-key", &pending_token)
-        .await
-        .map_err(|e| DIDCeremonyError::NetworkError {
-            message: e.to_string(),
-        })?;
-
-    let status = resp.status();
-    if status.as_u16() == 503 {
-        return Err(DIDCeremonyError::NoPdsSigningKey);
-    }
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "failed to read GET /v1/repo-signing-key error body");
-            "<body read failed>".to_string()
-        });
-        tracing::error!(status = %status, body = %body, "GET /v1/repo-signing-key returned non-success status");
-        return Err(DIDCeremonyError::PdsKeyFetchFailed);
-    }
-
-    let pds_key: PdsSigningKey = resp.json().await.map_err(|e| {
-        tracing::error!(error = %e, "failed to deserialize repo signing key response");
-        DIDCeremonyError::PdsKeyFetchFailed
-    })?;
+    let context = load_did_ceremony_context()?;
+    let device_key = context.device_key;
+    let pending_token = context.pending_token;
+    let pds_key = fetch_repo_signing_key(&state, &pending_token).await?;
 
     // Step 4: Build signed genesis op — device key as rotation key, per-account repo key as signing key.
     // On device, the private key never leaves the Secure Enclave; on Simulator and macOS, a software key is used instead.
@@ -475,10 +501,13 @@ async fn perform_did_ceremony(
     // Step 6: POST the signed genesis op to the PDS to promote the account to a full DID.
     let create_did_req = CreateDidRequest {
         rotation_key_public: device_key.key_id,
-        signed_creation_op: serde_json::from_str(&genesis_op.signed_op_json).map_err(|e| {
-            tracing::error!(error = %e, "genesis op JSON is not valid JSON");
-            DIDCeremonyError::SigningFailed
-        })?,
+        signed_creation_op: Some(serde_json::from_str(&genesis_op.signed_op_json).map_err(
+            |e| {
+                tracing::error!(error = %e, "genesis op JSON is not valid JSON");
+                DIDCeremonyError::SigningFailed
+            },
+        )?),
+        did_web_document: None,
         password,
     };
 
@@ -535,6 +564,90 @@ async fn perform_did_ceremony(
     Ok(DIDCeremonyResult {
         did: create_did_resp.did,
         share3: create_did_resp.shamir_share_3,
+    })
+}
+
+#[tauri::command]
+/// Prepare the device and reserved repository keys used to compose a did:web document.
+async fn prepare_did_web_ceremony(
+    state: tauri::State<'_, oauth::AppState>,
+) -> Result<DidWebPreparation, DIDCeremonyError> {
+    let context = load_did_ceremony_context()?;
+    let repo_key = fetch_repo_signing_key(&state, &context.pending_token).await?;
+    Ok(DidWebPreparation {
+        device_key_multibase: context.device_key.multibase,
+        repo_key_multibase: repo_key
+            .key_id
+            .strip_prefix("did:key:")
+            .unwrap_or(&repo_key.key_id)
+            .to_string(),
+        pds_url: state
+            .custos_client()
+            .base_url_str()
+            .trim_end_matches('/')
+            .to_string(),
+    })
+}
+
+#[tauri::command]
+/// Verify a published did:web document, promote the account, and persist recovery state.
+async fn complete_did_web_ceremony(
+    document_text: String,
+    password: String,
+    enable_managed_hosting: bool,
+    state: tauri::State<'_, oauth::AppState>,
+) -> Result<DIDCeremonyResult, DIDCeremonyError> {
+    let context = load_did_ceremony_context()?;
+    let request = CreateDidRequest {
+        rotation_key_public: context.device_key.key_id,
+        signed_creation_op: None,
+        did_web_document: Some(document_text),
+        password,
+    };
+    let response = state
+        .custos_client()
+        .post_with_bearer("/v1/dids", &request, &context.pending_token)
+        .await
+        .map_err(|e| DIDCeremonyError::NetworkError {
+            message: e.to_string(),
+        })?;
+    if !response.status().is_success() {
+        return Err(DIDCeremonyError::DidCreationFailed);
+    }
+    let created: CreateDidResponse = response
+        .json()
+        .await
+        .map_err(|_| DIDCeremonyError::DidCreationFailed)?;
+    // Promotion is already durable and cannot be retried. Persist every irreplaceable response
+    // value before the optional hosting toggle so a transient failure cannot strand the user.
+    keychain::store_item("session-token", created.session_token.as_bytes())
+        .map_err(|_| DIDCeremonyError::KeychainError)?;
+    keychain::store_item("did", created.did.as_bytes())
+        .map_err(|_| DIDCeremonyError::KeychainError)?;
+    keychain::store_item("recovery-share-1", created.shamir_share_1.as_bytes())
+        .map_err(|_| DIDCeremonyError::ShareStorageFailed)?;
+    if enable_managed_hosting {
+        let hosting_result = state
+            .custos_client()
+            .post_with_bearer(
+                "/v1/did-web/hosting",
+                &serde_json::json!({ "enabled": true }),
+                &created.session_token,
+            )
+            .await;
+        match hosting_result {
+            Ok(response) if response.status().is_success() => {}
+            Ok(response) => {
+                tracing::warn!(status = %response.status(), did = %created.did, "DID created, but optional managed hosting was not enabled")
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, did = %created.did, "DID created, but optional managed hosting was unreachable")
+            }
+        }
+    }
+    Ok(DIDCeremonyResult {
+        did: created.did,
+        share3: created.shamir_share_3,
     })
 }
 
@@ -971,7 +1084,9 @@ pub fn run() {
     // registering it behind `#[cfg(mobile)]` keeps the macOS host build and its test suite
     // free of a dependency they cannot compile.
     #[cfg(mobile)]
-    let builder = builder.plugin(tauri_plugin_biometric::init());
+    let builder = builder
+        .plugin(tauri_plugin_biometric::init())
+        .plugin(tauri_plugin_sharesheet::init());
 
     builder
         .setup(|app| {
@@ -1012,6 +1127,8 @@ pub fn run() {
             get_or_create_device_key,
             sign_with_device_key,
             perform_did_ceremony,
+            prepare_did_web_ceremony,
+            complete_did_web_ceremony,
             register_handle,
             register_created_identity,
             check_handle_resolution,
@@ -1044,6 +1161,8 @@ pub fn run() {
             migrate::detect_migration_path_cmd,
             migrate::build_migration_op_cmd,
             migrate::submit_migration_op_cmd,
+            migrate::build_did_web_migration_document_cmd,
+            migrate::submit_did_web_migration_document_cmd,
             migration_orchestrator::prepare_migration,
             migration_orchestrator::authenticate_migration_source,
             migration_orchestrator::create_destination_account,
@@ -1068,7 +1187,8 @@ mod tests {
     fn create_did_request_serializes_password_and_camel_case() {
         let req = CreateDidRequest {
             rotation_key_public: "did:key:z123".into(),
-            signed_creation_op: serde_json::json!({"type": "plc_operation"}),
+            signed_creation_op: Some(serde_json::json!({"type": "plc_operation"})),
+            did_web_document: None,
             password: "mysecretpassword".into(),
         };
         let json = serde_json::to_value(&req).unwrap();

@@ -37,7 +37,7 @@ understand why the architecture is the way it is.
 | [0000](0000-record-architecture-decisions.md) | Accepted | Record architecture decisions as ADRs |
 | [0001](0001-client-held-rotation-key-custody.md) | Accepted | The user's wallet holds `rotationKeys[0]`; the PDS holds `rotationKeys[1]` |
 | [0002](0002-wallet-authorized-account-migration.md) | Proposed | Account migration is wallet-authorized by default, with a PDS-signed interop fallback |
-| [0003](0003-did-plc-as-did-method.md) | Accepted (amended 2026-07-13) | `did:plc` is the *minted* DID method; `did:web` is *hosted* for user-owned domains, not minted |
+| [0003](0003-did-plc-as-did-method.md) | Superseded by ADR-0022 | Use `did:plc` as the account identity method |
 | [0004](0004-pds-signed-repo-commits.md) | Accepted | The PDS holds the repo signing key and signs commits |
 | [0005](0005-functional-core-imperative-shell.md) | Accepted | Functional Core / Imperative Shell workspace architecture |
 | [0006](0006-oauth-callback-via-aswebauthenticationsession.md) | Accepted | OAuth callback via ASWebAuthenticationSession (vendored plugin), not deep links |
@@ -56,3 +56,4 @@ understand why the architecture is the way it is.
 | [0019](0019-authmd-agent-authentication.md) | Accepted | Adopt the auth.md convention (self-registration, human claim ceremony, jwt-bearer exchange) as the agent-auth surface |
 | [0020](0020-set-revocation-trusted-issuers.md) | Accepted | Provider-driven agent revocation via Security Event Tokens, gated on the existing `trusted_issuers` list |
 | [0021](0021-identity-ops-require-full-session.md) | Accepted | Identity/PLC ops require a full session (or granular `identity:*`), not `transition:generic`; the wallet claim flow uses a password `createSession` |
+| [0022](0022-did-web-for-user-owned-domains.md) | Accepted | `did:plc` remains the default; `did:web` may be minted or hosted only after proving control of a user-owned domain |

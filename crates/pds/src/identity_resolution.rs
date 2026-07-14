@@ -484,7 +484,10 @@ async fn resolve_plc_did_document(state: &AppState, did: &str) -> Result<Value, 
     validate_did_doc_id(doc, did, ErrorCode::PlcDirectoryError)
 }
 
-async fn resolve_web_did_document(state: &AppState, did: &str) -> Result<Value, ApiError> {
+pub(crate) async fn resolve_web_did_document(
+    state: &AppState,
+    did: &str,
+) -> Result<Value, ApiError> {
     let url = did_web_document_url(did)?;
     let response = state.http_client.get(&url).send().await.map_err(|e| {
         tracing::error!(did = %did, error = %e, url = %url, "failed to resolve did:web document");
@@ -519,6 +522,53 @@ async fn resolve_web_did_document(state: &AppState, did: &str) -> Result<Value, 
     })?;
 
     validate_did_doc_id(doc, did, ErrorCode::PlcDirectoryError)
+}
+
+/// Fetch the authoritative did:web response without normalizing JSON whitespace or key order.
+/// The wallet mint ceremony uses this to prove the user published the exact reviewed bytes.
+pub(crate) async fn resolve_web_did_document_bytes(
+    state: &AppState,
+    did: &str,
+) -> Result<String, ApiError> {
+    let url = did_web_document_url(did)?;
+    let parsed = reqwest::Url::parse(&url)
+        .map_err(|_| ApiError::new(ErrorCode::InvalidClaim, "invalid did:web DID"))?;
+    let authority = parsed
+        .host_str()
+        .map(|host| match parsed.port() {
+            Some(port) => format!("https://{host}:{port}"),
+            None => format!("https://{host}"),
+        })
+        .ok_or_else(|| ApiError::new(ErrorCode::InvalidClaim, "invalid did:web DID"))?;
+    let pinned = validate_proxy_endpoint(&authority, state.allow_loopback_proxy_targets).await?;
+    let client = build_pinned_client(pinned.as_ref()).map_err(|e| {
+        tracing::error!(did = %did, error = %e, "failed to build hardened did:web client");
+        ApiError::new(
+            ErrorCode::PlcDirectoryError,
+            "failed to resolve did:web document",
+        )
+    })?;
+    let response = client.get(&url).send().await.map_err(|e| {
+        tracing::error!(did = %did, error = %e, url = %url, "failed to resolve did:web document bytes");
+        ApiError::new(
+            ErrorCode::PlcDirectoryError,
+            "failed to resolve did:web document",
+        )
+    })?;
+    if !response.status().is_success() {
+        return Err(ApiError::new(
+            if response.status() == reqwest::StatusCode::NOT_FOUND {
+                ErrorCode::DidNotFound
+            } else {
+                ErrorCode::PlcDirectoryError
+            },
+            "did:web endpoint returned error",
+        ));
+    }
+    response.text().await.map_err(|e| {
+        tracing::error!(did = %did, error = %e, "failed to read did:web document bytes");
+        ApiError::new(ErrorCode::PlcDirectoryError, "invalid did:web response")
+    })
 }
 
 fn validate_did_doc_id(doc: Value, did: &str, error_code: ErrorCode) -> Result<Value, ApiError> {

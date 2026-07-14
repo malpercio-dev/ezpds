@@ -97,6 +97,47 @@ export const performDIDCeremony = (
 ): Promise<DIDCeremonyResult> =>
   invoke('perform_did_ceremony', { handle, password });
 
+export type DidWebPreparation = {
+  deviceKeyMultibase: string;
+  repoKeyMultibase: string;
+  pdsUrl: string;
+};
+
+/** Load the device, repository, and PDS values needed to compose a new did:web document. */
+export const prepareDidWebCeremony = (): Promise<DidWebPreparation> =>
+  invoke('prepare_did_web_ceremony');
+
+/** Verify the live did:web bytes and promote the pending account. */
+export const completeDidWebCeremony = (
+  documentText: string,
+  password: string,
+  enableManagedHosting: boolean,
+): Promise<DIDCeremonyResult> =>
+  invoke('complete_did_web_ceremony', { documentText, password, enableManagedHosting });
+
+export type DidWebMigrationDocument = {
+  documentText: string;
+  deviceKey: string;
+  repoKey: string;
+  pdsEndpoint: string;
+};
+
+/** Compose the reviewed did:web update for an armed migration identity leg. */
+export const buildDidWebMigrationDocument = (did: string): Promise<DidWebMigrationDocument> =>
+  invoke('build_did_web_migration_document_cmd', { did });
+
+/** Verify and adopt the published did:web migration document. */
+export const submitDidWebMigrationDocument = (
+  did: string,
+  documentText: string,
+  enableManagedHosting: boolean,
+): Promise<ClaimResult> =>
+  invoke('submit_did_web_migration_document_cmd', { did, documentText, enableManagedHosting });
+
+/** Open the native platform share sheet for a text document. */
+export const shareTextNative = (text: string): Promise<void> =>
+  invoke('plugin:sharesheet|share_text', { text });
+
 // ── register_handle ──────────────────────────────────────────────────────────
 
 /**

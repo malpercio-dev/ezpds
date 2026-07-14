@@ -1,9 +1,9 @@
 # ADR-0003: `did:plc` as the DID method
 
-- **Status:** Accepted (amended 2026-07-13 — see [Amendment](#amendment-2026-07-13-didplc-is-the-minted-method-didweb-is-hosted-for-user-owned-domains))
+- **Status:** Superseded by ADR-0022
 - **Date:** 2026-07-02 (backfilled)
 - **Deciders:** ezpds maintainers
-- **Related:** [ADR-0001](0001-client-held-rotation-key-custody.md) · [ADR-0002](0002-wallet-authorized-account-migration.md) · [ADR-0012](0012-canonical-dag-cbor-for-plc-ops.md) · [`../identity-and-key-custody.md`](../identity-and-key-custody.md) · [`crates/crypto/src/plc.rs`](../../../crates/crypto/src/plc.rs) · [MM-278](https://linear.app/atbb/issue/MM-278) (migrate `did:web:malpercio.dev` onto Custos) · [MM-279](https://linear.app/atbb/issue/MM-279) (managed did:web hosting) · [MM-285](https://linear.app/atbb/issue/MM-285) (wallet did:web ceremony)
+- **Related:** [ADR-0001](0001-client-held-rotation-key-custody.md) · [ADR-0002](0002-wallet-authorized-account-migration.md) · [ADR-0012](0012-canonical-dag-cbor-for-plc-ops.md) · [`../identity-and-key-custody.md`](../identity-and-key-custody.md) · [`crates/crypto/src/plc.rs`](../../../crates/crypto/src/plc.rs)
 
 ## Context
 
@@ -53,78 +53,3 @@ We will mint and manage all ezpds accounts as **`did:plc`** identities.
 - **`did:key`.** Rejected as an *account* identity: immutable, carries no service
   endpoint and no rotation, so it can neither point at a PDS nor be recovered.
   (`did:key` is still used throughout for representing individual public keys.)
-
-## Amendment (2026-07-13): `did:plc` is the *minted* method; `did:web` is *hosted* for user-owned domains
-
-The original Decision said "`did:web` is not offered as an account identity
-method." Taken literally that reads as "Custos rejects `did:web` accounts,"
-which is too strong and was never the intent. The precise rule is:
-
-> **Custos never *mints* a `did:web` identity, but it will *host* (serve, and
-> act as PDS for) a `did:web` identity for a domain the user already controls.**
-
-This is exactly the exit-liability boundary the superseded provisioning spec
-already drew ([`docs/provisioning-api-spec.md:44-47`](../../provisioning-api-spec.md)):
-`did:web` is offered only to users who bring their own domain, and Custos never
-hosts a `did.json` for a domain the user does not control — because doing so
-would obligate Custos to keep serving that document indefinitely after the user
-leaves, the opposite of credible exit.
-
-### Why this is consistent with the original decision
-
-The Decision's *reasoning* was about **custody**, not about turning inbound
-`did:web` accounts away. `did:plc` is the method Custos mints because only it
-carries the ordered `rotationKeys` and 72-hour recovery window that ADR-0001's
-client-held-custody model, `plc_monitor`, `recovery.rs`, and wallet-authorized
-migration (ADR-0002) depend on. None of that is expressible under `did:web`.
-That remains true and unchanged — it is why a *new* Custos identity is always
-`did:plc`.
-
-A `did:web` identity the user already owns is a different case. The user controls
-the DID document at their own domain, so the "who can repoint this identity"
-question is answered by domain control, not by a rotation-key hierarchy Custos
-would have to hold. Accepting such an account as a PDS-hosting *destination* adds
-no custody Custos must vouch for, and it is method-agnostic on the server:
-migration-in (`createAccount` existing-DID path, `importRepo`, blob drain,
-`checkAccountStatus`, `activateAccount`) never inspects the DID method, and every
-store keys the DID as opaque TEXT.
-
-### The two `did:web` shapes, and what each requires
-
-1. **Self-hosted `did:web` (MM-278, shipped).** The user hosts and edits
-   `did.json` at their own domain (e.g. `did:web:malpercio.dev`). Custos does
-   **not** serve the document — it only resolves it (SSRF-guarded), caches it,
-   and, on the operator's edit, re-resolves it via `refreshIdentity` (which
-   rewrites the cache row and emits an `#identity` firehose frame so relays
-   re-resolve). The migration choreography is *simpler* than `did:plc`: no email
-   token and no PLC operation — the operator repoints the PDS by hand-editing
-   `#atproto_pds` and the `#atproto` verification method in their own `did.json`
-   (using the values from `getRecommendedDidCredentials`). The `did:plc`-only
-   identity endpoints (`signPlcOperation`, `submitPlcOperation`,
-   `requestPlcOperationSignature`) return an explicit "not a did:plc" error for
-   these accounts rather than failing deep in a plc.directory audit-log fetch.
-
-2. **Custos-served `did:web` for a user-owned domain (MM-279, deferred).**
-   Optionally serving `did.json` for a user-owned domain — including the
-   `did:web:obsign.org` apex scenario — is a larger change that must carry the
-   attested safeguards that keep the exit-liability rule intact (proof of domain
-   control, and a clean way to stop hosting on exit). It is tracked separately
-   and is **not** authorized by this amendment.
-
-### Honesty in the wallet
-
-Because `did:web` has **no rotation hierarchy, no audit log, and no recovery
-window**, the Obsign wallet must not present its `did:plc`-only assurances
-(PLC monitoring, recovery-window override, the claim/Shamir ceremonies) as if
-they applied to a `did:web` identity. Those surfaces are gated for `did:web` and
-replaced with an in-app explanation of what `did:web` does and does not provide —
-"practice the assurance you preach" (DESIGN.md), stated honestly rather than by
-silently showing an inapplicable "all secure" state.
-
-### Net effect on the Decision
-
-"`did:web` is not offered as an account identity method" is superseded by:
-**`did:web` is not *minted*, but is *hosted* for domains the user controls** —
-self-hosted today (MM-278), optionally Custos-served later under attested
-safeguards (MM-279). The custody rationale for minting only `did:plc` is
-unchanged.

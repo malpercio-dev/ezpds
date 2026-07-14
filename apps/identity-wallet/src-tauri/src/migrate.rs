@@ -65,6 +65,232 @@ pub struct MigrationState {
     pub signed_op: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DidWebMigrationDocument {
+    pub document_text: String,
+    pub device_key: String,
+    pub repo_key: String,
+    pub pds_endpoint: String,
+}
+
+fn multibase(key: &str) -> &str {
+    key.strip_prefix("did:key:").unwrap_or(key)
+}
+
+fn did_web_url(did: &str) -> Result<String, MigrateError> {
+    let host = did
+        .strip_prefix("did:web:")
+        .ok_or(MigrateError::GuardRejected {
+            reason: "identity is not did:web".into(),
+        })?;
+    if host.contains(':') || host.contains('/') || host.is_empty() {
+        return Err(MigrateError::GuardRejected {
+            reason: "only hostname-form did:web identities are supported".into(),
+        });
+    }
+    Ok(format!(
+        "https://{}/.well-known/did.json",
+        host.to_ascii_lowercase()
+    ))
+}
+
+#[tauri::command]
+/// Compose the exact did:web document that the user must review and publish for migration.
+pub async fn build_did_web_migration_document_cmd(
+    state: tauri::State<'_, crate::oauth::AppState>,
+    did: String,
+) -> Result<DidWebMigrationDocument, MigrateError> {
+    let dest_client = {
+        let guard = state.migration_state.lock().await;
+        let migration = guard
+            .as_ref()
+            .ok_or_else(|| MigrateError::IdentityNotFound {
+                message: "no identity leg is armed".into(),
+            })?;
+        if migration.did != did || !did.starts_with("did:web:") {
+            return Err(MigrateError::IdentityNotFound {
+                message: "DID mismatch".into(),
+            });
+        }
+        migration.dest_oauth_client.clone()
+    };
+    let (_, current) =
+        state
+            .pds_client()
+            .discover_pds(&did)
+            .await
+            .map_err(|e| MigrateError::NetworkError {
+                message: e.to_string(),
+            })?;
+    let recommended = get_recommended_did_credentials(&dest_client)
+        .await
+        .map_err(|e| MigrateError::NetworkError {
+            message: e.to_string(),
+        })?;
+    let repo_key = recommended
+        .verification_methods
+        .as_ref()
+        .and_then(|value| value.get(ATPROTO_VERIFICATION_METHOD_ID))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| MigrateError::InvalidRecommendedCredentials {
+            message: "missing verificationMethods.atproto".into(),
+        })?
+        .to_string();
+    let pds_endpoint = recommended
+        .services
+        .as_ref()
+        .and_then(|value| value.get(ATPROTO_PDS_SERVICE_ID))
+        .and_then(|value| value.get("endpoint"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| MigrateError::InvalidRecommendedCredentials {
+            message: "missing services.atproto_pds.endpoint".into(),
+        })?
+        .to_string();
+    let device = crate::device_key::get_or_create().map_err(|e| MigrateError::SigningFailed {
+        message: e.to_string(),
+    })?;
+
+    let mut methods = Vec::new();
+    if let Some(existing) = current.verification_methods.as_object() {
+        for (name, value) in existing {
+            if name != ATPROTO_VERIFICATION_METHOD_ID {
+                if let Some(key) = value.as_str() {
+                    methods.push(serde_json::json!({
+                        "id": format!("{did}#{name}"), "type": "Multikey", "controller": did,
+                        "publicKeyMultibase": multibase(key)
+                    }));
+                }
+            }
+        }
+    }
+    methods.retain(|method| {
+        method.get("id").and_then(serde_json::Value::as_str) != Some(&format!("{did}#device"))
+    });
+    methods.push(serde_json::json!({"id": format!("{did}#device"), "type": "Multikey", "controller": did, "publicKeyMultibase": device.multibase}));
+    methods.push(serde_json::json!({"id": format!("{did}#atproto"), "type": "Multikey", "controller": did, "publicKeyMultibase": multibase(&repo_key)}));
+    let document = serde_json::json!({
+        "@context": ["https://www.w3.org/ns/did/v1"],
+        "id": did,
+        // Domain migration must never let destination recommendations change the user's handle.
+        "alsoKnownAs": current.also_known_as,
+        "verificationMethod": methods,
+        "service": [{"id": format!("{did}#atproto_pds"), "type": "AtprotoPersonalDataServer", "serviceEndpoint": pds_endpoint}],
+    });
+    let document_text = format!(
+        "{}\n",
+        serde_json::to_string_pretty(&document).map_err(|e| MigrateError::SigningFailed {
+            message: e.to_string(),
+        })?
+    );
+    Ok(DidWebMigrationDocument {
+        document_text,
+        device_key: format!("{did}#device"),
+        repo_key: format!("{did}#atproto"),
+        pds_endpoint,
+    })
+}
+
+#[tauri::command]
+/// Verify the reviewed bytes are authoritative, refresh the destination, and adopt the identity.
+pub async fn submit_did_web_migration_document_cmd(
+    state: tauri::State<'_, crate::oauth::AppState>,
+    did: String,
+    document_text: String,
+    enable_managed_hosting: bool,
+) -> Result<ClaimResult, MigrateError> {
+    let dest_client = {
+        let guard = state.migration_state.lock().await;
+        let migration = guard
+            .as_ref()
+            .ok_or_else(|| MigrateError::IdentityNotFound {
+                message: "no identity leg is armed".into(),
+            })?;
+        if migration.did != did {
+            return Err(MigrateError::IdentityNotFound {
+                message: "DID mismatch".into(),
+            });
+        }
+        migration.dest_oauth_client.clone()
+    };
+    let live = state
+        .pds_client()
+        .client()
+        .get(did_web_url(&did)?)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|e| MigrateError::NetworkError {
+            message: e.to_string(),
+        })?
+        .text()
+        .await
+        .map_err(|e| MigrateError::NetworkError {
+            message: e.to_string(),
+        })?;
+    if live.as_bytes() != document_text.as_bytes() {
+        return Err(MigrateError::GuardRejected {
+            reason: "published did.json does not match the reviewed bytes".into(),
+        });
+    }
+    let refreshed = dest_client
+        .post(
+            "/xrpc/com.atproto.identity.refreshIdentity",
+            &serde_json::json!({ "identifier": did }),
+        )
+        .await
+        .map_err(|e| MigrateError::NetworkError {
+            message: e.to_string(),
+        })?;
+    if !refreshed.status().is_success() {
+        return Err(MigrateError::NetworkError {
+            message: "destination did not accept the published document".into(),
+        });
+    }
+    if enable_managed_hosting {
+        let result = dest_client
+            .post("/v1/did-web/hosting", &serde_json::json!({"enabled": true}))
+            .await;
+        match result {
+            Ok(response) if response.status().is_success() => {}
+            Ok(response) => {
+                tracing::warn!(status = %response.status(), did = %did, "migration verified, but optional managed hosting was not enabled")
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, did = %did, "migration verified, but optional managed hosting was unreachable")
+            }
+        }
+    }
+    let updated_did_doc: serde_json::Value =
+        serde_json::from_str(&document_text).map_err(|e| MigrateError::GuardRejected {
+            reason: format!("reviewed did.json is invalid: {e}"),
+        })?;
+    let store = IdentityStore;
+    if let Err(e) = store.add_identity(&did) {
+        if !matches!(
+            e,
+            crate::identity_store::IdentityStoreError::IdentityAlreadyExists
+        ) {
+            return Err(MigrateError::IdentityNotFound {
+                message: e.to_string(),
+            });
+        }
+    }
+    store
+        .adopt_global_device_key(&did)
+        .map_err(|e| MigrateError::IdentityNotFound {
+            message: e.to_string(),
+        })?;
+    store
+        .store_did_doc(&did, &document_text)
+        .map_err(|e| MigrateError::IdentityNotFound {
+            message: e.to_string(),
+        })?;
+    // Keep the armed leg available until every retryable local write has completed.
+    *state.migration_state.lock().await = None;
+    Ok(ClaimResult { updated_did_doc })
+}
+
 /// Errors from the migration identity leg.
 #[derive(Debug, Serialize, thiserror::Error)]
 #[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]
@@ -846,6 +1072,14 @@ mod tests {
     //
     // These tests are the spec for `guard_migration_op`. Until it is implemented
     // they fail (the stub is `todo!()`); once the five rules are in place they pass.
+
+    #[test]
+    fn did_web_url_normalizes_host_casing() {
+        assert_eq!(
+            did_web_url("did:web:Alice.Example.COM").unwrap(),
+            "https://alice.example.com/.well-known/did.json"
+        );
+    }
 
     /// A well-formed migration: device key stays at [0], the only extra key is the
     /// destination's recommended key, the handle is preserved, and only atproto_pds

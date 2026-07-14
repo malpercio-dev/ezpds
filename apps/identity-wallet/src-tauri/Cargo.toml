@@ -57,6 +57,9 @@ chrono = { workspace = true }
 # `#[cfg(mobile)]` in lib.rs. Same version admin-companion already uses.
 [target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
 tauri-plugin-biometric = "2"
+# Reuse the audited in-repo native plugin. The wallet calls its single command through the current
+# Tauri API directly, avoiding the upstream's stale 0.0.1 guest package and API dependency.
+tauri-plugin-sharesheet = { path = "../../admin-companion/vendor/tauri-plugin-sharesheet" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
