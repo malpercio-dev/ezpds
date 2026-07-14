@@ -57,9 +57,9 @@ pub struct Config {
     pub blobs: BlobsConfig,
     /// Persistent firehose event log (`repo_seq`) retention / pruning configuration.
     pub firehose: FirehoseConfig,
-    /// Account-lifecycle knobs (currently the scheduled-deletion reaper interval).
+    /// Account-lifecycle knobs (the scheduled-deletion reaper interval).
     pub accounts: AccountsConfig,
-    /// Operator companion-app admin-device knobs (currently the stale-nonce sweep interval
+    /// Operator companion-app admin-device knobs (the stale-nonce sweep interval
     /// and retention).
     pub admin_devices: AdminDevicesConfig,
     pub oauth: OAuthConfig,

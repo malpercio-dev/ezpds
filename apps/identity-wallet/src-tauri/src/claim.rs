@@ -366,10 +366,9 @@ fn map_pds_error_to_resolve(err: PdsClientError) -> ResolveError {
 
 /// Authenticate against the source PDS with the account password (`createSession`).
 ///
-/// Replaces the claim flow's old OAuth PDS login. The next steps —
-/// `requestPlcOperationSignature` + `signPlcOperation` — are PLC (identity) operations that a
-/// spec-strict PDS such as bsky.social gates behind a **full session**; no OAuth
-/// `transition:generic` token can drive them. A password `createSession` mints a full
+/// The next steps — `requestPlcOperationSignature` + `signPlcOperation` — are PLC (identity)
+/// operations that a spec-strict PDS such as bsky.social gates behind a **full session**; no
+/// OAuth `transition:generic` token can drive them. A password `createSession` mints a full
 /// `com.atproto.access` session, the only credential class that can. `goat account migrate` asks
 /// for the password for the same reason.
 ///
@@ -593,8 +592,7 @@ fn classify_plc_op_error(e: crate::pds_client::PdsClientError) -> ClaimError {
 /// The email code the user just typed is the most likely cause of a rejection here, and the screen
 /// has a dedicated "check your code" state for it. The PDS may report it as a `400` with an
 /// `InvalidToken`/`ExpiredToken` error code or as a `401`, so this checks both the atproto error
-/// code and the message rather than a single status (previously this was a fragile substring
-/// scrape of a flattened `NetworkError` message, which structured classification broke).
+/// code and the message rather than a single status.
 fn classify_sign_plc_error(e: crate::pds_client::PdsClientError) -> ClaimError {
     use crate::pds_client::PdsClientError;
     let invalid_token = match &e {
@@ -1528,7 +1526,7 @@ mod tests {
 
     #[test]
     fn test_classify_plc_op_error_flags_insufficient_scope() {
-        // A 403 insufficient-scope refusal (now a typed XrpcError carrying the atproto error code)
+        // A 403 insufficient-scope refusal (a typed XrpcError carrying the atproto error code)
         // must surface as InsufficientScope, not a generic error — recognized from the error code
         // on the structured variant.
         let scope_err = crate::pds_client::PdsClientError::XrpcError {

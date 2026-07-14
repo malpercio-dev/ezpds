@@ -267,7 +267,7 @@ pub struct AdminDeviceView {
     public_key: String,
     /// Platform tag (e.g. "ios").
     platform: String,
-    /// Granted scopes (currently always "full").
+    /// Granted scopes (always "full").
     scopes: String,
     /// Derived lifecycle status, never signalled by a flag alone: `"active"` while
     /// `revokedAt` is null, `"revoked"` once it is stamped.

@@ -1196,10 +1196,9 @@ mod tests {
             .unwrap_or_else(|| panic!("missing header {name}"))
     }
 
-    /// A document-backed pairing fixture. The golden envelope tests below predate the
-    /// multi-relay document; only this setup changed when the legacy triple helpers were
-    /// removed — every sign-string, header assertion, and relay-verifier call is
-    /// unchanged, which is what pins the envelope.
+    /// A document-backed pairing fixture for the golden envelope tests below: every
+    /// sign-string, header assertion, and relay-verifier call stays unchanged across
+    /// pairing storage formats, which is what pins the envelope.
     fn test_pairing(device_id: &str, relay_url: &str) -> Pairing {
         Pairing {
             id: "test-pairing-id".to_string(),

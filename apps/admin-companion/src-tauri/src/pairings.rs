@@ -1,7 +1,7 @@
 // pattern: Functional Core
 //
 // The multi-relay pairing document: which relays this device is paired to, and which
-// one unqualified operator actions (claim-code mint, self-revoke) currently target.
+// one unqualified operator actions (claim-code mint, self-revoke) target.
 // Pure data and invariant-preserving operations only — Keychain persistence lives in
 // `keychain::{load_pairings, save_pairings}`, and id generation (UUID) stays with the
 // imperative callers in `relay_client`, so every function here is deterministic.

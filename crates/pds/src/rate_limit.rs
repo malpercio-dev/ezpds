@@ -85,8 +85,8 @@ impl RateLimiterState {
             }])))
         };
 
-        // The account-creation cap applies to the reference XRPC path (not yet routed) and to the
-        // native provisioning routes that exist today. All three share *one* limiter instance so the
+        // The account-creation cap applies to the reference XRPC path and to the
+        // native provisioning routes. All three share *one* limiter instance so the
         // IP-keyed budget is enforced across every entry point — otherwise a client could triple its
         // allowance by rotating between paths.
         let mut endpoints: HashMap<&'static str, Arc<Mutex<MultiWindowLimiter>>> = HashMap::new();

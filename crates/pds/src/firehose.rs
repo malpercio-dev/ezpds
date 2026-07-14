@@ -8,7 +8,7 @@
 //! into a DAG-CBOR frame.
 //!
 //! **Durability & restart safety.** The monotonic `seq` and the event log live in SQLite, so a
-//! process restart / redeploy no longer resets the sequence to 0 or empties the replay backlog:
+//! process restart / redeploy neither resets the sequence to 0 nor empties the replay backlog:
 //! the sequencer loads `MAX(seq)` on construction and continues from there, and cursor replay
 //! reads missed events back out of `repo_seq` (see `db::firehose_seq`). An event is persisted
 //! *before* it is broadcast, so anything a live subscriber can observe is already durable — which
@@ -352,7 +352,7 @@ impl<'f> ReplayReader<'f> {
     /// the same SQL statement that reads the rows, so the pruned-prefix decision observes one
     /// SQLite snapshot (no TOCTOU between the batch and the cursor-presence check).
     ///
-    /// **Best-effort mid-drain, too.** Because replay no longer locks out the sweep, a *slow*
+    /// **Best-effort mid-drain, too.** Replay does not lock out the sweep, so a *slow*
     /// reader can have rows pruned out from under it between pages. Each gap or short/empty tail is
     /// therefore also checked against the firehose's [`prune_floor`](Firehose::prune_floor): when
     /// the next expected `seq` is at or below the floor, the missing rows were pruned, so the reader
@@ -623,7 +623,7 @@ impl Firehose {
             Err(e) if crate::db::is_unique_violation(&e) => {
                 let durable = crate::db::firehose_seq::max_seq(&mut *conn).await?;
                 let healed_seq = durable + 1;
-                // The wedge no longer surfaces as an outage, so this log line is the only
+                // The wedge never surfaces as an outage, so this log line is the only
                 // signal the cancellation window was actually hit in production.
                 tracing::warn!(
                     did,
@@ -1833,7 +1833,7 @@ mod tests {
 
     #[tokio::test]
     async fn replay_degrades_to_best_effort_when_pruned_mid_drain() {
-        // Regression: replay no longer locks out the retention sweep, so a slow reader can
+        // Replay must not lock out the retention sweep, so a slow reader can
         // have rows pruned out from under it between pages. A gap that opens up mid-drain because of
         // that prune must degrade to best-effort (re-anchor to the retained suffix), not fail
         // closed as if it were a durability hole.

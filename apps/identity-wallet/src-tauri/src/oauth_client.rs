@@ -399,8 +399,8 @@ impl OAuthClient {
             AuthMode::Dpop => {
                 // DPoP mode: Authorization + DPoP proof with ath claim. `htu` excludes the query
                 // string (RFC 9449 §4.2), matching `send_with_dpop`; the request still targets the
-                // full `url`. (Binary-upload paths carry no query today, but keep the two proof
-                // builders consistent so a future query-bearing upload can't ship a bad proof.)
+                // full `url`. (Binary-upload paths carry no query, but the two proof builders stay
+                // consistent so a query-bearing upload can't ship a bad proof.)
                 let htu = url.split('?').next().unwrap_or(url);
                 let ath = DPoPKeypair::compute_ath(&access_token);
                 let proof = self.dpop.make_proof("POST", htu, nonce, Some(&ath))?;

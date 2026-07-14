@@ -1488,7 +1488,7 @@ mod tests {
 
     /// Golden interop test: a REAL operation signed by bsky.social (fibercap's
     /// secp256k1 rotation key, via `signPlcOperation`), captured live from a real
-    /// bsky.social migration. Verifying it here proves byte-level canonical-CBOR +
+    /// bsky.social migration. Verifying it proves byte-level canonical-CBOR +
     /// k256 compatibility with the reference ecosystem, offline.
     /// (The op was never submitted to plc.directory — it is inert test data.)
     #[test]

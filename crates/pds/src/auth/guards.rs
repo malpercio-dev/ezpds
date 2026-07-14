@@ -215,10 +215,10 @@ pub async fn require_admin(
 /// Gate an admin endpoint and enforce JSON content type in one step.
 ///
 /// Combines [`require_admin`] with the 415 media-type guard that axum's `Json`
-/// extractor previously provided. Admin handlers that consume the body as raw
+/// extractor would otherwise provide. Admin handlers that consume the body as raw
 /// [`axum::body::Bytes`] for signature verification call this before parsing the
-/// body with `Json::from_bytes`, so they preserve the same rejection statuses as
-/// before device-signature support was added.
+/// body with `Json::from_bytes`, so raw-body handlers keep the same rejection
+/// statuses as `Json`-extracting ones.
 ///
 /// Returns `Err(Response)` on auth failure (401/403) or a non-JSON content type (415);
 /// `Ok(AdminActor)` (see [`require_admin`]) to proceed with body parsing.

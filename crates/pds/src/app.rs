@@ -639,7 +639,7 @@ const READ_AFTER_WRITE_NSIDS: [&str; 6] = [
 /// (resolved and SSRF-guarded exactly like the moderation branch) instead of the namespace's
 /// configured default. This is what lets the official app's `app.bsky.video.*` calls — sent with
 /// `atproto-proxy: did:web:video.bsky.app#bsky_video` — reach the video service rather than the
-/// AppView. An absent header keeps today's default routing (AppView / chat); moderation still has
+/// AppView. An absent header keeps the default routing (AppView / chat); moderation still has
 /// no default of its own, so its header remains mandatory.
 ///
 /// All three proxied namespaces are forwarded *on behalf of an authenticated user*, so the

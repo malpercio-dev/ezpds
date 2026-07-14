@@ -471,7 +471,7 @@ pub async fn commit_repo_write(
     // the firehose diff CAR and the per-block rev tag for getRepo?since — tagging this precise set
     // (not "all untagged blocks") is what keeps the rev correct under concurrent same-repo writes
     // (see `db::blocks::tag_blocks_rev`). `new_reachable` is reused as the post-commit GC keep-set
-    // below, so the GC no longer recomputes full-repo reachability a second time on every write.
+    // below, so the GC does not recompute full-repo reachability a second time on every write.
     // `cid_strs`/`gc_keep` are kept independently of `blocks` (rather than as one `Option` bundle)
     // because the rev tag and GC still run even if the CAR later fails to build — only the firehose
     // event is dropped in that case.
