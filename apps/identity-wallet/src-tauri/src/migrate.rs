@@ -52,8 +52,8 @@ pub struct SignedMigrationOp {
     pub signed_op: serde_json::Value,
     /// CID of the signed op — the content-address plc.directory assigns it once it
     /// lands. Recorded so a submit can reconcile the op's landed-state against the
-    /// audit log after an ambiguous/lost-response POST (MM-355). Internal only; not
-    /// part of the frontend contract.
+    /// audit log after an ambiguous/lost-response POST. Internal only; not part of
+    /// the frontend contract.
     #[serde(skip)]
     pub op_cid: String,
 }
@@ -69,12 +69,12 @@ pub struct MigrationState {
     pub dest_oauth_client: std::sync::Arc<OAuthClient>,
     /// The signed PLC op, set by `build_migration_op_cmd`. Kept parked (cloned, not
     /// taken) across a submit so an ambiguous/lost-response POST can be reconciled and
-    /// retried; cleared only once the op is confirmed landed (MM-355).
+    /// retried; cleared only once the op is confirmed landed.
     pub signed_op: Option<serde_json::Value>,
     /// CID of `signed_op` — the identity plc.directory assigns the op once it lands.
     /// Set alongside `signed_op` by `build_migration_op_cmd`, and used by the submit to
     /// detect (via the audit log) whether the op already landed before deciding to
-    /// re-POST (MM-355).
+    /// re-POST.
     pub op_cid: Option<String>,
 }
 
@@ -1035,7 +1035,7 @@ async fn reconcile_landed_migration_op(
     }
 }
 
-/// Submit the migration op with ambiguous / lost-response reconciliation (MM-355).
+/// Submit the migration op with ambiguous / lost-response reconciliation.
 ///
 /// A PLC operation is `prev`-chained and non-idempotent, and a mobile network can drop
 /// the HTTP response *after* plc.directory has already committed the op. Rather than
@@ -1148,7 +1148,7 @@ pub async fn build_migration_op_cmd(
 ///
 /// Clones (does NOT take) the signed op + its CID under the lock, so an ambiguous /
 /// lost-response POST leaves the op parked and a retry can reconcile-then-resubmit
-/// instead of dead-ending on `MIGRATION_NOT_READY` (MM-355). The reconciliation lives
+/// instead of dead-ending on `MIGRATION_NOT_READY`. The reconciliation lives
 /// in `submit_migration_op_reconciling`; the op is cleared here only once it is
 /// confirmed landed. Re-submitting the same non-idempotent op is prevented by that
 /// reconcile-first check and by PLC `prev`-chaining (a stale re-POST is rejected), so
@@ -1188,11 +1188,16 @@ pub async fn submit_migration_op_cmd(
     let result =
         submit_migration_op_reconciling(state.pds_client(), &did, &signed_op, &op_cid).await?;
 
-    // Landed (posted or reconciled) — clear the state, but only if it is still THIS
-    // DID's migration (a concurrent prepare_migration could have replaced it while we
-    // were on the network).
+    // Landed (posted or reconciled) — clear the state, but only if it is still the
+    // exact op we just submitted. Matching the DID alone is not enough: a concurrent
+    // re-arm/re-build for the same DID could have parked a newer op while we were on
+    // the network, and clearing on DID-only would wipe that newer op. Requiring the
+    // op_cid to match ensures we remove only the submission that completed.
     let mut migration = state.migration_state.lock().await;
-    if migration.as_ref().is_some_and(|ms| ms.did == did) {
+    if migration
+        .as_ref()
+        .is_some_and(|ms| ms.did == did && ms.op_cid.as_deref() == Some(op_cid.as_str()))
+    {
         *migration = None;
     }
 
@@ -1804,7 +1809,7 @@ mod tests {
         let _ = store.remove_identity(did);
     }
 
-    // ── MM-355: ambiguous / lost-response reconciliation ─────────────────────
+    // ── ambiguous / lost-response reconciliation ─────────────────────────────
     //
     // A did:plc op can commit at plc.directory even when the HTTP response is lost
     // (mobile network drop). The reconciliation reads the DID's audit log and decides
