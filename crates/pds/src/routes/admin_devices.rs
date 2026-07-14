@@ -31,6 +31,7 @@ use crate::db::admin_devices::{
     list_devices, revoke_device, AdminDeviceRow, NewAdminDevice,
 };
 use crate::db::is_unique_violation;
+use crate::time::to_rfc3339_utc;
 
 /// Default pairing-code lifetime: long enough to scan a QR, short enough that an
 /// unclaimed code's exposure window stays small. Mirrors the design's "~5 minutes".
@@ -116,14 +117,6 @@ fn generate_pairing_code() -> String {
     let mut bytes = [0u8; 16];
     OsRng.fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
-}
-
-/// Render a SQLite `datetime('now', …)` value (`YYYY-MM-DD HH:MM:SS`, UTC, no zone)
-/// as an unambiguous RFC 3339 / ISO-8601 UTC instant. Unlike most timestamps the API
-/// returns informationally, `expiresAt` drives client-side validity math, so it must
-/// carry an explicit zone designator rather than relying on an implied UTC convention.
-fn to_rfc3339_utc(sqlite_datetime: &str) -> String {
-    format!("{}Z", sqlite_datetime.replace(' ', "T"))
 }
 
 // ── POST /v1/admin/devices ───────────────────────────────────────────────────

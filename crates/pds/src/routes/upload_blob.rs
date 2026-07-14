@@ -7,8 +7,6 @@
 //
 // Implements: POST /xrpc/com.atproto.repo.uploadBlob
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use axum::{
     body::Body,
     extract::{FromRequestParts, State},
@@ -265,24 +263,18 @@ impl BlobUploader {
 /// access-token extractor.
 async fn resolve_uploader(state: &AppState, parts: &mut Parts) -> Result<BlobUploader, ApiError> {
     if is_service_auth_request(&parts.headers) {
-        let user =
-            require_service_auth(state, &parts.headers, UPLOAD_BLOB_LXM, unix_now()?).await?;
+        let user = require_service_auth(
+            state,
+            &parts.headers,
+            UPLOAD_BLOB_LXM,
+            crate::time::unix_now()?,
+        )
+        .await?;
         Ok(BlobUploader::Service(user))
     } else {
         let user = AuthenticatedUser::from_request_parts(parts, state).await?;
         Ok(BlobUploader::Access(user))
     }
-}
-
-/// Current Unix time in seconds, for the service-auth token's `exp` validation.
-fn unix_now() -> Result<u64, ApiError> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .map_err(|e| {
-            tracing::error!(error = %e, "system clock is before Unix epoch");
-            ApiError::new(ErrorCode::InternalError, "system clock error")
-        })
 }
 
 /// Read the request body up to `max_bytes`, returning an error if exceeded.

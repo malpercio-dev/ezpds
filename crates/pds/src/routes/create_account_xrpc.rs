@@ -21,8 +21,6 @@
 //
 // Invite codes are enforced (single-use, against `claim_codes`) when `config.invite_code_required`.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use axum::{extract::State, http::HeaderMap, response::Json};
 use serde::{Deserialize, Serialize};
 
@@ -425,7 +423,7 @@ async fn create_account_migration(
         did,
         &server_did,
         CREATE_ACCOUNT_LXM,
-        unix_now()?,
+        crate::time::unix_now()?,
     )
     .await?;
 
@@ -721,16 +719,6 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(str::trim)
         .filter(|t| !t.is_empty())
-}
-
-fn unix_now() -> Result<u64, ApiError> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .map_err(|e| {
-            tracing::error!(error = %e, "system clock is before Unix epoch");
-            ApiError::new(ErrorCode::InternalError, "system clock error")
-        })
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

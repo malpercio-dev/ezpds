@@ -67,9 +67,11 @@ pub(crate) use replay::collect_replay_seqs;
 pub use replay::{ReplayReader, SubscribeOutcome, Subscription};
 
 use events::{
-    now_rfc3339, validate_commit_cids, validate_sync_blocks, StoredAccountRef, StoredCommitRef,
+    validate_commit_cids, validate_sync_blocks, StoredAccountRef, StoredCommitRef,
     StoredIdentityRef, StoredOpRef, StoredSyncRef,
 };
+
+use crate::time::now_rfc3339;
 
 /// Default capacity of the broadcast ring buffer: the number of events retained for slow
 /// consumers before they begin to observe `Lagged`.
