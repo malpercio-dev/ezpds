@@ -114,7 +114,7 @@ async fn create_account_new(
         .as_deref()
         .filter(|p| !p.is_empty())
         .ok_or_else(|| ApiError::new(ErrorCode::InvalidClaim, "password must not be empty"))?;
-    if let Err(msg) = crate::handle::validate_handle(
+    if let Err(msg) = crate::identity::handle::validate_handle(
         &payload.handle,
         &state.config.available_user_domains,
         &state.config.reserved_handles,
@@ -143,7 +143,7 @@ async fn create_account_new(
             )
         })?;
 
-    let (verified, signed_op_str) = crate::genesis::verify_and_validate_genesis_op(
+    let (verified, signed_op_str) = crate::identity::genesis::verify_and_validate_genesis_op(
         rotation_key_public,
         plc_op,
         &payload.handle,
@@ -212,15 +212,16 @@ async fn create_account_new(
                 ApiError::new(ErrorCode::InternalError, "failed to build genesis repo")
             })?;
     let genesis_root_str = genesis_root.to_string();
-    let genesis_car = crate::genesis::build_genesis_car(genesis_root, &genesis_blocks);
-    let genesis_sync_car = crate::genesis::build_commit_block_car(genesis_root, &genesis_blocks)
-        .ok_or_else(|| {
-            tracing::error!(did = %did, "genesis commit block missing from built blocks");
-            ApiError::new(ErrorCode::InternalError, "failed to build genesis repo")
-        })?;
+    let genesis_car = crate::identity::genesis::build_genesis_car(genesis_root, &genesis_blocks);
+    let genesis_sync_car =
+        crate::identity::genesis::build_commit_block_car(genesis_root, &genesis_blocks)
+            .ok_or_else(|| {
+                tracing::error!(did = %did, "genesis commit block missing from built blocks");
+                ApiError::new(ErrorCode::InternalError, "failed to build genesis repo")
+            })?;
 
     check_did_not_promoted(state, &did).await?;
-    crate::genesis::post_to_plc_directory(
+    crate::identity::genesis::post_to_plc_directory(
         &state.http_client,
         &state.config.plc_directory_url,
         &did,
@@ -228,7 +229,7 @@ async fn create_account_new(
     )
     .await?;
 
-    let did_document = crate::genesis::build_did_document(&verified)?;
+    let did_document = crate::identity::genesis::build_did_document(&verified)?;
     let password_hash = hash_password(password)?;
 
     let session = promote_new_account(
@@ -462,13 +463,13 @@ async fn create_account_migration(
 
     // The migrating identity's handle is foreign (e.g. its old domain), so only structural
     // validity is required — not this server's served-domain policy.
-    if let Err(msg) = crate::handle::validate_handle_structure(&payload.handle) {
+    if let Err(msg) = crate::identity::handle::validate_handle_structure(&payload.handle) {
         return Err(ApiError::new(ErrorCode::InvalidHandle, msg));
     }
     // But if the handle *is* on one of our served domains, honor the reserved-name policy:
     // migration also inserts the handle locally, so without this a migration could claim a
     // reserved infrastructure name (e.g. identitywallet.obsign.org) that registration refuses.
-    if crate::handle::reserved_on_served_domain(
+    if crate::identity::handle::reserved_on_served_domain(
         &payload.handle,
         &state.config.available_user_domains,
         &state.config.reserved_handles,

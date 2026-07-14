@@ -105,12 +105,13 @@ pub async fn create_did_handler(
         payload.did_web_document.as_ref(),
     ) {
         (Some(signed_op), None) => {
-            let (verified, signed_op_str) = crate::genesis::verify_and_validate_genesis_op(
-                &payload.rotation_key_public,
-                signed_op,
-                &pending.handle,
-                &state.config.public_url,
-            )?;
+            let (verified, signed_op_str) =
+                crate::identity::genesis::verify_and_validate_genesis_op(
+                    &payload.rotation_key_public,
+                    signed_op,
+                    &pending.handle,
+                    &state.config.public_url,
+                )?;
             if verified
                 .verification_methods
                 .get("atproto")
@@ -122,7 +123,7 @@ pub async fn create_did_handler(
                     "op verificationMethods.atproto does not match the issued repo signing key",
                 ));
             }
-            let document = crate::genesis::build_did_document(&verified)?;
+            let document = crate::identity::genesis::build_did_document(&verified)?;
             (verified.did, document, Some(signed_op_str))
         }
         (None, Some(document_bytes)) => {
@@ -141,7 +142,7 @@ pub async fn create_did_handler(
                 &state.config.public_url,
             )?;
             let resolved =
-                crate::identity_resolution::resolve_web_did_document_bytes(&state, &did).await?;
+                crate::identity::resolution::resolve_web_did_document_bytes(&state, &did).await?;
             if resolved.as_bytes() != document_bytes.as_bytes() {
                 return Err(ApiError::new(
                     ErrorCode::InvalidClaim,
@@ -193,15 +194,16 @@ pub async fn create_did_handler(
     // Every block `build_genesis_repo` wrote is reachable from `genesis_root` (there is no
     // previous commit to diff against), so the genesis `#commit` frame's CARv1 payload can be
     // built directly from these in-memory blocks — no block-store round trip needed.
-    let genesis_car = crate::genesis::build_genesis_car(genesis_root, &genesis_blocks);
+    let genesis_car = crate::identity::genesis::build_genesis_car(genesis_root, &genesis_blocks);
     // A `#sync` state assertion carrying just the signed genesis commit block, staged atomically
     // with the account so a relay can anchor to this fresh host's head (Sync v1.1). The commit
     // block is always in the freshly-built genesis blocks, so `None` is an internal invariant break.
-    let genesis_sync_car = crate::genesis::build_commit_block_car(genesis_root, &genesis_blocks)
-        .ok_or_else(|| {
-            tracing::error!(did = %did, "genesis commit block missing from built blocks");
-            ApiError::new(ErrorCode::InternalError, "failed to build genesis repo")
-        })?;
+    let genesis_sync_car =
+        crate::identity::genesis::build_commit_block_car(genesis_root, &genesis_blocks)
+            .ok_or_else(|| {
+                tracing::error!(did = %did, "genesis commit block missing from built blocks");
+                ApiError::new(ErrorCode::InternalError, "failed to build genesis repo")
+            })?;
 
     // Phase 3: Pre-store DID and Shamir shares for retry resilience, then POST to plc.directory.
     // Shares are generated once and stored alongside pending_did so that retries return the
@@ -210,7 +212,7 @@ pub async fn create_did_handler(
         pre_store_did_and_shares(&state.db, &session.account_id, &did, &pending).await?;
     check_already_promoted(&state.db, &did).await?;
     if !skip_plc && signed_op_str.is_some() {
-        crate::genesis::post_to_plc_directory(
+        crate::identity::genesis::post_to_plc_directory(
             &state.http_client,
             &state.config.plc_directory_url,
             &did,

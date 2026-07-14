@@ -66,7 +66,7 @@ pub async fn xrpc_handler(
 ) -> Response {
     use crate::auth::jwt::AuthScope;
     use crate::auth::oauth_scopes;
-    use crate::identity_resolution::{resolve_atproto_proxy_target, HeaderProxyGuard};
+    use crate::identity::resolution::{resolve_atproto_proxy_target, HeaderProxyGuard};
     use crate::routes::service_proxy::proxy_xrpc;
 
     let upstream = if method.starts_with("app.bsky.") {

@@ -59,7 +59,7 @@ pub async fn update_handle_handler(
     }
     oauth_scopes::require_identity(&user.scope_claim, "handle")?;
 
-    crate::handle::validate_handle_structure(&payload.handle)
+    crate::identity::handle::validate_handle_structure(&payload.handle)
         .map_err(|msg| ApiError::new(ErrorCode::InvalidHandle, msg))?;
 
     // Checked before external resolution, so a caller updating to a handle they already
@@ -100,7 +100,10 @@ pub async fn update_handle_handler(
             .handle
             .find('.')
             .expect("structure guarantees a dot");
-        if crate::handle::is_reserved_name(&payload.handle[..dot], &state.config.reserved_handles) {
+        if crate::identity::handle::is_reserved_name(
+            &payload.handle[..dot],
+            &state.config.reserved_handles,
+        ) {
             return Err(ApiError::new(
                 ErrorCode::InvalidHandle,
                 "this handle name is reserved",
@@ -258,8 +261,8 @@ mod tests {
     use uuid::Uuid;
 
     use crate::app::{app, test_state, AppState};
-    use crate::dns::{DnsError, TxtResolver};
-    use crate::well_known::{WellKnownError, WellKnownResolver};
+    use crate::identity::dns::{DnsError, TxtResolver};
+    use crate::identity::well_known::{WellKnownError, WellKnownResolver};
 
     // ── Test doubles ──────────────────────────────────────────────────────────
 

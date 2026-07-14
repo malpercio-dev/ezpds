@@ -12,7 +12,7 @@ use common::{ApiError, ErrorCode};
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::identity_resolution::resolve_handle_to_did;
+use crate::identity::resolution::resolve_handle_to_did;
 
 #[derive(Deserialize)]
 pub struct ResolveHandleQuery {
@@ -50,9 +50,9 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state, AppState};
-    use crate::dns::{DnsError, TxtResolver};
+    use crate::identity::dns::{DnsError, TxtResolver};
+    use crate::identity::well_known::{WellKnownError, WellKnownResolver};
     use crate::routes::test_utils::seed_handle;
-    use crate::well_known::{WellKnownError, WellKnownResolver};
 
     // ── Test doubles ──────────────────────────────────────────────────────────
 

@@ -66,7 +66,7 @@ pub async fn create_handle_handler(
         ));
     }
 
-    let name = crate::handle::validate_handle(
+    let name = crate::identity::handle::validate_handle(
         &payload.handle,
         &state.config.available_user_domains,
         &state.config.reserved_handles,

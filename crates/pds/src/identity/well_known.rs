@@ -14,6 +14,12 @@ use std::pin::Pin;
 #[error("HTTP well-known error: {0}")]
 pub struct WellKnownError(pub String);
 
+/// Upper bound on the `.well-known/atproto-did` response body. A valid DID is well under this;
+/// the endpoint host is caller-controlled (the handle being resolved), so its response is not
+/// trusted to be bounded — without this, a malicious host could stream an unbounded body to
+/// exhaust memory.
+const MAX_WELL_KNOWN_BODY_BYTES: usize = 2048;
+
 /// Abstraction over HTTP well-known handle resolution.
 ///
 /// Used by `resolveHandle` as the third fallback after local DB and DNS TXT.
@@ -50,7 +56,7 @@ impl WellKnownResolver for HttpWellKnownResolver {
     ) -> Pin<Box<dyn Future<Output = Result<Option<String>, WellKnownError>> + Send + 'a>> {
         let url = format!("https://{}/.well-known/atproto-did", handle);
         Box::pin(async move {
-            let resp = self
+            let mut resp = self
                 .client
                 .get(&url)
                 .send()
@@ -59,10 +65,20 @@ impl WellKnownResolver for HttpWellKnownResolver {
             if !resp.status().is_success() {
                 return Ok(None);
             }
-            let text = resp
-                .text()
+            let mut body = Vec::new();
+            while let Some(chunk) = resp
+                .chunk()
                 .await
-                .map_err(|e| WellKnownError(e.to_string()))?;
+                .map_err(|e| WellKnownError(e.to_string()))?
+            {
+                body.extend_from_slice(&chunk);
+                if body.len() > MAX_WELL_KNOWN_BODY_BYTES {
+                    return Err(WellKnownError(
+                        "well-known response exceeds maximum size".to_string(),
+                    ));
+                }
+            }
+            let text = String::from_utf8(body).map_err(|e| WellKnownError(e.to_string()))?;
             Ok(Some(text.trim().to_string()))
         })
     }

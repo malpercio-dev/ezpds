@@ -15,7 +15,7 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 
 use crate::app::AppState;
-use crate::identity_resolution;
+use crate::identity::resolution;
 
 use super::oauth_scopes::{format_scope, normalize_scope_request, normalize_token, ScopeSyntax};
 
@@ -148,7 +148,7 @@ pub async fn expand_include_scopes(
 pub(crate) struct AuthorityEndpoint {
     pub did: String,
     pub url: String,
-    pub pinned: Option<identity_resolution::PinnedResolution>,
+    pub pinned: Option<resolution::PinnedResolution>,
 }
 
 /// Reverse an NSID's authority segments into the domain that publishes it, per the atproto
@@ -165,7 +165,7 @@ fn nsid_authority_domain(nsid: &str) -> Option<String> {
 }
 
 /// Resolve a Lexicon authority domain to its publishing DID via `_lexicon.<domain>` DNS TXT,
-/// mirroring `identity_resolution::resolve_handle_to_did`'s `_atproto.<handle>` lookup.
+/// mirroring `resolution::resolve_handle_to_did`'s `_atproto.<handle>` lookup.
 async fn resolve_authority_did(state: &AppState, domain: &str) -> Result<String, String> {
     let resolver = state
         .txt_resolver
@@ -197,7 +197,7 @@ pub(crate) async fn resolve_authority_endpoint(
         nsid_authority_domain(nsid).ok_or_else(|| format!("\"{nsid}\" is not a valid NSID"))?;
     let authority_did = resolve_authority_did(state, &domain).await?;
 
-    let doc = identity_resolution::resolve_did_document(state, &authority_did)
+    let doc = resolution::resolve_did_document(state, &authority_did)
         .await
         .map_err(|_| format!("could not resolve the DID document for \"{authority_did}\""))?;
 
@@ -216,12 +216,11 @@ pub(crate) async fn resolve_authority_endpoint(
         .and_then(Value::as_str)
         .ok_or_else(|| format!("\"{authority_did}\" does not advertise a PDS service endpoint"))?;
 
-    let pinned =
-        identity_resolution::validate_proxy_endpoint(endpoint, state.allow_loopback_proxy_targets)
-            .await
-            .map_err(|_| {
-                format!("\"{authority_did}\"'s service endpoint is not a usable public address")
-            })?;
+    let pinned = resolution::validate_proxy_endpoint(endpoint, state.allow_loopback_proxy_targets)
+        .await
+        .map_err(|_| {
+            format!("\"{authority_did}\"'s service endpoint is not a usable public address")
+        })?;
 
     Ok(AuthorityEndpoint {
         did: authority_did,
@@ -353,13 +352,13 @@ fn is_blob_wildcard(entry: &PermissionEntry) -> bool {
 
 /// Build a one-off HTTP client hardened for fetching from a caller-influenced Lexicon
 /// authority endpoint — the NSID (and therefore the authority) comes from the client's
-/// requested scope string. Delegates to the shared `identity_resolution::build_pinned_client`,
+/// requested scope string. Delegates to the shared `resolution::build_pinned_client`,
 /// the same hardening `routes::service_proxy::build_header_proxy_client` uses for its own
 /// caller-controlled target.
 fn build_fetch_client(
-    pinned: Option<&identity_resolution::PinnedResolution>,
+    pinned: Option<&resolution::PinnedResolution>,
 ) -> Result<reqwest::Client, String> {
-    identity_resolution::build_pinned_client(pinned).map_err(|e| {
+    resolution::build_pinned_client(pinned).map_err(|e| {
         tracing::error!(error = %e, "failed to build permission-set fetch client");
         "failed to prepare the permission-set fetch".to_string()
     })
@@ -452,7 +451,7 @@ mod tests {
 
     use crate::app::{test_state, AppState};
     use crate::db::dids::seed_did_document;
-    use crate::dns::{DnsError, TxtResolver};
+    use crate::identity::dns::{DnsError, TxtResolver};
 
     use super::*;
 
@@ -530,7 +529,7 @@ mod tests {
     async fn resolves_nsid_to_a_validated_service_endpoint() {
         // An IP literal (rather than a domain) so `validate_proxy_endpoint` doesn't need to
         // perform a live DNS resolution in this test — same convention as
-        // identity_resolution.rs's own SSRF tests.
+        // identity/resolution.rs's own SSRF tests.
         let state = state_with_dns(test_state().await, vec![format!("did={AUTHORITY_DID}")]);
         seed_did_document(&state.db, AUTHORITY_DID, pds_doc("http://93.184.216.34")).await;
 

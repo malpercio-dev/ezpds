@@ -31,7 +31,7 @@ use crate::auth::oauth_scopes;
 use crate::auth::token::hash_bearer_token;
 use crate::db::plc_operation_tokens::{consume_plc_operation_token, plc_operation_token_is_valid};
 use crate::db::repo_keys::get_signing_key_by_did;
-use crate::plc_ops::{
+use crate::identity::plc::{
     ensure_did_plc, fetch_current_plc_state, parse_services, parse_verification_methods,
 };
 

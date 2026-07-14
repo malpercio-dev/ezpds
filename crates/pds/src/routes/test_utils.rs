@@ -17,37 +17,45 @@ pub struct AlwaysOkDns;
 /// DNS provider that fails on every `create_record` and `delete_record` call.
 pub struct AlwaysErrDns;
 
-impl crate::dns::DnsProvider for AlwaysOkDns {
+impl crate::identity::dns::DnsProvider for AlwaysOkDns {
     fn create_record<'a>(
         &'a self,
         _name: &'a str,
         _target: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), crate::dns::DnsError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), crate::identity::dns::DnsError>> + Send + 'a>> {
         Box::pin(async { Ok(()) })
     }
 
     fn delete_record<'a>(
         &'a self,
         _name: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), crate::dns::DnsError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), crate::identity::dns::DnsError>> + Send + 'a>> {
         Box::pin(async { Ok(()) })
     }
 }
 
-impl crate::dns::DnsProvider for AlwaysErrDns {
+impl crate::identity::dns::DnsProvider for AlwaysErrDns {
     fn create_record<'a>(
         &'a self,
         _name: &'a str,
         _target: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), crate::dns::DnsError>> + Send + 'a>> {
-        Box::pin(async { Err(crate::dns::DnsError("simulated provider error".to_string())) })
+    ) -> Pin<Box<dyn Future<Output = Result<(), crate::identity::dns::DnsError>> + Send + 'a>> {
+        Box::pin(async {
+            Err(crate::identity::dns::DnsError(
+                "simulated provider error".to_string(),
+            ))
+        })
     }
 
     fn delete_record<'a>(
         &'a self,
         _name: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), crate::dns::DnsError>> + Send + 'a>> {
-        Box::pin(async { Err(crate::dns::DnsError("simulated provider error".to_string())) })
+    ) -> Pin<Box<dyn Future<Output = Result<(), crate::identity::dns::DnsError>> + Send + 'a>> {
+        Box::pin(async {
+            Err(crate::identity::dns::DnsError(
+                "simulated provider error".to_string(),
+            ))
+        })
     }
 }
 

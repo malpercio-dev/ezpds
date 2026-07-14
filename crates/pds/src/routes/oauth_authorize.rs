@@ -1577,7 +1577,7 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use crate::dns::{DnsError, TxtResolver};
+    use crate::identity::dns::{DnsError, TxtResolver};
     use crate::routes::test_utils::seed_did_document;
 
     const AUTHORITY_DID: &str = "did:plc:authoritydidxxxxxxxxxxxxx";

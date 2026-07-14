@@ -31,7 +31,7 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::auth::jwt::{peek_jwt_iss, verify_service_auth_jwt, ServiceAuthError};
 use crate::db::accounts::{account_lifecycle, AccountLifecycle};
-use crate::identity_resolution::{
+use crate::identity::resolution::{
     atproto_verification_key, resolve_did_document, resolve_did_document_force_refresh,
 };
 

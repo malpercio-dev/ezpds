@@ -42,9 +42,25 @@ pub async fn resolve_handle_to_did(
         let name = format!("_atproto.{handle}");
         match resolver.txt_lookup(&name).await {
             Ok(records) => {
-                for record in records {
-                    if let Some(did) = record.strip_prefix("did=") {
-                        return Ok(Some(did.to_string()));
+                let mut dids: Vec<&str> = records
+                    .iter()
+                    .filter_map(|r| r.strip_prefix("did="))
+                    .collect();
+                dids.sort_unstable();
+                dids.dedup();
+                match dids.as_slice() {
+                    [] => {}
+                    [did] => return Ok(Some((*did).to_string())),
+                    _ => {
+                        // Per the handle spec, multiple `did=` TXT records naming different
+                        // DIDs is ambiguous — resolution must not pick one by DNS answer order.
+                        // Fall through to well-known rather than fail closed, matching the
+                        // lookup-error handling below.
+                        tracing::warn!(
+                            handle = %handle,
+                            count = dids.len(),
+                            "ambiguous _atproto TXT records (multiple distinct DIDs); falling through to well-known"
+                        );
                     }
                 }
             }
@@ -489,7 +505,27 @@ pub(crate) async fn resolve_web_did_document(
     did: &str,
 ) -> Result<Value, ApiError> {
     let url = did_web_document_url(did)?;
-    let response = state.http_client.get(&url).send().await.map_err(|e| {
+    // The did:web authority is caller-controlled (the requested `did`), so this fetch is
+    // SSRF-guarded exactly like resolve_web_did_document_bytes: validate the resolved endpoint,
+    // then pin the connection to the already-validated addresses.
+    let parsed = reqwest::Url::parse(&url)
+        .map_err(|_| ApiError::new(ErrorCode::InvalidClaim, "invalid did:web DID"))?;
+    let authority = parsed
+        .host_str()
+        .map(|host| match parsed.port() {
+            Some(port) => format!("https://{host}:{port}"),
+            None => format!("https://{host}"),
+        })
+        .ok_or_else(|| ApiError::new(ErrorCode::InvalidClaim, "invalid did:web DID"))?;
+    let pinned = validate_proxy_endpoint(&authority, state.allow_loopback_proxy_targets).await?;
+    let client = build_pinned_client(pinned.as_ref()).map_err(|e| {
+        tracing::error!(did = %did, error = %e, "failed to build hardened did:web client");
+        ApiError::new(
+            ErrorCode::PlcDirectoryError,
+            "failed to resolve did:web document",
+        )
+    })?;
+    let response = client.get(&url).send().await.map_err(|e| {
         tracing::error!(did = %did, error = %e, url = %url, "failed to resolve did:web document");
         ApiError::new(
             ErrorCode::PlcDirectoryError,
@@ -582,7 +618,10 @@ fn validate_did_doc_id(doc: Value, did: &str, error_code: ErrorCode) -> Result<V
 
 const ERROR_BODY_PREVIEW_BYTES: usize = 2048;
 
-async fn bounded_body_preview(mut response: reqwest::Response) -> String {
+/// Read up to [`ERROR_BODY_PREVIEW_BYTES`] of an error response body for logging, instead of
+/// buffering the whole thing — an erroneous upstream (plc.directory, a did:web endpoint) is not
+/// trusted to bound its own response size. Shared with `identity::genesis`'s plc.directory POST.
+pub(crate) async fn bounded_body_preview(mut response: reqwest::Response) -> String {
     let mut body = Vec::new();
     while body.len() < ERROR_BODY_PREVIEW_BYTES {
         let chunk = match response.chunk().await {

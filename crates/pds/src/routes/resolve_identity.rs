@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::app::AppState;
-use crate::identity_resolution::{
+use crate::identity::resolution::{
     resolve_did_document, resolve_did_document_force_refresh, resolve_handle_to_did,
     verified_handle_for_did, verified_handle_for_identifier, INVALID_HANDLE,
 };

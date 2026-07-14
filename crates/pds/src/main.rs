@@ -16,17 +16,13 @@ mod blob_store;
 mod code_gen;
 mod crawler;
 mod db;
-mod dns;
 mod email;
 mod firehose;
 mod firehose_gc;
-mod genesis;
-mod handle;
-mod identity_resolution;
+mod identity;
 mod iroh_tunnel;
 mod metrics;
 mod platform;
-mod plc_ops;
 mod rate_limit;
 mod read_after_write;
 mod record_write;
@@ -40,7 +36,6 @@ mod telemetry;
 mod time;
 mod transfer;
 mod uniqueness;
-mod well_known;
 mod xrpc_dispatch;
 
 /// Convert a config database_url (which may be a plain filesystem path or a sqlx URL) to a valid sqlx URL.
@@ -179,8 +174,8 @@ async fn run() -> anyhow::Result<()> {
         .build()
         .expect("failed to build HTTP client");
 
-    let txt_resolver: Option<Arc<dyn dns::TxtResolver>> =
-        match dns::HickoryTxtResolver::from_system_conf() {
+    let txt_resolver: Option<Arc<dyn identity::dns::TxtResolver>> =
+        match identity::dns::HickoryTxtResolver::from_system_conf() {
             Ok(r) => {
                 tracing::info!("DNS TXT resolver initialised (handle resolution fallback enabled)");
                 Some(Arc::new(r))
@@ -194,9 +189,10 @@ async fn run() -> anyhow::Result<()> {
             }
         };
 
-    let well_known_resolver: Option<Arc<dyn well_known::WellKnownResolver>> = Some(Arc::new(
-        well_known::HttpWellKnownResolver::new(http_client.clone()),
-    ));
+    let well_known_resolver: Option<Arc<dyn identity::well_known::WellKnownResolver>> =
+        Some(Arc::new(identity::well_known::HttpWellKnownResolver::new(
+            http_client.clone(),
+        )));
 
     // Dynamic-trust JWKS cache for the auth.md `identity_assertion` flow: reuses the shared HTTP
     // client and the operator-configured cache TTL + refetch cooldown (the anti-amplification

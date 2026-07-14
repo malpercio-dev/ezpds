@@ -48,7 +48,7 @@ pub async fn create_account(
     require_admin_token(&headers, &state)?;
 
     // --- Validate handle format (structure + served-domain policy) ---
-    if let Err(msg) = crate::handle::validate_handle(
+    if let Err(msg) = crate::identity::handle::validate_handle(
         &payload.handle,
         &state.config.available_user_domains,
         &state.config.reserved_handles,
