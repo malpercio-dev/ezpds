@@ -1,6 +1,7 @@
 pub mod account_storage;
 pub mod account_usage;
 pub mod activate_account;
+pub mod admin_account_repair;
 pub mod admin_devices;
 pub mod admin_health;
 pub mod admin_list_accounts;

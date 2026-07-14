@@ -97,7 +97,7 @@ pub async fn update_email(
 
 /// A minimal plausibility check: exactly one `@` with a non-empty local part and a dotted domain.
 /// Not a full RFC 5322 validation — just enough to reject obvious garbage before the DB write.
-fn is_plausible_email(email: &str) -> bool {
+pub(crate) fn is_plausible_email(email: &str) -> bool {
     let mut parts = email.split('@');
     let (Some(local), Some(domain), None) = (parts.next(), parts.next(), parts.next()) else {
         return false;

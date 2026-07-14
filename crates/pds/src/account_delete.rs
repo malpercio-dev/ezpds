@@ -55,6 +55,7 @@ pub enum PurgeOutcome {
 /// account's history there ages out via the normal retention sweep; the `#account` (deleted) frame
 /// we emit is how subscribers learn the account is gone.
 const DELETE_BY_DID: &[&str] = &[
+    "DELETE FROM operator_account_audit_events WHERE did = ?",
     "DELETE FROM refresh_tokens WHERE did = ?",
     "DELETE FROM sessions WHERE did = ?",
     "DELETE FROM oauth_tokens WHERE did = ?",

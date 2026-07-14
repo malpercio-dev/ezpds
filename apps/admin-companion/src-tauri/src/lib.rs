@@ -232,6 +232,23 @@ async fn revoke_account_credentials(
     relay_client::revoke_account_credentials(&pairing_id, &did).await
 }
 
+#[tauri::command]
+async fn set_account_email(
+    pairing_id: String,
+    did: String,
+    email: String,
+) -> Result<relay_client::RepairedEmail, relay_client::RelayClientError> {
+    relay_client::set_account_email(&pairing_id, &did, &email).await
+}
+
+#[tauri::command]
+async fn issue_reset_token(
+    pairing_id: String,
+    did: String,
+) -> Result<relay_client::IssuedResetToken, relay_client::RelayClientError> {
+    relay_client::issue_reset_token(&pairing_id, &did).await
+}
+
 /// Whether the biometric (user-presence) gate on signing actions is enabled. Defaults to
 /// `true` on a fresh install — signing is gated until the operator opts out in Settings.
 /// Errors serialize through `RelayClientError::Keychain` (the app's one Serialize error).
@@ -284,6 +301,8 @@ pub fn run() {
             list_transfers,
             cancel_transfer,
             revoke_account_credentials,
+            set_account_email,
+            issue_reset_token,
             biometric_enabled,
             set_biometric_enabled
         ])
