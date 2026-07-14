@@ -3,7 +3,6 @@
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import {
-    listPairings,
     getAccountUsage,
     getAccountStorage,
     type Pairing,
@@ -13,17 +12,18 @@
   } from '$lib/ipc';
   import { serverIdentity } from '$lib/server-identity';
   import { formatBytes, formatPct } from '$lib/format';
+  import { loadPinnedPairing, pinnedHref } from '$lib/pinned-pairing';
   import { classifyRelayError, type ErrorView } from '$lib/errors';
   import ScreenShell from '$lib/components/ui/ScreenShell.svelte';
   import StatusChip from '$lib/components/ui/StatusChip.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import ErrorState from '$lib/components/ui/ErrorState.svelte';
+  import PinnedPairingGate from '$lib/components/ui/PinnedPairingGate.svelte';
 
   // The account-detail screen: the read-only inspection home for ONE account on ONE
   // relay — identity facts plus the usage/storage readout. Reached from the accounts
-  // list (`?server=…&did=…`) and pinned to a single pairing at entry like
-  // Devices/Moderation, so a concurrent active-pointer switch on Home can never
-  // redirect what this screen reads. Nothing here signs: destructive work
+  // list (`?server=…&did=…`) and pinned to a single pairing at entry (see
+  // $lib/pinned-pairing) like Devices/Moderation. Nothing here signs: destructive work
   // (takedown/restore, credential revocation) lives one hop deeper on the moderation
   // screen, reached from here with the same pin + DID.
 
@@ -40,15 +40,9 @@
   let metricsView = $state<MetricsView>({ kind: 'loading' });
 
   onMount(async () => {
-    try {
-      pairingsView = await listPairings();
-    } catch {
-      pairingsView = 'error';
-      return;
-    }
-    const requested = page.url.searchParams.get('server');
-    const targetId = requested ?? pairingsView.active;
-    pairing = pairingsView.pairings.find((p) => p.id === targetId) ?? null;
+    const resolved = await loadPinnedPairing(page.url.searchParams);
+    pairingsView = resolved.view;
+    pairing = resolved.pairing;
     did = page.url.searchParams.get('did');
     if (pairing && did) void loadMetrics(did);
   });
@@ -72,7 +66,7 @@
 
   function openModeration() {
     if (!pairing || !did) return;
-    void goto(`/moderation?server=${pairing.id}&did=${encodeURIComponent(did)}`);
+    void goto(pinnedHref('/moderation', pairing.id, { did }));
   }
 </script>
 
@@ -82,23 +76,9 @@
   onback={() => history.back()}
   server={identity}
 >
-  {#if pairingsView === 'loading'}
-    <p class="resolving">checking servers…</p>
-  {:else if pairingsView === 'error'}
-    <section class="panel" aria-label="Server check failed">
-      <StatusChip status="error" label="check failed" />
-      <p class="note" role="alert">Couldn't read this device's servers. Go back and retry.</p>
-    </section>
-  {:else if !pairing}
-    <!-- Unpaired, or no active pick and no ?server pin — there is no relay to read. -->
-    <section class="panel" aria-label="No server selected">
-      <StatusChip status="pending" label="no server" />
-      <p class="note">
-        No server is selected. Pick or pair one first — account detail always reads
-        from a specific server.
-      </p>
-    </section>
-  {:else if !did}
+  <PinnedPairingGate view={pairingsView} {pairing} resource="account detail always reads from a specific server.">
+    {#snippet children()}
+    {#if !did}
     <!-- This screen is only reached from the accounts list, which always pins a DID. -->
     <section class="panel" aria-label="No account selected">
       <StatusChip status="pending" label="no account" />
@@ -172,6 +152,8 @@
       <Button variant="secondary" onclick={openModeration}>Take down or restore</Button>
     </section>
   {/if}
+    {/snippet}
+  </PinnedPairingGate>
 </ScreenShell>
 
 <style>

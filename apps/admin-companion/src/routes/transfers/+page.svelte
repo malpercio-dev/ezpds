@@ -1,9 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { page } from '$app/state';
-  import { SvelteMap } from 'svelte/reactivity';
   import {
-    listPairings,
     listTransfers,
     cancelTransfer,
     type TransferEntry,
@@ -13,114 +11,55 @@
   import { accountLabel, chipFor, timelineLine } from '$lib/transfers';
   import { shortenId } from '$lib/format';
   import { serverIdentity } from '$lib/server-identity';
-  import { classifyRelayError, type ErrorView } from '$lib/errors';
-  import { requireUserPresence, presenceAllows } from '$lib/biometric';
+  import { loadPinnedPairing } from '$lib/pinned-pairing';
+  import { createGuardedActions } from '$lib/guarded-action.svelte';
+  import { createPagedList } from '$lib/paged-list.svelte';
   import ScreenShell from '$lib/components/ui/ScreenShell.svelte';
   import StatusChip from '$lib/components/ui/StatusChip.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import ErrorState from '$lib/components/ui/ErrorState.svelte';
+  import PinnedPairingGate from '$lib/components/ui/PinnedPairingGate.svelte';
 
   // In-flight device transfers: every planned device swap on ONE relay that can still
   // advance — a security-relevant pending state (from initiate onward a live code can
   // hand out device credentials; once accepted, the target device already holds a
   // working token). Cancelling interrupts the swap without touching the account's
-  // sessions. Pinned to a single pairing at entry (`?server=<pairingId>`, else the
-  // active pairing) — id-addressed like Devices, so a concurrent active switch on Home
-  // can never redirect what this screen shows or signs.
-
-  type TransfersState =
-    | { kind: 'loading' }
-    | { kind: 'error'; view: ErrorView }
-    | { kind: 'ready'; transfers: TransferEntry[]; cursor?: string; paging: boolean };
+  // sessions. Pinned to a single pairing at entry (see $lib/pinned-pairing), id-addressed
+  // like Devices; paged via the relay cursor.
 
   let pairingsView = $state<PairingsState | 'loading' | 'error'>('loading');
-  let inflight = $state<TransfersState>({ kind: 'loading' });
-  // A failed *page* fetch never clobbers the rows already shown — it renders
-  // inline next to the paging button instead (mirrors the Accounts screen).
-  let pagingError = $state<ErrorView | undefined>(undefined);
   let expandedId = $state<string | null>(null);
-  let cancelingStates = $state<SvelteMap<string, boolean>>(new SvelteMap());
-  let cancelErrors = $state<SvelteMap<string, ErrorView | undefined>>(new SvelteMap());
-  let gateHint = $state<string | undefined>(undefined);
-
   // Pinned once at entry: the pairing this screen shows and signs for.
   let pairing = $state<Pairing | null>(null);
 
+  // The cursor-paged in-flight list, and the per-row busy/error + gate-hint state for
+  // the biometric-gated cancel.
+  const inflight = createPagedList<TransferEntry>((cursor) =>
+    listTransfers(pairing!.id, cursor).then((r) => ({ items: r.transfers, cursor: r.cursor })),
+  );
+  const guarded = createGuardedActions();
+
   onMount(async () => {
-    try {
-      pairingsView = await listPairings();
-    } catch {
-      pairingsView = 'error';
-      return;
-    }
-    const requested = page.url.searchParams.get('server');
-    const targetId = requested ?? pairingsView.active;
-    pairing = pairingsView.pairings.find((p) => p.id === targetId) ?? null;
-    if (pairing) await loadTransfers(pairing.id);
+    const resolved = await loadPinnedPairing(page.url.searchParams);
+    pairingsView = resolved.view;
+    pairing = resolved.pairing;
+    if (pairing) await inflight.load();
   });
-
-  async function loadTransfers(pairingId: string) {
-    inflight = { kind: 'loading' };
-    pagingError = undefined;
-    try {
-      const first = await listTransfers(pairingId);
-      inflight = {
-        kind: 'ready',
-        transfers: first.transfers,
-        cursor: first.cursor,
-        paging: false,
-      };
-    } catch (e) {
-      inflight = { kind: 'error', view: classifyRelayError(e) };
-    }
-  }
-
-  /** Fetch the next page and append — the accumulated list stays newest-first. */
-  async function loadMore() {
-    if (!pairing || inflight.kind !== 'ready' || !inflight.cursor || inflight.paging) return;
-    inflight = { ...inflight, paging: true };
-    pagingError = undefined;
-    try {
-      const next = await listTransfers(pairing.id, inflight.cursor);
-      inflight = {
-        kind: 'ready',
-        transfers: [...inflight.transfers, ...next.transfers],
-        cursor: next.cursor,
-        paging: false,
-      };
-    } catch (e) {
-      // A failed page keeps what is already shown; the error renders by the button.
-      pagingError = classifyRelayError(e);
-      inflight = { ...inflight, paging: false };
-    }
-  }
 
   async function doCancel(entry: TransferEntry) {
     if (!pairing) return;
-    // Claim the busy flag synchronously, before the biometric prompt's await, so rapid
-    // taps can't open multiple gates and fire concurrent cancels.
-    if (cancelingStates.get(entry.id)) return;
-    cancelingStates.set(entry.id, true);
-    gateHint = undefined;
-    cancelErrors.set(entry.id, undefined);
-
-    try {
-      // Cancelling kills a live swap (and an accepted device's credential) — gate it
-      // on user presence.
-      const presence = await requireUserPresence('Cancel a device transfer on this server');
-      if (!presenceAllows(presence)) {
-        gateHint = 'Confirm with Face ID to cancel this transfer.';
-        return;
-      }
-      await cancelTransfer(pairing.id, entry.id);
-      // Reload so the list reports the relay's post-cancel truth (the transfer leaves
-      // the in-flight set) rather than an optimistic local edit.
-      await loadTransfers(pairing.id);
-    } catch (e) {
-      cancelErrors.set(entry.id, classifyRelayError(e));
-    } finally {
-      cancelingStates.set(entry.id, false);
-    }
+    const target = pairing;
+    await guarded.run({
+      id: entry.id,
+      reason: 'Cancel a device transfer on this server',
+      deniedHint: 'Confirm with Face ID to cancel this transfer.',
+      action: async () => {
+        await cancelTransfer(target.id, entry.id);
+        // Reload so the list reports the relay's post-cancel truth (the transfer leaves
+        // the in-flight set) rather than an optimistic local edit.
+        await inflight.load();
+      },
+    });
   }
 
   function toggleExpanded(id: string) {
@@ -174,16 +113,16 @@
         </p>
         <Button
           variant="destructive"
-          loading={cancelingStates.get(entry.id) ?? false}
+          loading={guarded.isBusy(entry.id)}
           onclick={() => doCancel(entry)}
         >
           Cancel this transfer
         </Button>
-        {#if cancelErrors.get(entry.id)}
+        {#if guarded.errorFor(entry.id)}
           <ErrorState
-            view={cancelErrors.get(entry.id)!}
+            view={guarded.errorFor(entry.id)!}
             server={identity}
-            retrying={cancelingStates.get(entry.id) ?? false}
+            retrying={guarded.isBusy(entry.id)}
             onretry={() => doCancel(entry)}
           />
         {/if}
@@ -198,30 +137,12 @@
   onback={() => history.back()}
   server={identity}
 >
-  {#if pairingsView === 'loading'}
-    <p class="resolving">checking servers…</p>
-  {:else if pairingsView === 'error'}
-    <section class="panel" aria-label="Server check failed">
-      <StatusChip status="error" label="check failed" />
-      <p class="note" role="alert">Couldn't read this device's servers. Go back and retry.</p>
-    </section>
-  {:else if !pairing}
-    <!-- Unpaired, or no active pick and no ?server pin — there is no relay to ask. -->
-    <section class="panel" aria-label="No server selected">
-      <StatusChip status="pending" label="no server" />
-      <p class="note">
-        No server is selected. Pick or pair one first — in-flight transfers are always
-        read from a specific server.
-      </p>
-    </section>
-  {:else if inflight.kind === 'loading'}
+  <PinnedPairingGate view={pairingsView} {pairing} resource="in-flight transfers are always read from a specific server.">
+    {#snippet children()}
+    {#if inflight.kind === 'loading'}
     <p class="resolving">reading in-flight transfers…</p>
   {:else if inflight.kind === 'error'}
-    <ErrorState
-      view={inflight.view}
-      server={identity}
-      onretry={() => pairing && loadTransfers(pairing.id)}
-    />
+    <ErrorState view={inflight.errorView!} server={identity} onretry={() => inflight.load()} />
   {:else}
     <p class="lede">
       Every planned device swap on this server that can still advance. A transfer whose
@@ -230,15 +151,15 @@
     </p>
 
     <section class="panel" aria-labelledby="inflight-label">
-      <span id="inflight-label" class="label">In flight · {inflight.transfers.length}</span>
-      {#if inflight.transfers.length === 0}
+      <span id="inflight-label" class="label">In flight · {inflight.items.length}</span>
+      {#if inflight.items.length === 0}
         <p class="note">
           No transfers in flight. A user starting a device swap from their old device
           appears here until the swap completes, expires, or is cancelled.
         </p>
       {:else}
         <div class="transfer-list">
-          {#each inflight.transfers as entry (entry.id)}
+          {#each inflight.items as entry (entry.id)}
             {@render transferRow(entry)}
           {/each}
         </div>
@@ -246,25 +167,27 @@
     </section>
 
     {#if inflight.cursor}
-      <Button variant="secondary" loading={inflight.paging} onclick={loadMore}>
+      <Button variant="secondary" loading={inflight.paging} onclick={() => inflight.loadMore()}>
         Load more
       </Button>
-      {#if pagingError}
-        <ErrorState view={pagingError} server={identity} retrying={inflight.paging} onretry={loadMore} />
+      {#if inflight.pagingError}
+        <ErrorState view={inflight.pagingError!} server={identity} retrying={inflight.paging} onretry={() => inflight.loadMore()} />
       {/if}
     {/if}
 
-    {#if gateHint}
+    {#if guarded.gateHint}
       <p class="hint" role="status">
         <StatusChip status="info" label="confirm" />
-        <span>{gateHint}</span>
+        <span>{guarded.gateHint}</span>
       </p>
     {/if}
   {/if}
+    {/snippet}
+  </PinnedPairingGate>
 
   {#snippet actions()}
     {#if pairing && inflight.kind === 'ready'}
-      <Button variant="secondary" onclick={() => pairing && loadTransfers(pairing.id)}>
+      <Button variant="secondary" onclick={() => inflight.load()}>
         Refresh
       </Button>
     {/if}

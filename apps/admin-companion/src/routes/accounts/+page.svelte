@@ -3,7 +3,6 @@
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import {
-    listPairings,
     listAccounts,
     type Pairing,
     type PairingsState,
@@ -11,6 +10,7 @@
   } from '$lib/ipc';
   import { serverIdentity } from '$lib/server-identity';
   import { quotaBar } from '$lib/format';
+  import { loadPinnedPairing, pinnedHref } from '$lib/pinned-pairing';
   import { classifyRelayError, type ErrorView } from '$lib/errors';
   import ScreenShell from '$lib/components/ui/ScreenShell.svelte';
   import StatusChip from '$lib/components/ui/StatusChip.svelte';
@@ -18,16 +18,15 @@
   import TextField from '$lib/components/ui/TextField.svelte';
   import ErrorState from '$lib/components/ui/ErrorState.svelte';
   import AccountRow from '$lib/components/ui/AccountRow.svelte';
+  import PinnedPairingGate from '$lib/components/ui/PinnedPairingGate.svelte';
 
   // The accounts screen: the hub for per-account operator work. Every account on ONE
   // relay in DID order, searchable (handle/DID substring) and filterable by derived
   // lifecycle, each row carrying the blob-quota readout so capacity scans across
-  // accounts. Pinned to a single pairing at entry (`?server=<pairingId>` else the
-  // active pairing) like Devices/Moderation, so a concurrent active-pointer switch on
-  // Home can never redirect what this screen reads or signs. Tapping a row hands the
-  // relay-confirmed DID to the account-detail screen (identity facts + usage/storage,
-  // with moderation one hop deeper) — replacing DID-pasting as the entry point for
-  // per-account work.
+  // accounts. Pinned to a single pairing at entry (see $lib/pinned-pairing) like
+  // Devices/Moderation. Tapping a row hands the relay-confirmed DID to the
+  // account-detail screen (identity facts + usage/storage, with moderation one hop
+  // deeper) — replacing DID-pasting as the entry point for per-account work.
 
   type StatusFilter = 'all' | AccountListEntry['status'];
   const FILTERS: { value: StatusFilter; label: string }[] = [
@@ -61,15 +60,9 @@
   let generation = 0;
 
   onMount(async () => {
-    try {
-      pairingsView = await listPairings();
-    } catch {
-      pairingsView = 'error';
-      return;
-    }
-    const requested = page.url.searchParams.get('server');
-    const targetId = requested ?? pairingsView.active;
-    pairing = pairingsView.pairings.find((p) => p.id === targetId) ?? null;
+    const resolved = await loadPinnedPairing(page.url.searchParams);
+    pairingsView = resolved.view;
+    pairing = resolved.pairing;
     if (pairing) void loadFirstPage();
   });
 
@@ -140,7 +133,7 @@
 
   function openAccount(entry: AccountListEntry) {
     if (!pairing) return;
-    void goto(`/account?server=${pairing.id}&did=${encodeURIComponent(entry.did)}`);
+    void goto(pinnedHref('/account', pairing.id, { did: entry.did }));
   }
 </script>
 
@@ -150,23 +143,8 @@
   onback={() => history.back()}
   server={identity}
 >
-  {#if pairingsView === 'loading'}
-    <p class="resolving">checking servers…</p>
-  {:else if pairingsView === 'error'}
-    <section class="panel" aria-label="Server check failed">
-      <StatusChip status="error" label="check failed" />
-      <p class="note" role="alert">Couldn't read this device's servers. Go back and retry.</p>
-    </section>
-  {:else if !pairing}
-    <!-- Unpaired, or no active pick and no ?server pin — there is no relay to list. -->
-    <section class="panel" aria-label="No server selected">
-      <StatusChip status="pending" label="no server" />
-      <p class="note">
-        No server is selected. Pick or pair one first — the account list always reads
-        from a specific server.
-      </p>
-    </section>
-  {:else}
+  <PinnedPairingGate view={pairingsView} {pairing} resource="the account list always reads from a specific server.">
+    {#snippet children()}
     <p class="lede">
       Every account on this server, in DID order. Tap an account for its detail —
       usage, storage, and moderation; the meter is each account's blob-storage quota.
@@ -240,7 +218,8 @@
         {/if}
       </section>
     {/if}
-  {/if}
+    {/snippet}
+  </PinnedPairingGate>
 </ScreenShell>
 
 <style>

@@ -2,9 +2,7 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { SvelteMap } from 'svelte/reactivity';
   import {
-    listPairings,
     listAdminDevices,
     revokeAdminDevice,
     type AdminDevice,
@@ -12,21 +10,21 @@
     type PairingsState,
   } from '$lib/ipc';
   import { serverIdentity } from '$lib/server-identity';
+  import { loadPinnedPairing } from '$lib/pinned-pairing';
+  import { createGuardedActions } from '$lib/guarded-action.svelte';
   import { classifyRelayError, type ErrorView } from '$lib/errors';
-  import { requireUserPresence, presenceAllows } from '$lib/biometric';
   import ScreenShell from '$lib/components/ui/ScreenShell.svelte';
   import StatusChip from '$lib/components/ui/StatusChip.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import ErrorState from '$lib/components/ui/ErrorState.svelte';
   import DeviceRow from '$lib/components/ui/DeviceRow.svelte';
+  import PinnedPairingGate from '$lib/components/ui/PinnedPairingGate.svelte';
 
   // The loss-response screen: every device registered on ONE relay, with a remote
-  // revoke for a lost one. Pinned to a single pairing at entry (`?server=<pairingId>`
-  // from Settings, else the active pairing) — id-addressed like revoke_self, so a
-  // concurrent active-pointer switch on Home can never redirect what this screen
-  // shows or signs. The row whose relay-assigned id equals the pairing's deviceId is
-  // the device in your hand; its revoke lives in Settings (with the local cleanup),
-  // never here.
+  // revoke for a lost one. Pinned to a single pairing at entry (see $lib/pinned-pairing),
+  // id-addressed like revoke_self. The row whose relay-assigned id equals the pairing's
+  // deviceId is the device in your hand; its revoke lives in Settings (with the local
+  // cleanup), never here.
 
   type DevicesState =
     | { kind: 'loading' }
@@ -36,23 +34,16 @@
   let pairingsView = $state<PairingsState | 'loading' | 'error'>('loading');
   let devicesView = $state<DevicesState>({ kind: 'loading' });
   let expandedId = $state<string | null>(null);
-  let revokingStates = $state<SvelteMap<string, boolean>>(new SvelteMap());
-  let revokeErrors = $state<SvelteMap<string, ErrorView | undefined>>(new SvelteMap());
-  let gateHint = $state<string | undefined>(undefined);
+  // Owns the per-row busy/error state and the gate hint for the biometric-gated revoke.
+  const guarded = createGuardedActions();
 
   // Pinned once at entry: the pairing this screen shows and signs for.
   let pairing = $state<Pairing | null>(null);
 
   onMount(async () => {
-    try {
-      pairingsView = await listPairings();
-    } catch {
-      pairingsView = 'error';
-      return;
-    }
-    const requested = page.url.searchParams.get('server');
-    const targetId = requested ?? pairingsView.active;
-    pairing = pairingsView.pairings.find((p) => p.id === targetId) ?? null;
+    const resolved = await loadPinnedPairing(page.url.searchParams);
+    pairingsView = resolved.view;
+    pairing = resolved.pairing;
     if (pairing) await loadDevices(pairing.id);
   });
 
@@ -67,29 +58,18 @@
 
   async function doRevoke(device: AdminDevice) {
     if (!pairing) return;
-    // Claim the busy flag synchronously, before the biometric prompt's await, so rapid
-    // taps can't open multiple gates and fire concurrent revokes.
-    if (revokingStates.get(device.id)) return;
-    revokingStates.set(device.id, true);
-    gateHint = undefined;
-    revokeErrors.set(device.id, undefined);
-
-    try {
-      // Revoking is a signing action — gate it on user presence.
-      const presence = await requireUserPresence('Revoke a device on this server');
-      if (!presenceAllows(presence)) {
-        gateHint = 'Confirm with Face ID to revoke this device.';
-        return;
-      }
-      await revokeAdminDevice(pairing.id, device.id);
-      // Reload so the row reports the relay's post-revoke truth (status flips to
-      // revoked with its timestamp) rather than an optimistic local edit.
-      await loadDevices(pairing.id);
-    } catch (e) {
-      revokeErrors.set(device.id, classifyRelayError(e));
-    } finally {
-      revokingStates.set(device.id, false);
-    }
+    const target = pairing;
+    await guarded.run({
+      id: device.id,
+      reason: 'Revoke a device on this server',
+      deniedHint: 'Confirm with Face ID to revoke this device.',
+      action: async () => {
+        await revokeAdminDevice(target.id, device.id);
+        // Reload so the row reports the relay's post-revoke truth (status flips to
+        // revoked with its timestamp) rather than an optimistic local edit.
+        await loadDevices(target.id);
+      },
+    });
   }
 
   function toggleExpanded(deviceId: string) {
@@ -110,30 +90,12 @@
   onback={() => history.back()}
   server={identity}
 >
-  {#if pairingsView === 'loading'}
-    <p class="resolving">checking servers…</p>
-  {:else if pairingsView === 'error'}
-    <section class="panel" aria-label="Server check failed">
-      <StatusChip status="error" label="check failed" />
-      <p class="note" role="alert">Couldn't read this device's servers. Go back and retry.</p>
-    </section>
-  {:else if !pairing}
-    <!-- Unpaired, or no active pick and no ?server pin — there is no relay to ask. -->
-    <section class="panel" aria-label="No server selected">
-      <StatusChip status="pending" label="no server" />
-      <p class="note">
-        No server is selected. Pick or pair one first — the device list is always read
-        from a specific server.
-      </p>
-    </section>
-  {:else if devicesView.kind === 'loading'}
+  <PinnedPairingGate view={pairingsView} {pairing} resource="the device list is always read from a specific server.">
+    {#snippet children(pairing)}
+    {#if devicesView.kind === 'loading'}
     <p class="resolving">reading device registry…</p>
   {:else if devicesView.kind === 'error'}
-    <ErrorState
-      view={devicesView.view}
-      server={identity}
-      onretry={() => pairing && loadDevices(pairing.id)}
-    />
+    <ErrorState view={devicesView.view} server={identity} onretry={() => loadDevices(pairing.id)} />
   {:else}
     <p class="lede">
       Every admin device registered on this server, active and revoked. Revoke a lost
@@ -195,16 +157,16 @@
                 {:else if device.status === 'active'}
                   <Button
                     variant="destructive"
-                    loading={revokingStates.get(device.id) ?? false}
+                    loading={guarded.isBusy(device.id)}
                     onclick={() => doRevoke(device)}
                   >
                     Revoke this device
                   </Button>
-                  {#if revokeErrors.get(device.id)}
+                  {#if guarded.errorFor(device.id)}
                     <ErrorState
-                      view={revokeErrors.get(device.id)!}
+                      view={guarded.errorFor(device.id)!}
                       server={identity}
-                      retrying={revokingStates.get(device.id) ?? false}
+                      retrying={guarded.isBusy(device.id)}
                       onretry={() => doRevoke(device)}
                     />
                   {/if}
@@ -218,13 +180,15 @@
       </div>
     </section>
 
-    {#if gateHint}
+    {#if guarded.gateHint}
       <p class="hint" role="status">
         <StatusChip status="info" label="confirm" />
-        <span>{gateHint}</span>
+        <span>{guarded.gateHint}</span>
       </p>
     {/if}
   {/if}
+    {/snippet}
+  </PinnedPairingGate>
 
   {#snippet actions()}
     {#if pairing && devicesView.kind === 'ready'}

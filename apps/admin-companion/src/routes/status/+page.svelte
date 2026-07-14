@@ -1,22 +1,22 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { page } from '$app/state';
-  import { listPairings, getServerHealth, type Pairing, type PairingsState, type ServerHealth } from '$lib/ipc';
+  import { getServerHealth, type Pairing, type PairingsState, type ServerHealth } from '$lib/ipc';
   import { serverIdentity } from '$lib/server-identity';
   import { formatBytes } from '$lib/format';
   import { formatDuration, formatBackfillWindow, sweepLine } from '$lib/health';
+  import { loadPinnedPairing } from '$lib/pinned-pairing';
   import { classifyRelayError, type ErrorView } from '$lib/errors';
   import ScreenShell from '$lib/components/ui/ScreenShell.svelte';
   import StatusChip from '$lib/components/ui/StatusChip.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import ErrorState from '$lib/components/ui/ErrorState.svelte';
+  import PinnedPairingGate from '$lib/components/ui/PinnedPairingGate.svelte';
 
   // The Status screen: ONE relay's health, as it reports it — literal row counts,
   // firehose state, and sweep last-runs, no derived verdicts. Pinned to a single
-  // pairing at entry like Devices/Account detail (`?server=<pairingId>`, else the
-  // active pairing), so a concurrent active-pointer switch on Home can never redirect
-  // which relay this screen reads. Reads only — nothing here signs beyond the
-  // envelope, so there is no biometric gate.
+  // pairing at entry (see $lib/pinned-pairing) like Devices/Account detail. Reads only —
+  // nothing here signs beyond the envelope, so there is no biometric gate.
 
   type HealthView =
     | { kind: 'loading' }
@@ -31,15 +31,9 @@
   let generation = 0;
 
   onMount(async () => {
-    try {
-      pairingsView = await listPairings();
-    } catch {
-      pairingsView = 'error';
-      return;
-    }
-    const requested = page.url.searchParams.get('server');
-    const targetId = requested ?? pairingsView.active;
-    pairing = pairingsView.pairings.find((p) => p.id === targetId) ?? null;
+    const resolved = await loadPinnedPairing(page.url.searchParams);
+    pairingsView = resolved.view;
+    pairing = resolved.pairing;
     if (pairing) void loadHealth();
   });
 
@@ -61,23 +55,8 @@
 </script>
 
 <ScreenShell prompt="status" title="Server status" onback={() => history.back()} server={identity}>
-  {#if pairingsView === 'loading'}
-    <p class="resolving">checking servers…</p>
-  {:else if pairingsView === 'error'}
-    <section class="panel" aria-label="Server check failed">
-      <StatusChip status="error" label="check failed" />
-      <p class="note" role="alert">Couldn't read this device's servers. Go back and retry.</p>
-    </section>
-  {:else if !pairing}
-    <!-- Unpaired, or no active pick and no ?server pin — there is no relay to read. -->
-    <section class="panel" aria-label="No server selected">
-      <StatusChip status="pending" label="no server" />
-      <p class="note">
-        No server is selected. Pick or pair one first — status always reads from a
-        specific server.
-      </p>
-    </section>
-  {:else}
+  <PinnedPairingGate view={pairingsView} {pairing} resource="status always reads from a specific server.">
+    {#snippet children()}
     <p class="lede">
       This server's health as it reports it — row counts, firehose state, and
       background-sweep last-runs. Facts only; nothing here is a verdict.
@@ -155,7 +134,8 @@
         </dl>
       </section>
     {/if}
-  {/if}
+    {/snippet}
+  </PinnedPairingGate>
 
   {#snippet actions()}
     {#if pairing && healthView.kind === 'ready'}
@@ -183,12 +163,6 @@
   .lede {
     margin: 0;
     font-size: var(--text-body);
-    line-height: var(--leading-body);
-    color: var(--color-ink-soft);
-  }
-  .note {
-    margin: 0;
-    font-size: var(--text-label);
     line-height: var(--leading-body);
     color: var(--color-ink-soft);
   }
