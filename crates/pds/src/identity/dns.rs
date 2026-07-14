@@ -76,16 +76,8 @@ impl TxtResolver for HickoryTxtResolver {
                 let hickory_resolver::proto::rr::RData::TXT(txt) = &record.data else {
                     continue;
                 };
-                for part in txt.txt_data.iter() {
-                    match std::str::from_utf8(part) {
-                        Ok(s) => results.push(s.to_string()),
-                        Err(_) => {
-                            tracing::warn!(
-                                name,
-                                "TXT record contains non-UTF-8 bytes; skipping part"
-                            );
-                        }
-                    }
+                if let Some(combined) = combine_txt_chunks(&txt.txt_data, name) {
+                    results.push(combined);
                 }
             }
             Ok(results)
@@ -119,4 +111,71 @@ pub trait DnsProvider: Send + Sync {
         &'a self,
         name: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<(), DnsError>> + Send + 'a>>;
+}
+
+/// Concatenate a single TXT record's character-string chunks into its full value.
+///
+/// RFC 1035 splits a TXT value longer than 255 bytes across multiple chunks; clients must
+/// join them to recover the original string. `name` is only used for the non-UTF-8 warning.
+/// Returns `None` if every chunk was empty or invalid.
+fn combine_txt_chunks(chunks: &[Box<[u8]>], name: &str) -> Option<String> {
+    let mut combined = String::new();
+    for part in chunks.iter() {
+        match std::str::from_utf8(part) {
+            Ok(s) => combined.push_str(s),
+            Err(_) => {
+                tracing::warn!(name, "TXT record contains non-UTF-8 bytes; skipping part");
+            }
+        }
+    }
+    (!combined.is_empty()).then_some(combined)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chunk(bytes: &[u8]) -> Box<[u8]> {
+        bytes.to_vec().into_boxed_slice()
+    }
+
+    #[test]
+    fn combine_txt_chunks_joins_multiple_chunks_of_one_record() {
+        let chunks = [chunk(b"did=did:plc:abc"), chunk(b"defghijklmnop")];
+        assert_eq!(
+            combine_txt_chunks(&chunks, "_atproto.alice.example.com"),
+            Some("did=did:plc:abcdefghijklmnop".to_string())
+        );
+    }
+
+    #[test]
+    fn combine_txt_chunks_single_chunk() {
+        let chunks = [chunk(b"did=did:plc:abc")];
+        assert_eq!(
+            combine_txt_chunks(&chunks, "_atproto.alice.example.com"),
+            Some("did=did:plc:abc".to_string())
+        );
+    }
+
+    #[test]
+    fn combine_txt_chunks_skips_non_utf8_and_keeps_valid_parts() {
+        let chunks = [
+            chunk(b"did=did:plc:abc"),
+            chunk(&[0xff, 0xfe]),
+            chunk(b"xyz"),
+        ];
+        assert_eq!(
+            combine_txt_chunks(&chunks, "_atproto.alice.example.com"),
+            Some("did=did:plc:abcxyz".to_string())
+        );
+    }
+
+    #[test]
+    fn combine_txt_chunks_all_invalid_returns_none() {
+        let chunks = [chunk(&[0xff, 0xfe])];
+        assert_eq!(
+            combine_txt_chunks(&chunks, "_atproto.alice.example.com"),
+            None
+        );
+    }
 }

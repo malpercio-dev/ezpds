@@ -81,6 +81,16 @@ pub(crate) fn validate_handle_structure(handle: &str) -> Result<&str, &'static s
     for label in &labels {
         validate_label(label)?;
     }
+    // AT Protocol handle syntax additionally forbids the final label (the effective TLD) from
+    // starting with a digit — unlike earlier labels, which may — so a handle can never be
+    // confused with an IPv4-literal-shaped name.
+    if labels[labels.len() - 1]
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_digit())
+    {
+        return Err("handle's final label must not start with a digit");
+    }
 
     Ok(labels[0])
 }
@@ -200,6 +210,18 @@ mod tests {
     #[test]
     fn structure_rejects_non_ascii() {
         assert!(validate_handle_structure("älice.example.com").is_err());
+    }
+
+    #[test]
+    fn structure_rejects_numeric_leading_final_label() {
+        assert!(validate_handle_structure("alice.123").is_err());
+        assert!(validate_handle_structure("alice.example.1com").is_err());
+    }
+
+    #[test]
+    fn structure_accepts_numeric_leading_non_final_label() {
+        // Digits are only forbidden in the final label; an earlier label may start with one.
+        assert_eq!(validate_handle_structure("123.example.com"), Ok("123"));
     }
 
     #[test]

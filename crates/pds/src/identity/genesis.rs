@@ -9,6 +9,8 @@
 
 use common::{ApiError, ErrorCode};
 
+use super::resolution::bounded_body_preview;
+
 /// Validate the rotation-key format, verify the genesis op signature, and check that the op
 /// fields match the account handle and server config.
 ///
@@ -101,10 +103,7 @@ pub async fn post_to_plc_directory(
 
     if !response.status().is_success() {
         let status = response.status();
-        let body_text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "<failed to read body>".to_string());
+        let body_text = bounded_body_preview(response).await;
         tracing::error!(
             status = %status,
             body = %body_text,
