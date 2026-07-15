@@ -9,6 +9,11 @@ does not soften or hide the effect.
 
 ## Actions
 
+<figure>
+  <img src="/screenshots/admin/moderation.png" alt="Custos operator console moderation screen with a DID lookup, account status panel, and armed takedown/restore and credential-revocation actions" width="280" />
+  <figcaption>The Moderation screen: look up an account, then arm a takedown/restore or credential sweep behind a two-tap confirmation and a biometric gate.</figcaption>
+</figure>
+
 On the **Moderation** screen (look up an account by DID first):
 
 - **Takedown** — stop serving an account: logins, writes, and sync are refused
@@ -21,6 +26,14 @@ On the **Moderation** screen (look up an account by DID first):
   the literal per-family counts. The account's **main password is untouched**, and
   any already-issued access tokens lapse on their own within minutes. Every holder
   — including the owner — is signed out and must log in again.
+
+You reach an account by tapping it in the account list, which is searchable by
+handle or DID and shows each account's blob quota.
+
+<figure>
+  <img src="/screenshots/admin/accounts.png" alt="Custos operator console accounts list, searchable by handle or DID, with lifecycle filter chips and per-row blob quota bars" width="280" />
+  <figcaption>The account list — search, lifecycle filters, and a per-row blob-quota readout. Tapping a row opens Account detail.</figcaption>
+</figure>
 
 On the **Account detail** screen (reached by tapping an account in the list):
 

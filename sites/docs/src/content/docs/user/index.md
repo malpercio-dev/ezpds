@@ -10,6 +10,11 @@ live with you, not with a server you have to trust.
 This surface is written for people _using_ Obsign. If you run the server side,
 head to [Running Custos](/operator/) instead.
 
+<figure>
+  <img src="/screenshots/wallet/home.png" alt="Obsign home screen showing an identity and an 'All identities secure' monitoring banner" width="280" />
+  <figcaption>Obsign's home: your seals, with tamper monitoring shown live. See every screen in the <a href="/user/screens/">tour</a>.</figcaption>
+</figure>
+
 ## What you can do here
 
 - **[Getting started](/user/getting-started/)** — create or bring an identity.

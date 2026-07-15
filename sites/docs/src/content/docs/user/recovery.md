@@ -7,6 +7,11 @@ Obsign continuously checks that your identity document (your DID) still says wha
 it should. If something changes that you did not initiate, Obsign tells you — in
 words, with an icon and a place in the list, never by color alone.
 
+<figure>
+  <img src="/screenshots/wallet/home-alert.png" alt="Obsign home screen with a banner reading that an unauthorized change needs attention, paired with an icon and text" width="280" />
+  <figcaption>A detected change surfaces on the home screen as a banner — text and icon, not color alone.</figcaption>
+</figure>
+
 ## Reading a status
 
 Every identity shows a status. The status is always carried by **text + icon +
@@ -38,6 +43,11 @@ contest a change. Because your key is `rotationKeys[0]` (see
 2. You review what changed, in plain language.
 3. If it was not you, you sign an override with your device key, and the change
    is reversed within the window.
+
+<figure>
+  <img src="/screenshots/wallet/alert-detail.png" alt="Obsign alert detail screen showing the contested change and a time-remaining countdown for the recovery window" width="280" />
+  <figcaption>The alert detail: what changed, and the time remaining in the 72-hour window — shown as a duration, not a color.</figcaption>
+</figure>
 
 :::tip
 The countdown is shown as a time remaining, not just a color. An override is

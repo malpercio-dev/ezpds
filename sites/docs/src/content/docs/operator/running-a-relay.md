@@ -24,6 +24,19 @@ The operator console reports health as an explicit label — `healthy`,
 colored dot. A degraded server tells you _what_ degraded.
 :::
 
+<figure>
+  <img src="/screenshots/admin/status.png" alt="Custos operator console server-status screen listing version, uptime, account counts, storage, firehose state, and background-sweep last-runs" width="280" />
+  <figcaption>The console's server-status readout — version, uptime, account counts, storage, firehose, and background-sweep last-runs. Facts only.</figcaption>
+</figure>
+
+On a degraded relay, the same readout flags stale background sweeps with a
+trailing glyph, so _what_ degraded is legible without relying on color.
+
+<figure>
+  <img src="/screenshots/admin/status-degraded.png" alt="Custos operator console server-status screen for a degraded relay, with stale background sweeps flagged by a trailing glyph" width="280" />
+  <figcaption>A degraded relay: stale sweeps carry a trailing <code>!</code> glyph, never color alone.</figcaption>
+</figure>
+
 ## What you are responsible for
 
 - **Durability** — the SQLite database is the identity store. Back it up.

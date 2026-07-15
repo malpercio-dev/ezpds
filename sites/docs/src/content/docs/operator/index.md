@@ -10,6 +10,11 @@ doing — it does not hide the machinery.
 If you are _using_ an identity rather than running a server, you want
 [Using Obsign](/user/) instead.
 
+<figure>
+  <img src="/screenshots/admin/home.png" alt="Custos operator console home screen for minting a device-signed account claim code" width="280" />
+  <figcaption>The operator console — minting a device-signed claim code for the active relay. See every console screen in the <a href="/operator/screens/">tour</a>.</figcaption>
+</figure>
+
 ## What you run
 
 - **[Running a relay](/operator/running-a-relay/)** — stand up the PDS, its
