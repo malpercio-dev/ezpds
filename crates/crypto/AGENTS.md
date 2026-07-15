@@ -122,6 +122,35 @@ where F: FnOnce(&[u8]) -> Result<Vec<u8>, CryptoError>
 - Returns `SignedPlcOperation { cid, signed_op_json }` — `cid` (via `compute_cid`) is ready to use as the next op's `prev`; `signed_op_json` is ready to POST to plc.directory
 - Errors: propagates any `CryptoError` from the callback, or `CryptoError::PlcOperation` for serialization failures
 
+**`build_did_plc_tombstone_op`**
+
+```rust
+pub fn build_did_plc_tombstone_op<F>(
+    prev_cid: &str,                 // CID of the DID's current head op (newest non-nullified)
+    sign: F,                        // callback: &[u8] -> Result<Vec<u8>, CryptoError>
+) -> Result<SignedPlcOperation, CryptoError>
+where F: FnOnce(&[u8]) -> Result<Vec<u8>, CryptoError>
+```
+
+- Builds and signs a did:plc **tombstone** op — exactly `{ "type": "plc_tombstone", "prev": <cid>, "sig": <b64url> }`, no rotationKeys/verificationMethods/alsoKnownAs/services (a different, smaller field set than genesis/rotation ops). Permanently retires the DID once plc.directory accepts it.
+- Same external-signer-callback shape as the other builders (raw 64-byte r‖s P-256 ECDSA, low-S canonical; the sig covers the **unsigned** CBOR = `prev` + `type` only). Signed with any key in the head op's `rotationKeys` (the wallet uses its device key at `rotationKeys[0]`).
+- Returns `SignedPlcOperation { cid, signed_op_json }`; `signed_op_json` is ready to POST to plc.directory.
+- Errors: propagates any `CryptoError` from the callback, or `CryptoError::PlcOperation` for a non-64-byte/high-S signature or a serialization failure
+
+**`verify_plc_tombstone_op`**
+
+```rust
+pub fn verify_plc_tombstone_op(
+    signed_op_json: &str,                       // JSON-encoded signed tombstone op
+    authorized_rotation_keys: &[DidKeyUri],     // the PREVIOUS (head) op's rotationKeys
+) -> Result<VerifiedTombstoneOp, CryptoError>
+```
+
+- Dedicated tombstone verifier (a tombstone's `type != "plc_operation"` and its field set differ, so it is verified separately from `verify_plc_operation`/`verify_genesis_op`, which both reject any non-`plc_operation` type). Parses (rejecting unknown fields), requires `type == "plc_tombstone"`, reconstructs the unsigned CBOR, and tries each authorized key (dual-curve, low-S enforced) until one verifies
+- Caller obligation: `authorized_rotation_keys` are the previous op's `rotationKeys` (same contract as `verify_plc_operation` for a rotation op)
+- Returns `VerifiedTombstoneOp { cid, prev }`
+- Errors: `CryptoError::PlcOperation` for a malformed/wrong-type op or if no authorized key verifies the signature
+
 **`verify_genesis_op`**
 ```rust
 pub fn verify_genesis_op(
@@ -210,6 +239,11 @@ pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<Aud
 - `prev`: `None` for genesis, `Some(cid)` for rotation
 - `rotation_keys` / `also_known_as` / `verification_methods` / `services`: full corresponding fields from the op
 
+**`VerifiedTombstoneOp`**
+- Returned by `verify_plc_tombstone_op`
+- `cid`: this tombstone op's own CID
+- `prev`: the head CID this tombstone chains onto
+
 **`AuditEntry`**
 - A single entry from a plc.directory audit log, as returned by `parse_audit_log`
 - `did`: the DID this operation belongs to
@@ -245,6 +279,7 @@ pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<Aud
 - `split_secret` polynomial coefficients are fresh OS RNG per call; information-theoretic security (a single share reveals nothing)
 - `combine_shares` requires exactly 2 shares with distinct indices in [1, 3]; returns `CryptoError::SecretReconstruction` otherwise
 - GF(2^8) arithmetic uses the AES irreducible polynomial (0x11b); secret bytes are always the first argument to `gf_mul` (non-branching position)
+- **did:plc tombstone op is `{type, prev, sig}` only, in canonical DAG-CBOR key order.** The tombstone structs carry no maps (unlike genesis/rotation ops), so they need no `CanonicalMap`; canonical ordering comes from serde field declaration order — unsigned is `prev`(4) before `type`(4) (`prev` < `type` bytewise), signed leads with `sig`(3). `prev` is a required non-null CID string (typed `String`, never CBOR null). Pinned by `tombstone_cbor_key_order_is_canonical`; `build_tombstone_round_trips` proves builder↔verifier byte-identity via the CID.
 - **did:plc op CBOR is canonical DAG-CBOR for any number of map entries.** The op structs wrap `services` / `verificationMethods` in an internal `CanonicalMap` that serializes keys length-first (DAG-CBOR order) instead of `BTreeMap`/`ciborium`'s bytewise order — bytewise would emit a non-canonical op for keys of differing length (e.g. `atproto_pds` + `atproto_labeler`) that plc.directory rejects. Cross-checked against `@ipld/dag-cbor` by the `golden_*` tests (genesis op bytes + derived DID, proving byte-identity transitively via the hash) and `rotation_op_with_multiple_services_encodes_canonically` (multi-service CID). Public APIs still take/return plain `BTreeMap<String, _>`; the canonical ordering is internal to the op encoder.
 
 ## Key Files

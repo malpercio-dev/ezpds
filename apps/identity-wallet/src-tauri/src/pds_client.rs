@@ -1320,6 +1320,50 @@ impl PdsClient {
                 message: format!("failed to parse reserve_signing_key response: {}", e),
             })
     }
+
+    /// Permanently delete an account on its PDS (auth: none — the credentials are in the body).
+    ///
+    /// Calls `POST {pds_url}/xrpc/com.atproto.server.deleteAccount` with `{ did, password, token }`,
+    /// where `token` is the single-use code minted by `requestAccountDelete` and emailed to the
+    /// account. The PDS purges all local account data and emits an `#account` (`status="deleted"`)
+    /// firehose frame; it does NOT touch the did:plc identity (the wallet tombstones that
+    /// separately). Not session-authed, so no `OAuthClient` is needed — but the password travels in
+    /// the body, so the endpoint is refused over a non-HTTPS URL (loopback excepted), same guard as
+    /// the password `createSession` path.
+    pub async fn delete_account(
+        &self,
+        pds_url: &str,
+        did: &str,
+        password: &str,
+        token: &str,
+    ) -> Result<(), PdsClientError> {
+        if !pds_url_is_password_safe(pds_url) {
+            return Err(PdsClientError::InsecurePdsUrl {
+                url: pds_url.to_string(),
+            });
+        }
+
+        let url = format!(
+            "{}/xrpc/com.atproto.server.deleteAccount",
+            pds_url.trim_end_matches('/')
+        );
+        let body = serde_json::json!({ "did": did, "password": password, "token": token });
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| PdsClientError::NetworkError {
+                message: format!("delete_account failed: {}", e),
+            })?;
+
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(classify_xrpc_response("deleteAccount", resp).await)
+        }
+    }
 }
 
 impl Default for PdsClient {
@@ -1808,6 +1852,29 @@ pub async fn deactivate_account(
         Ok(())
     } else {
         Err(classify_xrpc_response("deactivateAccount", resp).await)
+    }
+}
+
+/// Request permanent deletion of the authenticated account: mints and emails a single-use code.
+///
+/// Calls `POST /xrpc/com.atproto.server.requestAccountDelete` with NO body (a no-input procedure,
+/// like `activateAccount`). Full-access session authed. The PDS emails a 1-hour confirmation code
+/// to the account address; the code + the account password are then supplied to
+/// `PdsClient::delete_account` to complete the deletion.
+pub async fn request_account_delete(
+    client: &crate::oauth_client::OAuthClient,
+) -> Result<(), PdsClientError> {
+    let resp = client
+        .post_no_body("/xrpc/com.atproto.server.requestAccountDelete")
+        .await
+        .map_err(|e| PdsClientError::NetworkError {
+            message: format!("request_account_delete failed: {}", e),
+        })?;
+
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(classify_xrpc_response("requestAccountDelete", resp).await)
     }
 }
 

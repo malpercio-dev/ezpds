@@ -3,6 +3,7 @@ pub mod claim;
 pub mod device_key;
 pub mod handle_change;
 pub mod http;
+pub mod identity_removal;
 pub mod identity_store;
 pub mod keychain;
 pub mod migrate;
@@ -1145,6 +1146,9 @@ pub fn run() {
             plc_monitor::check_identity_status,
             recovery::build_recovery_override_cmd,
             recovery::submit_recovery_override_cmd,
+            identity_removal::request_identity_removal,
+            identity_removal::confirm_identity_removal,
+            identity_removal::tombstone_identity,
             migrate::detect_migration_path_cmd,
             migrate::build_migration_op_cmd,
             migrate::submit_migration_op_cmd,
