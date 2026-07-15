@@ -5,6 +5,7 @@
 pub mod at_uri;
 pub mod car_export;
 pub mod car_import;
+pub mod datetime;
 pub mod genesis;
 pub mod mst;
 pub mod records;
@@ -25,6 +26,9 @@ pub use car_export::{
     export_record_proof_car, export_repo_car, CarExportError, CommitDiff,
 };
 pub use car_import::{import_repo_car, CarImportError, ImportedRepo};
+pub use datetime::{
+    is_valid as is_valid_datetime, validate as validate_datetime, AtprotoDatetimeError,
+};
 pub use genesis::{build_genesis_repo, create_genesis_repo, CapturingBlockStore, GenesisError};
 pub use records::{
     apply_writes, count_records, delete_record, generate_tid, get_record, get_record_cid,
