@@ -12,14 +12,14 @@ If you are _using_ an identity rather than running a server, you want
 
 ## What you run
 
-- **[Running a relay](/operator/running-a-relay/)** — stand up the PDS, health,
-  and the custody seam you are responsible for.
+- **[Running a relay](/operator/running-a-relay/)** — stand up the PDS, its
+  health, and what you are (and aren't) responsible for.
 - **[Configuration](/operator/configuration/)** — the config and environment
   surface that tunes a deployment.
-- **[Moderation](/operator/moderation/)** — takedown, restore, and
-  credential-revocation from the operator console.
+- **[Moderation](/operator/moderation/)** — takedown, restore, credential
+  revocation, and account repair from the operator console.
 
-## The custody seam
+## Which key you hold
 
 The one thing to internalize before running Custos: you hold the **second**
 rotation key, not the first.

@@ -30,8 +30,10 @@ colored dot. A degraded server tells you _what_ degraded.
   Production uses Litestream; see the repository's `docs/deploy.md`.
 - **Availability** — users' clients reach your server to read and write. Health
   checks and restart policy are your safety net.
-- **The custody seam** — you hold `rotationKeys[1]`. You cannot lock a user in;
-  design your operations assuming a user may leave at any time.
+- **You can't lock anyone in** — you hold the lower-precedence rotation key
+  (`rotationKeys[1]`); the user's key (`rotationKeys[0]`) outranks it, so they can
+  move their identity to another server whenever they choose. Design your
+  operations for that.
 
 :::caution[Do not treat the DB as disposable]
 Losing the database is not like losing a cache. It holds the repositories your
