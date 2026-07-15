@@ -294,6 +294,10 @@ async fn prepare_custodied_plc_update(
     })?;
 
     let also_known_as = vec![format!("at://{handle}")];
+    if current.also_known_as == also_known_as {
+        return Ok(None);
+    }
+
     let signed = crypto::build_did_plc_rotation_op(
         &current.cid,
         current.rotation_keys,
@@ -743,6 +747,47 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             crate::db::handles::resolve_handle(&db, &new_handle)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(did)
+        );
+    }
+
+    #[tokio::test]
+    async fn custodied_account_skips_plc_op_when_authoritative_handle_matches() {
+        let plc = MockServer::start().await;
+        let state = state_with_plc(plc.uri()).await;
+        let db = state.db.clone();
+        let did = "did:plc:updatehandlecurrent111111";
+        let handle = format!("alice.{}", state.config.available_user_domains[0]);
+        let key_id = seed_account_with_signing_key(&db, did, &handle).await;
+        seed_cached_did(&db, did, &handle).await;
+        let jwt = insert_session(&db, did).await;
+        mount_audit_log(
+            &plc,
+            did,
+            &handle,
+            vec![key_id.clone()],
+            &key_id,
+            &state.config.public_url,
+        )
+        .await;
+        Mock::given(method("POST"))
+            .and(path(format!("/{did}")))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&plc)
+            .await;
+
+        let response = app(state)
+            .oneshot(update_handle_request(&jwt, &handle))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            crate::db::handles::resolve_handle(&db, &handle)
                 .await
                 .unwrap()
                 .as_deref(),
