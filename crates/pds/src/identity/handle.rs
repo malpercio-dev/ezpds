@@ -142,6 +142,52 @@ pub(crate) fn validate_handle<'a>(
 mod tests {
     use super::*;
 
+    /// Parse an upstream syntax fixture without normalizing the case itself. In particular,
+    /// leading/trailing whitespace is significant invalid input. Upstream comments use `# `;
+    /// a bare `#` prefix can itself be a syntax vector in other fixture sets.
+    fn load_syntax_cases(raw: &str) -> Vec<&str> {
+        raw.lines()
+            .map(|line| line.strip_suffix('\r').unwrap_or(line))
+            .filter(|line| !line.trim().is_empty() && !line.starts_with("# "))
+            .collect()
+    }
+
+    fn assert_handle_syntax_cases(valid_raw: &str, invalid_raw: &str) {
+        let valid = load_syntax_cases(valid_raw);
+        let invalid = load_syntax_cases(invalid_raw);
+        assert!(!valid.is_empty() && !invalid.is_empty());
+
+        for handle in valid {
+            assert!(
+                validate_handle_structure(handle).is_ok(),
+                "expected valid handle from interop fixture: {handle:?}",
+            );
+        }
+        for handle in invalid {
+            assert!(
+                validate_handle_structure(handle).is_err(),
+                "expected invalid handle from interop fixture: {handle:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn structure_matches_interop_fixtures() {
+        assert_handle_syntax_cases(
+            include_str!("../../tests/fixtures/interop/handle_syntax_valid.txt"),
+            include_str!("../../tests/fixtures/interop/handle_syntax_invalid.txt"),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "expected valid handle from interop fixture")]
+    fn corrupted_handle_fixture_is_detected() {
+        assert_handle_syntax_cases(
+            include_str!("../../tests/fixtures/interop/handle_syntax_invalid.txt"),
+            include_str!("../../tests/fixtures/interop/handle_syntax_valid.txt"),
+        );
+    }
+
     // ── validate_handle_structure: accepts valid handles ───────────────────────
 
     #[test]
