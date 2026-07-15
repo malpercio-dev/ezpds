@@ -136,8 +136,10 @@ pub async fn update_handle_handler(
 
     // DELETE old + INSERT new share one transaction so the swap commits or rolls back together.
     // On the PDS-custodied path, plc.directory must accept the authoritative change before this
-    // transaction commits. A failed POST therefore drops the transaction and restores the old
-    // local handle instead of leaving handle resolution ahead of the DID document.
+    // transaction commits. The remote call deliberately happens while this writer transaction
+    // reserves the new handle: posting first would let a concurrent claimant win the handle before
+    // our local commit, leaving the PLC document changed but local resolution unchanged. A failed
+    // POST drops the transaction and restores the old local handle.
     {
         let mut tx = state.db.begin().await.map_err(|e| {
             tracing::error!(error = %e, "failed to begin transaction for handle swap");
@@ -184,10 +186,13 @@ pub async fn update_handle_handler(
             .await?;
 
             sqlx::query(
-                "UPDATE did_documents SET document = ?, updated_at = datetime('now') WHERE did = ?",
+                "INSERT INTO did_documents (did, document, created_at, updated_at) \
+                 VALUES (?, ?, datetime('now'), datetime('now')) \
+                 ON CONFLICT(did) DO UPDATE SET \
+                    document = excluded.document, updated_at = datetime('now')",
             )
-            .bind(plc_update.did_document.to_string())
             .bind(did)
+            .bind(plc_update.did_document.to_string())
             .execute(&mut *tx)
             .await
             .map_err(|e| {
@@ -256,6 +261,10 @@ async fn prepare_custodied_plc_update(
         return Ok(None);
     };
 
+    // Custody cannot be classified from did_documents: that table stores the rendered W3C DID
+    // document, which intentionally omits PLC rotationKeys. Fetch the authoritative audit-log head
+    // before deciding whether the locally-held key is the root key or a lower-priority key retained
+    // by a wallet-sovereign identity.
     let current =
         fetch_current_plc_state(&state.http_client, &state.config.plc_directory_url, did).await?;
 
@@ -651,7 +660,8 @@ mod tests {
         let old_handle = format!("alice.{}", state.config.available_user_domains[0]);
         let new_handle = format!("bob.{}", state.config.available_user_domains[0]);
         let key_id = seed_account_with_signing_key(&db, did, &old_handle).await;
-        seed_cached_did(&db, did, &old_handle).await;
+        // Deliberately leave did_documents empty: the accepted operation must populate a missing
+        // cache row as well as update an existing one.
         let jwt = insert_session(&db, did).await;
         mount_audit_log(
             &plc,
