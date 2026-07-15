@@ -781,6 +781,87 @@ mod tests {
 
     const TEST_CID: &str = "bafyreie5cvv4h45feadgeuwhbcutmh6t2ceseocckahdoe6uat64zmz454";
 
+    /// Preserve each upstream case byte-for-byte apart from a possible CR in CRLF files.
+    /// Whitespace is significant invalid input, and only `# ` denotes a fixture comment.
+    fn load_syntax_cases(raw: &str) -> Vec<&str> {
+        raw.lines()
+            .map(|line| line.strip_suffix('\r').unwrap_or(line))
+            .filter(|line| !line.trim().is_empty() && !line.starts_with("# "))
+            .collect()
+    }
+
+    fn assert_nsid_syntax_cases(valid_raw: &str, invalid_raw: &str) {
+        let valid = load_syntax_cases(valid_raw);
+        let invalid = load_syntax_cases(invalid_raw);
+        assert!(!valid.is_empty() && !invalid.is_empty());
+
+        for nsid in valid {
+            assert!(
+                validate_collection(nsid).is_ok(),
+                "expected valid NSID from interop fixture: {nsid:?}",
+            );
+        }
+        for nsid in invalid {
+            assert!(
+                validate_collection(nsid).is_err(),
+                "expected invalid NSID from interop fixture: {nsid:?}",
+            );
+        }
+    }
+
+    fn assert_record_key_syntax_cases(valid_raw: &str, invalid_raw: &str) {
+        let valid = load_syntax_cases(valid_raw);
+        let invalid = load_syntax_cases(invalid_raw);
+        assert!(!valid.is_empty() && !invalid.is_empty());
+
+        for rkey in valid {
+            assert!(
+                validate_record_path("app.bsky.feed.post", rkey).is_ok(),
+                "expected valid record key from interop fixture: {rkey:?}",
+            );
+        }
+        for rkey in invalid {
+            assert!(
+                validate_record_path("app.bsky.feed.post", rkey).is_err(),
+                "expected invalid record key from interop fixture: {rkey:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn validate_collection_matches_interop_fixtures() {
+        assert_nsid_syntax_cases(
+            include_str!("../tests/fixtures/interop/nsid_syntax_valid.txt"),
+            include_str!("../tests/fixtures/interop/nsid_syntax_invalid.txt"),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "expected valid NSID from interop fixture")]
+    fn corrupted_nsid_fixture_is_detected() {
+        assert_nsid_syntax_cases(
+            include_str!("../tests/fixtures/interop/nsid_syntax_invalid.txt"),
+            include_str!("../tests/fixtures/interop/nsid_syntax_valid.txt"),
+        );
+    }
+
+    #[test]
+    fn validate_record_key_matches_interop_fixtures() {
+        assert_record_key_syntax_cases(
+            include_str!("../tests/fixtures/interop/recordkey_syntax_valid.txt"),
+            include_str!("../tests/fixtures/interop/recordkey_syntax_invalid.txt"),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "expected valid record key from interop fixture")]
+    fn corrupted_record_key_fixture_is_detected() {
+        assert_record_key_syntax_cases(
+            include_str!("../tests/fixtures/interop/recordkey_syntax_invalid.txt"),
+            include_str!("../tests/fixtures/interop/recordkey_syntax_valid.txt"),
+        );
+    }
+
     #[test]
     fn json_to_record_value_rejects_floats() {
         assert!(json_to_record_value(&serde_json::json!({ "x": 1.5 })).is_err());
