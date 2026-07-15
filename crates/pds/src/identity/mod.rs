@@ -4,6 +4,7 @@
 // TXT → HTTP well-known → did:plc/did:web document fetch), the `atproto-proxy` header target SSRF
 // guard, handle validation, and the did:plc genesis/rotation-op machinery.
 
+pub mod did;
 pub mod dns;
 pub mod genesis;
 pub mod handle;
