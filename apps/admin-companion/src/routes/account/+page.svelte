@@ -99,15 +99,20 @@
   }
 
   async function confirmEmailRepair() {
-    if (!pairing || !did || !emailLooksValid) return;
+    if (!pairing || !did || !emailLooksValid || armedEmail === null) return;
     const target = did;
     const pinned = pairing;
+    // Bind to the exact address the operator reviewed at arm time — never the live field.
+    // The precondition re-checks it synchronously (the armed-action controller runs it
+    // before the biometric await), so a fast edit-then-confirm can't slip a drifted value
+    // past the auto-disarm effect, which fires only on the next tick.
+    const address = armedEmail;
     await emailRepair.confirm({
       reason: 'Correct an account email on this server',
       deniedHint: 'Confirm with Face ID to correct this account email.',
-      precondition: () => did === target && !tokenIssue.writing,
+      precondition: () => did === target && normalizedEmail === address && !tokenIssue.writing,
       run: async () => {
-        repairedEmail = await setAccountEmail(pinned.id, target, normalizedEmail);
+        repairedEmail = await setAccountEmail(pinned.id, target, address);
       },
     });
   }

@@ -50,7 +50,7 @@ pub async fn update_email(
     let new_email = crate::uniqueness::normalize_email(&payload.email);
     // Minimal shape check — a real address has an '@' with something on each side. The SMTP layer
     // rejects a truly malformed address later, but catching it here yields a clean 400.
-    if !is_plausible_email(&new_email) {
+    if !crate::uniqueness::is_plausible_email(&new_email) {
         return Err(ApiError::new(
             ErrorCode::InvalidRequest,
             "invalid email address",
@@ -93,16 +93,6 @@ pub async fn update_email(
             "account not found or not active",
         )),
     }
-}
-
-/// A minimal plausibility check: exactly one `@` with a non-empty local part and a dotted domain.
-/// Not a full RFC 5322 validation — just enough to reject obvious garbage before the DB write.
-pub(crate) fn is_plausible_email(email: &str) -> bool {
-    let mut parts = email.split('@');
-    let (Some(local), Some(domain), None) = (parts.next(), parts.next(), parts.next()) else {
-        return false;
-    };
-    !local.is_empty() && domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
 }
 
 #[cfg(test)]

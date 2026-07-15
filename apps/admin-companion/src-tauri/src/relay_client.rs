@@ -739,11 +739,8 @@ pub fn build_set_account_email_request(
     nonce: &str,
 ) -> Result<SignedRequest, RelayClientError> {
     let path = format!("/v1/admin/accounts/{did}/email");
-    let body = serde_json::to_vec(&SetAccountEmailBody { email }).map_err(|error| {
-        RelayClientError::BadResponse {
-            message: error.to_string(),
-        }
-    })?;
+    let body =
+        serde_json::to_vec(&SetAccountEmailBody { email }).expect("SetAccountEmailBody serializes");
     build_signed_request(pairing, "POST", &path, &body, timestamp, nonce)
 }
 

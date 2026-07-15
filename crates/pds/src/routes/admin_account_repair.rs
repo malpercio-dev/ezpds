@@ -60,7 +60,7 @@ pub async fn set_account_email(
         Err(rejection) => return rejection.into_response(),
     };
     let email = crate::uniqueness::normalize_email(&payload.email);
-    if !crate::routes::update_email::is_plausible_email(&email) {
+    if !crate::uniqueness::is_plausible_email(&email) {
         return ApiError::new(ErrorCode::InvalidRequest, "invalid email address").into_response();
     }
 
