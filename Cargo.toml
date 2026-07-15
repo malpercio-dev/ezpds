@@ -21,7 +21,7 @@ resolver = "2"
 # `_health` / `describeServer` (via `env!("CARGO_PKG_VERSION")`). Keep in lockstep with the
 # release tag: `just set-version X.Y.Z` to bump (in a reviewed PR), then `just release` cuts the
 # matching `v X.Y.Z` tag. The release CI also asserts the tag equals this version.
-version = "0.4.7"
+version = "0.5.0"
 edition = "2021"
 publish = false
 # Matches the root LICENSE (AGPLv3 text, no "or later" grant filled in). "-only" is the
