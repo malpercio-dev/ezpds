@@ -48,6 +48,14 @@ export default defineConfig({
             { label: 'Configuration', slug: 'operator/configuration' },
             { label: 'Backups & restore', slug: 'operator/backups' },
             { label: 'Moderation', slug: 'operator/moderation' },
+            {
+              label: 'Reference',
+              items: [
+                { label: 'HTTP & XRPC API', slug: 'operator/reference/api' },
+                { label: 'Configuration', slug: 'operator/reference/config' },
+                { label: 'Mobile IPC commands', slug: 'operator/reference/ipc' },
+              ],
+            },
           ],
         },
       ],
