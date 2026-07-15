@@ -20,6 +20,7 @@ use crate::routes::admin_health::admin_health;
 use crate::routes::admin_list_accounts::list_accounts;
 use crate::routes::admin_revoke_credentials::revoke_account_credentials;
 use crate::routes::admin_transfers::{cancel_admin_transfer, list_admin_transfers};
+use crate::routes::agent_child::{list_children, mint_child, revoke_child};
 use crate::routes::agent_claim::{post_agent_claim, post_agent_claim_confirm};
 use crate::routes::agent_event::post_agent_event;
 use crate::routes::agent_identity::post_agent_identity;
@@ -235,6 +236,8 @@ pub fn app(state: AppState) -> Router {
         .route("/oauth/token", post(post_token))
         .route("/oauth/revoke", post(post_revoke))
         .route("/agent/identity", post(post_agent_identity))
+        .route("/agent/child", get(list_children).post(mint_child))
+        .route("/agent/child/revoke", post(revoke_child))
         .route("/agent/identity/claim", post(post_agent_claim))
         .route(
             "/agent/identity/claim/confirm",

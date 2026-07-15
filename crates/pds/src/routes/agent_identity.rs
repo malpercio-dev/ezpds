@@ -172,6 +172,7 @@ async fn handle_anonymous(state: &AppState) -> Result<Response, AgentAuthError> 
         &NewAgentIdentity {
             id: &registration_id,
             did: None,
+            parent_did: None,
             registration_type: RegistrationType::Anonymous,
             issuer: None,
             subject: None,
@@ -267,6 +268,7 @@ async fn handle_service_auth(
         &NewAgentIdentity {
             id: &registration_id,
             did: Some(&account.did),
+            parent_did: None,
             registration_type: RegistrationType::ServiceAuth,
             issuer: None,
             subject: None,
@@ -549,6 +551,7 @@ async fn new_identity_assertion(
         &NewAgentIdentity {
             id: &registration_id,
             did: Some(&account.did),
+            parent_did: None,
             registration_type: RegistrationType::IdentityAssertion,
             issuer: Some(iss),
             subject: Some(&claims.sub),

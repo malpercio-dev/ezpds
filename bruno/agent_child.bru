@@ -1,0 +1,27 @@
+meta {
+  name: Mint or List Sovereign Child Agents
+  type: http
+  seq: 107
+}
+
+post {
+  url: {{baseUrl}}/agent/child
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sessionToken}}
+}
+
+body:json {
+  {
+    "handle": "alice-writer.obsign.org",
+    "plcOp": {{childPlcOp}}
+  }
+}
+
+docs {
+  POST mints a wallet-recoverable sovereign child DID, repo, handle, and delegated capability.
+  GET on the same path lists children owned by the authenticated local parent account.
+}
