@@ -389,6 +389,55 @@ async fn http_golden_path_suite() {
     })
     .await;
 
+    // 9b. No-input strictness parity (MM-291): a no-input XRPC procedure rejects a spurious body
+    //     with 400 InvalidRequest, matching the reference PDS. The wallet develops against Custos,
+    //     so this is where Custos's strictness backstops the wallet. Uses `activateAccount` (the
+    //     account is still active here, so an empty-body call would be a 200 no-op) and
+    //     `requestPlcOperationSignature` (the exact route MM-291 flagged) as representatives, and
+    //     confirms the same call with no body still succeeds.
+    step("no-input procedures reject a body", || async {
+        for path in [
+            "/xrpc/com.atproto.server.activateAccount",
+            "/xrpc/com.atproto.identity.requestPlcOperationSignature",
+        ] {
+            let resp = h
+                .http
+                .post(h.url(path))
+                .bearer_auth(&token)
+                .json(&json!({}))
+                .send()
+                .await
+                .expect("no-input body request");
+            let status = resp.status();
+            let body: serde_json::Value = resp.json().await.expect("error json");
+            assert_eq!(
+                status.as_u16(),
+                400,
+                "{path} must reject a body with 400, got {status}: {body}"
+            );
+            assert_eq!(
+                body["error"]["code"], "InvalidRequest",
+                "{path} body rejection must be InvalidRequest: {body}"
+            );
+        }
+
+        // The same procedure with no body still succeeds (activateAccount on an active account is a
+        // 200 no-op) — the guard rejects only a present body, never an empty request.
+        let resp = h
+            .http
+            .post(h.url("/xrpc/com.atproto.server.activateAccount"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .expect("empty-body activateAccount request");
+        assert!(
+            resp.status().is_success(),
+            "activateAccount with no body must still succeed, got {}",
+            resp.status()
+        );
+    })
+    .await;
+
     // 10. deactivateAccount → subsequent createRecord is 403; getRepoStatus reflects deactivated;
     //     then re-deactivate with a `deleteAfter` already in the past and poll until the reaper
     //     (running every second via EZPDS_ACCOUNTS_DELETION_REAPER_INTERVAL_SECS in the harness)

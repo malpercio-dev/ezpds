@@ -17,3 +17,10 @@ auth:bearer {
 vars:pre-request {
   baseUrl: http://localhost:8080
 }
+
+docs {
+  Revokes the session identified by the refresh JWT's `jti` (sent as the Bearer token), deleting its
+  refresh tokens and session row atomically. Accepts expired refresh tokens so logout always works;
+  idempotent (already-revoked → 200). The lexicon defines no input: takes no body — a non-empty
+  payload is rejected with 400 InvalidRequest, matching the reference PDS.
+}

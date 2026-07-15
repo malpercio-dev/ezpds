@@ -17,3 +17,9 @@ auth:bearer {
 vars:pre-request {
   baseUrl: http://localhost:8080
 }
+
+docs {
+  Exchanges a refresh JWT (sent as the Bearer token) for a new access + refresh token pair. The
+  lexicon defines no input: takes no body — a non-empty payload is rejected with 400 InvalidRequest,
+  matching the reference PDS. Returns 200 with `{ accessJwt, refreshJwt, handle, did }`.
+}
