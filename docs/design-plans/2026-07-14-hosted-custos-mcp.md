@@ -175,7 +175,8 @@ Net of §1–§3: **agent = sovereign child identity; hosted tier = credential-f
 ## 7. ADRs to write
 
 Two decisions here are architecturally load-bearing and should be recorded as ADRs (next free
-number is 0022; assign in order when written):
+numbers are 0023 and 0024 — 0022 was taken by `0022-did-web-for-user-owned-domains.md`; assign in
+order when written):
 
 - **ADR-A — Agents may be sovereign child identities (the hosted default).** The agent can have its
   own DID/repo/handle; its recovery key is held in the user's Obsign wallet (same genesis/rotation
