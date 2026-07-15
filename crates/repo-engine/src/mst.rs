@@ -52,28 +52,38 @@ pub fn common_prefix_len(left: &[u8], right: &[u8]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Deserialize;
 
-    // Interop fixture: key_heights.json
-    // CC-0 licensed, from bluesky-social/atproto-interop-tests
+    // Interop fixtures are loaded from the real upstream files vendored under
+    // tests/fixtures/interop/ (see that directory's README for provenance and
+    // license), rather than hand-transcribed inline — so added upstream cases
+    // are exercised automatically.
+
+    #[derive(Deserialize)]
+    struct KeyHeight {
+        key: String,
+        height: usize,
+    }
+
+    #[derive(Deserialize)]
+    struct CommonPrefix {
+        left: String,
+        right: String,
+        len: usize,
+    }
+
+    // Interop fixture: mst/key_heights.json (CC0, bluesky-social/atproto-interop-tests)
     #[test]
     fn key_heights_match_interop_fixture() {
-        let fixtures: &[(&str, usize)] = &[
-            ("", 0),
-            ("asdf", 0),
-            ("blue", 1),
-            ("2653ae71", 0),
-            ("88bfafc7", 2),
-            ("2a92d355", 4),
-            ("884976f5", 6),
-            ("app.bsky.feed.post/454397e440ec", 4),
-            ("app.bsky.feed.post/9adeb165882c", 8),
-        ];
+        let raw = include_str!("../tests/fixtures/interop/key_heights.json");
+        let fixtures: Vec<KeyHeight> = serde_json::from_str(raw).expect("parse key_heights.json");
+        assert!(!fixtures.is_empty(), "fixture file must not be empty");
 
-        for (key, expected_height) in fixtures {
+        for KeyHeight { key, height } in &fixtures {
             let computed = leading_zero_bitpairs(key.as_bytes());
             assert_eq!(
-                computed, *expected_height,
-                "key={key:?}: expected height {expected_height}, got {computed}",
+                computed, *height,
+                "key={key:?}: expected height {height}, got {computed}",
             );
         }
     }
@@ -92,31 +102,19 @@ mod tests {
         );
     }
 
-    // Interop fixture: common_prefix.json
-    // CC-0 licensed, from bluesky-social/atproto-interop-tests
+    // Interop fixture: mst/common_prefix.json (CC0, bluesky-social/atproto-interop-tests)
     #[test]
     fn common_prefix_lengths_match_interop_fixture() {
-        let fixtures: &[(&str, &str, usize)] = &[
-            ("", "", 0),
-            ("abc", "abc", 3),
-            ("", "abc", 0),
-            ("abc", "", 0),
-            ("ab", "abc", 2),
-            ("abc", "ab", 2),
-            ("abcde", "abc", 3),
-            ("abc", "abcde", 3),
-            ("abcde", "abc1", 3),
-            ("abcde", "abb", 2),
-            ("abcde", "qbb", 0),
-            ("abc", "abc\0", 3),
-            ("abc\0", "abc", 3),
-        ];
+        let raw = include_str!("../tests/fixtures/interop/common_prefix.json");
+        let fixtures: Vec<CommonPrefix> =
+            serde_json::from_str(raw).expect("parse common_prefix.json");
+        assert!(!fixtures.is_empty(), "fixture file must not be empty");
 
-        for (left, right, expected_len) in fixtures {
+        for CommonPrefix { left, right, len } in &fixtures {
             let computed = common_prefix_len(left.as_bytes(), right.as_bytes());
             assert_eq!(
-                computed, *expected_len,
-                "common_prefix_len({left:?}, {right:?}): expected {expected_len}, got {computed}",
+                computed, *len,
+                "common_prefix_len({left:?}, {right:?}): expected {len}, got {computed}",
             );
         }
     }

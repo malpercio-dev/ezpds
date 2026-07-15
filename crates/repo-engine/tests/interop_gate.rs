@@ -6,7 +6,10 @@
 //! These tests verify that our adoption of atrium-repo produces byte-identical
 //! MST structures and CAR exports matching the ATProto reference implementation.
 //!
-//! Fixtures are CC-0 licensed, from bluesky-social/atproto-interop-tests.
+//! Fixtures are vendored under `tests/fixtures/interop/` — CC-0 from
+//! bluesky-social/atproto-interop-tests, except commit-proof-fixtures.json,
+//! which is MIT from the bluesky-social/atproto monorepo. See that directory's
+//! README for per-file provenance.
 
 use atrium_repo::blockstore::{
     AsyncBlockStoreRead, AsyncBlockStoreWrite, CarStore, MemoryBlockStore, DAG_CBOR, SHA2_256,
@@ -28,6 +31,52 @@ const LEAF_VALUE: &str = "bafyreie5cvv4h45feadgeuwhbcutmh6t2ceseocckahdoe6uat64z
 /// Parse a CID from a base32-multibase string (bafyrei...).
 fn parse_cid(s: &str) -> Cid {
     s.parse().unwrap_or_else(|_| panic!("invalid CID: {s}"))
+}
+
+/// Parse a vendored `syntax/*.txt` interop file into its cases: one per line,
+/// with blank lines and `#`-prefixed comments removed.
+fn load_syntax_cases(raw: &str) -> Vec<String> {
+    raw.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(str::to_string)
+        .collect()
+}
+
+/// One entry of `mst/commit-proof-fixtures.json` (bluesky-social/atproto, MIT).
+#[derive(serde::Deserialize)]
+struct CommitProofFixture {
+    comment: String,
+    keys: Vec<String>,
+    #[serde(rename = "leafValue")]
+    leaf_value: String,
+    #[serde(rename = "rootBeforeCommit")]
+    root_before: String,
+    #[serde(rename = "rootAfterCommit")]
+    root_after: String,
+    adds: Vec<String>,
+    dels: Vec<String>,
+}
+
+/// One entry of `data-model/data-model-fixtures.json` (CC0). The `json` source
+/// object is intentionally ignored — we verify CID computation over the already-
+/// canonical DAG-CBOR bytes, decoupled from any JSON→CBOR encoder.
+#[derive(serde::Deserialize)]
+struct DataModelFixture {
+    cbor_base64: String,
+    cid: String,
+}
+
+/// Build an MST from `keys` (all pointing at `leaf_cid`) and return its root CID.
+async fn build_root(keys: &[String], leaf_cid: Cid) -> Cid {
+    let mut bs = MemoryBlockStore::new();
+    let mut tree = Tree::create(&mut bs).await.expect("create tree");
+    for key in keys {
+        tree.add(key, leaf_cid)
+            .await
+            .unwrap_or_else(|_| panic!("add key {key:?}"));
+    }
+    tree.root()
 }
 
 /// Build a tree with the given keys, all pointing to the same leaf value CID.
@@ -76,108 +125,52 @@ async fn build_tree_with_stored_leaf(keys: &[&str]) -> (MemoryBlockStore, Cid, C
 }
 
 // ── Known-answer root CIDs from commit-proof-fixtures.json ──────────────────────
+//
+// Loaded from the real upstream mst/commit-proof-fixtures.json vendored under
+// tests/fixtures/interop/ (see that dir's README), rather than hand-transcribed
+// per-fixture — every entry (and any upstream additions) is exercised.
 
-/// Fixture: "two deep split" from commit-proof-fixtures.json
-///
-/// Keys: A0/374913, B1/986427, C0/451630, E0/670489, F1/085263, G0/765327
-/// Expected root: bafyreicraprx2xwnico4tuqir3ozsxpz46qkcpox3obf5bagicqwurghpy
 #[tokio::test]
-async fn interop_two_deep_split_root_cid() {
-    let keys = &[
-        "A0/374913",
-        "B1/986427",
-        "C0/451630",
-        "E0/670489",
-        "F1/085263",
-        "G0/765327",
-    ];
-    let expected_root = parse_cid("bafyreicraprx2xwnico4tuqir3ozsxpz46qkcpox3obf5bagicqwurghpy");
-
-    let (_bs, root) = build_tree_with_keys(keys).await;
-    assert_eq!(
-        root, expected_root,
-        "root CID must match the interop fixture"
+async fn commit_proof_root_cids_match_interop_fixtures() {
+    let raw = include_str!("fixtures/interop/commit-proof-fixtures.json");
+    let fixtures: Vec<CommitProofFixture> =
+        serde_json::from_str(raw).expect("parse commit-proof-fixtures.json");
+    assert!(
+        !fixtures.is_empty(),
+        "commit-proof fixtures must not be empty"
     );
-}
 
-/// Fixture: "two deep leafless split" from commit-proof-fixtures.json
-#[tokio::test]
-async fn interop_two_deep_leafless_split_root_cid() {
-    let keys = &["A0/374913", "B0/601692", "D0/952776", "E0/670489"];
-    let expected_root = parse_cid("bafyreialm5sgf7pijawbschsjpdevid5rss5ip3d4n4w6cc4mhu53sfl4i");
+    for f in &fixtures {
+        let leaf = parse_cid(&f.leaf_value);
 
-    let (_bs, root) = build_tree_with_keys(keys).await;
-    assert_eq!(
-        root, expected_root,
-        "root CID must match the interop fixture"
-    );
-}
+        // Root *before* the commit: the MST built from the fixture's key set.
+        let before = build_root(&f.keys, leaf).await;
+        assert_eq!(
+            before,
+            parse_cid(&f.root_before),
+            "[{}] rootBeforeCommit must match the interop fixture",
+            f.comment,
+        );
 
-/// Fixture: "add on edge with neighbor two layers down" from commit-proof-fixtures.json
-#[tokio::test]
-async fn interop_add_on_edge_root_cid() {
-    let keys = &["A0/374913", "B2/827649", "C0/451630"];
-    let expected_root = parse_cid("bafyreigc6ay2qwfk7kuevvrczummpd64nknfo4yxpaooknfymzyb7u3ntq");
-
-    let (_bs, root) = build_tree_with_keys(keys).await;
-    assert_eq!(
-        root, expected_root,
-        "root CID must match the interop fixture"
-    );
-}
-
-/// Fixture: "merge and split in multi-op commit" — root *before* commit
-#[tokio::test]
-async fn interop_merge_split_before_root_cid() {
-    let keys = &["A0/374913", "B2/827649", "D2/269196", "E0/670489"];
-    let expected_root = parse_cid("bafyreiceld4icym4qjmdcn3dfgtxt7t66hdgyhvigessgmkvb56dx6amgi");
-
-    let (_bs, root) = build_tree_with_keys(keys).await;
-    assert_eq!(
-        root, expected_root,
-        "root CID must match the interop fixture"
-    );
-}
-
-/// Fixture: "complex multi-op commit" — root *before* commit
-#[tokio::test]
-async fn interop_complex_multiop_before_root_cid() {
-    let keys = &[
-        "B0/601692",
-        "C2/014073",
-        "D0/952776",
-        "E2/819540",
-        "F0/697858",
-        "H0/131238",
-    ];
-    let expected_root = parse_cid("bafyreigr3plnts7dax6yokvinbhcqpyicdfgg6npvvyx6okc5jo55slfqi");
-
-    let (_bs, root) = build_tree_with_keys(keys).await;
-    assert_eq!(
-        root, expected_root,
-        "root CID must match the interop fixture"
-    );
-}
-
-/// Fixture: "split with earlier leaves on same layer" — root *before* commit
-#[tokio::test]
-async fn interop_split_earlier_leaves_before_root_cid() {
-    let keys = &[
-        "app.bsky.feed.post/3lo3kqqljmfe2",
-        "app.bsky.feed.post/3log4547dm6h2",
-        "app.bsky.feed.post/3log45inogon2",
-        "app.bsky.feed.post/3logaodrh74d2",
-        "app.bsky.feed.post/3logteazog2n2",
-        "app.bsky.feed.post/3lon5cqsbwrj2",
-        "app.bsky.feed.repost/3l6sjhvqonco2",
-    ];
-    let expected_root = parse_cid("bafyreigfcsro2up7qi7l3rxdpg7n6gjtteotkmgrrqztl5oy2tf4ncl4ji");
-
-    let (_bs, root) = build_tree_with_keys(keys).await;
-    assert_eq!(
-        root, expected_root,
-        "root CID must match the interop fixture"
-    );
+        // Root *after* the commit: an MST is canonical on its key set, so a tree
+        // built from (keys ∪ adds) \ dels from scratch equals the post-commit root
+        // without replaying the individual add/delete operations.
+        let dels: std::collections::HashSet<&str> = f.dels.iter().map(String::as_str).collect();
+        let mut after_keys: Vec<String> = f
+            .keys
+            .iter()
+            .filter(|k| !dels.contains(k.as_str()))
+            .cloned()
+            .collect();
+        after_keys.extend(f.adds.iter().cloned());
+        let after = build_root(&after_keys, leaf).await;
+        assert_eq!(
+            after,
+            parse_cid(&f.root_after),
+            "[{}] rootAfterCommit must match the interop fixture",
+            f.comment,
+        );
+    }
 }
 
 // ── CAR round-trip ───────────────────────────────────────────────────────────────
@@ -453,32 +446,26 @@ fn tid_is_valid(s: &str) -> bool {
 
 #[test]
 fn tid_syntax_matches_interop_fixture() {
-    // (input, expected_valid) — mirrors bluesky-social/atproto-interop-tests tid_syntax.
-    let fixtures: &[(&str, bool)] = &[
-        // Valid: 13 chars, in-alphabet, legal leading char.
-        ("3jzfcijpj2z2a", true),
-        ("7777777777777", true),
-        ("3zzzzzzzzzzzz", true),
-        ("234567abcdefg", true),
-        // Invalid: wrong length.
-        ("", false),
-        ("3jzfcijpj2z2", false),   // 12 — too short
-        ("3jzfcijpj2z2aa", false), // 14 — too long
-        // Invalid: characters outside the base32-sortable alphabet.
-        ("0000000000000", false), // '0' not in alphabet
-        ("1111111111111", false), // '1' not in alphabet
-        ("3jzfcijpj2z2!", false), // punctuation
-        ("3JZFCIJPJ2Z2A", false), // uppercase
-        // Invalid: legal alphabet but illegal leading char (high bit would be set).
-        ("zzzzzzzzzzzzz", false), // 'z' is alphabet index 31
-        ("kjzfcijpj2z2a", false), // 'k' is alphabet index 16 — just past the legal range
-    ];
+    // Loaded from the real upstream syntax/tid_syntax_{valid,invalid}.txt files
+    // vendored under tests/fixtures/interop/ (one case per line; blank lines and
+    // `#` comments ignored), rather than hand-transcribed inline.
+    let valid = load_syntax_cases(include_str!("fixtures/interop/tid_syntax_valid.txt"));
+    let invalid = load_syntax_cases(include_str!("fixtures/interop/tid_syntax_invalid.txt"));
+    assert!(
+        !valid.is_empty() && !invalid.is_empty(),
+        "TID syntax fixtures must not be empty",
+    );
 
-    for (input, expected) in fixtures {
-        assert_eq!(
-            tid_is_valid(input),
-            *expected,
-            "tid_is_valid({input:?}) should be {expected}",
+    for tid in &valid {
+        assert!(
+            tid_is_valid(tid),
+            "tid_is_valid({tid:?}) should be true (interop fixture: valid)",
+        );
+    }
+    for tid in &invalid {
+        assert!(
+            !tid_is_valid(tid),
+            "tid_is_valid({tid:?}) should be false (interop fixture: invalid)",
         );
     }
 }
@@ -654,45 +641,31 @@ async fn genesis_commit_signature_verifies() {
 /// SHA2-256 multihash code, per the multiformats table.
 const SHA2_256_CODE: u64 = 0x12;
 
-/// (raw dag-cbor block bytes, expected CIDv1 string). The bytes are the canonical
-/// dag-cbor encodings of, in order: empty map `{}`, integer `1`, string `"abc"`,
-/// boolean `true`, and `null`.
-const CID_FIXTURES: &[(&[u8], &str)] = &[
-    (
-        &[0xa0],
-        "bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua",
-    ),
-    (
-        &[0x01],
-        "bafyreicl6ujc6ncfktctxxroxognfn7d2fqavvrryoc2lv6m4i6hpbkfti",
-    ),
-    (
-        b"\x63abc",
-        "bafyreifg3cn26anmajrx3ieygwzijbns3nufo2bu2amgt7av4nvretdbpq",
-    ),
-    (
-        &[0xf5],
-        "bafyreibhvppn37ufanewvxvwendgzksh3jpwhk6sxrx2dh3m7s3t5t7noa",
-    ),
-    (
-        &[0xf6],
-        "bafyreifqwkmiw256ojf2zws6tzjeonw6bpd5vza4i22ccpcq4hjv2ts7cm",
-    ),
-];
-
 #[tokio::test]
 async fn cid_computation_matches_interop_fixtures() {
+    use base64::Engine;
+    let raw = include_str!("fixtures/interop/data-model-fixtures.json");
+    let fixtures: Vec<DataModelFixture> =
+        serde_json::from_str(raw).expect("parse data-model-fixtures.json");
+    assert!(
+        !fixtures.is_empty(),
+        "data-model fixtures must not be empty"
+    );
+
     let mut bs = MemoryBlockStore::new();
-    for (raw, expected) in CID_FIXTURES {
+    for f in &fixtures {
+        let cbor = base64::engine::general_purpose::STANDARD_NO_PAD
+            .decode(&f.cbor_base64)
+            .expect("decode cbor_base64");
         let cid = bs
-            .write_block(DAG_CBOR, SHA2_256, raw)
+            .write_block(DAG_CBOR, SHA2_256, &cbor)
             .await
             .expect("write block");
 
         assert_eq!(
             cid.to_string(),
-            *expected,
-            "CID for dag-cbor block {raw:02x?} must match the reference",
+            f.cid,
+            "CID for the data-model fixture must match the reference",
         );
         // Structural invariants of every ATProto CID. (The full string match above
         // already pins the CIDv1 prefix; these assert the codec/hash explicitly.)
@@ -705,7 +678,7 @@ async fn cid_computation_matches_interop_fixtures() {
         assert_eq!(cid.hash().size(), 32, "sha2-256 digest is 32 bytes");
 
         // Parsing the expected string back must round-trip to the same CID.
-        assert_eq!(cid, expected.parse::<Cid>().expect("parse reference CID"));
+        assert_eq!(cid, f.cid.parse::<Cid>().expect("parse reference CID"));
     }
 }
 
@@ -713,7 +686,7 @@ async fn cid_computation_matches_interop_fixtures() {
 #[should_panic(expected = "must match the reference")]
 async fn corrupted_cid_fixture_is_detected() {
     let mut bs = MemoryBlockStore::new();
-    // dag-cbor `{}` paired with the wrong reference CID (the one for integer `1`).
+    // dag-cbor `{}` (0xa0) paired with the wrong reference CID (the one for `1`).
     let raw: &[u8] = &[0xa0];
     let wrong = "bafyreicl6ujc6ncfktctxxroxognfn7d2fqavvrryoc2lv6m4i6hpbkfti";
     let cid = bs.write_block(DAG_CBOR, SHA2_256, raw).await.unwrap();
