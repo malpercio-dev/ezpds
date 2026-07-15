@@ -1038,6 +1038,12 @@ pub(crate) async fn resolve_by_email(
 
 /// Resolve a handle or DID to an active account (not deactivated, suspended, or taken down).
 ///
+/// Handles are matched case-insensitively: they are stored lowercase (atproto handles are
+/// case-insensitive ASCII), so a differently-cased identifier — e.g. an iOS keyboard
+/// auto-capitalizing the first letter to `Malpercio.…` — is lowercased before lookup rather than
+/// failing byte-equality. DIDs are matched exactly (did:plc/did:web method identifiers are already
+/// lowercase, and a DID is a case-sensitive URI in general).
+///
 /// Returns `None` when not found or not active; `Err` only on DB errors.
 pub(crate) async fn resolve_identifier(
     db: &sqlx::SqlitePool,
@@ -1066,6 +1072,9 @@ pub(crate) async fn resolve_identifier(
             handle,
         }))
     } else {
+        // Handles are stored lowercase; lowercase the input so case variants (e.g. iOS
+        // auto-capitalization) still resolve.
+        let handle = identifier.to_ascii_lowercase();
         let row: Option<(String, Option<String>)> = sqlx::query_as(
             "SELECT a.did, a.password_hash \
              FROM handles h \
@@ -1074,7 +1083,7 @@ pub(crate) async fn resolve_identifier(
                AND a.taken_down_at IS NULL \
              LIMIT 1",
         )
-        .bind(identifier)
+        .bind(&handle)
         .fetch_optional(db)
         .await
         .map_err(|e| {
@@ -1085,7 +1094,7 @@ pub(crate) async fn resolve_identifier(
         Ok(row.map(|(did, password_hash)| AccountRow {
             did,
             password_hash,
-            handle: Some(identifier.to_string()),
+            handle: Some(handle),
         }))
     }
 }
@@ -1867,6 +1876,34 @@ mod tests {
         .await
         .unwrap();
         assert!(!swapped, "an active account must not accept an import swap");
+    }
+
+    // ── handle resolution ──────────────────────────────────────────────────────────────────────
+
+    /// Insert a handle → DID mapping for an already-inserted account.
+    async fn insert_handle(db: &sqlx::SqlitePool, handle: &str, did: &str) {
+        sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
+            .bind(handle)
+            .bind(did)
+            .execute(db)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn resolve_identifier_matches_handle_case_insensitively() {
+        let db = test_pool().await;
+        insert_account(&db, "did:plc:casetest").await;
+        insert_handle(&db, "malpercio.example.com", "did:plc:casetest").await;
+
+        // A differently-cased handle (e.g. iOS auto-capitalizing the first letter) must still
+        // resolve to the same account, and the returned handle is the stored lowercase form.
+        let resolved = resolve_identifier(&db, "Malpercio.Example.com")
+            .await
+            .unwrap()
+            .expect("mixed-case handle must resolve to the lowercase-stored account");
+        assert_eq!(resolved.did, "did:plc:casetest");
+        assert_eq!(resolved.handle.as_deref(), Some("malpercio.example.com"));
     }
 
     // ── login/session lifecycle enforcement ────────────────────────────────────────────────────

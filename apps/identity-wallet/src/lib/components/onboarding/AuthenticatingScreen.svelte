@@ -4,16 +4,22 @@
   import Spinner from '$lib/components/ui/Spinner.svelte';
 
   let {
+    handle,
     onresolved,
     onfailed,
   }: {
+    /**
+     * The handle to pre-fill on the authorize page (the create flow's just-registered handle).
+     * Passed through to the server as `login_hint` so the identifier field is pre-populated.
+     */
+    handle?: string;
     onresolved: () => void;
     onfailed: (err: OAuthError) => void;
   } = $props();
 
   async function authenticate() {
     try {
-      await startOAuthFlow();
+      await startOAuthFlow(handle);
       onresolved();
     } catch (raw) {
       onfailed(raw as OAuthError);
