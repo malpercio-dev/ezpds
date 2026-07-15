@@ -35,6 +35,7 @@ export default defineConfig({
           items: [
             { label: 'Welcome', slug: 'user' },
             { label: 'Getting started', slug: 'user/getting-started' },
+            { label: 'Screens', slug: 'user/screens' },
             { label: 'Tamper monitoring & recovery', slug: 'user/recovery' },
             { label: '2-of-3 Shamir backup', slug: 'user/backup' },
             { label: 'Migrating your identity', slug: 'user/migration' },
@@ -45,6 +46,7 @@ export default defineConfig({
           items: [
             { label: 'Overview', slug: 'operator' },
             { label: 'Running a relay', slug: 'operator/running-a-relay' },
+            { label: 'Console screens', slug: 'operator/screens' },
             { label: 'Configuration', slug: 'operator/configuration' },
             { label: 'Backups & restore', slug: 'operator/backups' },
             { label: 'Moderation', slug: 'operator/moderation' },

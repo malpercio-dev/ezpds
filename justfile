@@ -83,6 +83,21 @@ docs-generate:
 docs-check:
     scripts/docs-check.sh
 
+# Regenerate the docs sites' app imagery by Playwright-driving each mobile app's browser
+# harness (VITE_HARNESS=fake) across its named scenarios — happy paths plus error/rare states
+# (migration-in-flight, degraded-health, failNext-injected failures) — into
+# sites/docs/public/screenshots/. Deterministic (frozen clock, no network) and Linux-runnable
+# (no macOS/Tauri shell). Pass through flags, e.g. `just docs-screenshots --app admin`.
+docs-screenshots *args:
+    scripts/docs-screenshots.sh {{args}}
+
+# Visual-diff gate: re-render every screenshot and fail if any drifts from the committed PNG
+# (an unintended UI change) or is missing a baseline. Not part of `just ci` — cross-runner
+# font rendering can differ; run it where the baselines were generated. Regenerate + commit
+# with `just docs-screenshots` when a change is intentional.
+docs-screenshots-check:
+    scripts/docs-screenshots.sh --check
+
 # Validate changelog fragment names/content and, when CHANGELOG_BASE_REF (or an explicit
 # argument) identifies a PR base, require a fragment for changes to shipped surfaces.
 changelog-check base="":
