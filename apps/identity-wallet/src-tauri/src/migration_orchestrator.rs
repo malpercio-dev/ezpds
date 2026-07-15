@@ -1036,7 +1036,7 @@ pub async fn verify_import(
 /// then advance to IdentityArmed.
 ///
 /// Gate: ensure_phase_did(..., Verified) → clone dest_client; drop lock
-/// Build fresh MigrationState { did, dest_oauth_client, signed_op: None }; store in AppState
+/// Build fresh MigrationState { did, dest_oauth_client, signed_op: None, op_cid: None }; store in AppState
 /// Advance phase → IdentityArmed
 #[tauri::command]
 pub async fn arm_identity_leg(
@@ -1077,6 +1077,7 @@ async fn arm_identity_leg_core(
         did: did.to_string(),
         dest_oauth_client: dest_client,
         signed_op: None,
+        op_cid: None,
     });
 
     // Advance orchestration phase to IdentityArmed (defense-in-depth DID re-check under the lock).
@@ -2884,6 +2885,7 @@ mod tests {
             did: did.into(),
             dest_oauth_client: Arc::new(bearer_client_at("https://dest.pds".into())),
             signed_op: None,
+            op_cid: None,
         }));
 
         let result = finalize_migration_core(&orchestration, &migration_state, did, || async {
