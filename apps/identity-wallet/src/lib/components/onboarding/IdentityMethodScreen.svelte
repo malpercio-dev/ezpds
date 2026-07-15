@@ -9,7 +9,7 @@
   subtitle="Custos anchors your identity with a key held on this device. If anyone else tries to change it, you get a 72-hour window to reverse it."
   {onback}
 >
-  <Button onclick={onplc}>Create identity on Custos</Button>
+  <Button onclick={onplc}>Create identity</Button>
 
   <div class="advanced">
     <button type="button" class="advanced-link" onclick={onweb}>

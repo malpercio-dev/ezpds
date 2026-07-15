@@ -95,6 +95,10 @@
   // ── State ────────────────────────────────────────────────────────────────
 
   let step = $state<OnboardingStep>('mode_select');
+  // True once the user has reached `mode_select` from an existing wallet (via the
+  // home screen's "add" action), so the entry screen can offer a Back-to-home
+  // affordance. Stays false on first launch, where there is no home to return to.
+  let cameFromHome = $state(false);
   let form = $state({ claimCode: '', email: '', handle: '', password: '', did: '', share3: '', registeredHandle: '', handleOrDid: '' });
   let didWebHosting = $state<DidWebHosting>('self');
   let migrationHostingChosen = $state(false);
@@ -278,6 +282,7 @@
     <ModeSelectScreen
       oncreate={() => goTo('identity_method')}
       onimport={() => goTo('identity_input')}
+      onback={cameFromHome ? () => goTo('home') : undefined}
     />
   {:else if step === 'identity_method'}
     <IdentityMethodScreen
@@ -444,7 +449,7 @@
 
   {:else if step === 'home'}
     <IdentityListHome
-      onadd={() => goTo('mode_select')}
+      onadd={() => { cameFromHome = true; goTo('mode_select'); }}
       onselect={(did, didDoc, deviceKeyIsRoot) => {
         selectedDid = did;
         selectedDidDoc = didDoc;
