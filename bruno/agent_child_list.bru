@@ -1,0 +1,19 @@
+meta {
+  name: List Sovereign Child Agents
+  type: http
+  seq: 108
+}
+
+get {
+  url: {{baseUrl}}/agent/child
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sessionToken}}
+}
+
+docs {
+  Lists sovereign child identities provisioned by the authenticated local parent account.
+}

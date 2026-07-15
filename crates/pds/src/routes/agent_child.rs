@@ -171,14 +171,7 @@ pub async fn mint_child(
     )
     .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to mint child capability"))?;
 
-    crate::identity::genesis::post_to_plc_directory(
-        &state.http_client,
-        &state.config.plc_directory_url,
-        &child_did,
-        &signed_op,
-    )
-    .await?;
-    persist_child(
+    let prepared = prepare_child(
         &state,
         &parent_did,
         &request.handle,
@@ -192,24 +185,62 @@ pub async fn mint_child(
         &root_string,
         &rev,
         &blocks,
-        genesis_car,
-        sync_car,
+        &signed_op,
+        &genesis_car,
+        &sync_car,
     )
     .await?;
 
+    if !prepared.plc_published {
+        publish_child_genesis(&state, &prepared, &did_document).await?;
+        sqlx::query(
+            "UPDATE agent_child_provisionings SET plc_published_at = datetime('now'), \
+             updated_at = datetime('now') WHERE child_did = ?",
+        )
+        .bind(&child_did)
+        .execute(&state.db)
+        .await
+        .map_err(|_| {
+            ApiError::new(
+                ErrorCode::InternalError,
+                "child published; retry to finish local activation",
+            )
+        })?;
+    }
+    finalize_child(&state, &prepared).await?;
+
     Ok(Json(MintChildResponse {
-        registration_id,
+        registration_id: prepared.registration_id,
         did: child_did,
         handle: request.handle,
         did_document,
-        identity_assertion: assertion.jwt,
-        assertion_expires: assertion.expires_rfc3339,
-        scopes,
+        identity_assertion: prepared.assertion,
+        assertion_expires: crate::auth::agent_assertion::parse_sqlite_datetime(
+            &prepared.assertion_expires,
+        )
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        scopes: serde_json::from_str(&prepared.scopes).unwrap_or(scopes),
     }))
 }
 
+struct PreparedChild {
+    child_did: String,
+    parent_did: String,
+    registration_id: String,
+    scopes: String,
+    assertion: String,
+    assertion_expires: String,
+    signed_op: String,
+    root: String,
+    rev: String,
+    genesis_car: Vec<u8>,
+    sync_car: Vec<u8>,
+    plc_published: bool,
+    finalized: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
-async fn persist_child(
+async fn prepare_child(
     state: &AppState,
     parent_did: &str,
     handle: &str,
@@ -223,13 +254,89 @@ async fn persist_child(
     root: &str,
     rev: &str,
     blocks: &[(repo_engine::Cid, Vec<u8>)],
-    genesis_car: Vec<u8>,
-    sync_car: Vec<u8>,
-) -> Result<(), ApiError> {
+    signed_op: &str,
+    genesis_car: &[u8],
+    sync_car: &[u8],
+) -> Result<PreparedChild, ApiError> {
+    type PendingRow = (
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        Vec<u8>,
+        Vec<u8>,
+        bool,
+        bool,
+    );
+    let existing = sqlx::query_as::<_, PendingRow>(
+        "SELECT p.parent_did, p.handle, p.registration_id, p.scopes, p.identity_assertion, \
+                p.assertion_expires_at, p.signed_op, p.genesis_car, p.sync_car, \
+                p.plc_published_at IS NOT NULL, p.finalized_at IS NOT NULL \
+         FROM agent_child_provisionings p WHERE p.child_did = ?",
+    )
+    .bind(child_did)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| {
+        ApiError::new(
+            ErrorCode::InternalError,
+            "failed to resume child provisioning",
+        )
+    })?;
+    if let Some((
+        stored_parent,
+        stored_handle,
+        stored_registration,
+        stored_scopes,
+        stored_assertion,
+        stored_expiry,
+        stored_signed_op,
+        stored_genesis_car,
+        stored_sync_car,
+        plc_published,
+        finalized,
+    )) = existing
+    {
+        if stored_parent != parent_did || stored_handle != handle {
+            return Err(ApiError::new(
+                ErrorCode::DidAlreadyExists,
+                "child DID is already being provisioned",
+            ));
+        }
+        let (stored_root, stored_rev): (String, String) =
+            sqlx::query_as("SELECT repo_root_cid, repo_rev FROM accounts WHERE did = ?")
+                .bind(child_did)
+                .fetch_one(&state.db)
+                .await
+                .map_err(|_| {
+                    ApiError::new(
+                        ErrorCode::InternalError,
+                        "failed to resume child provisioning",
+                    )
+                })?;
+        return Ok(PreparedChild {
+            child_did: child_did.to_string(),
+            parent_did: stored_parent,
+            registration_id: stored_registration,
+            scopes: stored_scopes,
+            assertion: stored_assertion,
+            assertion_expires: stored_expiry,
+            signed_op: stored_signed_op,
+            root: stored_root,
+            rev: stored_rev,
+            genesis_car: stored_genesis_car,
+            sync_car: stored_sync_car,
+            plc_published,
+            finalized,
+        });
+    }
+
     let document = serde_json::to_string(did_document)
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store child DID"))?;
     let disabled_password = hash_password(&Uuid::new_v4().to_string())?;
-    let emit_guard = state.firehose.lock_emit().await;
     let mut tx = state.db.begin().await.map_err(|_| {
         ApiError::new(
             ErrorCode::InternalError,
@@ -237,8 +344,8 @@ async fn persist_child(
         )
     })?;
     let account_result = sqlx::query(
-        "INSERT INTO accounts (did, email, password_hash, repo_root_cid, repo_rev, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+        "INSERT INTO accounts (did, email, password_hash, repo_root_cid, repo_rev, deactivated_at, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'), datetime('now'))",
     )
     .bind(child_did)
     .bind(format!("{registration_id}@agents.invalid"))
@@ -288,19 +395,101 @@ async fn persist_child(
         .await
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store child repo"))?;
     }
+    sqlx::query(
+        "INSERT INTO agent_child_provisionings \
+         (child_did, parent_did, handle, registration_id, signed_op, scopes, identity_assertion, \
+          assertion_expires_at, genesis_car, sync_car, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+    )
+    .bind(child_did)
+    .bind(parent_did)
+    .bind(handle)
+    .bind(registration_id)
+    .bind(signed_op)
+    .bind(scopes)
+    .bind(assertion)
+    .bind(assertion_expires_at)
+    .bind(genesis_car)
+    .bind(sync_car)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| {
+        ApiError::new(
+            ErrorCode::InternalError,
+            "failed to reserve child provisioning",
+        )
+    })?;
+    tx.commit().await.map_err(|_| {
+        ApiError::new(
+            ErrorCode::InternalError,
+            "failed to reserve child provisioning",
+        )
+    })?;
+    Ok(PreparedChild {
+        child_did: child_did.to_string(),
+        parent_did: parent_did.to_string(),
+        registration_id: registration_id.to_string(),
+        scopes: scopes.to_string(),
+        assertion: assertion.to_string(),
+        assertion_expires: assertion_expires_at.to_string(),
+        signed_op: signed_op.to_string(),
+        root: root.to_string(),
+        rev: rev.to_string(),
+        genesis_car: genesis_car.to_vec(),
+        sync_car: sync_car.to_vec(),
+        plc_published: false,
+        finalized: false,
+    })
+}
+
+async fn publish_child_genesis(
+    state: &AppState,
+    prepared: &PreparedChild,
+    expected_document: &serde_json::Value,
+) -> Result<(), ApiError> {
+    let plc_url = format!("{}/{}", state.config.plc_directory_url, prepared.child_did);
+    let already_published = match state.http_client.get(&plc_url).send().await {
+        Ok(response) if response.status().is_success() => response
+            .json::<serde_json::Value>()
+            .await
+            .is_ok_and(|document| document == *expected_document),
+        _ => false,
+    };
+    if !already_published {
+        crate::identity::genesis::post_to_plc_directory(
+            &state.http_client,
+            &state.config.plc_directory_url,
+            &prepared.child_did,
+            &prepared.signed_op,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn finalize_child(state: &AppState, prepared: &PreparedChild) -> Result<(), ApiError> {
+    if prepared.finalized {
+        return Ok(());
+    }
+    let emit_guard = state.firehose.lock_emit().await;
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to finalize child"))?;
     let inserted = insert_agent_identity(
         &mut *tx,
         &NewAgentIdentity {
-            id: registration_id,
-            did: Some(child_did),
-            parent_did: Some(parent_did),
+            id: &prepared.registration_id,
+            did: Some(&prepared.child_did),
+            parent_did: Some(&prepared.parent_did),
             registration_type: RegistrationType::Child,
             issuer: None,
-            subject: Some(child_did),
+            subject: Some(&prepared.child_did),
             email: None,
-            scopes,
-            identity_assertion: Some(assertion),
-            assertion_expires_at,
+            scopes: &prepared.scopes,
+            identity_assertion: Some(&prepared.assertion),
+            assertion_expires_at: &prepared.assertion_expires,
             pre_claim_scopes: None,
             claim_token: None,
             claim_token_expires_at: None,
@@ -316,7 +505,7 @@ async fn persist_child(
     // A child is provisioned and authorized in one parent-approved operation.
     crate::db::agent_auth::set_agent_identity_status(
         &mut *tx,
-        registration_id,
+        &prepared.registration_id,
         AgentIdentityStatus::Claimed,
     )
     .await?;
@@ -324,13 +513,13 @@ async fn persist_child(
         .stage_commit(
             &mut tx,
             crate::firehose::CommitInput {
-                repo: child_did.to_string(),
-                commit: root.to_string(),
-                rev: rev.to_string(),
+                repo: prepared.child_did.clone(),
+                commit: prepared.root.clone(),
+                rev: prepared.rev.clone(),
                 since: None,
                 prev_data: None,
                 ops: Vec::new(),
-                blocks: genesis_car,
+                blocks: prepared.genesis_car.clone(),
             },
         )
         .await
@@ -338,23 +527,38 @@ async fn persist_child(
         .stage_sync(
             &mut tx,
             crate::firehose::SyncInput {
-                did: child_did.to_string(),
-                rev: rev.to_string(),
-                blocks: sync_car,
+                did: prepared.child_did.clone(),
+                rev: prepared.rev.clone(),
+                blocks: prepared.sync_car.clone(),
             },
         )
         .await
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to sequence child repo"))?;
+    sqlx::query(
+        "UPDATE accounts SET deactivated_at = NULL, updated_at = datetime('now') WHERE did = ?",
+    )
+    .bind(&prepared.child_did)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to activate child"))?;
+    sqlx::query(
+        "UPDATE agent_child_provisionings SET finalized_at = datetime('now'), \
+         updated_at = datetime('now') WHERE child_did = ? AND plc_published_at IS NOT NULL",
+    )
+    .bind(&prepared.child_did)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to finalize child"))?;
     tx.commit()
         .await
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to commit child"))?;
     pending.finish();
     if let Err(error) = state
         .firehose
-        .emit_account(child_did.to_string(), true, None)
+        .emit_account(prepared.child_did.clone(), true, None)
         .await
     {
-        tracing::warn!(%error, did = %child_did, "failed to emit child account event");
+        tracing::warn!(%error, did = %prepared.child_did, "failed to emit child account event");
     }
     state.crawlers.notify();
     Ok(())
@@ -421,7 +625,7 @@ mod tests {
     use crate::app::app;
     use crate::routes::test_utils::{access_jwt, seed_account_with_repo, test_master_key};
 
-    async fn state() -> AppState {
+    async fn state_with_plc() -> (AppState, MockServer) {
         let plc = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path_regex(r"^/did:plc:[a-z2-7]+$"))
@@ -434,10 +638,17 @@ mod tests {
             test_master_key(),
         )));
         config.available_user_domains = vec!["example.com".to_string()];
-        AppState {
-            config: Arc::new(config),
-            ..base
-        }
+        (
+            AppState {
+                config: Arc::new(config),
+                ..base
+            },
+            plc,
+        )
+    }
+
+    async fn state() -> AppState {
+        state_with_plc().await.0
     }
 
     fn request(uri: &str, token: Option<&str>, body: serde_json::Value) -> Request<Body> {
@@ -449,6 +660,15 @@ mod tests {
             builder = builder.header("authorization", format!("Bearer {token}"));
         }
         builder.body(Body::from(body.to_string())).unwrap()
+    }
+
+    fn get_request(uri: &str, token: &str) -> Request<Body> {
+        Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap()
     }
 
     async fn reserve(db: &sqlx::SqlitePool) -> crypto::P256Keypair {
@@ -524,6 +744,23 @@ mod tests {
         assert_eq!(row.status, AgentIdentityStatus::Claimed);
 
         let response = app(state.clone())
+            .oneshot(get_request("/agent/child", &token))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let listed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(listed["children"][0]["did"], child);
+        assert_eq!(listed["children"][0]["handle"], handle);
+        assert_eq!(listed["children"][0]["status"], "claimed");
+        assert_eq!(
+            listed["children"][0]["registrationId"],
+            minted["registrationId"]
+        );
+
+        let response = app(state.clone())
             .oneshot(request(
                 "/agent/child/revoke",
                 Some(&token),
@@ -571,5 +808,84 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn plc_failure_leaves_a_deactivated_provisioning_that_retry_finishes() {
+        let (state, plc) = state_with_plc().await;
+        plc.reset().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/did:plc:[a-z2-7]+$"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&plc)
+            .await;
+        let parent = "did:plc:parentchildretry111111";
+        seed_account_with_repo(&state.db, parent).await;
+        let repo_key = reserve(&state.db).await;
+        let handle = "alice-retry.example.com";
+        let op = genesis(handle, &state.config.public_url, &repo_key.key_id.0);
+        let rotation_key = op["rotationKeys"][0].as_str().unwrap();
+        let child = crate::identity::genesis::verify_and_validate_genesis_op(
+            rotation_key,
+            &op,
+            handle,
+            &state.config.public_url,
+        )
+        .unwrap()
+        .0
+        .did;
+        let token = access_jwt(&[0x42; 32], parent);
+
+        let response = app(state.clone())
+            .oneshot(request(
+                "/agent/child",
+                Some(&token),
+                serde_json::json!({"handle": handle, "plcOp": op.clone()}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let deactivated: Option<String> =
+            sqlx::query_scalar("SELECT deactivated_at FROM accounts WHERE did = ?")
+                .bind(&child)
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert!(deactivated.is_some());
+        let pending: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM agent_child_provisionings WHERE child_did = ? AND plc_published_at IS NULL",
+        )
+        .bind(&child)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(pending, 1);
+
+        plc.reset().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/did:plc:[a-z2-7]+$"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&plc)
+            .await;
+        let response = app(state.clone())
+            .oneshot(request(
+                "/agent/child",
+                Some(&token),
+                serde_json::json!({"handle": handle, "plcOp": op}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let deactivated: Option<String> =
+            sqlx::query_scalar("SELECT deactivated_at FROM accounts WHERE did = ?")
+                .bind(&child)
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert!(deactivated.is_none());
+        assert!(get_child_of_parent(&state.db, &child, parent)
+            .await
+            .unwrap()
+            .is_some());
     }
 }

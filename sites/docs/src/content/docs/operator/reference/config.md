@@ -3,7 +3,7 @@ title: Configuration reference
 description: Generated TOML fields and environment controls for Custos operators.
 ---
 
-> Generated from source for ezpds **v0.4.7**. Do not edit this page by hand.
+> Generated from source for ezpds **v0.5.0**. Do not edit this page by hand.
 
 Fields come from the validated Rust configuration types. Environment overrides come from the loader and are shown beside the TOML value they replace. A dash means that field has no direct environment override. Sensitive values are named but never rendered.
 

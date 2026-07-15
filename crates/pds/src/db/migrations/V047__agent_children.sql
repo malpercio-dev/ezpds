@@ -48,6 +48,33 @@ DROP TABLE agent_claim_attempts_stash;
 CREATE INDEX idx_agent_identities_did ON agent_identities (did);
 CREATE INDEX idx_agent_identities_parent_did ON agent_identities (parent_did);
 CREATE UNIQUE INDEX idx_agent_identities_claim_token
-    ON agent_identities (claim_token) WHERE claim_token IS NOT NULL;
+    ON agent_identities (claim_token)
+    WHERE claim_token IS NOT NULL;
 CREATE UNIQUE INDEX idx_agent_identities_iss_sub
-    ON agent_identities (issuer, subject) WHERE issuer IS NOT NULL;
+    ON agent_identities (issuer, subject)
+    WHERE issuer IS NOT NULL;
+
+-- Durable local half of child provisioning. The account/handle/repo are reserved while the
+-- account is deactivated; publication and final firehose/capability activation can then resume
+-- safely after a process or network failure.
+CREATE TABLE agent_child_provisionings (
+    child_did            TEXT NOT NULL,
+    parent_did           TEXT NOT NULL,
+    handle               TEXT NOT NULL,
+    registration_id      TEXT NOT NULL,
+    signed_op            TEXT NOT NULL,
+    scopes               TEXT NOT NULL,
+    identity_assertion   TEXT NOT NULL,
+    assertion_expires_at TEXT NOT NULL,
+    genesis_car          BLOB NOT NULL,
+    sync_car             BLOB NOT NULL,
+    plc_published_at     TEXT,
+    finalized_at         TEXT,
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL,
+    PRIMARY KEY (child_did),
+    UNIQUE (handle),
+    UNIQUE (registration_id),
+    FOREIGN KEY (child_did) REFERENCES accounts (did),
+    FOREIGN KEY (parent_did) REFERENCES accounts (did)
+);

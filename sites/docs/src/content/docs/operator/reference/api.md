@@ -3,7 +3,7 @@ title: HTTP & XRPC API
 description: Generated route reference for the Custos server.
 ---
 
-> Generated from source for ezpds **v0.4.7**. Do not edit this page by hand.
+> Generated from source for ezpds **v0.5.0**. Do not edit this page by hand.
 
 Every path registered by the server is listed here. For `/xrpc/` endpoints, use the namespace after `/xrpc/` to find the request, response, and authentication schema in the [AT Protocol Lexicon reference](https://docs.bsky.app/docs/api/at-protocol-xrpc-api). Custos-specific endpoints are explained in the operator workflows elsewhere in this documentation; this generated inventory is the complete route-coverage index.
 
@@ -14,6 +14,8 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/.well-known/did.json` | Custos HTTP |
 | `/.well-known/oauth-authorization-server` | Custos HTTP |
 | `/.well-known/oauth-protected-resource` | Custos HTTP |
+| `/agent/child` | Custos HTTP |
+| `/agent/child/revoke` | Custos HTTP |
 | `/agent/event/notify` | Custos HTTP |
 | `/agent/identity` | Custos HTTP |
 | `/agent/identity/claim` | Custos HTTP |
