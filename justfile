@@ -173,6 +173,24 @@ mcp-test:
     cargo build -p pds
     cd tools/mcp && pnpm test
 
+# Install dependencies for the credential-forwarding MCP sidecar (tools/mcp-sidecar)
+# — one-time setup. The sidecar single-sources the tool surface from tools/mcp, so
+# run `just mcp-setup` too (it provides tools.ts's transitive deps at runtime).
+mcp-sidecar-setup:
+    cd tools/mcp-sidecar && pnpm install
+
+# Run the MCP sidecar (Streamable-HTTP, credential-forwarding). Requires
+# MCP_SIDECAR_PDS_ORIGIN (and, in prod, MCP_SIDECAR_PUBLIC_ORIGIN) — see
+# tools/mcp-sidecar/README.md. A long-running HTTP service, not a stdio launcher.
+mcp-sidecar *args:
+    tools/mcp-sidecar/bin/custos-mcp-sidecar {{args}}
+
+# Run the sidecar scaffold suite: per-caller registry, credential forwarding,
+# in-memory-only sessions, redaction, transport, and config parsing. Hermetic
+# (stub PDS on loopback — no cargo build, no live network). See its README.
+mcp-sidecar-test:
+    cd tools/mcp-sidecar && pnpm test
+
 # Shared gate list both `ci` variants run before their clippy/test/audit/deny tail.
 # Adding a check here covers `just ci` (macOS/full) and `just ci-pds` (Linux) at once —
 # the old design re-stated all twelve checks in each, so a gate added to one and

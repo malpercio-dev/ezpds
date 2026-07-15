@@ -1,0 +1,19 @@
+# Railway config for the credential-forwarding MCP sidecar service.
+#
+# Unlike the static-site services (which set Root Directory to their subtree so
+# Railway auto-resolves a sibling railway.toml), the sidecar builds from the REPO
+# ROOT context — it single-sources the tool surface from tools/mcp, so both
+# packages must be in the build context. Point the service's "Railway Config
+# File" setting at this file (tools/mcp-sidecar/railway.toml) so it does NOT
+# inherit the repo-root railway.toml, which is PDS-specific. dockerfilePath is
+# therefore repo-root-relative. See docs/deploy.md → "MCP sidecar".
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "tools/mcp-sidecar/Dockerfile"
+
+[deploy]
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
+# The sidecar answers 200 at "/" (a liveness probe that touches no credential).
+healthcheckPath = "/"
+healthcheckTimeout = 30

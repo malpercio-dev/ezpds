@@ -11,9 +11,33 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import { xrpc, HttpError } from './http.ts';
-import { AgentSession, RevokedError, SessionExpiredError } from './auth.ts';
+import { RevokedError, SessionExpiredError, type SessionState } from './auth.ts';
 import { ALLOW_DESTRUCTIVE, imageDir } from './config.ts';
+
+/**
+ * The slice of a session the tool surface actually consumes. `AgentSession`
+ * (the stdio server's onboarding-and-cache unit) satisfies it structurally, and
+ * so does the sidecar's per-request forwarding session — that is what lets both
+ * entry points single-source these tool implementations.
+ */
+export interface SessionLike {
+  readonly pdsUrl: string;
+  accessToken(): Promise<string>;
+  did(): string | null;
+  scopes(): string[];
+  status(): SessionState;
+}
+
+/**
+ * Resolves the session a tool call runs as. The stdio server binds one
+ * singleton (`() => session`); the sidecar resolves a per-caller forwarding
+ * session from the request's authenticated identity (`extra.authInfo`). A tool
+ * handler is invoked with the MCP `extra` object, which carries `authInfo` when
+ * the transport authenticated the caller.
+ */
+export type SessionResolver = (extra?: { authInfo?: AuthInfo }) => SessionLike;
 
 const ATTRIBUTION =
   'Runs as this MCP server’s agent registration: the action is attributed to the agent ' +
@@ -37,7 +61,7 @@ function fail(message: string): ToolResult {
  * never a stack trace. Scope refusals name the missing permission and the
  * scopes the agent actually holds.
  */
-function relayError(err: unknown, session: AgentSession): ToolResult {
+function relayError(err: unknown, session: SessionLike): ToolResult {
   if (err instanceof RevokedError || err instanceof SessionExpiredError) {
     return fail(err.message);
   }
@@ -104,7 +128,7 @@ function imageMime(filePath: string): string {
   return type;
 }
 
-async function requireDid(session: AgentSession): Promise<{ token: string; did: string }> {
+async function requireDid(session: SessionLike): Promise<{ token: string; did: string }> {
   const token = await session.accessToken();
   const did = session.did();
   if (!did) throw new Error('the agent session has no DID — onboarding did not complete');
@@ -113,7 +137,7 @@ async function requireDid(session: AgentSession): Promise<{ token: string; did: 
 
 const replyRef = z.object({ uri: z.string(), cid: z.string() });
 
-export function registerTools(server: McpServer, session: AgentSession): void {
+export function registerTools(server: McpServer, resolveSession: SessionResolver): void {
   server.registerTool(
     'whoami',
     {
@@ -124,7 +148,8 @@ export function registerTools(server: McpServer, session: AgentSession): void {
         'must confirm. Use this first if any other tool reports an auth problem.',
       annotations: { readOnlyHint: true },
     },
-    async () => {
+    async (extra) => {
+      const session = resolveSession(extra);
       const status = session.status();
       const report: Record<string, unknown> = { pds_url: session.pdsUrl, ...status };
       if (status.state === 'onboarding') {
@@ -170,7 +195,8 @@ export function registerTools(server: McpServer, session: AgentSession): void {
         langs: z.array(z.string()).optional().describe('BCP-47 language tags'),
       },
     },
-    async (args) => {
+    async (args, extra) => {
+      const session = resolveSession(extra);
       try {
         const { token, did } = await requireDid(session);
 
@@ -228,7 +254,8 @@ export function registerTools(server: McpServer, session: AgentSession): void {
           .describe('DID or handle of the repo to read (defaults to the onboarded account)'),
       },
     },
-    async (args) => {
+    async (args, extra) => {
+      const session = resolveSession(extra);
       try {
         const repo = args.repo ?? session.did();
         if (!repo) throw new Error('no repo given and the agent session has no DID yet');
@@ -259,7 +286,8 @@ export function registerTools(server: McpServer, session: AgentSession): void {
           .describe('DID or handle of the repo to read (defaults to the onboarded account)'),
       },
     },
-    async (args) => {
+    async (args, extra) => {
+      const session = resolveSession(extra);
       try {
         const repo = args.repo ?? session.did();
         if (!repo) throw new Error('no repo given and the agent session has no DID yet');
@@ -294,7 +322,8 @@ export function registerTools(server: McpServer, session: AgentSession): void {
         cursor: z.string().optional().describe('Cursor from a previous page'),
       },
     },
-    async (args) => {
+    async (args, extra) => {
+      const session = resolveSession(extra);
       try {
         const token = await session.accessToken();
         const result = args.query
@@ -321,7 +350,8 @@ export function registerTools(server: McpServer, session: AgentSession): void {
         'head/rev, and record/blob counts (com.atproto.server.checkAccountStatus).',
       annotations: { readOnlyHint: true },
     },
-    async () => {
+    async (extra) => {
+      const session = resolveSession(extra);
       try {
         const token = await session.accessToken();
         const status = await xrpc(session.pdsUrl, 'com.atproto.server.checkAccountStatus', {
@@ -349,7 +379,8 @@ export function registerTools(server: McpServer, session: AgentSession): void {
         record: z.record(z.string(), z.unknown()).describe('The full record value (JSON object)'),
       },
     },
-    async (args) => {
+    async (args, extra) => {
+      const session = resolveSession(extra);
       try {
         const { token, did } = await requireDid(session);
         const result = await xrpc(session.pdsUrl, 'com.atproto.repo.putRecord', {
@@ -377,7 +408,8 @@ export function registerTools(server: McpServer, session: AgentSession): void {
         rkey: z.string().describe('Record key to delete'),
       },
     },
-    async (args) => {
+    async (args, extra) => {
+      const session = resolveSession(extra);
       try {
         const { token, did } = await requireDid(session);
         const result = await xrpc(session.pdsUrl, 'com.atproto.repo.deleteRecord', {

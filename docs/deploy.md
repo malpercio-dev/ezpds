@@ -253,6 +253,72 @@ docker build -t obsign-docs sites/docs
 docker run --rm -p 8080:8080 obsign-docs   # then open http://localhost:8080
 ```
 
+## MCP sidecar (`mcp.obsign.org`)
+
+The credential-forwarding MCP sidecar (`tools/mcp-sidecar/`) deploys as **another Railway
+service in the same project** as the PDS — the hosted tier of the Custos MCP. It serves the
+`tools/mcp` tool surface over Streamable HTTP, authenticates each caller via OAuth against
+Custos, and **forwards** the caller's token per request while holding nothing durable
+([ADR-0024](architecture/decisions/0024-hosted-agent-credential-forwarding.md)). It reaches the
+PDS over **private networking** (`*.railway.internal`), so forwarded traffic never leaves the
+project's private network. There is no database, no volume, and **no secret** — the whole point
+of the forwarding posture.
+
+### Config as code
+
+| File | Role |
+|------|------|
+| `tools/mcp-sidecar/Dockerfile` | Two stages on `node:22-alpine`: install prod deps for `tools/mcp` **and** `tools/mcp-sidecar`, then run `src/server.ts` (Node strips TypeScript natively — no compile step). Runs as the non-root `node` user. |
+| `tools/mcp-sidecar/railway.toml` | Dockerfile builder + `healthcheckPath = "/"` (the sidecar answers 200 at `/`, touching no credential). |
+
+### The critical difference from the static sites: build context
+
+The marketing and docs services are **self-contained**, so they set **Root Directory** to their
+subtree and Railway auto-resolves a sibling `railway.toml` + `Dockerfile`. The sidecar is
+**not** self-contained: it single-sources the tool surface from `tools/mcp` (a relative import —
+Node will not type-strip a `.ts` resolved under `node_modules`), so its build context must
+include **both** packages. It therefore builds from the **repo root**, which needs a different
+wiring than the Root-Directory trick:
+
+- **Railway Config File** = `tools/mcp-sidecar/railway.toml` (service → Settings → Config-as-code).
+  This is what stops the service from inheriting the repo-root `railway.toml` (which is
+  PDS-specific), replacing the Root-Directory isolation the static sites rely on.
+- **Root Directory** = repo root (leave it unset). The `dockerfilePath` in the sidecar's
+  `railway.toml` is repo-root-relative (`tools/mcp-sidecar/Dockerfile`) and the Dockerfile
+  `COPY`s `tools/mcp` alongside `tools/mcp-sidecar`. The repo-root `.dockerignore` already
+  excludes `node_modules`/`target`/`.git`, so the context stays small.
+- **Watch Paths** = `tools/mcp-sidecar/**` **and** `tools/mcp/**` — the sidecar must rebuild when
+  either the sidecar or the shared tool surface changes. (Optionally add an *ignore* path of
+  `tools/**` to the **PDS** service so a sidecar edit doesn't redeploy the PDS.)
+- **Wait for CI** — optional, same reasoning as the static sites: `just ci-pds` does not run the
+  sidecar's Node suite, so waiting adds no real safety; harmless if you'd rather gate uniformly.
+- **Environment:** `MCP_SIDECAR_PDS_ORIGIN` = the PDS's private address
+  (`http://<pds-service>.railway.internal:<port>`), `MCP_SIDECAR_PUBLIC_ORIGIN` =
+  `https://mcp.obsign.org` (the OAuth resource identifier), and
+  `MCP_SIDECAR_AUTH_SERVER_ORIGIN` = `https://obsign.org` (the **public** Custos
+  authorization server advertised to clients — never the private forwarding
+  address, which is unreachable from outside the Railway network).
+  `MCP_SIDECAR_PDS_ORIGIN` is **required** — the sidecar parse-fails loudly rather
+  than defaulting to a public URL. **No volume, no secret.** Railway injects `PORT`.
+
+### Domain: `mcp.obsign.org`
+
+Same as the other services: `*.obsign.org` is a Railway custom domain on the **PDS**, so
+`mcp.obsign.org` currently resolves there via the wildcard. Add the **exact** domain
+`mcp.obsign.org` on the **sidecar** service (Settings → Networking); an exact hostname takes
+routing priority over the wildcard, stealing just `mcp` without touching the wildcard, the PDS,
+or the other services. The wildcard already covers `mcp` at the DNS layer; an explicit `mcp`
+CNAME (matching the wildcard's cloud mode) is clearer if the wildcard is ever narrowed.
+
+### Local check
+
+```sh
+docker build -t custos-mcp-sidecar -f tools/mcp-sidecar/Dockerfile .   # repo-root context
+docker run --rm -p 8080:8080 -e MCP_SIDECAR_PDS_ORIGIN=http://host.docker.internal:8080 \
+  custos-mcp-sidecar
+curl -s localhost:8080/.well-known/oauth-protected-resource   # names Custos as the AS
+```
+
 ## Colmena / NixOS oci-containers Deployment
 
 For self-hosted NixOS with colmena, use `nixosModules.default` from the flake:

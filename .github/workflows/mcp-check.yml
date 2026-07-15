@@ -1,0 +1,92 @@
+name: MCP · check
+
+# PR-time validation for the Custos MCP packages. The stdio server (tools/mcp) and the
+# credential-forwarding sidecar (tools/mcp-sidecar) are BOTH excluded from the Linux
+# `just ci-pds` gate: the stdio conformance suite needs a built `pds` binary (expensive),
+# and neither had any CI lane at all. That left a real gap — the sidecar single-sources
+# the stdio tool surface by relative import (tools/mcp/src/tools.ts), so a change to the
+# stdio package can break the sidecar (and the shared `registerTools` refactor coupled
+# them), yet nothing gated it.
+#
+# This lane closes the cheap half: it type-checks BOTH packages (catching a signature
+# break in the shared surface) and runs the sidecar's HERMETIC, self-contained suite
+# (a stub PDS on loopback — no cargo build, no live network, ~5s). It needs NO secrets and
+# no macOS/cargo. The stdio conformance suite (`just mcp-test`) stays out because it needs
+# the `pds` binary; folding it into the ci.yml PDS lane (which already builds `pds`) is a
+# tracked follow-up. Path-filtered so only MCP changes pay the cost.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "tools/mcp/**"
+      - "tools/mcp-sidecar/**"
+      - ".github/workflows/mcp-check.yml"
+  push:
+    branches: [main]
+    paths:
+      - "tools/mcp/**"
+      - "tools/mcp-sidecar/**"
+      - ".github/workflows/mcp-check.yml"
+  workflow_dispatch:
+
+# Read-only: type-checks and runs a hermetic suite; never deploys or touches secrets.
+permissions:
+  contents: read
+
+concurrency:
+  group: mcp-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mcp-check:
+    name: typecheck + sidecar suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          # Exact pin — matches the version that generated both tools lockfiles and the
+          # sidecar Dockerfile's corepack pin, so --frozen-lockfile can't fail on a
+          # lockfile-format difference. (The apps pin 9.15.9 for their own packageManager;
+          # these tool packages are independent and have none.)
+          version: 10.33.0
+
+      - name: Setup Node 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          # Cache the pnpm store, keyed by both lockfiles (pnpm is on PATH from the
+          # action-setup step above, which setup-node's `cache: pnpm` requires).
+          cache: pnpm
+          cache-dependency-path: |
+            tools/mcp/pnpm-lock.yaml
+            tools/mcp-sidecar/pnpm-lock.yaml
+
+      # The sidecar single-sources tools/mcp's tool surface by relative import, and that
+      # file resolves its own deps (zod, the MCP SDK) from tools/mcp's node_modules — so
+      # BOTH installs are required for the sidecar to type-check and run.
+      - name: Install deps (tools/mcp)
+        working-directory: tools/mcp
+        run: pnpm install --frozen-lockfile
+
+      - name: Install deps (tools/mcp-sidecar)
+        working-directory: tools/mcp-sidecar
+        run: pnpm install --frozen-lockfile
+
+      - name: Type-check the shared tool surface (tools/mcp)
+        working-directory: tools/mcp
+        run: pnpm check
+
+      - name: Type-check the sidecar (tools/mcp-sidecar)
+        working-directory: tools/mcp-sidecar
+        run: pnpm check
+
+      - name: Sidecar hermetic suite (registry, forwarding, sessions, redaction, transport, config)
+        working-directory: tools/mcp-sidecar
+        run: pnpm test
