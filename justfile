@@ -32,6 +32,16 @@ run-pds:
 docker-build:
     docker build -t pds:latest .
 
+# Reclaim disk: prune MERGED git worktrees (+ their multi-GB target/ caches) and
+# merged/[gone] local branches. `gc` is a dry run (reports what it would remove);
+# `gc-apply` actually removes. Only work provably already in main is touched —
+# unmerged/in-review worktrees and branches are kept. See scripts/gc.sh.
+gc:
+    scripts/gc.sh
+
+gc-apply:
+    scripts/gc.sh --apply
+
 # Security audit against the RustSec advisory database. Accepted/ignored advisories
 # and their rationale live in .cargo/audit.toml (read automatically by cargo audit).
 audit:
