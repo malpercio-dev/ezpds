@@ -213,6 +213,21 @@ This plan is the input to **implementation plans** (design → test-requirements
 `docs/archive/README.md`). Tracking issue:
 [MM-356](https://linear.app/malpercio/issue/MM-356/hosted-custos-mcp-agent-as-child-identity-credential-forwarding)
 (project `ezpds`, Wave 8: auth.md — Linear is the source of truth for its status). The first
-implementation plan should cover the smallest end-to-end slice:
+implementation plan covers the smallest end-to-end slice:
 agent-as-child-identity minting + a credential-forwarding Streamable-HTTP sidecar for one tool
 (`create_post`) against staging, with the two ADRs written alongside.
+
+The other two legs of the triad for this first slice ([MM-366](https://linear.app/malpercio/issue/MM-366)):
+
+- **Test requirements:** [`docs/test-plans/2026-07-15-MM-356.md`](../test-plans/2026-07-15-MM-356.md)
+  — every acceptance criterion (AC1 minting · AC2 sidecar · AC3 `create_post` E2E ·
+  AC4 stdio non-regression) mapped to its verification method + the live-check (HV) list.
+- **Phases:** [`docs/implementation-plans/2026-07-15-MM-356/`](../implementation-plans/2026-07-15-MM-356/)
+  — one phase per near-term child: minting ([MM-368](https://linear.app/malpercio/issue/MM-368)),
+  forwarding sidecar ([MM-369](https://linear.app/malpercio/issue/MM-369)),
+  `create_post` E2E ([MM-370](https://linear.app/malpercio/issue/MM-370)),
+  stdio non-regression ([MM-367](https://linear.app/malpercio/issue/MM-367)).
+
+The two ADRs written alongside:
+[ADR-0023](../architecture/decisions/0023-sovereign-child-agent-identities.md) and
+[ADR-0024](../architecture/decisions/0024-hosted-agent-credential-forwarding.md).
