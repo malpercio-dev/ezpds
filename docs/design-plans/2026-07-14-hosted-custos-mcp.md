@@ -80,7 +80,7 @@ capability** for a bot whose master key is in the user's wallet." That is arguab
 posture than a self-hosted delegate, where the assertion sits `0600` on a laptop with no enclave —
 which is a fair trade the *self-hoster* accepts for the simplicity of the agent being them.
 
-**This is ADR-worthy** (§7, ADR-A): it establishes the sovereign-child-identity model as the
+**ADR-0023 records this decision** (§7): it establishes the sovereign-child-identity model as the
 default for the *hosted* path and defines who holds the agent's recovery key — while the
 acts-as-you delegate model stays supported, and is the right default for self-hosting.
 
@@ -113,8 +113,8 @@ orthogonal decisions. Separate them:
   the OAuth AS. So the MCP client authenticates against obsign.org, the token rides each tool call,
   and the tier caches nothing durable (in-memory per session at most). The naive multi-tenant
   service only "needed" custody because it assumed long-lived server-side sessions; forwarding
-  removes that assumption. **Commit to forwarding regardless of process choice.** *(ADR-worthy — §7,
-  ADR-B.)*
+  removes that assumption. **Commit to forwarding regardless of process choice.** *(Recorded by
+  ADR-0024; §7.)*
 - **Codebase/process axis — sidecar first.** A **credential-forwarding Node sidecar** keeps the
   mature `tools/mcp/` tool surface (`create_post`, `get_record`, …, which are thin XRPC wrappers)
   and terminates only the MCP transport + streaming, delegating all auth to the PDS. Folding the
@@ -174,23 +174,22 @@ Net of §1–§3: **agent = sovereign child identity; hosted tier = credential-f
 
 ## 7. ADRs to write
 
-Two decisions here are architecturally load-bearing and should be recorded as ADRs (next free
-number is 0022; assign in order when written):
+Two decisions here are architecturally load-bearing and are recorded as separate ADRs:
 
-- **ADR-A — Agents may be sovereign child identities (the hosted default).** The agent can have its
+- **[ADR-0023](../architecture/decisions/0023-sovereign-child-agent-identities.md) — Agents may be sovereign child identities (the hosted default).** The agent can have its
   own DID/repo/handle; its recovery key is held in the user's Obsign wallet (same genesis/rotation
   machinery as the user's own identity); day-to-day signing is a delegated, revocable capability.
   This is the **default for the hosted path**; the *acts-as-you* delegate model (current auth.md
   service_auth flow) **remains first-class and is the default for self-hosting** — the ADR records
   when each applies (the §1 attribution × hosting matrix), not a replacement. Relates to ADR-0019,
   ADR-0001, ADR-0004.
-- **ADR-B — The hosted agent tier forwards credentials; it never holds durable user/agent
+- **[ADR-0024](../architecture/decisions/0024-hosted-agent-credential-forwarding.md) — The hosted agent tier forwards credentials; it never holds durable user/agent
   secrets.** MCP remote auth = OAuth against Custos (the existing AS); the caller's token rides each
   request; the tier caches nothing durable. This is the security-posture commitment that keeps a
   hosted offering consistent with the product thesis. Relates to ADR-0019.
 
-Whether ADR-A and ADR-B are two documents or one is an author's call at writing time; they are
-separable claims (identity model vs custody posture) and default to two.
+They are separate claims: ADR-0023 fixes the identity and attribution model;
+ADR-0024 fixes the hosted tier's credential-custody posture.
 
 ## 8. Gating
 
