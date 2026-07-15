@@ -12,6 +12,7 @@ license.workspace = true
 atrium-api = { workspace = true }
 atrium-repo = { workspace = true }
 base64 = { workspace = true }
+chrono = { workspace = true }
 futures = "0.3"
 ipld-core = { version = "0.4", features = ["serde"] }
 p256 = { workspace = true }

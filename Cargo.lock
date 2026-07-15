@@ -6063,6 +6063,7 @@ dependencies = [
  "atrium-api",
  "atrium-repo",
  "base64 0.21.7",
+ "chrono",
  "futures",
  "ipld-core",
  "p256",

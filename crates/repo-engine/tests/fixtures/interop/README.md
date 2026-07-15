@@ -13,6 +13,7 @@ commit `056e5741bb330757205d6b16db5266fffcae937b`.
 | `nsid_syntax_{valid,invalid}.txt` | atproto-interop-tests `syntax/nsid_syntax_{valid,invalid}.txt` | CC0-1.0 |
 | `recordkey_syntax_{valid,invalid}.txt` | atproto-interop-tests `syntax/recordkey_syntax_{valid,invalid}.txt` | CC0-1.0 |
 | `aturi_syntax_{valid,invalid}.txt` | atproto-interop-tests `syntax/aturi_syntax_{valid,invalid}.txt` | CC0-1.0 |
+| `datetime_syntax_{valid,invalid}.txt`, `datetime_parse_invalid.txt` | atproto-interop-tests `syntax/datetime_{syntax_valid,syntax_invalid,parse_invalid}.txt` | CC0-1.0 |
 | `data-model-fixtures.json` | atproto-interop-tests `data-model/data-model-fixtures.json` | CC0-1.0 |
 | `commit-proof-fixtures.json` | [bluesky-social/atproto](https://github.com/bluesky-social/atproto) `packages/repo/tests/commit-proof-fixtures.json` | MIT |
 
@@ -26,6 +27,7 @@ vectors.
 - `src/mst.rs` — `key_heights.json`, `common_prefix.json`
 - `src/at_uri.rs` — `aturi_syntax_*.txt`
 - `src/records.rs` — `nsid_syntax_*.txt`, `recordkey_syntax_*.txt`
+- `src/datetime.rs` — `datetime_syntax_*.txt`, `datetime_parse_invalid.txt`
 - `tests/interop_gate.rs` — `commit-proof-fixtures.json`, `tid_syntax_*.txt`,
   `data-model-fixtures.json`
 
