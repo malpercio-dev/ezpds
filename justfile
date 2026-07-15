@@ -32,6 +32,14 @@ run-pds:
 docker-build:
     docker build -t pds:latest .
 
+# Spawn a hermetic local PDS for the mobile apps' browser-harness proxy mode: mock
+# plc.directory (no live network), throwaway admin token, ephemeral data dir. Prints the
+# URL + token and the VITE_HARNESS_PDS_URL line to point a `dev:harness:proxy` server at.
+# Needs a built pds binary (`cargo build -p pds`). Ctrl-C stops and wipes it.
+# See apps/*/AGENTS.md "Browser test harness" and docs/design-plans/2026-07-12-browser-harness.md.
+harness-pds:
+    scripts/harness-pds.sh
+
 # Reclaim disk: prune MERGED git worktrees (+ their multi-GB target/ caches) and
 # merged/[gone] local branches. `gc` is a dry run (reports what it would remove);
 # `gc-apply` actually removes. Only work provably already in main is touched —
