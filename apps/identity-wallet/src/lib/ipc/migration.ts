@@ -153,8 +153,8 @@ export type MigrationError =
 
 /**
  * Resolved source identity returned by `prepareMigration` — mirrors the Rust `PreparedMigration`
- * (`#[serde(rename_all = "camelCase")]`). Used by MigrationSourceAuthScreen to prefill the login
- * identifier and show which PDS it is signing into.
+ * (`#[serde(rename_all = "camelCase")]`). `handle` is the preferred login identifier: the
+ * human-readable handle when known, otherwise the DID.
  */
 export type PreparedMigration = {
   handle: string;
